@@ -415,6 +415,58 @@ const result = match(id, {
 - ✅ Works everywhere (not just JSON)
 - ✅ Compiler handles complexity
 
+**Implementation Details:**
+
+Bare primitive unions are implemented using automatic boxing at runtime:
+
+1. **Runtime Representation:**
+   ```ts
+   // Internal representation (not accessible to user code)
+   type BareUnion<T> = {
+     $type: "string" | "number" | "boolean" | "null";
+     $value: T;
+   }
+   ```
+   - The `$type` and `$value` fields are REAL runtime fields
+   - Users CANNOT access these fields (compiler error if attempted)
+   - Memory overhead: ~16 bytes per value on 64-bit systems (pointer + tag + value)
+
+2. **Automatic Operations:**
+   - **Assignment**: Compiler inserts boxing code
+     ```ts
+     let id: string | number = 42;
+     // Compiles to:
+     // id = { $type: "number", $value: 42 }
+     ```
+   - **Method calls**: Compiler inserts unboxing code
+     ```ts
+     id.toString();  // If id is number
+     // Compiles to: id.$value.toString()
+     ```
+   - **match()**: Compiler generates discriminant check on `$type`
+     ```ts
+     match(id, { number: (n) => n + 1 })
+     // Compiles to: if (id.$type === "number") { return id.$value + 1 }
+     ```
+
+3. **User Code Restrictions:**
+   ```ts
+   let id: string | number = 42;
+
+   // ❌ FORBIDDEN - compiler error
+   console.log(id.$type);   // Error: Cannot access internal field
+   console.log(id.$value);  // Error: Cannot access internal field
+
+   // ✅ ALLOWED - automatic unwrapping
+   const len = id.toString().length;  // OK: compiler unwraps automatically
+   ```
+
+4. **Performance Characteristics:**
+   - Each bare union value requires allocation and indirection
+   - Discriminant check is a simple string/number comparison
+   - No type tags or RTTI involved
+   - Trade-off: Simplicity and type safety vs. memory overhead
+
 #### Discriminated Unions (Explicit Pattern)
 
 For **complex types** (objects, classes, arrays), use **discriminated unions** with explicit discriminant fields:
@@ -2200,29 +2252,78 @@ Use named exports instead.
 
 ### 16.8 Module Resolution
 
-Modules are resolved relative to the importing file:
+Raya uses a well-defined module resolution algorithm:
+
+#### 1. Standard Library Modules (Resolved First)
 
 ```ts
-import { foo } from "./sibling";      // ./sibling.raya
-import { bar } from "../parent";      // ../parent.raya
-import { baz } from "./dir/module";   // ./dir/module.raya
+import { match } from "raya:std";              // Built-in standard library
+import { JSON } from "raya:json";              // Built-in JSON support
+import { JsonValue } from "raya:json/internal"; // Internal JSON utilities
+import * as Reflect from "raya:reflect";       // Reflection API (if --emit-reflection)
 ```
 
-### 16.9 Circular Dependencies
+Standard library modules are always resolved first, before any user code.
 
-Circular imports are allowed but must be carefully managed:
+#### 2. Relative Imports
+
+```ts
+import { foo } from "./sibling";      // ./sibling.raya (same directory)
+import { bar } from "../parent";      // ../parent.raya (parent directory)
+import { baz } from "./dir/module";   // ./dir/module.raya (subdirectory)
+```
+
+- Resolved relative to the importing file's location
+- Must have `.raya` extension in filesystem
+- `.raya` extension is optional in import statement (compiler adds it)
+
+#### 3. Absolute/Package Imports
+
+```ts
+import { Component } from "ui/button";  // Package import
+```
+
+**Resolution order:**
+1. `./node_modules/ui/button.raya`
+2. `../node_modules/ui/button.raya`
+3. (Continue up directory tree)
+4. Directories in `RAYA_PATH` environment variable
+
+#### 4. Circular Dependencies
+
+Circular dependencies result in a **compile error**:
 
 ```ts
 // a.raya
-import { b } from "./b";
-export const a = 1;
+import { b } from "./b";  // ERROR: Circular dependency
 
 // b.raya
-import { a } from "./a";
-export const b = 2;
+import { a } from "./a";  // detected during compilation
 ```
 
-Values are initialized in dependency order. Use functions to break initialization cycles.
+**Reason:** Simplifies module initialization and prevents runtime issues.
+
+**Workaround:** Refactor shared code into a third module:
+
+```ts
+// shared.raya
+export const common = "shared";
+
+// a.raya
+import { common } from "./shared";
+
+// b.raya
+import { common } from "./shared";
+```
+
+### 16.9 Module Initialization
+
+Modules are initialized in dependency order (topological sort):
+
+1. All imports are resolved at compile time
+2. Modules are initialized bottom-up (dependencies first)
+3. Each module is initialized exactly once
+4. Initialization is single-threaded and deterministic
 
 ---
 
@@ -2319,7 +2420,15 @@ function match<T, R>(
 
 2. **For discriminated unions** (`{ status: "ok" | "err" }`):
    - Keys are discriminant values: `"ok"`, `"err"`
-   - Compiler infers discriminant field automatically
+   - Compiler infers discriminant field using this algorithm:
+     1. Find all fields with literal types that exist in ALL variants
+     2. If multiple candidates exist, use this priority order:
+        - `"kind"` (highest priority)
+        - `"type"`
+        - `"tag"`
+        - `"variant"`
+        - First alphabetically among remaining fields
+     3. If no common field with literal types exists, compilation error
    - Each handler receives the full variant object
 
 **Features:**
@@ -2995,7 +3104,7 @@ if (instanceof(obj, User)) {
 
 ### 18.5 Example: Dynamic Serialization (Reflection-Based)
 
-**Note:** For standard JSON serialization, use `JSON.encode()`/`JSON.decode<T>()` (Section 17.6) which uses compile-time code generation. This example shows reflection-based serialization for dynamic scenarios.
+**Note:** For standard JSON serialization, use `JSON.encode()`/`JSON.decode<T>()` (Section 17.7) which uses compile-time code generation. This example shows reflection-based serialization for dynamic scenarios.
 
 ```ts
 import * as Reflect from "raya:reflect";

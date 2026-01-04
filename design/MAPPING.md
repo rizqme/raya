@@ -1932,6 +1932,213 @@ RETURN
 
 ---
 
+### 15.4 Bare Primitive Union Pattern
+
+**Raya:**
+```ts
+type ID = string | number;
+
+let id: ID = 42;
+id = "abc";
+
+function printId(value: ID): void {
+  // Access methods - compiler unwraps automatically
+  console.log(value.toString());
+}
+```
+
+**Bytecode:**
+
+```
+// let id: ID = 42;
+// Create union wrapper object
+NEW <Union_string_number>      // Allocate union object
+DUP
+CONST_STR 0                    // "number" - $type field
+STORE_FIELD 0                  // Store discriminant
+CONST_I32 42                   // 42 - $value field
+STORE_FIELD 1                  // Store value
+STORE_LOCAL 0                  // id
+
+// id = "abc";
+// Re-assign with different type
+NEW <Union_string_number>
+DUP
+CONST_STR 1                    // "string" - $type field
+STORE_FIELD 0
+CONST_STR 2                    // "abc" - $value field
+STORE_FIELD 1
+STORE_LOCAL 0                  // id
+
+// printId(id)
+// Method call - compiler unwraps
+LOAD_LOCAL 0                   // id
+LOAD_FIELD 1                   // id.$value (unwrap)
+CALL_METHOD <toString>, 0      // Call method on unwrapped value
+CALL <console.log>, 1
+RETURN_VOID
+```
+
+**Object Layout:**
+
+```
+Union_string_number {
+  field[0]: $type (string discriminant)
+  field[1]: $value (any type - runtime value)
+}
+```
+
+**Explanation:**
+- Bare unions are boxed objects at runtime
+- Each assignment creates a new wrapper object
+- Compiler automatically inserts boxing/unboxing code
+- Method calls are unwrapped transparently
+- Memory overhead: ~16 bytes per value (2 fields)
+
+---
+
+### 15.5 Bare Union with match()
+
+**Raya:**
+```ts
+import { match } from "raya:std";
+
+type ID = string | number;
+const id: ID = 42;
+
+const desc = match(id, {
+  string: (s) => `String: ${s}`,
+  number: (n) => `Number: ${n}`
+});
+```
+
+**Bytecode (Inlined match):**
+
+```
+// Compiler inlines match() for performance
+LOAD_LOCAL 0                   // id
+LOAD_FIELD 0                   // id.$type (discriminant)
+
+// Check if "string"
+DUP
+CONST_STR 0                    // "string"
+STRICT_EQ
+JMP_IF_TRUE string_handler
+
+// Check if "number"
+CONST_STR 1                    // "number"
+STRICT_EQ
+JMP_IF_TRUE number_handler
+
+// Unreachable (exhaustiveness guaranteed)
+TRAP <unreachable>
+
+string_handler:
+POP                            // Remove duplicate
+LOAD_LOCAL 0                   // id
+LOAD_FIELD 1                   // id.$value (unwrap string)
+// Inline handler: s => `String: ${s}`
+CONST_STR 2                    // "String: "
+SWAP
+TO_STRING
+SCONCAT
+JMP end
+
+number_handler:
+POP
+LOAD_LOCAL 0                   // id
+LOAD_FIELD 1                   // id.$value (unwrap number)
+// Inline handler: n => `Number: ${n}`
+CONST_STR 3                    // "Number: "
+SWAP
+TO_STRING
+SCONCAT
+
+end:
+STORE_LOCAL 1                  // desc
+```
+
+**Explanation:**
+- `match()` is inlined by the compiler for zero-cost abstraction
+- Discriminant check uses string comparison on `$type` field
+- Each handler receives the unwrapped `$value`
+- Exhaustiveness checked at compile time
+- No function call overhead (fully inlined)
+
+---
+
+### 15.6 match() with Discriminated Unions
+
+**Raya:**
+```ts
+import { match } from "raya:std";
+
+type Result<T> =
+  | { status: "ok"; value: T }
+  | { status: "error"; error: string };
+
+const result: Result<number> = { status: "ok", value: 42 };
+
+const message = match(result, {
+  ok: (r) => `Success: ${r.value}`,
+  error: (r) => `Error: ${r.error}`
+});
+```
+
+**Bytecode (Inlined match):**
+
+```
+// Compiler inlines and infers discriminant field "status"
+LOAD_LOCAL 0                   // result
+LOAD_FIELD 0                   // result.status (inferred discriminant)
+
+// Check if "ok"
+DUP
+CONST_STR 0                    // "ok"
+STRICT_EQ
+JMP_IF_TRUE ok_handler
+
+// Check if "error"
+CONST_STR 1                    // "error"
+STRICT_EQ
+JMP_IF_TRUE error_handler
+
+// Unreachable (exhaustiveness guaranteed)
+TRAP <unreachable>
+
+ok_handler:
+POP                            // Remove duplicate
+LOAD_LOCAL 0                   // result (full object)
+// Inline handler: r => `Success: ${r.value}`
+CONST_STR 2                    // "Success: "
+LOAD_LOCAL 0
+LOAD_FIELD 1                   // r.value
+TO_STRING
+SCONCAT
+JMP end
+
+error_handler:
+POP
+LOAD_LOCAL 0                   // result (full object)
+// Inline handler: r => `Error: ${r.error}`
+CONST_STR 3                    // "Error: "
+LOAD_LOCAL 0
+LOAD_FIELD 2                   // r.error (assuming status is field 0, value is 1, error is 2)
+SCONCAT
+
+end:
+STORE_LOCAL 1                  // message
+```
+
+**Explanation:**
+- Compiler infers "status" as discriminant (first common literal-typed field)
+- No boxing/unboxing needed (discriminated unions are plain objects)
+- Handler receives the full variant object
+- Fully inlined for zero overhead
+- Field offsets resolved at compile time
+
+---
+
 ## 16. String Operations
 
 ### 16.1 String Concatenation

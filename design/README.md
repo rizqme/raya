@@ -84,27 +84,42 @@ Detailed examples showing how each language feature compiles to bytecode.
    - Direct dispatch (vtables for methods)
    - Value-based discrimination only
 
-**Example:**
-```ts
-// BANNED - Runtime type check
-if (typeof value === "string") { ... }
+**Two Patterns:**
 
-// REQUIRED - Compile-time discrimination
+1. **Bare Primitive Unions** (automatic):
+```ts
+// For primitives, compiler handles automatically
+type ID = string | number;
+let id: ID = 42;
+
+import { match } from "raya:std";
+match(id, {
+  string: (s) => console.log(`String: ${s}`),
+  number: (n) => console.log(`Number: ${n}`)
+});
+```
+
+2. **Discriminated Unions** (explicit):
+```ts
+// For complex types, use explicit discriminants
 type Value =
   | { kind: "string"; value: string }
   | { kind: "number"; value: number };
 
-switch (value.kind) {  // Compiler verifies exhaustiveness
-  case "string": ...    // value.value is string (compile-time)
-  case "number": ...    // value.value is number (compile-time)
-}
+match(value, {
+  string: (v) => console.log(v.value),
+  number: (v) => console.log(v.value)
+});
 ```
 
 **Benefits:**
-1. **Zero runtime overhead** — No type checking in hot paths
+1. **Minimal runtime overhead** — No type tags/RTTI, only value-based discriminants
+   - Bare unions: Boxing overhead (16 bytes per value on 64-bit)
+   - Discriminated unions: Zero overhead (fields already exist)
+   - No dynamic type checking (typeof/instanceof)
 2. **Compile-time safety** — Type errors caught before execution
 3. **Exhaustiveness** — Compiler ensures all cases handled
-4. **Optimization** — Better inlining, specialization
+4. **Ergonomic** — Bare unions for simple cases, explicit for complex
 5. **Smaller runtime** — No type introspection machinery
 
 ### 2. Goroutine-Style Concurrency
@@ -261,7 +276,8 @@ class Box<T> {
 - **String**: Standard string methods
 - **Array**: Standard array methods
 - **Task utilities**: `sleep`, `all`, `race`
-- **JSON**: Compile-time `encode`/`decode` (see LANG.md Section 17.6)
+- **Pattern matching**: `match()` utility for all union types (see LANG.md Section 17.6)
+- **JSON**: Compile-time `encode`/`decode` (see LANG.md Section 17.7)
 
 ---
 
@@ -293,7 +309,7 @@ Raya provides an **optional reflection capability** for advanced use cases:
 - **Debugging**: Runtime inspection of types and properties
 - **Interoperability**: Bridge to dynamic languages or external systems
 
-**Note:** JSON serialization uses compile-time code generation by default (see LANG.md Section 17.6), not reflection
+**Note:** JSON serialization uses compile-time code generation by default (see LANG.md Section 17.7), not reflection
 
 **Performance:**
 - +10-30% binary size (metadata only)
