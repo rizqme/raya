@@ -7,14 +7,12 @@ This document describes how to work with JSON data in Raya while maintaining **f
 ## Table of Contents
 
 1. [Core Principles](#1-core-principles)
-2. [JSON Type Definition](#2-json-type-definition)
-3. [Parsing JSON](#3-parsing-json)
-4. [Serializing to JSON](#4-serializing-to-json)
-5. [Type-Safe Decoding](#5-type-safe-decoding)
-6. [Validation](#6-validation)
-7. [Common Patterns](#7-common-patterns)
-8. [With Reflection](#8-with-reflection)
-9. [Examples](#9-examples)
+2. [Simple API (Go-Style)](#2-simple-api-go-style)
+3. [Advanced: Manual Decoders](#3-advanced-manual-decoders)
+4. [Advanced: JSON Type Definition](#4-advanced-json-type-definition)
+5. [Advanced: Decoder Combinators](#5-advanced-decoder-combinators)
+6. [Common Patterns](#6-common-patterns)
+7. [Examples](#7-examples)
 
 ---
 
@@ -32,11 +30,193 @@ This document describes how to work with JSON data in Raya while maintaining **f
 
 ---
 
-## 2. JSON Type Definition
+## 2. Simple API (Go-Style)
 
-### 2.1 JSON Value Type
+**For most use cases, use the simple API.** It provides Go-like ergonomics with full type safety.
 
-Represent JSON as a discriminated union:
+### 2.1 Quick Start
+
+```ts
+import { JSON } from "raya:json";
+
+interface User {
+  name: string;
+  age: number;
+  email: string | null;
+}
+
+// Encoding (like Go's json.Marshal)
+const user: User = { name: "Alice", age: 30, email: "alice@example.com" };
+const result = JSON.encode(user);
+
+switch (result.status) {
+  case "ok":
+    const jsonString = result.value;  // jsonString: string
+    console.log(jsonString);
+    break;
+  case "error":
+    console.error(`Encode error: ${result.error}`);
+    break;
+}
+
+// Decoding (like Go's json.Unmarshal)
+const jsonString = '{"name":"Alice","age":30,"email":"alice@example.com"}';
+const decodeResult = JSON.decode<User>(jsonString);
+
+switch (decodeResult.status) {
+  case "ok":
+    const user = decodeResult.value;  // user: User
+    console.log(`User: ${user.name}, ${user.age}`);
+    break;
+  case "error":
+    console.error(`Decode error: ${decodeResult.error}`);
+    break;
+}
+```
+
+### 2.2 API Reference
+
+```ts
+namespace JSON {
+  // Encode any value to JSON string
+  export function encode<T>(value: T): Result<string, Error>;
+
+  // Decode JSON string to typed value
+  export function decode<T>(input: string): Result<T, Error>;
+}
+
+type Result<T, E> =
+  | { status: "ok"; value: T }
+  | { status: "error"; error: E };
+```
+
+### 2.3 How It Works
+
+**Compile-time (default, no reflection):**
+- Compiler generates specialized encode/decode functions for each type
+- Uses type structure to generate serialization code
+- Zero runtime overhead, no reflection needed
+
+**Runtime (with `--emit-reflection`):**
+- Uses reflection API to inspect types dynamically
+- More flexible but slower
+- Useful for generic libraries and debugging
+
+**Recommendation:** Use the simple API unless you need maximum performance or have complex custom validation logic.
+
+### 2.4 Complete Example
+
+```ts
+import { JSON } from "raya:json";
+
+interface Address {
+  street: string;
+  city: string;
+  zipCode: string;
+}
+
+interface Person {
+  name: string;
+  age: number;
+  address: Address;
+  tags: string[];
+}
+
+async function fetchPerson(id: number): Task<Result<Person, string>> {
+  const response = await fetch(`/api/person/${id}`);
+  const text = await response.text();
+
+  const result = JSON.decode<Person>(text);
+
+  if (result.status !== "ok") {
+    return { status: "error", error: result.error.message };
+  }
+
+  return { status: "ok", value: result.value };
+}
+
+async function savePerson(person: Person): Task<Result<void, string>> {
+  const encodeResult = JSON.encode(person);
+
+  if (encodeResult.status !== "ok") {
+    return { status: "error", error: encodeResult.error.message };
+  }
+
+  const response = await fetch("/api/person", {
+    method: "POST",
+    body: encodeResult.value,
+    headers: { "Content-Type": "application/json" }
+  });
+
+  if (!response.ok) {
+    return { status: "error", error: "Failed to save person" };
+  }
+
+  return { status: "ok", value: undefined };
+}
+```
+
+### 2.5 Arrays and Collections
+
+```ts
+// Encode/decode arrays
+const users: User[] = [
+  { name: "Alice", age: 30, email: null },
+  { name: "Bob", age: 25, email: "bob@example.com" }
+];
+
+const encoded = JSON.encode(users);
+// Result<string, Error>
+
+const decoded = JSON.decode<User[]>('[ ... ]');
+// Result<User[], Error>
+
+// Encode/decode maps
+const userMap = new Map<string, User>();
+userMap.set("alice", { name: "Alice", age: 30, email: null });
+
+const encodedMap = JSON.encode(userMap);
+const decodedMap = JSON.decode<Map<string, User>>('{ ... }');
+```
+
+### 2.6 Error Handling
+
+```ts
+interface Error {
+  message: string;
+  path?: string[];  // JSON path where error occurred
+}
+
+// Example error messages:
+// { message: "Expected number at .age", path: ["age"] }
+// { message: "Missing required field 'name'", path: [] }
+// { message: "Invalid JSON syntax at position 42" }
+```
+
+### 2.7 When to Use Advanced API
+
+Use the **Advanced Manual Decoders** (Section 3) when you need:
+- Custom validation logic (e.g., age > 0, email format validation)
+- Different JSON field names than struct fields
+- Performance-critical code (avoid reflection overhead)
+- Backwards compatibility with legacy JSON formats
+- Fine-grained error messages
+
+---
+
+## 3. Advanced: Manual Decoders
+
+**For advanced use cases requiring custom validation or maximum performance.**
+
+### 3.1 Decoder Pattern
+
+**Problem:** Need custom validation, field name mapping, or maximum performance.
+
+**Solution:** Write **decoder functions** that validate and transform JSON with full control.
+
+#### JSON Value Type
+
+First, define the JSON discriminated union:
 
 ```ts
 type JsonValue =
@@ -46,96 +226,13 @@ type JsonValue =
   | { kind: "string"; value: string }
   | { kind: "array"; value: JsonValue[] }
   | { kind: "object"; value: Map<string, JsonValue> };
-```
 
-**Why this works:**
-- Each JSON type has an explicit discriminant (`kind`)
-- Compiler can verify exhaustiveness
-- No runtime type tags needed (discriminant is a string literal)
-- Type-safe pattern matching via `switch`
-
-### 2.2 Alternative: Simpler Union
-
-For performance-critical code:
-
-```ts
-type Json = null | boolean | number | string | Json[] | JsonObject;
-
-interface JsonObject {
-  [key: string]: Json;
-}
-```
-
-**Trade-off:** Less explicit, but more ergonomic. Still type-safe.
-
----
-
-## 3. Parsing JSON
-
-### 3.1 Parse Function Signature
-
-```ts
 type ParseResult<T> =
   | { status: "ok"; value: T }
   | { status: "error"; error: string };
-
-// Built-in JSON parser (returns discriminated union)
-function parseJson(input: string): ParseResult<JsonValue>;
 ```
 
-### 3.2 Example Usage
-
-```ts
-const input = '{"name": "Alice", "age": 30}';
-const result = parseJson(input);
-
-switch (result.status) {
-  case "ok":
-    const json = result.value;
-    // json has type JsonValue
-    processJson(json);
-    break;
-  case "error":
-    console.error(`Parse error: ${result.error}`);
-    break;
-}
-```
-
----
-
-## 4. Serializing to JSON
-
-### 4.1 Stringify Function
-
-```ts
-// Built-in JSON stringifier
-function stringifyJson(value: JsonValue): string;
-```
-
-### 4.2 Example Usage
-
-```ts
-const json: JsonValue = {
-  kind: "object",
-  value: new Map([
-    ["name", { kind: "string", value: "Alice" }],
-    ["age", { kind: "number", value: 30 }]
-  ])
-};
-
-const output = stringifyJson(json);
-console.log(output); // {"name":"Alice","age":30}
-```
-
----
-
-## 5. Type-Safe Decoding
-
-### 5.1 Decoder Pattern
-
-**Problem:** We have `JsonValue`, but we want a strongly-typed Raya object.
-
-**Solution:** Write **decoder functions** that validate and transform JSON.
+#### Example Decoder
 
 ```ts
 interface User {
@@ -190,7 +287,54 @@ function decodeUser(json: JsonValue): ParseResult<User> {
 }
 ```
 
-### 5.2 Usage
+### 3.2 Custom Validation
+
+Manual decoders allow custom validation logic:
+
+```ts
+function decodeUser(json: JsonValue): ParseResult<User> {
+  if (json.kind !== "object") {
+    return { status: "error", error: "Expected object" };
+  }
+
+  const obj = json.value;
+
+  // Name validation
+  const nameField = obj.get("name");
+  if (!nameField || nameField.kind !== "string") {
+    return { status: "error", error: "Invalid name field" };
+  }
+  const name = nameField.value.trim();
+  if (name.length === 0) {
+    return { status: "error", error: "Name cannot be empty" };
+  }
+
+  // Age validation with range check
+  const ageField = obj.get("age");
+  if (!ageField || ageField.kind !== "number") {
+    return { status: "error", error: "Invalid age field" };
+  }
+  const age = ageField.value;
+  if (age < 0 || age > 150) {
+    return { status: "error", error: "Age must be between 0 and 150" };
+  }
+
+  // Email validation
+  const emailField = obj.get("email");
+  let email: string | null = null;
+  if (emailField && emailField.kind === "string") {
+    email = emailField.value;
+    // Basic email format validation
+    if (!email.includes("@")) {
+      return { status: "error", error: "Invalid email format" };
+    }
+  }
+
+  return { status: "ok", value: { name, age, email } };
+}
+```
+
+### 3.3 Usage
 
 ```ts
 const input = '{"name":"Alice","age":30,"email":"alice@example.com"}';
@@ -216,9 +360,59 @@ switch (decodeResult.status) {
 
 ---
 
-## 6. Validation
+## 4. Advanced: JSON Type Definition
 
-### 6.1 Decoder Combinators
+### 4.1 Alternative JSON Representations
+
+For simpler code or performance-critical paths, you can use a simpler union type:
+
+```ts
+type Json = null | boolean | number | string | Json[] | JsonObject;
+
+interface JsonObject {
+  [key: string]: Json;
+}
+```
+
+**Trade-offs:**
+- ✅ More ergonomic and less verbose
+- ✅ Closer to JavaScript's native types
+- ❌ Less explicit than discriminated unions
+- ❌ Harder to validate exhaustively
+
+### 4.2 Parsing and Stringifying
+
+```ts
+// Parse JSON string to JsonValue
+function parseJson(input: string): ParseResult<JsonValue>;
+
+// Stringify JsonValue to JSON string
+function stringifyJson(value: JsonValue): string;
+```
+
+**Example:**
+
+```ts
+const input = '{"name": "Alice", "age": 30}';
+const result = parseJson(input);
+
+switch (result.status) {
+  case "ok":
+    const json = result.value;  // json: JsonValue
+    const output = stringifyJson(json);
+    console.log(output);
+    break;
+  case "error":
+    console.error(`Parse error: ${result.error}`);
+    break;
+}
+```
+
+---
+
+## 5. Advanced: Decoder Combinators
+
+### 5.1 Primitive Decoders
 
 Build complex decoders from simple ones:
 
@@ -285,7 +479,7 @@ function decodeOptional<T>(
 }
 ```
 
-### 6.2 Field Extraction Helper
+### 5.2 Field Extraction Helpers
 
 ```ts
 function getField(
@@ -308,7 +502,7 @@ function getOptionalField(
 }
 ```
 
-### 6.3 Improved User Decoder
+### 5.3 Composable Decoder Example
 
 ```ts
 function decodeUser(json: JsonValue): ParseResult<User> {
@@ -347,9 +541,9 @@ function decodeUser(json: JsonValue): ParseResult<User> {
 
 ---
 
-## 7. Common Patterns
+## 6. Common Patterns
 
-### 7.1 API Response Handling
+### 6.1 API Response Handling
 
 ```ts
 type ApiResponse<T> =
@@ -422,7 +616,7 @@ if (result.status === "ok") {
 }
 ```
 
-### 7.2 Encoding to JSON
+### 6.2 Encoding to JSON
 
 ```ts
 function encodeUser(user: User): JsonValue {
@@ -445,7 +639,7 @@ const json = encodeUser(user);
 const jsonString = stringifyJson(json);
 ```
 
-### 7.3 Array Handling
+### 6.3 Array Handling
 
 ```ts
 function decodeUserList(json: JsonValue): ParseResult<User[]> {
@@ -469,122 +663,9 @@ if (parseResult.status === "ok") {
 
 ---
 
-## 8. With Reflection
+## 7. Examples
 
-When compiled with `--emit-reflection`, you can use reflection for automatic serialization:
-
-### 8.1 Auto-Serialization
-
-```ts
-import * as Reflect from "raya:reflect";
-
-function autoEncode(value: any): JsonValue {
-  const typeInfo = Reflect.typeOf(value);
-
-  switch (typeInfo.kind) {
-    case "primitive":
-      if (typeInfo.name === "null") {
-        return { kind: "null" };
-      }
-      if (typeInfo.name === "boolean") {
-        return { kind: "boolean", value: value as boolean };
-      }
-      if (typeInfo.name === "number") {
-        return { kind: "number", value: value as number };
-      }
-      if (typeInfo.name === "string") {
-        return { kind: "string", value: value as string };
-      }
-      throw new Error(`Unsupported primitive: ${typeInfo.name}`);
-
-    case "array":
-      const arr = value as any[];
-      const encodedArray = arr.map(item => autoEncode(item));
-      return { kind: "array", value: encodedArray };
-
-    case "class":
-    case "interface":
-      const props = Reflect.getProperties(value);
-      const fields = new Map<string, JsonValue>();
-      for (const prop of props) {
-        const propValue = Reflect.getProperty(value, prop.name);
-        fields.set(prop.name, autoEncode(propValue));
-      }
-      return { kind: "object", value: fields };
-
-    default:
-      throw new Error(`Cannot encode type: ${typeInfo.kind}`);
-  }
-}
-
-// Usage
-const user: User = { name: "Alice", age: 30, email: null };
-const json = autoEncode(user);
-const jsonString = stringifyJson(json);
-```
-
-### 8.2 Auto-Deserialization
-
-```ts
-function autoDecode<T>(json: JsonValue): ParseResult<T> {
-  const typeInfo = Reflect.typeInfo<T>();
-
-  if (typeInfo.kind === "class") {
-    if (json.kind !== "object") {
-      return { status: "error", error: "Expected object" };
-    }
-
-    const instance = Reflect.construct(typeInfo, []);
-    const obj = json.value;
-
-    if (!typeInfo.properties) {
-      return { status: "ok", value: instance as T };
-    }
-
-    for (const prop of typeInfo.properties) {
-      const jsonValue = obj.get(prop.name);
-      if (!jsonValue) {
-        return { status: "error", error: `Missing field: ${prop.name}` };
-      }
-
-      // Recursively decode based on property type
-      const decodedValue = decodeByType(jsonValue, prop.type);
-      if (decodedValue.status !== "ok") {
-        return decodedValue;
-      }
-
-      Reflect.setProperty(instance, prop.name, decodedValue.value);
-    }
-
-    return { status: "ok", value: instance as T };
-  }
-
-  return { status: "error", error: "Auto-decode only supports classes" };
-}
-
-function decodeByType(
-  json: JsonValue,
-  typeInfo: TypeInfo
-): ParseResult<any> {
-  switch (typeInfo.kind) {
-    case "primitive":
-      if (typeInfo.name === "string") return decodeString(json);
-      if (typeInfo.name === "number") return decodeNumber(json);
-      if (typeInfo.name === "boolean") return decodeBoolean(json);
-      break;
-    // ... handle other types
-  }
-  return { status: "error", error: `Unsupported type: ${typeInfo.kind}` };
-}
-```
-
-**Note:** Reflection-based approaches are convenient but have overhead. For performance-critical code, use explicit decoders.
-
----
-
-## 9. Examples
-
-### 9.1 Complete Example: User API
+### 7.1 Complete Example: User API
 
 ```ts
 interface User {
@@ -703,7 +784,7 @@ async function main(): Task<void> {
 }
 ```
 
-### 9.2 Nested Objects
+### 7.2 Nested Objects
 
 ```ts
 interface Address {
@@ -780,21 +861,35 @@ function decodePerson(json: JsonValue): ParseResult<Person> {
 
 ## Summary
 
-**Key Takeaways:**
+**Recommended Approach:**
 
-1. **JSON as Discriminated Union** — Represent JSON values using discriminated unions
-2. **Explicit Decoders** — Write decoder functions that validate and transform JSON
-3. **Result Types** — Use `Result<T, Error>` for all parsing operations
-4. **Composable Validation** — Build complex decoders from simple primitives
-5. **Type Safety** — Never bypass the type system; validate at boundaries
-6. **Optional Reflection** — Use reflection for convenience when performance isn't critical
+Use the **Simple API** (Section 2) for most cases:
 
-**Benefits:**
+```ts
+import { JSON } from "raya:json";
 
-✅ **Compile-time guarantees** — Invalid JSON structures caught at runtime
-✅ **No `any` type** — All values have explicit types
-✅ **Exhaustive checking** — Compiler ensures all cases handled
-✅ **Clear errors** — Failed parsing returns descriptive error messages
-✅ **Zero overhead** — No runtime type tags (except optional reflection)
+// Encoding
+const result = JSON.encode(user);  // Result<string, Error>
 
-This approach gives you **TypeScript-style ergonomics** with **Rust-level safety**!
+// Decoding
+const result = JSON.decode<User>(jsonString);  // Result<User, Error>
+```
+
+**When to Use Advanced API:**
+
+Use **Manual Decoders** (Sections 3-5) when you need:
+- Custom validation (e.g., age range, email format)
+- Field name mapping
+- Maximum performance (avoid reflection)
+- Complex transformation logic
+
+**Key Benefits:**
+
+✅ **Go-like simplicity** — Single function call for encode/decode
+✅ **Full type safety** — All values have explicit types
+✅ **Compile-time guarantees** — Type errors caught before execution
+✅ **Clear error messages** — Failed parsing returns descriptive errors
+✅ **Flexible** — Choose simple API or manual decoders based on needs
+✅ **Zero runtime overhead** — No type tags (when using compile-time codegen)
+
+**This approach gives you Go-style ergonomics with Rust-level type safety!**
