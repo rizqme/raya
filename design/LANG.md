@@ -367,9 +367,57 @@ type StringOrNumber = string | number;
 type Result = Success | Failure;
 ```
 
-#### Discriminated Unions (Required Pattern)
+Raya supports two patterns for union types:
 
-Since Raya bans `typeof` and `instanceof`, all union types must use **discriminated unions** with explicit discriminant fields:
+1. **Bare Primitive Unions** — Automatically transformed by compiler (simple primitives only)
+2. **Discriminated Unions** — Explicit discriminant fields (for complex types)
+
+#### Bare Primitive Unions (Compiler-Transformed)
+
+For **primitive types only** (`string`, `number`, `boolean`, `null`), you can write bare unions and the compiler automatically transforms them:
+
+```ts
+type ID = string | number;
+
+let id: ID = 42;  // OK
+id = "abc";       // OK
+
+// Pattern match using match() utility
+import { match } from "raya:std";
+
+const result = match(id, {
+  string: (s) => `String ID: ${s}`,
+  number: (n) => `Numeric ID: ${n}`
+});
+```
+
+**How it works:**
+
+1. Compiler sees `string | number`
+2. Internally transforms to: `{ $type: "string"; $value: string } | { $type: "number"; $value: number }`
+3. All operations transparently unwrap the value
+4. Use `match()` from `raya:std` for type narrowing
+
+**Supported bare unions:**
+- `string | number`
+- `string | boolean`
+- `number | boolean`
+- `string | number | boolean`
+- Any combination with `null` (e.g., `string | null`)
+
+**Limitations:**
+- Only primitive types (no objects, arrays, or classes)
+- For complex types, use discriminated unions
+
+**Benefits:**
+- ✅ Simple syntax for common cases
+- ✅ Full type safety maintained
+- ✅ Works everywhere (not just JSON)
+- ✅ Compiler handles complexity
+
+#### Discriminated Unions (Explicit Pattern)
+
+For **complex types** (objects, classes, arrays), use **discriminated unions** with explicit discriminant fields:
 
 ```ts
 type Value =
@@ -2226,7 +2274,236 @@ async function all<T>(tasks: Task<T>[]): Task<T[]>;
 async function race<T>(tasks: Task<T>[]): Task<T>;
 ```
 
-### 17.6 JSON Serialization
+### 17.6 Pattern Matching Utility
+
+The `match()` function provides elegant pattern matching for all union types:
+
+```ts
+import { match } from "raya:std";
+
+// Bare primitive unions
+type ID = string | number;
+const id: ID = 42;
+
+const desc = match(id, {
+  string: (s) => `String ID: ${s}`,
+  number: (n) => `Numeric ID: ${n}`
+});
+
+// Discriminated unions
+type Result<T> =
+  | { status: "ok"; value: T }
+  | { status: "err"; error: string };
+
+const message = match(result, {
+  ok: (r) => `Success: ${r.value}`,
+  err: (r) => `Error: ${r.error}`
+});
+```
+
+**Type Signature:**
+
+```ts
+function match<T, R>(
+  value: T,
+  handlers: MatchHandlers<T, R>
+): R;
+```
+
+**How it works:**
+
+1. **For bare primitive unions** (`string | number`):
+   - Keys are type names: `"string"`, `"number"`, `"boolean"`, `"null"`
+   - Compiler unwraps internal `{ $type, $value }` representation
+   - Each handler receives the unwrapped primitive value
+
+2. **For discriminated unions** (`{ status: "ok" | "err" }`):
+   - Keys are discriminant values: `"ok"`, `"err"`
+   - Compiler infers discriminant field automatically
+   - Each handler receives the full variant object
+
+**Features:**
+
+- ✅ **Type-safe** — TypeScript/Raya infers all parameter types
+- ✅ **Exhaustiveness checking** — Compiler ensures all cases handled
+- ✅ **Expression form** — Returns value from matched handler
+- ✅ **Works everywhere** — Not limited to specific contexts
+
+**Examples:**
+
+```ts
+import { match } from "raya:std";
+
+// Example 1: Bare union with null
+type MaybeString = string | null;
+const value: MaybeString = getValue();
+
+const result = match(value, {
+  string: (s) => s.toUpperCase(),
+  null: () => "DEFAULT"
+});
+
+// Example 2: Multiple primitives
+type Primitive = string | number | boolean;
+const prim: Primitive = true;
+
+match(prim, {
+  string: (s) => console.log(`String: ${s}`),
+  number: (n) => console.log(`Number: ${n}`),
+  boolean: (b) => console.log(`Boolean: ${b}`)
+});
+
+// Example 3: Discriminated union
+type Action =
+  | { type: "increment"; by: number }
+  | { type: "decrement"; by: number }
+  | { type: "reset" };
+
+const newState = match(action, {
+  increment: (a) => state + a.by,
+  decrement: (a) => state - a.by,
+  reset: () => 0
+});
+
+// Example 4: Nested matching
+type Response =
+  | { status: "ok"; data: string | number }
+  | { status: "error"; code: number };
+
+match(response, {
+  ok: (r) => {
+    match(r.data, {
+      string: (s) => console.log(`Text: ${s}`),
+      number: (n) => console.log(`ID: ${n}`)
+    });
+  },
+  error: (r) => console.error(`Error ${r.code}`)
+});
+```
+
+**Limitations:**
+
+- No default case (must be exhaustive)
+- Cannot match on computed values
+- For partial matching, use traditional if/else
+
+**How `match()` works with interfaces:**
+
+```ts
+// Interfaces require explicit discriminated unions
+interface Dog {
+  kind: "dog";  // Discriminant field required
+  name: string;
+  bark(): void;
+}
+
+interface Cat {
+  kind: "cat";  // Discriminant field required
+  name: string;
+  meow(): void;
+}
+
+type Animal = Dog | Cat;
+
+// match() works by checking the discriminant value
+const animal: Animal = { kind: "dog", name: "Buddy", bark: () => {} };
+
+match(animal, {
+  dog: (a) => a.bark(),  // a is Dog
+  cat: (a) => a.meow()   // a is Cat
+});
+```
+
+**Key points:**
+
+1. **Interfaces are structural** — Any object with matching shape satisfies the interface
+2. **Discriminants are explicit** — You must add discriminant fields to make variants distinguishable
+3. **match() checks values** — Not interface implementation, but discriminant field values
+4. **No bare unions for interfaces** — Only primitives (`string | number`) get automatic transformation
+
+**Why interfaces need discriminants:**
+
+```ts
+// WITHOUT discriminant - ambiguous at runtime
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+interface Point3D {
+  x: number;
+  y: number;
+  z: number;
+}
+
+// ❌ Can't use bare union - how would match() know which is which?
+type Point = Point2D | Point3D;  // Both satisfy Point2D structurally!
+
+// ✅ WITH discriminant - clear at runtime
+interface Point2D {
+  dims: 2;  // Literal type discriminant
+  x: number;
+  y: number;
+}
+
+interface Point3D {
+  dims: 3;  // Literal type discriminant
+  x: number;
+  y: number;
+  z: number;
+}
+
+type Point = Point2D | Point3D;
+
+// Now match() works!
+match(point, {
+  2: (p) => console.log(`2D: (${p.x}, ${p.y})`),
+  3: (p) => console.log(`3D: (${p.x}, ${p.y}, ${p.z})`)
+});
+```
+
+**Compiler's role:**
+
+- **For primitives (`string | number`):** Compiler auto-generates `{ $type, $value }` wrapper
+- **For interfaces:** Compiler requires explicit discriminant fields (compile error otherwise)
+- **For classes:** Use discriminant fields (classes are nominal, but still need runtime distinction)
+
+**Example combining primitives and interfaces:**
+
+```ts
+// Interface with bare primitive union inside
+interface Response {
+  id: string | number;  // Bare union - auto-transformed
+  data: Data;           // Interface - needs discriminant if union
+}
+
+type Data =
+  | { type: "text"; content: string }    // Explicit discriminant
+  | { type: "binary"; buffer: ArrayBuffer };
+
+const response: Response = /* ... */;
+
+// Match on the primitive union
+match(response.id, {
+  string: (id) => console.log(`String ID: ${id}`),
+  number: (id) => console.log(`Numeric ID: ${id}`)
+});
+
+// Match on the interface union
+match(response.data, {
+  text: (d) => console.log(d.content),
+  binary: (d) => console.log(d.buffer.byteLength)
+});
+```
+
+**Summary:**
+- `match()` is **value-based**, not type-based
+- Works by checking discriminant field values (strings/numbers/booleans)
+- Primitives get automatic discrimination via compiler
+- Interfaces/objects require explicit discriminant fields
+- This maintains zero runtime overhead while providing type safety
+
+### 17.7 JSON Serialization
 
 Raya provides compile-time JSON encoding/decoding via code generation:
 
@@ -2329,7 +2606,7 @@ function __decode_User(input: string): Result<User, Error> {
 - Cannot serialize/deserialize arbitrary runtime values
 - For dynamic JSON handling, use manual decoders with discriminated unions
 
-### 17.7 Handling Third-Party APIs Without Discriminants
+### 17.8 Handling Third-Party APIs Without Discriminants
 
 **Problem:** Third-party APIs often don't use discriminated unions. For example, an API might return:
 
@@ -2347,10 +2624,11 @@ The JSON itself doesn't have a discriminant field like `"type"` or `"kind"`.
 
 #### Automatic Approach (Compiler-Generated)
 
-**The simple way:** Let the compiler handle it automatically, like Go's `encoding/json`:
+**The simple way:** Use bare primitive unions and the `match()` utility:
 
 ```ts
 import { JSON } from "raya:json";
+import { match } from "raya:std";
 
 interface User {
   id: string | number;  // Bare union - compiler handles it!
@@ -2362,35 +2640,31 @@ const result = JSON.decode<User>(jsonString);
 if (result.status === "ok") {
   const user = result.value;
 
-  // Compiler auto-generates discriminant access
-  // user.id is actually { $type: "string", $value: string } | { $type: "number", $value: number }
-  // But you can use it directly with helper functions:
+  // Pattern match on the bare union
+  const idString = match(user.id, {
+    string: (id) => `String ID: ${id}`,
+    number: (id) => `Numeric ID: ${id}`
+  });
 
-  if (JSON.isType(user.id, "string")) {
-    console.log(`String ID: ${user.id}`);  // user.id is string here
-  } else {
-    console.log(`Numeric ID: ${user.id}`);  // user.id is number here
-  }
+  console.log(idString);
 }
 ```
 
 **How it works:**
 
-1. Compiler sees `id: string | number` in interface used with `JSON.decode<T>()`
-2. Internally transforms it to a discriminated union: `{ $type: "string"; $value: string } | { $type: "number"; $value: number }`
-3. Generates decoder that inspects JSON structure and creates appropriate variant
-4. Provides helper functions (`JSON.isType`, `JSON.match`) for type narrowing
+1. Compiler sees `id: string | number` in interface
+2. Internally transforms to: `{ $type: "string"; $value: string } | { $type: "number"; $value: number }`
+3. JSON decoder inspects structure and creates appropriate variant
+4. Use `match()` from `raya:std` for type narrowing (works everywhere, not just JSON)
 
-**Alternative syntax with pattern matching:**
+**Inline handling:**
 
 ```ts
-const result = JSON.decode<User>(jsonString);
-
 if (result.status === "ok") {
   const user = result.value;
 
-  // Pattern match on the union
-  JSON.match(user.id, {
+  // Direct pattern matching
+  match(user.id, {
     string: (id) => console.log(`String ID: ${id}`),
     number: (id) => console.log(`Numeric ID: ${id}`)
   });
@@ -2401,12 +2675,12 @@ if (result.status === "ok") {
 - ✅ Go-like simplicity - just use bare unions in types
 - ✅ Compiler handles the complexity
 - ✅ Full type safety maintained
-- ✅ No manual decoder needed
+- ✅ Works everywhere (not just JSON)
+- ✅ Uses general `match()` utility
 
 **Limitations:**
-- Only works for simple unions (primitives: `string | number | boolean`)
+- Only works for primitive unions (`string`, `number`, `boolean`, `null`)
 - Complex unions still require manual discriminated unions
-- The internal discriminated union adds small overhead
 
 #### Manual Approach (Full Control)
 
