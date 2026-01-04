@@ -23,10 +23,11 @@
 15. [Synchronization](#15-synchronization)
 16. [Module System](#16-module-system)
 17. [Standard Library](#17-standard-library)
-18. [Banned Features](#18-banned-features)
-19. [Error Handling](#19-error-handling)
-20. [Memory Model](#20-memory-model)
-21. [Examples](#21-examples)
+18. [Optional Reflection System](#18-optional-reflection-system)
+19. [Banned Features](#19-banned-features)
+20. [Error Handling](#20-error-handling)
+21. [Memory Model](#21-memory-model)
+22. [Examples](#22-examples)
 
 ---
 
@@ -2225,6 +2226,109 @@ async function all<T>(tasks: Task<T>[]): Task<T[]>;
 async function race<T>(tasks: Task<T>[]): Task<T>;
 ```
 
+### 17.6 JSON Serialization
+
+Raya provides compile-time JSON encoding/decoding via code generation:
+
+```ts
+import { JSON } from "raya:json";
+
+interface User {
+  name: string;
+  age: number;
+  email: string | null;
+}
+
+// Encoding - compiler generates specialized encoder
+const result = JSON.encode(user);  // Result<string, Error>
+
+// Decoding - compiler generates specialized decoder
+const decoded = JSON.decode<User>(jsonString);  // Result<User, Error>
+
+// Result type
+type Result<T, E> =
+  | { status: "ok"; value: T }
+  | { status: "error"; error: E };
+```
+
+**How It Works:**
+
+The compiler analyzes the type structure at compile time and generates specialized encode/decode functions:
+
+1. **For each interface/class** used with `JSON.encode()` or `JSON.decode<T>()`, the compiler generates:
+   - An encoder function that converts the type to JSON
+   - A decoder function that validates and converts JSON to the type
+
+2. **Code Generation Strategy:**
+   - Interface/class fields → JSON object properties
+   - Arrays → JSON arrays
+   - Primitives → JSON primitives
+   - Union types → Requires discriminated unions for proper decoding
+   - Optional fields (T | null) → Can be missing or null in JSON
+
+3. **No Runtime Overhead:**
+   - All type information used during compilation
+   - Generated code is specialized for each type
+   - No reflection or runtime type inspection
+
+**Example Generated Code:**
+
+```ts
+// User source
+interface User {
+  name: string;
+  age: number;
+  email: string | null;
+}
+
+// Compiler generates (conceptually):
+function __encode_User(value: User): string {
+  return `{"name":"${value.name}","age":${value.age},"email":${value.email === null ? "null" : `"${value.email}"`}}`;
+}
+
+function __decode_User(input: string): Result<User, Error> {
+  const json = parseJSON(input);  // Built-in parser
+  if (json.kind !== "object") {
+    return { status: "error", error: { message: "Expected object" } };
+  }
+
+  const name = json.value.get("name");
+  if (!name || name.kind !== "string") {
+    return { status: "error", error: { message: "Invalid 'name' field" } };
+  }
+
+  const age = json.value.get("age");
+  if (!age || age.kind !== "number") {
+    return { status: "error", error: { message: "Invalid 'age' field" } };
+  }
+
+  const email = json.value.get("email");
+  let emailVal: string | null = null;
+  if (email && email.kind === "string") {
+    emailVal = email.value;
+  }
+
+  return {
+    status: "ok",
+    value: { name: name.value, age: age.value, email: emailVal }
+  };
+}
+```
+
+**Benefits:**
+
+✅ **Simple API** — Single function call for encode/decode
+✅ **Type-safe** — Compiler verifies types match
+✅ **Zero runtime overhead** — Specialized code generated at compile time
+✅ **Clear errors** — Validation errors include field paths
+✅ **No reflection needed** — Pure compile-time code generation
+
+**Limitations:**
+
+- Only works with types known at compile time
+- Cannot serialize/deserialize arbitrary runtime values
+- For dynamic JSON handling, use manual decoders with discriminated unions
+
 ---
 
 ## 18. Optional Reflection System
@@ -2371,7 +2475,9 @@ if (instanceof(obj, User)) {
 }
 ```
 
-### 18.5 Example: Serialization
+### 18.5 Example: Dynamic Serialization (Reflection-Based)
+
+**Note:** For standard JSON serialization, use `JSON.encode()`/`JSON.decode<T>()` (Section 17.6) which uses compile-time code generation. This example shows reflection-based serialization for dynamic scenarios.
 
 ```ts
 import * as Reflect from "raya:reflect";

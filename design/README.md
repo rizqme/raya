@@ -261,6 +261,7 @@ class Box<T> {
 - **String**: Standard string methods
 - **Array**: Standard array methods
 - **Task utilities**: `sleep`, `all`, `race`
+- **JSON**: Compile-time `encode`/`decode` (see LANG.md Section 17.6)
 
 ---
 
@@ -268,11 +269,12 @@ class Box<T> {
 
 1. **Parse** — Source to AST
 2. **Type Check** — Validate all types, enforce discriminated unions
-3. **Lower** — AST to typed IR
-4. **Optimize** — Type-based optimizations
-5. **Emit** — IR to typed bytecode
-6. **Verify** — Bytecode verification
-7. **Execute** — VM interprets bytecode
+3. **Code Generation** — Generate JSON encoders/decoders for types used with `JSON.encode()`/`JSON.decode<T>()`
+4. **Lower** — AST to typed IR
+5. **Optimize** — Type-based optimizations
+6. **Emit** — IR to typed bytecode
+7. **Verify** — Bytecode verification
+8. **Execute** — VM interprets bytecode
 
 ---
 
@@ -288,9 +290,10 @@ Raya provides an **optional reflection capability** for advanced use cases:
 
 **Use Cases:**
 - **TypeScript Compatibility**: Build shims that implement `typeof`/`instanceof` via reflection
-- **Serialization**: Auto-generate JSON serializers/deserializers
 - **Debugging**: Runtime inspection of types and properties
 - **Interoperability**: Bridge to dynamic languages or external systems
+
+**Note:** JSON serialization uses compile-time code generation by default (see LANG.md Section 17.6), not reflection
 
 **Performance:**
 - +10-30% binary size (metadata only)

@@ -385,7 +385,7 @@ Raya is a **fully statically typed language**. All type information is:
 
 Reflection opcodes enable **optional runtime type introspection** for:
 - **TypeScript compatibility shims** — Implement `typeof`/`instanceof` using reflection
-- **Serialization/deserialization** — Auto-generate JSON converters
+- **Dynamic serialization** — Runtime-based JSON converters (note: standard JSON uses compile-time codegen, see LANG.md 17.6)
 - **Debugging tools** — Runtime inspection of object structure
 - **Interoperability** — Bridge to dynamic languages
 
