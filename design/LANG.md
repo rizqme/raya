@@ -2345,6 +2345,71 @@ or
 
 The JSON itself doesn't have a discriminant field like `"type"` or `"kind"`.
 
+#### Automatic Approach (Compiler-Generated)
+
+**The simple way:** Let the compiler handle it automatically, like Go's `encoding/json`:
+
+```ts
+import { JSON } from "raya:json";
+
+interface User {
+  id: string | number;  // Bare union - compiler handles it!
+  name: string;
+}
+
+const result = JSON.decode<User>(jsonString);
+
+if (result.status === "ok") {
+  const user = result.value;
+
+  // Compiler auto-generates discriminant access
+  // user.id is actually { $type: "string", $value: string } | { $type: "number", $value: number }
+  // But you can use it directly with helper functions:
+
+  if (JSON.isType(user.id, "string")) {
+    console.log(`String ID: ${user.id}`);  // user.id is string here
+  } else {
+    console.log(`Numeric ID: ${user.id}`);  // user.id is number here
+  }
+}
+```
+
+**How it works:**
+
+1. Compiler sees `id: string | number` in interface used with `JSON.decode<T>()`
+2. Internally transforms it to a discriminated union: `{ $type: "string"; $value: string } | { $type: "number"; $value: number }`
+3. Generates decoder that inspects JSON structure and creates appropriate variant
+4. Provides helper functions (`JSON.isType`, `JSON.match`) for type narrowing
+
+**Alternative syntax with pattern matching:**
+
+```ts
+const result = JSON.decode<User>(jsonString);
+
+if (result.status === "ok") {
+  const user = result.value;
+
+  // Pattern match on the union
+  JSON.match(user.id, {
+    string: (id) => console.log(`String ID: ${id}`),
+    number: (id) => console.log(`Numeric ID: ${id}`)
+  });
+}
+```
+
+**Benefits:**
+- ✅ Go-like simplicity - just use bare unions in types
+- ✅ Compiler handles the complexity
+- ✅ Full type safety maintained
+- ✅ No manual decoder needed
+
+**Limitations:**
+- Only works for simple unions (primitives: `string | number | boolean`)
+- Complex unions still require manual discriminated unions
+- The internal discriminated union adds small overhead
+
+#### Manual Approach (Full Control)
+
 **Solution:** Write a decoder that inspects the **JSON structure** and creates the appropriate discriminated union:
 
 ```ts
