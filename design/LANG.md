@@ -2329,6 +2329,185 @@ function __decode_User(input: string): Result<User, Error> {
 - Cannot serialize/deserialize arbitrary runtime values
 - For dynamic JSON handling, use manual decoders with discriminated unions
 
+### 17.7 Handling Third-Party APIs Without Discriminants
+
+**Problem:** Third-party APIs often don't use discriminated unions. For example, an API might return:
+
+```json
+{ "id": 123 }
+```
+
+or
+
+```json
+{ "id": "abc123" }
+```
+
+The JSON itself doesn't have a discriminant field like `"type"` or `"kind"`.
+
+**Solution:** Write a decoder that inspects the **JSON structure** and creates the appropriate discriminated union:
+
+```ts
+import { JsonValue, parseJson } from "raya:json/internal";
+
+type UserId =
+  | { kind: "numeric"; value: number }
+  | { kind: "string"; value: string };
+
+interface User {
+  id: UserId;
+  name: string;
+}
+
+function decodeUserId(json: JsonValue): Result<UserId, Error> {
+  // Check the JSON structure (not Raya types!)
+  if (json.kind === "number") {
+    // JSON is a number, create numeric variant
+    return {
+      status: "ok",
+      value: { kind: "numeric", value: json.value }
+    };
+  } else if (json.kind === "string") {
+    // JSON is a string, create string variant
+    return {
+      status: "ok",
+      value: { kind: "string", value: json.value }
+    };
+  } else {
+    return {
+      status: "error",
+      error: { message: "id must be number or string" }
+    };
+  }
+}
+
+function decodeUser(json: JsonValue): Result<User, Error> {
+  if (json.kind !== "object") {
+    return { status: "error", error: { message: "Expected object" } };
+  }
+
+  const obj = json.value;
+
+  // Decode id field
+  const idField = obj.get("id");
+  if (!idField) {
+    return { status: "error", error: { message: "Missing id field" } };
+  }
+
+  const idResult = decodeUserId(idField);
+  if (idResult.status !== "ok") {
+    return idResult;
+  }
+
+  // Decode name field
+  const nameField = obj.get("name");
+  if (!nameField || nameField.kind !== "string") {
+    return { status: "error", error: { message: "Invalid name field" } };
+  }
+
+  return {
+    status: "ok",
+    value: {
+      id: idResult.value,
+      name: nameField.value
+    }
+  };
+}
+```
+
+**Usage:**
+
+```ts
+const apiResponse = '{"id": 123, "name": "Alice"}';
+const result = decodeUser(parseJson(apiResponse).value);
+
+if (result.status === "ok") {
+  const user = result.value;
+
+  // Now statically handle the discriminated union
+  switch (user.id.kind) {
+    case "numeric":
+      console.log(`Numeric ID: ${user.id.value}`);
+      break;
+    case "string":
+      console.log(`String ID: ${user.id.value}`);
+      break;
+  }
+}
+```
+
+**Key Insight:**
+
+The runtime checking happens **on the JSON structure**, not on Raya types:
+
+1. **JSON has type information** — A JSON number is structurally different from a JSON string
+2. **Decoder inspects JSON** — Checks `json.kind === "number"` vs `json.kind === "string"`
+3. **Decoder creates discriminated union** — Based on what it finds
+4. **Raya code is fully static** — Once the discriminated union is created, all handling is compile-time checked
+
+**The boundary is the decoder:**
+
+```
+Third-Party API (dynamic JSON)
+         ↓
+    JSON Parser (parses to JsonValue)
+         ↓
+    Custom Decoder (inspects JSON structure)
+         ↓
+    Discriminated Union (fully static Raya type)
+         ↓
+    Your Code (compile-time type safety)
+```
+
+**More Complex Example:**
+
+For APIs with nested unions:
+
+```ts
+// API might return:
+// { "data": 123 } OR { "data": "text" } OR { "data": { "nested": true } }
+
+type ApiData =
+  | { type: "number"; value: number }
+  | { type: "string"; value: string }
+  | { type: "object"; value: Map<string, JsonValue> };
+
+function decodeApiData(json: JsonValue): Result<ApiData, Error> {
+  switch (json.kind) {
+    case "number":
+      return {
+        status: "ok",
+        value: { type: "number", value: json.value }
+      };
+
+    case "string":
+      return {
+        status: "ok",
+        value: { type: "string", value: json.value }
+      };
+
+    case "object":
+      return {
+        status: "ok",
+        value: { type: "object", value: json.value }
+      };
+
+    default:
+      return {
+        status: "error",
+        error: { message: `Unexpected type: ${json.kind}` }
+      };
+  }
+}
+```
+
+**This maintains full static type safety** because:
+
+- The JSON structure is checked at the boundary
+- The decoder transforms dynamic JSON into static discriminated unions
+- All subsequent code operates on statically-known types
+- The compiler verifies exhaustiveness and type correctness
+
 ---
 
 ## 18. Optional Reflection System
