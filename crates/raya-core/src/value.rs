@@ -119,7 +119,7 @@ impl Value {
 
     /// Create an f32 value
     #[inline]
-    pub const fn f32(f: f32) -> Self {
+    pub fn f32(f: f32) -> Self {
         // NaN-box: base | tag | f32 bits as payload
         Value(Self::NAN_BOX_BASE | Self::TAG_F32 | (f.to_bits() as u64))
     }

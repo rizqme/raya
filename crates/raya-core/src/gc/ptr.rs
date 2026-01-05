@@ -158,8 +158,11 @@ impl<T: ?Sized> fmt::Display for GcPtr<T> {
 impl<T> GcPtr<[T]> {
     /// Get the length of the slice
     #[inline]
+    #[allow(clippy::needless_borrow)]
     pub fn len(&self) -> usize {
-        unsafe { (*self.ptr.as_ptr()).len() }
+        // SAFETY: GcPtr ensures the pointer is valid.
+        // We use explicit &* to make the reference creation clear.
+        unsafe { (&*self.ptr.as_ptr()).len() }
     }
 
     /// Check if the slice is empty
