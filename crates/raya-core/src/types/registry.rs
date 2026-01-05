@@ -197,6 +197,8 @@ impl TypeRegistryBuilder {
 
 /// Create a standard type registry with built-in types
 pub fn create_standard_registry() -> TypeRegistry {
+    use crate::object::{Array, Object, RayaString};
+
     TypeRegistry::builder()
         // Primitives (no pointers)
         .register::<i32>("i32", PointerMap::none())
@@ -207,6 +209,10 @@ pub fn create_standard_registry() -> TypeRegistry {
         .register::<()>("()", PointerMap::none())
         // String (no pointers in data, UTF-8 bytes)
         .register::<String>("String", PointerMap::none())
+        // Raya objects (special handling in GC for dynamic fields)
+        .register::<Object>("Object", PointerMap::none())
+        .register::<Array>("Array", PointerMap::none())
+        .register::<RayaString>("RayaString", PointerMap::none())
         .build()
 }
 

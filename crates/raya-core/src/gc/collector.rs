@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Garbage collector statistics
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct GcStats {
     /// Total number of collections
     pub collections: usize,
@@ -24,11 +24,100 @@ pub struct GcStats {
     /// Total bytes freed
     pub bytes_freed: usize,
 
-    /// Total pause time
+    /// Total pause time across all collections
     pub total_pause_time: Duration,
 
     /// Last collection duration
     pub last_pause_time: Duration,
+
+    /// Average pause time
+    pub avg_pause_time: Duration,
+
+    /// Maximum pause time
+    pub max_pause_time: Duration,
+
+    /// Minimum pause time
+    pub min_pause_time: Duration,
+
+    /// Objects marked in last collection
+    pub last_marked_count: usize,
+
+    /// Objects freed in last collection
+    pub last_freed_count: usize,
+
+    /// Bytes freed in last collection
+    pub last_freed_bytes: usize,
+
+    /// Live objects after last collection
+    pub live_objects: usize,
+
+    /// Live bytes after last collection
+    pub live_bytes: usize,
+}
+
+impl Default for GcStats {
+    fn default() -> Self {
+        Self {
+            collections: 0,
+            objects_freed: 0,
+            bytes_freed: 0,
+            total_pause_time: Duration::ZERO,
+            last_pause_time: Duration::ZERO,
+            avg_pause_time: Duration::ZERO,
+            max_pause_time: Duration::ZERO,
+            min_pause_time: Duration::ZERO,
+            last_marked_count: 0,
+            last_freed_count: 0,
+            last_freed_bytes: 0,
+            live_objects: 0,
+            live_bytes: 0,
+        }
+    }
+}
+
+impl GcStats {
+    /// Update statistics after a collection
+    fn update(
+        &mut self,
+        pause_time: Duration,
+        marked: usize,
+        freed: usize,
+        freed_bytes: usize,
+        live_objects: usize,
+        live_bytes: usize,
+    ) {
+        self.collections += 1;
+        self.objects_freed += freed;
+        self.bytes_freed += freed_bytes;
+        self.total_pause_time += pause_time;
+        self.last_pause_time = pause_time;
+
+        // Update average
+        self.avg_pause_time = self.total_pause_time / self.collections as u32;
+
+        // Update max/min
+        if pause_time > self.max_pause_time {
+            self.max_pause_time = pause_time;
+        }
+        if self.collections == 1 || pause_time < self.min_pause_time {
+            self.min_pause_time = pause_time;
+        }
+
+        // Update last collection stats
+        self.last_marked_count = marked;
+        self.last_freed_count = freed;
+        self.last_freed_bytes = freed_bytes;
+        self.live_objects = live_objects;
+        self.live_bytes = live_bytes;
+    }
+
+    /// Get survival rate (0.0 to 1.0)
+    pub fn survival_rate(&self) -> f64 {
+        if self.last_marked_count == 0 {
+            return 0.0;
+        }
+        self.live_objects as f64 / self.last_marked_count as f64
+    }
 }
 
 /// Mark-sweep garbage collector
@@ -110,17 +199,25 @@ impl GarbageCollector {
         let start = Instant::now();
 
         // Mark phase
-        self.mark();
+        let marked_count = self.mark();
 
         // Sweep phase
-        let freed = self.sweep();
+        let (freed_count, freed_bytes) = self.sweep();
+
+        // Calculate live stats
+        let live_objects = self.heap.allocation_count();
+        let live_bytes = self.heap.allocated_bytes();
 
         // Update stats
         let duration = start.elapsed();
-        self.stats.collections += 1;
-        self.stats.objects_freed += freed;
-        self.stats.last_pause_time = duration;
-        self.stats.total_pause_time += duration;
+        self.stats.update(
+            duration,
+            marked_count,
+            freed_count,
+            freed_bytes,
+            live_objects,
+            live_bytes,
+        );
 
         // Adjust threshold (grow by 2x current usage)
         let current_usage = self.heap.allocated_bytes();
@@ -128,7 +225,8 @@ impl GarbageCollector {
     }
 
     /// Mark phase: mark all reachable objects
-    fn mark(&mut self) {
+    /// Returns number of objects marked
+    fn mark(&mut self) -> usize {
         // Clear all mark bits first
         for header_ptr in self.heap.iter_allocations() {
             unsafe {
@@ -141,45 +239,128 @@ impl GarbageCollector {
         for root in roots {
             self.mark_value(root);
         }
+
+        // Count marked objects
+        let mut marked = 0;
+        for header_ptr in self.heap.iter_allocations() {
+            if unsafe { (*header_ptr).is_marked() } {
+                marked += 1;
+            }
+        }
+
+        marked
     }
 
     /// Mark a single value and its references
     fn mark_value(&mut self, value: Value) {
+        use crate::object::{Array, Object};
+
         // Only mark heap-allocated values
         if !value.is_heap_allocated() {
             return;
         }
 
-        // Get the pointer (this is unsafe because we don't have proper object types yet)
-        // In a complete implementation, we would:
-        // 1. Extract the pointer from the value
-        // 2. Check if already marked
-        // 3. Mark it
-        // 4. Recursively mark its children based on type info
-        //
-        // For now, this is a placeholder
+        // Extract pointer from value
+        let ptr = match unsafe { value.as_ptr::<u8>() } {
+            Some(p) => p.as_ptr(),
+            None => return,
+        };
+
+        // Get GcHeader (located before the object data)
+        // The GcHeader is stored immediately before the object in memory
+        let header_ptr = unsafe { ptr.cast::<GcHeader>().sub(1) };
+
+        // Check if already marked (avoid cycles and redundant work)
+        unsafe {
+            if (*header_ptr).is_marked() {
+                return;
+            }
+
+            // Mark this object
+            (*header_ptr).mark();
+        }
+
+        // Get type information
+        let type_id = unsafe { (*header_ptr).type_id() };
+        let type_registry = self.heap.type_registry();
+
+        if let Some(type_info) = type_registry.get(type_id) {
+            // Special handling for Object and Array types (dynamic field counts)
+            let type_name = type_info.name;
+            match type_name {
+                "Object" => {
+                    // Cast to Object and mark each field
+                    let obj = unsafe { &*(ptr as *const Object) };
+                    for &field_value in &obj.fields {
+                        self.mark_value(field_value);
+                    }
+                    return;
+                }
+                "Array" => {
+                    // Cast to Array and mark each element
+                    let arr = unsafe { &*(ptr as *const Array) };
+                    for &elem_value in &arr.elements {
+                        self.mark_value(elem_value);
+                    }
+                    return;
+                }
+                "RayaString" => {
+                    // Strings have no GC pointers
+                    return;
+                }
+                _ => {
+                    // Use normal pointer map traversal for other types
+                }
+            }
+
+            // If this type has no pointers, we're done
+            if !type_info.has_pointers() {
+                return;
+            }
+
+            // Traverse all pointer fields using type metadata
+            // Collect field values first to avoid borrow checker issues
+            let mut field_values = Vec::new();
+            type_info.for_each_pointer(ptr, |field_ptr| {
+                // Read the Value from this pointer field
+                let field_value = unsafe { *(field_ptr as *const Value) };
+                field_values.push(field_value);
+            });
+
+            // Now recursively mark each field
+            for field_value in field_values {
+                self.mark_value(field_value);
+            }
+        }
     }
 
     /// Sweep phase: free unmarked objects
-    fn sweep(&mut self) -> usize {
+    /// Returns (freed_count, freed_bytes)
+    fn sweep(&mut self) -> (usize, usize) {
         let mut freed_count = 0;
+        let mut freed_bytes = 0;
 
         // Collect unmarked allocations
-        let to_free: Vec<*mut GcHeader> = self
+        let to_free: Vec<(*mut GcHeader, usize)> = self
             .heap
             .iter_allocations()
             .filter(|&header_ptr| unsafe { !(*header_ptr).is_marked() })
+            .map(|header_ptr| {
+                let size = unsafe { (*header_ptr).size() };
+                (header_ptr, size)
+            })
             .collect();
 
         // Free them
-        for header_ptr in to_free {
+        for (header_ptr, size) in to_free {
             unsafe {
                 self.heap.free(header_ptr);
             }
             freed_count += 1;
+            freed_bytes += size;
         }
 
-        freed_count
+        (freed_count, freed_bytes)
     }
 
     /// Get GC statistics

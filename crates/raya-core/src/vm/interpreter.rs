@@ -33,6 +33,47 @@ impl Vm {
         }
     }
 
+    /// Collect GC roots from the stack
+    fn collect_roots(&mut self) {
+        self.gc.clear_stack_roots();
+
+        // Add all values from the operand stack
+        for i in 0..self.stack.depth() {
+            if let Ok(value) = self.stack.peek_at(i) {
+                if value.is_heap_allocated() {
+                    self.gc.add_root(value);
+                }
+            }
+        }
+
+        // Add values from all call frames' local variables
+        for frame in self.stack.frames() {
+            let locals_start = frame.locals_start();
+            let locals_count = frame.locals_count();
+
+            for i in 0..locals_count {
+                if let Ok(value) = self.stack.peek_at(locals_start + i) {
+                    if value.is_heap_allocated() {
+                        self.gc.add_root(value);
+                    }
+                }
+            }
+        }
+
+        // Add global variables as roots
+        for value in self.globals.values() {
+            if value.is_heap_allocated() {
+                self.gc.add_root(*value);
+            }
+        }
+    }
+
+    /// Trigger garbage collection
+    pub fn collect_garbage(&mut self) {
+        self.collect_roots();
+        self.gc.collect();
+    }
+
     /// Execute a module
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module

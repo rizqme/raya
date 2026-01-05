@@ -77,6 +77,18 @@ impl CallFrame {
     pub fn frame_size(&self) -> usize {
         self.local_count
     }
+
+    /// Get the starting index of locals in the stack
+    #[inline]
+    pub fn locals_start(&self) -> usize {
+        self.base_pointer
+    }
+
+    /// Get the number of local variables
+    #[inline]
+    pub fn locals_count(&self) -> usize {
+        self.local_count
+    }
 }
 
 /// Operand and call frame stack for the VM
@@ -403,6 +415,14 @@ impl Stack {
         &self.slots[0..self.sp]
     }
 
+    /// Iterate over all call frames
+    pub fn frames(&self) -> FrameIterator<'_> {
+        FrameIterator {
+            stack: self,
+            frame_idx: 0,
+        }
+    }
+
     // ========================================================================
     // Debugging & Inspection
     // ========================================================================
@@ -445,6 +465,26 @@ impl Stack {
             } else {
                 0.0
             },
+        }
+    }
+}
+
+/// Iterator over call frames
+pub struct FrameIterator<'a> {
+    stack: &'a Stack,
+    frame_idx: usize,
+}
+
+impl<'a> Iterator for FrameIterator<'a> {
+    type Item = &'a CallFrame;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.frame_idx < self.stack.frames.len() {
+            let frame = &self.stack.frames[self.frame_idx];
+            self.frame_idx += 1;
+            Some(frame)
+        } else {
+            None
         }
     }
 }
