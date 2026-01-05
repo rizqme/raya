@@ -42,6 +42,7 @@ pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};
+pub use sync::{Mutex, MutexError, MutexId, MutexRegistry};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
 pub use vm::{

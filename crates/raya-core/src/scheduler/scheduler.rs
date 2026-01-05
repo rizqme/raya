@@ -1,6 +1,6 @@
 //! Main task scheduler coordinating worker threads
 
-use crate::scheduler::{PreemptMonitor, Task, TaskId, Worker, DEFAULT_PREEMPT_THRESHOLD};
+use crate::scheduler::{PreemptMonitor, Task, TaskId, TaskState, Worker, DEFAULT_PREEMPT_THRESHOLD};
 use crate::vm::SafepointCoordinator;
 use crossbeam_deque::{Injector, Worker as CWorker};
 use parking_lot::RwLock;
@@ -260,6 +260,28 @@ impl Scheduler {
             }
 
             std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// Block a Task on a mutex
+    ///
+    /// This is called when a Task tries to acquire a mutex that is already locked.
+    /// The Task's state is set to Suspended and it will not be scheduled until resumed.
+    pub fn block_on_mutex(&self, task_id: TaskId, _mutex_id: crate::sync::MutexId) {
+        if let Some(task) = self.get_task(task_id) {
+            task.set_state(TaskState::Suspended);
+        }
+    }
+
+    /// Resume a Task that was blocked on a mutex
+    ///
+    /// This is called when a mutex is unlocked and the next waiting Task should be resumed.
+    /// The Task's state is set to Resumed and it will be scheduled for execution.
+    pub fn resume_from_mutex(&self, task_id: TaskId) {
+        if let Some(task) = self.get_task(task_id) {
+            task.set_state(TaskState::Resumed);
+            // Push task back to global injector so it can be picked up by a worker
+            self.injector.push(task);
         }
     }
 }

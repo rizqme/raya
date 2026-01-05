@@ -142,9 +142,17 @@ raya bundle main.raya -o myapp
   - ✅ 14 comprehensive integration tests
   - ✅ Value encode/decode for all types
 
+- **1.12**: Synchronization Primitives (Mutex) - Task-aware synchronization
+  - ✅ Enhanced Mutex with FIFO wait queue and owner tracking
+  - ✅ MutexId and MutexRegistry for global management
+  - ✅ Scheduler integration (block_on_mutex, resume_from_mutex)
+  - ✅ Mutex serialization for snapshots
+  - ✅ MutexGuard with RAII pattern (auto-unlock on drop)
+  - ✅ Comprehensive unit and integration tests
+  - ✅ Task-level blocking without OS thread blocking
+
 ### In Progress ⏳
 - **1.3-1.8**: Core VM components (stack, frames, basic execution)
-- **1.12**: Synchronization primitives (Mutex)
 
 ### Pending 📋
 - Parser & type checker
