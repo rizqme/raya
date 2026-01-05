@@ -185,6 +185,20 @@ impl Stack {
         Ok(self.slots[self.sp - 1 - n])
     }
 
+    /// Peek at value at absolute stack position
+    ///
+    /// # Errors
+    ///
+    /// Returns `VmError::StackUnderflow` if position is out of bounds.
+    #[inline]
+    pub fn peek_at(&self, pos: usize) -> VmResult<Value> {
+        if pos >= self.sp {
+            return Err(VmError::StackUnderflow);
+        }
+
+        Ok(self.slots[pos])
+    }
+
     /// Get current stack depth
     #[inline]
     pub fn depth(&self) -> usize {

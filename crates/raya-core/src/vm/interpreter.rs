@@ -1,7 +1,14 @@
 //! Virtual machine interpreter
 
 use raya_bytecode::{Module, Opcode};
-use crate::{gc::GarbageCollector, stack::Stack, value::Value, VmError, VmResult};
+use crate::{
+    gc::GarbageCollector,
+    object::{Array, Object, RayaString},
+    stack::Stack,
+    value::Value,
+    VmError, VmResult,
+};
+use super::ClassRegistry;
 
 /// Raya virtual machine
 pub struct Vm {
@@ -11,6 +18,8 @@ pub struct Vm {
     stack: Stack,
     /// Global variables
     globals: rustc_hash::FxHashMap<String, Value>,
+    /// Class registry
+    pub classes: ClassRegistry,
 }
 
 impl Vm {
@@ -20,6 +29,7 @@ impl Vm {
             gc: GarbageCollector::default(),
             stack: Stack::new(),
             globals: rustc_hash::FxHashMap::default(),
+            classes: ClassRegistry::new(),
         }
     }
 
@@ -172,6 +182,48 @@ impl Vm {
                     self.stack.pop_frame()?;
 
                     return Ok(return_value);
+                }
+
+                // Object operations
+                Opcode::New => {
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_new(class_index)?;
+                }
+                Opcode::LoadField => {
+                    let field_offset = self.read_u16(code, &mut ip)? as usize;
+                    self.op_load_field(field_offset)?;
+                }
+                Opcode::StoreField => {
+                    let field_offset = self.read_u16(code, &mut ip)? as usize;
+                    self.op_store_field(field_offset)?;
+                }
+                Opcode::LoadFieldFast => {
+                    let offset = self.read_u8(code, &mut ip)?;
+                    self.op_load_field_fast(offset)?;
+                }
+                Opcode::StoreFieldFast => {
+                    let offset = self.read_u8(code, &mut ip)?;
+                    self.op_store_field_fast(offset)?;
+                }
+
+                // Array operations
+                Opcode::NewArray => {
+                    let type_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_new_array(type_index)?;
+                }
+                Opcode::LoadElem => self.op_load_elem()?,
+                Opcode::StoreElem => self.op_store_elem()?,
+                Opcode::ArrayLen => self.op_array_len()?,
+
+                // String operations
+                Opcode::Sconcat => self.op_sconcat()?,
+                Opcode::Slen => self.op_slen()?,
+
+                // Method dispatch
+                Opcode::CallMethod => {
+                    let method_index = self.read_u16(code, &mut ip)? as usize;
+                    let arg_count = self.read_u8(code, &mut ip)? as usize;
+                    self.op_call_method(method_index, arg_count, module)?;
                 }
 
                 _ => {
@@ -502,6 +554,349 @@ impl Vm {
     fn op_store_global(&mut self, name: String) -> VmResult<()> {
         let value = self.stack.pop()?;
         self.globals.insert(name, value);
+        Ok(())
+    }
+
+    // ===== Object Operations =====
+
+    /// NEW - Allocate new object
+    #[allow(dead_code)]
+    fn op_new(&mut self, class_index: usize) -> VmResult<()> {
+        // Look up class
+        let class = self.classes
+            .get_class(class_index)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Invalid class index: {}", class_index)
+            ))?;
+
+        // Create object with correct field count
+        let obj = Object::new(class_index, class.field_count);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(obj);
+
+        // Push GC pointer as value
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+        };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// LOAD_FIELD - Load field from object
+    #[allow(dead_code)]
+    fn op_load_field(&mut self, field_offset: usize) -> VmResult<()> {
+        // Pop object from stack
+        let obj_val = self.stack.pop()?;
+
+        // Check it's a pointer
+        if !obj_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected object for field access".to_string()
+            ));
+        }
+
+        // Get object from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+
+        // Load field
+        let value = obj.get_field(field_offset)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Field offset {} out of bounds", field_offset)
+            ))?;
+
+        // Push field value
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// STORE_FIELD - Store value to object field
+    #[allow(dead_code)]
+    fn op_store_field(&mut self, field_offset: usize) -> VmResult<()> {
+        // Pop value and object from stack
+        let value = self.stack.pop()?;
+        let obj_val = self.stack.pop()?;
+
+        // Check it's a pointer
+        if !obj_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected object for field access".to_string()
+            ));
+        }
+
+        // Get mutable object from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+        let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+
+        // Store field
+        obj.set_field(field_offset, value)
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
+    /// LOAD_FIELD_FAST - Optimized field load with inline offset
+    #[allow(dead_code)]
+    fn op_load_field_fast(&mut self, offset: u8) -> VmResult<()> {
+        // Delegate to regular LOAD_FIELD
+        self.op_load_field(offset as usize)
+    }
+
+    /// STORE_FIELD_FAST - Optimized field store with inline offset
+    #[allow(dead_code)]
+    fn op_store_field_fast(&mut self, offset: u8) -> VmResult<()> {
+        // Delegate to regular STORE_FIELD
+        self.op_store_field(offset as usize)
+    }
+
+    // ===== Array Operations =====
+
+    /// NEW_ARRAY - Allocate new array
+    #[allow(dead_code)]
+    fn op_new_array(&mut self, type_index: usize) -> VmResult<()> {
+        // Pop length from stack
+        let length_val = self.stack.pop()?;
+        let length = length_val.as_i32()
+            .ok_or_else(|| VmError::TypeError(
+                "Array length must be a number".to_string()
+            ))? as usize;
+
+        // Bounds check (reasonable maximum)
+        if length > 10_000_000 {
+            return Err(VmError::RuntimeError(
+                format!("Array length {} too large", length)
+            ));
+        }
+
+        // Create array
+        let arr = Array::new(type_index, length);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(arr);
+
+        // Push GC pointer as value
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+        };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// LOAD_ELEM - Load array element
+    #[allow(dead_code)]
+    fn op_load_elem(&mut self) -> VmResult<()> {
+        // Pop index and array from stack
+        let index_val = self.stack.pop()?;
+        let array_val = self.stack.pop()?;
+
+        // Check array is a pointer
+        if !array_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected array for element access".to_string()
+            ));
+        }
+
+        // Check index is a number
+        let index = index_val.as_i32()
+            .ok_or_else(|| VmError::TypeError(
+                "Array index must be a number".to_string()
+            ))? as usize;
+
+        // Get array from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+        let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+        // Load element
+        let value = arr.get(index)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Array index {} out of bounds (length: {})", index, arr.len())
+            ))?;
+
+        // Push element value
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// STORE_ELEM - Store array element
+    #[allow(dead_code)]
+    fn op_store_elem(&mut self) -> VmResult<()> {
+        // Pop value, index, and array from stack
+        let value = self.stack.pop()?;
+        let index_val = self.stack.pop()?;
+        let array_val = self.stack.pop()?;
+
+        // Check array is a pointer
+        if !array_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected array for element access".to_string()
+            ));
+        }
+
+        // Check index is a number
+        let index = index_val.as_i32()
+            .ok_or_else(|| VmError::TypeError(
+                "Array index must be a number".to_string()
+            ))? as usize;
+
+        // Get mutable array from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+        let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+        // Store element
+        arr.set(index, value)
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
+    /// ARRAY_LEN - Get array length
+    #[allow(dead_code)]
+    fn op_array_len(&mut self) -> VmResult<()> {
+        // Pop array from stack
+        let array_val = self.stack.pop()?;
+
+        // Check array is a pointer
+        if !array_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected array for length operation".to_string()
+            ));
+        }
+
+        // Get array from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+        let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+        // Push length as i32
+        self.stack.push(Value::i32(arr.len() as i32))?;
+
+        Ok(())
+    }
+
+    // ===== String Operations =====
+
+    /// SCONCAT - Concatenate two strings
+    #[allow(dead_code)]
+    fn op_sconcat(&mut self) -> VmResult<()> {
+        // Pop two strings from stack
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        // Check both are pointers
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for concatenation".to_string()
+            ));
+        }
+
+        // Get strings from GC heap
+        // SAFETY: Values are tagged as pointers, managed by GC
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+        let str1 = unsafe { &*str1_ptr.unwrap().as_ptr() };
+        let str2 = unsafe { &*str2_ptr.unwrap().as_ptr() };
+
+        // Concatenate
+        let result = str1.concat(str2);
+
+        // Allocate result on GC heap
+        let gc_ptr = self.gc.allocate(result);
+
+        // Push result
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+        };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// SLEN - Get string length
+    #[allow(dead_code)]
+    fn op_slen(&mut self) -> VmResult<()> {
+        // Pop string from stack
+        let str_val = self.stack.pop()?;
+
+        // Check it's a pointer
+        if !str_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected string for length operation".to_string()
+            ));
+        }
+
+        // Get string from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let str_ptr = unsafe { str_val.as_ptr::<RayaString>() };
+        let string = unsafe { &*str_ptr.unwrap().as_ptr() };
+
+        // Push length as i32
+        self.stack.push(Value::i32(string.len() as i32))?;
+
+        Ok(())
+    }
+
+    // ===== Method Dispatch =====
+
+    /// CALL_METHOD - Call method via vtable dispatch
+    #[allow(dead_code)]
+    fn op_call_method(
+        &mut self,
+        method_index: usize,
+        arg_count: usize,
+        module: &Module,
+    ) -> VmResult<()> {
+        // Peek at object (receiver) on stack without popping
+        // Object is at stack position: stack_top - arg_count
+        let receiver_pos = self.stack.depth().checked_sub(arg_count + 1)
+            .ok_or_else(|| VmError::StackUnderflow)?;
+
+        let receiver_val = self.stack.peek_at(receiver_pos)?;
+
+        // Check receiver is an object
+        if !receiver_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected object for method call".to_string()
+            ));
+        }
+
+        // Get object from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let obj_ptr = unsafe { receiver_val.as_ptr::<Object>() };
+        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+
+        // Look up class
+        let class = self.classes
+            .get_class(obj.class_id)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Invalid class ID: {}", obj.class_id)
+            ))?;
+
+        // Look up method in vtable
+        let function_id = class.vtable.get_method(method_index)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Method index {} not found in vtable", method_index)
+            ))?;
+
+        // Get function from module
+        let function = module.functions
+            .get(function_id)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Invalid function ID: {}", function_id)
+            ))?;
+
+        // Execute function (implementation same as CALL)
+        // Arguments are already on stack in correct order
+        self.execute_function(function, module)?;
+
         Ok(())
     }
 }
