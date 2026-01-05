@@ -177,7 +177,7 @@ fn test_snapshot_with_blocked_task() {
 
 #[test]
 fn test_snapshot_header_validation() {
-    use raya_core::snapshot::{format::{SnapshotHeader, SNAPSHOT_MAGIC, SNAPSHOT_VERSION}};
+    use raya_core::snapshot::format::{SnapshotHeader, SNAPSHOT_MAGIC, SNAPSHOT_VERSION};
 
     let header = SnapshotHeader::new();
     assert_eq!(header.magic, SNAPSHOT_MAGIC);

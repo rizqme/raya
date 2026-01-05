@@ -75,10 +75,7 @@ impl HeapSnapshot {
         let mut data = vec![0u8; data_len];
         reader.read_exact(&mut data)?;
 
-        Ok(Self {
-            object_count,
-            data,
-        })
+        Ok(Self { object_count, data })
     }
 }
 

@@ -165,10 +165,7 @@ mod tests {
         buf[0..8].copy_from_slice(&0u64.to_le_bytes());
 
         let result = SnapshotReader::from_reader(&mut &buf[..]);
-        assert!(matches!(
-            result,
-            Err(SnapshotError::InvalidMagic)
-        ));
+        assert!(matches!(result, Err(SnapshotError::InvalidMagic)));
     }
 
     #[test]
@@ -186,9 +183,6 @@ mod tests {
 
         // Should fail checksum validation
         let result = SnapshotReader::from_reader(&mut &buf[..]);
-        assert!(matches!(
-            result,
-            Err(SnapshotError::ChecksumMismatch)
-        ));
+        assert!(matches!(result, Err(SnapshotError::ChecksumMismatch)));
     }
 }

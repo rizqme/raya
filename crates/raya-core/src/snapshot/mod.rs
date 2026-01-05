@@ -5,12 +5,12 @@
 
 pub mod format;
 mod heap;
+mod reader;
 mod task;
 mod writer;
-mod reader;
 
-pub use format::{SnapshotHeader, SegmentType, SnapshotChecksum, SnapshotError};
+pub use format::{SegmentType, SnapshotChecksum, SnapshotError, SnapshotHeader};
 pub use heap::{HeapSnapshot, ObjectId};
-pub use task::{SerializedTask, SerializedFrame, BlockedReason};
-pub use writer::SnapshotWriter;
 pub use reader::SnapshotReader;
+pub use task::{BlockedReason, SerializedFrame, SerializedTask};
+pub use writer::SnapshotWriter;

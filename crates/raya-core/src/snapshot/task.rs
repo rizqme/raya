@@ -341,9 +341,8 @@ impl BlockedReason {
 
                 let mut bytes = vec![0u8; len];
                 reader.read_exact(&mut bytes)?;
-                let s = String::from_utf8(bytes).map_err(|e| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-                })?;
+                let s = String::from_utf8(bytes)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
                 Ok(BlockedReason::Other(s))
             }
             _ => Err(std::io::Error::new(
