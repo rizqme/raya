@@ -42,6 +42,7 @@ rand = "0.8"
 
 # Hashing
 rustc-hash = "1.1"
+sha2 = "0.10"
 
 # Allocator
 mimalloc = { version = "0.1", default-features = false }

@@ -17,9 +17,11 @@ rustc-hash = { workspace = true }
 thiserror = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
+tempfile = "3.8"
 
 [[bench]]
 name = "vm_execution"

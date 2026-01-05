@@ -389,6 +389,27 @@ impl Value {
             }
         }
     }
+
+    /// Encode value to binary format for snapshot serialization
+    ///
+    /// Note: Pointers are NOT serialized directly - they must be mapped
+    /// to stable object IDs by the snapshot system before calling this.
+    /// This method will encode pointers as their raw payload value.
+    pub fn encode<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        // Write the raw 64-bit value directly
+        // This preserves the NaN-boxing encoding
+        writer.write_all(&self.0.to_le_bytes())
+    }
+
+    /// Decode value from binary format
+    ///
+    /// Note: If this value contains a pointer, the caller must ensure
+    /// the pointer has been properly mapped from object ID to actual pointer.
+    pub fn decode<R: std::io::Read>(reader: &mut R) -> std::io::Result<Self> {
+        let mut buf = [0u8; 8];
+        reader.read_exact(&mut buf)?;
+        Ok(Value(u64::from_le_bytes(buf)))
+    }
 }
 
 impl fmt::Debug for Value {

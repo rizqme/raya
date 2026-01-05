@@ -30,6 +30,7 @@ pub mod gc;
 pub mod json;
 pub mod object;
 pub mod scheduler;
+pub mod snapshot;
 pub mod stack;
 pub mod sync;
 pub mod types;
@@ -39,6 +40,7 @@ pub mod vm;
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
+pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
@@ -73,6 +75,10 @@ pub enum VmError {
     /// Runtime error
     #[error("Runtime error: {0}")]
     RuntimeError(String),
+
+    /// Snapshot error
+    #[error("Snapshot error: {0}")]
+    SnapshotError(String),
 }
 
 /// VM execution result
