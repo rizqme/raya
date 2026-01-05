@@ -374,7 +374,7 @@ pub struct VTable {
 
 **Goal:** Per-context precise mark-sweep GC with type metadata.
 
-**Status:** 🔄 Foundation Complete, GC Implementation Pending
+**Status:** ✅ Complete
 
 **Tasks:**
 - [x] Create VmContext structure (heap, resources, limits)
@@ -382,9 +382,9 @@ pub struct VTable {
 - [x] Create GcHeader with type metadata
 - [x] Build basic GarbageCollector structure
 - [x] Add allocation threshold checking
-- [ ] Build precise mark-sweep GC with type-metadata-guided pointer traversal
-- [ ] Root set management (stack, globals) integration
-- [ ] GC statistics and tuning
+- [x] Build precise mark-sweep GC with type-metadata-guided pointer traversal
+- [x] Root set management (stack, globals) integration
+- [x] GC statistics and tuning
 
 **Files Implemented:**
 ```rust
@@ -431,25 +431,79 @@ pub struct RootSet {
 }
 ```
 
-**Reference:** `design/ARCHITECTURE.md` Section 5, `plans/milestone-1.3.md`
+**Reference:** `design/ARCHITECTURE.md` Section 5, `plans/milestone-1.3.md`, `plans/milestone-1.7.md`
 
-**What's Complete:**
+**Complete Implementation:**
 - VmContext with isolated per-context heaps
 - Resource limits (max heap size, max tasks, CPU budget)
 - Heap allocator with type-aware allocation
-- GC skeleton with threshold-based collection triggering
-- Basic mark-sweep structure (mark phase needs type-metadata integration)
-
-**What's Pending:**
-- Precise pointer traversal using TypeRegistry in mark phase
-- Integration with Stack for automatic root scanning
-- Performance tuning and GC statistics
+- Precise mark-sweep GC with type-metadata-guided pointer traversal
+- Automatic root collection from stack (operands + locals) and globals
+- Comprehensive GC statistics (pause time, survival rate, live objects/bytes)
+- Automatic threshold adjustment (2x live size, min 1MB)
+- Special handling for Object, Array, RayaString with dynamic fields
 
 **Future Enhancements:**
 - Phase 2: Generational GC (young-gen copying collector)
 - Phase 3: Incremental/Concurrent GC (if needed)
 
-### 1.8 Safepoint Infrastructure
+### 1.8 Native JSON Type
+
+**Goal:** Dynamic JSON values with runtime type casting and validation.
+
+**Status:** 📋 Planned
+
+**Tasks:**
+- [ ] Implement JsonValue runtime type (enum with Null/Bool/Number/String/Array/Object/Undefined)
+- [ ] Add JSON_GET, JSON_INDEX, JSON_CAST opcodes
+- [ ] Implement dynamic property access (returns json)
+- [ ] Implement dynamic array indexing (returns json)
+- [ ] Build runtime validation algorithm for type casting
+- [ ] Add JSON.parse() and JSON.stringify() to stdlib
+- [ ] GC integration for JsonValue marking
+- [ ] Type schema storage in TypeRegistry
+
+**Files:**
+```rust
+// crates/raya-core/src/json/mod.rs
+pub enum JsonValue {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(GcPtr<RayaString>),
+    Array(GcPtr<Vec<JsonValue>>),
+    Object(GcPtr<HashMap<String, JsonValue>>),
+    Undefined,
+}
+
+impl JsonValue {
+    pub fn get_property(&self, key: &str) -> JsonValue;
+    pub fn get_index(&self, index: usize) -> JsonValue;
+}
+
+// crates/raya-core/src/json/cast.rs
+pub struct TypeSchema {
+    pub type_id: usize,
+    pub kind: TypeKind,
+}
+
+pub fn validate_cast(
+    json: JsonValue,
+    schema: &TypeSchema,
+    gc: &mut GarbageCollector,
+) -> VmResult<Value>;
+
+// crates/raya-stdlib/src/json.rs
+pub fn parse(json_text: String, gc: &mut GarbageCollector) -> VmResult<Value>;
+pub fn stringify(json_value: JsonValue) -> VmResult<String>;
+```
+
+**Reference:** `design/JSON-TYPE.md`, `plans/milestone-1.8.md`
+
+**Dependencies:**
+- `serde_json` crate for parsing/serialization
+
+### 1.9 Safepoint Infrastructure
 
 **Goal:** Coordinated stop-the-world pauses for GC and snapshotting.
 
@@ -486,7 +540,7 @@ impl SafepointCoordinator {
 
 **Reference:** `design/ARCHITECTURE.md` Section 5.6, `design/SNAPSHOTTING.md` Section 2
 
-### 1.9 Task Scheduler (Goroutine-Style)
+### 1.10 Task Scheduler (Goroutine-Style)
 
 **Goal:** Work-stealing multi-threaded task execution.
 
@@ -529,7 +583,7 @@ pub enum TaskState {
 
 **Reference:** `design/ARCHITECTURE.md` Section 4, `design/LANG.md` Section 14
 
-### 1.10 Synchronization (Mutex)
+### 1.11 Synchronization (Mutex)
 
 **Goal:** Thread-safe mutual exclusion without await in critical sections.
 
