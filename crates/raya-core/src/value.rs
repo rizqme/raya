@@ -5,15 +5,20 @@
 //!
 //! # Encoding Strategy
 //!
+//! Uses NaN-boxing for efficient value representation:
+//!
 //! ```text
-//! Pointer:  pppppppppppppppppppppppppppppppppppppppppppppppppppppppppp000
-//! i32:      000000000000000000000000000000iiiiiiiiiiiiiiiiiiiiiiiiiiii001
-//! bool:     000000000000000000000000000000000000000000000000000000000b010
-//! null:     0000000000000000000000000000000000000000000000000000000000110
-//! f64:      Special NaN-boxed encoding (future optimization)
+//! f64:      Any value where upper 13 bits != 0x1FFF (regular IEEE 754 double)
+//! Tagged:   0x1FFF + 3-bit tag + 48-bit payload (NaN-boxed)
+//!   - Pointer:  0xFFF8000000000000 | (ptr & 0xFFFFFFFFFFFF)  [tag=000]
+//!   - i32:      0xFFF8001000000000 | (i32 as u64)            [tag=001]
+//!   - bool:     0xFFF8002000000000 | (b as u64)              [tag=010]
+//!   - null:     0xFFF8006000000000                           [tag=110]
 //! ```
 //!
-//! Pointers must be 8-byte aligned (guaranteed by allocator).
+//! The key insight: IEEE 754 quiet NaN has exponent=0x7FF and mantissa bit 51=1,
+//! giving us 0x7FF8... in the upper 16 bits. By using the sign bit and making it
+//! 0xFFF8..., we create tagged values that are quiet NaNs but distinguishable.
 
 use std::fmt;
 use std::ptr::NonNull;
@@ -27,17 +32,39 @@ use std::ptr::NonNull;
 pub struct Value(u64);
 
 impl Value {
-    // Tag constants (lowest 3 bits)
-    const TAG_MASK: u64 = 0b111;
-    const TAG_PTR: u64 = 0b000;
-    const TAG_I32: u64 = 0b001;
-    const TAG_BOOL: u64 = 0b010;
-    const TAG_NULL: u64 = 0b110;
+    // NaN-boxing constants
+    // Quiet NaN base: sign=1, exp=0x7FF, quiet=1 => 0xFFF8 in upper 16 bits
+    const NAN_BOX_BASE: u64 = 0xFFF8_0000_0000_0000;
 
-    // Special values
-    const NULL: u64 = Self::TAG_NULL;
-    const TRUE: u64 = (1 << 3) | Self::TAG_BOOL;
-    const FALSE: u64 = (0 << 3) | Self::TAG_BOOL;
+    // Tag is in bits 48-50 (3 bits, shifted by 48)
+    const TAG_SHIFT: u64 = 48;
+    const TAG_MASK: u64 = 0x7 << Self::TAG_SHIFT; // 3 bits at position 48
+
+    const TAG_PTR: u64 = 0x0 << Self::TAG_SHIFT;
+    const TAG_I32: u64 = 0x1 << Self::TAG_SHIFT;
+    const TAG_BOOL: u64 = 0x2 << Self::TAG_SHIFT;
+    const TAG_NULL: u64 = 0x6 << Self::TAG_SHIFT;
+
+    // Payload mask (lower 48 bits)
+    const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
+
+    // Special values (NaN-boxed)
+    const NULL: u64 = Self::NAN_BOX_BASE | Self::TAG_NULL;
+    const TRUE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL | 1;
+    const FALSE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL | 0;
+
+    /// Check if this value is NaN-boxed (tagged)
+    #[inline]
+    const fn is_nan_boxed(&self) -> bool {
+        // Check if upper 13 bits are 0x1FFF (sign=1, exp=0x7FF, quiet=1)
+        (self.0 & 0xFFF8_0000_0000_0000) == Self::NAN_BOX_BASE
+    }
+
+    /// Get the tag from a NaN-boxed value
+    #[inline]
+    const fn get_tag(&self) -> u64 {
+        (self.0 & Self::TAG_MASK) >> Self::TAG_SHIFT
+    }
 
     /// Create a null value
     #[inline]
@@ -54,8 +81,16 @@ impl Value {
     /// Create an i32 value
     #[inline]
     pub const fn i32(i: i32) -> Self {
-        // Store i32 in upper 32 bits, tag in lower bits
-        Value((((i as i64) as u64) << 32) | Self::TAG_I32)
+        // NaN-box: base | tag | i32 payload (sign-extended to 48 bits)
+        Value(Self::NAN_BOX_BASE | Self::TAG_I32 | ((i as i64) as u64 & Self::PAYLOAD_MASK))
+    }
+
+    /// Create an f64 value
+    #[inline]
+    pub fn f64(f: f64) -> Self {
+        // Store f64 as IEEE 754 double directly (not NaN-boxed)
+        // Valid f64 values won't have 0xFFF8 in upper 16 bits
+        Value(f.to_bits())
     }
 
     /// Create a pointer value (for heap-allocated objects)
@@ -63,14 +98,14 @@ impl Value {
     /// # Safety
     ///
     /// The pointer must be:
-    /// - 8-byte aligned (lowest 3 bits must be 0)
     /// - Valid for the lifetime of this Value
     /// - Managed by the GC
+    /// - Fits in 48 bits (must be < 2^48)
     #[inline]
     pub unsafe fn from_ptr<T>(ptr: NonNull<T>) -> Self {
         let addr = ptr.as_ptr() as usize as u64;
-        debug_assert_eq!(addr & Self::TAG_MASK, 0, "Pointer must be 8-byte aligned");
-        Value(addr)
+        debug_assert_eq!(addr & !Self::PAYLOAD_MASK, 0, "Pointer must fit in 48 bits");
+        Value(Self::NAN_BOX_BASE | Self::TAG_PTR | (addr & Self::PAYLOAD_MASK))
     }
 
     /// Check if this value is null
@@ -82,19 +117,26 @@ impl Value {
     /// Check if this value is a boolean
     #[inline]
     pub const fn is_bool(&self) -> bool {
-        (self.0 & Self::TAG_MASK) == Self::TAG_BOOL
+        self.is_nan_boxed() && self.get_tag() == (Self::TAG_BOOL >> Self::TAG_SHIFT)
     }
 
     /// Check if this value is an i32
     #[inline]
     pub const fn is_i32(&self) -> bool {
-        (self.0 & Self::TAG_MASK) == Self::TAG_I32
+        self.is_nan_boxed() && self.get_tag() == (Self::TAG_I32 >> Self::TAG_SHIFT)
+    }
+
+    /// Check if this value is an f64
+    #[inline]
+    pub const fn is_f64(&self) -> bool {
+        // f64 values are NOT NaN-boxed (they're direct IEEE 754)
+        !self.is_nan_boxed()
     }
 
     /// Check if this value is a heap pointer
     #[inline]
     pub const fn is_ptr(&self) -> bool {
-        (self.0 & Self::TAG_MASK) == Self::TAG_PTR
+        self.is_nan_boxed() && self.get_tag() == (Self::TAG_PTR >> Self::TAG_SHIFT)
     }
 
     /// Check if this value is heap-allocated
@@ -107,7 +149,7 @@ impl Value {
     #[inline]
     pub const fn as_bool(&self) -> Option<bool> {
         if self.is_bool() {
-            Some((self.0 >> 3) != 0)
+            Some((self.0 & Self::PAYLOAD_MASK) != 0)
         } else {
             None
         }
@@ -117,7 +159,27 @@ impl Value {
     #[inline]
     pub const fn as_i32(&self) -> Option<i32> {
         if self.is_i32() {
-            Some((self.0 >> 32) as i32)
+            // Extract payload and sign-extend from 48 bits to 32 bits
+            let payload = (self.0 & Self::PAYLOAD_MASK) as i64;
+            // Check if sign bit (bit 47) is set
+            let sign_extended = if payload & 0x8000_0000_0000 != 0 {
+                // Negative: sign-extend from 48 bits
+                payload as i32
+            } else {
+                // Positive
+                payload as i32
+            };
+            Some(sign_extended)
+        } else {
+            None
+        }
+    }
+
+    /// Extract f64 value
+    #[inline]
+    pub fn as_f64(&self) -> Option<f64> {
+        if self.is_f64() {
+            Some(f64::from_bits(self.0))
         } else {
             None
         }
@@ -134,7 +196,8 @@ impl Value {
     #[inline]
     pub unsafe fn as_ptr<T>(&self) -> Option<NonNull<T>> {
         if self.is_ptr() {
-            Some(NonNull::new_unchecked(self.0 as usize as *mut T))
+            let addr = (self.0 & Self::PAYLOAD_MASK) as usize;
+            Some(NonNull::new_unchecked(addr as *mut T))
         } else {
             None
         }
@@ -149,7 +212,12 @@ impl Value {
     /// Get tag bits
     #[inline]
     pub const fn tag(&self) -> u64 {
-        self.0 & Self::TAG_MASK
+        if self.is_nan_boxed() {
+            self.get_tag()
+        } else {
+            // Not NaN-boxed, it's an f64
+            0xFF // Special marker for f64
+        }
     }
 
     /// Check if value is truthy (for conditionals)
@@ -160,6 +228,8 @@ impl Value {
             false
         } else if let Some(i) = self.as_i32() {
             i != 0
+        } else if let Some(f) = self.as_f64() {
+            f != 0.0 && !f.is_nan()
         } else {
             // Pointers are always truthy
             true
@@ -168,36 +238,52 @@ impl Value {
 
     /// Get type name for debugging
     pub const fn type_name(&self) -> &'static str {
-        match self.tag() {
-            Self::TAG_NULL => "null",
-            Self::TAG_BOOL => "bool",
-            Self::TAG_I32 => "i32",
-            Self::TAG_PTR => "pointer",
-            _ => "unknown",
+        if !self.is_nan_boxed() {
+            "float"
+        } else {
+            match self.get_tag() {
+                0 => "pointer",
+                1 => "int",
+                2 => "bool",
+                6 => "null",
+                _ => "unknown",
+            }
         }
     }
 }
 
 impl fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.tag() {
-            Self::TAG_NULL => write!(f, "null"),
-            Self::TAG_BOOL => write!(f, "bool({})", self.as_bool().unwrap()),
-            Self::TAG_I32 => write!(f, "i32({})", self.as_i32().unwrap()),
-            Self::TAG_PTR => write!(f, "ptr({:#x})", self.0),
-            _ => write!(f, "Value({:#x})", self.0),
+        if self.is_null() {
+            write!(f, "null")
+        } else if self.is_bool() {
+            write!(f, "bool({})", self.as_bool().unwrap())
+        } else if self.is_i32() {
+            write!(f, "int({})", self.as_i32().unwrap())
+        } else if self.is_f64() {
+            write!(f, "float({})", self.as_f64().unwrap())
+        } else if self.is_ptr() {
+            write!(f, "ptr({:#x})", self.0 & Self::PAYLOAD_MASK)
+        } else {
+            write!(f, "Value({:#x})", self.0)
         }
     }
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.tag() {
-            Self::TAG_NULL => write!(f, "null"),
-            Self::TAG_BOOL => write!(f, "{}", self.as_bool().unwrap()),
-            Self::TAG_I32 => write!(f, "{}", self.as_i32().unwrap()),
-            Self::TAG_PTR => write!(f, "[object@{:#x}]", self.0),
-            _ => write!(f, "<??>"),
+        if self.is_null() {
+            write!(f, "null")
+        } else if self.is_bool() {
+            write!(f, "{}", self.as_bool().unwrap())
+        } else if self.is_i32() {
+            write!(f, "{}", self.as_i32().unwrap())
+        } else if self.is_f64() {
+            write!(f, "{}", self.as_f64().unwrap())
+        } else if self.is_ptr() {
+            write!(f, "[object@{:#x}]", self.0 & Self::PAYLOAD_MASK)
+        } else {
+            write!(f, "<??>")
         }
     }
 }
@@ -241,7 +327,7 @@ mod tests {
         let v = Value::i32(42);
         assert!(v.is_i32());
         assert_eq!(v.as_i32(), Some(42));
-        assert_eq!(v.type_name(), "i32");
+        assert_eq!(v.type_name(), "int");
 
         // Test negative numbers
         let neg = Value::i32(-100);
@@ -271,9 +357,10 @@ mod tests {
 
     #[test]
     fn test_value_tag() {
-        assert_eq!(Value::null().tag(), Value::TAG_NULL);
-        assert_eq!(Value::bool(true).tag(), Value::TAG_BOOL);
-        assert_eq!(Value::i32(42).tag(), Value::TAG_I32);
+        assert_eq!(Value::null().tag(), (Value::TAG_NULL >> Value::TAG_SHIFT));
+        assert_eq!(Value::bool(true).tag(), (Value::TAG_BOOL >> Value::TAG_SHIFT));
+        assert_eq!(Value::i32(42).tag(), (Value::TAG_I32 >> Value::TAG_SHIFT));
+        assert_eq!(Value::f64(3.14).tag(), 0xFF);  // Special marker for f64
     }
 
     #[test]
@@ -289,7 +376,8 @@ mod tests {
     fn test_value_debug() {
         assert_eq!(format!("{:?}", Value::null()), "null");
         assert_eq!(format!("{:?}", Value::bool(true)), "bool(true)");
-        assert_eq!(format!("{:?}", Value::i32(42)), "i32(42)");
+        assert_eq!(format!("{:?}", Value::i32(42)), "int(42)");
+        assert_eq!(format!("{:?}", Value::f64(3.14)), "float(3.14)");
     }
 
     #[test]

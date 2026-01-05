@@ -275,6 +275,14 @@ pub enum Opcode {
     /// Store global variable (operand: u32 index)
     StoreGlobal = 0xE6,
 
+    // ===== JSON Operations (0xE7-0xE9) =====
+    /// JSON property access: pop json, push json (operand: u32 propertyIndex)
+    JsonGet = 0xE7,
+    /// JSON array indexing: pop index, pop json, push json
+    JsonIndex = 0xE8,
+    /// JSON type casting: pop json, push typed value (operand: u32 typeId)
+    JsonCast = 0xE9,
+
     // ===== Closures (0xF0-0xF3) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
     MakeClosure = 0xF0,
@@ -460,6 +468,11 @@ impl Opcode {
             0xE5 => Some(Self::LoadGlobal),
             0xE6 => Some(Self::StoreGlobal),
 
+            // JSON operations
+            0xE7 => Some(Self::JsonGet),
+            0xE8 => Some(Self::JsonIndex),
+            0xE9 => Some(Self::JsonCast),
+
             // Closures
             0xF0 => Some(Self::MakeClosure),
             0xF1 => Some(Self::CloseVar),
@@ -598,6 +611,9 @@ impl Opcode {
             Self::Trap => "TRAP",
             Self::LoadGlobal => "LOAD_GLOBAL",
             Self::StoreGlobal => "STORE_GLOBAL",
+            Self::JsonGet => "JSON_GET",
+            Self::JsonIndex => "JSON_INDEX",
+            Self::JsonCast => "JSON_CAST",
             Self::MakeClosure => "MAKE_CLOSURE",
             Self::CloseVar => "CLOSE_VAR",
             Self::LoadCaptured => "LOAD_CAPTURED",

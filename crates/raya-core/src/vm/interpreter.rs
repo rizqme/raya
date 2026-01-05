@@ -176,6 +176,11 @@ impl Vm {
                 Opcode::Igt => self.op_igt()?,
                 Opcode::Ige => self.op_ige()?,
 
+                // Boolean operations
+                Opcode::Not => self.op_not()?,
+                Opcode::And => self.op_and()?,
+                Opcode::Or => self.op_or()?,
+
                 // Control flow
                 Opcode::Jmp => {
                     let offset = self.read_i16(code, &mut ip)?;
@@ -267,6 +272,19 @@ impl Vm {
                     self.op_call_method(method_index, arg_count, module)?;
                 }
 
+                // JSON operations
+                Opcode::JsonGet => {
+                    let property_index = self.read_u32(code, &mut ip)? as usize;
+                    self.op_json_get(property_index, module)?;
+                }
+                Opcode::JsonIndex => {
+                    self.op_json_index()?;
+                }
+                Opcode::JsonCast => {
+                    let type_id = self.read_u32(code, &mut ip)? as usize;
+                    self.op_json_cast(type_id)?;
+                }
+
                 _ => {
                     return Err(VmError::RuntimeError(format!(
                         "Unimplemented opcode: {:?}",
@@ -296,6 +314,16 @@ impl Vm {
         }
         let value = u16::from_le_bytes([code[*ip], code[*ip + 1]]);
         *ip += 2;
+        Ok(value)
+    }
+
+    #[inline]
+    fn read_u32(&self, code: &[u8], ip: &mut usize) -> VmResult<u32> {
+        if *ip + 3 >= code.len() {
+            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+        }
+        let value = u32::from_le_bytes([code[*ip], code[*ip + 1], code[*ip + 2], code[*ip + 3]]);
+        *ip += 4;
         Ok(value)
     }
 
@@ -393,9 +421,8 @@ impl Vm {
 
     /// CONST_F64 - Push 64-bit float constant (placeholder)
     #[inline]
-    fn op_const_f64(&mut self, _value: f64) -> VmResult<()> {
-        // TODO: Add f64 support to Value
-        Err(VmError::RuntimeError("f64 not yet supported".to_string()))
+    fn op_const_f64(&mut self, value: f64) -> VmResult<()> {
+        self.stack.push(Value::f64(value))
     }
 
     // ===== Local Variable Operations =====
@@ -486,34 +513,52 @@ impl Vm {
 
     // ===== Float Arithmetic Operations (Placeholder) =====
 
-    /// FADD - Add two floats (TODO: implement when f64 added to Value)
+    /// FADD - Add two floats
     #[inline]
     fn op_fadd(&mut self) -> VmResult<()> {
-        Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
+        let b = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(a + b))
     }
 
     /// FSUB - Subtract two floats
     #[inline]
     fn op_fsub(&mut self) -> VmResult<()> {
-        Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
+        let b = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(a - b))
     }
 
     /// FMUL - Multiply two floats
     #[inline]
     fn op_fmul(&mut self) -> VmResult<()> {
-        Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
+        let b = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(a * b))
     }
 
     /// FDIV - Divide two floats
     #[inline]
     fn op_fdiv(&mut self) -> VmResult<()> {
-        Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
+        let b = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(a / b))
     }
 
     /// FNEG - Negate a float
     #[inline]
     fn op_fneg(&mut self) -> VmResult<()> {
-        Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
+        let a = self.stack.pop()?.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(-a))
     }
 
     // ===== Comparison Operations =====
@@ -576,6 +621,31 @@ impl Vm {
         let a = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a >= b))
+    }
+
+    // ===== Boolean Operations =====
+
+    /// NOT - Boolean not
+    #[inline]
+    fn op_not(&mut self) -> VmResult<()> {
+        let value = self.stack.pop()?;
+        self.stack.push(Value::bool(!value.is_truthy()))
+    }
+
+    /// AND - Boolean and
+    #[inline]
+    fn op_and(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        self.stack.push(Value::bool(a.is_truthy() && b.is_truthy()))
+    }
+
+    /// OR - Boolean or
+    #[inline]
+    fn op_or(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        self.stack.push(Value::bool(a.is_truthy() || b.is_truthy()))
     }
 
     // ===== Global Variable Operations =====
@@ -939,6 +1009,118 @@ impl Vm {
         self.execute_function(function, module)?;
 
         Ok(())
+    }
+
+    // ===== JSON Operations =====
+
+    /// JSON_GET - Get property from JSON object
+    #[allow(dead_code)]
+    fn op_json_get(&mut self, property_index: usize, module: &Module) -> VmResult<()> {
+        // Pop JSON value from stack
+        let json_val = self.stack.pop()?;
+
+        // Get JSON pointer
+        if !json_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected JSON value for property access".to_string()
+            ));
+        }
+
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let json_ptr = unsafe { json_val.as_ptr::<crate::json::JsonValue>() };
+        let json = unsafe { &*json_ptr.unwrap().as_ptr() };
+
+        // Get property name from constant pool
+        let property_name = module.constants
+            .get_string(property_index as u32)
+            .ok_or_else(|| VmError::RuntimeError(
+                format!("Invalid property index: {}", property_index)
+            ))?;
+
+        // Get property value
+        let result = json.get_property(property_name);
+
+        // Allocate result on heap
+        let result_ptr = self.gc.allocate(result);
+
+        // Push result onto stack
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new_unchecked(result_ptr.as_ptr() as *mut u8))
+        };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// JSON_INDEX - Get element from JSON array by index
+    #[allow(dead_code)]
+    fn op_json_index(&mut self) -> VmResult<()> {
+        // Pop index from stack
+        let index_val = self.stack.pop()?;
+        let index = index_val.as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected integer index".to_string()))?;
+
+        if index < 0 {
+            return Err(VmError::RuntimeError("Array index cannot be negative".to_string()));
+        }
+
+        // Pop JSON value from stack
+        let json_val = self.stack.pop()?;
+
+        // Get JSON pointer
+        if !json_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected JSON value for index access".to_string()
+            ));
+        }
+
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let json_ptr = unsafe { json_val.as_ptr::<crate::json::JsonValue>() };
+        let json = unsafe { &*json_ptr.unwrap().as_ptr() };
+
+        // Get element at index
+        let result = json.get_index(index as usize);
+
+        // Allocate result on heap
+        let result_ptr = self.gc.allocate(result);
+
+        // Push result onto stack
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new_unchecked(result_ptr.as_ptr() as *mut u8))
+        };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// JSON_CAST - Cast JSON value to typed object with validation
+    #[allow(dead_code)]
+    fn op_json_cast(&mut self, type_id: usize) -> VmResult<()> {
+        // Pop JSON value from stack
+        let json_val = self.stack.pop()?;
+
+        // Get JSON pointer
+        if !json_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected JSON value for type cast".to_string()
+            ));
+        }
+
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let json_ptr = unsafe { json_val.as_ptr::<crate::json::JsonValue>() };
+        let json = unsafe { &*json_ptr.unwrap().as_ptr() };
+
+        // TODO: Get type schema from type registry
+        // For now, just return an error indicating not implemented
+        return Err(VmError::RuntimeError(
+            format!("JSON type casting not yet fully implemented for type ID: {}", type_id)
+        ));
+
+        // Future implementation:
+        // 1. Get TypeSchema from type registry using type_id
+        // 2. Get TypeSchemaRegistry (needs to be added to Vm struct)
+        // 3. Call validate_cast(json, schema, schema_registry, &mut self.gc)
+        // 4. Push resulting typed value onto stack
     }
 }
 

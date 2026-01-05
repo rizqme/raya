@@ -224,7 +224,8 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::ReflectGetProps
         | Opcode::ReflectGetProp
         | Opcode::ReflectSetProp
-        | Opcode::ReflectHasProp => 0,
+        | Opcode::ReflectHasProp
+        | Opcode::JsonIndex => 0,
 
         // 2-byte operands (u16)
         | Opcode::LoadLocal
@@ -253,7 +254,9 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::NewArray
         | Opcode::LoadModule
         | Opcode::ReflectTypeinfo
-        | Opcode::TaskThen => 4,
+        | Opcode::TaskThen
+        | Opcode::JsonGet
+        | Opcode::JsonCast => 4,
 
         // 8-byte operands (f64)
         Opcode::ConstF64 => 8,
@@ -421,6 +424,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::ReflectSetProp => (3, 0),
         Opcode::ReflectHasProp => (2, 1),
         Opcode::ReflectConstruct => (0, 1),
+        Opcode::JsonGet => (1, 1),
+        Opcode::JsonIndex => (2, 1),
+        Opcode::JsonCast => (1, 1),
     }
 }
 

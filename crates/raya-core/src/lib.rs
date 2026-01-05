@@ -18,6 +18,7 @@ pub mod vm;
 pub mod scheduler;
 pub mod object;
 pub mod sync;
+pub mod json;
 
 pub use value::Value;
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
@@ -25,6 +26,7 @@ pub use stack::{Stack, CallFrame, StackStats};
 pub use vm::{Vm, VmContext, VmContextId, VmOptions, ResourceLimits, ResourceCounters, ContextRegistry, ClassRegistry};
 pub use scheduler::Scheduler;
 pub use object::{Object, Class, VTable, Array, RayaString};
+pub use json::{JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry, validate_cast};
 
 /// VM execution errors
 #[derive(Debug, thiserror::Error)]

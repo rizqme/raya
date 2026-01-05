@@ -273,18 +273,79 @@ From highest to lowest:
 
 ### 4.1 Primitive Types
 
-Raya has four primitive types:
+Raya has six primitive types:
+
+#### `int`
+
+* 32-bit signed integer
+* Range: -2,147,483,648 to 2,147,483,647
+* Stored unboxed in VM (efficient)
+* Used for counters, indices, and whole numbers
+
+```ts
+let count: int = 42;
+let index: int = 0;
+let offset: int = -100;
+```
+
+#### `float`
+
+* 64-bit IEEE 754 floating point
+* Full double precision
+* Special values: `Infinity`, `-Infinity`, `NaN`
+* Used for decimal numbers and large integers
+
+```ts
+let pi: float = 3.14159;
+let huge: float = 1e100;
+let temperature: float = 98.6;
+```
 
 #### `number`
 
-* 64-bit IEEE 754 floating point
-* Includes integers (safe up to 2^53 - 1)
-* Special values: `Infinity`, `-Infinity`, `NaN`
+* Type alias for `int | float`
+* Accepts both integers and floats
+* Provides TypeScript/JavaScript compatibility
+* The compiler infers the specific type when possible
 
 ```ts
-let count: number = 42;
-let pi: number = 3.14159;
-let huge: number = 1e100;
+let value: number = 42;        // Inferred as int
+let ratio: number = 3.14;      // Inferred as float
+let result: number = getValue(); // Could be either
+
+// Type narrowing with typeof
+function double(x: number): number {
+  if (typeof x === "int") {
+    return x * 2;  // x is int, result is int
+  } else {
+    return x * 2;  // x is float, result is float
+  }
+}
+```
+
+**Numeric Literal Inference:**
+
+```ts
+42          // Inferred as int
+3.14        // Inferred as float
+1e6         // Inferred as float
+0x1A        // Inferred as int
+2_147_483_647   // Inferred as int (max i32)
+2_147_483_648   // Inferred as float (exceeds i32)
+```
+
+**Type Conversions:**
+
+```ts
+let i: int = 42;
+let f: float = i;  // Implicit conversion: int → float
+
+let f2: float = 3.14;
+let i2: int = f2;  // ERROR: No implicit float → int conversion
+
+// Explicit conversion with built-in functions
+let i3: int = Math.floor(f2);     // floor/ceil/round/trunc
+let f3: float = float(i);          // Explicit cast
 ```
 
 #### `boolean`
@@ -374,17 +435,17 @@ Raya supports two patterns for union types:
 
 #### Bare Primitive Unions (typeof Operator)
 
-For **primitive types only** (`string`, `number`, `boolean`, `null`), you can write bare unions and use `typeof` for type narrowing:
+For **primitive types only** (`int`, `float`, `number`, `string`, `boolean`, `null`), you can write bare unions and use `typeof` for type narrowing:
 
 ```ts
-type ID = string | number;
+type ID = string | int;
 
 let id: ID = 42;  // OK
 id = "abc";       // OK
 
 // Type narrowing with typeof
-if (typeof id === "number") {
-  console.log(id + 1);  // id is narrowed to number
+if (typeof id === "int") {
+  console.log(id + 1);  // id is narrowed to int
 } else {
   console.log(id.toUpperCase());  // id is narrowed to string
 }
@@ -398,11 +459,13 @@ if (typeof id === "number") {
 4. Exhaustiveness checking ensures all cases are handled
 
 **Supported bare unions:**
+- `int | float` (equivalent to `number`)
+- `string | int`
+- `string | float`
 - `string | number`
-- `string | boolean`
-- `number | boolean`
-- `string | number | boolean`
-- Any combination with `null` (e.g., `string | null`)
+- `int | boolean`
+- `float | boolean`
+- Any combination with `null` (e.g., `int | null`, `string | null`)
 
 **Limitations:**
 - Only primitive types (no objects, arrays, or classes)
@@ -420,7 +483,8 @@ if (typeof id === "number") {
 The `typeof` operator returns a string indicating the type:
 
 ```ts
-typeof 42           // "number"
+typeof 42           // "int"
+typeof 3.14         // "float"
 typeof "hello"      // "string"
 typeof true         // "boolean"
 typeof null         // "null"
@@ -432,22 +496,26 @@ typeof (() => {})   // "function"
 **Type Narrowing Examples:**
 
 ```ts
-// Simple if/else
+// Simple if/else with number union
 function process(value: string | number): string {
-  if (typeof value === "number") {
-    return value.toFixed(2);  // value is number
+  if (typeof value === "int") {
+    return value.toString();  // value is int
+  } else if (typeof value === "float") {
+    return value.toFixed(2);  // value is float
   } else {
     return value.toUpperCase();  // value is string
   }
 }
 
-// Switch statement
-function describe(v: string | number | boolean): string {
+// Switch statement with all primitives
+function describe(v: int | float | string | boolean): string {
   switch (typeof v) {
+    case "int":
+      return `Int: ${v}`;
+    case "float":
+      return `Float: ${v.toFixed(2)}`;
     case "string":
       return `String: "${v}"`;
-    case "number":
-      return `Number: ${v}`;
     case "boolean":
       return `Boolean: ${v}`;
   }
@@ -462,13 +530,24 @@ function greet(name: string | null): string {
   return "Hello, stranger!";
 }
 
-// Early return pattern
-function parse(input: string | number): number {
-  if (typeof input === "number") {
+// Early return pattern with number
+function processNumber(input: string | number): float {
+  if (typeof input === "int") {
+    return float(input);  // Convert int to float
+  } else if (typeof input === "float") {
     return input;
   }
   // input is narrowed to string here
-  return parseInt(input, 10);
+  return parseFloat(input);
+}
+
+// Working with int | float (number type)
+function double(x: number): number {
+  if (typeof x === "int") {
+    return x * 2;  // int * int = int
+  } else {
+    return x * 2.0;  // float * float = float
+  }
 }
 ```
 

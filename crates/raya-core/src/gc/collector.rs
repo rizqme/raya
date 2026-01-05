@@ -308,6 +308,12 @@ impl GarbageCollector {
                     // Strings have no GC pointers
                     return;
                 }
+                "JsonValue" => {
+                    // Cast to JsonValue and mark recursively
+                    let json = unsafe { &*(ptr as *const crate::json::JsonValue) };
+                    self.mark_json_value(json);
+                    return;
+                }
                 _ => {
                     // Use normal pointer map traversal for other types
                 }
@@ -331,6 +337,69 @@ impl GarbageCollector {
             for field_value in field_values {
                 self.mark_value(field_value);
             }
+        }
+    }
+
+    /// Mark a JsonValue and all its nested values
+    fn mark_json_value(&mut self, json: &crate::json::JsonValue) {
+        use crate::json::JsonValue;
+
+        match json {
+            JsonValue::String(s_ptr) => {
+                // Mark the string GC object
+                let str_ptr = s_ptr.as_ptr();
+                let header_ptr = unsafe { (str_ptr as *mut crate::gc::header::GcHeader).sub(1) };
+
+                // Mark if not already marked
+                unsafe {
+                    if !(*header_ptr).is_marked() {
+                        (*header_ptr).mark();
+                    }
+                }
+            }
+            JsonValue::Array(arr_ptr) => {
+                // Mark the array Vec GC object
+                let vec_ptr = arr_ptr.as_ptr();
+                let header_ptr = unsafe { (vec_ptr as *mut crate::gc::header::GcHeader).sub(1) };
+
+                // Mark the Vec itself
+                unsafe {
+                    if (*header_ptr).is_marked() {
+                        return; // Already marked, avoid infinite recursion
+                    }
+                    (*header_ptr).mark();
+                }
+
+                // Mark all elements
+                let arr = unsafe { &**vec_ptr };
+                for elem in arr {
+                    self.mark_json_value(elem);
+                }
+            }
+            JsonValue::Object(obj_ptr) => {
+                // Mark the object HashMap GC object
+                let map_ptr = obj_ptr.as_ptr();
+                let header_ptr = unsafe { (map_ptr as *mut crate::gc::header::GcHeader).sub(1) };
+
+                // Mark the HashMap itself
+                unsafe {
+                    if (*header_ptr).is_marked() {
+                        return; // Already marked, avoid infinite recursion
+                    }
+                    (*header_ptr).mark();
+                }
+
+                // Mark all values in the map
+                let obj = unsafe { &*map_ptr };
+                for value in obj.values() {
+                    self.mark_json_value(value);
+                }
+            }
+            // Primitives don't need marking
+            JsonValue::Null
+            | JsonValue::Bool(_)
+            | JsonValue::Number(_)
+            | JsonValue::Undefined => {}
         }
     }
 
