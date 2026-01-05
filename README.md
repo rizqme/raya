@@ -9,6 +9,8 @@
 
 - **Fully Static Type System** - All types verified at compile time, no runtime type checks
 - **Goroutine-Style Concurrency** - Lightweight green threads (Tasks) with automatic CPU core utilization
+- **VM Snapshotting** - Pause, serialize, and resume entire VM state for migration and debugging
+- **Inner VMs** - Nested, isolated VMs with resource limits and capability-based security
 - **TypeScript Syntax** - Familiar syntax for millions of developers
 - **Monomorphization** - Generic code specialized per concrete type (like Rust/C++)
 - **Discriminated Unions** - Type-safe sum types with exhaustiveness checking
@@ -20,6 +22,8 @@
 - [Language Specification](design/LANG.md) - Complete language reference
 - [VM Architecture](design/ARCHITECTURE.md) - Virtual machine design
 - [Bytecode Reference](design/OPCODE.md) - Instruction set documentation
+- [VM Snapshotting](design/SNAPSHOTTING.md) - Pause, snapshot, and resume design
+- [Inner VMs](design/INNER_VM.md) - Nested VMs with isolation and control
 - [File Formats](design/FORMATS.md) - .raya, .rbc, .rlib specifications
 - [CLI Design](design/CLI.md) - Unified command-line interface
 - [Implementation Plan](plans/PLAN.md) - Development roadmap

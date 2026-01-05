@@ -42,6 +42,8 @@ rayavm/
 │   ├── ARCHITECTURE.md    # VM architecture
 │   ├── OPCODE.md          # Bytecode instruction set
 │   ├── MAPPING.md         # Language → bytecode mappings
+│   ├── SNAPSHOTTING.md    # VM snapshotting design
+│   ├── INNER_VM.md        # Inner VM & controllability
 │   └── STDLIB.md          # Standard library design
 ├── plans/                 # Implementation roadmap
 │   └── PLAN.md           # Detailed implementation plan
@@ -150,7 +152,19 @@ When working on this project, **always reference these documents**:
 - Side-by-side examples
 - Optimization patterns
 
-### 5. [plans/PLAN.md](plans/PLAN.md) - Implementation Roadmap
+### 5. [design/SNAPSHOTTING.md](design/SNAPSHOTTING.md) - VM Snapshotting
+- Stop-the-world snapshotting protocol
+- Safepoint-based task suspension
+- Snapshot format and resume semantics
+- Multi-context snapshotting support
+
+### 6. [design/INNER_VM.md](design/INNER_VM.md) - Inner VMs
+- Nested VmContexts with isolation
+- Resource limits and enforcement
+- Capability-based security model
+- Data marshalling and fair scheduling
+
+### 7. [plans/PLAN.md](plans/PLAN.md) - Implementation Roadmap
 - Rust crate structure
 - Phase-by-phase implementation plan
 - File organization
@@ -214,7 +228,10 @@ When working on this project, **always reference these documents**:
 - VM architecture design (ARCHITECTURE.md)
 - Opcode set definition (OPCODE.md)
 - Language-to-bytecode mappings (MAPPING.md)
+- VM snapshotting design (SNAPSHOTTING.md)
+- Inner VM design (INNER_VM.md)
 - Implementation plan (PLAN.md)
+- Milestone 1.2: Bytecode definitions and encoding
 
 ### ⏳ In Progress:
 - Rust workspace setup
@@ -239,6 +256,8 @@ See [plans/PLAN.md](plans/PLAN.md) for detailed milestones.
    - Check ARCHITECTURE.md for VM behavior
    - Check OPCODE.md for instruction details
    - Check MAPPING.md for compilation patterns
+   - Check SNAPSHOTTING.md for pause/resume design
+   - Check INNER_VM.md for nested VM isolation
 
 3. **Follow the implementation plan**
    - PLAN.md has detailed task breakdowns

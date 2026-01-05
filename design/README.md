@@ -47,6 +47,29 @@ Detailed examples showing how each language feature compiles to bytecode.
 - Optimization patterns
 - Compiler hints
 
+### [SNAPSHOTTING.md](SNAPSHOTTING.md) - VM Snapshotting Design
+Specification for safe pause, snapshot, transfer, and resume semantics.
+
+**Key Features:**
+- Stop-the-world snapshotting protocol
+- Safepoint-based task suspension
+- Complete VM state serialization (heap, tasks, scheduler, mutexes)
+- Portable snapshot format with versioning
+- Deterministic resume semantics
+- Multi-context snapshotting support
+
+### [INNER_VM.md](INNER_VM.md) - Inner VM & Controllability
+Specification for nested VmContexts with resource isolation and control.
+
+**Key Features:**
+- Instantiable VMs from Raya code
+- Heap, type, and capability isolation per context
+- Resource limits (memory, CPU, tasks)
+- Shared scheduler with fairness guarantees
+- Capability-based security model
+- Marshalled cross-context communication
+- Per-context snapshotting support
+
 ---
 
 ## Key Design Decisions
