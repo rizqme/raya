@@ -1,6 +1,6 @@
 # Raya Programming Language
 
-[![CI](https://github.com/rayalang/rayavm/workflows/CI/badge.svg)](https://github.com/rayalang/rayavm/actions)
+[![CI](https://github.com/rizqme/raya/workflows/CI/badge.svg)](https://github.com/rizqme/raya/actions)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
 **Raya** is a statically-typed programming language with TypeScript syntax, featuring a custom virtual machine with goroutine-style concurrency and a fully static type system with zero runtime type checks.
@@ -134,10 +134,17 @@ raya bundle main.raya -o myapp
   - ✅ Resource limits for inner VMs (SchedulerLimits)
   - ✅ 22 comprehensive integration tests
 
+- **1.11**: VM Snapshotting - Stop-the-world pause & resume
+  - ✅ Binary snapshot format with SHA-256 checksums
+  - ✅ Task state serialization (IP, stack, frames, blocked reasons)
+  - ✅ Heap snapshot infrastructure
+  - ✅ Snapshot writer/reader with validation
+  - ✅ 14 comprehensive integration tests
+  - ✅ Value encode/decode for all types
+
 ### In Progress ⏳
 - **1.3-1.8**: Core VM components (stack, frames, basic execution)
-- **1.11**: Synchronization primitives (Mutex)
-- **1.12**: VM Snapshotting
+- **1.12**: Synchronization primitives (Mutex)
 
 ### Pending 📋
 - Parser & type checker
