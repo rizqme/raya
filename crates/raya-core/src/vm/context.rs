@@ -5,13 +5,19 @@
 //! - Resource limits and accounting
 //! - Global variables
 //! - Independent GC policy
+//! - Task registry for owned tasks
+//! - Optional parent context for nesting
 
 use crate::gc::{GarbageCollector, GcStats, HeapStats};
+use crate::scheduler::TaskId;
 use crate::types::TypeRegistry;
 use crate::value::Value;
+use crate::vm::{CapabilityRegistry, ClassRegistry};
+use dashmap::DashMap;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Unique identifier for a VmContext
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -174,7 +180,7 @@ impl ResourceCounters {
 }
 
 /// Options for creating a VmContext
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct VmOptions {
     /// Resource limits
     pub limits: ResourceLimits,
@@ -184,6 +190,9 @@ pub struct VmOptions {
 
     /// Type registry (shared across contexts)
     pub type_registry: Arc<TypeRegistry>,
+
+    /// Capabilities granted to this context
+    pub capabilities: CapabilityRegistry,
 }
 
 impl Default for VmOptions {
@@ -192,6 +201,7 @@ impl Default for VmOptions {
             limits: ResourceLimits::default(),
             gc_threshold: 1024 * 1024, // 1 MB
             type_registry: Arc::new(crate::types::create_standard_registry()),
+            capabilities: CapabilityRegistry::new(),
         }
     }
 }
@@ -203,6 +213,9 @@ impl Default for VmOptions {
 /// - Global variables
 /// - Resource limits and accounting
 /// - GC policy
+/// - Task registry for owned tasks
+/// - Class registry for loaded classes
+/// - Optional parent for nesting
 pub struct VmContext {
     /// Unique context ID
     id: VmContextId,
@@ -221,6 +234,18 @@ pub struct VmContext {
 
     /// Type registry (shared)
     type_registry: Arc<TypeRegistry>,
+
+    /// Task registry (all tasks owned by this context)
+    task_registry: Vec<TaskId>,
+
+    /// Class registry (loaded classes)
+    class_registry: ClassRegistry,
+
+    /// Parent context (for nested VMs)
+    parent: Option<VmContextId>,
+
+    /// Capabilities granted to this context
+    capabilities: CapabilityRegistry,
 }
 
 impl VmContext {
@@ -249,7 +274,18 @@ impl VmContext {
             limits: options.limits,
             counters: ResourceCounters::new(),
             type_registry: options.type_registry,
+            task_registry: Vec::new(),
+            class_registry: ClassRegistry::new(),
+            parent: None,
+            capabilities: options.capabilities,
         }
+    }
+
+    /// Create a child context with a parent
+    pub fn with_parent(options: VmOptions, parent_id: VmContextId) -> Self {
+        let mut ctx = Self::with_options(options);
+        ctx.parent = Some(parent_id);
+        ctx
     }
 
     /// Get the context ID
@@ -324,6 +360,55 @@ impl VmContext {
     pub fn collect_garbage(&mut self) {
         self.gc.collect();
     }
+
+    /// Register a task with this context
+    pub fn register_task(&mut self, task_id: TaskId) {
+        self.task_registry.push(task_id);
+        self.counters.increment_tasks();
+    }
+
+    /// Unregister a task from this context
+    pub fn unregister_task(&mut self, task_id: TaskId) {
+        if let Some(pos) = self.task_registry.iter().position(|&id| id == task_id) {
+            self.task_registry.swap_remove(pos);
+            self.counters.decrement_tasks();
+        }
+    }
+
+    /// Get all registered tasks
+    pub fn tasks(&self) -> &[TaskId] {
+        &self.task_registry
+    }
+
+    /// Get the number of registered tasks
+    pub fn task_count(&self) -> usize {
+        self.task_registry.len()
+    }
+
+    /// Get the parent context ID, if any
+    pub fn parent(&self) -> Option<VmContextId> {
+        self.parent
+    }
+
+    /// Check if this is a root context (no parent)
+    pub fn is_root(&self) -> bool {
+        self.parent.is_none()
+    }
+
+    /// Get the class registry
+    pub fn class_registry(&self) -> &ClassRegistry {
+        &self.class_registry
+    }
+
+    /// Get mutable access to the class registry
+    pub fn class_registry_mut(&mut self) -> &mut ClassRegistry {
+        &mut self.class_registry
+    }
+
+    /// Get the capability registry
+    pub fn capabilities(&self) -> &CapabilityRegistry {
+        &self.capabilities
+    }
 }
 
 impl Default for VmContext {
@@ -334,38 +419,38 @@ impl Default for VmContext {
 
 /// Global registry of all VM contexts
 pub struct ContextRegistry {
-    contexts: Mutex<HashMap<VmContextId, Arc<Mutex<VmContext>>>>,
+    contexts: DashMap<VmContextId, Arc<RwLock<VmContext>>>,
 }
 
 impl ContextRegistry {
     /// Create a new context registry
     pub fn new() -> Self {
         Self {
-            contexts: Mutex::new(HashMap::new()),
+            contexts: DashMap::new(),
         }
     }
 
     /// Register a new context
-    pub fn register(&self, context: VmContext) -> Arc<Mutex<VmContext>> {
+    pub fn register(&self, context: VmContext) -> Arc<RwLock<VmContext>> {
         let id = context.id();
-        let context = Arc::new(Mutex::new(context));
-        self.contexts.lock().unwrap().insert(id, context.clone());
+        let context = Arc::new(RwLock::new(context));
+        self.contexts.insert(id, context.clone());
         context
     }
 
     /// Get a context by ID
-    pub fn get(&self, id: VmContextId) -> Option<Arc<Mutex<VmContext>>> {
-        self.contexts.lock().unwrap().get(&id).cloned()
+    pub fn get(&self, id: VmContextId) -> Option<Arc<RwLock<VmContext>>> {
+        self.contexts.get(&id).map(|entry| entry.value().clone())
     }
 
     /// Remove a context
-    pub fn remove(&self, id: VmContextId) -> Option<Arc<Mutex<VmContext>>> {
-        self.contexts.lock().unwrap().remove(&id)
+    pub fn remove(&self, id: VmContextId) -> Option<Arc<RwLock<VmContext>>> {
+        self.contexts.remove(&id).map(|(_, v)| v)
     }
 
     /// Get the number of registered contexts
     pub fn len(&self) -> usize {
-        self.contexts.lock().unwrap().len()
+        self.contexts.len()
     }
 
     /// Check if the registry is empty
@@ -375,7 +460,7 @@ impl ContextRegistry {
 
     /// Get all context IDs
     pub fn all_ids(&self) -> Vec<VmContextId> {
-        self.contexts.lock().unwrap().keys().copied().collect()
+        self.contexts.iter().map(|entry| *entry.key()).collect()
     }
 }
 
@@ -470,6 +555,7 @@ mod tests {
             limits: ResourceLimits::with_heap_limit(2 * 1024 * 1024), // 2 MB
             gc_threshold: 512 * 1024,                                 // 512 KB
             type_registry: Arc::new(crate::types::create_standard_registry()),
+            capabilities: CapabilityRegistry::new(),
         };
 
         let ctx = VmContext::with_options(options);

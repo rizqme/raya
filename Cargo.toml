@@ -52,6 +52,9 @@ mimalloc = { version = "0.1", default-features = false }
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Lazy statics
+once_cell = "1.19"
+
 # Testing
 criterion = "0.5"
 

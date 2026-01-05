@@ -19,6 +19,7 @@ thiserror = { workspace = true }
 num_cpus = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
+once_cell = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
