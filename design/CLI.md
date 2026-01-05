@@ -71,9 +71,9 @@ function main(): void {
 - Can also use `.ts` extension for compatibility
 - Compiled to bytecode before execution
 
-### `.rbc` - Bytecode Files
+### `.rbin` - Binary Files
 
-Compiled Raya bytecode files. Binary format containing VM instructions.
+Compiled Raya binary files. Unified format for both executables and libraries.
 
 **Format:**
 - Magic number: `RAYA` (0x52 0x41 0x59 0x41)
@@ -81,48 +81,30 @@ Compiled Raya bytecode files. Binary format containing VM instructions.
 - Constant pool
 - Function definitions
 - Class definitions
-- Metadata
+- Type metadata (mandatory)
+- Export table
 
 **Usage:**
 ```bash
-# Compile to bytecode
-raya build main.raya           # Creates dist/main.rbc
+# Compile to binary
+raya build main.raya           # Creates dist/main.rbin
 
-# Run bytecode directly
-raya run dist/main.rbc
+# Run binary directly (if it has main())
+raya run dist/main.rbin
+
+# Import as library (if it has exports)
+import { function } from "./dist/mylib.rbin";
 ```
 
 **Characteristics:**
 - Binary format (not human-readable)
 - Optimized for fast loading
-- Includes type information in debug builds
+- **Always includes reflection metadata** (not optional)
 - Can be cached for faster execution
-
-### `.rlib` - Library Files
-
-Raya library archives. Collections of compiled modules with metadata.
-
-**Contains:**
-- Multiple `.rbc` modules
-- Public API definitions
-- Type information
-- Documentation metadata
-- Dependency information
-
-**Usage:**
-```bash
-# Build library
-raya build --lib src/           # Creates dist/mylib.rlib
-
-# Import in code
-import { function } from "./dist/mylib.rlib";
-```
-
-**Characteristics:**
-- Archive format (similar to JAR/AAR)
-- Self-contained dependencies
-- Versioned
-- Distributable
+- Dual-purpose: executable or library depending on contents
+- Binary with `main()` → can be executed
+- Binary with exports → can be imported
+- Can have both `main()` and exports (hybrid)
 
 ### Executable Bundles
 
@@ -219,17 +201,14 @@ raya build --release         # Optimized build
 ```
 --out-dir <dir>      Output directory (default: dist/)
 --release            Optimized build with full optimization
---emit-reflection    Include reflection metadata
---lib                Build as library (.rlib)
 --target <name>      Build target (native/wasm/bytecode)
 --watch, -w          Watch for changes
 ```
 
 **Output:**
-- `.rbc` bytecode modules
-- `.rlib` library archives (with `--lib` flag)
+- `.rbin` binary files (with mandatory reflection metadata)
 - Dependency graph
-- Type information (in dev mode)
+- Debug source mapping (in debug builds)
 
 ### `raya check`
 
@@ -523,8 +502,8 @@ raya bundle main.raya --release -o myapp
 ```
 Executable:
 ├── Raya VM Runtime (embedded)
-├── Compiled bytecode (.rbc)
-├── Dependencies (.rlib)
+├── Compiled binary (.rbin with main())
+├── Dependencies (.rbin libraries)
 └── Metadata
 ```
 
@@ -533,12 +512,12 @@ Executable:
 - **Single file** - Easy distribution
 - **Optimized** - Dead code elimination
 - **Cross-platform** - Build for any target from any host
+- **Reflection included** - All type metadata embedded
 
 **Size:**
-- Minimal bundle: ~2-5 MB (stripped)
-- With reflection: +500 KB
-- With full stdlib: ~5-10 MB
-- Compressed: ~1-3 MB
+- Minimal bundle: ~2.5-5.5 MB (stripped, includes reflection)
+- With full stdlib: ~5.5-10.5 MB
+- Compressed: ~1.5-3.5 MB
 
 ---
 
@@ -617,7 +596,6 @@ prettier = "^3.0.0"
 
 [build]
 target = "native"
-emit-reflection = false
 
 [test]
 timeout = 5000
@@ -904,5 +882,12 @@ Bun demonstrated that a unified CLI:
 ---
 
 **Status:** Design Document
-**Version:** v0.1
-**Last Updated:** 2026-01-04
+**Version:** v0.2
+**Last Updated:** 2026-01-05
+
+**Key Changes in v0.2:**
+- Updated all `.rbc` references to `.rbin`
+- Removed `.rlib` format (now uses `.rbin` for libraries)
+- Removed `--emit-reflection` flag (reflection is always included)
+- Removed `--lib` flag (binary type determined by contents)
+- Updated size estimates to account for mandatory reflection

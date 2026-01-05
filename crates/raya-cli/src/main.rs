@@ -33,7 +33,7 @@ enum Commands {
         inspect: bool,
     },
 
-    /// Build/compile Raya source to bytecode
+    /// Build/compile Raya source to binary (.rbin)
     Build {
         /// Files or directories to build
         #[arg(default_value = ".")]
@@ -44,12 +44,6 @@ enum Commands {
         /// Optimized release build
         #[arg(short, long)]
         release: bool,
-        /// Include reflection metadata
-        #[arg(long)]
-        emit_reflection: bool,
-        /// Build as library (.rlib)
-        #[arg(long)]
-        lib: bool,
         /// Watch for changes
         #[arg(short, long)]
         watch: bool,
@@ -247,22 +241,13 @@ fn main() -> anyhow::Result<()> {
             files,
             out_dir,
             release,
-            emit_reflection,
-            lib,
             watch,
         } => {
             println!("Building: {:?}", files);
             println!("Output directory: {}", out_dir);
-            if lib {
-                println!("Build type: library (.rlib)");
-            } else {
-                println!("Build type: bytecode (.rbc)");
-            }
+            println!("Build type: binary (.rbin with mandatory reflection)");
             if release {
                 println!("Release mode: enabled");
-            }
-            if emit_reflection {
-                println!("Reflection metadata: enabled");
             }
             if watch {
                 println!("Watch mode: enabled");

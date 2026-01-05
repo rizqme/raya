@@ -1,4 +1,4 @@
-# Raya File Formats (v0.1)
+# Raya File Formats (v0.2)
 
 Specification for all file formats used in the Raya ecosystem.
 
@@ -8,23 +8,30 @@ Specification for all file formats used in the Raya ecosystem.
 
 1. [Overview](#overview)
 2. [Source Files (.raya)](#source-files-raya)
-3. [Bytecode Files (.rbc)](#bytecode-files-rbc)
-4. [Library Archives (.rlib)](#library-archives-rlib)
-5. [Executable Bundles](#executable-bundles)
+3. [Binary Files (.rbin)](#binary-files-rbin)
+4. [Executable Bundles](#executable-bundles)
 
 ---
 
 ## Overview
 
-Raya uses distinct file formats for different stages of the development pipeline:
+Raya uses a simplified file format system:
 
 | Extension | Type | Purpose | Format |
 |-----------|------|---------|--------|
 | `.raya` | Source | Human-readable code | UTF-8 text |
 | `.ts` | Source | TypeScript compatibility | UTF-8 text |
-| `.rbc` | Bytecode | Compiled module | Binary |
-| `.rlib` | Library | Package archive | Binary (archive) |
+| `.rbin` | Binary | Compiled module/library | Binary (with reflection) |
 | `.exe`/etc | Executable | Standalone binary | Binary (native) |
+
+**Key Design Principles:**
+
+- **Unified binary format:** `.rbin` serves as both compiled module and library format
+- **Mandatory reflection:** All type definitions are always included in binaries
+- **Dual-purpose binaries:**
+  - Binary with `main()` function → can be executed directly
+  - Binary with public exports → can be imported as a library
+- **No separate library archives:** Eliminates the complexity of `.rlib` files
 
 ---
 
@@ -63,11 +70,11 @@ Files with `.ts` extension are also accepted for TypeScript compatibility, but:
 
 ---
 
-## Bytecode Files (.rbc)
+## Binary Files (.rbin)
 
 ### Format Specification
 
-Binary format containing compiled Raya bytecode.
+Binary format containing compiled Raya bytecode with mandatory reflection metadata.
 
 ### File Structure
 
@@ -83,7 +90,9 @@ Binary format containing compiled Raya bytecode.
 ├─────────────────────────────────────────┤
 │ Bytecode Sections                       │
 ├─────────────────────────────────────────┤
-│ Metadata (optional)                     │
+│ Type Metadata (mandatory)               │
+├─────────────────────────────────────────┤
+│ Export Table                            │
 └─────────────────────────────────────────┘
 ```
 
@@ -101,11 +110,14 @@ struct Header {
 #### Flags
 
 ```
-Bit 0: Has reflection metadata
+Bit 0: Has main() entry point
 Bit 1: Debug build
 Bit 2: Optimized
-Bit 3-31: Reserved
+Bit 3: Has public exports
+Bit 4-31: Reserved
 ```
+
+**Note:** Reflection metadata is always included (not optional).
 
 ### Constant Pool
 
@@ -185,15 +197,30 @@ struct BytecodeSection {
 }
 ```
 
-### Metadata Section (Optional)
+### Type Metadata Section (Mandatory)
 
-Debug information and reflection data.
+Complete type information and debug data for all types, functions, and classes.
 
 ```rust
-struct Metadata {
-    source_file: Option<String>,
+struct TypeMetadata {
+    // Type definitions
+    type_count: u32,
+    types: [TypeDefinition],
+
+    // Interface definitions
+    interface_count: u32,
+    interfaces: [InterfaceDefinition],
+
+    // Source mapping (optional, for debug builds)
     line_info: Vec<LineInfo>,
-    type_info: Option<TypeMetadata>,
+    source_file: Option<String>,
+}
+
+struct TypeDefinition {
+    name_idx: u32,              // Index into string pool
+    kind: TypeKind,             // Primitive, Class, Interface, Union, etc.
+    properties: Vec<Property>,
+    methods: Vec<MethodSignature>,
 }
 
 struct LineInfo {
@@ -203,128 +230,180 @@ struct LineInfo {
 }
 ```
 
+**Key Points:**
+- Type metadata is **always** included (not optional)
+- Enables runtime reflection and type introspection
+- Required for importing binaries as libraries
+- Supports dynamic type checking when needed
+- Debug source mapping controlled by build flags
+
+### Export Table
+
+Public API exports for library usage.
+
+```rust
+struct ExportTable {
+    export_count: u32,
+    exports: [Export],
+}
+
+struct Export {
+    name_idx: u32,        // Index into string pool
+    kind: ExportKind,     // Function, Class, Constant, Type
+    target_idx: u32,      // Index into appropriate table
+    flags: u32,
+}
+
+enum ExportKind {
+    Function = 0,
+    Class = 1,
+    Constant = 2,
+    Type = 3,
+}
+```
+
 ### Example
 
 ```bash
-# Compile to bytecode
+# Compile to binary
 $ raya build hello.raya
-# Creates: dist/hello.rbc
+# Creates: dist/hello.rbin
 
-# Inspect bytecode
-$ xxd dist/hello.rbc | head
+# Binary with main() can be executed directly
+$ raya run dist/hello.rbin
+Hello, Raya!
+
+# Inspect binary structure
+$ xxd dist/hello.rbin | head
 00000000: 5241 5941 0100 0000 0000 0001 1234 5678  RAYA.........4Vx
 ...
+
+# View exported API (for library binaries)
+$ raya inspect dist/mylib.rbin
+Exports:
+  - function add(a: number, b: number): number
+  - class Calculator { ... }
+  - type Result<T, E> = ...
 ```
 
 ### Verification
 
-Bytecode files are verified on load:
+Binary files are verified on load:
 1. Magic number check
 2. Version compatibility
 3. Checksum validation
 4. Structural validation (bounds checks, etc.)
 
----
+### Dual-Purpose Binaries
 
-## Library Archives (.rlib)
+`.rbin` files serve two purposes depending on their contents:
 
-### Format Specification
+#### Executable Binaries (with main)
 
-Archive format containing multiple compiled modules with metadata.
-
-### File Structure
-
-```
-┌─────────────────────────────────────────┐
-│ Archive Header                          │
-├─────────────────────────────────────────┤
-│ Manifest                                │
-├─────────────────────────────────────────┤
-│ Module 1 (.rbc)                         │
-├─────────────────────────────────────────┤
-│ Module 2 (.rbc)                         │
-├─────────────────────────────────────────┤
-│ ...                                     │
-├─────────────────────────────────────────┤
-│ Type Definitions                        │
-├─────────────────────────────────────────┤
-│ Documentation                           │
-└─────────────────────────────────────────┘
-```
-
-### Archive Header
-
-```rust
-struct LibHeader {
-    magic: [u8; 4],      // "RLIB" (0x52 0x4C 0x49 0x42)
-    version: u32,        // Library format version
-    manifest_offset: u64,
-    manifest_size: u64,
+```typescript
+// hello.raya - Has main() function
+function main(): void {
+  console.log("Hello, Raya!");
 }
 ```
 
-### Manifest
+```bash
+# Compile
+$ raya build hello.raya
+# Creates: hello.rbin with "Has main() entry point" flag set
 
-JSON or binary format containing package metadata:
+# Execute directly
+$ raya run hello.rbin
+Hello, Raya!
 
-```json
-{
-  "name": "mylib",
-  "version": "1.0.0",
-  "modules": [
-    {
-      "name": "index",
-      "offset": 1024,
-      "size": 4096,
-      "exports": ["function1", "class1"]
-    },
-    {
-      "name": "utils",
-      "offset": 5120,
-      "size": 2048,
-      "exports": ["helper"]
-    }
-  ],
-  "dependencies": {
-    "lodash": "^4.17.0"
+# Or bundle as standalone executable
+$ raya bundle hello.raya -o hello
+$ ./hello
+Hello, Raya!
+```
+
+#### Library Binaries (with exports)
+
+```typescript
+// math.raya - No main(), but has exports
+export function add(a: number, b: number): number {
+  return a + b;
+}
+
+export class Calculator {
+  multiply(a: number, b: number): number {
+    return a * b;
   }
 }
 ```
 
-### Compilation
-
 ```bash
-# Build library from directory
-$ raya build --lib src/
-# Creates: dist/mylib.rlib
+# Compile
+$ raya build math.raya
+# Creates: math.rbin with "Has public exports" flag set
 
-# Build with specific name
-$ raya build --lib src/ -o mylib.rlib
+# Import in other code
 ```
-
-### Usage in Code
 
 ```typescript
-// Import from library
-import { helper } from "./mylib.rlib";
-import * as lib from "./mylib.rlib";
+// app.raya - Imports from math.rbin
+import { add, Calculator } from "./math.rbin";
+
+function main(): void {
+  console.log(add(2, 3));  // 5
+
+  const calc = new Calculator();
+  console.log(calc.multiply(4, 5));  // 20
+}
 ```
 
-### Characteristics
+#### Hybrid Binaries (both main and exports)
 
-- **Self-contained:** Includes all compiled modules
-- **Versioned:** Semantic versioning in manifest
-- **Discoverable:** Public API in manifest
-- **Optimized:** Dead code eliminated
-- **Portable:** Binary-compatible across platforms
+```typescript
+// utils.raya - Has both main() and exports
+export function helper(): string {
+  return "Useful!";
+}
+
+function main(): void {
+  console.log("Running utils directly");
+  console.log(helper());
+}
+```
+
+```bash
+# Can be executed
+$ raya run utils.rbin
+Running utils directly
+Useful!
+
+# Can also be imported by other modules
+import { helper } from "./utils.rbin";
+```
+
+### Compilation Options
+
+```bash
+# Standard build (with reflection, always included)
+$ raya build module.raya
+
+# Debug build (includes source mapping)
+$ raya build module.raya --debug
+
+# Release build (optimizations enabled)
+$ raya build module.raya --release
+
+# Specify output path
+$ raya build module.raya -o dist/module.rbin
+```
 
 ---
 
 ## Executable Bundles
 
-### Format
+### Format Specification
 
-Platform-specific executable formats with embedded Raya runtime and bytecode.
+Platform-specific native executables with embedded Raya VM runtime and compiled bytecode.
 
 ### Structure
 
@@ -335,9 +414,9 @@ Platform-specific executable formats with embedded Raya runtime and bytecode.
 ├─────────────────────────────────────────┤
 │ Raya VM Runtime (embedded)              │
 ├─────────────────────────────────────────┤
-│ Application Bytecode (.rbc)             │
+│ Application Binary (.rbin)              │
 ├─────────────────────────────────────────┤
-│ Bundled Dependencies (.rlib)            │
+│ Bundled Dependencies (.rbin)            │
 ├─────────────────────────────────────────┤
 │ Bundle Metadata                         │
 └─────────────────────────────────────────┘
@@ -407,10 +486,12 @@ myapp.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)
 |--------------|-------------|
 | Base runtime | ~2-3 MB |
 | With stdlib | +2-3 MB |
-| With reflection | +500 KB |
+| Reflection metadata | +500 KB (always included) |
 | Debug symbols | +1-2 MB |
 | Stripped | -1-2 MB |
 | Compressed (UPX) | -50-70% |
+
+**Note:** Reflection metadata is always included in all binaries (not optional).
 
 ### Example Sizes
 
@@ -418,17 +499,17 @@ myapp.wasm: WebAssembly (wasm) binary module version 0x1 (MVP)
 # Minimal bundle (stripped)
 $ raya bundle hello.raya --release --strip -o hello
 $ ls -lh hello
--rwxr-xr-x  1.8M  hello
+-rwxr-xr-x  2.3M  hello
 
 # With compression
 $ raya bundle hello.raya --release --strip --compress -o hello
 $ ls -lh hello
--rwxr-xr-x  800K  hello
+-rwxr-xr-x  1.0M  hello
 
-# Full bundle with reflection
-$ raya bundle app.raya --emit-reflection -o app
+# Full bundle with debug symbols
+$ raya bundle app.raya --debug -o app
 $ ls -lh app
--rwxr-xr-x  7.2M  app
+-rwxr-xr-x  7.5M  app
 ```
 
 ---
@@ -438,23 +519,29 @@ $ ls -lh app
 ```
 .raya  → Source code (TypeScript syntax)
 .ts    → Source code (TypeScript compatibility)
-.rbc   → Compiled bytecode module
-.rlib  → Library archive (multiple modules)
+.rbin  → Compiled binary (executable or library, with reflection)
 .exe   → Windows executable bundle
 (none) → Linux/macOS executable bundle
 .wasm  → WebAssembly bundle
 ```
 
+**Key Points:**
+- `.rbin` replaces both `.rbc` and `.rlib` - single unified format
+- All `.rbin` files include complete reflection metadata (mandatory)
+- Binary with `main()` → can be executed
+- Binary with exports → can be imported as library
+- Binary can have both `main()` and exports (dual-purpose)
+
 ---
 
 ## Caching
 
-### Bytecode Cache Location
+### Binary Cache Location
 
 ```
 ~/.cache/raya/
-├── bytecode/
-│   ├── <hash>.rbc      # Cached bytecode
+├── binaries/
+│   ├── <hash>.rbin      # Cached compiled binaries
 │   └── ...
 └── metadata/
     └── cache.db        # Cache metadata
@@ -480,7 +567,7 @@ fn cache_key(source_path: &Path) -> String {
 
 ### Cache Invalidation
 
-Cached bytecode is invalidated when:
+Cached binaries are invalidated when:
 - Source file modified
 - Compiler version changed
 - Dependencies updated
@@ -508,5 +595,11 @@ Libraries follow semantic versioning:
 ---
 
 **Status:** Design Document
-**Version:** v0.1
-**Last Updated:** 2026-01-04
+**Version:** v0.2
+**Last Updated:** 2026-01-05
+
+**Key Changes in v0.2:**
+- Replaced `.rbc` and `.rlib` with unified `.rbin` format
+- Made reflection metadata mandatory (always included)
+- Added dual-purpose binary support (executable + library)
+- Simplified file format system

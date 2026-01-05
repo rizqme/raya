@@ -26,7 +26,7 @@ Implement the complete bytecode instruction set and module format for the Raya V
 
 - All VM opcodes (100+ instructions)
 - Bytecode encoding/decoding
-- Module file format (.rbc)
+- Module file format (.rbin)
 - Constant pool structures
 - Bytecode verification
 
@@ -247,8 +247,8 @@ Implement the complete bytecode instruction set and module format for the Raya V
 - [x] Implement `Module::add_function()`
 - [x] Implement `Module::add_class()`
 - [x] Implement `Module::validate()`
-- [x] Implement module encoding to .rbc format
-- [x] Implement module decoding from .rbc format
+- [x] Implement module encoding to .rbin format
+- [x] Implement module decoding from .rbin format
 - [x] Add CRC32 checksum generation
 - [x] Add CRC32 checksum verification
 
@@ -500,8 +500,8 @@ All errors should include:
 **File:** `crates/raya-bytecode/tests/integration.rs`
 
 - [x] Create module programmatically
-- [x] Encode to .rbc file
-- [x] Decode from .rbc file
+- [x] Encode to .rbin file
+- [x] Decode from .rbin file
 - [x] Verify decoded module
 - [x] Disassemble and check output
 - [x] Test with hand-crafted invalid modules
@@ -570,7 +570,7 @@ criterion = { workspace = true }
 ### Design Documents
 
 - [design/OPCODE.md](../design/OPCODE.md) - Complete opcode specification
-- [design/FORMATS.md](../design/FORMATS.md) - .rbc file format
+- [design/FORMATS.md](../design/FORMATS.md) - .rbin file format
 - [design/ARCHITECTURE.md](../design/ARCHITECTURE.md) - VM architecture
 
 ---

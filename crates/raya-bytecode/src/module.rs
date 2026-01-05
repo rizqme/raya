@@ -270,7 +270,7 @@ impl Module {
         Ok(())
     }
 
-    /// Encode the module to binary format (.rbc)
+    /// Encode the module to binary format (.rbin)
     ///
     /// Format:
     /// - Header: magic (4 bytes) + version (u32) + flags (u32) + checksum (u32)
