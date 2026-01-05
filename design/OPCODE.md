@@ -154,13 +154,27 @@ The Raya VM uses a **stack-based** bytecode model:
 
 ---
 
-### 3.6 Logical Operations
+### 3.6 Logical Operations & Type Checking
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `NOT` | — | Logical NOT |
 | `AND` | — | Logical AND (short-circuit via jumps) |
 | `OR` | — | Logical OR (short-circuit via jumps) |
+| `TYPEOF` | — | Pop value, push type string ("null", "boolean", "number", "string", "object", "function") |
+
+**TYPEOF Details:**
+- Returns a string indicating the runtime type of a value
+- Used for type narrowing in bare unions of primitives
+- Return values:
+  - `null` → `"null"`
+  - `true`/`false` → `"boolean"`
+  - `42`/`3.14` → `"number"`
+  - `"hello"` → `"string"`
+  - `{x:1}` / `[1,2]` → `"object"`
+  - `() => {}` → `"function"`
+- Combined with conditional jumps for control flow-based type narrowing
+- Always available (not a reflection operation)
 
 ---
 

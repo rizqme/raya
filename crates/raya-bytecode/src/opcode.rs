@@ -152,6 +152,8 @@ pub enum Opcode {
     And = 0x75,
     /// Logical OR: pop b, pop a, push a || b
     Or = 0x76,
+    /// Typeof: pop a, push typeof(a) as string
+    Typeof = 0x77,
 
     // ===== String Operations (0x80-0x8F) =====
     /// String concatenation: pop b, pop a, push a + b
@@ -387,6 +389,7 @@ impl Opcode {
             0x74 => Some(Self::Not),
             0x75 => Some(Self::And),
             0x76 => Some(Self::Or),
+            0x77 => Some(Self::Typeof),
 
             // String operations
             0x80 => Some(Self::Sconcat),
@@ -543,6 +546,7 @@ impl Opcode {
             Self::Not => "NOT",
             Self::And => "AND",
             Self::Or => "OR",
+            Self::Typeof => "TYPEOF",
             Self::Sconcat => "SCONCAT",
             Self::Slen => "SLEN",
             Self::Seq => "SEQ",

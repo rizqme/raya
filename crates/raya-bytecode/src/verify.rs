@@ -199,6 +199,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::Not
         | Opcode::And
         | Opcode::Or
+        | Opcode::Typeof
         | Opcode::Sconcat
         | Opcode::Slen
         | Opcode::Seq
@@ -363,7 +364,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
             (2, 1)
         }
         Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => (2, 1),
-        Opcode::Not => (1, 1),
+        Opcode::Not | Opcode::Typeof => (1, 1),
         Opcode::And | Opcode::Or => (2, 1),
         Opcode::Sconcat => (2, 1),
         Opcode::Slen | Opcode::ToString => (1, 1),
