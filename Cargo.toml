@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/raya-bytecode",
+    "crates/raya-core",
+    "crates/raya-parser",
+    "crates/raya-types",
+    "crates/raya-compiler",
+    "crates/raya-stdlib",
+    "crates/raya-cli",
+    "crates/raya-fmt",
+    "crates/raya-lsp",
+    "crates/raya-test",
+    "crates/raya-pm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Raya Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rayalang/rayavm"
+rust-version = "1.70"
+
+[workspace.dependencies]
+# CLI and argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Lexer generation
+logos = "0.13"
+
+# Concurrency primitives
+crossbeam = "0.8"
+parking_lot = "0.12"
+
+# Hashing
+rustc-hash = "1.1"
+
+# Allocator
+mimalloc = { version = "0.1", default-features = false }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Testing
+criterion = "0.5"
+
+# LSP
+tower-lsp = "0.20"
+tokio = { version = "1.35", features = ["full"] }
+
+# Common internal dependencies
+raya-bytecode = { path = "crates/raya-bytecode" }
+raya-core = { path = "crates/raya-core" }
+raya-parser = { path = "crates/raya-parser" }
+raya-types = { path = "crates/raya-types" }
+raya-compiler = { path = "crates/raya-compiler" }
+raya-stdlib = { path = "crates/raya-stdlib" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+
+[profile.bench]
+inherits = "release"

@@ -1,0 +1,22 @@
+[package]
+name = "raya-bytecode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bytecode definitions and encoding for the Raya VM"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+crc32fast = "1.3"
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "bytecode_encoding"
+harness = false
