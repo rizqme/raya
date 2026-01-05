@@ -165,11 +165,7 @@ pub struct TypeRegistryBuilder {
 
 impl TypeRegistryBuilder {
     /// Register a type
-    pub fn register<T: 'static>(
-        mut self,
-        name: &'static str,
-        pointer_map: PointerMap,
-    ) -> Self {
+    pub fn register<T: 'static>(mut self, name: &'static str, pointer_map: PointerMap) -> Self {
         let type_info = TypeInfo::new::<T>(name, pointer_map);
         self.types.insert(type_info.type_id, type_info);
         self
@@ -267,10 +263,7 @@ mod tests {
         }
 
         // Pointer is at offset 8 (after i32 + padding)
-        let info = TypeInfo::new::<HasPointers>(
-            "HasPointers",
-            PointerMap::offsets(vec![8]),
-        );
+        let info = TypeInfo::new::<HasPointers>("HasPointers", PointerMap::offsets(vec![8]));
 
         assert!(info.has_pointers());
         assert_eq!(info.pointer_map.pointer_count(), 1);

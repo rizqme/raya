@@ -10,7 +10,12 @@ use std::collections::HashSet;
 pub enum VerifyError {
     /// Invalid opcode
     #[error("Invalid opcode {opcode:#x} at offset {offset}")]
-    InvalidOpcode { opcode: u8, offset: usize },
+    InvalidOpcode {
+        /// The invalid opcode byte
+        opcode: u8,
+        /// Offset in bytecode
+        offset: usize,
+    },
 
     /// Stack underflow
     #[error("Stack underflow at offset {0}")]
@@ -22,17 +27,30 @@ pub enum VerifyError {
 
     /// Invalid jump target
     #[error("Invalid jump target {target} at offset {offset}")]
-    InvalidJumpTarget { target: usize, offset: usize },
+    InvalidJumpTarget {
+        /// The invalid jump target
+        target: usize,
+        /// Offset in bytecode
+        offset: usize,
+    },
 
     /// Invalid constant pool reference
     #[error("Invalid constant pool reference: index {index} at offset {offset}")]
-    InvalidConstantRef { index: u32, offset: usize },
+    InvalidConstantRef {
+        /// The invalid constant index
+        index: u32,
+        /// Offset in bytecode
+        offset: usize,
+    },
 
     /// Invalid local variable reference
     #[error("Invalid local variable reference: index {index} (max {max}) at offset {offset}")]
     InvalidLocalRef {
+        /// The invalid local variable index
         index: usize,
+        /// Maximum allowed index
         max: usize,
+        /// Offset in bytecode
         offset: usize,
     },
 
@@ -52,9 +70,7 @@ pub enum VerifyError {
 /// Verify a module's bytecode
 pub fn verify_module(module: &Module) -> Result<(), VerifyError> {
     // Validate module structure
-    module
-        .validate()
-        .map_err(|e| VerifyError::ModuleValidation(e))?;
+    module.validate().map_err(VerifyError::ModuleValidation)?;
 
     // Verify each function
     for function in &module.functions {
@@ -228,7 +244,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::JsonIndex => 0,
 
         // 2-byte operands (u16)
-        | Opcode::LoadLocal
+        Opcode::LoadLocal
         | Opcode::StoreLocal
         | Opcode::LoadField
         | Opcode::StoreField
@@ -245,7 +261,11 @@ fn get_operand_size(opcode: Opcode) -> usize {
 
         // 4-byte operands (i32 or u32)
         Opcode::ConstI32 => 4,
-        Opcode::Jmp | Opcode::JmpIfFalse | Opcode::JmpIfTrue | Opcode::JmpIfNull | Opcode::JmpIfNotNull => 4,
+        Opcode::Jmp
+        | Opcode::JmpIfFalse
+        | Opcode::JmpIfTrue
+        | Opcode::JmpIfNull
+        | Opcode::JmpIfNotNull => 4,
         Opcode::ConstStr
         | Opcode::LoadConst
         | Opcode::LoadGlobal
@@ -360,24 +380,16 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Ineg | Opcode::Fneg | Opcode::Nneg => (1, 1),
         Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv => (2, 1),
         Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod => (2, 1),
-        Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => {
-            (2, 1)
-        }
-        Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => {
-            (2, 1)
-        }
+        Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => (2, 1),
+        Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => (2, 1),
         Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => (2, 1),
         Opcode::Not | Opcode::Typeof => (1, 1),
         Opcode::And | Opcode::Or => (2, 1),
         Opcode::Sconcat => (2, 1),
         Opcode::Slen | Opcode::ToString => (1, 1),
-        Opcode::Seq | Opcode::Sne | Opcode::Slt | Opcode::Sle | Opcode::Sgt | Opcode::Sge => {
-            (2, 1)
-        }
+        Opcode::Seq | Opcode::Sne | Opcode::Slt | Opcode::Sle | Opcode::Sgt | Opcode::Sge => (2, 1),
         Opcode::Jmp => (0, 0),
-        Opcode::JmpIfFalse | Opcode::JmpIfTrue | Opcode::JmpIfNull | Opcode::JmpIfNotNull => {
-            (1, 0)
-        }
+        Opcode::JmpIfFalse | Opcode::JmpIfTrue | Opcode::JmpIfNull | Opcode::JmpIfNotNull => (1, 0),
         Opcode::Return => (1, 0),
         Opcode::ReturnVoid => (0, 0),
         Opcode::Call => (0, 1), // Simplified - actual depends on arg count
@@ -431,10 +443,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 }
 
 /// Verify constant pool references in instructions
-fn verify_constant_refs(
-    instructions: &[Instruction],
-    module: &Module,
-) -> Result<(), VerifyError> {
+fn verify_constant_refs(instructions: &[Instruction], module: &Module) -> Result<(), VerifyError> {
     for instr in instructions {
         match instr.opcode {
             Opcode::ConstStr | Opcode::LoadConst => {
@@ -448,13 +457,13 @@ fn verify_constant_refs(
                     let index = u32::from_le_bytes(index_bytes);
 
                     // Check if index is valid
-                    if instr.opcode == Opcode::ConstStr {
-                        if module.constants.get_string(index).is_none() {
-                            return Err(VerifyError::InvalidConstantRef {
-                                index,
-                                offset: instr.offset,
-                            });
-                        }
+                    if instr.opcode == Opcode::ConstStr
+                        && module.constants.get_string(index).is_none()
+                    {
+                        return Err(VerifyError::InvalidConstantRef {
+                            index,
+                            offset: instr.offset,
+                        });
                     }
                 }
             }
@@ -466,10 +475,7 @@ fn verify_constant_refs(
 }
 
 /// Verify local variable references in instructions
-fn verify_local_refs(
-    instructions: &[Instruction],
-    function: &Function,
-) -> Result<(), VerifyError> {
+fn verify_local_refs(instructions: &[Instruction], function: &Function) -> Result<(), VerifyError> {
     let max_locals = function.local_count;
 
     for instr in instructions {
@@ -489,7 +495,7 @@ fn verify_local_refs(
                 }
             }
             Opcode::LoadLocal0 | Opcode::StoreLocal0 => {
-                if 0 >= max_locals {
+                if max_locals == 0 {
                     return Err(VerifyError::InvalidLocalRef {
                         index: 0,
                         max: max_locals,

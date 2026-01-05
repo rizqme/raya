@@ -1,5 +1,7 @@
 //! Integration tests for VM Context (Milestone 1.3)
 
+#![allow(clippy::unnecessary_cast)]
+
 use raya_core::gc::GarbageCollector;
 use raya_core::object::Object;
 use raya_core::value::Value;

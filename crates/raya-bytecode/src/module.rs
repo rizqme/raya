@@ -27,7 +27,12 @@ pub enum ModuleError {
 
     /// Checksum mismatch
     #[error("Checksum mismatch: expected {expected:#x}, got {actual:#x}")]
-    ChecksumMismatch { expected: u32, actual: u32 },
+    ChecksumMismatch {
+        /// Expected checksum value
+        expected: u32,
+        /// Actual checksum value
+        actual: u32,
+    },
 }
 
 /// A compiled Raya module
@@ -87,7 +92,7 @@ impl Function {
     }
 
     /// Decode function from binary
-    fn decode(reader: &mut BytecodeReader) -> Result<Self, DecodeError> {
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read name
         let name = reader.read_string()?;
 
@@ -137,7 +142,7 @@ impl ClassDef {
     }
 
     /// Decode class definition from binary
-    fn decode(reader: &mut BytecodeReader) -> Result<Self, DecodeError> {
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read name
         let name = reader.read_string()?;
 
@@ -180,7 +185,7 @@ impl Method {
     }
 
     /// Decode method from binary
-    fn decode(reader: &mut BytecodeReader) -> Result<Self, DecodeError> {
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read name
         let name = reader.read_string()?;
 
@@ -221,7 +226,7 @@ impl Metadata {
     }
 
     /// Decode metadata from binary
-    fn decode(reader: &mut BytecodeReader) -> Result<Self, DecodeError> {
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         // Read name
         let name = reader.read_string()?;
 
@@ -373,9 +378,9 @@ impl Module {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
-    use crate::opcode::Opcode;
 
     #[test]
     fn test_module_creation() {
@@ -488,7 +493,10 @@ mod tests {
         let decoded = Module::decode(&bytes).unwrap();
 
         assert_eq!(decoded.metadata.name, "test_module");
-        assert_eq!(decoded.metadata.source_file, Some("src/main.raya".to_string()));
+        assert_eq!(
+            decoded.metadata.source_file,
+            Some("src/main.raya".to_string())
+        );
     }
 
     #[test]

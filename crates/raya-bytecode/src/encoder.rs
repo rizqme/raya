@@ -32,9 +32,7 @@ pub struct BytecodeWriter {
 impl BytecodeWriter {
     /// Create a new bytecode writer
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     /// Create a new bytecode writer with capacity
@@ -756,8 +754,7 @@ impl<'a> BytecodeReader<'a> {
         }
         let bytes = &self.buffer[self.position..self.position + len];
         self.position += len;
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| DecodeError::InvalidUtf8(self.position - len))
+        String::from_utf8(bytes.to_vec()).map_err(|_| DecodeError::InvalidUtf8(self.position - len))
     }
 
     /// Read a fixed number of bytes
@@ -778,6 +775,7 @@ impl<'a> BytecodeReader<'a> {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
 
@@ -826,8 +824,7 @@ mod tests {
         assert_eq!(bytes[5], Opcode::ConstF64.to_u8());
         // Verify f64 value
         let value = f64::from_le_bytes([
-            bytes[6], bytes[7], bytes[8], bytes[9],
-            bytes[10], bytes[11], bytes[12], bytes[13],
+            bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13],
         ]);
         assert!((value - 3.14).abs() < 0.001);
     }

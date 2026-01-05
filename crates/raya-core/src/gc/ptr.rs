@@ -71,6 +71,7 @@ impl<T: ?Sized> GcPtr<T> {
     /// - The pointer is still valid (not freed)
     /// - No other code is accessing the header
     #[inline]
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn header_mut(&self) -> &mut GcHeader {
         let header_ptr = (self.ptr.as_ptr() as *mut u8).sub(std::mem::size_of::<GcHeader>());
         &mut *(header_ptr as *mut GcHeader)
@@ -171,7 +172,6 @@ impl<T> GcPtr<[T]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::any::TypeId;
 
     #[test]
     fn test_gcptr_creation() {
@@ -182,7 +182,9 @@ mod tests {
         assert_eq!(*gc_ptr, 42);
 
         // Cleanup
-        unsafe { drop(Box::from_raw(gc_ptr.as_ptr())); }
+        unsafe {
+            drop(Box::from_raw(gc_ptr.as_ptr()));
+        }
     }
 
     #[test]
@@ -195,7 +197,9 @@ mod tests {
         assert_eq!(*gc_ptr, 100);
 
         // Cleanup
-        unsafe { drop(Box::from_raw(gc_ptr.as_ptr())); }
+        unsafe {
+            drop(Box::from_raw(gc_ptr.as_ptr()));
+        }
     }
 
     #[test]
@@ -209,7 +213,9 @@ mod tests {
         assert_eq!(*gc_ptr, 75);
 
         // Cleanup
-        unsafe { drop(Box::from_raw(gc_ptr.as_ptr())); }
+        unsafe {
+            drop(Box::from_raw(gc_ptr.as_ptr()));
+        }
     }
 
     #[test]
@@ -217,13 +223,15 @@ mod tests {
         let data = Box::new(200i32);
         let ptr = NonNull::from(Box::leak(data));
         let gc_ptr1 = unsafe { GcPtr::new(ptr) };
-        let gc_ptr2 = gc_ptr1.clone();
+        let gc_ptr2 = gc_ptr1;
 
         assert_eq!(gc_ptr1, gc_ptr2);
         assert_eq!(*gc_ptr1, *gc_ptr2);
 
         // Cleanup
-        unsafe { drop(Box::from_raw(gc_ptr1.as_ptr())); }
+        unsafe {
+            drop(Box::from_raw(gc_ptr1.as_ptr()));
+        }
     }
 
     #[test]

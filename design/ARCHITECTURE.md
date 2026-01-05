@@ -166,12 +166,25 @@ workerLoop(worker):
 runTask(taskId):
   task = vm.tasks[taskId]
   task.status = RUNNING
+  task.start_time = now()  // For preemption monitoring
 
   while true:
+    // Check for asynchronous preemption (Go-style)
+    if task.preempt_requested:
+      rescheduleTask(task)
+      return
+
+    // Poll safepoint for GC/snapshot coordination
+    safepoint.poll()
+
     instr = fetchInstruction(task)
 
     switch instr.opcode:
       case ... normal ops ...
+      case SPAWN:
+        newTask = createTask(instr.funcIndex)
+        scheduler.spawn(newTask)
+        push(newTask.id)
       case AWAIT:
         handleAwait(task)
         return       // Task is now BLOCKED or completed
@@ -189,8 +202,112 @@ runTask(taskId):
 The interpreter runs until the Task:
 
 * blocks (on `AWAIT`, `MUTEX_LOCK`, I/O)
-* yields
+* is preempted (running >10ms)
+* yields voluntarily
 * returns or fails
+
+### 4.5 Go-Style Asynchronous Preemption ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+To prevent long-running tasks from starving other tasks, Raya implements **Go-style asynchronous preemption** similar to Go 1.14+'s preemptive scheduling:
+
+#### Preemption Monitor (like Go's sysmon)
+
+A dedicated background thread monitors task execution times:
+
+```rust
+PreemptMonitor {
+  tasks: Arc<RwLock<HashMap<TaskId, Arc<Task>>>>
+  threshold: Duration  // Default: 10ms
+  shutdown: AtomicBool
+}
+
+fn monitor_loop():
+  loop every 1ms:
+    if shutdown: break
+
+    for task in tasks:
+      if task.state == RUNNING:
+        elapsed = now() - task.start_time
+        if elapsed >= threshold:
+          task.preempt_requested.store(true)  // Async signal
+```
+
+#### Preemption Points
+
+Tasks check for preemption at safe points:
+- **Safepoint polls** (every N instructions)
+- **Backward jumps** (loop headers)
+- **Function calls**
+
+```rust
+// At backward jump (loop header)
+if task.preempt_requested:
+  task.clear_preempt()
+  rescheduleTask(task)  // Yield to scheduler
+  return
+```
+
+**Key Benefits:**
+- Prevents task monopolization (fairness)
+- Maintains responsiveness under load
+- Works with cooperative scheduling (no signals/interrupts)
+- Allows nested task spawning without deadlock
+
+**Implementation Details:**
+- Monitor thread polls every 1ms
+- Default threshold: 10ms (configurable via `DEFAULT_PREEMPT_THRESHOLD`)
+- Preemption is **asynchronous** - set flag, task checks at safe points
+- No signals or forced context switches (pure cooperative + hints)
+
+### 4.6 Resource Limits for Inner VMs ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+Sub-schedulers (for inner VMs) support resource limits:
+
+```rust
+SchedulerLimits {
+  max_workers: Option<usize>,           // Limit worker threads
+  max_concurrent_tasks: Option<usize>,  // Limit running tasks
+  max_stack_size: Option<usize>,        // Per-task stack limit (bytes)
+  max_heap_size: Option<usize>,         // Total heap limit (bytes)
+}
+
+// Example: Restricted inner VM
+let limits = SchedulerLimits::restricted();
+// Returns: { max_workers: 1, max_concurrent_tasks: 10,
+//           max_stack_size: 1MB, max_heap_size: 10MB }
+
+let scheduler = Scheduler::with_limits(worker_count, limits);
+```
+
+When `spawn()` is called with limits:
+- Returns `None` if max_concurrent_tasks reached
+- Inner VM cannot exceed resource caps
+- Prevents resource exhaustion from untrusted code
+
+### 4.7 Nested Task Spawning ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+Tasks can spawn other tasks arbitrarily:
+
+```rust
+// Worker executor handles SPAWN opcode
+case SPAWN:
+  newTask = Task::new(func_index, module, Some(current_task.id))
+  tasks.write().insert(newTask.id, newTask.clone())
+  injector.push(newTask)  // Add to global queue
+  stack.push(Value::u64(newTask.id))
+```
+
+**Key Features:**
+- Parent task reference tracked (`parent: Option<TaskId>`)
+- Nested tasks execute on any available worker
+- Full AWAIT support in worker executors
+- Tested with 3-level nesting (VM → task → task → task)
 
 ---
 

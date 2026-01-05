@@ -35,7 +35,10 @@ logos = "0.13"
 
 # Concurrency primitives
 crossbeam = "0.8"
+crossbeam-deque = "0.8"
 parking_lot = "0.12"
+num_cpus = "1.16"
+rand = "0.8"
 
 # Hashing
 rustc-hash = "1.1"

@@ -3,6 +3,9 @@
 //! Tests cover:
 //! - Parse JSON → access properties
 //! - Array indexing
+
+#![allow(clippy::approx_constant)]
+#![allow(clippy::single_char_add_str)]
 //! - Nested structures
 //! - Round-trip parse/stringify
 //! - Error handling
@@ -44,11 +47,18 @@ fn test_parse_and_access_properties() {
 
     // Test float property
     let balance = parsed.get_property("balance");
-    assert_eq!(balance.as_number(), Some(1234.56), "balance should be 1234.56");
+    assert_eq!(
+        balance.as_number(),
+        Some(1234.56),
+        "balance should be 1234.56"
+    );
 
     // Test missing property
     let missing = parsed.get_property("missing");
-    assert!(missing.is_undefined(), "Missing property should be undefined");
+    assert!(
+        missing.is_undefined(),
+        "Missing property should be undefined"
+    );
 }
 
 #[test]
@@ -403,5 +413,8 @@ fn test_stringify_special_characters() {
     let reparsed = parser::parse(&stringified, &mut gc).unwrap();
     let reparsed_str = reparsed.as_string().unwrap();
     let reparsed_data = unsafe { &*reparsed_str.as_ptr() };
-    assert_eq!(reparsed_data.data, "Line1\nLine2\tTab\rReturn\"Quote\\Backslash");
+    assert_eq!(
+        reparsed_data.data,
+        "Line1\nLine2\tTab\rReturn\"Quote\\Backslash"
+    );
 }

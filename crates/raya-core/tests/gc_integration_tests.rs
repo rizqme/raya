@@ -3,6 +3,8 @@
 //! Tests cover:
 //! - Basic GC collection
 //! - Nested object graphs
+
+#![allow(clippy::approx_constant)]
 //! - Circular references
 //! - Array element tracking
 //! - Multiple collection cycles

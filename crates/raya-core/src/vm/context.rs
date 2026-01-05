@@ -468,7 +468,7 @@ mod tests {
     fn test_vm_context_with_options() {
         let options = VmOptions {
             limits: ResourceLimits::with_heap_limit(2 * 1024 * 1024), // 2 MB
-            gc_threshold: 512 * 1024, // 512 KB
+            gc_threshold: 512 * 1024,                                 // 512 KB
             type_registry: Arc::new(crate::types::create_standard_registry()),
         };
 
@@ -542,14 +542,14 @@ mod tests {
 
         let ctx1 = VmContext::new();
         let id1 = ctx1.id();
-        let arc1 = registry.register(ctx1);
+        let _arc1 = registry.register(ctx1);
 
         assert_eq!(registry.len(), 1);
         assert!(!registry.is_empty());
 
         let ctx2 = VmContext::new();
         let id2 = ctx2.id();
-        let arc2 = registry.register(ctx2);
+        let _arc2 = registry.register(ctx2);
 
         assert_eq!(registry.len(), 2);
 

@@ -86,7 +86,7 @@ impl ConstantPool {
     }
 
     /// Decode the constant pool from binary format
-    pub fn decode(reader: &mut BytecodeReader) -> Result<Self, DecodeError> {
+    pub fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
         let mut pool = ConstantPool::new();
 
         // Decode strings
@@ -138,6 +138,7 @@ impl ConstantPool {
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
 

@@ -6,7 +6,7 @@ use super::header::GcHeader;
 use super::ptr::GcPtr;
 use crate::types::TypeRegistry;
 use crate::vm::VmContextId;
-use std::alloc::{alloc, dealloc, Layout};
+use std::alloc::{alloc, Layout};
 use std::any::TypeId;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -76,7 +76,9 @@ impl Heap {
             .expect("Failed to calculate layout");
 
         // Check heap size limit
-        if self.max_heap_bytes > 0 && self.allocated_bytes + combined_layout.size() > self.max_heap_bytes {
+        if self.max_heap_bytes > 0
+            && self.allocated_bytes + combined_layout.size() > self.max_heap_bytes
+        {
             panic!("Heap size limit exceeded");
         }
 
@@ -89,7 +91,11 @@ impl Heap {
         // Initialize header
         let header_ptr = ptr as *mut GcHeader;
         unsafe {
-            header_ptr.write(GcHeader::new(self.context_id, type_id, combined_layout.size()));
+            header_ptr.write(GcHeader::new(
+                self.context_id,
+                type_id,
+                combined_layout.size(),
+            ));
         }
 
         // Initialize value
@@ -107,9 +113,9 @@ impl Heap {
     }
 
     /// Allocate an array on the heap
-    pub fn allocate_array<T: 'static>(&mut self, len: usize) -> GcPtr<[T]>
+    pub fn allocate_array<T>(&mut self, len: usize) -> GcPtr<[T]>
     where
-        T: Default + Clone,
+        T: 'static + Default + Clone,
     {
         let type_id = TypeId::of::<[T]>();
 
@@ -123,7 +129,9 @@ impl Heap {
             .expect("Failed to calculate layout");
 
         // Check heap size limit
-        if self.max_heap_bytes > 0 && self.allocated_bytes + combined_layout.size() > self.max_heap_bytes {
+        if self.max_heap_bytes > 0
+            && self.allocated_bytes + combined_layout.size() > self.max_heap_bytes
+        {
             panic!("Heap size limit exceeded");
         }
 
@@ -136,7 +144,11 @@ impl Heap {
         // Initialize header
         let header_ptr = ptr as *mut GcHeader;
         unsafe {
-            header_ptr.write(GcHeader::new(self.context_id, type_id, combined_layout.size()));
+            header_ptr.write(GcHeader::new(
+                self.context_id,
+                type_id,
+                combined_layout.size(),
+            ));
         }
 
         // Initialize array
@@ -164,7 +176,7 @@ impl Heap {
     pub unsafe fn free(&mut self, header_ptr: *mut GcHeader) {
         // Get the type ID to determine layout
         let header = &*header_ptr;
-        let type_id = header.type_id();
+        let _type_id = header.type_id();
 
         // For now, we can't determine the exact layout without more metadata
         // We'll need to store size in the header or use a type registry
@@ -258,7 +270,7 @@ mod tests {
 
         assert_eq!(*int_ptr, 42);
         assert_eq!(*string_ptr, "hello");
-        assert_eq!(*bool_ptr, true);
+        assert!(*bool_ptr);
         assert_eq!(heap.allocation_count(), 3);
     }
 
@@ -284,8 +296,8 @@ mod tests {
         // Access via as_ptr for now (until we fix Deref for slices)
         unsafe {
             let slice = &*array.as_ptr();
-            for i in 0..10 {
-                assert_eq!(slice[i], 0); // Default value
+            for item in slice.iter().take(10) {
+                assert_eq!(*item, 0); // Default value
             }
         }
     }

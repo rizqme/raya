@@ -120,17 +120,32 @@ raya bundle main.raya -o myapp
 
 ## 🚦 Project Status
 
-**Current Phase:** Phase 1 - Project Setup & VM Core
+**Current Phase:** Phase 1 - VM Core Implementation
 
-- ✅ Language specification complete
-- ✅ VM architecture designed
-- ✅ Rust workspace setup
-- ✅ CI/CD configured
-- ⏳ Bytecode interpreter (in progress)
-- ⏳ Parser & type checker (pending)
-- ⏳ Compiler (pending)
+### Completed Milestones ✅
+- **1.1**: Project Setup - Rust workspace, dependencies, CI/CD
+- **1.2**: Bytecode Definitions - Complete opcode set and module format
+- **1.9**: Safepoint Infrastructure - Stop-the-world coordination for GC/snapshots
+- **1.10**: Task Scheduler - Goroutine-style work-stealing concurrency
+  - ✅ Multi-threaded work-stealing scheduler (crossbeam-deque)
+  - ✅ Go-style asynchronous preemption (10ms threshold)
+  - ✅ SPAWN/AWAIT opcodes in both VM and worker threads
+  - ✅ Nested task spawning support
+  - ✅ Resource limits for inner VMs (SchedulerLimits)
+  - ✅ 22 comprehensive integration tests
 
-See [PLAN.md](plans/PLAN.md) for detailed milestones.
+### In Progress ⏳
+- **1.3-1.8**: Core VM components (stack, frames, basic execution)
+- **1.11**: Synchronization primitives (Mutex)
+- **1.12**: VM Snapshotting
+
+### Pending 📋
+- Parser & type checker
+- Compiler (bytecode generation)
+- Standard library
+- CLI tools
+
+See [PLAN.md](plans/PLAN.md) for detailed milestones and [ARCHITECTURE.md](design/ARCHITECTURE.md) for VM design.
 
 ## 🤝 Contributing
 

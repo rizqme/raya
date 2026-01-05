@@ -67,22 +67,30 @@ mod tests {
         let mut gc = GarbageCollector::default();
 
         // Null
-        let input = RayaString { data: "null".to_string() };
+        let input = RayaString {
+            data: "null".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
         assert!(result.is_null());
 
         // Boolean
-        let input = RayaString { data: "true".to_string() };
+        let input = RayaString {
+            data: "true".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
         assert_eq!(result.as_bool(), Some(true));
 
         // Number
-        let input = RayaString { data: "42.5".to_string() };
+        let input = RayaString {
+            data: "42.5".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
         assert_eq!(result.as_number(), Some(42.5));
 
         // String
-        let input = RayaString { data: "\"hello\"".to_string() };
+        let input = RayaString {
+            data: "\"hello\"".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
         assert!(result.is_string());
     }
@@ -91,7 +99,9 @@ mod tests {
     fn test_parse_array() {
         let mut gc = GarbageCollector::default();
 
-        let input = RayaString { data: "[1, 2, 3]".to_string() };
+        let input = RayaString {
+            data: "[1, 2, 3]".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
 
         assert!(result.is_array());
@@ -107,7 +117,9 @@ mod tests {
     fn test_parse_object() {
         let mut gc = GarbageCollector::default();
 
-        let input = RayaString { data: "{\"name\": \"Alice\", \"age\": 30}".to_string() };
+        let input = RayaString {
+            data: "{\"name\": \"Alice\", \"age\": 30}".to_string(),
+        };
         let result = parse(&input, &mut gc).unwrap();
 
         assert!(result.is_object());

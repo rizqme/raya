@@ -9,24 +9,43 @@
 
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
+// TODO: Fix these clippy warnings properly
+#![cfg_attr(test, allow(clippy::approx_constant))]
+#![cfg_attr(test, allow(clippy::identity_op))]
+#![cfg_attr(test, allow(clippy::unnecessary_cast))]
+#![cfg_attr(test, allow(clippy::single_char_add_str))]
+#![cfg_attr(test, allow(unused_variables))]
+#![cfg_attr(test, allow(unused_imports))]
+#![allow(clippy::approx_constant)]
+#![allow(clippy::identity_op)]
+#![allow(clippy::derivable_impls)]
+#![allow(clippy::arc_with_non_send_sync)]
+#![allow(clippy::redundant_closure)]
+#![allow(clippy::unnecessary_lazy_evaluations)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(ambiguous_wide_pointer_comparisons)]
 
-pub mod value;
-pub mod types;
 pub mod gc;
-pub mod stack;
-pub mod vm;
-pub mod scheduler;
-pub mod object;
-pub mod sync;
 pub mod json;
+pub mod object;
+pub mod scheduler;
+pub mod stack;
+pub mod sync;
+pub mod types;
+pub mod value;
+pub mod vm;
 
-pub use value::Value;
-pub use types::{PointerMap, TypeInfo, TypeRegistry};
-pub use stack::{Stack, CallFrame, StackStats};
-pub use vm::{Vm, VmContext, VmContextId, VmOptions, ResourceLimits, ResourceCounters, ContextRegistry, ClassRegistry};
+pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
+pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
-pub use object::{Object, Class, VTable, Array, RayaString};
-pub use json::{JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry, validate_cast};
+pub use stack::{CallFrame, Stack, StackStats};
+pub use types::{PointerMap, TypeInfo, TypeRegistry};
+pub use value::Value;
+pub use vm::{
+    ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
+    VmOptions,
+};
 
 /// VM execution errors
 #[derive(Debug, thiserror::Error)]

@@ -11,9 +11,12 @@ description = "Core runtime for the Raya VM (interpreter, GC, scheduler)"
 [dependencies]
 raya-bytecode = { workspace = true }
 crossbeam = { workspace = true }
+crossbeam-deque = { workspace = true }
 parking_lot = { workspace = true }
 rustc-hash = { workspace = true }
 thiserror = { workspace = true }
+num_cpus = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true }

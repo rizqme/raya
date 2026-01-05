@@ -167,9 +167,9 @@ impl GarbageCollector {
     }
 
     /// Allocate an array
-    pub fn allocate_array<T: 'static>(&mut self, len: usize) -> GcPtr<[T]>
+    pub fn allocate_array<T>(&mut self, len: usize) -> GcPtr<[T]>
     where
-        T: Default + Clone,
+        T: 'static + Default + Clone,
     {
         // Check if we should collect
         if self.should_collect() {
@@ -341,6 +341,7 @@ impl GarbageCollector {
     }
 
     /// Mark a JsonValue and all its nested values
+    #[allow(clippy::only_used_in_recursion)]
     fn mark_json_value(&mut self, json: &crate::json::JsonValue) {
         use crate::json::JsonValue;
 
@@ -396,10 +397,7 @@ impl GarbageCollector {
                 }
             }
             // Primitives don't need marking
-            JsonValue::Null
-            | JsonValue::Bool(_)
-            | JsonValue::Number(_)
-            | JsonValue::Undefined => {}
+            JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::Undefined => {}
         }
     }
 

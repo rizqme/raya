@@ -1,5 +1,7 @@
 //! Integration tests for Bytecode Module (Milestone 1.2)
 
+#![allow(clippy::approx_constant)]
+
 use raya_bytecode::{verify_module, ConstantPool, Function, Module, Opcode};
 
 #[test]
@@ -25,8 +27,10 @@ fn test_decode_module() {
         param_count: 2,
         local_count: 2,
         code: vec![
-            Opcode::LoadLocal as u8, 0,
-            Opcode::LoadLocal as u8, 1,
+            Opcode::LoadLocal as u8,
+            0,
+            Opcode::LoadLocal as u8,
+            1,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
@@ -48,9 +52,15 @@ fn test_roundtrip_encoding() {
         param_count: 0,
         local_count: 1,
         code: vec![
-            Opcode::ConstI32 as u8, 10, 0, 0, 0,
-            Opcode::StoreLocal as u8, 0,
-            Opcode::LoadLocal as u8, 0,
+            Opcode::ConstI32 as u8,
+            10,
+            0,
+            0,
+            0,
+            Opcode::StoreLocal as u8,
+            0,
+            Opcode::LoadLocal as u8,
+            0,
             Opcode::Return as u8,
         ],
     });
@@ -92,7 +102,7 @@ fn test_verify_invalid_no_return() {
 fn test_module_with_constants() {
     let mut module = Module::new("with_const".to_string());
     let str_idx = module.constants.add_string("Hello".to_string());
-    
+
     module.functions.push(Function {
         name: "get_str".to_string(),
         param_count: 0,
@@ -114,11 +124,11 @@ fn test_module_with_constants() {
 #[test]
 fn test_constant_pool_types() {
     let mut pool = ConstantPool::new();
-    
+
     let s = pool.add_string("test".to_string());
     let i = pool.add_integer(42);
     let f = pool.add_float(3.14);
-    
+
     assert_eq!(pool.get_string(s), Some("test"));
     assert_eq!(pool.get_integer(i), Some(42));
     assert_eq!(pool.get_float(f), Some(3.14));
@@ -129,7 +139,7 @@ fn test_empty_module() {
     let module = Module::new("empty".to_string());
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.metadata.name, "empty");
     assert_eq!(decoded.functions.len(), 0);
 }
@@ -137,19 +147,26 @@ fn test_empty_module() {
 #[test]
 fn test_many_functions() {
     let mut module = Module::new("many".to_string());
-    
+
     for i in 0..50 {
         module.functions.push(Function {
             name: format!("fn_{}", i),
             param_count: 0,
             local_count: 0,
-            code: vec![Opcode::ConstI32 as u8, i as u8, 0, 0, 0, Opcode::Return as u8],
+            code: vec![
+                Opcode::ConstI32 as u8,
+                i as u8,
+                0,
+                0,
+                0,
+                Opcode::Return as u8,
+            ],
         });
     }
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.functions.len(), 50);
 }
 
@@ -157,22 +174,22 @@ fn test_many_functions() {
 fn test_large_function() {
     let mut module = Module::new("large".to_string());
     let mut code = Vec::new();
-    
+
     for i in 0..250 {
         code.extend_from_slice(&[Opcode::ConstI32 as u8, i as u8, 0, 0, 0, Opcode::Pop as u8]);
     }
     code.extend_from_slice(&[Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8]);
-    
+
     module.functions.push(Function {
         name: "large".to_string(),
         param_count: 0,
         local_count: 0,
         code,
     });
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert!(decoded.functions[0].code.len() > 1000);
 }
 
@@ -190,18 +207,24 @@ fn test_arithmetic_function() {
         param_count: 2,
         local_count: 2,
         code: vec![
-            Opcode::LoadLocal as u8, 0,
-            Opcode::LoadLocal as u8, 1,
+            Opcode::LoadLocal as u8,
+            0,
+            Opcode::LoadLocal as u8,
+            1,
             Opcode::Iadd as u8,
-            Opcode::ConstI32 as u8, 2, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            2,
+            0,
+            0,
+            0,
             Opcode::Imul as u8,
             Opcode::Return as u8,
         ],
     });
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.functions[0].name, "compute");
 }
 
@@ -214,8 +237,10 @@ fn test_control_flow() {
         param_count: 2,
         local_count: 2,
         code: vec![
-            Opcode::LoadLocal as u8, 0,
-            Opcode::LoadLocal as u8, 1,
+            Opcode::LoadLocal as u8,
+            0,
+            Opcode::LoadLocal as u8,
+            1,
             Opcode::Igt as u8,
             Opcode::Return as u8,
         ],
@@ -232,22 +257,22 @@ fn test_control_flow() {
 #[test]
 fn test_constant_pool_persistence() {
     let mut module = Module::new("const_persist".to_string());
-    
+
     let s1 = module.constants.add_string("hello".to_string());
     let s2 = module.constants.add_string("world".to_string());
     let i1 = module.constants.add_integer(100);
     let f1 = module.constants.add_float(2.5);
-    
+
     module.functions.push(Function {
         name: "dummy".to_string(),
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
     });
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.constants.get_string(s1), Some("hello"));
     assert_eq!(decoded.constants.get_string(s2), Some("world"));
     assert_eq!(decoded.constants.get_integer(i1), Some(100));
@@ -263,7 +288,7 @@ fn test_module_checksum() {
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 1, 0, 0, 0, Opcode::Return as u8],
     });
-    
+
     let bytes = module.encode();
     Module::decode(&bytes).expect("Checksum should validate");
 }
@@ -277,10 +302,10 @@ fn test_empty_function() {
         local_count: 0,
         code: vec![Opcode::ReturnVoid as u8],
     });
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.functions[0].code.len(), 1);
 }
 
@@ -292,15 +317,21 @@ fn test_many_locals() {
         param_count: 0,
         local_count: 100,
         code: vec![
-            Opcode::ConstI32 as u8, 42, 0, 0, 0,
-            Opcode::StoreLocal as u8, 99,
-            Opcode::LoadLocal as u8, 99,
+            Opcode::ConstI32 as u8,
+            42,
+            0,
+            0,
+            0,
+            Opcode::StoreLocal as u8,
+            99,
+            Opcode::LoadLocal as u8,
+            99,
             Opcode::Return as u8,
         ],
     });
-    
+
     let bytes = module.encode();
     let decoded = Module::decode(&bytes).unwrap();
-    
+
     assert_eq!(decoded.functions[0].local_count, 100);
 }

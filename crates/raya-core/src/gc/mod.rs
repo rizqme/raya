@@ -56,4 +56,5 @@ pub use roots::RootSet;
 // Legacy Gc type for backwards compatibility
 // TODO: Remove this once all code is updated to use GarbageCollector
 #[deprecated(note = "Use GarbageCollector instead")]
+/// Alias for GarbageCollector
 pub type Gc = GarbageCollector;

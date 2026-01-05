@@ -234,7 +234,13 @@ impl JsonValue {
         match self {
             JsonValue::Null => 0.0,
             JsonValue::Undefined => f64::NAN,
-            JsonValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+            JsonValue::Bool(b) => {
+                if *b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             JsonValue::Number(n) => *n,
             JsonValue::String(s_ptr) => {
                 // Safety: GcPtr guarantees valid pointer

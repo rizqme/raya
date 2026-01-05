@@ -62,9 +62,10 @@ impl PointerMap {
             PointerMap::None => false,
             PointerMap::All(count) => *count > 0,
             PointerMap::Offsets(offsets) => !offsets.is_empty(),
-            PointerMap::Array { length, element_map } => {
-                *length > 0 && element_map.has_pointers()
-            }
+            PointerMap::Array {
+                length,
+                element_map,
+            } => *length > 0 && element_map.has_pointers(),
         }
     }
 
@@ -92,7 +93,10 @@ impl PointerMap {
                     f(base_offset + offset);
                 }
             }
-            PointerMap::Array { length, element_map } => {
+            PointerMap::Array {
+                length,
+                element_map,
+            } => {
                 // Assume 8-byte elements for now (Value size)
                 for i in 0..*length {
                     element_map.for_each_pointer_offset_impl(base_offset + i * 8, f);
@@ -107,9 +111,10 @@ impl PointerMap {
             PointerMap::None => 0,
             PointerMap::All(count) => *count,
             PointerMap::Offsets(offsets) => offsets.len(),
-            PointerMap::Array { length, element_map } => {
-                length * element_map.pointer_count()
-            }
+            PointerMap::Array {
+                length,
+                element_map,
+            } => length * element_map.pointer_count(),
         }
     }
 }
@@ -122,7 +127,10 @@ impl fmt::Display for PointerMap {
             PointerMap::Offsets(offsets) => {
                 write!(f, "Offsets({:?})", offsets)
             }
-            PointerMap::Array { length, element_map } => {
+            PointerMap::Array {
+                length,
+                element_map,
+            } => {
                 write!(f, "Array[{}]({})", length, element_map)
             }
         }

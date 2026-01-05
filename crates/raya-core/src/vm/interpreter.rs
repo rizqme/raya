@@ -1,14 +1,16 @@
 //! Virtual machine interpreter
 
-use raya_bytecode::{Module, Opcode};
+use super::{ClassRegistry, SafepointCoordinator};
 use crate::{
     gc::GarbageCollector,
     object::{Array, Object, RayaString},
+    scheduler::{Scheduler, Task, TaskState},
     stack::Stack,
     value::Value,
     VmError, VmResult,
 };
-use super::ClassRegistry;
+use raya_bytecode::{Module, Opcode};
+use std::sync::Arc;
 
 /// Raya virtual machine
 pub struct Vm {
@@ -20,17 +22,44 @@ pub struct Vm {
     globals: rustc_hash::FxHashMap<String, Value>,
     /// Class registry
     pub classes: ClassRegistry,
+    /// Task scheduler
+    scheduler: Scheduler,
 }
 
 impl Vm {
-    /// Create a new VM
+    /// Create a new VM with default worker count
     pub fn new() -> Self {
+        let worker_count = num_cpus::get();
+        Self::with_worker_count(worker_count)
+    }
+
+    /// Create a new VM with specified worker count
+    pub fn with_worker_count(worker_count: usize) -> Self {
+        let mut scheduler = Scheduler::new(worker_count);
+        scheduler.start();
+
         Self {
             gc: GarbageCollector::default(),
             stack: Stack::new(),
             globals: rustc_hash::FxHashMap::default(),
             classes: ClassRegistry::new(),
+            scheduler,
         }
+    }
+
+    /// Get the scheduler
+    pub fn scheduler(&self) -> &Scheduler {
+        &self.scheduler
+    }
+
+    /// Get mutable scheduler
+    pub fn scheduler_mut(&mut self) -> &mut Scheduler {
+        &mut self.scheduler
+    }
+
+    /// Get the safepoint coordinator
+    pub fn safepoint(&self) -> &Arc<SafepointCoordinator> {
+        self.scheduler.safepoint()
     }
 
     /// Collect GC roots from the stack
@@ -77,11 +106,11 @@ impl Vm {
     /// Execute a module
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module
-        module.validate()
-            .map_err(|e| VmError::RuntimeError(e))?;
+        module.validate().map_err(|e| VmError::RuntimeError(e))?;
 
         // Find main function
-        let main_fn = module.functions
+        let main_fn = module
+            .functions
             .iter()
             .find(|f| f.name == "main")
             .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
@@ -108,6 +137,9 @@ impl Vm {
         let code = &function.code;
 
         loop {
+            // Safepoint poll at loop back-edge
+            self.safepoint().poll();
+
             // Bounds check
             if ip >= code.len() {
                 return Err(VmError::RuntimeError(
@@ -117,15 +149,14 @@ impl Vm {
 
             // Fetch opcode
             let opcode_byte = code[ip];
-            let opcode = Opcode::from_u8(opcode_byte)
-                .ok_or(VmError::InvalidOpcode(opcode_byte))?;
+            let opcode = Opcode::from_u8(opcode_byte).ok_or(VmError::InvalidOpcode(opcode_byte))?;
 
             ip += 1;
 
             // Dispatch and execute
             match opcode {
                 // Stack manipulation
-                Opcode::Nop => {},
+                Opcode::Nop => {}
                 Opcode::Pop => self.op_pop()?,
                 Opcode::Dup => self.op_dup()?,
                 Opcode::Swap => self.op_swap()?,
@@ -184,6 +215,10 @@ impl Vm {
                 // Control flow
                 Opcode::Jmp => {
                     let offset = self.read_i16(code, &mut ip)?;
+                    // Poll on backward jumps (loop back-edges)
+                    if offset < 0 {
+                        self.safepoint().poll();
+                    }
                     ip = (ip as isize + offset as isize) as usize;
                 }
                 Opcode::JmpIfTrue => {
@@ -201,6 +236,9 @@ impl Vm {
 
                 // Function calls
                 Opcode::Call => {
+                    // Safepoint poll before function call
+                    self.safepoint().poll();
+
                     let func_index = self.read_u16(code, &mut ip)?;
                     if func_index as usize >= module.functions.len() {
                         return Err(VmError::RuntimeError(format!(
@@ -232,6 +270,9 @@ impl Vm {
 
                 // Object operations
                 Opcode::New => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
                     let class_index = self.read_u16(code, &mut ip)? as usize;
                     self.op_new(class_index)?;
                 }
@@ -254,6 +295,9 @@ impl Vm {
 
                 // Array operations
                 Opcode::NewArray => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
                     let type_index = self.read_u16(code, &mut ip)? as usize;
                     self.op_new_array(type_index)?;
                 }
@@ -285,6 +329,15 @@ impl Vm {
                     self.op_json_cast(type_id)?;
                 }
 
+                // Concurrency operations
+                Opcode::Spawn => {
+                    let func_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_spawn(func_index, module)?;
+                }
+                Opcode::Await => {
+                    self.op_await()?;
+                }
+
                 _ => {
                     return Err(VmError::RuntimeError(format!(
                         "Unimplemented opcode: {:?}",
@@ -300,7 +353,9 @@ impl Vm {
     #[inline]
     fn read_u8(&self, code: &[u8], ip: &mut usize) -> VmResult<u8> {
         if *ip >= code.len() {
-            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
         }
         let value = code[*ip];
         *ip += 1;
@@ -310,7 +365,9 @@ impl Vm {
     #[inline]
     fn read_u16(&self, code: &[u8], ip: &mut usize) -> VmResult<u16> {
         if *ip + 1 >= code.len() {
-            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
         }
         let value = u16::from_le_bytes([code[*ip], code[*ip + 1]]);
         *ip += 2;
@@ -320,7 +377,9 @@ impl Vm {
     #[inline]
     fn read_u32(&self, code: &[u8], ip: &mut usize) -> VmResult<u32> {
         if *ip + 3 >= code.len() {
-            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
         }
         let value = u32::from_le_bytes([code[*ip], code[*ip + 1], code[*ip + 2], code[*ip + 3]]);
         *ip += 4;
@@ -335,14 +394,11 @@ impl Vm {
     #[inline]
     fn read_i32(&self, code: &[u8], ip: &mut usize) -> VmResult<i32> {
         if *ip + 3 >= code.len() {
-            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
         }
-        let value = i32::from_le_bytes([
-            code[*ip],
-            code[*ip + 1],
-            code[*ip + 2],
-            code[*ip + 3],
-        ]);
+        let value = i32::from_le_bytes([code[*ip], code[*ip + 1], code[*ip + 2], code[*ip + 3]]);
         *ip += 4;
         Ok(value)
     }
@@ -350,7 +406,9 @@ impl Vm {
     #[inline]
     fn read_f64(&self, code: &[u8], ip: &mut usize) -> VmResult<f64> {
         if *ip + 7 >= code.len() {
-            return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of bytecode".to_string(),
+            ));
         }
         let value = f64::from_le_bytes([
             code[*ip],
@@ -446,9 +504,15 @@ impl Vm {
     /// IADD - Add two integers
     #[inline]
     fn op_iadd(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::i32(a.wrapping_add(b)))
     }
@@ -456,9 +520,15 @@ impl Vm {
     /// ISUB - Subtract two integers
     #[inline]
     fn op_isub(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::i32(a.wrapping_sub(b)))
     }
@@ -466,9 +536,15 @@ impl Vm {
     /// IMUL - Multiply two integers
     #[inline]
     fn op_imul(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::i32(a.wrapping_mul(b)))
     }
@@ -476,9 +552,15 @@ impl Vm {
     /// IDIV - Divide two integers
     #[inline]
     fn op_idiv(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
 
         if b == 0 {
@@ -491,9 +573,15 @@ impl Vm {
     /// IMOD - Modulo two integers
     #[inline]
     fn op_imod(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
 
         if b == 0 {
@@ -506,7 +594,10 @@ impl Vm {
     /// INEG - Negate an integer
     #[inline]
     fn op_ineg(&mut self) -> VmResult<()> {
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::i32(-a))
     }
@@ -516,9 +607,15 @@ impl Vm {
     /// FADD - Add two floats
     #[inline]
     fn op_fadd(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_f64()
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self.stack.pop()?.as_f64()
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(a + b))
     }
@@ -526,9 +623,15 @@ impl Vm {
     /// FSUB - Subtract two floats
     #[inline]
     fn op_fsub(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_f64()
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self.stack.pop()?.as_f64()
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(a - b))
     }
@@ -536,9 +639,15 @@ impl Vm {
     /// FMUL - Multiply two floats
     #[inline]
     fn op_fmul(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_f64()
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self.stack.pop()?.as_f64()
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(a * b))
     }
@@ -546,9 +655,15 @@ impl Vm {
     /// FDIV - Divide two floats
     #[inline]
     fn op_fdiv(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_f64()
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self.stack.pop()?.as_f64()
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(a / b))
     }
@@ -556,7 +671,10 @@ impl Vm {
     /// FNEG - Negate a float
     #[inline]
     fn op_fneg(&mut self) -> VmResult<()> {
-        let a = self.stack.pop()?.as_f64()
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(-a))
     }
@@ -566,9 +684,15 @@ impl Vm {
     /// IEQ - Integer equality
     #[inline]
     fn op_ieq(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a == b))
     }
@@ -576,9 +700,15 @@ impl Vm {
     /// INE - Integer inequality
     #[inline]
     fn op_ine(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a != b))
     }
@@ -586,9 +716,15 @@ impl Vm {
     /// ILT - Integer less than
     #[inline]
     fn op_ilt(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a < b))
     }
@@ -596,9 +732,15 @@ impl Vm {
     /// ILE - Integer less or equal
     #[inline]
     fn op_ile(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a <= b))
     }
@@ -606,9 +748,15 @@ impl Vm {
     /// IGT - Integer greater than
     #[inline]
     fn op_igt(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a > b))
     }
@@ -616,9 +764,15 @@ impl Vm {
     /// IGE - Integer greater or equal
     #[inline]
     fn op_ige(&mut self) -> VmResult<()> {
-        let b = self.stack.pop()?.as_i32()
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
-        let a = self.stack.pop()?.as_i32()
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a >= b))
     }
@@ -653,7 +807,8 @@ impl Vm {
     /// LOAD_GLOBAL - Load global variable
     #[allow(dead_code)]
     fn op_load_global(&mut self, name: &str) -> VmResult<()> {
-        let value = self.globals
+        let value = self
+            .globals
             .get(name)
             .copied()
             .ok_or_else(|| VmError::RuntimeError(format!("Undefined global: {}", name)))?;
@@ -674,11 +829,9 @@ impl Vm {
     #[allow(dead_code)]
     fn op_new(&mut self, class_index: usize) -> VmResult<()> {
         // Look up class
-        let class = self.classes
-            .get_class(class_index)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Invalid class index: {}", class_index)
-            ))?;
+        let class = self.classes.get_class(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
 
         // Create object with correct field count
         let obj = Object::new(class_index, class.field_count);
@@ -687,9 +840,7 @@ impl Vm {
         let gc_ptr = self.gc.allocate(obj);
 
         // Push GC pointer as value
-        let value = unsafe {
-            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-        };
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
         self.stack.push(value)?;
 
         Ok(())
@@ -704,7 +855,7 @@ impl Vm {
         // Check it's a pointer
         if !obj_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected object for field access".to_string()
+                "Expected object for field access".to_string(),
             ));
         }
 
@@ -714,10 +865,9 @@ impl Vm {
         let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
 
         // Load field
-        let value = obj.get_field(field_offset)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Field offset {} out of bounds", field_offset)
-            ))?;
+        let value = obj.get_field(field_offset).ok_or_else(|| {
+            VmError::RuntimeError(format!("Field offset {} out of bounds", field_offset))
+        })?;
 
         // Push field value
         self.stack.push(value)?;
@@ -735,7 +885,7 @@ impl Vm {
         // Check it's a pointer
         if !obj_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected object for field access".to_string()
+                "Expected object for field access".to_string(),
             ));
         }
 
@@ -772,16 +922,17 @@ impl Vm {
     fn op_new_array(&mut self, type_index: usize) -> VmResult<()> {
         // Pop length from stack
         let length_val = self.stack.pop()?;
-        let length = length_val.as_i32()
-            .ok_or_else(|| VmError::TypeError(
-                "Array length must be a number".to_string()
-            ))? as usize;
+        let length = length_val
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Array length must be a number".to_string()))?
+            as usize;
 
         // Bounds check (reasonable maximum)
         if length > 10_000_000 {
-            return Err(VmError::RuntimeError(
-                format!("Array length {} too large", length)
-            ));
+            return Err(VmError::RuntimeError(format!(
+                "Array length {} too large",
+                length
+            )));
         }
 
         // Create array
@@ -791,9 +942,7 @@ impl Vm {
         let gc_ptr = self.gc.allocate(arr);
 
         // Push GC pointer as value
-        let value = unsafe {
-            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-        };
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
         self.stack.push(value)?;
 
         Ok(())
@@ -809,15 +958,15 @@ impl Vm {
         // Check array is a pointer
         if !array_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected array for element access".to_string()
+                "Expected array for element access".to_string(),
             ));
         }
 
         // Check index is a number
-        let index = index_val.as_i32()
-            .ok_or_else(|| VmError::TypeError(
-                "Array index must be a number".to_string()
-            ))? as usize;
+        let index = index_val
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Array index must be a number".to_string()))?
+            as usize;
 
         // Get array from GC heap
         // SAFETY: Value is tagged as pointer, managed by GC
@@ -825,10 +974,13 @@ impl Vm {
         let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
         // Load element
-        let value = arr.get(index)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Array index {} out of bounds (length: {})", index, arr.len())
-            ))?;
+        let value = arr.get(index).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Array index {} out of bounds (length: {})",
+                index,
+                arr.len()
+            ))
+        })?;
 
         // Push element value
         self.stack.push(value)?;
@@ -847,15 +999,15 @@ impl Vm {
         // Check array is a pointer
         if !array_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected array for element access".to_string()
+                "Expected array for element access".to_string(),
             ));
         }
 
         // Check index is a number
-        let index = index_val.as_i32()
-            .ok_or_else(|| VmError::TypeError(
-                "Array index must be a number".to_string()
-            ))? as usize;
+        let index = index_val
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Array index must be a number".to_string()))?
+            as usize;
 
         // Get mutable array from GC heap
         // SAFETY: Value is tagged as pointer, managed by GC
@@ -878,7 +1030,7 @@ impl Vm {
         // Check array is a pointer
         if !array_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected array for length operation".to_string()
+                "Expected array for length operation".to_string(),
             ));
         }
 
@@ -905,7 +1057,7 @@ impl Vm {
         // Check both are pointers
         if !str1_val.is_ptr() || !str2_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected strings for concatenation".to_string()
+                "Expected strings for concatenation".to_string(),
             ));
         }
 
@@ -923,9 +1075,7 @@ impl Vm {
         let gc_ptr = self.gc.allocate(result);
 
         // Push result
-        let value = unsafe {
-            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-        };
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
         self.stack.push(value)?;
 
         Ok(())
@@ -940,7 +1090,7 @@ impl Vm {
         // Check it's a pointer
         if !str_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected string for length operation".to_string()
+                "Expected string for length operation".to_string(),
             ));
         }
 
@@ -967,7 +1117,10 @@ impl Vm {
     ) -> VmResult<()> {
         // Peek at object (receiver) on stack without popping
         // Object is at stack position: stack_top - arg_count
-        let receiver_pos = self.stack.depth().checked_sub(arg_count + 1)
+        let receiver_pos = self
+            .stack
+            .depth()
+            .checked_sub(arg_count + 1)
             .ok_or_else(|| VmError::StackUnderflow)?;
 
         let receiver_val = self.stack.peek_at(receiver_pos)?;
@@ -975,7 +1128,7 @@ impl Vm {
         // Check receiver is an object
         if !receiver_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected object for method call".to_string()
+                "Expected object for method call".to_string(),
             ));
         }
 
@@ -985,24 +1138,20 @@ impl Vm {
         let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
 
         // Look up class
-        let class = self.classes
+        let class = self
+            .classes
             .get_class(obj.class_id)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Invalid class ID: {}", obj.class_id)
-            ))?;
+            .ok_or_else(|| VmError::RuntimeError(format!("Invalid class ID: {}", obj.class_id)))?;
 
         // Look up method in vtable
-        let function_id = class.vtable.get_method(method_index)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Method index {} not found in vtable", method_index)
-            ))?;
+        let function_id = class.vtable.get_method(method_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Method index {} not found in vtable", method_index))
+        })?;
 
         // Get function from module
-        let function = module.functions
-            .get(function_id)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Invalid function ID: {}", function_id)
-            ))?;
+        let function = module.functions.get(function_id).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid function ID: {}", function_id))
+        })?;
 
         // Execute function (implementation same as CALL)
         // Arguments are already on stack in correct order
@@ -1022,7 +1171,7 @@ impl Vm {
         // Get JSON pointer
         if !json_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected JSON value for property access".to_string()
+                "Expected JSON value for property access".to_string(),
             ));
         }
 
@@ -1031,11 +1180,12 @@ impl Vm {
         let json = unsafe { &*json_ptr.unwrap().as_ptr() };
 
         // Get property name from constant pool
-        let property_name = module.constants
+        let property_name = module
+            .constants
             .get_string(property_index as u32)
-            .ok_or_else(|| VmError::RuntimeError(
-                format!("Invalid property index: {}", property_index)
-            ))?;
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!("Invalid property index: {}", property_index))
+            })?;
 
         // Get property value
         let result = json.get_property(property_name);
@@ -1045,7 +1195,9 @@ impl Vm {
 
         // Push result onto stack
         let value = unsafe {
-            Value::from_ptr(std::ptr::NonNull::new_unchecked(result_ptr.as_ptr() as *mut u8))
+            Value::from_ptr(std::ptr::NonNull::new_unchecked(
+                result_ptr.as_ptr() as *mut u8
+            ))
         };
         self.stack.push(value)?;
 
@@ -1057,11 +1209,14 @@ impl Vm {
     fn op_json_index(&mut self) -> VmResult<()> {
         // Pop index from stack
         let index_val = self.stack.pop()?;
-        let index = index_val.as_i32()
+        let index = index_val
+            .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected integer index".to_string()))?;
 
         if index < 0 {
-            return Err(VmError::RuntimeError("Array index cannot be negative".to_string()));
+            return Err(VmError::RuntimeError(
+                "Array index cannot be negative".to_string(),
+            ));
         }
 
         // Pop JSON value from stack
@@ -1070,7 +1225,7 @@ impl Vm {
         // Get JSON pointer
         if !json_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected JSON value for index access".to_string()
+                "Expected JSON value for index access".to_string(),
             ));
         }
 
@@ -1086,7 +1241,9 @@ impl Vm {
 
         // Push result onto stack
         let value = unsafe {
-            Value::from_ptr(std::ptr::NonNull::new_unchecked(result_ptr.as_ptr() as *mut u8))
+            Value::from_ptr(std::ptr::NonNull::new_unchecked(
+                result_ptr.as_ptr() as *mut u8
+            ))
         };
         self.stack.push(value)?;
 
@@ -1102,25 +1259,93 @@ impl Vm {
         // Get JSON pointer
         if !json_val.is_ptr() {
             return Err(VmError::TypeError(
-                "Expected JSON value for type cast".to_string()
+                "Expected JSON value for type cast".to_string(),
             ));
         }
 
         // SAFETY: Value is tagged as pointer, managed by GC
         let json_ptr = unsafe { json_val.as_ptr::<crate::json::JsonValue>() };
-        let json = unsafe { &*json_ptr.unwrap().as_ptr() };
+        let _json = unsafe { &*json_ptr.unwrap().as_ptr() };
 
         // TODO: Get type schema from type registry
         // For now, just return an error indicating not implemented
-        return Err(VmError::RuntimeError(
-            format!("JSON type casting not yet fully implemented for type ID: {}", type_id)
-        ));
+        return Err(VmError::RuntimeError(format!(
+            "JSON type casting not yet fully implemented for type ID: {}",
+            type_id
+        )));
 
         // Future implementation:
         // 1. Get TypeSchema from type registry using type_id
         // 2. Get TypeSchemaRegistry (needs to be added to Vm struct)
         // 3. Call validate_cast(json, schema, schema_registry, &mut self.gc)
         // 4. Push resulting typed value onto stack
+    }
+
+    // ===== Concurrency Operations =====
+
+    /// SPAWN - Create a new Task and start it
+    #[allow(dead_code)]
+    fn op_spawn(&mut self, func_index: usize, module: &raya_bytecode::Module) -> VmResult<()> {
+        // Create new Task with the given function
+        let task = Arc::new(Task::new(
+            func_index,
+            Arc::new(module.clone()),
+            None, // No parent task (VM is the spawner, not another task)
+        ));
+
+        // Spawn task on scheduler
+        let task_id = self.scheduler.spawn(task).ok_or_else(|| {
+            VmError::RuntimeError("Failed to spawn task: concurrent task limit reached".to_string())
+        })?;
+
+        // Push TaskId as u64 value onto stack
+        self.stack.push(Value::u64(task_id.as_u64()))?;
+
+        Ok(())
+    }
+
+    /// AWAIT - Wait for a Task to complete and get its result
+    #[allow(dead_code)]
+    fn op_await(&mut self) -> VmResult<()> {
+        // Pop TaskId from stack
+        let task_id_val = self.stack.pop()?;
+        let task_id_u64 = task_id_val
+            .as_u64()
+            .ok_or_else(|| VmError::TypeError("Expected TaskId (u64) for AWAIT".to_string()))?;
+
+        use crate::scheduler::TaskId;
+        let task_id = TaskId::from_u64(task_id_u64);
+
+        // Wait for task to complete
+        loop {
+            // Get task from scheduler
+            let task = self
+                .scheduler
+                .get_task(task_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Task {:?} not found", task_id)))?;
+
+            let state = task.state();
+
+            match state {
+                TaskState::Completed => {
+                    // Get result and push to stack
+                    let result = task.result().unwrap_or(Value::null());
+                    self.stack.push(result)?;
+                    return Ok(());
+                }
+                TaskState::Failed => {
+                    return Err(VmError::RuntimeError(format!(
+                        "Awaited task {:?} failed",
+                        task_id
+                    )));
+                }
+                _ => {
+                    // Task still running, poll safepoint and yield
+                    self.safepoint().poll();
+                    std::thread::sleep(std::time::Duration::from_micros(100));
+                }
+            }
+        }
     }
 }
 
@@ -1147,10 +1372,7 @@ mod tests {
             name: "main".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![
-                Opcode::ConstNull as u8,
-                Opcode::Return as u8,
-            ],
+            code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
         });
 
         let mut vm = Vm::new();
@@ -1165,10 +1387,7 @@ mod tests {
             name: "main".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![
-                Opcode::ConstTrue as u8,
-                Opcode::Return as u8,
-            ],
+            code: vec![Opcode::ConstTrue as u8, Opcode::Return as u8],
         });
 
         let mut vm = Vm::new();
@@ -1183,10 +1402,7 @@ mod tests {
             name: "main".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![
-                Opcode::ConstFalse as u8,
-                Opcode::Return as u8,
-            ],
+            code: vec![Opcode::ConstFalse as u8, Opcode::Return as u8],
         });
 
         let mut vm = Vm::new();
@@ -1201,10 +1417,7 @@ mod tests {
             name: "main".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::Return as u8,
-            ],
+            code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
         });
 
         let mut vm = Vm::new();
@@ -1221,8 +1434,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::ConstI32 as u8, 20, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                20,
+                0,
+                0,
+                0,
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
@@ -1242,8 +1463,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 100, 0, 0, 0,
-                Opcode::ConstI32 as u8, 25, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                100,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                25,
+                0,
+                0,
+                0,
                 Opcode::Isub as u8,
                 Opcode::Return as u8,
             ],
@@ -1263,8 +1492,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 6, 0, 0, 0,
-                Opcode::ConstI32 as u8, 7, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                6,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                7,
+                0,
+                0,
+                0,
                 Opcode::Imul as u8,
                 Opcode::Return as u8,
             ],
@@ -1284,8 +1521,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 100, 0, 0, 0,
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                100,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                5,
+                0,
+                0,
+                0,
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
@@ -1305,8 +1550,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::ConstI32 as u8, 0, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                0,
+                0,
+                0,
+                0,
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
@@ -1327,7 +1580,11 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,
                 Opcode::Dup as u8,
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
@@ -1350,12 +1607,24 @@ mod tests {
             param_count: 0,
             local_count: 2,
             code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::StoreLocal as u8, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::StoreLocal as u8, 1,
-                Opcode::LoadLocal as u8, 0,
-                Opcode::LoadLocal as u8, 1,
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,
+                Opcode::StoreLocal as u8,
+                0,
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0,
+                Opcode::StoreLocal as u8,
+                1,
+                Opcode::LoadLocal as u8,
+                0,
+                Opcode::LoadLocal as u8,
+                1,
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
@@ -1375,8 +1644,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,
                 Opcode::Ieq as u8,
                 Opcode::Return as u8,
             ],
@@ -1396,8 +1673,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0,
                 Opcode::Ine as u8,
                 Opcode::Return as u8,
             ],
@@ -1417,8 +1702,16 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                5,
+                0,
+                0,
+                0,
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0,
                 Opcode::Ilt as u8,
                 Opcode::Return as u8,
             ],
@@ -1438,15 +1731,33 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,  // offset 0-4
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,   // offset 5-9
-                Opcode::Igt as u8,                     // offset 10
-                Opcode::JmpIfFalse as u8, 8, 0,       // offset 11-13, jump +8 to offset 21
-                Opcode::ConstI32 as u8, 1, 0, 0, 0,   // offset 14-18 (then branch)
-                Opcode::Return as u8,                  // offset 19
+                Opcode::ConstI32 as u8,
+                10,
+                0,
+                0,
+                0, // offset 0-4
+                Opcode::ConstI32 as u8,
+                5,
+                0,
+                0,
+                0,                 // offset 5-9
+                Opcode::Igt as u8, // offset 10
+                Opcode::JmpIfFalse as u8,
+                8,
+                0, // offset 11-13, jump +8 to offset 21
+                Opcode::ConstI32 as u8,
+                1,
+                0,
+                0,
+                0,                    // offset 14-18 (then branch)
+                Opcode::Return as u8, // offset 19
                 // else branch starts at offset 20
-                Opcode::ConstI32 as u8, 0, 0, 0, 0,   // offset 20-24
-                Opcode::Return as u8,                  // offset 25
+                Opcode::ConstI32 as u8,
+                0,
+                0,
+                0,
+                0,                    // offset 20-24
+                Opcode::Return as u8, // offset 25
             ],
         });
 
@@ -1467,10 +1778,20 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::Jmp as u8, 5, 0,              // offset 0-2, jump +5 to offset 8
-                Opcode::ConstI32 as u8, 99, 0, 0, 0,  // offset 3-7 (skipped)
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,  // offset 8-12
-                Opcode::Return as u8,                  // offset 13
+                Opcode::Jmp as u8,
+                5,
+                0, // offset 0-2, jump +5 to offset 8
+                Opcode::ConstI32 as u8,
+                99,
+                0,
+                0,
+                0, // offset 3-7 (skipped)
+                Opcode::ConstI32 as u8,
+                42,
+                0,
+                0,
+                0,                    // offset 8-12
+                Opcode::Return as u8, // offset 13
             ],
         });
 

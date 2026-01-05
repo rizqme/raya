@@ -73,12 +73,7 @@ impl Class {
     }
 
     /// Create a new class with parent
-    pub fn with_parent(
-        id: usize,
-        name: String,
-        field_count: usize,
-        parent_id: usize,
-    ) -> Self {
+    pub fn with_parent(id: usize, name: String, field_count: usize, parent_id: usize) -> Self {
         Self {
             id,
             name,

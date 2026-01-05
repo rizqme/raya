@@ -211,6 +211,21 @@ impl Stack {
         Ok(self.slots[pos])
     }
 
+    /// Set value at absolute stack position
+    ///
+    /// # Errors
+    ///
+    /// Returns `VmError::StackUnderflow` if position is out of bounds.
+    #[inline]
+    pub fn set_at(&mut self, pos: usize, value: Value) -> VmResult<()> {
+        if pos >= self.sp {
+            return Err(VmError::StackUnderflow);
+        }
+
+        self.slots[pos] = value;
+        Ok(())
+    }
+
     /// Get current stack depth
     #[inline]
     pub fn depth(&self) -> usize {
@@ -437,7 +452,12 @@ impl Stack {
         for (i, frame) in self.frames.iter().enumerate() {
             println!(
                 "Frame {}: function={}, return_ip={}, bp={}, locals={}, args={}",
-                i, frame.function_id, frame.return_ip, frame.base_pointer, frame.local_count, frame.arg_count
+                i,
+                frame.function_id,
+                frame.return_ip,
+                frame.base_pointer,
+                frame.local_count,
+                frame.arg_count
             );
         }
 

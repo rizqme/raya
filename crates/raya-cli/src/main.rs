@@ -224,7 +224,12 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Run { file, args, watch, inspect } => {
+        Commands::Run {
+            file,
+            args,
+            watch,
+            inspect,
+        } => {
             if watch {
                 println!("Running {} in watch mode...", file);
             } else if inspect {
@@ -238,7 +243,14 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Build { files, out_dir, release, emit_reflection, lib, watch } => {
+        Commands::Build {
+            files,
+            out_dir,
+            release,
+            emit_reflection,
+            lib,
+            watch,
+        } => {
             println!("Building: {:?}", files);
             println!("Output directory: {}", out_dir);
             if lib {
@@ -266,7 +278,12 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Test { pattern, watch, coverage, bail } => {
+        Commands::Test {
+            pattern,
+            watch,
+            coverage,
+            bail,
+        } => {
             if let Some(p) = pattern {
                 println!("Running tests matching: {}", p);
             } else {
@@ -284,7 +301,12 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Install { package, save, save_dev, global } => {
+        Commands::Install {
+            package,
+            save,
+            save_dev,
+            global,
+        } => {
             if let Some(pkg) = package {
                 println!("Installing package: {}", pkg);
                 if save {
@@ -349,7 +371,11 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Doc { out_dir, serve, open } => {
+        Commands::Doc {
+            out_dir,
+            serve,
+            open,
+        } => {
             println!("Generating documentation...");
             println!("Output directory: {}", out_dir);
             if serve {
@@ -375,7 +401,15 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Bundle { file, output, target, release, strip, compress, no_runtime } => {
+        Commands::Bundle {
+            file,
+            output,
+            target,
+            release,
+            strip,
+            compress,
+            no_runtime,
+        } => {
             println!("Bundling: {}", file);
             println!("Output: {}", output);
             println!("Target: {}", target);
@@ -396,7 +430,11 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Init { name, template, yes } => {
+        Commands::Init {
+            name,
+            template,
+            yes,
+        } => {
             if let Some(n) = name {
                 println!("Initializing project: {}", n);
             } else {

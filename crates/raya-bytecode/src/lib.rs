@@ -6,14 +6,14 @@
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
 
-pub mod opcode;
-pub mod module;
 pub mod constants;
-pub mod verify;
 pub mod encoder;
+pub mod module;
+pub mod opcode;
+pub mod verify;
 
-pub use opcode::Opcode;
-pub use module::{Module, ModuleError, Function, ClassDef, Method, Metadata};
 pub use constants::ConstantPool;
 pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
+pub use module::{ClassDef, Function, Metadata, Method, Module, ModuleError};
+pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

@@ -540,46 +540,113 @@ impl SafepointCoordinator {
 
 **Reference:** `design/ARCHITECTURE.md` Section 5.6, `design/SNAPSHOTTING.md` Section 2
 
-### 1.10 Task Scheduler (Goroutine-Style)
+### 1.10 Task Scheduler (Goroutine-Style) ✅
 
-**Goal:** Work-stealing multi-threaded task execution.
+**Status:** Complete
+
+**Goal:** Work-stealing multi-threaded task execution with Go-style asynchronous preemption.
 
 **Tasks:**
-- [ ] Implement Task structure with state machine
-- [ ] Build work-stealing deques (crossbeam)
-- [ ] Create worker thread pool
-- [ ] Add task spawning (SPAWN opcode)
-- [ ] Implement await mechanism (AWAIT opcode)
-- [ ] Task completion tracking
-- [ ] Fair scheduling across contexts
+- [x] Implement Task structure with state machine (Created, Running, Suspended, Resumed, Completed, Failed)
+- [x] Build work-stealing deques (crossbeam-deque with LIFO/FIFO strategy)
+- [x] Create worker thread pool with dynamic worker count
+- [x] Add task spawning (SPAWN opcode in both VM and worker executor)
+- [x] Implement await mechanism (AWAIT opcode with polling loop)
+- [x] Task completion tracking with waiter lists
+- [x] Go-style asynchronous preemption (PreemptMonitor thread, 10ms threshold)
+- [x] SchedulerLimits for inner VMs (max_workers, max_concurrent_tasks, max_stack_size, max_heap_size)
+- [x] Nested task spawning support (tasks can spawn tasks)
+- [x] Safepoint integration with preemption checks at loop headers
+- [x] Fair scheduling across workers with random victim selection
+- [x] Comprehensive integration testing (13 scheduler tests + 9 concurrency tests)
 
 **Files:**
 ```rust
-// crates/raya-core/src/scheduler.rs
-use crossbeam::deque::{Worker, Stealer};
+// crates/raya-core/src/scheduler/mod.rs
+pub use scheduler::{Scheduler, SchedulerLimits};
+pub use task::{Task, TaskHandle, TaskId, TaskState};
+pub use worker::Worker;
+pub use preempt::{PreemptMonitor, DEFAULT_PREEMPT_THRESHOLD};
 
+// crates/raya-core/src/scheduler/scheduler.rs
 pub struct Scheduler {
-    workers: Vec<WorkerThread>,
-    global_queue: Arc<Mutex<VecDeque<TaskId>>>,
-    tasks: HashMap<TaskId, Task>,
+    workers: Vec<Worker>,
+    tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+    injector: Arc<Injector<Arc<Task>>>,
+    safepoint: Arc<SafepointCoordinator>,
+    preempt_monitor: PreemptMonitor,
+    worker_count: usize,
+    started: bool,
+    limits: SchedulerLimits,
 }
 
+// crates/raya-core/src/scheduler/task.rs
 pub struct Task {
     id: TaskId,
-    context_id: VmContextId,  // Which context owns this task
-    state: TaskState,
-    stack: Stack,
-    result: Option<Value>,
-    waiters: Vec<TaskId>,
+    state: Mutex<TaskState>,
+    function_id: usize,
+    module: Arc<Module>,
+    stack: Mutex<Stack>,
+    ip: AtomicUsize,
+    result: Mutex<Option<Value>>,
+    waiters: Mutex<Vec<TaskId>>,
+    parent: Option<TaskId>,
+    preempt_requested: AtomicBool,  // Async preemption
+    start_time: Mutex<Option<Instant>>,
 }
 
 pub enum TaskState {
-    Ready,
-    Running,
-    Suspended,
-    Completed,
+    Created, Running, Suspended, Resumed, Completed, Failed
+}
+
+// crates/raya-core/src/scheduler/worker.rs
+// Worker threads execute tasks with SPAWN/AWAIT support
+pub struct Worker {
+    id: usize,
+    stealers: Vec<Stealer<Arc<Task>>>,
+    injector: Arc<Injector<Arc<Task>>>,
+    tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+    safepoint: Arc<SafepointCoordinator>,
+    handle: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+// crates/raya-core/src/scheduler/preempt.rs
+// Go-style asynchronous preemption monitor (like sysmon)
+pub struct PreemptMonitor {
+    tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+    threshold: Duration,  // Default: 10ms
+    handle: Option<thread::JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
+}
+
+// crates/raya-core/src/vm/interpreter.rs
+fn op_spawn(&mut self, func_index: usize, module: &Module) -> VmResult<()> {
+    let task = Arc::new(Task::new(func_index, Arc::new(module.clone()), None));
+    let task_id = self.scheduler.spawn(task)?;
+    self.stack.push(Value::u64(task_id.as_u64()))?;
+    Ok(())
+}
+
+fn op_await(&mut self) -> VmResult<()> {
+    let task_id = TaskId::from_u64(self.stack.pop()?.as_u64()?);
+    loop {
+        let task = self.scheduler.get_task(task_id)?;
+        match task.state() {
+            TaskState::Completed => {
+                self.stack.push(task.result().unwrap_or(Value::null()))?;
+                return Ok(());
+            }
+            TaskState::Failed => return Err(...),
+            _ => { self.safepoint().poll(); thread::sleep(...); }
+        }
+    }
 }
 ```
+
+**Tests:**
+- `crates/raya-core/tests/scheduler_integration.rs` - 13 comprehensive scheduler tests
+- `crates/raya-core/tests/concurrency_integration.rs` - 9 SPAWN/AWAIT integration tests (including nested task spawning)
 
 **Reference:** `design/ARCHITECTURE.md` Section 4, `design/LANG.md` Section 14
 
@@ -1941,13 +2008,15 @@ function main(): void {
 **Goal:** Enforce sound type safety.
 
 ### Milestone 4: Concurrency (Weeks 21-28)
-- [ ] Task scheduler
-- [ ] Work-stealing
-- [ ] Async/await
+- [x] Task scheduler (✅ Milestone 1.10 complete)
+- [x] Work-stealing (✅ Milestone 1.10 complete)
+- [x] Async/await (✅ SPAWN/AWAIT opcodes implemented)
 - [ ] Mutex support
 - [ ] Task utilities (sleep, all, race)
 
 **Goal:** Run concurrent programs efficiently.
+
+**Progress:** Core scheduler and async/await complete with Go-style preemption, nested task spawning, and comprehensive testing.
 
 ### Milestone 5: Standard Library (Weeks 29-32)
 - [ ] Core types

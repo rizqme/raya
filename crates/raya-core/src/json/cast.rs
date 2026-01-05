@@ -26,8 +26,7 @@
 
 use super::JsonValue;
 use crate::gc::GarbageCollector;
-use crate::gc::GcPtr;
-use crate::object::{Object, RayaString};
+use crate::object::Object;
 use crate::value::Value;
 use crate::{VmError, VmResult};
 use rustc_hash::FxHashMap;
@@ -240,14 +239,12 @@ fn validate_number(json: &JsonValue) -> VmResult<Value> {
 }
 
 /// Validate string type
-fn validate_string(json: &JsonValue, gc: &mut GarbageCollector) -> VmResult<Value> {
+fn validate_string(json: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<Value> {
     match json.as_string() {
         Some(s_ptr) => {
             // String is already heap-allocated, return as-is
             Ok(unsafe {
-                Value::from_ptr(
-                    std::ptr::NonNull::new_unchecked(s_ptr.as_ptr() as *mut u8),
-                )
+                Value::from_ptr(std::ptr::NonNull::new_unchecked(s_ptr.as_ptr() as *mut u8))
             })
         }
         None => Err(VmError::TypeError(format!(
@@ -308,9 +305,7 @@ fn validate_interface(
 
     let obj_ptr = gc.allocate(obj);
 
-    Ok(unsafe {
-        Value::from_ptr(std::ptr::NonNull::new_unchecked(obj_ptr.as_ptr() as *mut u8))
-    })
+    Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new_unchecked(obj_ptr.as_ptr() as *mut u8)) })
 }
 
 /// Validate array type
@@ -356,9 +351,7 @@ fn validate_array(
 
     let arr_ptr = gc.allocate(arr);
 
-    Ok(unsafe {
-        Value::from_ptr(std::ptr::NonNull::new_unchecked(arr_ptr.as_ptr() as *mut u8))
-    })
+    Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new_unchecked(arr_ptr.as_ptr() as *mut u8)) })
 }
 
 /// Validate union type
@@ -408,9 +401,9 @@ fn validate_union(
         // (In practice, the compiler would encode the mapping)
         // For now, we just try each variant in order
         for variant_type_id in variant_type_ids {
-            let variant_schema = schema_registry
-                .get(*variant_type_id)
-                .ok_or_else(|| VmError::TypeError(format!("Unknown type ID: {}", variant_type_id)))?;
+            let variant_schema = schema_registry.get(*variant_type_id).ok_or_else(|| {
+                VmError::TypeError(format!("Unknown type ID: {}", variant_type_id))
+            })?;
 
             // Try to validate against this variant
             if let Ok(value) =
@@ -427,9 +420,9 @@ fn validate_union(
     } else {
         // Bare union (primitives only) - try each variant in order
         for variant_type_id in variant_type_ids {
-            let variant_schema = schema_registry
-                .get(*variant_type_id)
-                .ok_or_else(|| VmError::TypeError(format!("Unknown type ID: {}", variant_type_id)))?;
+            let variant_schema = schema_registry.get(*variant_type_id).ok_or_else(|| {
+                VmError::TypeError(format!("Unknown type ID: {}", variant_type_id))
+            })?;
 
             // Try to validate against this variant
             if let Ok(value) =

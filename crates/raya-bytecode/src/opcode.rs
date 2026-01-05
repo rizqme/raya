@@ -299,7 +299,6 @@ pub enum Opcode {
 
     // ===== Reflection Operations (0xF5-0xFC) - Optional =====
     // Only available when compiled with --emit-reflection
-
     /// Pop value, push TypeInfo object
     ReflectTypeof = 0xF5,
     /// Push TypeInfo for type (operand: u32 typeIndex)
@@ -316,7 +315,6 @@ pub enum Opcode {
     ReflectHasProp = 0xFB,
     /// Pop N args, pop TypeInfo, construct instance (operand: u16 argCount)
     ReflectConstruct = 0xFC,
-
     // ===== Reserved (0xFD-0xFF) =====
     // 0xFD: Reserved for future use
     // 0xFE: Reserved for future use
@@ -634,11 +632,7 @@ impl Opcode {
     pub fn is_jump(self) -> bool {
         matches!(
             self,
-            Self::Jmp
-                | Self::JmpIfFalse
-                | Self::JmpIfTrue
-                | Self::JmpIfNull
-                | Self::JmpIfNotNull
+            Self::Jmp | Self::JmpIfFalse | Self::JmpIfTrue | Self::JmpIfNull | Self::JmpIfNotNull
         )
     }
 

@@ -1,7 +1,7 @@
 //! Synchronization primitives
 
-use parking_lot::Mutex as ParkingLotMutex;
 use crate::scheduler::TaskId;
+use parking_lot::Mutex as ParkingLotMutex;
 
 /// Raya Mutex for task synchronization
 pub struct RayaMutex {
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn test_mutex_lock_unlock() {
         let mutex = RayaMutex::new();
-        let task_id = 1;
+        let task_id = TaskId::new();
 
         assert!(mutex.lock(task_id));
         assert!(mutex.is_locked_by(task_id));

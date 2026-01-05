@@ -142,9 +142,7 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Err(VmError::RuntimeError(
-            "Unterminated string".to_string(),
-        ))
+        Err(VmError::RuntimeError("Unterminated string".to_string()))
     }
 
     /// Unescape a JSON string
@@ -188,7 +186,11 @@ impl<'a> Parser<'a> {
                             c
                         )))
                     }
-                    None => return Err(VmError::RuntimeError("Unexpected end of string".to_string())),
+                    None => {
+                        return Err(VmError::RuntimeError(
+                            "Unexpected end of string".to_string(),
+                        ))
+                    }
                 }
             } else {
                 result.push(ch);
@@ -209,7 +211,9 @@ impl<'a> Parser<'a> {
 
         // Integer part
         if self.pos >= self.bytes.len() {
-            return Err(VmError::RuntimeError("Unexpected end of number".to_string()));
+            return Err(VmError::RuntimeError(
+                "Unexpected end of number".to_string(),
+            ));
         }
 
         if self.bytes[self.pos] == b'0' {
@@ -239,9 +243,13 @@ impl<'a> Parser<'a> {
         }
 
         // Exponent part
-        if self.pos < self.bytes.len() && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E') {
+        if self.pos < self.bytes.len()
+            && (self.bytes[self.pos] == b'e' || self.bytes[self.pos] == b'E')
+        {
             self.pos += 1;
-            if self.pos < self.bytes.len() && (self.bytes[self.pos] == b'+' || self.bytes[self.pos] == b'-') {
+            if self.pos < self.bytes.len()
+                && (self.bytes[self.pos] == b'+' || self.bytes[self.pos] == b'-')
+            {
                 self.pos += 1;
             }
             if self.pos >= self.bytes.len() || !self.bytes[self.pos].is_ascii_digit() {
@@ -255,9 +263,9 @@ impl<'a> Parser<'a> {
         }
 
         let num_str = &self.input[start..self.pos];
-        let num = num_str.parse::<f64>().map_err(|_| {
-            VmError::RuntimeError(format!("Invalid number: {}", num_str))
-        })?;
+        let num = num_str
+            .parse::<f64>()
+            .map_err(|_| VmError::RuntimeError(format!("Invalid number: {}", num_str)))?;
 
         Ok(JsonValue::Number(num))
     }
