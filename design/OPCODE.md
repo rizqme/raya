@@ -185,6 +185,19 @@ The Raya VM uses a **stack-based** bytecode model:
 | `SCONCAT` | — | Pop two strings, push concatenation |
 | `SLEN` | — | Pop string, push length |
 
+**SCONCAT Details:**
+- Pops two string pointers from stack (str2, then str1)
+- Type checked: both values must be heap pointers to RayaString
+- Creates new RayaString with concatenated data
+- Allocates result on GC heap
+- Stack effect: `[str1, str2] → [result]`
+- Result is UTF-8 string: `str1.data + str2.data`
+
+**SLEN Details:**
+- Returns string length in bytes (not character count)
+- UTF-8 strings may have length != character count
+- Stack effect: `[string] → [length:i32]`
+
 ---
 
 ### 3.8 Control Flow
@@ -204,9 +217,20 @@ The Raya VM uses a **stack-based** bytecode model:
 | Opcode | Operands | Description |
 |--------|----------|-------------|
 | `CALL` | `funcIndex`, `argCount` | Call function with N arguments |
-| `CALL_METHOD` | `methodIndex`, `argCount` | Call method on object (vtable dispatch) |
+| `CALL_METHOD` | `u16 methodIndex`, `u8 argCount` | Call method on object (vtable dispatch) |
 | `RETURN` | — | Return from function (pop return value) |
 | `RETURN_VOID` | — | Return from void function |
+
+**CALL_METHOD Details:**
+- Virtual method dispatch via vtable lookup
+- Receiver object must be on stack at position `depth - argCount - 1`
+- Peeks at receiver without popping to get class ID
+- Looks up class from ClassRegistry
+- Looks up method function ID from class vtable using methodIndex
+- Executes function with receiver + arguments on stack
+- Stack layout before call: `[receiver, arg1, arg2, ..., argN]`
+- Stack effect: `[receiver, args...] → [result]`
+- Supports polymorphism: different classes can have different implementations
 
 ---
 
@@ -214,11 +238,31 @@ The Raya VM uses a **stack-based** bytecode model:
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
-| `NEW` | `classIndex` | Allocate new object of class |
-| `LOAD_FIELD` | `fieldOffset` | Pop object, push field value |
-| `STORE_FIELD` | `fieldOffset` | Pop value, pop object, store field |
-| `LOAD_FIELD_FAST` | `offset` | Load field at known offset (optimized) |
-| `STORE_FIELD_FAST` | `offset` | Store field at known offset (optimized) |
+| `NEW` | `u16 classIndex` | Allocate new object of class |
+| `LOAD_FIELD` | `u16 fieldOffset` | Pop object, push field value |
+| `STORE_FIELD` | `u16 fieldOffset` | Pop value, pop object, store field |
+| `LOAD_FIELD_FAST` | `u8 offset` | Load field at known offset (optimized) |
+| `STORE_FIELD_FAST` | `u8 offset` | Store field at known offset (optimized) |
+
+**NEW Details:**
+- Looks up class metadata from ClassRegistry by index
+- Allocates object on GC heap with field_count slots
+- All fields initialized to null
+- Pushes GC pointer as tagged Value
+- Stack effect: `[] → [object]`
+
+**LOAD_FIELD / STORE_FIELD Details:**
+- Field offset is absolute index into object's field array
+- Bounds checked at runtime (errors if offset >= field_count)
+- Type checked: value must be a heap pointer
+- Stack effects:
+  - LOAD_FIELD: `[object] → [value]`
+  - STORE_FIELD: `[object, value] → []`
+
+**LOAD_FIELD_FAST / STORE_FIELD_FAST:**
+- Same as regular variants but with u8 offset (0-255)
+- Used when compiler knows field index is small
+- Saves 1 byte per instruction
 
 ---
 
@@ -226,10 +270,29 @@ The Raya VM uses a **stack-based** bytecode model:
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
-| `NEW_ARRAY` | `typeIndex` | Pop length, create array of type |
+| `NEW_ARRAY` | `u16 typeIndex` | Pop length, create array of type |
 | `LOAD_ELEM` | — | Pop index, pop array, push element |
 | `STORE_ELEM` | — | Pop value, pop index, pop array, store |
 | `ARRAY_LEN` | — | Pop array, push length |
+
+**NEW_ARRAY Details:**
+- Pops length from stack (must be i32)
+- Maximum length: 10,000,000 elements (runtime check)
+- All elements initialized to null
+- Allocates on GC heap with type metadata
+- Stack effect: `[length:i32] → [array]`
+
+**LOAD_ELEM / STORE_ELEM Details:**
+- Index must be i32, converted to usize
+- Bounds checked at runtime (errors if index >= length)
+- Type checked: array value must be heap pointer
+- Stack effects:
+  - LOAD_ELEM: `[array, index:i32] → [value]`
+  - STORE_ELEM: `[array, index:i32, value] → []`
+
+**ARRAY_LEN Details:**
+- Returns length as i32
+- Stack effect: `[array] → [length:i32]`
 
 ---
 
