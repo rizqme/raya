@@ -770,7 +770,7 @@ pub fn marshal(value: Value, from_ctx: &VmContext) -> Result<MarshalledValue, Ma
 pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<Value, MarshallError>;
 ```
 
-**Reference:** `design/INNER_VM.md` (Full specification)
+**Reference:** `design/INNER_VM.md` (Full specification), `plans/milestone-1.13.md` (Implementation plan)
 
 ### 1.14 Integration Testing & Validation
 
