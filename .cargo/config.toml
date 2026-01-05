@@ -1,0 +1,29 @@
+# Cargo configuration
+
+[build]
+# Use all CPU cores for compilation
+jobs = -1
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[alias]
+# Useful aliases
+b = "build"
+br = "build --release"
+t = "test"
+tw = "test --workspace"
+c = "check"
+cw = "check --workspace"
+r = "run"
+
+# Benchmark aliases
+bench-all = "bench --workspace"
+bench-vm = "bench -p raya-core"
+bench-bc = "bench -p raya-bytecode"
+
+# Development aliases
+dev = "watch -x 'check --workspace'"

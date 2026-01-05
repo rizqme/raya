@@ -1,0 +1,12 @@
+[package]
+name = "raya-fmt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Code formatter for Raya"
+
+[dependencies]
+raya-parser = { workspace = true }

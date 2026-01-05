@@ -1,0 +1,12 @@
+[package]
+name = "raya-stdlib"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Standard library native implementations for Raya"
+
+[dependencies]
+raya-core = { workspace = true }

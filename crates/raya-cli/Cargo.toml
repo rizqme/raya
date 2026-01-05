@@ -1,0 +1,20 @@
+[package]
+name = "raya-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Unified CLI tool for Raya"
+
+[[bin]]
+name = "raya"
+path = "src/main.rs"
+
+[dependencies]
+raya-core = { workspace = true }
+raya-bytecode = { workspace = true }
+raya-compiler = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }

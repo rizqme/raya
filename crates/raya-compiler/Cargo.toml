@@ -1,0 +1,15 @@
+[package]
+name = "raya-compiler"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Compiler for Raya (AST to bytecode)"
+
+[dependencies]
+raya-bytecode = { workspace = true }
+raya-parser = { workspace = true }
+raya-types = { workspace = true }
+thiserror = { workspace = true }

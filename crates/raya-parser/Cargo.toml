@@ -1,0 +1,13 @@
+[package]
+name = "raya-parser"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Lexer and parser for the Raya language"
+
+[dependencies]
+logos = { workspace = true }
+thiserror = { workspace = true }

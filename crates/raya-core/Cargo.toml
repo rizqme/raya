@@ -1,0 +1,23 @@
+[package]
+name = "raya-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Core runtime for the Raya VM (interpreter, GC, scheduler)"
+
+[dependencies]
+raya-bytecode = { workspace = true }
+crossbeam = { workspace = true }
+parking_lot = { workspace = true }
+rustc-hash = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "vm_execution"
+harness = false

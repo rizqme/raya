@@ -58,15 +58,17 @@ rayavm/
 
 ## Phase 1: VM Core
 
-**Goal:** Build a functional bytecode interpreter with garbage collection and task scheduling.
+**Goal:** Build a functional bytecode interpreter with garbage collection, task scheduling, and VM controllability.
 
-### 1.1 Project Setup
+### 1.1 Project Setup ✅
+
+**Status:** Complete
 
 **Tasks:**
 - [x] Initialize Rust workspace
-- [ ] Set up crate structure
-- [ ] Configure CI/CD (GitHub Actions)
-- [ ] Set up benchmarking infrastructure
+- [x] Set up crate structure
+- [x] Configure dependencies
+- [x] Set up testing infrastructure
 
 **Files:**
 ```
@@ -75,16 +77,18 @@ crates/raya-bytecode/Cargo.toml
 crates/raya-core/Cargo.toml
 ```
 
-### 1.2 Bytecode Definitions
+### 1.2 Bytecode Definitions ✅
 
 **Crate:** `raya-bytecode`
 
+**Status:** Complete
+
 **Tasks:**
-- [ ] Define `Opcode` enum (all opcodes from OPCODE.md)
-- [ ] Implement bytecode encoding/decoding
-- [ ] Create bytecode module format
-- [ ] Add constant pool structure
-- [ ] Implement bytecode verification
+- [x] Define `Opcode` enum (all opcodes from OPCODE.md)
+- [x] Implement bytecode encoding/decoding
+- [x] Create bytecode module format
+- [x] Add constant pool structure
+- [x] Implement bytecode verification
 
 **Files:**
 ```rust
@@ -116,104 +120,151 @@ pub struct Module {
 
 **Reference:** `design/OPCODE.md`
 
-### 1.3 Memory Management, GC, Inner VMs & Snapshotting (Phase 1)
+### 1.3 Value Representation & Type Metadata
 
 **Crate:** `raya-core`
 
-**Goal:** Build integrated memory system with per-context heaps, precise GC, VM snapshotting, and inner VM support.
+**Status:** ✅ Complete
 
-**Architecture:**
-- One heap per VmContext (strong isolation)
-- Precise mark-sweep GC using type metadata
-- Stop-the-world pauses via safepoints
-- Full VM state snapshotting
-- Resource limits per context
+**Goal:** Foundation for precise GC - efficient value encoding and type metadata for pointer scanning.
 
 **Tasks:**
-- [ ] Implement value representation (tagged pointers)
-- [ ] Build type metadata and pointer maps
-- [ ] Create VmContext structure (heap, resources, limits)
-- [ ] Implement per-context heap allocator
-- [ ] Build precise mark-sweep GC with type metadata
-- [ ] Add safepoint infrastructure (for GC and snapshots)
-- [ ] Implement VM snapshotting (pause, serialize, resume)
-- [ ] Create inner VM API (Vm creation, capabilities, marshalling)
-- [ ] Add resource accounting and enforcement
+- [x] Implement tagged pointer value representation
+- [x] Build PointerMap system for precise GC
+- [x] Create TypeRegistry for runtime type information
+- [x] Register standard built-in types
+- [x] Implement GcHeader with type metadata
+- [x] Create GcPtr smart pointer
+- [x] Add VmContext structure with resource limits
+- [x] Implement per-context heap allocator
 
-**Files:**
+**Files Implemented:**
 ```rust
-// crates/raya-core/src/value.rs
+// crates/raya-core/src/value.rs - ✅ COMPLETE
 #[repr(transparent)]
-pub struct Value(u64);  // Tagged pointer
+pub struct Value(u64);  // Tagged pointer: i32, bool, null inline, heap pointers
 
-// crates/raya-core/src/types/mod.rs
-pub struct TypeInfo {
-    type_id: TypeId,
-    pointer_map: PointerMap,
+impl Value {
+    pub const fn null() -> Self;
+    pub const fn bool(b: bool) -> Self;
+    pub const fn i32(i: i32) -> Self;
+    pub unsafe fn from_ptr<T>(ptr: NonNull<T>) -> Self;
+
+    pub const fn is_null(&self) -> bool;
+    pub const fn is_bool(&self) -> bool;
+    pub const fn is_i32(&self) -> bool;
+    pub const fn is_ptr(&self) -> bool;
+    pub const fn is_heap_allocated(&self) -> bool;
+
+    pub unsafe fn as_ptr<T>(&self) -> Option<NonNull<T>>;
 }
 
+// crates/raya-core/src/types/pointer_map.rs - ✅ COMPLETE
 pub enum PointerMap {
-    None,                    // No pointers
-    All(usize),              // All fields are pointers
-    Offsets(Vec<usize>),     // Specific offsets
+    None,                         // No pointers (primitives)
+    All(usize),                   // All fields are pointers
+    Offsets(Vec<usize>),          // Specific field offsets
+    Array { length, element_map } // Array elements
 }
 
-// crates/raya-core/src/vm/context.rs
+impl PointerMap {
+    pub fn none() -> Self;
+    pub fn offsets(offsets: Vec<usize>) -> Self;
+    pub fn has_pointers(&self) -> bool;
+    pub fn pointer_count(&self) -> usize;
+    pub fn for_each_pointer_offset<F>(&self, base_offset: usize, f: F);
+}
+
+// crates/raya-core/src/types/registry.rs - ✅ COMPLETE
+pub struct TypeInfo {
+    pub type_id: TypeId,
+    pub name: &'static str,
+    pub size: usize,
+    pub align: usize,
+    pub pointer_map: PointerMap,
+    pub drop_fn: Option<DropFn>,
+}
+
+pub struct TypeRegistry {
+    types: Arc<HashMap<TypeId, TypeInfo>>,
+}
+
+impl TypeRegistry {
+    pub fn builder() -> TypeRegistryBuilder;
+    pub fn get(&self, type_id: TypeId) -> Option<&TypeInfo>;
+    pub fn for_each_pointer<F>(&self, base_ptr: *mut u8, type_id: TypeId, f: F);
+}
+
+pub fn create_standard_registry() -> TypeRegistry; // i32, i64, f32, f64, bool, String, etc.
+
+// crates/raya-core/src/gc/header.rs - ✅ COMPLETE
+#[repr(C, align(8))]
+pub struct GcHeader {
+    marked: bool,
+    context_id: VmContextId,
+    type_id: TypeId,
+    size: usize,
+}
+
+// crates/raya-core/src/gc/ptr.rs - ✅ COMPLETE
+pub struct GcPtr<T: ?Sized> {
+    ptr: NonNull<T>,
+}
+
+impl<T: ?Sized> GcPtr<T> {
+    pub unsafe fn new(ptr: NonNull<T>) -> Self;
+    pub fn as_ptr(&self) -> *mut T;
+    pub unsafe fn header(&self) -> &GcHeader;
+    pub fn is_marked(&self) -> bool;
+    pub fn mark(&self);
+    pub fn unmark(&self);
+}
+
+// crates/raya-core/src/vm/context.rs - ✅ COMPLETE
 pub struct VmContext {
     id: VmContextId,
-    heap: Heap,                  // Per-context heap
+    gc: GarbageCollector,
     globals: HashMap<String, Value>,
+    limits: ResourceLimits,
+    counters: ResourceCounters,
     type_registry: Arc<TypeRegistry>,
-    resource_limits: ResourceLimits,
-    resource_counters: ResourceCounters,
-    gc_threshold: usize,
 }
 
-// crates/raya-core/src/gc/collector.rs
-pub struct GarbageCollector {
+pub struct ResourceLimits {
+    pub max_heap_bytes: Option<usize>,
+    pub max_tasks: Option<usize>,
+    pub max_step_budget: Option<u64>,
+}
+
+// crates/raya-core/src/gc/heap.rs - ✅ COMPLETE
+pub struct Heap {
     context_id: VmContextId,
-    heap: Heap,
-    roots: RootSet,
     type_registry: Arc<TypeRegistry>,
+    allocations: Vec<*mut GcHeader>,
+    allocated_bytes: usize,
+    max_heap_bytes: usize,
 }
 
-impl GarbageCollector {
-    pub fn collect(&mut self);  // Per-context collection
-}
-
-// crates/raya-core/src/vm/safepoint.rs
-pub struct SafepointCoordinator {
-    gc_pending: AtomicBool,
-    snapshot_pending: AtomicBool,
-    barrier: Barrier,
-}
-
-// crates/raya-core/src/vm/snapshot.rs
-pub fn snapshot_context(context: &VmContext) -> Result<Snapshot, SnapError>;
-pub fn restore_context(snapshot: Snapshot) -> Result<VmContext, RestoreError>;
-
-// crates/raya-core/src/vm/inner.rs
-pub struct Vm {
-    context: VmContext,
-}
-
-impl Vm {
-    pub fn new(options: VmOptions) -> Self;
-    pub fn allocate<T>(&mut self, value: T) -> GcPtr<T>;
-    pub fn snapshot(&self) -> Result<Snapshot, SnapError>;
-    pub fn get_stats(&self) -> VmStats;
+impl Heap {
+    pub fn allocate<T: 'static>(&mut self, value: T) -> GcPtr<T>;
+    pub fn allocate_array<T: 'static>(&mut self, len: usize) -> GcPtr<[T]>;
+    pub unsafe fn free(&mut self, header_ptr: *mut GcHeader);
 }
 ```
 
-**References:**
-- `design/ARCHITECTURE.md` Section 5 (Memory Model)
-- `design/SNAPSHOTTING.md` (VM Snapshotting Design)
-- `design/INNER_VM.md` (Inner VM & Controllability)
-- `plans/milestone-1.3-memory-gc.md` (Detailed implementation plan)
+**Reference:** `design/ARCHITECTURE.md` Section 5.2, 5.3
 
-**Future Phases:**
-- Phase 2: Generational GC (young-gen copying collector)
-- Phase 3: Incremental/Concurrent GC (if needed)
+**What's Complete:**
+- Tagged pointer value system with 64-bit encoding
+- Complete type metadata infrastructure (PointerMap + TypeRegistry)
+- GC-managed heap allocator with per-context isolation
+- Resource limits and accounting (heap size, task count, CPU budget)
+- GC header with mark bit, context ID, type ID, and allocation size
+- Smart pointer type (GcPtr) with automatic header access
+
+**Next Steps:**
+- Section 1.4: Stack & Frame Management
+- Section 1.5: Basic Bytecode Interpreter (opcodes for constants, arithmetic, control flow)
 
 ### 1.4 Stack & Frame Management
 
@@ -243,23 +294,24 @@ pub struct CallFrame {
 
 **Reference:** `design/ARCHITECTURE.md` Section 3
 
-### 1.5 Bytecode Interpreter
+### 1.5 Bytecode Interpreter (Basic)
+
+**Goal:** Execute simple bytecode programs without GC or concurrency.
 
 **Tasks:**
 - [ ] Build instruction dispatch loop
-- [ ] Implement all arithmetic opcodes (IADD, FADD, NADD, etc.)
-- [ ] Implement control flow (JMP, JMP_IF_TRUE, etc.)
+- [ ] Implement arithmetic opcodes (IADD, FADD, NADD, etc.)
+- [ ] Implement control flow (JMP, JMP_IF_TRUE, JMP_IF_FALSE)
 - [ ] Implement function calls (CALL, RETURN)
-- [ ] Add error handling (THROW, TRAP)
-- [ ] Optimize dispatch (computed goto, threaded code)
+- [ ] Add local variable access (LOAD_LOCAL, STORE_LOCAL)
+- [ ] Basic error handling
 
 **Files:**
 ```rust
-// crates/raya-core/src/vm.rs
+// crates/raya-core/src/vm/interpreter.rs
 pub struct Vm {
+    gc: GarbageCollector,
     stack: Stack,
-    gc: Gc,
-    scheduler: Scheduler,
     globals: HashMap<String, Value>,
 }
 
@@ -281,18 +333,20 @@ impl Vm {
 
 ### 1.6 Object Model
 
+**Goal:** Heap-allocated objects with class-based structure.
+
 **Tasks:**
-- [ ] Implement object allocation
+- [ ] Implement Object and Class structures
 - [ ] Add field access (LOAD_FIELD, STORE_FIELD)
 - [ ] Build vtable system for method dispatch
-- [ ] Implement class metadata
-- [ ] Add array operations
+- [ ] Add array operations (NEW_ARRAY, ARRAY_LOAD, ARRAY_STORE)
+- [ ] Implement string operations
 
 **Files:**
 ```rust
 // crates/raya-core/src/object.rs
 pub struct Object {
-    class: ClassRef,
+    class_id: usize,
     fields: Vec<Value>,
 }
 
@@ -310,21 +364,139 @@ pub struct VTable {
 
 **Reference:** `design/LANG.md` Section 8, `design/ARCHITECTURE.md` Section 2
 
-### 1.7 Task Scheduler
+### 1.7 Memory Management & Garbage Collection
+
+**Goal:** Per-context precise mark-sweep GC with type metadata.
+
+**Status:** 🔄 Foundation Complete, GC Implementation Pending
 
 **Tasks:**
-- [ ] Implement Task structure
-- [ ] Build work-stealing deque
+- [x] Create VmContext structure (heap, resources, limits)
+- [x] Implement per-context heap allocator
+- [x] Create GcHeader with type metadata
+- [x] Build basic GarbageCollector structure
+- [x] Add allocation threshold checking
+- [ ] Build precise mark-sweep GC with type-metadata-guided pointer traversal
+- [ ] Root set management (stack, globals) integration
+- [ ] GC statistics and tuning
+
+**Files Implemented:**
+```rust
+// crates/raya-core/src/vm/context.rs - ✅ COMPLETE
+pub struct VmContext {
+    id: VmContextId,
+    gc: GarbageCollector,
+    globals: HashMap<String, Value>,
+    limits: ResourceLimits,
+    counters: ResourceCounters,
+    type_registry: Arc<TypeRegistry>,
+}
+
+impl VmContext {
+    pub fn new() -> Self;
+    pub fn with_options(options: VmOptions) -> Self;
+    pub fn gc(&self) -> &GarbageCollector;
+    pub fn gc_mut(&mut self) -> &mut GarbageCollector;
+    pub fn collect_garbage(&mut self);
+}
+
+// crates/raya-core/src/gc/collector.rs - 🔄 PARTIAL (structure done, mark phase needs completion)
+pub struct GarbageCollector {
+    heap: Heap,
+    roots: RootSet,
+    threshold: usize,
+    stats: GcStats,
+}
+
+impl GarbageCollector {
+    pub fn new(context_id: VmContextId, type_registry: Arc<TypeRegistry>) -> Self;
+    pub fn allocate<T: 'static>(&mut self, value: T) -> GcPtr<T>;
+    pub fn collect(&mut self);  // Per-context collection
+    pub fn add_root(&mut self, value: Value);
+
+    // TODO: Implement precise marking with type metadata
+    fn mark_value(&mut self, value: Value);  // Currently placeholder
+}
+
+// crates/raya-core/src/gc/roots.rs - ✅ COMPLETE
+pub struct RootSet {
+    stack_roots: Vec<Value>,
+    global_roots: Vec<Value>,
+}
+```
+
+**Reference:** `design/ARCHITECTURE.md` Section 5, `plans/milestone-1.3.md`
+
+**What's Complete:**
+- VmContext with isolated per-context heaps
+- Resource limits (max heap size, max tasks, CPU budget)
+- Heap allocator with type-aware allocation
+- GC skeleton with threshold-based collection triggering
+- Basic mark-sweep structure (mark phase needs type-metadata integration)
+
+**What's Pending:**
+- Precise pointer traversal using TypeRegistry in mark phase
+- Integration with Stack for automatic root scanning
+- Performance tuning and GC statistics
+
+**Future Enhancements:**
+- Phase 2: Generational GC (young-gen copying collector)
+- Phase 3: Incremental/Concurrent GC (if needed)
+
+### 1.8 Safepoint Infrastructure
+
+**Goal:** Coordinated stop-the-world pauses for GC and snapshotting.
+
+**Tasks:**
+- [ ] Implement SafepointCoordinator
+- [ ] Add safepoint poll mechanism
+- [ ] STW pause protocol (request, wait, resume)
+- [ ] Insert safepoints at: function calls, loop back-edges, allocations, await points
+- [ ] Integration with interpreter loop
+
+**Files:**
+```rust
+// crates/raya-core/src/vm/safepoint.rs
+pub struct SafepointCoordinator {
+    gc_pending: AtomicBool,
+    snapshot_pending: AtomicBool,
+    workers_at_safepoint: AtomicUsize,
+    barrier: Barrier,
+}
+
+impl SafepointCoordinator {
+    #[inline(always)]
+    pub fn poll(&self) {
+        if self.gc_pending.load(Ordering::Acquire) ||
+           self.snapshot_pending.load(Ordering::Acquire) {
+            self.enter_safepoint();
+        }
+    }
+
+    pub fn request_stw_pause(&self, reason: StopReason);
+    pub fn resume_from_pause(&self);
+}
+```
+
+**Reference:** `design/ARCHITECTURE.md` Section 5.6, `design/SNAPSHOTTING.md` Section 2
+
+### 1.9 Task Scheduler (Goroutine-Style)
+
+**Goal:** Work-stealing multi-threaded task execution.
+
+**Tasks:**
+- [ ] Implement Task structure with state machine
+- [ ] Build work-stealing deques (crossbeam)
 - [ ] Create worker thread pool
 - [ ] Add task spawning (SPAWN opcode)
 - [ ] Implement await mechanism (AWAIT opcode)
-- [ ] Add task completion tracking
+- [ ] Task completion tracking
+- [ ] Fair scheduling across contexts
 
 **Files:**
 ```rust
 // crates/raya-core/src/scheduler.rs
 use crossbeam::deque::{Worker, Stealer};
-use parking_lot::Mutex;
 
 pub struct Scheduler {
     workers: Vec<WorkerThread>,
@@ -332,14 +504,9 @@ pub struct Scheduler {
     tasks: HashMap<TaskId, Task>,
 }
 
-pub struct WorkerThread {
-    id: WorkerId,
-    local_queue: Worker<TaskId>,
-    stealers: Vec<Stealer<TaskId>>,
-}
-
 pub struct Task {
     id: TaskId,
+    context_id: VmContextId,  // Which context owns this task
     state: TaskState,
     stack: Stack,
     result: Option<Value>,
@@ -354,15 +521,18 @@ pub enum TaskState {
 }
 ```
 
-**Reference:** `design/ARCHITECTURE.md` Section 4
+**Reference:** `design/ARCHITECTURE.md` Section 4, `design/LANG.md` Section 14
 
-### 1.8 Synchronization
+### 1.10 Synchronization (Mutex)
+
+**Goal:** Thread-safe mutual exclusion without await in critical sections.
 
 **Tasks:**
-- [ ] Implement Mutex type
+- [ ] Implement RayaMutex type
 - [ ] Add MUTEX_LOCK / MUTEX_UNLOCK opcodes
-- [ ] Ensure no await in critical sections (compile-time check)
-- [ ] Add deadlock detection (debug mode)
+- [ ] Compile-time check: no await in critical sections
+- [ ] Runtime deadlock detection (debug mode)
+- [ ] Integration with task scheduler
 
 **Files:**
 ```rust
@@ -380,23 +550,118 @@ impl RayaMutex {
 
 **Reference:** `design/LANG.md` Section 15
 
-### 1.9 Testing
+### 1.11 VM Snapshotting
+
+**Goal:** Pause, serialize, and resume entire VM state.
 
 **Tasks:**
-- [ ] Write unit tests for each opcode
-- [ ] Create integration tests for bytecode execution
-- [ ] Add GC stress tests
-- [ ] Test concurrent task execution
-- [ ] Benchmark performance
+- [ ] Implement snapshot coordination with GC
+- [ ] Serialize heap state (allocations, pointer graphs, type info)
+- [ ] Serialize context metadata (ID, resources, counters)
+- [ ] Implement restore from snapshot
+- [ ] Define snapshot binary format
+- [ ] Multi-context snapshotting support
+
+**Files:**
+```rust
+// crates/raya-core/src/vm/snapshot.rs
+pub struct Snapshot {
+    magic: [u8; 4],        // "SNAP"
+    version: u32,
+    contexts: Vec<ContextSnapshot>,
+    checksum: u32,
+}
+
+pub fn snapshot_context(context: &VmContext) -> Result<Snapshot, SnapError> {
+    // Ensure no GC in progress
+    // Request STW pause
+    // Serialize heap and metadata
+    // Resume
+}
+
+pub fn restore_context(snapshot: Snapshot) -> Result<VmContext, RestoreError> {
+    // Recreate heap
+    // Restore pointer graph
+    // Assign new context ID
+}
+```
+
+**Reference:** `design/SNAPSHOTTING.md` (Full specification)
+
+### 1.12 Inner VMs & Controllability
+
+**Goal:** Nested VMs with resource limits and capability-based security.
+
+**Tasks:**
+- [ ] Implement Vm creation with VmOptions
+- [ ] Resource accounting and enforcement
+- [ ] Capability injection system
+- [ ] Data marshalling across context boundaries
+- [ ] Foreign handle system for cross-context references
+- [ ] Context termination and cleanup
+
+**Files:**
+```rust
+// crates/raya-core/src/vm/inner.rs
+pub struct VmOptions {
+    pub max_heap_bytes: Option<usize>,
+    pub max_tasks: Option<usize>,
+    pub max_step_budget: Option<usize>,
+}
+
+pub trait Capability {
+    fn name(&self) -> &str;
+    fn invoke(&self, args: &[Value]) -> Result<Value, VmError>;
+}
+
+// crates/raya-core/src/vm/marshal.rs
+pub enum MarshalledValue {
+    Null,
+    Bool(bool),
+    I32(i32),
+    String(String),           // Deep copy
+    Array(Vec<MarshalledValue>), // Deep copy
+    Foreign(ForeignHandle),    // Opaque handle
+}
+
+pub fn marshal(value: Value, from_ctx: &VmContext) -> Result<MarshalledValue, MarshallError>;
+pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<Value, MarshallError>;
+```
+
+**Reference:** `design/INNER_VM.md` (Full specification)
+
+### 1.13 Integration Testing & Validation
+
+**Goal:** Comprehensive test coverage for all VM systems.
+
+**Tasks:**
+- [ ] Unit tests for each opcode
+- [ ] Integration tests for bytecode execution
+- [ ] GC stress tests (allocation patterns, memory pressure)
+- [ ] Multi-context isolation tests
+- [ ] Concurrent task execution tests
+- [ ] Snapshot/restore validation
+- [ ] Inner VM security boundary tests
+- [ ] Resource limit enforcement tests
+- [ ] Performance benchmarks
 
 **Files:**
 ```
 crates/raya-core/tests/
-├── opcodes.rs
-├── gc.rs
-├── tasks.rs
-└── integration.rs
+├── opcodes.rs            # Individual opcode tests
+├── gc.rs                 # GC correctness and stress tests
+├── tasks.rs              # Concurrency and scheduling tests
+├── snapshot.rs           # Snapshot/restore validation
+├── inner_vm.rs           # Inner VM isolation tests
+├── integration.rs        # End-to-end scenarios
+└── benchmarks.rs         # Performance measurements
 ```
+
+**Test Coverage Goals:**
+- >90% code coverage for core VM
+- >85% for GC and memory management
+- Stress tests running for hours without crashes
+- All design examples from specification working
 
 ---
 
