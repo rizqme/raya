@@ -65,36 +65,47 @@ rayavm/
 
 ## 🔑 Critical Design Principles
 
-### 1. **Fully Static Type System (NO Runtime Type Checks)**
+### 1. **Type System with typeof for Primitives**
+
+**ALLOWED FOR PRIMITIVES:**
+- `typeof` operator for bare unions of primitives (`string | number | boolean | null`)
+- Control flow-based type narrowing
+- Exhaustiveness checking
 
 **ABSOLUTELY BANNED:**
-- `typeof` operator
 - `instanceof` operator
 - `any` type
 - Type assertions (`as`)
 - Type casts
 - Runtime type tags/RTTI (except with `--emit-reflection` flag)
 
-**REQUIRED INSTEAD:**
-- Discriminated unions with explicit discriminant fields
-- Compile-time type narrowing only
-- Exhaustiveness checking
-- Value-based discrimination (e.g., checking a `kind` field)
+**Two Patterns for Unions:**
 
-**Example:**
+**1. Bare Unions (Primitives Only) - Use `typeof`:**
 ```typescript
-// ❌ BANNED in Raya
-if (typeof x === "string") { ... }
+// ✅ ALLOWED for primitives
+type ID = string | number;
+let id: ID = 42;
 
-// ✅ REQUIRED in Raya
+if (typeof id === "number") {
+  console.log(id + 1);  // id is narrowed to number
+} else {
+  console.log(id.toUpperCase());  // id is narrowed to string
+}
+```
+
+**2. Discriminated Unions (Complex Types) - Use Discriminants:**
+```typescript
+// ✅ REQUIRED for objects/classes
 type Value =
   | { kind: "string"; value: string }
   | { kind: "number"; value: number };
 
-match(value, {
-  string: (v) => console.log(v.value),
-  number: (v) => console.log(v.value)
-});
+if (value.kind === "string") {
+  console.log(value.value.toUpperCase());
+} else {
+  console.log(value.value.toFixed(2));
+}
 ```
 
 ### 2. **Monomorphization (Like Rust/C++)**
@@ -299,15 +310,23 @@ type Result<T, E> =
 
 Priority for discriminant inference: `kind > type > tag > variant > alphabetical`
 
-### Bare Unions (Automatic Boxing)
+### Bare Unions (typeof for Primitives)
 
-Primitive-only unions are automatically boxed:
+Primitive-only unions use `typeof` for type narrowing:
 
 ```typescript
 type ID = string | number;
-// Compiler transforms to:
-// type ID = { $type: "string"; $value: string }
-//         | { $type: "number"; $value: number };
+let id: ID = 42;
+
+// Use typeof for type narrowing
+if (typeof id === "number") {
+  console.log(id + 1);  // id is number here
+} else {
+  console.log(id.toUpperCase());  // id is string here
+}
+
+// Values stored directly, no boxing
+// Runtime: Value::i32(42) or Value::string_ptr(...)
 ```
 
 ### Tasks vs Promises
@@ -405,14 +424,25 @@ cargo run -p raya-cli -- run program.raya
 
 ## ✨ Quick Decision Guide for AI Assistants
 
-**Question:** "Should I add runtime type checking?"
-**Answer:** ❌ NO. All types are compile-time only (unless using optional reflection).
-
 **Question:** "Can I use `typeof` in Raya code?"
-**Answer:** ❌ NO. Use discriminated unions instead.
+**Answer:** ✅ YES, for bare unions of primitives (`string | number | boolean | null`). Use discriminated unions for complex types.
 
-**Question:** "How do I handle union types?"
-**Answer:** ✅ Discriminated unions with explicit discriminant fields + `match()`.
+**Question:** "How do I handle primitive unions?"
+**Answer:** ✅ Use `typeof` for type narrowing:
+```typescript
+type ID = string | number;
+if (typeof id === "number") { /* ... */ }
+```
+
+**Question:** "How do I handle object/class unions?"
+**Answer:** ✅ Discriminated unions with explicit discriminant fields:
+```typescript
+type Value = { kind: "str"; value: string } | { kind: "num"; value: number };
+if (value.kind === "str") { /* ... */ }
+```
+
+**Question:** "Should I add runtime type checking for complex types?"
+**Answer:** ❌ NO. All complex types use compile-time discriminants (unless using optional reflection).
 
 **Question:** "Should generic code be type-erased?"
 **Answer:** ❌ NO. Use monomorphization (like Rust/C++).

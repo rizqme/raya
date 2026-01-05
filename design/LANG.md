@@ -369,12 +369,12 @@ type Result = Success | Failure;
 
 Raya supports two patterns for union types:
 
-1. **Bare Primitive Unions** — Automatically transformed by compiler (simple primitives only)
+1. **Bare Primitive Unions** — Use `typeof` for type narrowing (simple primitives only)
 2. **Discriminated Unions** — Explicit discriminant fields (for complex types)
 
-#### Bare Primitive Unions (Compiler-Transformed)
+#### Bare Primitive Unions (typeof Operator)
 
-For **primitive types only** (`string`, `number`, `boolean`, `null`), you can write bare unions and the compiler automatically transforms them:
+For **primitive types only** (`string`, `number`, `boolean`, `null`), you can write bare unions and use `typeof` for type narrowing:
 
 ```ts
 type ID = string | number;
@@ -382,21 +382,20 @@ type ID = string | number;
 let id: ID = 42;  // OK
 id = "abc";       // OK
 
-// Pattern match using match() utility
-import { match } from "raya:std";
-
-const result = match(id, {
-  string: (s) => `String ID: ${s}`,
-  number: (n) => `Numeric ID: ${n}`
-});
+// Type narrowing with typeof
+if (typeof id === "number") {
+  console.log(id + 1);  // id is narrowed to number
+} else {
+  console.log(id.toUpperCase());  // id is narrowed to string
+}
 ```
 
 **How it works:**
 
-1. Compiler sees `string | number`
-2. Internally transforms to: `{ $type: "string"; $value: string } | { $type: "number"; $value: number }`
-3. All operations transparently unwrap the value
-4. Use `match()` from `raya:std` for type narrowing
+1. Bare unions store values **directly** without boxing
+2. Use `typeof` operator for runtime type checking
+3. Compiler performs **control flow-based type narrowing**
+4. Exhaustiveness checking ensures all cases are handled
 
 **Supported bare unions:**
 - `string | number`
@@ -410,62 +409,84 @@ const result = match(id, {
 - For complex types, use discriminated unions
 
 **Benefits:**
-- ✅ Simple syntax for common cases
-- ✅ Full type safety maintained
-- ✅ Works everywhere (not just JSON)
-- ✅ Compiler handles complexity
+- ✅ Familiar syntax (matches JavaScript/TypeScript)
+- ✅ No memory overhead (values stored directly)
+- ✅ Better performance (no boxing/unboxing)
+- ✅ Natural type narrowing with control flow
+- ✅ Exhaustiveness checking at compile time
 
-**Implementation Details:**
+**typeof Operator:**
 
-Bare primitive unions are implemented using automatic boxing at runtime:
+The `typeof` operator returns a string indicating the type:
 
-1. **Runtime Representation:**
-   ```ts
-   // Internal representation (not accessible to user code)
-   type BareUnion<T> = {
-     $type: "string" | "number" | "boolean" | "null";
-     $value: T;
-   }
-   ```
-   - The `$type` and `$value` fields are REAL runtime fields
-   - Users CANNOT access these fields (compiler error if attempted)
-   - Memory overhead: ~16 bytes per value on 64-bit systems (pointer + tag + value)
+```ts
+typeof 42           // "number"
+typeof "hello"      // "string"
+typeof true         // "boolean"
+typeof null         // "null"
+typeof { x: 1 }     // "object"
+typeof [1, 2, 3]    // "object"
+typeof (() => {})   // "function"
+```
 
-2. **Automatic Operations:**
-   - **Assignment**: Compiler inserts boxing code
-     ```ts
-     let id: string | number = 42;
-     // Compiles to:
-     // id = { $type: "number", $value: 42 }
-     ```
-   - **Method calls**: Compiler inserts unboxing code
-     ```ts
-     id.toString();  // If id is number
-     // Compiles to: id.$value.toString()
-     ```
-   - **match()**: Compiler generates discriminant check on `$type`
-     ```ts
-     match(id, { number: (n) => n + 1 })
-     // Compiles to: if (id.$type === "number") { return id.$value + 1 }
-     ```
+**Type Narrowing Examples:**
 
-3. **User Code Restrictions:**
-   ```ts
-   let id: string | number = 42;
+```ts
+// Simple if/else
+function process(value: string | number): string {
+  if (typeof value === "number") {
+    return value.toFixed(2);  // value is number
+  } else {
+    return value.toUpperCase();  // value is string
+  }
+}
 
-   // ❌ FORBIDDEN - compiler error
-   console.log(id.$type);   // Error: Cannot access internal field
-   console.log(id.$value);  // Error: Cannot access internal field
+// Switch statement
+function describe(v: string | number | boolean): string {
+  switch (typeof v) {
+    case "string":
+      return `String: "${v}"`;
+    case "number":
+      return `Number: ${v}`;
+    case "boolean":
+      return `Boolean: ${v}`;
+  }
+  // Compiler enforces exhaustiveness
+}
 
-   // ✅ ALLOWED - automatic unwrapping
-   const len = id.toString().length;  // OK: compiler unwraps automatically
-   ```
+// Nullable types
+function greet(name: string | null): string {
+  if (typeof name === "string") {
+    return `Hello, ${name}!`;
+  }
+  return "Hello, stranger!";
+}
 
-4. **Performance Characteristics:**
-   - Each bare union value requires allocation and indirection
-   - Discriminant check is a simple string/number comparison
-   - No type tags or RTTI involved
-   - Trade-off: Simplicity and type safety vs. memory overhead
+// Early return pattern
+function parse(input: string | number): number {
+  if (typeof input === "number") {
+    return input;
+  }
+  // input is narrowed to string here
+  return parseInt(input, 10);
+}
+```
+
+**Runtime Representation:**
+
+Values are stored directly without boxing:
+
+```ts
+type ID = string | number;
+let id: ID = 42;
+// Runtime: Value::i32(42) - stored inline, no wrapper
+```
+
+**Performance Characteristics:**
+- ✅ Zero memory overhead (no boxing)
+- ✅ Direct value storage (no indirection)
+- ✅ Fast type checks (single opcode)
+- ✅ No allocations for type narrowing
 
 #### Discriminated Unions (Explicit Pattern)
 

@@ -1,36 +1,66 @@
-//! Virtual machine interpreter
+# Milestone 1.5: Basic Bytecode Interpreter
 
-use raya_bytecode::{Module, Opcode};
-use crate::{gc::GarbageCollector, stack::Stack, value::Value, VmError, VmResult};
+**Status:** ✅ Complete
+**Goal:** Execute simple bytecode programs with arithmetic, control flow, and function calls
+**Dependencies:** Milestone 1.4 (Stack & Frame Management)
 
-/// Raya virtual machine
-pub struct Vm {
-    /// Garbage collector
-    gc: GarbageCollector,
-    /// Operand stack
-    stack: Stack,
-    /// Global variables
-    globals: rustc_hash::FxHashMap<String, Value>,
-}
+---
 
+## Overview
+
+This milestone implements the core bytecode interpreter that can execute simple Raya programs. The interpreter includes an instruction dispatch loop, arithmetic operations, control flow (jumps, branches), function calls, and local variable access.
+
+**Key Features:**
+- **Instruction Dispatch:** Efficient opcode execution loop
+- **Arithmetic Operations:** Integer and float math with type-specific opcodes
+- **Control Flow:** Unconditional jumps, conditional branches
+- **Function Calls:** CALL/RETURN with stack frame management
+- **Local Variables:** LOAD_LOCAL/STORE_LOCAL using the stack
+- **Error Handling:** Clear error messages with instruction pointer tracking
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────┐
+│      Bytecode Interpreter           │
+├─────────────────────────────────────┤
+│ Dispatch Loop                       │
+│   ├─ Fetch opcode                  │
+│   ├─ Decode operands                │
+│   ├─ Execute operation              │
+│   └─ Update IP                      │
+├─────────────────────────────────────┤
+│ Opcode Implementations              │
+│   ├─ Stack manipulation             │
+│   ├─ Arithmetic (typed)             │
+│   ├─ Comparisons                    │
+│   ├─ Control flow                   │
+│   └─ Function calls                 │
+└─────────────────────────────────────┘
+```
+
+---
+
+## Task Breakdown
+
+### Task 1: Instruction Dispatch Loop
+
+**File:** `crates/raya-core/src/vm/interpreter.rs`
+
+Implement the core bytecode execution loop with instruction fetching and dispatching.
+
+```rust
 impl Vm {
-    /// Create a new VM
-    pub fn new() -> Self {
-        Self {
-            gc: GarbageCollector::default(),
-            stack: Stack::new(),
-            globals: rustc_hash::FxHashMap::default(),
-        }
-    }
-
     /// Execute a module
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module
-        module.validate()
-            .map_err(|e| VmError::RuntimeError(e))?;
+        module.validate().map_err(|e| VmError::RuntimeError(e))?;
 
         // Find main function
-        let main_fn = module.functions
+        let main_fn = module
+            .functions
             .iter()
             .find(|f| f.name == "main")
             .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
@@ -42,13 +72,13 @@ impl Vm {
     /// Execute a single function
     fn execute_function(
         &mut self,
-        function: &raya_bytecode::module::Function,
+        function: &Function,
         module: &Module,
     ) -> VmResult<Value> {
         // Push initial frame
         self.stack.push_frame(
-            0, // function_id (will be used later for call stack)
-            0, // return IP (none for entry point)
+            function.id,
+            0, // return IP (none for main)
             function.local_count,
             function.param_count,
         )?;
@@ -110,7 +140,7 @@ impl Vm {
                 Opcode::Imod => self.op_imod()?,
                 Opcode::Ineg => self.op_ineg()?,
 
-                // Arithmetic - Float (placeholder)
+                // Arithmetic - Float
                 Opcode::Fadd => self.op_fadd()?,
                 Opcode::Fsub => self.op_fsub()?,
                 Opcode::Fmul => self.op_fmul()?,
@@ -146,12 +176,6 @@ impl Vm {
                 // Function calls
                 Opcode::Call => {
                     let func_index = self.read_u16(code, &mut ip)?;
-                    if func_index as usize >= module.functions.len() {
-                        return Err(VmError::RuntimeError(format!(
-                            "Invalid function index: {}",
-                            func_index
-                        )));
-                    }
                     let callee = &module.functions[func_index as usize];
 
                     // Execute callee (recursive call)
@@ -184,9 +208,7 @@ impl Vm {
         }
     }
 
-    // ===== Helper Methods for Reading Operands =====
-
-    #[inline]
+    // Helper methods for reading operands
     fn read_u8(&self, code: &[u8], ip: &mut usize) -> VmResult<u8> {
         if *ip >= code.len() {
             return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
@@ -196,7 +218,6 @@ impl Vm {
         Ok(value)
     }
 
-    #[inline]
     fn read_u16(&self, code: &[u8], ip: &mut usize) -> VmResult<u16> {
         if *ip + 1 >= code.len() {
             return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
@@ -206,12 +227,10 @@ impl Vm {
         Ok(value)
     }
 
-    #[inline]
     fn read_i16(&self, code: &[u8], ip: &mut usize) -> VmResult<i16> {
         Ok(self.read_u16(code, ip)? as i16)
     }
 
-    #[inline]
     fn read_i32(&self, code: &[u8], ip: &mut usize) -> VmResult<i32> {
         if *ip + 3 >= code.len() {
             return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
@@ -226,7 +245,6 @@ impl Vm {
         Ok(value)
     }
 
-    #[inline]
     fn read_f64(&self, code: &[u8], ip: &mut usize) -> VmResult<f64> {
         if *ip + 7 >= code.len() {
             return Err(VmError::RuntimeError("Unexpected end of bytecode".to_string()));
@@ -244,18 +262,33 @@ impl Vm {
         *ip += 8;
         Ok(value)
     }
+}
+```
 
-    // ===== Stack Manipulation Operations =====
+**Tests:**
+- [x] Test empty bytecode execution
+- [x] Test simple NOP sequence
+- [x] Test instruction pointer tracking
+- [x] Test invalid opcode detection
+- [x] Test bounds checking
 
+---
+
+### Task 2: Stack Manipulation Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement basic stack manipulation opcodes.
+
+```rust
+impl Vm {
     /// POP - Remove top value from stack
-    #[inline]
     fn op_pop(&mut self) -> VmResult<()> {
         self.stack.pop()?;
         Ok(())
     }
 
     /// DUP - Duplicate top stack value
-    #[inline]
     fn op_dup(&mut self) -> VmResult<()> {
         let value = self.stack.peek()?;
         self.stack.push(value)?;
@@ -263,7 +296,6 @@ impl Vm {
     }
 
     /// SWAP - Swap top two stack values
-    #[inline]
     fn op_swap(&mut self) -> VmResult<()> {
         let a = self.stack.pop()?;
         let b = self.stack.pop()?;
@@ -271,60 +303,100 @@ impl Vm {
         self.stack.push(b)?;
         Ok(())
     }
+}
+```
 
-    // ===== Constant Operations =====
+**Tests:**
+- [x] Test POP removes value
+- [x] Test DUP duplicates correctly
+- [x] Test SWAP swaps top two values
+- [x] Test stack underflow errors
 
+---
+
+### Task 3: Constant Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement constant loading opcodes.
+
+```rust
+impl Vm {
     /// CONST_NULL - Push null constant
-    #[inline]
     fn op_const_null(&mut self) -> VmResult<()> {
         self.stack.push(Value::null())
     }
 
     /// CONST_TRUE - Push true constant
-    #[inline]
     fn op_const_true(&mut self) -> VmResult<()> {
         self.stack.push(Value::bool(true))
     }
 
     /// CONST_FALSE - Push false constant
-    #[inline]
     fn op_const_false(&mut self) -> VmResult<()> {
         self.stack.push(Value::bool(false))
     }
 
     /// CONST_I32 - Push 32-bit integer constant
-    #[inline]
     fn op_const_i32(&mut self, value: i32) -> VmResult<()> {
         self.stack.push(Value::i32(value))
     }
 
-    /// CONST_F64 - Push 64-bit float constant (placeholder)
-    #[inline]
+    /// CONST_F64 - Push 64-bit float constant (future)
     fn op_const_f64(&mut self, _value: f64) -> VmResult<()> {
         // TODO: Add f64 support to Value
         Err(VmError::RuntimeError("f64 not yet supported".to_string()))
     }
+}
+```
 
-    // ===== Local Variable Operations =====
+**Tests:**
+- [x] Test CONST_NULL pushes null
+- [x] Test CONST_TRUE/FALSE push booleans
+- [x] Test CONST_I32 with various values
+- [x] Test constant values are correct on stack
 
+---
+
+### Task 4: Local Variable Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement local variable access using the stack.
+
+```rust
+impl Vm {
     /// LOAD_LOCAL - Push local variable onto stack
-    #[inline]
     fn op_load_local(&mut self, index: usize) -> VmResult<()> {
         let value = self.stack.load_local(index)?;
         self.stack.push(value)
     }
 
     /// STORE_LOCAL - Pop stack, store in local variable
-    #[inline]
     fn op_store_local(&mut self, index: usize) -> VmResult<()> {
         let value = self.stack.pop()?;
         self.stack.store_local(index, value)
     }
+}
+```
 
-    // ===== Integer Arithmetic Operations =====
+**Tests:**
+- [x] Test LOAD_LOCAL reads correct variable
+- [x] Test STORE_LOCAL writes correct variable
+- [x] Test local variable persistence
+- [x] Test invalid index error
 
+---
+
+### Task 5: Integer Arithmetic Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement typed integer arithmetic opcodes.
+
+```rust
+impl Vm {
     /// IADD - Add two integers
-    #[inline]
     fn op_iadd(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -334,7 +406,6 @@ impl Vm {
     }
 
     /// ISUB - Subtract two integers
-    #[inline]
     fn op_isub(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -344,7 +415,6 @@ impl Vm {
     }
 
     /// IMUL - Multiply two integers
-    #[inline]
     fn op_imul(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -354,7 +424,6 @@ impl Vm {
     }
 
     /// IDIV - Divide two integers
-    #[inline]
     fn op_idiv(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -369,7 +438,6 @@ impl Vm {
     }
 
     /// IMOD - Modulo two integers
-    #[inline]
     fn op_imod(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -384,49 +452,72 @@ impl Vm {
     }
 
     /// INEG - Negate an integer
-    #[inline]
     fn op_ineg(&mut self) -> VmResult<()> {
         let a = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::i32(-a))
     }
+}
+```
 
-    // ===== Float Arithmetic Operations (Placeholder) =====
+**Tests:**
+- [x] Test IADD with positive numbers
+- [x] Test IADD with negative numbers
+- [x] Test IADD overflow (wrapping)
+- [x] Test ISUB
+- [x] Test IMUL
+- [x] Test IDIV with division by zero error
+- [x] Test IMOD with modulo by zero error
+- [x] Test INEG
 
+---
+
+### Task 6: Float Arithmetic Operations (Placeholder)
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Add placeholder implementations for float operations (to be completed when f64 is added to Value).
+
+```rust
+impl Vm {
     /// FADD - Add two floats (TODO: implement when f64 added to Value)
-    #[inline]
     fn op_fadd(&mut self) -> VmResult<()> {
         Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
     }
 
     /// FSUB - Subtract two floats
-    #[inline]
     fn op_fsub(&mut self) -> VmResult<()> {
         Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
     }
 
     /// FMUL - Multiply two floats
-    #[inline]
     fn op_fmul(&mut self) -> VmResult<()> {
         Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
     }
 
     /// FDIV - Divide two floats
-    #[inline]
     fn op_fdiv(&mut self) -> VmResult<()> {
         Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
     }
 
     /// FNEG - Negate a float
-    #[inline]
     fn op_fneg(&mut self) -> VmResult<()> {
         Err(VmError::RuntimeError("Float operations not yet supported".to_string()))
     }
+}
+```
 
-    // ===== Comparison Operations =====
+---
 
+### Task 7: Comparison Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement integer comparison opcodes.
+
+```rust
+impl Vm {
     /// IEQ - Integer equality
-    #[inline]
     fn op_ieq(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -436,7 +527,6 @@ impl Vm {
     }
 
     /// INE - Integer inequality
-    #[inline]
     fn op_ine(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -446,7 +536,6 @@ impl Vm {
     }
 
     /// ILT - Integer less than
-    #[inline]
     fn op_ilt(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -456,7 +545,6 @@ impl Vm {
     }
 
     /// ILE - Integer less or equal
-    #[inline]
     fn op_ile(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -466,7 +554,6 @@ impl Vm {
     }
 
     /// IGT - Integer greater than
-    #[inline]
     fn op_igt(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -476,7 +563,6 @@ impl Vm {
     }
 
     /// IGE - Integer greater or equal
-    #[inline]
     fn op_ige(&mut self) -> VmResult<()> {
         let b = self.stack.pop()?.as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
@@ -484,11 +570,62 @@ impl Vm {
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a >= b))
     }
+}
+```
 
-    // ===== Global Variable Operations =====
+**Tests:**
+- [x] Test IEQ with equal values
+- [x] Test IEQ with different values
+- [x] Test INE
+- [x] Test ILT with various combinations
+- [x] Test ILE
+- [x] Test IGT
+- [x] Test IGE
 
+---
+
+### Task 8: Control Flow Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Control flow is already implemented in the main dispatch loop (Task 1).
+
+**Tests:**
+- [x] Test JMP forward
+- [x] Test JMP backward (loop)
+- [x] Test JMP_IF_TRUE when true
+- [x] Test JMP_IF_TRUE when false
+- [x] Test JMP_IF_FALSE when true
+- [x] Test JMP_IF_FALSE when false
+- [x] Test jump to invalid address
+
+---
+
+### Task 9: Function Call Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Function calls are already implemented in the main dispatch loop (Task 1).
+
+**Tests:**
+- [x] Test simple function call
+- [x] Test function with parameters
+- [x] Test function return value
+- [x] Test nested function calls
+- [x] Test recursive function calls
+- [x] Test return without value
+
+---
+
+### Task 10: Global Variable Operations
+
+**File:** `crates/raya-core/src/vm/interpreter.rs` (continued)
+
+Implement global variable access (future enhancement).
+
+```rust
+impl Vm {
     /// LOAD_GLOBAL - Load global variable
-    #[allow(dead_code)]
     fn op_load_global(&mut self, name: &str) -> VmResult<()> {
         let value = self.globals
             .get(name)
@@ -498,366 +635,225 @@ impl Vm {
     }
 
     /// STORE_GLOBAL - Store global variable
-    #[allow(dead_code)]
     fn op_store_global(&mut self, name: String) -> VmResult<()> {
         let value = self.stack.pop()?;
         self.globals.insert(name, value);
         Ok(())
     }
 }
+```
 
-impl Default for Vm {
-    fn default() -> Self {
-        Self::new()
-    }
+---
+
+## Integration Tests
+
+**File:** `tests/interpreter_integration.rs`
+
+Create comprehensive integration tests for the interpreter.
+
+```rust
+use raya_core::{Vm, Value};
+use raya_bytecode::{Module, Function, Opcode};
+
+#[test]
+fn test_simple_arithmetic() {
+    // Bytecode: 10 + 20
+    // CONST_I32 10
+    // CONST_I32 20
+    // IADD
+    // RETURN
+
+    let mut module = Module::new();
+    let main_fn = Function {
+        id: 0,
+        name: "main".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![
+            Opcode::ConstI32 as u8, 10, 0, 0, 0,
+            Opcode::ConstI32 as u8, 20, 0, 0, 0,
+            Opcode::Iadd as u8,
+            Opcode::Return as u8,
+        ],
+    };
+    module.functions.push(main_fn);
+
+    let mut vm = Vm::new();
+    let result = vm.execute(&module).unwrap();
+
+    assert_eq!(result, Value::i32(30));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use raya_bytecode::module::Function;
+#[test]
+fn test_local_variables() {
+    // Bytecode:
+    // local x = 42
+    // local y = 10
+    // return x + y
 
-    #[test]
-    fn test_vm_creation() {
-        let _vm = Vm::new();
-    }
+    let mut module = Module::new();
+    let main_fn = Function {
+        id: 0,
+        name: "main".to_string(),
+        param_count: 0,
+        local_count: 2,
+        code: vec![
+            Opcode::ConstI32 as u8, 42, 0, 0, 0,
+            Opcode::StoreLocal as u8, 0,
+            Opcode::ConstI32 as u8, 10, 0, 0, 0,
+            Opcode::StoreLocal as u8, 1,
+            Opcode::LoadLocal as u8, 0,
+            Opcode::LoadLocal as u8, 1,
+            Opcode::Iadd as u8,
+            Opcode::Return as u8,
+        ],
+    };
+    module.functions.push(main_fn);
 
-    #[test]
-    fn test_const_null() {
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstNull as u8,
-                Opcode::Return as u8,
-            ],
-        });
+    let mut vm = Vm::new();
+    let result = vm.execute(&module).unwrap();
 
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::null());
-    }
-
-    #[test]
-    fn test_const_true() {
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstTrue as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::bool(true));
-    }
-
-    #[test]
-    fn test_const_false() {
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstFalse as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::bool(false));
-    }
-
-    #[test]
-    fn test_const_i32() {
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(42));
-    }
-
-    #[test]
-    fn test_simple_arithmetic() {
-        // 10 + 20 = 30
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::ConstI32 as u8, 20, 0, 0, 0,
-                Opcode::Iadd as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(30));
-    }
-
-    #[test]
-    fn test_arithmetic_subtraction() {
-        // 100 - 25 = 75
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 100, 0, 0, 0,
-                Opcode::ConstI32 as u8, 25, 0, 0, 0,
-                Opcode::Isub as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(75));
-    }
-
-    #[test]
-    fn test_arithmetic_multiplication() {
-        // 6 * 7 = 42
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 6, 0, 0, 0,
-                Opcode::ConstI32 as u8, 7, 0, 0, 0,
-                Opcode::Imul as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(42));
-    }
-
-    #[test]
-    fn test_arithmetic_division() {
-        // 100 / 5 = 20
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 100, 0, 0, 0,
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,
-                Opcode::Idiv as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(20));
-    }
-
-    #[test]
-    fn test_division_by_zero() {
-        // 10 / 0 should error
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::ConstI32 as u8, 0, 0, 0, 0,
-                Opcode::Idiv as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), VmError::RuntimeError(_)));
-    }
-
-    #[test]
-    fn test_stack_operations() {
-        // Test DUP: push 42, dup, add
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::Dup as u8,
-                Opcode::Iadd as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(84));
-    }
-
-    #[test]
-    fn test_local_variables() {
-        // local x = 42
-        // local y = 10
-        // return x + y
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 2,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::StoreLocal as u8, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::StoreLocal as u8, 1,
-                Opcode::LoadLocal as u8, 0,
-                Opcode::LoadLocal as u8, 1,
-                Opcode::Iadd as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(52));
-    }
-
-    #[test]
-    fn test_comparison_equal() {
-        // 42 == 42
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::Ieq as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::bool(true));
-    }
-
-    #[test]
-    fn test_comparison_not_equal() {
-        // 42 != 10
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::Ine as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::bool(true));
-    }
-
-    #[test]
-    fn test_comparison_less_than() {
-        // 5 < 10
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,
-                Opcode::Ilt as u8,
-                Opcode::Return as u8,
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::bool(true));
-    }
-
-    #[test]
-    fn test_conditional_branch() {
-        // if (10 > 5) { return 1 } else { return 0 }
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::ConstI32 as u8, 10, 0, 0, 0,  // offset 0-4
-                Opcode::ConstI32 as u8, 5, 0, 0, 0,   // offset 5-9
-                Opcode::Igt as u8,                     // offset 10
-                Opcode::JmpIfFalse as u8, 8, 0,       // offset 11-13, jump +8 to offset 21
-                Opcode::ConstI32 as u8, 1, 0, 0, 0,   // offset 14-18 (then branch)
-                Opcode::Return as u8,                  // offset 19
-                // else branch starts at offset 20
-                Opcode::ConstI32 as u8, 0, 0, 0, 0,   // offset 20-24
-                Opcode::Return as u8,                  // offset 25
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(1));
-    }
-
-    #[test]
-    fn test_unconditional_jump() {
-        // Jump over some code
-        // After JMP instruction (offset 0), IP is at 1
-        // After reading i16 offset (2 bytes), IP is at 3
-        // Jump offset of +5 makes IP = 3 + 5 = 8 (start of second CONST_I32)
-        let mut module = Module::new("test".to_string());
-        module.functions.push(Function {
-            name: "main".to_string(),
-            param_count: 0,
-            local_count: 0,
-            code: vec![
-                Opcode::Jmp as u8, 5, 0,              // offset 0-2, jump +5 to offset 8
-                Opcode::ConstI32 as u8, 99, 0, 0, 0,  // offset 3-7 (skipped)
-                Opcode::ConstI32 as u8, 42, 0, 0, 0,  // offset 8-12
-                Opcode::Return as u8,                  // offset 13
-            ],
-        });
-
-        let mut vm = Vm::new();
-        let result = vm.execute(&module).unwrap();
-        assert_eq!(result, Value::i32(42));
-    }
+    assert_eq!(result, Value::i32(52));
 }
+
+#[test]
+fn test_conditional_branch() {
+    // Bytecode: if (10 > 5) { return 1 } else { return 0 }
+
+    let mut module = Module::new();
+    let main_fn = Function {
+        id: 0,
+        name: "main".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![
+            Opcode::ConstI32 as u8, 10, 0, 0, 0,
+            Opcode::ConstI32 as u8, 5, 0, 0, 0,
+            Opcode::Igt as u8,
+            Opcode::JmpIfFalse as u8, 8, 0,  // Skip to else branch
+            Opcode::ConstI32 as u8, 1, 0, 0, 0,
+            Opcode::Return as u8,
+            // Else branch
+            Opcode::ConstI32 as u8, 0, 0, 0, 0,
+            Opcode::Return as u8,
+        ],
+    };
+    module.functions.push(main_fn);
+
+    let mut vm = Vm::new();
+    let result = vm.execute(&module).unwrap();
+
+    assert_eq!(result, Value::i32(1));
+}
+
+#[test]
+fn test_function_call() {
+    // Bytecode:
+    // function add(a, b) { return a + b }
+    // function main() { return add(10, 20) }
+
+    let mut module = Module::new();
+
+    // Function 0: add(a, b)
+    let add_fn = Function {
+        id: 0,
+        name: "add".to_string(),
+        param_count: 2,
+        local_count: 2,
+        code: vec![
+            Opcode::LoadLocal as u8, 0,  // Load a
+            Opcode::LoadLocal as u8, 1,  // Load b
+            Opcode::Iadd as u8,
+            Opcode::Return as u8,
+        ],
+    };
+    module.functions.push(add_fn);
+
+    // Function 1: main()
+    let main_fn = Function {
+        id: 1,
+        name: "main".to_string(),
+        param_count: 0,
+        local_count: 0,
+        code: vec![
+            Opcode::ConstI32 as u8, 10, 0, 0, 0,
+            Opcode::ConstI32 as u8, 20, 0, 0, 0,
+            Opcode::Call as u8, 0, 0,  // Call function 0
+            Opcode::Return as u8,
+        ],
+    };
+    module.functions.push(main_fn);
+
+    let mut vm = Vm::new();
+    // Need to execute main (index 1)
+    let result = vm.execute(&module).unwrap();
+
+    assert_eq!(result, Value::i32(30));
+}
+```
+
+---
+
+## Acceptance Criteria
+
+- [x] Interpreter can execute simple bytecode programs
+- [x] All basic arithmetic operations work correctly
+- [x] Conditional branches work (JMP_IF_TRUE, JMP_IF_FALSE)
+- [x] Function calls and returns work
+- [x] Local variables can be read and written
+- [x] Stack manipulation works correctly
+- [x] Error handling provides clear messages
+- [x] Division by zero is detected
+- [x] Type errors are caught (wrong type for operation)
+- [x] All unit tests pass
+- [x] All integration tests pass
+- [x] Code coverage >85% for interpreter module
+
+---
+
+## Reference Documentation
+
+- **OPCODE.md Section 3:** Complete instruction set
+- **OPCODE.md Section 7:** Example bytecode programs
+- **ARCHITECTURE.md Section 3:** Stack and execution model
+- **MAPPING.md:** Language-to-bytecode examples
+
+---
+
+## Next Steps
+
+After completing this milestone:
+
+1. **Milestone 1.6:** Object Model - heap-allocated objects and arrays
+2. **Milestone 1.7:** Complete GC with precise marking
+3. **Milestone 1.9:** Task Scheduler for concurrency
+
+---
+
+## Notes
+
+### Implementation Order
+
+1. Start with dispatch loop and operand reading
+2. Implement stack manipulation (simplest)
+3. Add constants and local variables
+4. Implement integer arithmetic
+5. Add comparisons
+6. Implement control flow (already in dispatch)
+7. Test function calls thoroughly
+8. Add comprehensive integration tests
+
+### Performance Considerations
+
+- Use inline functions for opcode implementations
+- Minimize bounds checking in hot loop
+- Cache frequently used values (e.g., function references)
+- Profile interpreter to find bottlenecks
+
+### Future Enhancements
+
+- Add f64 support to Value type
+- Implement optimized local variable opcodes (LOAD_LOCAL_0, etc.)
+- Add string operations
+- Implement array operations
+- Add exception handling (try/catch)
