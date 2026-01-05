@@ -116,46 +116,104 @@ pub struct Module {
 
 **Reference:** `design/OPCODE.md`
 
-### 1.3 Memory Management & GC
+### 1.3 Memory Management, GC, Inner VMs & Snapshotting (Phase 1)
 
 **Crate:** `raya-core`
 
+**Goal:** Build integrated memory system with per-context heaps, precise GC, VM snapshotting, and inner VM support.
+
+**Architecture:**
+- One heap per VmContext (strong isolation)
+- Precise mark-sweep GC using type metadata
+- Stop-the-world pauses via safepoints
+- Full VM state snapshotting
+- Resource limits per context
+
 **Tasks:**
 - [ ] Implement value representation (tagged pointers)
-- [ ] Build heap allocator
-- [ ] Implement mark-sweep garbage collector
-- [ ] Add GC root tracking
-- [ ] Optimize for generational GC (later)
+- [ ] Build type metadata and pointer maps
+- [ ] Create VmContext structure (heap, resources, limits)
+- [ ] Implement per-context heap allocator
+- [ ] Build precise mark-sweep GC with type metadata
+- [ ] Add safepoint infrastructure (for GC and snapshots)
+- [ ] Implement VM snapshotting (pause, serialize, resume)
+- [ ] Create inner VM API (Vm creation, capabilities, marshalling)
+- [ ] Add resource accounting and enforcement
 
 **Files:**
 ```rust
 // crates/raya-core/src/value.rs
-#[repr(C)]
-pub enum Value {
-    Number(f64),
-    Integer(i32),
-    Boolean(bool),
-    Null,
-    Object(GcPtr<Object>),
-    String(GcPtr<String>),
+#[repr(transparent)]
+pub struct Value(u64);  // Tagged pointer
+
+// crates/raya-core/src/types/mod.rs
+pub struct TypeInfo {
+    type_id: TypeId,
+    pointer_map: PointerMap,
 }
 
-// crates/raya-core/src/gc.rs
-pub struct Gc {
+pub enum PointerMap {
+    None,                    // No pointers
+    All(usize),              // All fields are pointers
+    Offsets(Vec<usize>),     // Specific offsets
+}
+
+// crates/raya-core/src/vm/context.rs
+pub struct VmContext {
+    id: VmContextId,
+    heap: Heap,                  // Per-context heap
+    globals: HashMap<String, Value>,
+    type_registry: Arc<TypeRegistry>,
+    resource_limits: ResourceLimits,
+    resource_counters: ResourceCounters,
+    gc_threshold: usize,
+}
+
+// crates/raya-core/src/gc/collector.rs
+pub struct GarbageCollector {
+    context_id: VmContextId,
     heap: Heap,
-    roots: Vec<GcPtr<Value>>,
-    allocated: usize,
-    threshold: usize,
+    roots: RootSet,
+    type_registry: Arc<TypeRegistry>,
 }
 
-impl Gc {
-    pub fn collect(&mut self);
-    pub fn mark(&self, ptr: GcPtr<Value>);
-    pub fn sweep(&mut self);
+impl GarbageCollector {
+    pub fn collect(&mut self);  // Per-context collection
+}
+
+// crates/raya-core/src/vm/safepoint.rs
+pub struct SafepointCoordinator {
+    gc_pending: AtomicBool,
+    snapshot_pending: AtomicBool,
+    barrier: Barrier,
+}
+
+// crates/raya-core/src/vm/snapshot.rs
+pub fn snapshot_context(context: &VmContext) -> Result<Snapshot, SnapError>;
+pub fn restore_context(snapshot: Snapshot) -> Result<VmContext, RestoreError>;
+
+// crates/raya-core/src/vm/inner.rs
+pub struct Vm {
+    context: VmContext,
+}
+
+impl Vm {
+    pub fn new(options: VmOptions) -> Self;
+    pub fn allocate<T>(&mut self, value: T) -> GcPtr<T>;
+    pub fn snapshot(&self) -> Result<Snapshot, SnapError>;
+    pub fn get_stats(&self) -> VmStats;
 }
 ```
 
-**Reference:** `design/ARCHITECTURE.md` Section 5
+**References:**
+- `design/ARCHITECTURE.md` Section 5 (Memory Model)
+- `design/SNAPSHOTTING.md` (VM Snapshotting Design)
+- `design/INNER_VM.md` (Inner VM & Controllability)
+- `plans/milestone-1.3-memory-gc.md` (Detailed implementation plan)
+
+**Future Phases:**
+- Phase 2: Generational GC (young-gen copying collector)
+- Phase 3: Incremental/Concurrent GC (if needed)
 
 ### 1.4 Stack & Frame Management
 
@@ -1517,14 +1575,21 @@ impl DocGenerator {
 
 ## Milestones
 
-### Milestone 1: Hello World (Weeks 1-4)
+### Milestone 1: Core VM with Integrated Memory System (Weeks 1-6)
 - [x] Project setup
+- [x] Bytecode definitions
+- [ ] **Memory system (Phase 1):**
+  - [ ] Per-context heaps with precise GC
+  - [ ] VM snapshotting infrastructure
+  - [ ] Inner VM support
+  - [ ] Safepoint coordination
 - [ ] Basic bytecode interpreter
-- [ ] Simple lexer and parser
-- [ ] Minimal type checker
-- [ ] Compile and run "Hello, World!"
+- [ ] Stack and frame management
+- [ ] Simple object model
 
-**Goal:** Execute a simple Raya program.
+**Goal:** Execute programs with full memory management, GC, and VM control.
+
+**Key Achievement:** Integrated foundation for all advanced features.
 
 ```typescript
 function main(): void {
@@ -1577,16 +1642,21 @@ function main(): void {
 
 **Goal:** Productive developer experience.
 
-### Milestone 7: Advanced Features (Weeks 41-48)
+### Milestone 7: Advanced Features & Optimization (Weeks 41-48)
 - [ ] LSP server
 - [ ] Debugger
 - [ ] Documentation generator
-- [ ] Optimization passes
-- [ ] Reflection (optional)
-- [ ] VM Snapshotting (pause, snapshot, resume)
-- [ ] Inner VMs (nested VmContexts with isolation and control)
+- [ ] JIT compilation for hot code
+- [ ] Reflection system (optional)
+- [ ] **Phase 2 GC:** Generational young-gen copying collector
+- [ ] **Phase 3 GC:** Incremental/concurrent marking (if needed)
 
-**Goal:** Complete development environment.
+**Goal:** Production-ready performance and tooling.
+
+**GC Evolution:**
+- Phase 2 adds young generation with write barriers
+- Significantly improves throughput for object-heavy code
+- Phase 3 only if pause times become bottleneck
 
 ### Milestone 8: Production Ready (Weeks 49-52)
 - [ ] Performance optimization

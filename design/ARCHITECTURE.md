@@ -194,47 +194,281 @@ The interpreter runs until the Task:
 
 ---
 
-## 5. Heap & Object Model
+## 5. Heap, GC & VmContext Model
 
-### 5.1 Value Model
+### 5.1 Per-Context Heap Architecture
 
-Conceptually:
-
-```rust
-Value =
-  Int | Float | Bool |
-  String | Array | Map |
-  Object | Null
-```
-
-Implementation optimizations:
-
-* Unboxed primitives in locals/stack where types are known
-* Boxed values in generic containers and erased contexts
-
-### 5.2 Object Layout
+Raya uses **one heap per VmContext** for strong isolation, snapshot-ability, and resource control:
 
 ```rust
-Object {
-  typeId: TypeId
-  vtablePtr: *VTable
-  fields: [FieldStorage]
+VmContext {
+  id: VmContextId
+  heap: Heap {
+    context_id: VmContextId
+    allocations: Vec<*mut GcHeader>
+    allocated_bytes: usize
+    max_heap_bytes: Option<usize>
+    type_registry: Arc<TypeRegistry>
+  }
+  globals: HashMap<String, Value>
+  resource_limits: ResourceLimits
+  resource_counters: ResourceCounters
+  gc_threshold: usize
+  gc_stats: GcStats
 }
 ```
 
-`TypeId` maps to metadata describing:
+**Design Benefits:**
+- Strong isolation for inner VMs
+- Snapshot entire context independently
+- Resource accounting is trivial
+- Security boundaries are clear
+- Per-context GC doesn't pause other contexts
 
-* Field count and types
-* Pointer map for GC
-* Vtable layout for methods
+### 5.2 Value Representation (Tagged Pointers)
 
-### 5.3 Arrays & Maps
+Raya uses 64-bit tagged pointers for efficient value storage:
 
-* `number[]` → contiguous numeric storage
-* `User[]` → contiguous references
-* `Map<K,V>` → hash table structure
+```rust
+#[repr(transparent)]
+pub struct Value(u64);
 
-Array/data structures use type metadata to avoid boxing where possible.
+// Encoding:
+// Pointer:  pppppppppppppppppppppppppppppppppppppppppppppppppppppppppp000
+// i32:      000000000000000000000000000000iiiiiiiiiiiiiiiiiiiiiiiiiiii001
+// bool:     000000000000000000000000000000000000000000000000000000000b010
+// null:     0000000000000000000000000000000000000000000000000000000000110
+```
+
+**Benefits:**
+- 8-byte values (single word)
+- Inline i32, bool, null without allocation
+- Fast type checking (bit mask)
+- Heap pointers 8-byte aligned
+
+### 5.3 Type Metadata & Pointer Maps
+
+Precise GC requires type metadata for each allocated object:
+
+```rust
+TypeInfo {
+  type_id: TypeId
+  name: &'static str
+  size: usize
+  align: usize
+  pointer_map: PointerMap
+  drop_fn: Option<DropFn>
+}
+
+enum PointerMap {
+  None,                    // No pointers (primitives)
+  All(usize),              // All fields are pointers
+  Offsets(Vec<usize>),     // Specific field offsets
+  Array(Box<PointerMap>),  // Array elements
+}
+```
+
+**Pointer Maps Enable:**
+- Precise marking (no conservative scanning)
+- Faster GC (skip non-pointer data)
+- Accurate heap snapshots
+- Type-safe object traversal
+
+### 5.4 Object Layout in Memory
+
+Every heap allocation has a GC header:
+
+```
+┌─────────────────────────────────────────┐
+│ GcHeader (16 bytes, 8-byte aligned)     │
+│  - marked: bool                         │
+│  - context_id: VmContextId              │
+│  - type_id: TypeId                      │
+│  - size: usize                          │
+├─────────────────────────────────────────┤  ← GcPtr<T> points here
+│ Object data (variable size)             │
+│  - For objects: fields[N]               │
+│  - For arrays: length + elements[]      │
+│  - For strings: length + UTF-8 bytes[]  │
+└─────────────────────────────────────────┘
+```
+
+**Object Types:**
+
+```rust
+RayaString {
+  len: usize
+  data: [u8]  // UTF-8 bytes
+}
+
+RayaArray<T> {
+  len: usize
+  capacity: usize
+  elements: [T]
+}
+
+RayaObject {
+  class_id: ClassId
+  vtable_ptr: *VTable
+  fields: [Value]  // Determined by class
+}
+
+RayaClosure {
+  function_id: FunctionId
+  captures: [Value]  // Captured variables
+}
+```
+
+### 5.5 Garbage Collection (Phase 1: Mark-Sweep)
+
+**Per-Context Precise Mark-Sweep:**
+
+1. **Mark Phase:**
+   - Clear all mark bits in this context's heap
+   - Start from roots (tasks, globals in this context)
+   - Recursively mark reachable objects using pointer maps
+   - Type metadata guides precise traversal
+
+2. **Sweep Phase:**
+   - Iterate allocations in this context's heap
+   - Free unmarked objects (proper deallocation)
+   - Update heap statistics
+   - Adjust GC threshold
+
+**GC Triggering:**
+- Automatic: when `allocated_bytes > gc_threshold`
+- Manual: explicit `collect()` call
+- Threshold adjustment: `new_threshold = current_usage * 2`
+
+**Coordination:**
+- Stop-the-world within context only
+- Other contexts continue running
+- Safepoints at: function calls, loops, allocations
+
+**Complexity:** O(live objects in context)
+
+### 5.6 Safepoint Infrastructure
+
+Shared mechanism for GC and snapshotting:
+
+```rust
+SafepointCoordinator {
+  gc_pending: AtomicBool
+  snapshot_pending: AtomicBool
+  workers_at_safepoint: AtomicUsize
+  barrier: Barrier
+}
+```
+
+**Safepoint Locations:**
+- Function calls (prologue)
+- Loop back-edges
+- Allocations
+- Await points
+
+**Safepoint Poll (inlined):**
+```rust
+#[inline(always)]
+fn safepoint_poll() {
+    if gc_pending || snapshot_pending {
+        enter_safepoint()  // Stop and wait
+    }
+}
+```
+
+### 5.7 VM Snapshotting Integration
+
+Snapshots use the same safepoint mechanism as GC:
+
+**Snapshot Protocol:**
+1. Set `snapshot_pending` flag
+2. All workers reach safepoint (stop-the-world)
+3. Serialize heap state using pointer maps
+4. Serialize task state, globals, metadata
+5. Clear flag, resume workers
+
+**Snapshot-GC Coordination:**
+- Snapshot only when no GC in progress
+- GC only when no snapshot in progress
+- Shared safepoint ensures mutual exclusion
+
+**Snapshot Format:**
+```rust
+Snapshot {
+  magic: [u8; 4]  // "SNAP"
+  version: u32
+  context_id: VmContextId
+  heap_snapshot: HeapSnapshot {
+    allocations: Vec<AllocationSnapshot>
+    pointer_graph: PointerGraph
+  }
+  metadata: ContextMetadata
+  checksum: u32
+}
+```
+
+### 5.8 Inner VMs & Resource Isolation
+
+Each VmContext is fully isolated:
+
+**Resource Limits (per context):**
+```rust
+ResourceLimits {
+  max_heap_bytes: Option<usize>
+  max_tasks: Option<usize>
+  max_step_budget: Option<usize>
+}
+```
+
+**Resource Counters (atomic):**
+```rust
+ResourceCounters {
+  heap_bytes_used: AtomicUsize
+  task_count: AtomicUsize
+  steps_executed: AtomicUsize
+}
+```
+
+**Enforcement:**
+- Heap allocation checks `max_heap_bytes` before allocating
+- Task creation checks `max_tasks` before spawning
+- Instruction execution decrements `max_step_budget` (fuel)
+
+**Data Marshalling:**
+
+Values crossing context boundaries are marshalled:
+
+```rust
+enum MarshalledValue {
+  Null,
+  Bool(bool),
+  I32(i32),
+  String(String),  // Deep copy
+  Array(Vec<MarshalledValue>),  // Deep copy
+  Object(HashMap<String, MarshalledValue>),  // Deep copy
+  Foreign(ForeignHandle),  // Opaque handle
+}
+```
+
+No shared references across contexts (prevents interference).
+
+### 5.9 Future GC Phases
+
+**Phase 2: Generational GC** (Milestone 7)
+- Young generation (copying collector)
+- Old generation (mark-sweep)
+- Write barriers for inter-generational pointers
+- 2-5x throughput improvement expected
+
+**Phase 3: Incremental/Concurrent GC** (If needed)
+- Tri-color marking
+- Incremental STW slices
+- Sub-millisecond pause times
+
+**Current Phase 1 provides:**
+- Good enough performance
+- Simple, correct implementation
+- Stable foundation for optimization
 
 ---
 
