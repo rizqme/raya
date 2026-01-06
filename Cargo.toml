@@ -12,6 +12,7 @@ members = [
     "crates/raya-lsp",
     "crates/raya-test",
     "crates/raya-pm",
+    "crates/raya-ffi",
 ]
 
 [workspace.package]

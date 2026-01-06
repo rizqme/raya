@@ -1,0 +1,30 @@
+[package]
+name = "raya-ffi"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "C FFI bindings for the Raya VM"
+
+[lib]
+name = "raya_ffi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+raya-core = { workspace = true }
+raya-bytecode = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Thread-safe primitives
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+# For testing the C API
+libc = "0.2"
+
+[features]
+default = []
