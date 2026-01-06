@@ -772,7 +772,81 @@ pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<
 
 **Reference:** `design/INNER_VM.md` (Full specification), `plans/milestone-1.13.md` (Implementation plan)
 
-### 1.14 Native Module System
+### 1.14 Module System & Package Management
+
+**Goal:** Efficient module system with global cache and bytecode-first storage (inspired by Bun and Go).
+
+**Status:** 📋 Planned
+
+**Architecture:**
+```
+~/.raya/cache/          # Global package cache
+    ├── <hash>/         # Content-addressable storage
+    │   └── module.rbin # Compiled bytecode only
+
+my-project/
+    ├── raya.toml       # Package descriptor
+    ├── raya.lock       # Lockfile (exact versions)
+    └── src/
+```
+
+**Key Features:**
+- **Global cache:** Single `~/.raya/cache/` for all projects (no node_modules!)
+- **Bytecode-first:** Store compiled `.rbin` files, not source
+- **Content-addressable:** Packages identified by SHA-256 hash
+- **Lockfile-based:** Reproducible builds with `raya.lock`
+- **Zero duplication:** Same package version shared across projects
+- **Fast:** Parallel downloads, incremental compilation
+- **Offline-first:** Work without network once cached
+
+**Import Syntax:**
+```typescript
+// Named package (from registry)
+import { Logger } from "logging@1.2.3";
+
+// URL import (decentralized)
+import { utils } from "https://github.com/user/repo/v1.0.0";
+
+// Local import
+import { helper } from "./utils.raya";
+```
+
+**Tasks:**
+- [ ] Core Module System
+  - [ ] Import resolution (local, package, URL)
+  - [ ] Module loading from bytecode
+  - [ ] Dependency graph construction
+  - [ ] Circular dependency detection
+- [ ] Package Format
+  - [ ] raya.toml parser (package descriptor)
+  - [ ] Package metadata structure
+  - [ ] Lockfile (raya.lock) generation
+  - [ ] SHA-256 checksum computation
+- [ ] Global Cache
+  - [ ] Cache directory structure (~/.raya/cache)
+  - [ ] Content-addressable storage (by hash)
+  - [ ] Cache lookup and retrieval
+  - [ ] LRU eviction policy
+- [ ] Package Manager CLI
+  - [ ] `raya install` - Install dependencies
+  - [ ] `raya add <package>` - Add dependency
+  - [ ] `raya remove <package>` - Remove dependency
+  - [ ] `raya update` - Update dependencies
+  - [ ] `raya publish` - Publish package
+- [ ] Registry Client
+  - [ ] HTTP client for registry API
+  - [ ] Package search and resolution
+  - [ ] Parallel downloads
+  - [ ] Retry logic and error handling
+- [ ] Compilation Integration
+  - [ ] Compile .raya → .rbin
+  - [ ] Incremental compilation
+  - [ ] Cache compiled artifacts
+  - [ ] Bundle generation (single .rbin)
+
+**Reference:** `design/MODULES.md` (Complete specification)
+
+### 1.15 Native Module System
 
 **Goal:** Enable Raya programs to call native functions written in C, C++, or Rust (similar to Node.js N-API).
 
@@ -789,6 +863,7 @@ C / C++ / Rust
 
 **Tasks:**
 - [x] Design native module system (NATIVE_BINDINGS.md)
+- [x] Add comprehensive C++ examples
 - [ ] Implement C API for native modules (raya-ffi crate)
   - [x] Value conversion functions (to/from native types)
   - [ ] Module registration API
@@ -901,7 +976,7 @@ impl NativeModuleLoader {
 
 **Reference:** `design/NATIVE_BINDINGS.md` (Complete specification)
 
-### 1.15 Integration Testing & Validation
+### 1.16 Integration Testing & Validation
 
 **Goal:** Comprehensive test coverage for all VM systems.
 
