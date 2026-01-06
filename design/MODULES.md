@@ -79,8 +79,8 @@ import { config } from "../config.raya";
 ~/.raya/
 ├── cache/                    # Global package cache
 │   ├── <sha256-hash>/       # Content-addressable packages
-│   │   ├── module.rbin      # Compiled bytecode
-│   │   ├── module.raya      # Source (optional, for debugging)
+│   │   ├── module.rbin      # Compiled bytecode (required)
+│   │   ├── module.rdef      # Type definitions (optional, like .d.ts)
 │   │   └── metadata.json    # Package metadata
 │   └── <sha256-hash>/
 │       └── module.rbin
@@ -94,8 +94,8 @@ import { config } from "../config.raya";
 
 ```
 ~/.raya/cache/a3f2b1.../
-├── module.rbin              # Compiled logging@1.2.3
-├── module.raya              # Source (optional)
+├── module.rbin              # Compiled logging@1.2.3 (required)
+├── module.rdef              # Type definitions (optional)
 └── metadata.json            # { name, version, dependencies, checksum }
 ```
 
@@ -166,6 +166,146 @@ version = "1.3.0"
 checksum = "sha256:3b2a1f9e8d7c..."
 source = "git+https://github.com/user/fmt#v1.3.0"
 ```
+
+### Package File Formats
+
+Published packages contain **compiled bytecode only** (not source code). This ensures:
+- **Fast loading:** No compilation needed at install time
+- **Smaller downloads:** Bytecode is more compact than source
+- **IP protection:** Source code not exposed (optional)
+
+#### `.rbin` - Compiled Bytecode (Required)
+
+**Format:** Raya bytecode format (see [OPCODE.md](OPCODE.md))
+
+**Contents:**
+- Compiled functions and classes
+- Constant pool (strings, numbers)
+- Module metadata (exports, dependencies)
+- Optimized for VM execution
+
+**Generation:**
+```bash
+# During package build
+raya build --release
+# Produces: dist/module.rbin
+```
+
+**Properties:**
+- Platform-independent (runs on any architecture with Raya VM)
+- Includes all necessary runtime information
+- No separate compilation step needed by consumers
+
+#### `.rdef` - Type Definitions (Optional)
+
+**Format:** TypeScript-like declaration file (similar to `.d.ts`)
+
+**Purpose:**
+- Provide type information for IDE autocomplete
+- Enable static type checking for package users
+- Document public API
+
+**Example:**
+
+```typescript
+// module.rdef (for "logging" package)
+
+/**
+ * Structured logger with multiple output levels
+ */
+export class Logger {
+    constructor(name: string);
+
+    /**
+     * Log informational message
+     */
+    info(message: string): void;
+
+    /**
+     * Log error message
+     */
+    error(message: string): void;
+}
+
+/**
+ * Create default logger instance
+ */
+export function createLogger(name: string): Logger;
+```
+
+**Generation:**
+```bash
+# Auto-generate from source
+raya build --emit-rdef
+
+# Or write manually
+# dist/module.rdef
+```
+
+**When to include `.rdef`:**
+- ✅ Public libraries (improve developer experience)
+- ✅ Complex APIs (documentation + type safety)
+- ❌ Private internal packages (not necessary)
+- ❌ Simple utilities (types inferable from usage)
+
+#### `.raya` Source Files (NOT in Published Packages)
+
+**Important:** Published packages do **NOT** include `.raya` source files by default.
+
+**Source files are only present during:**
+- Local development
+- Building the package
+- Debugging with `--include-source` flag
+
+**Why exclude source?**
+- Reduces package size
+- Protects intellectual property
+- Prevents source/bytecode inconsistencies
+- Faster installation (no compilation needed)
+
+**To include source (optional):**
+
+```toml
+# raya.toml
+[package]
+include-source = true  # Include .raya files in published package
+```
+
+**Use cases for including source:**
+- Open-source projects (transparency)
+- Educational packages (learning resource)
+- Debugging support (source maps)
+
+#### File Size Comparison
+
+Example: `logging` package
+
+| Format | Size | Included |
+|--------|------|----------|
+| `.raya` source | 15 KB | ❌ No (by default) |
+| `.rbin` bytecode | 8 KB | ✅ Always |
+| `.rdef` types | 2 KB | ✅ Recommended |
+| **Total download** | **10 KB** | |
+
+Compare to Node.js (source + dependencies): typically 50-500 KB per package.
+
+#### Registry Download Format
+
+Packages are downloaded as **single compressed archive:**
+
+```bash
+# Registry provides:
+GET /packages/logging/1.2.3/download
+→ Returns: logging-1.2.3.tar.zst (Zstandard-compressed tar)
+
+# Archive contents:
+logging-1.2.3.tar.zst
+├── module.rbin      # Required
+├── module.rdef      # Optional
+└── metadata.json    # Required
+```
+
+**Compression:** Zstandard (`.zst`) for fast decompression and high compression ratio.
 
 ---
 
@@ -242,15 +382,187 @@ my-project/
 5. **Generate lockfile:**
    - Write exact versions and checksums to `raya.lock`
 
-### Conflict Resolution
+### Semver Resolution Rules
 
-**Scenario:** Package A requires `http@1.x`, Package B requires `http@2.x`
+Raya follows **semantic versioning** (MAJOR.MINOR.PATCH) with the following constraint operators:
 
-**Solution:**
-- Allow multiple major versions
-- Each package gets the version it requested
-- No "dependency hell" (unlike NPM)
-- Trade-off: Larger binary (multiple versions bundled)
+#### Version Constraint Operators
+
+```toml
+[dependencies]
+"http" = "1.2.3"      # Exact version (1.2.3 only)
+"fmt" = "^1.2.3"      # Compatible (>=1.2.3, <2.0.0) - allows minor/patch updates
+"time" = "~1.2.3"     # Patch-level (>=1.2.3, <1.3.0) - allows patch updates only
+"logging" = ">=1.0.0" # Greater than or equal to
+"utils" = "*"         # Latest stable (not recommended for production)
+```
+
+#### Resolution Algorithm
+
+**For each dependency constraint:**
+
+1. **Exact version (`1.2.3`):**
+   - Resolve to exactly `1.2.3`
+   - No flexibility
+
+2. **Caret constraint (`^1.2.3`):**
+   - Allow minor and patch updates within same major version
+   - Resolve to latest: `>=1.2.3` AND `<2.0.0`
+   - Example: `^1.2.3` can resolve to `1.9.5` but not `2.0.0`
+
+3. **Tilde constraint (`~1.2.3`):**
+   - Allow only patch updates within same minor version
+   - Resolve to latest: `>=1.2.3` AND `<1.3.0`
+   - Example: `~1.2.3` can resolve to `1.2.9` but not `1.3.0`
+
+4. **Range constraint (`>=1.0.0`):**
+   - Resolve to latest version matching constraint
+
+#### Lockfile Behavior
+
+Once resolved, versions are **pinned in `raya.lock`:**
+
+```toml
+[[package]]
+name = "http"
+version = "1.2.7"        # Exact resolved version
+checksum = "sha256:..."
+source = "registry+https://raya.dev"
+```
+
+**On subsequent `raya install`:** Use locked version (ignore semver constraints).
+
+**To update dependencies:** Run `raya update` to re-resolve constraints.
+
+### Local Module Resolution
+
+For **private/internal dependencies** (not published to registry), use local path references:
+
+```toml
+[dependencies]
+"shared-utils" = { path = "../shared/utils" }
+"internal-lib" = { path = "../../libs/internal-lib" }
+```
+
+**Resolution:**
+1. Path is relative to project root (where `raya.toml` lives)
+2. Target directory must contain valid `raya.toml`
+3. Local packages are compiled on-the-fly
+4. No version constraints (always use latest code)
+5. Changes reflected immediately (no cache staleness)
+
+**Use cases:**
+- Monorepo/workspace setups
+- Internal company libraries
+- Development before publishing
+- Private projects not suitable for public registry
+
+**Example monorepo structure:**
+
+```
+my-monorepo/
+├── packages/
+│   ├── shared-utils/
+│   │   ├── raya.toml
+│   │   └── src/index.raya
+│   ├── core-api/
+│   │   ├── raya.toml    # depends on shared-utils via path
+│   │   └── src/index.raya
+│   └── web-app/
+│       ├── raya.toml    # depends on both via path
+│       └── src/index.raya
+```
+
+```toml
+# packages/core-api/raya.toml
+[dependencies]
+"shared-utils" = { path = "../shared-utils" }
+"logging" = "^1.2.0"  # Registry package
+```
+
+### Conflict Resolution Policy
+
+**Goal:** Minimize bloat while ensuring compatibility.
+
+#### Default Behavior (Relaxed)
+
+**MAJOR version conflicts:**
+- ✅ **Allow multiple major versions** (different major = breaking changes)
+- Each dependent gets its requested major version
+- Example: Package A uses `http@1.x`, Package B uses `http@2.x` → both bundled
+
+**MINOR/PATCH version conflicts:**
+- ✅ **Resolve to single version** (pick latest compatible)
+- Assumes semver compatibility within same major version
+- Example: Package A uses `^1.2.0`, Package B uses `^1.5.0` → resolve to latest `1.x.x`
+
+#### Strict Mode (Enforced)
+
+Enable strict conflict checking in `raya.toml`:
+
+```toml
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[resolution]
+conflict-strategy = "strict"  # Fail on any conflict
+```
+
+**Strict mode behavior:**
+- ❌ **Fail on ANY version conflict** (even minor/patch)
+- User must explicitly resolve conflicts with overrides
+
+**Override resolution:**
+
+```toml
+[resolution.override]
+"http" = "1.5.3"  # Force all dependents to use 1.5.3
+```
+
+#### Example Conflict Scenarios
+
+**Scenario 1: Major version conflict (allowed by default)**
+
+```toml
+# Package A depends on http@1.5.0
+# Package B depends on http@2.1.0
+```
+
+**Resolution:**
+- Bundle both `http@1.5.0` and `http@2.1.0`
+- Binary size increases, but no compatibility issues
+- Each package uses its required version
+
+**Scenario 2: Minor version conflict (auto-resolved by default)**
+
+```toml
+# Package A depends on fmt@^1.2.0
+# Package B depends on fmt@^1.5.0
+```
+
+**Resolution:**
+- Resolve to latest `1.x.x` (e.g., `1.7.2`)
+- Both packages use same version (semver guarantees compatibility)
+- If semver is violated (breaking change in minor), build may fail at runtime
+
+**Scenario 3: User-enforced resolution**
+
+```toml
+[resolution.override]
+"fmt" = "1.5.0"  # Pin specific version for all
+```
+
+**Resolution:**
+- All dependents use `fmt@1.5.0` regardless of constraints
+- User takes responsibility for compatibility
+
+#### Trade-offs
+
+| Strategy | Binary Size | Compatibility | Build Speed |
+|----------|-------------|---------------|-------------|
+| **Relaxed (default)** | Larger (multiple majors) | High (semver-based) | Fast |
+| **Strict** | Smaller (single version) | Requires manual verification | Slower (conflict resolution) |
 
 ---
 
@@ -362,7 +674,7 @@ sha256sum ~/.raya/cache/a3f2b1.../module.rbin
 ### Pseudocode
 
 ```rust
-fn resolve_import(import_path: &str, current_file: &Path) -> Result<Module, Error> {
+fn resolve_import(import_path: &str, current_file: &Path, project_root: &Path) -> Result<Module, Error> {
     match import_path {
         // Local import: "./foo.raya" or "../bar.raya"
         path if path.starts_with("./") || path.starts_with("../") => {
@@ -380,27 +692,69 @@ fn resolve_import(import_path: &str, current_file: &Path) -> Result<Module, Erro
         package_spec => {
             let (name, version) = parse_package_spec(package_spec);
 
-            // 1. Check lockfile
+            // 1. Check if it's a local path dependency in raya.toml
+            if let Some(local_dep) = project_dependencies.get(name) {
+                if let DependencySource::Path(path) = local_dep.source {
+                    // Resolve local package
+                    let local_path = project_root.join(path);
+                    let local_toml = local_path.join("raya.toml");
+
+                    if !local_toml.exists() {
+                        return Err(Error::InvalidLocalPackage(name));
+                    }
+
+                    // Compile local package on-the-fly
+                    return compile_local_package(local_path);
+                }
+            }
+
+            // 2. Check lockfile
             if let Some(locked) = lockfile.get(name) {
                 return load_from_cache(locked.checksum);
             }
 
-            // 2. Resolve version from registry
+            // 3. Resolve version from registry
             let resolved = registry.resolve(name, version)?;
 
-            // 3. Check cache
+            // 4. Check cache
             if let Some(cached) = cache.get(resolved.checksum) {
                 return Ok(cached);
             }
 
-            // 4. Download and compile
-            let source = download(resolved.download_url)?;
-            let bytecode = compile(source)?;
+            // 5. Download and store in cache
+            let bytecode = download(resolved.download_url)?;
+            verify_checksum(&bytecode, resolved.checksum)?;
             cache.store(resolved.checksum, bytecode)?;
 
             Ok(bytecode)
         }
     }
+}
+
+/// Compile local package from filesystem path
+fn compile_local_package(package_path: &Path) -> Result<Module, Error> {
+    // 1. Read raya.toml
+    let toml = read_package_toml(package_path.join("raya.toml"))?;
+
+    // 2. Find entry point
+    let entry_point = package_path.join(toml.main);
+
+    // 3. Compile (respecting cache)
+    let cache_key = compute_cache_key(&entry_point)?;
+
+    if let Some(cached) = local_cache.get(cache_key) {
+        return Ok(cached);
+    }
+
+    // 4. Fresh compilation
+    let ast = parse(entry_point)?;
+    let typed_ast = type_check(ast)?;
+    let bytecode = compile(typed_ast)?;
+
+    // 5. Cache for next time
+    local_cache.store(cache_key, bytecode.clone())?;
+
+    Ok(bytecode)
 }
 ```
 
