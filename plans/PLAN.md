@@ -772,93 +772,132 @@ pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<
 
 **Reference:** `design/INNER_VM.md` (Full specification), `plans/milestone-1.13.md` (Implementation plan)
 
-### 1.14 Native Bindings Support
+### 1.14 Native Module System
 
-**Goal:** Provide C, C++, and Rust bindings for embedding the Raya VM in other languages.
+**Goal:** Enable Raya programs to call native functions written in C, C++, or Rust (similar to Node.js N-API).
 
-**Status:** 📋 Planned
+**Status:** 🔄 In Progress
+
+**Architecture:**
+```
+Raya Program (.raya)
+    ↓ imports native:moduleName
+Native Module (.so/.dylib/.dll)
+    ↓ written in
+C / C++ / Rust
+```
 
 **Tasks:**
-- [ ] Implement C API (raya-ffi crate)
-  - [ ] Opaque pointer types (RayaVM, RayaValue, RayaSnapshot, RayaError)
-  - [ ] VM lifecycle functions (new, destroy, load, run)
-  - [ ] Value creation and manipulation
-  - [ ] Error handling with error pointers
-  - [ ] Snapshot/restore functions
-  - [ ] Thread-safe API with internal synchronization
-- [ ] Implement C++ API (raya-cpp)
-  - [ ] RAII wrappers around C API
-  - [ ] Exception-based error handling
-  - [ ] Smart pointers (unique_ptr, shared_ptr)
-  - [ ] STL integration (std::string, std::vector)
-  - [ ] Move semantics for efficiency
-- [ ] Implement Rust Safe API (raya-rs)
-  - [ ] Safe wrappers with Result-based error handling
-  - [ ] Ownership tracking and Drop trait
-  - [ ] Zero-cost abstractions
-  - [ ] Type-safe value conversions
-- [ ] Build system integration
-  - [ ] CMake support for C/C++
-  - [ ] Cargo support for Rust
-  - [ ] pkg-config files
-  - [ ] Header installation
+- [x] Design native module system (NATIVE_BINDINGS.md)
+- [ ] Implement C API for native modules (raya-ffi crate)
+  - [x] Value conversion functions (to/from native types)
+  - [ ] Module registration API
+  - [ ] Module builder functions
+  - [ ] Array/Object accessor functions
+  - [ ] Error creation functions
+  - [ ] Context API
+- [ ] Implement module loader in VM
+  - [ ] Dynamic library loading (dlopen/LoadLibrary)
+  - [ ] Symbol resolution (raya_module_init_NAME)
+  - [ ] Version checking
+  - [ ] Function registration in VM
+  - [ ] Module path resolution ($RAYA_MODULE_PATH, ~/.raya/modules)
+- [ ] Implement native function invocation
+  - [ ] Call native functions from bytecode
+  - [ ] Value marshalling (Raya <-> Native)
+  - [ ] Error propagation
+  - [ ] GC safety during native calls
+- [ ] Implement Rust ergonomic API (raya-native crate)
+  - [ ] #[function] proc-macro
+  - [ ] #[module] proc-macro
+  - [ ] Automatic type conversion
+  - [ ] Result-based error handling
+- [ ] Implement standard native modules
+  - [ ] native:fs (file system operations)
+  - [ ] native:crypto (hash, random)
 - [ ] Documentation and examples
-  - [ ] C API documentation
-  - [ ] C++ API documentation
-  - [ ] Rust API documentation
-  - [ ] Example programs in all three languages
+  - [ ] C API header (raya/module.h)
+  - [ ] Example native module in C
+  - [ ] Example native module in Rust
+  - [ ] User guide for native module authors
 - [ ] Testing
-  - [ ] C API tests
-  - [ ] C++ API tests
-  - [ ] Rust API tests
+  - [ ] Module loading tests
+  - [ ] Value marshalling tests
+  - [ ] Error handling tests
   - [ ] Cross-language integration tests
 
-**Files:**
+**Example Usage:**
+
+```typescript
+// Raya program
+import { hash } from "native:crypto";
+const digest = hash("sha256", "hello world");
+```
+
 ```rust
-// crates/raya-ffi/src/lib.rs - C API
-#[repr(C)]
-pub struct RayaVM { /* opaque */ }
+// Native module (Rust)
+use raya_native::{module, function, Context, Error};
 
-#[no_mangle]
-pub extern "C" fn raya_vm_new(error: *mut *mut RayaError) -> *mut RayaVM;
-
-#[no_mangle]
-pub extern "C" fn raya_vm_destroy(vm: *mut RayaVM);
-
-// crates/raya-cpp/include/raya.hpp - C++ API
-namespace raya {
-  class VM {
-    public:
-      VM();
-      ~VM();
-      void load_file(const std::string& path);
-      void run_entry(const std::string& name);
-  };
+#[function]
+fn hash(ctx: &Context, algorithm: String, data: String) -> Result<String, Error> {
+    // Native implementation
 }
 
-// crates/raya-rs/src/lib.rs - Rust Safe API
-pub struct Vm {
-    inner: NonNull<ffi::RayaVM>,
+#[module(name = "crypto", version = "1.0.0")]
+mod crypto_module {
+    exports! { hash }
+}
+```
+
+**Files:**
+```c
+// raya-ffi/include/raya/module.h - C API for native modules
+typedef struct RayaContext RayaContext;
+typedef struct RayaValue RayaValue;
+typedef struct RayaModule RayaModule;
+
+typedef RayaValue* (*RayaNativeFunction)(
+    RayaContext* ctx,
+    RayaValue** args,
+    size_t argc
+);
+
+#define RAYA_MODULE_INIT(name) \
+    __attribute__((visibility("default"))) \
+    RayaModule* raya_module_init_##name(void)
+
+// Value conversion
+const char* raya_value_to_string(RayaValue* value);
+RayaValue* raya_value_from_string(RayaContext* ctx, const char* str);
+// ... more conversion functions
+
+// Module registration
+RayaModuleBuilder* raya_module_builder_new(const char* name, const char* version);
+void raya_module_add_function(RayaModuleBuilder* builder, const char* name,
+                               RayaNativeFunction func, size_t arity);
+RayaModule* raya_module_builder_finish(RayaModuleBuilder* builder);
+```
+
+```rust
+// raya-core/src/native/loader.rs - Dynamic library loader
+pub struct NativeModuleLoader {
+    search_paths: Vec<PathBuf>,
+    loaded_modules: HashMap<String, LoadedModule>,
 }
 
-impl Vm {
-    pub fn new() -> Result<Self, VmError>;
-    pub fn load_file(&mut self, path: impl AsRef<Path>) -> Result<(), VmError>;
-    pub fn run_entry(&mut self, name: &str) -> Result<(), VmError>;
-}
-
-impl Drop for Vm {
-    fn drop(&mut self) {
-        unsafe { ffi::raya_vm_destroy(self.inner.as_ptr()) }
-    }
+impl NativeModuleLoader {
+    pub fn load(&mut self, name: &str) -> Result<&LoadedModule, LoadError>;
+    fn find_library(&self, name: &str) -> Option<PathBuf>;
+    fn load_symbols(&self, lib: &Library) -> Result<ModuleDescriptor, LoadError>;
 }
 ```
 
 **ABI Stability:**
-- C API follows semantic versioning (MAJOR.MINOR.PATCH)
+- Native module ABI follows semantic versioning (MAJOR.MINOR.PATCH)
 - MAJOR version change = breaking ABI changes
 - MINOR version change = new functions (backward compatible)
 - PATCH version change = bug fixes (no API/ABI changes)
+- Current ABI version: 1.0.0
 
 **Reference:** `design/NATIVE_BINDINGS.md` (Complete specification)
 
