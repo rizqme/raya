@@ -12,6 +12,6 @@ mod worker;
 
 pub use deque::WorkerDeque;
 pub use preempt::{PreemptMonitor, DEFAULT_PREEMPT_THRESHOLD};
-pub use scheduler::{Scheduler, SchedulerLimits};
+pub use scheduler::{Scheduler, SchedulerLimits, SchedulerStats};
 pub use task::{Task, TaskHandle, TaskId, TaskState};
 pub use worker::Worker;

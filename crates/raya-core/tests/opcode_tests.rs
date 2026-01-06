@@ -53,6 +53,11 @@ fn i32_bytes(val: i32) -> [u8; 4] {
     val.to_le_bytes()
 }
 
+/// Helper to encode i16 as little-endian bytes (for jump offsets)
+fn i16_bytes(val: i16) -> [u8; 2] {
+    val.to_le_bytes()
+}
+
 /// Helper to encode f64 as little-endian bytes
 fn f64_bytes(val: f64) -> [u8; 8] {
     val.to_le_bytes()
@@ -61,6 +66,11 @@ fn f64_bytes(val: f64) -> [u8; 8] {
 /// Helper to encode u16 as little-endian bytes
 fn u16_bytes(val: u16) -> [u8; 2] {
     val.to_le_bytes()
+}
+
+/// Helper to encode u8 as a single byte (for local variable indices)
+fn u8_byte(val: u8) -> u8 {
+    val
 }
 
 // ===== Constants (0x00-0x0F) =====
@@ -637,7 +647,7 @@ mod number_arithmetic {
             Opcode::Ndiv as u8,
             Opcode::Return as u8,
         ]);
-        assert_eq!(result, Value::i32(42));
+        assert_eq!(result, Value::f64(42.0));
     }
 }
 
@@ -999,13 +1009,11 @@ mod control_flow {
     #[test]
     fn test_jmp_forward() {
         // Jump over some instructions
-        let jump_offset = i32_bytes(7); // Skip CONST_I32 10
+        let jump_offset = i16_bytes(6); // Skip CONST_I32 10
         let result = execute_bytecode(vec![
             Opcode::Jmp as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // This should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1026,14 +1034,12 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_true_taken() {
-        let jump_offset = i32_bytes(7);
+        let jump_offset = i16_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstTrue as u8,
             Opcode::JmpIfTrue as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1054,14 +1060,12 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_true_not_taken() {
-        let jump_offset = i32_bytes(7);
+        let jump_offset = i16_bytes(7);
         let result = execute_bytecode(vec![
             Opcode::ConstFalse as u8,
             Opcode::JmpIfTrue as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // Should execute this
             Opcode::ConstI32 as u8,
             10,
@@ -1082,14 +1086,12 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_false_taken() {
-        let jump_offset = i32_bytes(7);
+        let jump_offset = i16_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstFalse as u8,
             Opcode::JmpIfFalse as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1110,14 +1112,12 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_null_taken() {
-        let jump_offset = i32_bytes(7);
+        let jump_offset = i16_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstNull as u8,
             Opcode::JmpIfNull as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1138,7 +1138,7 @@ mod control_flow {
 
     #[test]
     fn test_jmp_if_not_null_taken() {
-        let jump_offset = i32_bytes(7);
+        let jump_offset = i16_bytes(6);
         let result = execute_bytecode(vec![
             Opcode::ConstI32 as u8,
             1,
@@ -1148,8 +1148,6 @@ mod control_flow {
             Opcode::JmpIfNotNull as u8,
             jump_offset[0],
             jump_offset[1],
-            jump_offset[2],
-            jump_offset[3],
             // Should be skipped
             Opcode::ConstI32 as u8,
             10,
@@ -1183,9 +1181,9 @@ mod composite {
         // while i > 1:
         //   result = result * i
         //   i = i - 1
-        let bytes0 = u16_bytes(0); // result
-        let bytes1 = u16_bytes(1); // i
-        let loop_start_offset = i32_bytes(-20); // Jump back to loop condition
+        let bytes0 = u8_byte(0); // result
+        let bytes1 = u8_byte(1); // i
+        let loop_start_offset = i16_bytes(-31); // Jump back to loop condition
 
         let result = execute_bytecode(vec![
             // result = 1 (local 0)
@@ -1195,8 +1193,7 @@ mod composite {
             0,
             0,
             Opcode::StoreLocal as u8,
-            bytes0[0],
-            bytes0[1],
+            bytes0,
             // i = 5 (local 1)
             Opcode::ConstI32 as u8,
             5,
@@ -1204,12 +1201,10 @@ mod composite {
             0,
             0,
             Opcode::StoreLocal as u8,
-            bytes1[0],
-            bytes1[1],
+            bytes1,
             // Loop: while i > 1
             Opcode::LoadLocal as u8,
-            bytes1[0],
-            bytes1[1],
+            bytes1,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -1217,25 +1212,19 @@ mod composite {
             0,
             Opcode::Igt as u8,
             Opcode::JmpIfFalse as u8,
-            28,
-            0,
-            0,
+            20,
             0, // Jump to end if i <= 1
             // result = result * i
             Opcode::LoadLocal as u8,
-            bytes0[0],
-            bytes0[1],
+            bytes0,
             Opcode::LoadLocal as u8,
-            bytes1[0],
-            bytes1[1],
+            bytes1,
             Opcode::Imul as u8,
             Opcode::StoreLocal as u8,
-            bytes0[0],
-            bytes0[1],
+            bytes0,
             // i = i - 1
             Opcode::LoadLocal as u8,
-            bytes1[0],
-            bytes1[1],
+            bytes1,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -1243,18 +1232,14 @@ mod composite {
             0,
             Opcode::Isub as u8,
             Opcode::StoreLocal as u8,
-            bytes1[0],
-            bytes1[1],
+            bytes1,
             // Jump back to loop start
             Opcode::Jmp as u8,
             loop_start_offset[0],
             loop_start_offset[1],
-            loop_start_offset[2],
-            loop_start_offset[3],
             // Return result
             Opcode::LoadLocal as u8,
-            bytes0[0],
-            bytes0[1],
+            bytes0,
             Opcode::Return as u8,
         ]);
         assert_eq!(result, Value::i32(120)); // 5! = 120
@@ -1265,11 +1250,11 @@ mod composite {
         // Compute 7th Fibonacci number iteratively
         // a = 0, b = 1, count = 7
         // for i in 0..count: a, b = b, a + b
-        let bytes_a = u16_bytes(0);
-        let bytes_b = u16_bytes(1);
-        let bytes_i = u16_bytes(2);
-        let bytes_tmp = u16_bytes(3);
-        let loop_start_offset = i32_bytes(-38);
+        let bytes_a = u8_byte(0);
+        let bytes_b = u8_byte(1);
+        let bytes_i = u8_byte(2);
+        let bytes_tmp = u8_byte(3);
+        let loop_start_offset = i16_bytes(-39);
 
         let result = execute_bytecode(vec![
             // a = 0
@@ -1279,8 +1264,7 @@ mod composite {
             0,
             0,
             Opcode::StoreLocal as u8,
-            bytes_a[0],
-            bytes_a[1],
+            bytes_a,
             // b = 1
             Opcode::ConstI32 as u8,
             1,
@@ -1288,8 +1272,7 @@ mod composite {
             0,
             0,
             Opcode::StoreLocal as u8,
-            bytes_b[0],
-            bytes_b[1],
+            bytes_b,
             // i = 0
             Opcode::ConstI32 as u8,
             0,
@@ -1297,12 +1280,10 @@ mod composite {
             0,
             0,
             Opcode::StoreLocal as u8,
-            bytes_i[0],
-            bytes_i[1],
+            bytes_i,
             // Loop: while i < 7
             Opcode::LoadLocal as u8,
-            bytes_i[0],
-            bytes_i[1],
+            bytes_i,
             Opcode::ConstI32 as u8,
             7,
             0,
@@ -1310,39 +1291,29 @@ mod composite {
             0,
             Opcode::Ilt as u8,
             Opcode::JmpIfFalse as u8,
-            40,
-            0,
-            0,
+            28,
             0, // Jump to end if i >= 7
             // tmp = a + b
             Opcode::LoadLocal as u8,
-            bytes_a[0],
-            bytes_a[1],
+            bytes_a,
             Opcode::LoadLocal as u8,
-            bytes_b[0],
-            bytes_b[1],
+            bytes_b,
             Opcode::Iadd as u8,
             Opcode::StoreLocal as u8,
-            bytes_tmp[0],
-            bytes_tmp[1],
+            bytes_tmp,
             // a = b
             Opcode::LoadLocal as u8,
-            bytes_b[0],
-            bytes_b[1],
+            bytes_b,
             Opcode::StoreLocal as u8,
-            bytes_a[0],
-            bytes_a[1],
+            bytes_a,
             // b = tmp
             Opcode::LoadLocal as u8,
-            bytes_tmp[0],
-            bytes_tmp[1],
+            bytes_tmp,
             Opcode::StoreLocal as u8,
-            bytes_b[0],
-            bytes_b[1],
+            bytes_b,
             // i = i + 1
             Opcode::LoadLocal as u8,
-            bytes_i[0],
-            bytes_i[1],
+            bytes_i,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -1350,18 +1321,14 @@ mod composite {
             0,
             Opcode::Iadd as u8,
             Opcode::StoreLocal as u8,
-            bytes_i[0],
-            bytes_i[1],
+            bytes_i,
             // Jump back to loop start
             Opcode::Jmp as u8,
             loop_start_offset[0],
             loop_start_offset[1],
-            loop_start_offset[2],
-            loop_start_offset[3],
             // Return a
             Opcode::LoadLocal as u8,
-            bytes_a[0],
-            bytes_a[1],
+            bytes_a,
             Opcode::Return as u8,
         ]);
         assert_eq!(result, Value::i32(13)); // 7th Fibonacci number is 13

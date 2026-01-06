@@ -7,6 +7,19 @@ use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
+/// Scheduler statistics
+#[derive(Debug, Clone, Default)]
+pub struct SchedulerStats {
+    /// Total tasks spawned
+    pub tasks_spawned: u64,
+
+    /// Total tasks completed
+    pub tasks_completed: u64,
+
+    /// Currently active tasks
+    pub active_tasks: usize,
+}
+
 /// Resource limits for sub-schedulers (inner VMs)
 #[derive(Debug, Clone, Default)]
 pub struct SchedulerLimits {
@@ -64,8 +77,14 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Create a new scheduler with the specified number of workers
+    /// If worker_count is 0, defaults to the number of CPU cores
     pub fn new(worker_count: usize) -> Self {
-        Self::with_limits(worker_count, SchedulerLimits::default())
+        let count = if worker_count == 0 {
+            num_cpus::get()
+        } else {
+            worker_count
+        };
+        Self::with_limits(count, SchedulerLimits::default())
     }
 
     /// Create a new scheduler with resource limits (for sub-schedulers)
@@ -282,6 +301,28 @@ impl Scheduler {
             task.set_state(TaskState::Resumed);
             // Push task back to global injector so it can be picked up by a worker
             self.injector.push(task);
+        }
+    }
+
+    /// Get scheduler statistics
+    pub fn stats(&self) -> SchedulerStats {
+        let tasks = self.tasks.read();
+
+        // Count active tasks by state
+        let active_tasks = tasks
+            .values()
+            .filter(|task| {
+                matches!(
+                    task.state(),
+                    TaskState::Created | TaskState::Running | TaskState::Resumed
+                )
+            })
+            .count();
+
+        SchedulerStats {
+            tasks_spawned: 0, // TODO: Track this with atomic counter
+            tasks_completed: 0, // TODO: Track this with atomic counter
+            active_tasks,
         }
     }
 }

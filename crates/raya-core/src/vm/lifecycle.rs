@@ -88,11 +88,19 @@ impl Vm {
     /// * `Err(VmError)` - Failed to create VM
     ///
     /// # Example
-    /// ```ignore
-    /// let vm = Vm::new(VmOptions {
-    ///     limits: ResourceLimits::with_heap_limit(16 * 1024 * 1024),
+    /// ```
+    /// use raya_core::vm::{InnerVm, VmOptions, ResourceLimits};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let vm = InnerVm::new(VmOptions {
+    ///     limits: ResourceLimits {
+    ///         max_heap_bytes: Some(16 * 1024 * 1024),
+    ///         ..Default::default()
+    ///     },
     ///     ..Default::default()
     /// })?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn new(options: VmOptions) -> Result<Self, VmError> {
         let context = VmContext::with_options(options);
@@ -112,9 +120,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to restore
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmSnapshot, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm1 = InnerVm::new(VmOptions::default())?;
     /// let snapshot = vm1.snapshot()?;
-    /// let vm2 = Vm::from_snapshot(snapshot, None)?;
+    /// let vm2 = InnerVm::from_snapshot(snapshot, None)?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn from_snapshot(
         _snapshot: VmSnapshot,
@@ -136,8 +149,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to load
     ///
     /// # Example
-    /// ```ignore
-    /// vm.load_rbin("./mymodule.rbin")?;
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # use std::path::Path;
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
+    /// vm.load_rbin(Path::new("./mymodule.rbin"))?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn load_rbin(&self, path: &Path) -> Result<(), VmError> {
         let bytes = std::fs::read(path)?;
@@ -154,9 +173,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to load
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
     /// let bytes = std::fs::read("./mymodule.rbin")?;
     /// vm.load_rbin_bytes(&bytes)?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn load_rbin_bytes(&self, bytes: &[u8]) -> Result<(), VmError> {
         // Parse the .rbin format
@@ -201,9 +225,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to start execution
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
     /// let task_id = vm.run_entry("main", vec![])?;
     /// // Wait for task to complete...
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn run_entry(&self, _name: &str, _args: Vec<Value>) -> Result<TaskId, VmError> {
         // TODO: Implement entry point execution
@@ -230,8 +259,13 @@ impl Vm {
     /// * `Err(VmError)` - Failed to terminate
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
     /// vm.terminate()?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn terminate(&self) -> Result<(), VmError> {
         // Get write access to terminate tasks
@@ -250,9 +284,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to get stats
     ///
     /// # Example
-    /// ```ignore
+    /// ```
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
     /// let stats = vm.get_stats()?;
     /// println!("Heap: {} bytes", stats.heap_bytes_used);
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn get_stats(&self) -> Result<VmStats, VmError> {
         let context = self.context.read();
@@ -276,9 +315,14 @@ impl Vm {
     /// * `Err(VmError)` - Failed to snapshot
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let vm = InnerVm::new(VmOptions::default())?;
     /// let snapshot = vm.snapshot()?;
     /// // Later... restore from snapshot
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn snapshot(&self) -> Result<VmSnapshot, VmError> {
         // TODO: Implement VM snapshotting
@@ -304,10 +348,15 @@ impl Vm {
     /// * `Err(VmError)` - Failed to restore
     ///
     /// # Example
-    /// ```ignore
+    /// ```no_run
+    /// # use raya_core::vm::{InnerVm, VmOptions};
+    /// # fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let mut vm = InnerVm::new(VmOptions::default())?;
     /// let snapshot = vm.snapshot()?;
     /// // ... later ...
     /// vm.restore(snapshot)?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub fn restore(&mut self, _snapshot: VmSnapshot) -> Result<(), VmError> {
         // TODO: Implement VM restoration

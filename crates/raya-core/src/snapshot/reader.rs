@@ -14,6 +14,7 @@ pub struct SnapshotReader {
     header: SnapshotHeader,
     tasks: Vec<SerializedTask>,
     heap: HeapSnapshot,
+    needs_byte_swap: bool,
 }
 
 impl SnapshotReader {
@@ -26,14 +27,16 @@ impl SnapshotReader {
 
     /// Load snapshot from reader
     pub fn from_reader(reader: &mut impl Read) -> Result<Self, SnapshotError> {
+        use crate::snapshot::format::byteswap;
+
         // Read and validate header
         let header = SnapshotHeader::decode(reader)?;
-        header.validate()?;
+        let needs_byte_swap = header.validate()?;
 
         // Read segment count
         let mut buf = [0u8; 4];
         reader.read_exact(&mut buf)?;
-        let segment_count = u32::from_le_bytes(buf) as usize;
+        let segment_count = byteswap::swap_u32(u32::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read all segments and collect complete segment data for checksum
         let mut segments = Vec::new();
@@ -81,10 +84,10 @@ impl SnapshotReader {
                     // Skip metadata for now
                 }
                 SegmentType::Heap => {
-                    heap = HeapSnapshot::decode(&mut &data[..])?;
+                    heap = HeapSnapshot::decode(&mut &data[..], needs_byte_swap)?;
                 }
                 SegmentType::Task => {
-                    tasks = Self::parse_task_segment(data)?;
+                    tasks = Self::parse_task_segment(data, needs_byte_swap)?;
                 }
                 SegmentType::Scheduler => {
                     // Skip scheduler for now
@@ -99,21 +102,24 @@ impl SnapshotReader {
             header,
             tasks,
             heap,
+            needs_byte_swap,
         })
     }
 
-    fn parse_task_segment(data: &[u8]) -> Result<Vec<SerializedTask>, SnapshotError> {
+    fn parse_task_segment(data: &[u8], needs_byte_swap: bool) -> Result<Vec<SerializedTask>, SnapshotError> {
+        use crate::snapshot::format::byteswap;
+
         let mut reader = data;
         let mut buf = [0u8; 8];
 
         // Read task count
         reader.read_exact(&mut buf)?;
-        let task_count = u64::from_le_bytes(buf) as usize;
+        let task_count = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read tasks
         let mut tasks = Vec::with_capacity(task_count);
         for _ in 0..task_count {
-            tasks.push(SerializedTask::decode(&mut reader)?);
+            tasks.push(SerializedTask::decode(&mut reader, needs_byte_swap)?);
         }
 
         Ok(tasks)

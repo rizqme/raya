@@ -60,16 +60,18 @@ impl HeapSnapshot {
     }
 
     /// Decode heap snapshot from reader
-    pub fn decode(reader: &mut impl Read) -> std::io::Result<Self> {
+    pub fn decode(reader: &mut impl Read, needs_byte_swap: bool) -> std::io::Result<Self> {
+        use crate::snapshot::format::byteswap;
+
         let mut buf = [0u8; 8];
 
         // Read object count
         reader.read_exact(&mut buf)?;
-        let object_count = u64::from_le_bytes(buf);
+        let object_count = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap);
 
         // Read data length
         reader.read_exact(&mut buf)?;
-        let data_len = u64::from_le_bytes(buf) as usize;
+        let data_len = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read data
         let mut data = vec![0u8; data_len];
@@ -101,7 +103,7 @@ mod tests {
         let mut buf = Vec::new();
         snapshot.encode(&mut buf).unwrap();
 
-        let decoded = HeapSnapshot::decode(&mut &buf[..]).unwrap();
+        let decoded = HeapSnapshot::decode(&mut &buf[..], false).unwrap();
         assert_eq!(decoded.object_count, 0);
         assert_eq!(decoded.data.len(), 0);
     }
@@ -116,7 +118,7 @@ mod tests {
         let mut buf = Vec::new();
         snapshot.encode(&mut buf).unwrap();
 
-        let decoded = HeapSnapshot::decode(&mut &buf[..]).unwrap();
+        let decoded = HeapSnapshot::decode(&mut &buf[..], false).unwrap();
         assert_eq!(decoded.object_count, 5);
         assert_eq!(decoded.data, vec![1, 2, 3, 4, 5]);
     }

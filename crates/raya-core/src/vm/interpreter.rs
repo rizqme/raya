@@ -183,6 +183,10 @@ impl Vm {
                     let index = self.read_u8(code, &mut ip)?;
                     self.op_store_local(index as usize)?;
                 }
+                Opcode::LoadLocal0 => self.op_load_local(0)?,
+                Opcode::LoadLocal1 => self.op_load_local(1)?,
+                Opcode::StoreLocal0 => self.op_store_local(0)?,
+                Opcode::StoreLocal1 => self.op_store_local(1)?,
 
                 // Arithmetic - Integer
                 Opcode::Iadd => self.op_iadd()?,
@@ -192,12 +196,20 @@ impl Vm {
                 Opcode::Imod => self.op_imod()?,
                 Opcode::Ineg => self.op_ineg()?,
 
-                // Arithmetic - Float (placeholder)
+                // Arithmetic - Float
                 Opcode::Fadd => self.op_fadd()?,
                 Opcode::Fsub => self.op_fsub()?,
                 Opcode::Fmul => self.op_fmul()?,
                 Opcode::Fdiv => self.op_fdiv()?,
                 Opcode::Fneg => self.op_fneg()?,
+
+                // Arithmetic - Number (generic)
+                Opcode::Nadd => self.op_nadd()?,
+                Opcode::Nsub => self.op_nsub()?,
+                Opcode::Nmul => self.op_nmul()?,
+                Opcode::Ndiv => self.op_ndiv()?,
+                Opcode::Nmod => self.op_nmod()?,
+                Opcode::Nneg => self.op_nneg()?,
 
                 // Comparisons - Integer
                 Opcode::Ieq => self.op_ieq()?,
@@ -206,6 +218,20 @@ impl Vm {
                 Opcode::Ile => self.op_ile()?,
                 Opcode::Igt => self.op_igt()?,
                 Opcode::Ige => self.op_ige()?,
+
+                // Comparisons - Float
+                Opcode::Feq => self.op_feq()?,
+                Opcode::Fne => self.op_fne()?,
+                Opcode::Flt => self.op_flt()?,
+                Opcode::Fle => self.op_fle()?,
+                Opcode::Fgt => self.op_fgt()?,
+                Opcode::Fge => self.op_fge()?,
+
+                // Comparisons - Generic
+                Opcode::Eq => self.op_eq()?,
+                Opcode::Ne => self.op_ne()?,
+                Opcode::StrictEq => self.op_strict_eq()?,
+                Opcode::StrictNe => self.op_strict_ne()?,
 
                 // Boolean operations
                 Opcode::Not => self.op_not()?,
@@ -230,6 +256,18 @@ impl Vm {
                 Opcode::JmpIfFalse => {
                     let offset = self.read_i16(code, &mut ip)?;
                     if !self.stack.pop()?.is_truthy() {
+                        ip = (ip as isize + offset as isize) as usize;
+                    }
+                }
+                Opcode::JmpIfNull => {
+                    let offset = self.read_i16(code, &mut ip)?;
+                    if self.stack.pop()?.is_null() {
+                        ip = (ip as isize + offset as isize) as usize;
+                    }
+                }
+                Opcode::JmpIfNotNull => {
+                    let offset = self.read_i16(code, &mut ip)?;
+                    if !self.stack.pop()?.is_null() {
                         ip = (ip as isize + offset as isize) as usize;
                     }
                 }
@@ -446,8 +484,8 @@ impl Vm {
     fn op_swap(&mut self) -> VmResult<()> {
         let a = self.stack.pop()?;
         let b = self.stack.pop()?;
-        self.stack.push(a)?;
         self.stack.push(b)?;
+        self.stack.push(a)?;
         Ok(())
     }
 
@@ -679,6 +717,117 @@ impl Vm {
         self.stack.push(Value::f64(-a))
     }
 
+    // ===== Number Arithmetic Operations (Generic) =====
+
+    /// NADD - Add two numbers (i32 or f64)
+    #[inline]
+    fn op_nadd(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Try i32 + i32 first
+        if let (Some(a_i32), Some(b_i32)) = (a.as_i32(), b.as_i32()) {
+            return self.stack.push(Value::i32(a_i32.wrapping_add(b_i32)));
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64 + b_f64))
+    }
+
+    /// NSUB - Subtract two numbers (i32 or f64)
+    #[inline]
+    fn op_nsub(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Try i32 - i32 first
+        if let (Some(a_i32), Some(b_i32)) = (a.as_i32(), b.as_i32()) {
+            return self.stack.push(Value::i32(a_i32.wrapping_sub(b_i32)));
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64 - b_f64))
+    }
+
+    /// NMUL - Multiply two numbers (i32 or f64)
+    #[inline]
+    fn op_nmul(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Try i32 * i32 first
+        if let (Some(a_i32), Some(b_i32)) = (a.as_i32(), b.as_i32()) {
+            return self.stack.push(Value::i32(a_i32.wrapping_mul(b_i32)));
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64 * b_f64))
+    }
+
+    /// NDIV - Divide two numbers (i32 or f64)
+    #[inline]
+    fn op_ndiv(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Convert both to f64 for division (to match TypeScript semantics)
+        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64 / b_f64))
+    }
+
+    /// NMOD - Modulo two numbers (i32 or f64)
+    #[inline]
+    fn op_nmod(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Try i32 % i32 first
+        if let (Some(a_i32), Some(b_i32)) = (a.as_i32(), b.as_i32()) {
+            if b_i32 == 0 {
+                return Err(VmError::RuntimeError("Modulo by zero".to_string()));
+            }
+            return self.stack.push(Value::i32(a_i32 % b_i32));
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64 % b_f64))
+    }
+
+    /// NNEG - Negate a number (i32 or f64)
+    #[inline]
+    fn op_nneg(&mut self) -> VmResult<()> {
+        let a = self.stack.pop()?;
+
+        // Try i32 first
+        if let Some(a_i32) = a.as_i32() {
+            return self.stack.push(Value::i32(-a_i32));
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a.as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(-a_f64))
+    }
+
     // ===== Comparison Operations =====
 
     /// IEQ - Integer equality
@@ -775,6 +924,141 @@ impl Vm {
             .as_i32()
             .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
         self.stack.push(Value::bool(a >= b))
+    }
+
+    // ===== Float Comparison Operations =====
+
+    /// FEQ - Float equality
+    #[inline]
+    fn op_feq(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a == b))
+    }
+
+    /// FNE - Float inequality
+    #[inline]
+    fn op_fne(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a != b))
+    }
+
+    /// FLT - Float less than
+    #[inline]
+    fn op_flt(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a < b))
+    }
+
+    /// FLE - Float less or equal
+    #[inline]
+    fn op_fle(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a <= b))
+    }
+
+    /// FGT - Float greater than
+    #[inline]
+    fn op_fgt(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a > b))
+    }
+
+    /// FGE - Float greater or equal
+    #[inline]
+    fn op_fge(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::bool(a >= b))
+    }
+
+    // ===== Generic Comparison Operations =====
+
+    /// EQ - Generic equality (structural)
+    #[inline]
+    fn op_eq(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        // Use Value's PartialEq implementation
+        self.stack.push(Value::bool(a == b))
+    }
+
+    /// NE - Generic inequality
+    #[inline]
+    fn op_ne(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        self.stack.push(Value::bool(a != b))
+    }
+
+    /// STRICT_EQ - Strict equality
+    #[inline]
+    fn op_strict_eq(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        // For now, same as generic equality
+        // TODO: Implement strict equality semantics (no type coercion)
+        self.stack.push(Value::bool(a == b))
+    }
+
+    /// STRICT_NE - Strict inequality
+    #[inline]
+    fn op_strict_ne(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+        self.stack.push(Value::bool(a != b))
     }
 
     // ===== Boolean Operations =====

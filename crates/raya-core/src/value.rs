@@ -410,6 +410,19 @@ impl Value {
         reader.read_exact(&mut buf)?;
         Ok(Value(u64::from_le_bytes(buf)))
     }
+
+    /// Decode value from binary format with byte-swapping if needed
+    ///
+    /// This is used by snapshot deserialization when loading snapshots
+    /// from different endianness systems.
+    pub fn decode_with_byteswap<R: std::io::Read>(reader: &mut R, needs_byte_swap: bool) -> std::io::Result<Self> {
+        use crate::snapshot::format::byteswap;
+
+        let mut buf = [0u8; 8];
+        reader.read_exact(&mut buf)?;
+        let raw = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap);
+        Ok(Value(raw))
+    }
 }
 
 impl fmt::Debug for Value {

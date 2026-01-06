@@ -118,12 +118,14 @@ impl SerializedTask {
     }
 
     /// Decode from reader
-    pub fn decode(reader: &mut impl Read) -> std::io::Result<Self> {
+    pub fn decode(reader: &mut impl Read, needs_byte_swap: bool) -> std::io::Result<Self> {
+        use crate::snapshot::format::byteswap;
+
         let mut buf = [0u8; 8];
 
         // Read task ID
         reader.read_exact(&mut buf)?;
-        let task_id = TaskId::from_u64(u64::from_le_bytes(buf));
+        let task_id = TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
 
         // Read state
         let mut state_buf = [0u8; 1];
@@ -145,36 +147,36 @@ impl SerializedTask {
 
         // Read function index
         reader.read_exact(&mut buf)?;
-        let function_index = u64::from_le_bytes(buf) as usize;
+        let function_index = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read instruction pointer
         reader.read_exact(&mut buf)?;
-        let ip = u64::from_le_bytes(buf) as usize;
+        let ip = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read frame count
         reader.read_exact(&mut buf)?;
-        let frame_count = u64::from_le_bytes(buf) as usize;
+        let frame_count = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read frames
         let mut frames = Vec::with_capacity(frame_count);
         for _ in 0..frame_count {
-            frames.push(SerializedFrame::decode(reader)?);
+            frames.push(SerializedFrame::decode(reader, needs_byte_swap)?);
         }
 
         // Read stack size
         reader.read_exact(&mut buf)?;
-        let stack_size = u64::from_le_bytes(buf) as usize;
+        let stack_size = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         // Read stack values
         let mut stack = Vec::with_capacity(stack_size);
         for _ in 0..stack_size {
-            stack.push(Value::decode(reader)?);
+            stack.push(Value::decode_with_byteswap(reader, needs_byte_swap)?);
         }
 
         // Read result
         reader.read_exact(&mut state_buf)?;
         let result = if state_buf[0] == 1 {
-            Some(Value::decode(reader)?)
+            Some(Value::decode_with_byteswap(reader, needs_byte_swap)?)
         } else {
             None
         };
@@ -183,7 +185,7 @@ impl SerializedTask {
         reader.read_exact(&mut state_buf)?;
         let parent = if state_buf[0] == 1 {
             reader.read_exact(&mut buf)?;
-            Some(TaskId::from_u64(u64::from_le_bytes(buf)))
+            Some(TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap)))
         } else {
             None
         };
@@ -191,7 +193,7 @@ impl SerializedTask {
         // Read blocked reason
         reader.read_exact(&mut state_buf)?;
         let blocked_on = if state_buf[0] == 1 {
-            Some(BlockedReason::decode(reader)?)
+            Some(BlockedReason::decode(reader, needs_byte_swap)?)
         } else {
             None
         };
@@ -252,24 +254,26 @@ impl SerializedFrame {
     }
 
     /// Decode call frame from reader
-    pub fn decode(reader: &mut impl Read) -> std::io::Result<Self> {
+    pub fn decode(reader: &mut impl Read, needs_byte_swap: bool) -> std::io::Result<Self> {
+        use crate::snapshot::format::byteswap;
+
         let mut buf = [0u8; 8];
 
         reader.read_exact(&mut buf)?;
-        let function_index = u64::from_le_bytes(buf) as usize;
+        let function_index = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         reader.read_exact(&mut buf)?;
-        let return_ip = u64::from_le_bytes(buf) as usize;
+        let return_ip = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         reader.read_exact(&mut buf)?;
-        let base_pointer = u64::from_le_bytes(buf) as usize;
+        let base_pointer = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         reader.read_exact(&mut buf)?;
-        let local_count = u64::from_le_bytes(buf) as usize;
+        let local_count = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
         let mut locals = Vec::with_capacity(local_count);
         for _ in 0..local_count {
-            locals.push(Value::decode(reader)?);
+            locals.push(Value::decode_with_byteswap(reader, needs_byte_swap)?);
         }
 
         Ok(Self {
@@ -317,7 +321,9 @@ impl BlockedReason {
     }
 
     /// Decode blocked reason from reader
-    pub fn decode(reader: &mut impl Read) -> std::io::Result<Self> {
+    pub fn decode(reader: &mut impl Read, needs_byte_swap: bool) -> std::io::Result<Self> {
+        use crate::snapshot::format::byteswap;
+
         let mut buf = [0u8; 1];
         reader.read_exact(&mut buf)?;
 
@@ -325,19 +331,19 @@ impl BlockedReason {
             0 => {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
-                let task_id = TaskId::from_u64(u64::from_le_bytes(buf));
+                let task_id = TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
                 Ok(BlockedReason::AwaitingTask(task_id))
             }
             1 => {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
-                let mutex_id = u64::from_le_bytes(buf);
+                let mutex_id = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap);
                 Ok(BlockedReason::AwaitingMutex(mutex_id))
             }
             2 => {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
-                let len = u64::from_le_bytes(buf) as usize;
+                let len = byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap) as usize;
 
                 let mut bytes = vec![0u8; len];
                 reader.read_exact(&mut bytes)?;
@@ -369,7 +375,7 @@ mod tests {
         let mut buf = Vec::new();
         task.encode(&mut buf).unwrap();
 
-        let decoded = SerializedTask::decode(&mut &buf[..]).unwrap();
+        let decoded = SerializedTask::decode(&mut &buf[..], false).unwrap();
         assert_eq!(decoded.task_id.as_u64(), 42);
         assert_eq!(decoded.state, TaskState::Running);
         assert_eq!(decoded.function_index, 10);
@@ -388,7 +394,7 @@ mod tests {
         let mut buf = Vec::new();
         frame.encode(&mut buf).unwrap();
 
-        let decoded = SerializedFrame::decode(&mut &buf[..]).unwrap();
+        let decoded = SerializedFrame::decode(&mut &buf[..], false).unwrap();
         assert_eq!(decoded.function_index, 5);
         assert_eq!(decoded.return_ip, 50);
         assert_eq!(decoded.base_pointer, 10);
@@ -401,7 +407,7 @@ mod tests {
         let reason = BlockedReason::AwaitingTask(TaskId::from_u64(123));
         let mut buf = Vec::new();
         reason.encode(&mut buf).unwrap();
-        let decoded = BlockedReason::decode(&mut &buf[..]).unwrap();
+        let decoded = BlockedReason::decode(&mut &buf[..], false).unwrap();
         match decoded {
             BlockedReason::AwaitingTask(id) => assert_eq!(id.as_u64(), 123),
             _ => panic!("Wrong variant"),
@@ -411,7 +417,7 @@ mod tests {
         let reason = BlockedReason::AwaitingMutex(456);
         let mut buf = Vec::new();
         reason.encode(&mut buf).unwrap();
-        let decoded = BlockedReason::decode(&mut &buf[..]).unwrap();
+        let decoded = BlockedReason::decode(&mut &buf[..], false).unwrap();
         match decoded {
             BlockedReason::AwaitingMutex(id) => assert_eq!(id, 456),
             _ => panic!("Wrong variant"),
@@ -421,7 +427,7 @@ mod tests {
         let reason = BlockedReason::Other("test reason".to_string());
         let mut buf = Vec::new();
         reason.encode(&mut buf).unwrap();
-        let decoded = BlockedReason::decode(&mut &buf[..]).unwrap();
+        let decoded = BlockedReason::decode(&mut &buf[..], false).unwrap();
         match decoded {
             BlockedReason::Other(s) => assert_eq!(s, "test reason"),
             _ => panic!("Wrong variant"),

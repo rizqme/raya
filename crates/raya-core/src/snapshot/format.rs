@@ -1,13 +1,143 @@
 //! Snapshot binary format definitions
+//!
+//! # Endianness Handling
+//!
+//! Raya snapshots use **little-endian encoding** as the canonical format for portability.
+//! This ensures snapshots can be transferred between systems regardless of their native
+//! byte order. All multi-byte integers are encoded using little-endian byte order.
+//!
+//! The snapshot header includes an endianness marker (0x01020304) which serves two purposes:
+//! 1. Detect if the snapshot was created on a system with different endianness
+//! 2. Verify the snapshot format is valid
+//!
+//! When reading a snapshot:
+//! - If the marker reads as 0x01020304, the snapshot is in little-endian (correct)
+//! - If the marker reads as 0x04030201, the snapshot is in big-endian (byte-swap needed)
+//! - Any other value indicates a corrupted snapshot
+//!
+//! # Platform Support
+//!
+//! While Raya's canonical format is little-endian, the code includes endianness detection
+//! to provide clear error messages on big-endian systems. Future versions may add automatic
+//! byte-swapping for full big-endian support.
 
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 
-/// Magic number for Raya snapshots: "RAYA\0\0\0\0"
+/// Magic number for Raya snapshots: "RAYA\0\0\0\0" (little-endian)
 pub const SNAPSHOT_MAGIC: u64 = 0x0000005941594152;
 
 /// Current snapshot format version
 pub const SNAPSHOT_VERSION: u32 = 1;
+
+/// Endianness marker - should read as 0x01020304 in native byte order
+pub const ENDIANNESS_MARKER: u32 = 0x01020304;
+
+/// Endianness marker when byte-swapped (indicates different endianness)
+pub const ENDIANNESS_MARKER_SWAPPED: u32 = 0x04030201;
+
+/// Detect the system's native byte order
+#[inline]
+pub const fn is_little_endian() -> bool {
+    // Check native byte order using const evaluation
+    cfg!(target_endian = "little")
+}
+
+/// Detect the system's native byte order
+#[inline]
+pub const fn is_big_endian() -> bool {
+    cfg!(target_endian = "big")
+}
+
+/// Check if byte-swapping is needed for a snapshot
+///
+/// # Arguments
+/// * `marker` - The endianness marker read from the snapshot
+///
+/// # Returns
+/// * `Ok(true)` - Byte-swapping is needed (different endianness)
+/// * `Ok(false)` - No byte-swapping needed (same endianness)
+/// * `Err(())` - Invalid marker (corrupted snapshot)
+pub fn needs_byte_swap(marker: u32) -> Result<bool, ()> {
+    match marker {
+        ENDIANNESS_MARKER => Ok(false),         // Same endianness
+        ENDIANNESS_MARKER_SWAPPED => Ok(true),  // Different endianness
+        _ => Err(()),                            // Corrupted
+    }
+}
+
+/// Byte-swap utilities for endianness conversion
+pub mod byteswap {
+    /// Conditionally byte-swap a u16 value
+    #[inline]
+    pub fn swap_u16(value: u16, should_swap: bool) -> u16 {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap a u32 value
+    #[inline]
+    pub fn swap_u32(value: u32, should_swap: bool) -> u32 {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap a u64 value
+    #[inline]
+    pub fn swap_u64(value: u64, should_swap: bool) -> u64 {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap an i32 value
+    #[inline]
+    pub fn swap_i32(value: i32, should_swap: bool) -> i32 {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap an i64 value
+    #[inline]
+    pub fn swap_i64(value: i64, should_swap: bool) -> i64 {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap an f64 value
+    #[inline]
+    pub fn swap_f64(value: f64, should_swap: bool) -> f64 {
+        if should_swap {
+            f64::from_bits(value.to_bits().swap_bytes())
+        } else {
+            value
+        }
+    }
+
+    /// Conditionally byte-swap a usize value (64-bit on most platforms)
+    #[inline]
+    pub fn swap_usize(value: usize, should_swap: bool) -> usize {
+        if should_swap {
+            value.swap_bytes()
+        } else {
+            value
+        }
+    }
+}
 
 /// Snapshot header (32 bytes)
 #[repr(C)]
@@ -42,7 +172,7 @@ impl SnapshotHeader {
             magic: SNAPSHOT_MAGIC,
             version: SNAPSHOT_VERSION,
             flags: 0,
-            endianness: 0x01020304,
+            endianness: ENDIANNESS_MARKER,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -52,8 +182,10 @@ impl SnapshotHeader {
         }
     }
 
-    /// Validate snapshot header
-    pub fn validate(&self) -> Result<(), SnapshotError> {
+    /// Validate snapshot header and detect endianness
+    ///
+    /// Returns `Ok(true)` if byte-swapping is needed, `Ok(false)` otherwise
+    pub fn validate(&self) -> Result<bool, SnapshotError> {
         if self.magic != SNAPSHOT_MAGIC {
             return Err(SnapshotError::InvalidMagic);
         }
@@ -65,11 +197,29 @@ impl SnapshotHeader {
             });
         }
 
-        if self.endianness != 0x01020304 {
-            return Err(SnapshotError::EndiannessMismatch);
+        // Check endianness marker
+        match needs_byte_swap(self.endianness) {
+            Ok(needs_swap) => {
+                // Return whether byte-swapping is needed
+                // The reader will handle byte-swapping automatically
+                Ok(needs_swap)
+            }
+            Err(()) => {
+                // Invalid endianness marker - snapshot is corrupted
+                Err(SnapshotError::CorruptedData)
+            }
         }
+    }
 
-        Ok(())
+    /// Get system endianness as a string (for debugging)
+    pub fn system_endianness() -> &'static str {
+        if is_little_endian() {
+            "little-endian"
+        } else if is_big_endian() {
+            "big-endian"
+        } else {
+            "unknown"
+        }
     }
 
     /// Encode header to writer in little-endian format
@@ -305,13 +455,15 @@ mod tests {
         let decoded = SnapshotHeader::decode(&mut &buf[..]).unwrap();
         assert_eq!(decoded.magic, SNAPSHOT_MAGIC);
         assert_eq!(decoded.version, SNAPSHOT_VERSION);
-        assert_eq!(decoded.endianness, 0x01020304);
+        assert_eq!(decoded.endianness, ENDIANNESS_MARKER);
     }
 
     #[test]
     fn test_header_validation() {
         let header = SnapshotHeader::new();
-        assert!(header.validate().is_ok());
+        let result = header.validate();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false); // No byte-swapping needed
 
         let mut invalid = header.clone();
         invalid.magic = 0;
@@ -319,6 +471,51 @@ mod tests {
             invalid.validate(),
             Err(SnapshotError::InvalidMagic)
         ));
+
+        // Test invalid endianness marker (corrupted)
+        let mut corrupted = header.clone();
+        corrupted.endianness = 0xDEADBEEF;
+        assert!(matches!(
+            corrupted.validate(),
+            Err(SnapshotError::CorruptedData)
+        ));
+    }
+
+    #[test]
+    fn test_endianness_detection() {
+        // Test system endianness detection
+        let is_le = is_little_endian();
+        let is_be = is_big_endian();
+
+        // Exactly one should be true
+        assert!(is_le ^ is_be);
+
+        // Get endianness string
+        let endian_str = SnapshotHeader::system_endianness();
+        if is_le {
+            assert_eq!(endian_str, "little-endian");
+        } else if is_be {
+            assert_eq!(endian_str, "big-endian");
+        }
+    }
+
+    #[test]
+    fn test_needs_byte_swap() {
+        // Test endianness marker detection
+        assert_eq!(needs_byte_swap(ENDIANNESS_MARKER), Ok(false));
+        assert_eq!(needs_byte_swap(ENDIANNESS_MARKER_SWAPPED), Ok(true));
+        assert_eq!(needs_byte_swap(0xDEADBEEF), Err(()));
+    }
+
+    #[test]
+    fn test_endianness_marker_values() {
+        // Verify marker constants are correct
+        assert_eq!(ENDIANNESS_MARKER, 0x01020304);
+        assert_eq!(ENDIANNESS_MARKER_SWAPPED, 0x04030201);
+
+        // Verify they are byte-swapped versions of each other
+        assert_eq!(ENDIANNESS_MARKER.swap_bytes(), ENDIANNESS_MARKER_SWAPPED);
+        assert_eq!(ENDIANNESS_MARKER_SWAPPED.swap_bytes(), ENDIANNESS_MARKER);
     }
 
     #[test]
