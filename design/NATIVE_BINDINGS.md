@@ -379,7 +379,7 @@ cargo build --release
 #           target/release/crypto.dll (Windows)
 ```
 
-### Building with C/C++
+### Building with C
 
 ```makefile
 # Makefile
@@ -393,13 +393,28 @@ install:
 	cp libcrypto.so ~/.raya/modules/
 ```
 
+### Building with C++
+
+```makefile
+# Makefile
+CXX = g++
+CXXFLAGS = -std=c++17 -fPIC -O2 -I/usr/include/raya
+
+crypto.so: crypto.cpp
+	$(CXX) $(CXXFLAGS) -shared -o libcrypto.so crypto.cpp -lcrypto
+
+install:
+	cp libcrypto.so ~/.raya/modules/
+```
+
 ### CMake Integration
 
 ```cmake
 # CMakeLists.txt
-add_library(crypto SHARED crypto.c)
+add_library(crypto SHARED crypto.cpp)
 target_include_directories(crypto PRIVATE /usr/include/raya)
 set_target_properties(crypto PROPERTIES PREFIX "lib")
+target_compile_features(crypto PRIVATE cxx_std_17)
 ```
 
 ---
@@ -468,6 +483,392 @@ if (exists("/tmp/input.txt")) {
         }
     });
 }
+```
+
+---
+
+## Example: Native Module in C++
+
+### C++ Declaration
+
+```typescript
+// stdlib/crypto.raya
+declare module "native:crypto" {
+    export function hash(algorithm: string, data: string): string;
+    export function randomBytes(length: number): Uint8Array;
+    export function constantTimeEqual(a: string, b: string): boolean;
+}
+```
+
+### C++ Implementation
+
+```cpp
+// crypto.cpp
+#include <raya/module.h>
+#include <string>
+#include <vector>
+#include <cstring>
+#include <random>
+#include <openssl/sha.h>
+
+// ============================================================================
+// Helper: RAII wrapper for cleaner code
+// ============================================================================
+
+class ModuleBuilder {
+    RayaModuleBuilder* builder_;
+public:
+    ModuleBuilder(const char* name, const char* version)
+        : builder_(raya_module_builder_new(name, version)) {}
+
+    ModuleBuilder& add_function(const char* name, RayaNativeFunction func, size_t arity) {
+        raya_module_add_function(builder_, name, func, arity);
+        return *this;
+    }
+
+    RayaModule* finish() {
+        return raya_module_builder_finish(builder_);
+    }
+};
+
+// ============================================================================
+// Native Functions
+// ============================================================================
+
+/**
+ * Hash a string using SHA256 or SHA512
+ */
+RayaValue* native_hash(RayaContext* ctx, RayaValue** args, size_t argc) {
+    if (argc != 2) {
+        return raya_error_new(ctx, "hash() requires 2 arguments");
+    }
+
+    const char* algorithm = raya_value_to_string(args[0]);
+    const char* data = raya_value_to_string(args[1]);
+
+    if (!algorithm || !data) {
+        return raya_error_new(ctx, "Arguments must be strings");
+    }
+
+    if (strcmp(algorithm, "sha256") == 0) {
+        unsigned char hash[SHA256_DIGEST_LENGTH];
+        SHA256_CTX sha256;
+        SHA256_Init(&sha256);
+        SHA256_Update(&sha256, data, strlen(data));
+        SHA256_Final(hash, &sha256);
+
+        // Convert to hex string
+        char hex[SHA256_DIGEST_LENGTH * 2 + 1];
+        for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+            sprintf(hex + (i * 2), "%02x", hash[i]);
+        }
+        hex[SHA256_DIGEST_LENGTH * 2] = '\0';
+
+        return raya_value_from_string(ctx, hex);
+    }
+    else if (strcmp(algorithm, "sha512") == 0) {
+        unsigned char hash[SHA512_DIGEST_LENGTH];
+        SHA512_CTX sha512;
+        SHA512_Init(&sha512);
+        SHA512_Update(&sha512, data, strlen(data));
+        SHA512_Final(hash, &sha512);
+
+        // Convert to hex string
+        char hex[SHA512_DIGEST_LENGTH * 2 + 1];
+        for (int i = 0; i < SHA512_DIGEST_LENGTH; i++) {
+            sprintf(hex + (i * 2), "%02x", hash[i]);
+        }
+        hex[SHA512_DIGEST_LENGTH * 2] = '\0';
+
+        return raya_value_from_string(ctx, hex);
+    }
+    else {
+        std::string error = "Unsupported algorithm: ";
+        error += algorithm;
+        return raya_error_new(ctx, error.c_str());
+    }
+}
+
+/**
+ * Generate cryptographically secure random bytes
+ */
+RayaValue* native_random_bytes(RayaContext* ctx, RayaValue** args, size_t argc) {
+    if (argc != 1) {
+        return raya_error_new(ctx, "randomBytes() requires 1 argument");
+    }
+
+    int32_t length = raya_value_to_i32(args[0]);
+    if (length <= 0 || length > 1024 * 1024) {
+        return raya_error_new(ctx, "Length must be between 1 and 1048576");
+    }
+
+    // Generate random bytes
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, 255);
+
+    // Create Raya array
+    RayaValue* array = raya_array_new(ctx, length);
+    for (int32_t i = 0; i < length; i++) {
+        raya_array_set(array, i, raya_value_from_i32(ctx, dis(gen)));
+    }
+
+    return array;
+}
+
+/**
+ * Constant-time string comparison (prevents timing attacks)
+ */
+RayaValue* native_constant_time_equal(RayaContext* ctx, RayaValue** args, size_t argc) {
+    if (argc != 2) {
+        return raya_error_new(ctx, "constantTimeEqual() requires 2 arguments");
+    }
+
+    const char* a = raya_value_to_string(args[0]);
+    const char* b = raya_value_to_string(args[1]);
+
+    if (!a || !b) {
+        return raya_error_new(ctx, "Both arguments must be strings");
+    }
+
+    size_t len_a = strlen(a);
+    size_t len_b = strlen(b);
+    size_t max_len = (len_a > len_b) ? len_a : len_b;
+
+    int result = 0;
+    for (size_t i = 0; i < max_len; i++) {
+        uint8_t byte_a = (i < len_a) ? a[i] : 0;
+        uint8_t byte_b = (i < len_b) ? b[i] : 0;
+        result |= (byte_a ^ byte_b);
+    }
+    result |= (len_a ^ len_b);
+
+    return raya_value_from_bool(ctx, result == 0);
+}
+
+// ============================================================================
+// Module Registration
+// ============================================================================
+
+extern "C" {
+
+RAYA_MODULE_INIT(crypto) {
+    return ModuleBuilder("crypto", "1.0.0")
+        .add_function("hash", native_hash, 2)
+        .add_function("randomBytes", native_random_bytes, 1)
+        .add_function("constantTimeEqual", native_constant_time_equal, 2)
+        .finish();
+}
+
+} // extern "C"
+```
+
+### C++ Usage (Raya)
+
+```typescript
+import { hash, randomBytes, constantTimeEqual } from "native:crypto";
+
+// Hash a string
+const digest = hash("sha256", "hello world");
+console.log("SHA256:", digest);
+
+// Generate random bytes
+const random = randomBytes(32);
+console.log("Generated", random.length, "random bytes");
+
+// Constant-time comparison (security-sensitive)
+const password = "secret123";
+const input = getUserInput();
+if (constantTimeEqual(password, input)) {
+    console.log("Access granted!");
+} else {
+    console.log("Access denied!");
+}
+
+// Error handling
+try {
+    const invalid = hash("md5", "data"); // Unsupported
+} catch (e) {
+    console.error("Error:", e.message);
+}
+```
+
+### Building the C++ Module
+
+```bash
+# Compile to shared library
+g++ -std=c++17 -fPIC -shared -o libcrypto.so crypto.cpp \
+    -I/usr/include/raya \
+    -lcrypto
+
+# Install to module directory
+cp libcrypto.so ~/.raya/modules/
+
+# Or use with RAYA_MODULE_PATH
+export RAYA_MODULE_PATH=/path/to/modules
+```
+
+---
+
+## Advanced C++ Patterns
+
+### Type-Safe Wrappers
+
+```cpp
+// Type conversion traits for automatic marshalling
+template<typename T>
+struct TypeConverter;
+
+template<>
+struct TypeConverter<std::string> {
+    static std::string from_raya(RayaValue* value) {
+        const char* str = raya_value_to_string(value);
+        return str ? std::string(str) : std::string();
+    }
+
+    static RayaValue* to_raya(RayaContext* ctx, const std::string& value) {
+        return raya_value_from_string(ctx, value.c_str());
+    }
+};
+
+template<>
+struct TypeConverter<int32_t> {
+    static int32_t from_raya(RayaValue* value) {
+        return raya_value_to_i32(value);
+    }
+
+    static RayaValue* to_raya(RayaContext* ctx, int32_t value) {
+        return raya_value_from_i32(ctx, value);
+    }
+};
+
+// Usage in native functions
+RayaValue* native_add(RayaContext* ctx, RayaValue** args, size_t argc) {
+    int32_t a = TypeConverter<int32_t>::from_raya(args[0]);
+    int32_t b = TypeConverter<int32_t>::from_raya(args[1]);
+    return TypeConverter<int32_t>::to_raya(ctx, a + b);
+}
+```
+
+### Result Type Pattern
+
+```cpp
+#include <variant>
+
+template<typename T>
+using Result = std::variant<T, std::string>;
+
+// Function that can fail
+Result<std::string> read_file(const std::string& path) {
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        return std::string("Failed to open: ") + path;
+    }
+
+    std::string content(
+        (std::istreambuf_iterator<char>(file)),
+        std::istreambuf_iterator<char>()
+    );
+    return content;
+}
+
+// Bridge to Raya
+RayaValue* native_read_file(RayaContext* ctx, RayaValue** args, size_t argc) {
+    std::string path = TypeConverter<std::string>::from_raya(args[0]);
+    auto result = read_file(path);
+
+    return std::visit([ctx](auto&& value) -> RayaValue* {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, std::string>) {
+            // Check if error (by convention)
+            if (value.find("Failed") == 0) {
+                return raya_error_new(ctx, value.c_str());
+            }
+            return TypeConverter<std::string>::to_raya(ctx, value);
+        }
+        return raya_error_new(ctx, "Internal error");
+    }, result);
+}
+```
+
+### RAII Value Management
+
+```cpp
+class RayaValue {
+    RayaContext* ctx_;
+    RayaValue* value_;
+
+public:
+    RayaValue(RayaContext* ctx, RayaValue* value)
+        : ctx_(ctx), value_(value) {}
+
+    // Move-only (no copying)
+    RayaValue(const RayaValue&) = delete;
+    RayaValue& operator=(const RayaValue&) = delete;
+
+    RayaValue(RayaValue&& other) noexcept
+        : ctx_(other.ctx_), value_(other.value_) {
+        other.value_ = nullptr;
+    }
+
+    RayaValue* release() {
+        auto v = value_;
+        value_ = nullptr;
+        return v;
+    }
+
+    RayaValue* get() const { return value_; }
+};
+
+// Usage
+RayaValue* native_example(RayaContext* ctx, RayaValue** args, size_t argc) {
+    RayaValue temp(ctx, raya_value_from_i32(ctx, 42));
+
+    // Do work with temp.get()...
+
+    return temp.release(); // Transfer ownership to Raya
+}
+```
+
+### Modern C++ Features
+
+```cpp
+// Using std::optional for nullable values
+std::optional<std::string> find_value(const std::string& key) {
+    // Search logic...
+    if (found) {
+        return value;
+    }
+    return std::nullopt;
+}
+
+RayaValue* native_find(RayaContext* ctx, RayaValue** args, size_t argc) {
+    std::string key = TypeConverter<std::string>::from_raya(args[0]);
+    auto result = find_value(key);
+
+    if (result.has_value()) {
+        return TypeConverter<std::string>::to_raya(ctx, *result);
+    } else {
+        return raya_value_null(ctx);
+    }
+}
+
+// Using std::span for array views (C++20)
+#include <span>
+
+void process_array(std::span<const int32_t> values) {
+    for (int32_t value : values) {
+        // Process each value
+    }
+}
+
+// Lambda-based error handling
+auto safe_divide = [](int32_t a, int32_t b) -> Result<int32_t> {
+    if (b == 0) {
+        return "Division by zero";
+    }
+    return a / b;
+};
 ```
 
 ---
