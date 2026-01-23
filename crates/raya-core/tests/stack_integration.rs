@@ -19,12 +19,12 @@ fn test_function_call_simulation() {
     stack.push_frame(0, 0, 1, 0).unwrap();
     stack.store_local(0, Value::i32(999)).unwrap();
 
-    // Call foo (2 locals)
-    stack.push_frame(1, 5, 2, 2).unwrap();
+    // Push arguments for foo
+    stack.push(Value::i32(42)).unwrap();
+    stack.push(Value::i32(100)).unwrap();
 
-    // Set up arguments as locals
-    stack.store_local(0, Value::i32(42)).unwrap();
-    stack.store_local(1, Value::i32(100)).unwrap();
+    // Call foo (2 args become locals 0 and 1)
+    stack.push_frame(1, 5, 2, 2).unwrap();
 
     // In foo: use arguments as locals
     assert_eq!(stack.load_local(0).unwrap(), Value::i32(42));
@@ -56,13 +56,13 @@ fn test_nested_function_calls() {
     stack.push_frame(0, 0, 1, 0).unwrap();
     stack.store_local(0, Value::i32(1)).unwrap();
 
-    // Foo frame
+    // Push argument for foo and call
+    stack.push(Value::i32(10)).unwrap();
     stack.push_frame(1, 5, 1, 1).unwrap();
-    stack.store_local(0, Value::i32(10)).unwrap();
 
-    // Bar frame
+    // Push argument for bar and call
+    stack.push(Value::i32(20)).unwrap();
     stack.push_frame(2, 10, 1, 1).unwrap();
-    stack.store_local(0, Value::i32(20)).unwrap();
 
     // Bar returns 200
     stack.pop_frame().unwrap();
@@ -88,9 +88,9 @@ fn test_local_variables_isolation() {
     stack.push_frame(0, 0, 1, 0).unwrap();
     stack.store_local(0, Value::i32(100)).unwrap();
 
-    // Frame 2 with local 0 = 200
+    // Push argument for frame 2 and call
+    stack.push(Value::i32(200)).unwrap();
     stack.push_frame(1, 5, 1, 1).unwrap();
-    stack.store_local(0, Value::i32(200)).unwrap();
 
     // Frame 2's local 0 should be 200
     assert_eq!(stack.load_local(0).unwrap(), Value::i32(200));

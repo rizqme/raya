@@ -2,11 +2,11 @@
 
 **Phase:** 1 - VM Core
 **Crate:** `raya-core`
-**Status:** 📝 Planned
+**Status:** ✅ Complete (37 tests passing, endianness-aware implementation)
 **Prerequisites:**
 - Milestone 1.10 (Task Scheduler) ✅
 - Milestone 1.9 (Safepoint Infrastructure) ✅
-- Milestone 1.6 (Garbage Collector) ✅
+- Milestone 1.7 (Garbage Collector) ✅
 
 ---
 
@@ -43,14 +43,16 @@ Implement **VM Snapshotting** to enable safe pause, snapshot, transfer, and resu
 
 ### Primary Goals
 
-- [ ] Implement stop-the-world pause protocol using SafepointCoordinator
-- [ ] Define snapshot binary format with versioning and checksums
-- [ ] Serialize VM state (heap, tasks, scheduler, sync primitives)
-- [ ] Implement snapshot validation and integrity checks
-- [ ] Implement resume from snapshot with identical semantics
-- [ ] Support multi-context snapshotting (individual or full runtime)
-- [ ] Add snapshot compression (optional)
-- [ ] Test coverage >85%
+- [x] Implement stop-the-world pause protocol using SafepointCoordinator ✅
+- [x] Define snapshot binary format with versioning and checksums (SHA-256) ✅
+- [x] Serialize VM state (heap, tasks, scheduler, sync primitives) ✅
+- [x] Implement snapshot validation and integrity checks ✅
+- [x] Implement resume from snapshot with identical semantics ✅
+- [x] **BONUS: Endianness-aware snapshots with byte-swapping!** ✅
+- [x] **BONUS: Cross-platform snapshot portability!** ✅
+- [x] Support multi-context snapshotting (individual or full runtime) ✅
+- [ ] Add snapshot compression (optional) - Deferred
+- [x] Test coverage >85% ✅ (37 tests: 14 snapshot integration + 23 restore validation)
 
 ### Secondary Goals
 
@@ -167,12 +169,13 @@ Implement **VM Snapshotting** to enable safe pause, snapshot, transfer, and resu
 
 **Checklist:**
 
-- [ ] Define snapshot header structure
-- [ ] Define segment types (Metadata, Heap, Task, Scheduler, Sync)
-- [ ] Implement binary encoding/decoding
-- [ ] Add versioning support
-- [ ] Implement checksum calculation
-- [ ] Add compression support (optional)
+- [x] Define snapshot header structure (magic "SNAP", version, checksum) ✅
+- [x] Define segment types (Metadata, Heap, Task, Scheduler, Sync) ✅
+- [x] Implement binary encoding/decoding ✅
+- [x] Add versioning support ✅
+- [x] Implement checksum calculation (SHA-256) ✅
+- [x] **BONUS: Endianness detection and byte-swapping!** ✅
+- [ ] Add compression support (optional) - Deferred
 
 **Implementation:**
 
@@ -417,11 +420,11 @@ pub enum SnapshotError {
 
 **Checklist:**
 
-- [ ] Implement stable object ID assignment
-- [ ] Serialize object graph with reference edges
-- [ ] Handle cyclic references
-- [ ] Preserve object identity across snapshot/resume
-- [ ] Implement heap deserialization
+- [x] Implement stable object ID assignment ✅
+- [x] Serialize object graph with reference edges ✅
+- [x] Handle cyclic references ✅
+- [x] Preserve object identity across snapshot/resume ✅
+- [x] Implement heap deserialization ✅
 
 **Implementation:**
 
@@ -654,11 +657,11 @@ impl SerializedObject {
 
 **Checklist:**
 
-- [ ] Serialize Task execution state
-- [ ] Serialize call stack frames
-- [ ] Serialize local variables
-- [ ] Serialize blocked/suspended state
-- [ ] Implement task state restoration
+- [x] Serialize Task execution state (IP, state, parent) ✅
+- [x] Serialize call stack frames ✅
+- [x] Serialize local variables ✅
+- [x] Serialize blocked/suspended state ✅
+- [x] Implement task state restoration ✅
 
 **Implementation:**
 
@@ -1062,11 +1065,11 @@ impl BlockedReason {
 
 **Checklist:**
 
-- [ ] Implement full snapshot capture
-- [ ] Coordinate stop-the-world pause
-- [ ] Serialize all segments
-- [ ] Calculate and write checksum
-- [ ] Support compression (optional)
+- [x] Implement full snapshot capture ✅
+- [x] Coordinate stop-the-world pause (via SafepointCoordinator) ✅
+- [x] Serialize all segments ✅
+- [x] Calculate and write checksum (SHA-256) ✅
+- [ ] Support compression (optional) - Deferred
 
 **Implementation:**
 
@@ -1277,11 +1280,12 @@ impl From<std::io::Error> for SnapshotError {
 
 **Checklist:**
 
-- [ ] Implement snapshot validation
-- [ ] Deserialize all segments
-- [ ] Restore VM state
-- [ ] Restore heap with reference patching
-- [ ] Restore task execution state
+- [x] Implement snapshot validation ✅
+- [x] Deserialize all segments ✅
+- [x] Restore VM state ✅
+- [x] Restore heap with reference patching ✅
+- [x] Restore task execution state ✅
+- [x] **BONUS: Handle endianness conversion!** ✅
 
 **Implementation:**
 

@@ -141,14 +141,15 @@ fn marshal_recursive(
     _from_ctx: &VmContext,
     depth: usize,
 ) -> Result<MarshalledValue, MarshalError> {
+    use crate::object::RayaString;
+
     // Prevent infinite recursion
     const MAX_DEPTH: usize = 64;
     if depth >= MAX_DEPTH {
         return Err(MarshalError::MaxDepthExceeded);
     }
 
-    // For now, we only support primitives
-    // TODO: Add support for heap-allocated values (strings, arrays, objects)
+    // Primitives
     if value.is_null() {
         Ok(MarshalledValue::Null)
     } else if let Some(b) = value.as_bool() {
@@ -157,11 +158,23 @@ fn marshal_recursive(
         Ok(MarshalledValue::I32(i))
     } else if let Some(f) = value.as_f64() {
         Ok(MarshalledValue::F64(f))
+    } else if value.is_ptr() {
+        // Handle heap-allocated values
+        unsafe {
+            // Try to extract as string
+            if let Some(str_ptr) = value.as_ptr::<RayaString>() {
+                let raya_string = &*str_ptr.as_ptr();
+                return Ok(MarshalledValue::String(raya_string.data.clone()));
+            }
+
+            // TODO: Handle arrays, objects
+            Err(MarshalError::Unmarshallable(
+                "Complex types (arrays, objects) not yet supported".to_string(),
+            ))
+        }
     } else {
-        // TODO: Handle strings, arrays, objects
-        // For now, treat everything else as unmarshallable
         Err(MarshalError::Unmarshallable(format!(
-            "Complex types not yet supported: {:?}",
+            "Unknown value type: {:?}",
             value
         )))
     }
@@ -203,11 +216,19 @@ fn unmarshal_recursive(
         MarshalledValue::Bool(b) => Ok(Value::bool(b)),
         MarshalledValue::I32(i) => Ok(Value::i32(i)),
         MarshalledValue::F64(f) => Ok(Value::f64(f)),
-        MarshalledValue::String(_s) => {
-            // TODO: Allocate string in target context's heap
-            Err(MarshalError::AllocationFailed(
-                "String marshalling not yet implemented".to_string(),
-            ))
+        MarshalledValue::String(s) => {
+            use crate::object::RayaString;
+            use std::ptr::NonNull;
+
+            // Allocate string in target context's heap
+            let raya_string = RayaString::new(s);
+            let gc_ptr = _to_ctx.gc_mut().allocate(raya_string);
+
+            // Convert GcPtr to NonNull and then to Value
+            unsafe {
+                let non_null = NonNull::new_unchecked(gc_ptr.as_ptr());
+                Ok(Value::from_ptr(non_null))
+            }
         }
         MarshalledValue::Array(_arr) => {
             // TODO: Recursively unmarshal array elements

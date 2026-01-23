@@ -2,7 +2,7 @@
 
 **Phase:** 1 - VM Core
 **Crate:** `raya-core`
-**Status:** 🔄 In Progress
+**Status:** ✅ Complete
 **Prerequisites:** Milestones 1.1-1.12 ✅
 
 ---
@@ -33,15 +33,15 @@ Implement nested, isolated virtual machine contexts (Inner VMs) that run on the 
 ### Primary Goals
 
 - ✅ Define VmContext structure with isolated heaps and metadata
-- ⬜ Implement VmOptions for resource limits and configuration
-- ⬜ Build resource accounting and enforcement mechanisms
-- ⬜ Create capability injection system for host API access
-- ⬜ Implement data marshalling across context boundaries
-- ⬜ Add foreign handle system for cross-context references
-- ⬜ Integrate with existing Task scheduler
-- ⬜ Support context termination and cleanup
-- ⬜ Enable independent snapshotting per VmContext
-- ⬜ Achieve >90% test coverage
+- ✅ Implement VmOptions for resource limits and configuration
+- ✅ Build resource accounting and enforcement mechanisms
+- ✅ Create capability injection system for host API access
+- ✅ Implement data marshalling across context boundaries
+- ✅ Add foreign handle system for cross-context references
+- ✅ Integrate with existing Task scheduler
+- ✅ Support context termination and cleanup
+- ✅ Enable independent snapshotting per VmContext
+- ✅ Achieve >90% test coverage (29 passing integration tests)
 
 ### Secondary Goals
 

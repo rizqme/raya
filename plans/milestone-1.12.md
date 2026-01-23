@@ -42,14 +42,14 @@ Implement **Synchronization Primitives** starting with **Mutex** for safe concur
 
 ### Primary Goals
 
-- [x] Basic Mutex implementation (already exists in sync.rs)
-- [ ] Task-level blocking with scheduler integration
-- [ ] FIFO wait queue for fairness
+- [x] Basic Mutex implementation (already exists in sync.rs) ✅
+- [x] Task-level blocking with scheduler integration ✅
+- [x] FIFO wait queue for fairness ✅
+- [x] Integration with LOCK/UNLOCK opcodes (NewMutex 0xE0, MutexLock 0xE1, MutexUnlock 0xE2) ✅
+- [x] Mutex serialization for snapshots ✅
+- [x] Proper panic handling (unlock on panic via MutexGuard RAII) ✅
+- [x] Test coverage >85% ✅ (26 tests passing)
 - [ ] Deadlock detection (optional, deferred)
-- [ ] Integration with LOCK/UNLOCK opcodes
-- [ ] Mutex serialization for snapshots
-- [ ] Proper panic handling (unlock on panic)
-- [ ] Test coverage >85%
 
 ### Secondary Goals
 
@@ -537,12 +537,14 @@ fn bench_mutex_low_contention(b: &mut Bencher) {
 
 ### Functionality
 
-- [ ] Mutex can be locked and unlocked by a Task
-- [ ] Mutex blocks Tasks when contended
-- [ ] Blocked Tasks resume in FIFO order
-- [ ] Unlock by non-owner returns error
-- [ ] Double-lock by same Task returns error
-- [ ] Mutex state serializes and deserializes correctly
+- [x] Mutex can be locked and unlocked by a Task ✅
+- [x] Mutex blocks Tasks when contended ✅
+- [x] Blocked Tasks resume in FIFO order ✅
+- [x] Unlock by non-owner returns error ✅
+- [x] Double-lock by same Task returns error ✅
+- [x] Mutex state serializes and deserializes correctly ✅
+- [x] MutexGuard provides RAII unlock on drop ✅
+- [x] MutexId and MutexRegistry for global management ✅
 
 ### Performance
 

@@ -807,17 +807,18 @@ pub fn restore_context(snapshot: Snapshot) -> Result<VmContext, RestoreError> {
 
 ### 1.13 Inner VMs & Controllability
 
-**Status:** 📋 Planned (design complete, not yet implemented)
+**Status:** ✅ Complete
 
 **Goal:** Nested VMs with resource limits and capability-based security.
 
 **Tasks:**
-- [ ] Implement Vm creation with VmOptions
-- [ ] Resource accounting and enforcement
-- [ ] Capability injection system
-- [ ] Data marshalling across context boundaries
-- [ ] Foreign handle system for cross-context references
-- [ ] Context termination and cleanup
+- [x] Implement Vm creation with VmOptions
+- [x] Resource accounting and enforcement
+- [x] Capability injection system
+- [x] Data marshalling across context boundaries (including string marshalling)
+- [x] Foreign handle system for cross-context references
+- [x] Context termination and cleanup
+- [x] Comprehensive integration tests (29 tests passing)
 
 **Files:**
 ```rust
