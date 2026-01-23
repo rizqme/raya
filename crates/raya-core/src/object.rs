@@ -52,12 +52,16 @@ pub struct Class {
     pub id: usize,
     /// Class name
     pub name: String,
-    /// Number of fields (including inherited)
+    /// Number of instance fields (including inherited)
     pub field_count: usize,
     /// Parent class ID (None for root classes)
     pub parent_id: Option<usize>,
     /// Virtual method table
     pub vtable: VTable,
+    /// Static fields (class-level, shared across all instances)
+    pub static_fields: Vec<Value>,
+    /// Constructor function ID (None if no explicit constructor)
+    pub constructor_id: Option<usize>,
 }
 
 impl Class {
@@ -69,6 +73,8 @@ impl Class {
             field_count,
             parent_id: None,
             vtable: VTable::new(),
+            static_fields: Vec::new(),
+            constructor_id: None,
         }
     }
 
@@ -80,7 +86,61 @@ impl Class {
             field_count,
             parent_id: Some(parent_id),
             vtable: VTable::new(),
+            static_fields: Vec::new(),
+            constructor_id: None,
         }
+    }
+
+    /// Create a new class with static fields
+    pub fn with_static_fields(
+        id: usize,
+        name: String,
+        field_count: usize,
+        static_field_count: usize,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            field_count,
+            parent_id: None,
+            vtable: VTable::new(),
+            static_fields: vec![Value::null(); static_field_count],
+            constructor_id: None,
+        }
+    }
+
+    /// Set the constructor function ID
+    pub fn set_constructor(&mut self, function_id: usize) {
+        self.constructor_id = Some(function_id);
+    }
+
+    /// Get the constructor function ID
+    pub fn get_constructor(&self) -> Option<usize> {
+        self.constructor_id
+    }
+
+    /// Get a static field value by index
+    pub fn get_static_field(&self, index: usize) -> Option<Value> {
+        self.static_fields.get(index).copied()
+    }
+
+    /// Set a static field value by index
+    pub fn set_static_field(&mut self, index: usize, value: Value) -> Result<(), String> {
+        if index < self.static_fields.len() {
+            self.static_fields[index] = value;
+            Ok(())
+        } else {
+            Err(format!(
+                "Static field index {} out of bounds (class has {} static fields)",
+                index,
+                self.static_fields.len()
+            ))
+        }
+    }
+
+    /// Get number of static fields
+    pub fn static_field_count(&self) -> usize {
+        self.static_fields.len()
     }
 
     /// Add a method to the vtable

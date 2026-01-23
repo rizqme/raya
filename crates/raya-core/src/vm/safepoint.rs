@@ -2,6 +2,39 @@
 //!
 //! This module provides cooperative safepoint coordination for stop-the-world (STW)
 //! operations like garbage collection, VM snapshotting, and debugging.
+//!
+//! ## Safepoint Poll Locations
+//!
+//! The VM guarantees safepoint polls at these locations to ensure timely STW pauses:
+//!
+//! ### Critical Locations (Always Polled)
+//! - **Before GC allocations**: NEW, NEW_ARRAY, OBJECT_LITERAL, ARRAY_LITERAL, SCONCAT
+//! - **Function calls**: CALL, CALL_METHOD, CALL_CONSTRUCTOR, CALL_SUPER
+//! - **Loop back-edges**: At the start of each interpreter loop iteration
+//! - **Task operations**: SPAWN (before task creation), AWAIT (on entry)
+//!
+//! ### Guarantees
+//! - All workers will reach a safepoint within:
+//!   - One loop iteration (~microseconds for tight loops)
+//!   - One function call
+//!   - One allocation
+//! - No indefinite blocking of GC or snapshotting
+//! - Fast-path polling (single atomic load when no pause pending)
+//!
+//! ## Usage
+//!
+//! ```rust,ignore
+//! // In interpreter loop
+//! fn execute_opcode(&mut self, opcode: Opcode) -> VmResult<()> {
+//!     match opcode {
+//!         Opcode::New => {
+//!             self.safepoint().poll();  // Before allocation
+//!             // ... allocate object
+//!         }
+//!         // ...
+//!     }
+//! }
+//! ```
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};

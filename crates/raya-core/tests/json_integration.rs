@@ -14,6 +14,10 @@ use raya_core::gc::GarbageCollector;
 use raya_core::json::{parser, stringify};
 use raya_core::object::RayaString;
 
+// ============================================================================
+// Runtime JSON Tests (parser, stringify, property access)
+// ============================================================================
+
 #[test]
 fn test_parse_and_access_properties() {
     let mut gc = GarbageCollector::default();
@@ -417,4 +421,201 @@ fn test_stringify_special_characters() {
         reparsed_data.data,
         "Line1\nLine2\tTab\rReturn\"Quote\\Backslash"
     );
+}
+
+// ============================================================================
+// GC Integration Tests for JSON
+// ============================================================================
+
+#[test]
+fn test_json_gc_survival_simple() {
+    // Test that JSON values survive garbage collection
+    let mut gc = GarbageCollector::default();
+
+    // Parse JSON - strings and containers are GC-allocated
+    let json = r#"{"name":"Alice","data":[1,2,3]}"#;
+    let parsed = parser::parse(json, &mut gc).unwrap();
+
+    // Trigger multiple collections
+    for _ in 0..5 {
+        gc.collect();
+    }
+
+    // Verify structure is still accessible and intact
+    assert!(parsed.is_object());
+    let name = parsed.get_property("name");
+    assert!(name.is_string());
+    let data = parsed.get_property("data");
+    assert!(data.is_array());
+}
+
+#[test]
+fn test_json_gc_nested_structures() {
+    // Test GC with deeply nested JSON structures
+    let mut gc = GarbageCollector::default();
+
+    // Create a deeply nested structure
+    let mut json = String::from(r#"{"level0":"#);
+    for i in 1..20 {
+        json.push_str(&format!(r#"{{"level{}":"#, i));
+    }
+    json.push_str(r#""deep""#);
+    for _ in 0..20 {
+        json.push_str("}}");
+    }
+
+    let parsed = parser::parse(&json, &mut gc).unwrap();
+    assert!(parsed.is_object());
+
+    // Trigger GC - all nested objects should survive if rooted
+    gc.collect();
+
+    // Navigate to verify structure survived
+    let mut current = parsed;
+    for i in 0..20 {
+        current = current.get_property(&format!("level{}", i));
+        if i < 19 {
+            assert!(current.is_object() || current.is_string());
+        }
+    }
+}
+
+#[test]
+fn test_json_gc_array_of_objects() {
+    // Test GC with JSON arrays containing complex objects
+    let mut gc = GarbageCollector::default();
+
+    let json = r#"[
+        {"id": 1, "items": [1, 2, 3]},
+        {"id": 2, "items": [4, 5, 6]},
+        {"id": 3, "items": [7, 8, 9]}
+    ]"#;
+
+    let parsed = parser::parse(json, &mut gc).unwrap();
+    assert!(parsed.is_array());
+
+    // Trigger GC multiple times
+    for _ in 0..5 {
+        gc.collect();
+    }
+
+    // Verify structure is intact
+    let arr_ptr = parsed.as_array().unwrap();
+    let arr = unsafe { &*arr_ptr.as_ptr() };
+    assert_eq!(arr.len(), 3);
+
+    for i in 0..3 {
+        let obj = &arr[i];
+        assert!(obj.is_object());
+        let id = obj.get_property("id");
+        assert_eq!(id.as_number(), Some((i + 1) as f64));
+
+        let items = obj.get_property("items");
+        assert!(items.is_array());
+    }
+}
+
+#[test]
+fn test_json_gc_large_allocation() {
+    // Test that large JSON structures can be allocated and collected
+    let mut gc = GarbageCollector::default();
+
+    // Build large JSON array (100 objects with nested arrays)
+    let mut json = String::from("[");
+    for i in 0..100 {
+        if i > 0 {
+            json.push(',');
+        }
+        json.push_str(&format!(
+            r#"{{"id":{},"data":[1,2,3,4,5,6,7,8,9,10]}}"#,
+            i
+        ));
+    }
+    json.push(']');
+
+    let parsed = parser::parse(&json, &mut gc).unwrap();
+    assert!(parsed.is_array());
+
+    // Trigger GC - should handle the large structure
+    gc.collect();
+
+    // Verify structure is intact
+    let arr_ptr = parsed.as_array().unwrap();
+    let arr = unsafe { &*arr_ptr.as_ptr() };
+    assert_eq!(arr.len(), 100);
+
+    // Verify first and last elements
+    let first = &arr[0];
+    assert_eq!(first.get_property("id").as_number(), Some(0.0));
+    let last = &arr[99];
+    assert_eq!(last.get_property("id").as_number(), Some(99.0));
+}
+
+#[test]
+fn test_json_gc_mixed_types() {
+    // Test GC with JSON containing all value types
+    let mut gc = GarbageCollector::default();
+
+    let json = r#"{
+        "null_val": null,
+        "bool_true": true,
+        "bool_false": false,
+        "number_int": 42,
+        "number_float": 3.14,
+        "string": "hello world",
+        "array": [1, 2, 3],
+        "object": {"nested": "value"}
+    }"#;
+
+    let parsed = parser::parse(json, &mut gc).unwrap();
+    assert!(parsed.is_object());
+
+    // Trigger GC
+    gc.collect();
+
+    // Verify all types survived
+    assert!(parsed.get_property("null_val").is_null());
+    assert_eq!(parsed.get_property("bool_true").as_bool(), Some(true));
+    assert_eq!(parsed.get_property("bool_false").as_bool(), Some(false));
+    assert_eq!(parsed.get_property("number_int").as_number(), Some(42.0));
+    assert_eq!(parsed.get_property("number_float").as_number(), Some(3.14));
+    assert!(parsed.get_property("string").is_string());
+    assert!(parsed.get_property("array").is_array());
+    assert!(parsed.get_property("object").is_object());
+}
+
+#[test]
+fn test_json_gc_string_deduplication() {
+    // Test that multiple identical strings can be GC'd correctly
+    let mut gc = GarbageCollector::default();
+
+    let json = r#"{
+        "key1": "hello",
+        "key2": "hello",
+        "key3": "hello",
+        "array": ["hello", "hello", "hello"]
+    }"#;
+
+    let parsed = parser::parse(json, &mut gc).unwrap();
+    assert!(parsed.is_object());
+
+    // Trigger GC
+    gc.collect();
+
+    // Verify all strings are accessible
+    let key1 = parsed.get_property("key1");
+    let key2 = parsed.get_property("key2");
+    let key3 = parsed.get_property("key3");
+    assert!(key1.is_string());
+    assert!(key2.is_string());
+    assert!(key3.is_string());
+
+    let array = parsed.get_property("array");
+    assert!(array.is_array());
+    let arr_ptr = array.as_array().unwrap();
+    let arr = unsafe { &*arr_ptr.as_ptr() };
+    assert_eq!(arr.len(), 3);
+    assert!(arr[0].is_string());
+    assert!(arr[1].is_string());
+    assert!(arr[2].is_string());
 }

@@ -263,22 +263,39 @@ impl Stack {
         local_count: usize,
         arg_count: usize,
     ) -> VmResult<()> {
-        // Check if we have enough stack space for locals
-        if self.sp + local_count > self.max_size {
+        // NEW CALLING CONVENTION:
+        // - Arguments are already on stack (pushed by caller)
+        // - local_count = TOTAL locals (arg_count + additional locals)
+        // - base_pointer points to first argument (params accessible as locals 0..arg_count-1)
+        // - We allocate additional locals beyond parameters
+
+        // Calculate base pointer (points to first argument, or current SP if no args)
+        let base_ptr = if arg_count > 0 {
+            self.sp.checked_sub(arg_count)
+                .ok_or_else(|| VmError::RuntimeError("Not enough arguments on stack".to_string()))?
+        } else {
+            self.sp
+        };
+
+        // Calculate additional locals needed beyond parameters
+        let additional_locals = local_count.saturating_sub(arg_count);
+
+        // Check if we have enough stack space for additional locals
+        if self.sp + additional_locals > self.max_size {
             return Err(VmError::StackOverflow);
         }
 
         // Create frame
-        let frame = CallFrame::new(function_id, return_ip, self.sp, local_count, arg_count);
+        let frame = CallFrame::new(function_id, return_ip, base_ptr, local_count, arg_count);
 
         // Push frame
         self.frames.push(frame);
 
         // Update frame pointer
-        self.fp = self.sp;
+        self.fp = base_ptr;
 
-        // Allocate space for locals (initialize to null)
-        for _ in 0..local_count {
+        // Allocate space for additional locals (beyond parameters)
+        for _ in 0..additional_locals {
             self.push(Value::null())?;
         }
 
@@ -300,8 +317,9 @@ impl Stack {
             .pop()
             .ok_or_else(|| VmError::RuntimeError("No call frame to pop".to_string()))?;
 
-        // Reset stack pointer to frame base
-        self.sp = frame.base_pointer;
+        // Reset stack pointer to remove frame's locals
+        // Keep arguments on stack (they become caller's operands again)
+        self.sp = frame.base_pointer + frame.arg_count;
 
         // Update frame pointer to previous frame (if any)
         if let Some(prev_frame) = self.frames.last() {
@@ -662,15 +680,18 @@ mod tests {
 
         assert_eq!(stack.depth(), 4); // 2 locals + 2 operands
 
-        // Frame 1: nested function with 1 local, 2 args
-        stack.push_frame(1, 100, 1, 2).unwrap();
-        stack.store_local(0, Value::i32(99)).unwrap();
+        // Frame 1: nested function with 2 args + 1 additional local = 3 total locals
+        stack.push_frame(1, 100, 3, 2).unwrap();
+        // Store to the additional local (index 2, after the 2 args at indices 0,1)
+        stack.store_local(2, Value::i32(99)).unwrap();
 
         assert_eq!(stack.frame_count(), 2);
         assert_eq!(stack.depth(), 5); // prev depth + 1 local
 
-        // Check nested frame local
-        assert_eq!(stack.load_local(0).unwrap(), Value::i32(99));
+        // Check nested frame locals
+        assert_eq!(stack.load_local(0).unwrap(), Value::i32(10)); // First arg
+        assert_eq!(stack.load_local(1).unwrap(), Value::i32(20)); // Second arg
+        assert_eq!(stack.load_local(2).unwrap(), Value::i32(99)); // Additional local
 
         // Pop nested frame
         let frame1 = stack.pop_frame().unwrap();
@@ -774,14 +795,11 @@ mod tests {
         stack.push(Value::i32(42)).unwrap();
         stack.push(Value::i32(100)).unwrap();
 
-        // Call foo (2 locals for args)
+        // Call foo (2 args become first 2 locals, no additional locals)
         stack.push_frame(1, 5, 2, 2).unwrap();
 
-        // Arguments should be accessible as locals
-        // (in real implementation, we'd copy from stack to locals)
-        // For now, just set them manually
-        stack.store_local(0, Value::i32(42)).unwrap();
-        stack.store_local(1, Value::i32(100)).unwrap();
+        // Arguments are now accessible as locals 0 and 1
+        // (they were already on stack, push_frame set base pointer correctly)
 
         // Compute result in foo
         let a = stack.load_local(0).unwrap().as_i32().unwrap();
@@ -792,7 +810,9 @@ mod tests {
         let frame = stack.pop_frame().unwrap();
         assert_eq!(frame.return_ip, 5);
 
-        // Pop the argument operands that were left on stack
+        // Arguments are still on stack (pop_frame keeps them)
+        // In a real implementation, we'd pop them and push the result
+        // For this test, just pop args and push result
         stack.pop().unwrap(); // 100
         stack.pop().unwrap(); // 42
 

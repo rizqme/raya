@@ -126,6 +126,7 @@ impl Vm {
         module: &Module,
     ) -> VmResult<Value> {
         // Push initial frame
+        // Arguments are already on stack, push_frame will set base pointer correctly
         self.stack.push_frame(
             0, // function_id (will be used later for call stack)
             0, // return IP (none for entry point)
@@ -330,6 +331,32 @@ impl Vm {
                     let offset = self.read_u8(code, &mut ip)?;
                     self.op_store_field_fast(offset)?;
                 }
+                Opcode::ObjectLiteral => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    let field_count = self.read_u16(code, &mut ip)?;
+                    self.op_object_literal(class_index, field_count)?;
+                }
+                Opcode::InitObject => {
+                    let field_offset = self.read_u16(code, &mut ip)?;
+                    self.op_init_object(field_offset)?;
+                }
+                Opcode::LoadStatic => {
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    let field_offset = self.read_u16(code, &mut ip)?;
+                    self.op_load_static(class_index, field_offset)?;
+                }
+                Opcode::StoreStatic => {
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    let field_offset = self.read_u16(code, &mut ip)?;
+                    self.op_store_static(class_index, field_offset)?;
+                }
+                Opcode::OptionalField => {
+                    let field_offset = self.read_u16(code, &mut ip)?;
+                    self.op_optional_field(field_offset)?;
+                }
 
                 // Array operations
                 Opcode::NewArray => {
@@ -342,6 +369,18 @@ impl Vm {
                 Opcode::LoadElem => self.op_load_elem()?,
                 Opcode::StoreElem => self.op_store_elem()?,
                 Opcode::ArrayLen => self.op_array_len()?,
+                Opcode::ArrayLiteral => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
+                    let type_index = self.read_u16(code, &mut ip)? as usize;
+                    let length = self.read_u32(code, &mut ip)?;
+                    self.op_array_literal(type_index, length)?;
+                }
+                Opcode::InitArray => {
+                    let index = self.read_u32(code, &mut ip)?;
+                    self.op_init_array(index)?;
+                }
 
                 // String operations
                 Opcode::Sconcat => self.op_sconcat()?,
@@ -352,6 +391,19 @@ impl Vm {
                     let method_index = self.read_u16(code, &mut ip)? as usize;
                     let arg_count = self.read_u8(code, &mut ip)? as usize;
                     self.op_call_method(method_index, arg_count, module)?;
+                }
+                Opcode::CallConstructor => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    let arg_count = self.read_u8(code, &mut ip)? as usize;
+                    self.op_call_constructor(class_index, arg_count, module)?;
+                }
+                Opcode::CallSuper => {
+                    let class_index = self.read_u16(code, &mut ip)? as usize;
+                    let arg_count = self.read_u8(code, &mut ip)? as usize;
+                    self.op_call_super(class_index, arg_count, module)?;
                 }
 
                 // JSON operations
@@ -1199,6 +1251,144 @@ impl Vm {
         self.op_store_field(offset as usize)
     }
 
+    /// OBJECT_LITERAL - Create object literal
+    /// Stack: [] -> [object]
+    #[allow(dead_code)]
+    fn op_object_literal(&mut self, class_index: usize, field_count: u16) -> VmResult<()> {
+        // Look up class
+        let class = self.classes.get_class(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
+
+        // Verify field count matches
+        if class.field_count != field_count as usize {
+            return Err(VmError::TypeError(format!(
+                "Object literal field count mismatch: expected {}, got {}",
+                class.field_count, field_count
+            )));
+        }
+
+        // Create object with correct field count
+        let obj = Object::new(class_index, class.field_count);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(obj);
+
+        // Push GC pointer as value
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// INIT_OBJECT - Initialize object field
+    /// Stack: [object, value] -> [object]
+    #[allow(dead_code)]
+    fn op_init_object(&mut self, field_offset: u16) -> VmResult<()> {
+        // Pop value from stack
+        let value = self.stack.pop()?;
+
+        // Peek at object (don't pop - keep for next field initialization)
+        let obj_val = self.stack.peek()?;
+
+        // Check it's a pointer
+        if !obj_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected object for field initialization".to_string(),
+            ));
+        }
+
+        // Get mutable object from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+        let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+
+        // Set field
+        obj.set_field(field_offset as usize, value)
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
+    /// LOAD_STATIC - Load static field from class
+    /// Stack: [] -> [value]
+    #[allow(dead_code)]
+    fn op_load_static(&mut self, class_index: usize, field_offset: u16) -> VmResult<()> {
+        // Look up class
+        let class = self.classes.get_class(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
+
+        // Load static field
+        let value = class.get_static_field(field_offset as usize).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Static field offset {} out of bounds for class {}",
+                field_offset, class.name
+            ))
+        })?;
+
+        // Push field value
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// STORE_STATIC - Store value to static field
+    /// Stack: [value] -> []
+    #[allow(dead_code)]
+    fn op_store_static(&mut self, class_index: usize, field_offset: u16) -> VmResult<()> {
+        // Pop value from stack
+        let value = self.stack.pop()?;
+
+        // Look up mutable class
+        let class = self.classes.get_class_mut(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
+
+        // Store static field
+        class
+            .set_static_field(field_offset as usize, value)
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
+    /// OPTIONAL_FIELD - Optional chaining field access (obj?.field)
+    /// Stack: [object] -> [value or null]
+    #[allow(dead_code)]
+    fn op_optional_field(&mut self, field_offset: u16) -> VmResult<()> {
+        // Pop object from stack
+        let obj_val = self.stack.pop()?;
+
+        // If null, push null and return
+        if obj_val.is_null() {
+            self.stack.push(Value::null())?;
+            return Ok(());
+        }
+
+        // Check it's a pointer
+        if !obj_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected object or null for optional field access".to_string(),
+            ));
+        }
+
+        // Get object from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+
+        // Load field
+        let value = obj.get_field(field_offset as usize).ok_or_else(|| {
+            VmError::RuntimeError(format!("Field offset {} out of bounds", field_offset))
+        })?;
+
+        // Push field value
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
     // ===== Array Operations =====
 
     /// NEW_ARRAY - Allocate new array
@@ -1329,11 +1519,68 @@ impl Vm {
         Ok(())
     }
 
+    /// ARRAY_LITERAL - Create array literal
+    /// Stack: [] -> [array]
+    #[allow(dead_code)]
+    fn op_array_literal(&mut self, type_index: usize, length: u32) -> VmResult<()> {
+        // Bounds check (reasonable maximum)
+        if length > 10_000_000 {
+            return Err(VmError::RuntimeError(format!(
+                "Array length {} too large",
+                length
+            )));
+        }
+
+        // Create array with null elements
+        let arr = Array::new(type_index, length as usize);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(arr);
+
+        // Push GC pointer as value
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// INIT_ARRAY - Initialize array element
+    /// Stack: [array, value] -> [array]
+    #[allow(dead_code)]
+    fn op_init_array(&mut self, index: u32) -> VmResult<()> {
+        // Pop value from stack
+        let value = self.stack.pop()?;
+
+        // Peek at array (don't pop - keep for next element initialization)
+        let array_val = self.stack.peek()?;
+
+        // Check array is a pointer
+        if !array_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected array for element initialization".to_string(),
+            ));
+        }
+
+        // Get mutable array from GC heap
+        // SAFETY: Value is tagged as pointer, managed by GC
+        let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+        let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+        // Set element
+        arr.set(index as usize, value)
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
     // ===== String Operations =====
 
     /// SCONCAT - Concatenate two strings
     #[allow(dead_code)]
     fn op_sconcat(&mut self) -> VmResult<()> {
+        // Safepoint poll before allocation
+        self.safepoint().poll();
+
         // Pop two strings from stack
         let str2_val = self.stack.pop()?;
         let str1_val = self.stack.pop()?;
@@ -1444,11 +1691,126 @@ impl Vm {
         Ok(())
     }
 
+    /// CALL_CONSTRUCTOR - Call class constructor
+    /// Stack: [arg1, arg2, ...] -> [new object]
+    #[allow(dead_code)]
+    fn op_call_constructor(
+        &mut self,
+        class_index: usize,
+        arg_count: usize,
+        module: &Module,
+    ) -> VmResult<()> {
+        // Look up class
+        let class = self.classes.get_class(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
+
+        // Create new object
+        let obj = Object::new(class_index, class.field_count);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(obj);
+        let obj_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+
+        // If class has a constructor, call it with the new object as receiver
+        if let Some(constructor_id) = class.constructor_id {
+            // Push object onto stack (as receiver)
+            self.stack.push(obj_value)?;
+
+            // Get constructor function
+            let function = module.functions.get(constructor_id).ok_or_else(|| {
+                VmError::RuntimeError(format!("Invalid constructor function ID: {}", constructor_id))
+            })?;
+
+            // Arguments are already on stack before the object
+            // Need to move object before arguments for `this` binding
+            // Stack before: [arg1, arg2, ..., obj]
+            // Stack after: [obj, arg1, arg2, ...]
+
+            // Pop object first
+            let obj = self.stack.pop()?;
+
+            // Pop arguments
+            let mut args = Vec::new();
+            for _ in 0..arg_count {
+                args.push(self.stack.pop()?);
+            }
+
+            // Push in correct order: object first, then arguments (reversed)
+            self.stack.push(obj)?;
+            for arg in args.iter().rev() {
+                self.stack.push(*arg)?;
+            }
+
+            // Execute constructor function
+            self.execute_function(function, module)?;
+
+            // Constructor returns null, but we return the object
+            // Pop constructor's null result
+            self.stack.pop()?;
+            // Push the object as the result
+            self.stack.push(obj_value)?;
+        } else {
+            // No constructor, just push the new object
+            self.stack.push(obj_value)?;
+        }
+
+        Ok(())
+    }
+
+    /// CALL_SUPER - Call parent class constructor
+    /// Stack: [this, arg1, arg2, ...] -> []
+    #[allow(dead_code)]
+    fn op_call_super(
+        &mut self,
+        class_index: usize,
+        arg_count: usize,
+        module: &Module,
+    ) -> VmResult<()> {
+        // Look up class
+        let class = self.classes.get_class(class_index).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+        })?;
+
+        // Get parent class ID
+        let parent_id = class.parent_id.ok_or_else(|| {
+            VmError::RuntimeError(format!("Class {} has no parent", class.name))
+        })?;
+
+        // Look up parent class
+        let parent_class = self.classes.get_class(parent_id).ok_or_else(|| {
+            VmError::RuntimeError(format!("Invalid parent class ID: {}", parent_id))
+        })?;
+
+        // Get parent constructor
+        let parent_constructor_id = parent_class.constructor_id.ok_or_else(|| {
+            VmError::RuntimeError(format!("Parent class has no constructor"))
+        })?;
+
+        // Get constructor function
+        let function = module.functions.get(parent_constructor_id).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Invalid parent constructor function ID: {}",
+                parent_constructor_id
+            ))
+        })?;
+
+        // Arguments and `this` are already on stack in correct order
+        // Stack: [this, arg1, arg2, ...]
+        // Execute parent constructor
+        self.execute_function(function, module)?;
+
+        Ok(())
+    }
+
     // ===== JSON Operations =====
 
     /// JSON_GET - Get property from JSON object
     #[allow(dead_code)]
     fn op_json_get(&mut self, property_index: usize, module: &Module) -> VmResult<()> {
+        // Safepoint poll before potential allocation
+        self.safepoint().poll();
+
         // Pop JSON value from stack
         let json_val = self.stack.pop()?;
 
@@ -1491,6 +1853,9 @@ impl Vm {
     /// JSON_INDEX - Get element from JSON array by index
     #[allow(dead_code)]
     fn op_json_index(&mut self) -> VmResult<()> {
+        // Safepoint poll before potential allocation
+        self.safepoint().poll();
+
         // Pop index from stack
         let index_val = self.stack.pop()?;
         let index = index_val
@@ -1537,6 +1902,9 @@ impl Vm {
     /// JSON_CAST - Cast JSON value to typed object with validation
     #[allow(dead_code)]
     fn op_json_cast(&mut self, type_id: usize) -> VmResult<()> {
+        // Safepoint poll before potential allocation
+        self.safepoint().poll();
+
         // Pop JSON value from stack
         let json_val = self.stack.pop()?;
 
@@ -1570,6 +1938,9 @@ impl Vm {
     /// SPAWN - Create a new Task and start it
     #[allow(dead_code)]
     fn op_spawn(&mut self, func_index: usize, module: &raya_bytecode::Module) -> VmResult<()> {
+        // Safepoint poll before task creation
+        self.safepoint().poll();
+
         // Create new Task with the given function
         let task = Arc::new(Task::new(
             func_index,
@@ -1591,6 +1962,9 @@ impl Vm {
     /// AWAIT - Wait for a Task to complete and get its result
     #[allow(dead_code)]
     fn op_await(&mut self) -> VmResult<()> {
+        // Safepoint poll on await entry
+        self.safepoint().poll();
+
         // Pop TaskId from stack
         let task_id_val = self.stack.pop()?;
         let task_id_u64 = task_id_val
