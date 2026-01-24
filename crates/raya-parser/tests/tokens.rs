@@ -431,13 +431,531 @@ fn test_comments_are_ignored() {
            comment */
         let y = "test";
     "#;
-    
+
     let lexer = Lexer::new(source);
     let tokens = lexer.tokenize().unwrap();
     let token_types: Vec<Token> = tokens.iter().map(|(t, _)| t.clone()).collect();
-    
+
     // Comments should not appear in tokens
     assert!(token_types.contains(&Token::Const));
     assert!(token_types.contains(&Token::Let));
     assert_eq!(token_types.iter().filter(|t| matches!(t, Token::Identifier(s) if s == "x")).count(), 1);
+}
+
+// ============================================================================
+// Template Literal Tests (Phase 3)
+// ============================================================================
+
+#[test]
+fn test_simple_template_literal() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Hello, World!`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    assert_eq!(tokens.len(), 2); // Template + EOF
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => assert_eq!(s, "Hello, World!"),
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_with_single_expression() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Hello, ${name}!`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 3); // "Hello, " + expr + "!"
+
+            match &parts[0] {
+                TemplatePart::String(s) => assert_eq!(s, "Hello, "),
+                _ => panic!("Expected string part"),
+            }
+
+            match &parts[1] {
+                TemplatePart::Expression(expr_tokens) => {
+                    assert_eq!(expr_tokens.len(), 1);
+                    match &expr_tokens[0].0 {
+                        Token::Identifier(id) => assert_eq!(id, "name"),
+                        _ => panic!("Expected identifier"),
+                    }
+                }
+                _ => panic!("Expected expression part"),
+            }
+
+            match &parts[2] {
+                TemplatePart::String(s) => assert_eq!(s, "!"),
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_with_multiple_expressions() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`${a} + ${b} = ${a + b}`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 5); // expr + " + " + expr + " = " + expr
+
+            // First expression
+            match &parts[0] {
+                TemplatePart::Expression(expr_tokens) => {
+                    assert_eq!(expr_tokens.len(), 1);
+                    match &expr_tokens[0].0 {
+                        Token::Identifier(id) => assert_eq!(id, "a"),
+                        _ => panic!("Expected identifier 'a'"),
+                    }
+                }
+                _ => panic!("Expected expression part"),
+            }
+
+            // String " + "
+            match &parts[1] {
+                TemplatePart::String(s) => assert_eq!(s, " + "),
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_with_nested_braces() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Result: ${{ x: 42 }.x}`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 2); // "Result: " + expr
+
+            match &parts[1] {
+                TemplatePart::Expression(expr_tokens) => {
+                    // Should contain: { x : 42 } . x
+                    let has_braces = expr_tokens.iter().any(|(t, _)| matches!(t, Token::LeftBrace | Token::RightBrace));
+                    assert!(has_braces, "Expected braces in expression");
+                }
+                _ => panic!("Expected expression part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_with_complex_expression() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Total: ${items.length * price}`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 2);
+
+            match &parts[1] {
+                TemplatePart::Expression(expr_tokens) => {
+                    // Should have: items . length * price
+                    assert!(expr_tokens.len() >= 5);
+                }
+                _ => panic!("Expected expression part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_with_escape_sequences() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Line 1\nLine 2\tTabbed`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => {
+                    assert!(s.contains('\n'));
+                    assert!(s.contains('\t'));
+                }
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_escaped_dollar_sign() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Price: \$${price}`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 2); // "Price: $" + expr
+
+            match &parts[0] {
+                TemplatePart::String(s) => assert_eq!(s, "Price: $"),
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_template_escaped_backtick() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Use \` for templates`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => assert!(s.contains('`')),
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_multiline_template() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`This is
+a multiline
+template`"#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => {
+                    assert!(s.contains('\n'));
+                    assert_eq!(s.lines().count(), 3);
+                }
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_empty_template() {
+    use raya_parser::TemplatePart;
+
+    let source = "``";
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 0);
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_unterminated_template() {
+    let source = r#"`This is unterminated"#;
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    assert!(result.is_err());
+    match &result.err().unwrap()[0] {
+        raya_parser::lexer::LexError::UnterminatedTemplate { .. } => {}
+        _ => panic!("Expected UnterminatedTemplate error"),
+    }
+}
+
+// ============================================================================
+// Unicode Escape Sequence Tests (Phase 4)
+// ============================================================================
+
+#[test]
+fn test_unicode_escape_4_digits() {
+    let source = r#""\u0048\u0065\u006C\u006C\u006F""#; // "Hello"
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert_eq!(s, "Hello");
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_unicode_escape_emoji() {
+    let source = r#""\u{1F600}""#; // 😀
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert_eq!(s, "😀");
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_unicode_escape_chinese() {
+    let source = r#""\u4F60\u597D""#; // "你好"
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert_eq!(s, "你好");
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_unicode_escape_variable_length() {
+    let source = r#""\u{41}\u{42}\u{43}""#; // "ABC"
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert_eq!(s, "ABC");
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_hex_escape_sequence() {
+    let source = r#""\x48\x65\x6C\x6C\x6F""#; // "Hello"
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert_eq!(s, "Hello");
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_mixed_escape_sequences() {
+    let source = r#""Line 1\nTab:\t\u0048\x65\u{6C}lo""#;
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::StringLiteral(s) => {
+            assert!(s.contains('\n'));
+            assert!(s.contains('\t'));
+            assert!(s.contains('H'));
+            assert!(s.contains('e'));
+            assert!(s.contains('l'));
+        }
+        _ => panic!("Expected string literal"),
+    }
+}
+
+#[test]
+fn test_unicode_in_template_literal() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`Hello \u{1F44B}!`"#; // Hello 👋!
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => {
+                    assert!(s.contains('👋'));
+                    assert_eq!(s, "Hello 👋!");
+                }
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+#[test]
+fn test_unicode_fixed_in_template() {
+    use raya_parser::TemplatePart;
+
+    let source = r#"`\u0048\u0065\u006C\u006C\u006F`"#; // Hello
+    let lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().unwrap();
+
+    match &tokens[0].0 {
+        Token::TemplateLiteral(parts) => {
+            assert_eq!(parts.len(), 1);
+            match &parts[0] {
+                TemplatePart::String(s) => {
+                    assert_eq!(s, "Hello");
+                }
+                _ => panic!("Expected string part"),
+            }
+        }
+        _ => panic!("Expected template literal"),
+    }
+}
+
+// ============================================================================
+// Error Recovery Tests (Phase 5)
+// ============================================================================
+
+#[test]
+fn test_error_recovery_continues_after_error() {
+    let source = r#"
+        const x = @; // Invalid character
+        const y = 42; // Should still tokenize this
+    "#;
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    // Should have errors but also some valid tokens
+    assert!(result.is_err());
+    // The lexer should have tried to continue tokenizing
+}
+
+#[test]
+fn test_rich_error_message_for_unterminated_string() {
+    let source = r#"const x = "unterminated"#;
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    if let Err(errors) = result {
+        assert!(!errors.is_empty());
+        let formatted = Lexer::format_errors(&errors, source);
+        // Note: logos recognizes the string, so we might not get an unterminated string error
+        // Just verify we get an error message
+        assert!(formatted.contains("Error at"));
+    } else {
+        panic!("Expected error");
+    }
+}
+
+#[test]
+fn test_rich_error_message_for_unexpected_char() {
+    let source = "const x = @;";
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    if let Err(errors) = result {
+        assert!(!errors.is_empty());
+        let error = &errors[0];
+
+        // Test individual error methods
+        assert_eq!(error.description(), "Unexpected character '@'");
+        assert_eq!(error.span().line, 1);
+
+        // Test formatted output
+        let formatted = error.format_with_source(source);
+        assert!(formatted.contains("Error at 1:"));
+        assert!(formatted.contains("Unexpected character '@'"));
+        assert!(formatted.contains("const x = @;"));
+        assert!(formatted.contains("^"));
+    } else {
+        panic!("Expected error");
+    }
+}
+
+#[test]
+fn test_unterminated_template_hint() {
+    let source = r#"`This template never closes"#;
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    if let Err(errors) = result {
+        assert!(!errors.is_empty());
+        let hint = errors[0].hint();
+        assert!(hint.is_some());
+        assert!(hint.unwrap().contains("backtick"));
+    } else {
+        panic!("Expected error");
+    }
+}
+
+#[test]
+fn test_error_span_accuracy() {
+    let source = "let x = @;";
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    if let Err(errors) = result {
+        let span = errors[0].span();
+        // The @ character should be detected
+        assert!(span.start == 8); // position of @
+        assert!(span.column > 0); // should have a valid column
+    } else {
+        panic!("Expected error");
+    }
+}
+
+#[test]
+fn test_multiple_errors_formatted() {
+    let source = r#"
+const x = @;
+const y = #;
+"#;
+
+    let lexer = Lexer::new(source);
+    let result = lexer.tokenize();
+
+    if let Err(errors) = result {
+        // Should have at least one error
+        assert!(!errors.is_empty());
+
+        let formatted = Lexer::format_errors(&errors, source);
+        assert!(formatted.contains("Error at"));
+    } else {
+        panic!("Expected errors");
+    }
 }

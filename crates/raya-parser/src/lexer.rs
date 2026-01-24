@@ -396,7 +396,7 @@ fn parse_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
 
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars();
+    let mut chars = s.chars().peekable();
 
     while let Some(c) = chars.next() {
         if c == '\\' {
@@ -409,12 +409,101 @@ fn unescape_string(s: &str) -> String {
                 Some('\'') => result.push('\''),
                 Some('0') => result.push('\0'),
                 Some('u') => {
-                    // Unicode escape sequences handled in Phase 4
-                    result.push('u');
+                    // Unicode escape sequences: \uXXXX or \u{XXXXXX}
+                    if chars.peek() == Some(&'{') {
+                        // Variable-length: \u{XXXXXX}
+                        chars.next(); // consume '{'
+                        let mut hex = String::new();
+                        while let Some(&ch) = chars.peek() {
+                            if ch == '}' {
+                                chars.next(); // consume '}'
+                                break;
+                            }
+                            if ch.is_ascii_hexdigit() {
+                                hex.push(ch);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if let Ok(code_point) = u32::from_str_radix(&hex, 16) {
+                            if let Some(unicode_char) = char::from_u32(code_point) {
+                                result.push(unicode_char);
+                            } else {
+                                // Invalid code point, keep as-is
+                                result.push('\\');
+                                result.push('u');
+                                result.push('{');
+                                result.push_str(&hex);
+                                result.push('}');
+                            }
+                        } else {
+                            // Invalid hex, keep as-is
+                            result.push('\\');
+                            result.push('u');
+                            result.push('{');
+                            result.push_str(&hex);
+                        }
+                    } else {
+                        // Fixed-length: \uXXXX (4 hex digits)
+                        let mut hex = String::new();
+                        for _ in 0..4 {
+                            if let Some(&ch) = chars.peek() {
+                                if ch.is_ascii_hexdigit() {
+                                    hex.push(ch);
+                                    chars.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if hex.len() == 4 {
+                            if let Ok(code_point) = u16::from_str_radix(&hex, 16) {
+                                result.push(char::from_u32(code_point as u32).unwrap());
+                            } else {
+                                // Invalid hex (shouldn't happen)
+                                result.push('\\');
+                                result.push('u');
+                                result.push_str(&hex);
+                            }
+                        } else {
+                            // Not enough hex digits, keep as-is
+                            result.push('\\');
+                            result.push('u');
+                            result.push_str(&hex);
+                        }
+                    }
                 }
                 Some('x') => {
-                    // Hex escape sequences
-                    result.push('x');
+                    // Hex escape sequences: \xXX (2 hex digits)
+                    let mut hex = String::new();
+                    for _ in 0..2 {
+                        if let Some(&ch) = chars.peek() {
+                            if ch.is_ascii_hexdigit() {
+                                hex.push(ch);
+                                chars.next();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+
+                    if hex.len() == 2 {
+                        if let Ok(code_point) = u8::from_str_radix(&hex, 16) {
+                            result.push(code_point as char);
+                        } else {
+                            result.push('\\');
+                            result.push('x');
+                            result.push_str(&hex);
+                        }
+                    } else {
+                        // Not enough hex digits
+                        result.push('\\');
+                        result.push('x');
+                        result.push_str(&hex);
+                    }
                 }
                 Some(c) => result.push(c),
                 None => break,
@@ -453,66 +542,99 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Format all errors with source context
+    pub fn format_errors(errors: &[LexError], source: &str) -> String {
+        errors
+            .iter()
+            .map(|e| e.format_with_source(source))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     pub fn tokenize(mut self) -> Result<Vec<(Token, Span)>, Vec<LexError>> {
-        let mut logos_lexer = LogosToken::lexer(self.source);
+        let mut pos = 0;
         let mut line = 1u32;
         let mut column = 1u32;
-        let mut last_end = 0;
 
-        while let Some(token_result) = logos_lexer.next() {
-            let range = logos_lexer.span();
-            
-            // Update line and column based on consumed text
-            for c in self.source[last_end..range.start].chars() {
-                if c == '\n' {
-                    line += 1;
-                    column = 1;
-                } else {
-                    column += 1;
-                }
-            }
+        while pos < self.source.len() {
+            // Check for template literal first
+            if self.source.as_bytes()[pos] == b'`' {
+                let start_span = Span::new(pos, pos + 1, line, column);
+                pos += 1; // Skip opening backtick
+                column += 1;
 
-            let span = Span::new(range.start, range.end, line, column);
+                match self.lex_template(pos) {
+                    Ok((template, end_pos)) => {
+                        self.tokens.push((Token::TemplateLiteral(template), start_span));
 
-            match token_result {
-                Ok(logos_token) => {
-                    // Handle template literals specially
-                    if matches!(logos_token, LogosToken::Backtick) {
-                        match self.lex_template(range.end) {
-                            Ok((template, end_pos)) => {
-                                self.tokens.push((Token::TemplateLiteral(template), span));
-                                // Update position
-                                last_end = end_pos;
-                                continue;
-                            }
-                            Err(err) => {
-                                self.errors.push(err);
-                                last_end = range.end;
-                                continue;
+                        // Update line/column for consumed template
+                        for c in self.source[pos..end_pos].chars() {
+                            if c == '\n' {
+                                line += 1;
+                                column = 1;
+                            } else {
+                                column += 1;
                             }
                         }
+                        pos = end_pos;
+                        continue;
                     }
-
-                    let token = self.convert_token(logos_token);
-                    self.tokens.push((token, span));
-                }
-                Err(_) => {
-                    let char = self.source[range.start..].chars().next().unwrap_or('\0');
-                    self.errors.push(LexError::UnexpectedCharacter { char, span });
+                    Err(err) => {
+                        self.errors.push(err);
+                        // Skip to end of line or next backtick for error recovery
+                        while pos < self.source.len() {
+                            let ch = self.source.as_bytes()[pos];
+                            if ch == b'\n' || ch == b'`' {
+                                break;
+                            }
+                            if ch == b'\n' {
+                                line += 1;
+                                column = 1;
+                            } else {
+                                column += 1;
+                            }
+                            pos += 1;
+                        }
+                        continue;
+                    }
                 }
             }
 
-            // Update column for this token
-            for c in self.source[range.start..range.end].chars() {
-                if c == '\n' {
-                    line += 1;
-                    column = 1;
-                } else {
-                    column += 1;
-                }
-            }
+            // Use logos for regular tokens
+            let mut logos_lexer = LogosToken::lexer(&self.source[pos..]);
 
-            last_end = range.end;
+            if let Some(token_result) = logos_lexer.next() {
+                let range = logos_lexer.span();
+                let abs_start = pos + range.start;
+                let abs_end = pos + range.end;
+
+                let span = Span::new(abs_start, abs_end, line, column);
+
+                match token_result {
+                    Ok(logos_token) => {
+                        let token = self.convert_token(logos_token);
+                        self.tokens.push((token, span));
+                    }
+                    Err(_) => {
+                        let char = self.source[abs_start..].chars().next().unwrap_or('\0');
+                        self.errors.push(LexError::UnexpectedCharacter { char, span });
+                    }
+                }
+
+                // Update line and column
+                for c in self.source[abs_start..abs_end].chars() {
+                    if c == '\n' {
+                        line += 1;
+                        column = 1;
+                    } else {
+                        column += 1;
+                    }
+                }
+
+                pos = abs_end;
+            } else {
+                break;
+            }
         }
 
         // Add EOF token
@@ -639,31 +761,282 @@ impl<'a> Lexer<'a> {
     }
 
     fn lex_template(&self, start: usize) -> Result<(Vec<TemplatePart>, usize), LexError> {
-        // Template literal lexing will be implemented in Phase 3
-        // For now, return a simple placeholder
-        Ok((vec![], start))
+        let mut parts = Vec::new();
+        let mut string_part = String::new();
+        let bytes = self.source.as_bytes();
+        let mut pos = start;
+
+        while pos < bytes.len() {
+            let ch = bytes[pos] as char;
+
+            match ch {
+                '`' => {
+                    // End of template literal
+                    if !string_part.is_empty() {
+                        parts.push(TemplatePart::String(string_part));
+                    }
+                    return Ok((parts, pos + 1));
+                }
+                '\\' if pos + 1 < bytes.len() => {
+                    // Escape sequence
+                    pos += 1;
+                    match bytes[pos] as char {
+                        'n' => {
+                            string_part.push('\n');
+                            pos += 1;
+                        }
+                        'r' => {
+                            string_part.push('\r');
+                            pos += 1;
+                        }
+                        't' => {
+                            string_part.push('\t');
+                            pos += 1;
+                        }
+                        '\\' => {
+                            string_part.push('\\');
+                            pos += 1;
+                        }
+                        '`' => {
+                            string_part.push('`');
+                            pos += 1;
+                        }
+                        '"' => {
+                            string_part.push('"');
+                            pos += 1;
+                        }
+                        '\'' => {
+                            string_part.push('\'');
+                            pos += 1;
+                        }
+                        '0' => {
+                            string_part.push('\0');
+                            pos += 1;
+                        }
+                        '$' => {
+                            string_part.push('$');
+                            pos += 1;
+                        }
+                        'u' => {
+                            // Unicode escape sequences
+                            pos += 1;
+                            if pos < bytes.len() && bytes[pos] as char == '{' {
+                                // Variable-length \u{XXXXXX}
+                                pos += 1;
+                                let mut hex = String::new();
+                                while pos < bytes.len() && bytes[pos] as char != '}' {
+                                    hex.push(bytes[pos] as char);
+                                    pos += 1;
+                                }
+                                if pos < bytes.len() {
+                                    pos += 1; // skip '}'
+                                }
+
+                                if let Ok(code_point) = u32::from_str_radix(&hex, 16) {
+                                    if let Some(unicode_char) = char::from_u32(code_point) {
+                                        string_part.push(unicode_char);
+                                    }
+                                }
+                            } else {
+                                // Fixed-length \uXXXX
+                                let mut hex = String::new();
+                                for _ in 0..4 {
+                                    if pos < bytes.len() && (bytes[pos] as char).is_ascii_hexdigit() {
+                                        hex.push(bytes[pos] as char);
+                                        pos += 1;
+                                    } else {
+                                        break;
+                                    }
+                                }
+
+                                if hex.len() == 4 {
+                                    if let Ok(code_point) = u16::from_str_radix(&hex, 16) {
+                                        string_part.push(char::from_u32(code_point as u32).unwrap());
+                                    }
+                                }
+                            }
+                        }
+                        'x' => {
+                            // Hex escape \xXX
+                            pos += 1;
+                            let mut hex = String::new();
+                            for _ in 0..2 {
+                                if pos < bytes.len() && (bytes[pos] as char).is_ascii_hexdigit() {
+                                    hex.push(bytes[pos] as char);
+                                    pos += 1;
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            if hex.len() == 2 {
+                                if let Ok(code_point) = u8::from_str_radix(&hex, 16) {
+                                    string_part.push(code_point as char);
+                                }
+                            }
+                        }
+                        _ => {
+                            string_part.push('\\');
+                            string_part.push(bytes[pos] as char);
+                            pos += 1;
+                        }
+                    }
+                }
+                '$' if pos + 1 < bytes.len() && bytes[pos + 1] as char == '{' => {
+                    // Expression interpolation
+                    if !string_part.is_empty() {
+                        parts.push(TemplatePart::String(string_part.clone()));
+                        string_part.clear();
+                    }
+
+                    // Skip ${
+                    pos += 2;
+                    let expr_start = pos;
+                    let mut brace_depth = 1;
+
+                    // Find matching closing brace
+                    while pos < bytes.len() && brace_depth > 0 {
+                        match bytes[pos] as char {
+                            '{' => brace_depth += 1,
+                            '}' => {
+                                brace_depth -= 1;
+                                if brace_depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                        pos += 1;
+                    }
+
+                    if brace_depth != 0 {
+                        let span = Span::new(expr_start - 2, pos, 0, 0);
+                        return Err(LexError::UnterminatedTemplate { span });
+                    }
+
+                    // Extract and tokenize the expression
+                    let expr_str = &self.source[expr_start..pos];
+                    let expr_lexer = Lexer::new(expr_str);
+                    match expr_lexer.tokenize() {
+                        Ok(tokens) => {
+                            // Remove EOF token from the end
+                            let tokens_without_eof: Vec<_> = tokens
+                                .into_iter()
+                                .filter(|(t, _)| !matches!(t, Token::Eof))
+                                .collect();
+                            parts.push(TemplatePart::Expression(tokens_without_eof));
+                        }
+                        Err(_) => {
+                            let span = Span::new(expr_start - 2, pos, 0, 0);
+                            return Err(LexError::UnterminatedTemplate { span });
+                        }
+                    }
+
+                    pos += 1; // Skip the closing }
+                }
+                _ => {
+                    string_part.push(ch);
+                    pos += 1;
+                }
+            }
+        }
+
+        // Reached end without finding closing backtick
+        let span = Span::new(start, self.source.len(), 0, 0);
+        Err(LexError::UnterminatedTemplate { span })
+    }
+}
+
+impl LexError {
+    /// Get the span of this error
+    pub fn span(&self) -> &Span {
+        match self {
+            LexError::UnexpectedCharacter { span, .. }
+            | LexError::UnterminatedString { span }
+            | LexError::UnterminatedTemplate { span }
+            | LexError::InvalidNumber { span, .. }
+            | LexError::InvalidEscape { span, .. } => span,
+        }
+    }
+
+    /// Get a description of this error
+    pub fn description(&self) -> String {
+        match self {
+            LexError::UnexpectedCharacter { char, .. } => {
+                format!("Unexpected character '{}'", char)
+            }
+            LexError::UnterminatedString { .. } => {
+                "Unterminated string literal".to_string()
+            }
+            LexError::UnterminatedTemplate { .. } => {
+                "Unterminated template literal".to_string()
+            }
+            LexError::InvalidNumber { text, .. } => {
+                format!("Invalid number '{}'", text)
+            }
+            LexError::InvalidEscape { escape, .. } => {
+                format!("Invalid escape sequence '{}'", escape)
+            }
+        }
+    }
+
+    /// Get a hint for fixing this error
+    pub fn hint(&self) -> Option<String> {
+        match self {
+            LexError::UnterminatedString { .. } => {
+                Some("Add a closing quote to terminate the string".to_string())
+            }
+            LexError::UnterminatedTemplate { .. } => {
+                Some("Add a closing backtick (`) to terminate the template literal".to_string())
+            }
+            LexError::InvalidEscape { escape, .. } => {
+                Some(format!(
+                    "Valid escape sequences are: \\n \\r \\t \\\\ \\\" \\' \\0 \\xXX \\uXXXX \\u{{XXXXXX}}, but found '{}'",
+                    escape
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Format the error with source context
+    pub fn format_with_source(&self, source: &str) -> String {
+        let span = self.span();
+        let mut result = String::new();
+
+        // Error header
+        result.push_str(&format!(
+            "Error at {}:{}: {}\n",
+            span.line,
+            span.column,
+            self.description()
+        ));
+
+        // Source context: show the line with the error
+        if let Some(error_line) = source.lines().nth((span.line - 1) as usize) {
+            result.push_str(&format!("  |\n"));
+            result.push_str(&format!("{:3} | {}\n", span.line, error_line));
+            result.push_str(&format!("  | {}{}\n", " ".repeat(span.column as usize - 1), "^"));
+        }
+
+        // Hint if available
+        if let Some(hint) = self.hint() {
+            result.push_str(&format!("\nHint: {}\n", hint));
+        }
+
+        result
     }
 }
 
 impl std::fmt::Display for LexError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LexError::UnexpectedCharacter { char, span } => {
-                write!(f, "Unexpected character '{}' at {}:{}", char, span.line, span.column)
-            }
-            LexError::UnterminatedString { span } => {
-                write!(f, "Unterminated string at {}:{}", span.line, span.column)
-            }
-            LexError::UnterminatedTemplate { span } => {
-                write!(f, "Unterminated template literal at {}:{}", span.line, span.column)
-            }
-            LexError::InvalidNumber { text, span } => {
-                write!(f, "Invalid number '{}' at {}:{}", text, span.line, span.column)
-            }
-            LexError::InvalidEscape { escape, span } => {
-                write!(f, "Invalid escape sequence '{}' at {}:{}", escape, span.line, span.column)
-            }
-        }
+        write!(
+            f,
+            "{} at {}:{}",
+            self.description(),
+            self.span().line,
+            self.span().column
+        )
     }
 }
 

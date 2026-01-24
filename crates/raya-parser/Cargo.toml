@@ -15,7 +15,6 @@ unicode-xid = "0.2"         # Unicode identifier support
 [dev-dependencies]
 criterion = "0.5"           # Benchmarking
 
-# Benchmarks will be added in Phase 6
-# [[bench]]
-# name = "lexer"
-# harness = false
+[[bench]]
+name = "lexer"
+harness = false

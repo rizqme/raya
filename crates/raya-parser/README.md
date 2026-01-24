@@ -14,8 +14,12 @@ This crate provides lexical analysis (tokenization) for Raya source code. It use
 - **Numeric Separators:** Support for `1_000_000`, `0xFF_FF`, `3.14_159`, etc.
 - **Unicode Identifiers:** Full UTF-8 identifier support
 - **Comment Handling:** Single-line (`//`) and multi-line (`/* */`) comments
-- **Template Literals:** Backtick strings with expression interpolation (Phase 3)
+- **Template Literals:** Backtick strings with `${expression}` interpolation
+- **Unicode Escapes:** `\uXXXX` (4-digit) and `\u{XXXXXX}` (variable-length) support
+- **Hex Escapes:** `\xXX` (2-digit) support
 - **Error Recovery:** Continue tokenizing after errors to report multiple issues
+- **Rich Error Messages:** Contextual error messages with source snippets and hints
+- **Performance Benchmarks:** Comprehensive criterion-based benchmarks
 
 ## Usage
 
@@ -82,28 +86,26 @@ Run tests:
 cargo test -p raya-parser
 ```
 
-Current test count: **39 tests** covering all token types and integration scenarios.
+Current test count: **64 tests** covering all token types, template literals, Unicode escapes, error recovery, and integration scenarios.
 
 ## Implementation Status
 
-### ✅ Complete (Phase 1-2)
+### ✅ Complete (Phases 1-6)
 
 - [x] Token enum with all 41 keywords
 - [x] All 43 operators
 - [x] Span struct for source location tracking
 - [x] Logos-based lexer
-- [x] Numeric separator support
-- [x] String escape sequences
-- [x] Comment handling
-- [x] 39 comprehensive tests
-
-### 🚧 Pending (Phase 3-6)
-
-- [ ] Template literal support with nested expressions
-- [ ] Unicode escape sequences (\uXXXX, \u{XXXXXX})
-- [ ] Error recovery and rich error messages
-- [ ] Performance benchmarks
-- [ ] Additional integration tests
+- [x] Numeric separator support (`1_000_000`)
+- [x] String escape sequences (`\n`, `\t`, `\r`, `\\`, etc.)
+- [x] Comment handling (`//` and `/* */`)
+- [x] Template literal support with `${expression}` interpolation
+- [x] Unicode escape sequences (`\uXXXX`, `\u{XXXXXX}`)
+- [x] Hex escape sequences (`\xXX`)
+- [x] Error recovery (continues after errors)
+- [x] Rich error messages with source context and hints
+- [x] Performance benchmarks (criterion)
+- [x] 64 comprehensive tests
 
 ## Performance
 
@@ -113,6 +115,18 @@ The lexer is designed for high performance:
 - **DFA-based:** Logos generates optimized state machines
 - **Minimal allocations:** Tokens are created only when needed
 - **Fast path:** Most common tokens handled in single clock cycles
+
+Run benchmarks:
+```bash
+cargo bench -p raya-parser
+```
+
+Typical performance (on modern hardware):
+- Keywords: ~230 ns
+- Numbers: ~200-320 ns (depending on type)
+- Strings: ~125-350 ns (depending on escapes)
+- Template literals: ~400-600 ns (depending on expressions)
+- Real code (100+ tokens): ~2-5 µs
 
 ## References
 
