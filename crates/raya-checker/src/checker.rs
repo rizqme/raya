@@ -6,9 +6,41 @@
 
 use crate::error::CheckError;
 use crate::symbols::SymbolTable;
+use crate::type_guards::{extract_type_guard, TypeGuard};
+use crate::narrowing::{apply_type_guard, TypeEnv};
 use raya_parser::ast::*;
 use raya_types::{AssignabilityContext, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
+
+/// Get the variable name from a type guard
+fn get_guard_var(guard: &TypeGuard) -> &String {
+    match guard {
+        TypeGuard::TypeOf { var, .. } => var,
+        TypeGuard::Discriminant { var, .. } => var,
+        TypeGuard::Nullish { var, .. } => var,
+    }
+}
+
+/// Negate a type guard
+fn negate_guard(guard: &TypeGuard) -> TypeGuard {
+    match guard {
+        TypeGuard::TypeOf { var, type_name, negated } => TypeGuard::TypeOf {
+            var: var.clone(),
+            type_name: type_name.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Discriminant { var, field, variant, negated } => TypeGuard::Discriminant {
+            var: var.clone(),
+            field: field.clone(),
+            variant: variant.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Nullish { var, negated } => TypeGuard::Nullish {
+            var: var.clone(),
+            negated: !negated,
+        },
+    }
+}
 
 /// Type checker
 ///
@@ -25,6 +57,9 @@ pub struct TypeChecker<'a> {
 
     /// Current function return type (for checking return statements)
     current_function_return_type: Option<TypeId>,
+
+    /// Type environment tracking narrowed types in current scope
+    type_env: TypeEnv,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -36,6 +71,7 @@ impl<'a> TypeChecker<'a> {
             expr_types: FxHashMap::default(),
             errors: Vec::new(),
             current_function_return_type: None,
+            type_env: TypeEnv::new(),
         }
     }
 
@@ -149,12 +185,46 @@ impl<'a> TypeChecker<'a> {
         let bool_ty = self.type_ctx.boolean_type();
         self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
 
-        // Check branches
+        // Try to extract type guard from condition
+        let type_guard = extract_type_guard(&if_stmt.condition);
+
+        // Save current environment
+        let saved_env = self.type_env.clone();
+
+        // Apply type guard for then branch
+        if let Some(ref guard) = type_guard {
+            if let Some(symbol) = self.symbols.resolve(&get_guard_var(guard)) {
+                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, guard) {
+                    self.type_env.set(get_guard_var(guard).clone(), narrowed_ty);
+                }
+            }
+        }
+
+        // Check then branch
         self.check_stmt(&if_stmt.then_branch);
+        let then_env = self.type_env.clone();
+
+        // Restore environment and apply negated guard for else branch
+        self.type_env = saved_env.clone();
 
         if let Some(ref else_branch) = if_stmt.else_branch {
+            if let Some(ref guard) = type_guard {
+                // Apply negated guard
+                let negated_guard = negate_guard(guard);
+                if let Some(symbol) = self.symbols.resolve(&get_guard_var(&negated_guard)) {
+                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, &negated_guard) {
+                        self.type_env.set(get_guard_var(&negated_guard).clone(), narrowed_ty);
+                    }
+                }
+            }
+
             self.check_stmt(else_branch);
         }
+
+        let else_env = self.type_env.clone();
+
+        // Merge environments from both branches
+        self.type_env = then_env.merge(&else_env, self.type_ctx);
     }
 
     /// Check while loop
@@ -258,6 +328,12 @@ impl<'a> TypeChecker<'a> {
 
     /// Check identifier
     fn check_identifier(&mut self, ident: &Identifier) -> TypeId {
+        // First check for narrowed type in type environment
+        if let Some(narrowed_ty) = self.type_env.get(&ident.name) {
+            return narrowed_ty;
+        }
+
+        // Otherwise look up in symbol table
         match self.symbols.resolve(&ident.name) {
             Some(symbol) => symbol.ty,
             None => {
