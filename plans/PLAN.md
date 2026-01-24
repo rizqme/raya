@@ -1265,9 +1265,21 @@ pub struct DiscriminantInfo {
 
 **Status:** See [milestone-2.5.md](milestone-2.5.md) for detailed plan
 
+**Key Features:**
+- **Implicit primitive coercions**: `number → string` (automatic)
+- **Structural subtyping**: Objects with more properties can assign to types with fewer
+- **Union type coercion**: `string | number → string` (OK if all variants coerce)
+- **Subtype widening**: `Dog → Animal` (subclass to superclass)
+- **Control flow type narrowing**: TypeScript-style narrowing with type guards
+
 **Tasks:**
 - [ ] Build symbol table and resolve names
 - [ ] Implement type inference for expressions
+- [ ] **Type assignability with implicit coercions**
+  - [ ] Primitive coercions (number → string)
+  - [ ] Structural subtyping (RaceCar → Car)
+  - [ ] Union type coercion (string | number → string)
+  - [ ] Subtype widening (Dog → Animal)
 - [ ] **Control flow-based type narrowing** (TypeScript-style)
   - [ ] `typeof` guards for bare unions (string | number)
   - [ ] Discriminant guards for discriminated unions

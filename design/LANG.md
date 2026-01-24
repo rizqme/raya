@@ -694,6 +694,128 @@ class Vector {
 let p: Point = new Vector(1, 2);  // ERROR: incompatible types
 ```
 
+#### Type Assignability Rules
+
+Raya supports **implicit type conversions** in specific, well-defined cases:
+
+**1. Primitive Coercions:**
+
+```ts
+// ✅ OK: number → string (automatic conversion)
+let x: number = 42;
+let s: string = x;  // Implicitly converts to "42"
+
+function fn(x: string): void {
+  console.log(x);
+}
+fn(42);  // OK: number coerces to string
+
+// ❌ ERROR: string → number (no implicit conversion)
+let str: string = "hello";
+let num: number = str;  // ERROR: Cannot convert string to number
+```
+
+**2. Union Type Coercion:**
+
+When assigning a union type to a target type, Raya checks if **all variants** of the union can be coerced to the target:
+
+```ts
+// ✅ OK: string | number → string
+// (Both string and number can coerce to string)
+let a: string | number = 42;
+function fn(x: string): void { }
+fn(a);  // OK: number in union coerces to string
+
+let b: string | number = "hello";
+fn(b);  // OK: string is already compatible
+
+// ❌ ERROR: string | number → number
+// (string cannot coerce to number)
+let c: string | number = "hello";
+function gn(x: number): void { }
+gn(c);  // ERROR: Cannot convert string to number
+```
+
+**3. Subtype Widening:**
+
+Subtypes can always be used where supertypes are expected:
+
+```ts
+// ✅ OK: Dog → Animal (subclass to superclass)
+class Animal {
+  eat(): void { }
+}
+
+class Dog extends Animal {
+  bark(): void { }
+}
+
+function handle(animal: Animal): void {
+  animal.eat();
+}
+
+let dog: Dog = new Dog();
+handle(dog);  // OK: Dog is a subtype of Animal
+```
+
+**4. Structural Subtyping (Intersection Types):**
+
+Objects with **more properties** can be assigned to types expecting **fewer properties**:
+
+```ts
+// ✅ OK: RaceCar → Car (more specific to less specific)
+type Car = {
+  honk(): void;
+};
+
+type RaceCar = Car & {
+  speed(): void;
+};
+
+function drive(car: Car): void {
+  car.honk();
+}
+
+let raceCar: RaceCar = {
+  honk() { console.log("Beep!"); },
+  speed() { console.log("Zoom!"); }
+};
+
+drive(raceCar);  // OK: RaceCar has all properties of Car
+```
+
+**5. Forbidden Conversions:**
+
+```ts
+// ❌ ERROR: string → number
+let str: string = "42";
+let num: number = str;  // ERROR
+
+// ❌ ERROR: float → int (precision loss)
+let f: float = 3.14;
+let i: int = f;  // ERROR: Use Math.floor/ceil/round instead
+
+// ❌ ERROR: Unrelated class types
+class Cat { }
+class Dog { }
+let cat: Cat = new Cat();
+let dog: Dog = cat;  // ERROR: Incompatible nominal types
+```
+
+**Summary of Coercion Rules:**
+
+| From | To | Allowed? | Notes |
+|------|-----|----------|-------|
+| `number` | `string` | ✅ Yes | Automatic conversion |
+| `int` | `float` | ✅ Yes | Safe widening |
+| `string` | `number` | ❌ No | Use `parseFloat()` |
+| `float` | `int` | ❌ No | Use `Math.floor()` |
+| `T` | `T \| U` | ✅ Yes | Widening to union |
+| `Dog` | `Animal` | ✅ Yes | Subtype to supertype |
+| `RaceCar` | `Car` | ✅ Yes | Structural subtyping |
+| `string \| number` | `string` | ✅ Yes | If all variants coerce |
+| `string \| number` | `number` | ❌ No | string can't coerce |
+
 ### 4.6 Type Assertions
 
 **Raya supports type casting with `as` but with strict safety guarantees.**

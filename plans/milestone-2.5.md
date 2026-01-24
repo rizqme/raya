@@ -32,33 +32,45 @@ Implement a sound type checker for Raya that performs:
 - **Control flow-based type narrowing** (TypeScript-style)
 - Discriminated union validation
 - Exhaustiveness checking
-- **Strict type checking** (NO implicit narrowing)
+- **Implicit primitive coercions** (number → string)
 
 ### What is Type Checking?
 
 Type checking verifies that a program follows the type system rules. It ensures:
 - Variables have consistent types
-- Function calls match signatures
+- Function calls match signatures with implicit primitive coercions
 - Operations are valid for their operand types
 - **Control flow guards narrow union types correctly**
-- **Union types are NOT implicitly narrowed at call sites** (strict typing)
+- **Implicit coercions for primitives** (number → string is automatic)
 
 ### Key Difference from TypeScript
 
-**Raya is STRICT:**
+**Raya has implicit primitive coercions:**
 ```typescript
-// ❌ ERROR in Raya (OK in TypeScript):
-let a: string | number = "hello";
+// ✅ OK in Raya (number auto-casts to string):
+let a: string | number = 42;
 function fn(x: string): void { }
-fn(a);  // Type error: Cannot pass string | number to parameter expecting string
+fn(a);  // OK: number in union is auto-cast to string
 
-// ✅ OK in Raya (explicit narrowing):
-if (typeof a === "string") {
-    fn(a);  // a is narrowed to string in this branch
-}
+// ❌ ERROR in Raya (string cannot cast to number):
+let b: string | number = "hello";
+function gn(x: number): void { }
+gn(b);  // ERROR: Cannot cast string to number
+
+// ✅ OK: Subtype widening (Dog → Animal)
+let dog: Dog = new Dog();
+function handle(animal: Animal): void { }
+handle(dog);  // OK: Dog is subtype of Animal
+
+// ✅ OK: Structural subtyping (RaceCar → Car)
+type Car = { honk(): void };
+type RaceCar = Car & { speed(): void };
+let raceCar: RaceCar = { honk() {}, speed() {} };
+function drive(car: Car): void { car.honk(); }
+drive(raceCar);  // OK: RaceCar has all properties of Car
 ```
 
-This strictness ensures type safety without runtime type tags.
+Raya allows **implicit primitive coercions** (number → string), **structural subtyping** (objects with more properties can assign to types with fewer), and **union type coercion** (if all variants can coerce to target).
 
 **Input:** AST from parser (Milestone 2.3)
 ```rust
@@ -514,35 +526,59 @@ impl Type {
         matches!(self, Type::Number | Type::String | Type::Boolean | Type::Null)
     }
 
-    /// Check if type is assignable to target
-    /// **CRITICAL: Raya is STRICT - union types are NOT assignable to their constituents**
+    /// Check if type is assignable to target with implicit coercions
+    ///
+    /// Raya supports implicit primitive coercions:
+    /// - number → string (auto-cast)
+    /// - Subtype → Supertype (Dog → Animal)
     ///
     /// Examples:
     /// ```rust
-    /// // ❌ ERROR: Cannot pass string | number to parameter expecting string
-    /// let a: string | number = "hello";
+    /// // ✅ OK: number in union auto-casts to string
+    /// let a: string | number = 42;
     /// fn(a);  // where fn(x: string): void
     ///
-    /// // ✅ OK: Explicit narrowing required
-    /// if (typeof a === "string") {
-    ///     fn(a);  // a is narrowed to string
-    /// }
+    /// // ❌ ERROR: string cannot cast to number
+    /// let b: string | number = "hello";
+    /// gn(b);  // where gn(x: number): void
+    ///
+    /// // ✅ OK: Subtype widening
+    /// let dog: Dog = new Dog();
+    /// handle(dog);  // where handle(x: Animal): void
     /// ```
     pub fn is_assignable_to(&self, target: &Type) -> bool {
         match (self, target) {
             // Exact match
             _ if self == target => true,
 
-            // STRICT: Union is NOT assignable to constituent
-            // This prevents implicit narrowing at call sites
-            (Type::Union(_), _) => false,
+            // Union → Target: Check if all variants can coerce to target
+            (Type::Union(union), target) => {
+                union.variants.iter().all(|variant| variant.is_assignable_to(target))
+            }
 
-            // Widening is OK: number assignable to string | number
+            // Widening: concrete type to union
             (concrete, Type::Union(union)) => {
                 union.variants.iter().any(|v| concrete.is_assignable_to(v))
             }
 
-            // Other subtyping rules (classes, functions, etc.)
+            // Primitive coercions
+            (Type::Number, Type::String) => true,  // number → string auto-cast
+
+            // Subtype to supertype (Dog → Animal)
+            (Type::Class(subclass), Type::Class(superclass)) => {
+                // Check inheritance chain
+                self.is_subtype_of(superclass)
+            }
+
+            // Other subtyping rules
+            _ => false,
+        }
+    }
+
+    /// Check if this type can be coerced to target
+    pub fn can_coerce_to(&self, target: &Type) -> bool {
+        match (self, target) {
+            (Type::Number, Type::String) => true,  // number → string
             _ => false,
         }
     }
@@ -1368,13 +1404,27 @@ fn test_null_narrowing() {
 }
 
 #[test]
-fn test_strict_no_implicit_narrowing() {
-    // Raya is STRICT: union types cannot be passed to parameters expecting constituents
+fn test_implicit_number_to_string_coercion() {
+    // Raya allows number → string auto-cast
     let source = r#"
         function fn(x: string): void { }
 
-        let a: string | number = "hello";
-        fn(a);  // ERROR: Cannot pass string | number to parameter expecting string
+        let a: string | number = 42;
+        fn(a);  // OK: number auto-casts to string
+    "#;
+
+    let result = type_check(source);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_no_string_to_number_coercion() {
+    // string → number is NOT allowed
+    let source = r#"
+        function gn(x: number): void { }
+
+        let b: string | number = "hello";
+        gn(b);  // ERROR: Cannot cast string to number
     "#;
 
     let result = type_check(source);
@@ -1386,17 +1436,16 @@ fn test_strict_no_implicit_narrowing() {
 }
 
 #[test]
-fn test_strict_explicit_narrowing_required() {
-    // User must explicitly narrow before passing to function
+fn test_subtype_widening() {
+    // Dog → Animal (subtype to supertype) is OK
     let source = r#"
-        function fn(x: string): void { }
+        class Animal { }
+        class Dog extends Animal { }
 
-        let a: string | number = "hello";
+        function handle(animal: Animal): void { }
 
-        // ✅ OK: Explicit narrowing with typeof guard
-        if (typeof a === "string") {
-            fn(a);  // a is narrowed to string here
-        }
+        let dog: Dog = new Dog();
+        handle(dog);  // OK: Dog is subtype of Animal
     "#;
 
     let result = type_check(source);
@@ -1434,7 +1483,9 @@ fn test_nested_narrowing() {
 
 - ✅ Symbol table correctly resolves all names
 - ✅ Type inference works for all expression types
-- ✅ **Strict type checking: union types NOT assignable to constituents**
+- ✅ **Implicit primitive coercions: number → string**
+- ✅ **Subtype widening: Dog → Animal**
+- ✅ **No invalid coercions: string ↛ number**
 - ✅ `typeof` guards narrow bare unions (string | number)
 - ✅ Discriminant guards narrow discriminated unions
 - ✅ Null checks remove null from unions
