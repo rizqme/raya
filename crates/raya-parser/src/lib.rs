@@ -31,6 +31,7 @@
 
 pub mod token;
 pub mod lexer;
+pub mod ast;
 
 // Re-exports for convenience
 pub use token::{Token, Span, TemplatePart};
