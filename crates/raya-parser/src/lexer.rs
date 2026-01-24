@@ -30,14 +30,8 @@ enum LogosToken {
     #[token("class")]
     Class,
 
-    #[token("interface")]
-    Interface,
-
     #[token("type")]
     Type,
-
-    #[token("enum")]
-    Enum,
 
     #[token("let")]
     Let,
@@ -45,8 +39,7 @@ enum LogosToken {
     #[token("const")]
     Const,
 
-    #[token("var")]
-    Var,
+    // Note: 'interface', 'enum', and 'var' are BANNED in Raya
 
     #[token("if")]
     If,
@@ -120,6 +113,9 @@ enum LogosToken {
     #[token("static")]
     Static,
 
+    #[token("abstract")]
+    Abstract,
+
     #[token("extends")]
     Extends,
 
@@ -131,6 +127,12 @@ enum LogosToken {
 
     #[token("instanceof")]
     Instanceof,
+
+    #[token("as")]
+    As,
+
+    #[token("delete")]
+    Delete,
 
     #[token("void")]
     Void,
@@ -323,6 +325,9 @@ enum LogosToken {
 
     #[token(":")]
     Colon,
+
+    #[token("@")]
+    At,
 
     #[token("(")]
     LeftParen,
@@ -652,12 +657,9 @@ impl<'a> Lexer<'a> {
         match logos_token {
             LogosToken::Function => Token::Function,
             LogosToken::Class => Token::Class,
-            LogosToken::Interface => Token::Interface,
             LogosToken::Type => Token::Type,
-            LogosToken::Enum => Token::Enum,
             LogosToken::Let => Token::Let,
             LogosToken::Const => Token::Const,
-            LogosToken::Var => Token::Var,
             LogosToken::If => Token::If,
             LogosToken::Else => Token::Else,
             LogosToken::Switch => Token::Switch,
@@ -682,10 +684,13 @@ impl<'a> Lexer<'a> {
             LogosToken::This => Token::This,
             LogosToken::Super => Token::Super,
             LogosToken::Static => Token::Static,
+            LogosToken::Abstract => Token::Abstract,
             LogosToken::Extends => Token::Extends,
             LogosToken::Implements => Token::Implements,
             LogosToken::Typeof => Token::Typeof,
             LogosToken::Instanceof => Token::Instanceof,
+            LogosToken::As => Token::As,
+            LogosToken::Delete => Token::Delete,
             LogosToken::Void => Token::Void,
             LogosToken::Debugger => Token::Debugger,
             LogosToken::Namespace => Token::Namespace,
@@ -745,6 +750,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Question => Token::Question,
             LogosToken::Dot => Token::Dot,
             LogosToken::Colon => Token::Colon,
+            LogosToken::At => Token::At,
             LogosToken::LeftParen => Token::LeftParen,
             LogosToken::RightParen => Token::RightParen,
             LogosToken::LeftBrace => Token::LeftBrace,

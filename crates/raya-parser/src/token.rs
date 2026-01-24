@@ -12,12 +12,11 @@ pub enum Token {
     // Core keywords
     Function,
     Class,
-    Interface,
     Type,
-    Enum,
     Let,
     Const,
-    Var,
+    // Note: 'interface' and 'enum' are BANNED in Raya (LANG.md §10, §19.2)
+    // Note: 'var' is BANNED in Raya (LANG.md §19.1)
 
     // Control flow
     If,
@@ -50,12 +49,15 @@ pub enum Token {
     This,
     Super,
     Static,
+    Abstract,
     Extends,
     Implements,
 
     // Type operators
     Typeof,
     Instanceof,
+    As,
+    Delete,
     Void,
 
     // Utility/Debug
@@ -139,6 +141,7 @@ pub enum Token {
     Dot,
     Colon,
     Arrow,
+    At, // @ for decorators
 
     // Delimiters
     LeftParen,
@@ -208,12 +211,9 @@ impl fmt::Display for Token {
         match self {
             Token::Function => write!(f, "function"),
             Token::Class => write!(f, "class"),
-            Token::Interface => write!(f, "interface"),
             Token::Type => write!(f, "type"),
-            Token::Enum => write!(f, "enum"),
             Token::Let => write!(f, "let"),
             Token::Const => write!(f, "const"),
-            Token::Var => write!(f, "var"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::Switch => write!(f, "switch"),
@@ -238,10 +238,13 @@ impl fmt::Display for Token {
             Token::This => write!(f, "this"),
             Token::Super => write!(f, "super"),
             Token::Static => write!(f, "static"),
+            Token::Abstract => write!(f, "abstract"),
             Token::Extends => write!(f, "extends"),
             Token::Implements => write!(f, "implements"),
             Token::Typeof => write!(f, "typeof"),
             Token::Instanceof => write!(f, "instanceof"),
+            Token::As => write!(f, "as"),
+            Token::Delete => write!(f, "delete"),
             Token::Void => write!(f, "void"),
             Token::Debugger => write!(f, "debugger"),
             Token::Namespace => write!(f, "namespace"),
@@ -302,6 +305,7 @@ impl fmt::Display for Token {
             Token::Dot => write!(f, "."),
             Token::Colon => write!(f, ":"),
             Token::Arrow => write!(f, "=>"),
+            Token::At => write!(f, "@"),
             Token::LeftParen => write!(f, "("),
             Token::RightParen => write!(f, ")"),
             Token::LeftBrace => write!(f, "{{"),
@@ -323,12 +327,9 @@ impl Token {
             self,
             Token::Function
                 | Token::Class
-                | Token::Interface
                 | Token::Type
-                | Token::Enum
                 | Token::Let
                 | Token::Const
-                | Token::Var
                 | Token::If
                 | Token::Else
                 | Token::Switch
@@ -353,10 +354,13 @@ impl Token {
                 | Token::This
                 | Token::Super
                 | Token::Static
+                | Token::Abstract
                 | Token::Extends
                 | Token::Implements
                 | Token::Typeof
                 | Token::Instanceof
+                | Token::As
+                | Token::Delete
                 | Token::Void
                 | Token::Debugger
                 | Token::Namespace

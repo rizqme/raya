@@ -696,25 +696,63 @@ let p: Point = new Vector(1, 2);  // ERROR: incompatible types
 
 ### 4.6 Type Assertions
 
-**Raya does NOT support unsafe type assertions.**
+**Raya supports type casting with `as` but with strict safety guarantees.**
 
-TypeScript's `as` and `<Type>` syntax are **banned** when they would be unsound.
-
-Safe alternatives:
-* Type guards with runtime checks
-* Union type narrowing
-* `instanceof` for class types
+TypeScript's `as` syntax is **supported** with Raya-specific semantics that prevent unsound casts:
 
 ```ts
-// BANNED
-let x = value as string;  // unsafe
+// ✅ ALLOWED: Safe upcast (widening)
+let x: number = 42;
+let y: number | string = x as number | string;  // Safe widening
 
-// ALLOWED - with runtime check
+// ✅ ALLOWED: Cast to narrower type with discriminant check
+type Result = { status: "ok"; value: number } | { status: "error"; error: string };
+let result: Result = getResult();
+
+if (result.status === "ok") {
+  let value: number = (result as { status: "ok"; value: number }).value;  // Safe after check
+}
+
+// ✅ ALLOWED: JSON type casts (runtime-checked)
+import { JsonValue, JsonObject } from "raya:json";
+let json: JsonValue = parseJson();
+let obj: JsonObject = json as JsonObject;  // Runtime type check inserted
+
+// ❌ BANNED: Unsafe downcast without runtime check
+let value: unknown = getValue();
+let str: string = value as string;  // ERROR: Unsound cast
+
+// ❌ BANNED: Cast between unrelated types
+let num: number = 42;
+let str: string = num as string;  // ERROR: Incompatible types
+```
+
+**Raya `as` semantics:**
+1. **Safe widening** — Always allowed (e.g., `T` → `T | U`)
+2. **Safe narrowing with evidence** — Allowed after discriminant check
+3. **JSON casts** — Runtime type check automatically inserted
+4. **Unsound casts** — Compile error
+
+**Safe alternatives for complex cases:**
+```ts
+// Use type guards with typeof
 function asString(value: unknown): string | null {
   if (typeof value === "string") {
     return value;
   }
   return null;
+}
+
+// Use discriminated unions
+type Value =
+  | { kind: "string"; value: string }
+  | { kind: "number"; value: number };
+
+function processValue(v: Value): void {
+  if (v.kind === "string") {
+    // v is narrowed to { kind: "string"; value: string }
+    console.log(v.value.toUpperCase());
+  }
 }
 ```
 
@@ -1071,23 +1109,99 @@ Type rules:
 * Arguments must match constructor signature
 * Result type is the class type
 
-### 6.13 Runtime Type Operators - BANNED
+### 6.13 Runtime Type Operators
 
-**Raya does not support runtime type introspection:**
+#### `typeof` Operator
 
-* `typeof value` — **BANNED**
-* `value instanceof Class` — **BANNED**
+**Limited support for specific use cases:**
+
+```ts
+// ✅ ALLOWED: Type narrowing with bare unions (primitives)
+type ID = string | number | boolean | null;
+function processID(id: ID): void {
+  if (typeof id === "string") {
+    console.log(id.toUpperCase());
+  } else if (typeof id === "number") {
+    console.log(id.toFixed(2));
+  }
+}
+
+// ✅ ALLOWED: JSON type checking
+import { JsonValue } from "raya:json";
+function processJson(value: JsonValue): void {
+  if (typeof value === "string") {
+    // value is narrowed to string
+  }
+}
+
+// ❌ BANNED: Complex object type checking
+function process(value: Shape): void {
+  if (typeof value === "object") {  // ERROR: Use discriminated unions
+    // ...
+  }
+}
+```
+
+**Allowed contexts:**
+* Bare union type narrowing (primitives: `string`, `number`, `boolean`, `null`)
+* JSON type checking within `JsonValue` types
+* Type predicates that check primitive types
+
+**Use discriminated unions for complex types:**
+```ts
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rectangle"; width: number; height: number };
+
+function area(shape: Shape): number {
+  switch (shape.kind) {  // Check discriminant, not typeof
+    case "circle":
+      return Math.PI * shape.radius ** 2;
+    case "rectangle":
+      return shape.width * shape.height;
+  }
+}
+```
+
+#### `instanceof` Operator
+
+**BANNED** — Use discriminated unions for type narrowing
 
 **Rationale:**
-* Runtime type checks bypass static type safety
-* Encourage use of discriminated unions instead
-* Reduce runtime overhead
-* Make type narrowing explicit via discriminants
+* `instanceof` requires runtime type information
+* Encourages explicit discriminant fields
+* More performant (simple field check vs prototype chain walk)
 
-**Alternatives:**
-* Use discriminated unions with literal types
-* Use type predicates that check discriminant fields
-* Use null checks for optional values
+#### `delete` Operator
+
+**Limited support for JSON objects:**
+
+```ts
+import { JsonObject } from "raya:json";
+
+// ✅ ALLOWED: Delete JSON object properties
+function removeField(obj: JsonObject, key: string): void {
+  delete obj[key];
+}
+
+// ❌ BANNED: Delete class instance properties
+class Point {
+  x: number = 0;
+  y: number = 0;
+}
+
+let p = new Point();
+delete p.x;  // ERROR: Cannot delete class properties
+```
+
+**Allowed contexts:**
+* JSON object properties only
+* Dynamic property removal in JSON data structures
+
+**Rationale:**
+* Class properties have fixed layouts (cannot be deleted)
+* JSON objects are dynamic and may need property removal
+* Clear distinction between structured classes and dynamic JSON
 
 ---
 
@@ -1485,15 +1599,127 @@ class Bird extends Animal {
 * Override must have compatible signature
 * Use `super.method()` to call parent
 
-### 9.8 Abstract Classes - Future Feature
+### 9.8 Abstract Classes
 
-Not in v0.5. Use interfaces instead.
+Abstract classes provide base implementations with abstract methods that subclasses must implement:
 
-### 9.9 Access Modifiers - Future Feature
+```ts
+abstract class Shape {
+  // Abstract methods - no implementation
+  abstract area(): number;
+  abstract perimeter(): number;
+
+  // Concrete method
+  describe(): string {
+    return `Area: ${this.area()}, Perimeter: ${this.perimeter()}`;
+  }
+}
+
+class Circle extends Shape {
+  constructor(public radius: number) {
+    super();
+  }
+
+  area(): number {
+    return Math.PI * this.radius ** 2;
+  }
+
+  perimeter(): number {
+    return 2 * Math.PI * this.radius;
+  }
+}
+
+class Rectangle extends Shape {
+  constructor(public width: number, public height: number) {
+    super();
+  }
+
+  area(): number {
+    return this.width * this.height;
+  }
+
+  perimeter(): number {
+    return 2 * (this.width + this.height);
+  }
+}
+
+// ❌ ERROR: Cannot instantiate abstract class
+let shape = new Shape();
+
+// ✅ OK: Instantiate concrete subclass
+let circle = new Circle(5);
+console.log(circle.describe());  // "Area: 78.54, Perimeter: 31.42"
+```
+
+**Rules:**
+* Abstract classes cannot be instantiated directly
+* Abstract methods must be implemented by concrete subclasses
+* Concrete methods provide shared implementation
+* Abstract classes can have fields and constructors
+
+### 9.9 Decorators
+
+Decorators provide a way to add metadata and modify class behavior at compile-time:
+
+```ts
+// Decorator function
+function logged(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
+  const original = descriptor.value;
+  descriptor.value = function(...args: any[]): any {
+    console.log(`Calling ${propertyKey} with`, args);
+    const result = original.apply(this, args);
+    console.log(`Result:`, result);
+    return result;
+  };
+}
+
+// Class decorator
+function sealed(constructor: Function): void {
+  Object.seal(constructor);
+  Object.seal(constructor.prototype);
+}
+
+@sealed
+class Calculator {
+  @logged
+  add(a: number, b: number): number {
+    return a + b;
+  }
+
+  @logged
+  multiply(a: number, b: number): number {
+    return a * b;
+  }
+}
+
+let calc = new Calculator();
+calc.add(2, 3);  // Logs: "Calling add with [2, 3]" then "Result: 5"
+```
+
+**Decorator types:**
+* **Class decorators** — Applied to class declarations
+* **Method decorators** — Applied to class methods
+* **Property decorators** — Applied to class properties
+* **Parameter decorators** — Applied to method parameters
+
+**Execution order:**
+1. Property decorators (in order of declaration)
+2. Parameter decorators (for each method)
+3. Method decorators (in order of declaration)
+4. Class decorators (outermost first)
+
+**Common use cases:**
+* Logging and debugging
+* Validation
+* Memoization/caching
+* Dependency injection
+* Metadata emission
+
+### 9.10 Access Modifiers - Future Feature
 
 Not in v0.5. All members are public.
 
-### 9.10 Class Expressions
+### 9.11 Class Expressions
 
 ```ts
 const Point = class {
@@ -1503,84 +1729,81 @@ const Point = class {
 
 ---
 
-## 10. Interfaces
+## 10. Interfaces - BANNED
 
-### 10.1 Interface Declarations
+**Raya does NOT support `interface` declarations. Use `type` instead.**
+
+**Rationale:**
+* Simplifies the type system (one way to do things)
+* Type aliases are more flexible (support unions, primitives, tuples)
+* Eliminates confusion between `interface` and `type`
+* Prevents declaration merging complexity
+* Aligns with modern TypeScript best practices
+
+### Use Type Aliases Instead
 
 ```ts
+// ❌ BANNED: interface
 interface Point {
   x: number;
   y: number;
 }
 
-interface Named {
-  name: string;
-}
-```
-
-### 10.2 Optional Properties
-
-```ts
-interface User {
-  name: string;
-  email?: string;  // type is string | null
-}
-
-let user: User = { name: "Alice" };  // OK
-```
-
-### 10.3 Readonly Properties - Future Feature
-
-Not in v0.5.
-
-### 10.4 Method Signatures
-
-```ts
-interface Comparable {
-  compareTo(other: Comparable): number;
-}
-```
-
-### 10.5 Interface Extension
-
-```ts
-interface Point2D {
+// ✅ USE: type alias
+type Point = {
   x: number;
   y: number;
-}
-
-interface Point3D extends Point2D {
-  z: number;
-}
-
-let p: Point3D = { x: 1, y: 2, z: 3 };
+};
 ```
 
-**Rules:**
-* Can extend multiple interfaces
-* Properties must not conflict
+### Object Types with Type Aliases
 
 ```ts
-interface Named {
+// Simple object type
+type User = {
   name: string;
-}
+  email?: string;  // optional property
+};
 
-interface Versioned {
-  version: number;
-}
+// Method signatures
+type Comparable = {
+  compareTo(other: Comparable): number;
+};
 
-interface Document extends Named, Versioned {
-  content: string;
-}
+// Or using arrow syntax
+type Comparable = {
+  compareTo: (other: Comparable) => number;
+};
 ```
 
-### 10.6 Implementing Interfaces
+### Extending Types with Intersection
 
 ```ts
-interface Printable {
-  print(): void;
-}
+// Combine multiple types
+type Named = {
+  name: string;
+};
 
+type Versioned = {
+  version: number;
+};
+
+type Document = Named & Versioned & {
+  content: string;
+};
+
+// Equivalent to:
+// { name: string; version: number; content: string }
+```
+
+### Implementing Type Contracts
+
+```ts
+type Printable = {
+  print(): void;
+};
+
+// Classes can implement type aliases
 class Document implements Printable {
   constructor(public content: string) {}
 
@@ -1590,40 +1813,29 @@ class Document implements Printable {
 }
 ```
 
-**Rules:**
-* Class must implement all interface members
-* Can implement multiple interfaces
-
-### 10.7 Structural Typing
+### Advantages of Type Aliases
 
 ```ts
-interface Point {
-  x: number;
-  y: number;
-}
+// ✅ Unions (not possible with interfaces)
+type ID = string | number;
 
-// Any object with compatible structure works
-let p: Point = { x: 1, y: 2, z: 3 };  // extra property OK
-```
+// ✅ Primitives (not possible with interfaces)
+type Name = string;
 
-### 10.8 Interface Merging - BANNED
+// ✅ Tuples (not possible with interfaces)
+type Point2D = [number, number];
 
-Raya does not allow declaration merging.
-
-```ts
-// NOT ALLOWED
-interface User {
-  name: string;
-}
-
-interface User {  // ERROR: duplicate declaration
-  age: number;
-}
+// ✅ Complex combinations
+type Result<T, E> =
+  | { status: "ok"; value: T }
+  | { status: "error"; error: E };
 ```
 
 ---
 
 ## 11. Type Aliases
+
+**Type aliases are the primary way to define custom types in Raya.**
 
 ### 11.1 Type Alias Declarations
 
@@ -1640,18 +1852,70 @@ type Point = { x: number; y: number };
 ```ts
 type StringOrNumber = string | number;
 type Result<T> = T | null;
+
+// Discriminated unions
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rectangle"; width: number; height: number };
 ```
 
-### 11.3 Type Aliases vs Interfaces
+### 11.3 Intersection Types
 
-| Feature | Type Alias | Interface |
+```ts
+type Named = { name: string };
+type Aged = { age: number };
+
+// Combine types
+type Person = Named & Aged;
+// Equivalent to: { name: string; age: number }
+
+// Extend object types
+type Employee = Person & {
+  employeeId: number;
+  department: string;
+};
+```
+
+### 11.4 Generic Type Aliases
+
+```ts
+// Generic wrapper
+type Box<T> = {
+  value: T;
+  isEmpty: boolean;
+};
+
+// Generic result type
+type Result<T, E> =
+  | { status: "ok"; value: T }
+  | { status: "error"; error: E };
+
+// Constrained generics
+type Lengthwise<T extends { length: number }> = {
+  value: T;
+  length: number;
+};
+```
+
+### 11.5 Why Type Aliases Only?
+
+Raya uses only `type` declarations (no `interface`) for simplicity:
+
+| Capability | Type Alias | Interface |
 |---------|------------|-----------|
-| Object shape | ✓ | ✓ |
-| Union types | ✓ | ✗ |
-| Primitive aliases | ✓ | ✗ |
-| Tuple types | ✓ | ✗ |
-| Extension | via `&` | via `extends` |
-| Merging | ✗ | ✗ (banned in Raya) |
+| Object shapes | ✅ | ❌ Banned |
+| Union types | ✅ | ❌ N/A |
+| Intersection | ✅ `&` | ❌ N/A |
+| Primitive aliases | ✅ | ❌ N/A |
+| Tuple types | ✅ | ❌ N/A |
+| Generic types | ✅ | ❌ Banned |
+| Class implementation | ✅ | ❌ Banned |
+
+**Benefits:**
+* One way to define types (simplicity)
+* More flexible than interfaces
+* Supports all type constructs
+* No confusion between `type` and `interface`
 
 **When to use:**
 * **Interface** — For object contracts, especially when implementing
@@ -3353,14 +3617,14 @@ Even with reflection enabled, Raya maintains its type safety guarantees:
 
 * `eval()` — arbitrary code execution
 * `with` — ambiguous scoping
-* `delete` — property deletion
+* `delete` — **Exception:** Allowed for JSON object properties only
 * `prototype` — prototype manipulation
 * `__proto__` — prototype access
 * Global `this` — implicit global object
 * `arguments` — use rest parameters instead
 * `var` — use `let` or `const`
 * `for-in` — use `for-of` or explicit iteration
-* `typeof` — use discriminated unions instead
+* `typeof` — **Exception:** Allowed for JSON types and bare union type narrowing
 * `instanceof` — use discriminated unions instead
 * Automatic semicolon insertion edge cases — always use semicolons
 
@@ -3371,12 +3635,13 @@ Even with reflection enabled, Raya maintains its type safety guarantees:
 * `any` type — unsafe type escape
 * Implicit `any` — all types must be explicit or inferred soundly
 * Non-null assertion (`!`) — unsafe null bypass
-* `as` casting (when unsound) — only safe casts allowed
+* `as` casting — **Exception:** Supported with Raya-specific semantics (safe casts only)
 * `satisfies` — not needed with sound inference
 * Index signatures (`[key: string]: T`) — use `Map<K, V>` instead
 * Function overloading — use union types
 * `enum` — use union of literals instead
 * `namespace` — use modules
+* **`interface` declarations** — use `type` aliases instead (LANG.md §10)
 
 ### 18.3 Module Features
 
@@ -3387,14 +3652,20 @@ Even with reflection enabled, Raya maintains its type safety guarantees:
 * Dynamic imports (`import()`) — not in v0.5
 * `export =` — TypeScript legacy syntax
 
-### 18.4 Advanced TypeScript Features (not in v0.5)
+### 19.4 Advanced TypeScript Features
 
-* Conditional types
-* Mapped types
-* Template literal types
-* Decorators
-* Mixins
-* Abstract classes (future feature)
+**Supported in Raya:**
+
+* **Decorators** — supported with Raya semantics
+* **Abstract classes** — supported for class inheritance patterns
+* **Generics** — full support with monomorphization
+
+**Not in v0.5:**
+
+* Conditional types — advanced type-level programming
+* Mapped types — advanced type transformations
+* Template literal types — string template types
+* Mixins — complex composition patterns
 
 ---
 

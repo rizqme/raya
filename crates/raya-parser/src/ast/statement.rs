@@ -21,10 +21,7 @@ pub enum Statement {
     /// Class declaration
     ClassDecl(ClassDecl),
 
-    /// Interface declaration
-    InterfaceDecl(InterfaceDecl),
-
-    /// Type alias declaration
+    /// Type alias declaration (interfaces BANNED in Raya - LANG.md §10)
     TypeAliasDecl(TypeAliasDecl),
 
     /// Import statement
@@ -80,7 +77,6 @@ impl Statement {
             Statement::VariableDecl(s) => &s.span,
             Statement::FunctionDecl(s) => &s.span,
             Statement::ClassDecl(s) => &s.span,
-            Statement::InterfaceDecl(s) => &s.span,
             Statement::TypeAliasDecl(s) => &s.span,
             Statement::ImportDecl(s) => &s.span,
             Statement::ExportDecl(s) => s.span(),
@@ -107,7 +103,6 @@ impl Statement {
             Statement::VariableDecl(_)
                 | Statement::FunctionDecl(_)
                 | Statement::ClassDecl(_)
-                | Statement::InterfaceDecl(_)
                 | Statement::TypeAliasDecl(_)
         )
     }
@@ -179,6 +174,9 @@ pub struct FunctionDecl {
 /// Function parameter
 #[derive(Debug, Clone, PartialEq)]
 pub struct Parameter {
+    /// Decorators (@inject, @validate, etc.)
+    pub decorators: Vec<Decorator>,
+
     pub pattern: Pattern,
     pub type_annotation: Option<TypeAnnotation>,
     pub span: Span,
@@ -192,26 +190,38 @@ pub struct Parameter {
 ///
 /// # Example
 /// ```text
-/// class Point {
-///     x: number;
-///     y: number;
+/// @sealed
+/// abstract class Shape {
+///     abstract area(): number;
 ///
-///     constructor(x: number, y: number) {
-///         this.x = x;
-///         this.y = y;
+///     describe(): string {
+///         return `Area: ${this.area()}`;
 ///     }
+/// }
 ///
-///     distance(): number {
-///         return Math.sqrt(this.x ** 2 + this.y ** 2);
+/// class Circle extends Shape {
+///     constructor(public radius: number) { super(); }
+///
+///     area(): number {
+///         return Math.PI * this.radius ** 2;
 ///     }
 /// }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
+    /// Decorators (@sealed, @logged, etc.)
+    pub decorators: Vec<Decorator>,
+
+    /// Abstract modifier
+    pub is_abstract: bool,
+
     pub name: Identifier,
     pub type_params: Option<Vec<TypeParameter>>,
     pub extends: Option<TypeAnnotation>,
+
+    /// Implements clauses (type aliases only, NOT interfaces - LANG.md §10)
     pub implements: Vec<TypeAnnotation>,
+
     pub members: Vec<ClassMember>,
     pub span: Span,
 }
@@ -226,6 +236,9 @@ pub enum ClassMember {
 /// Field declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDecl {
+    /// Decorators (@validate, @readonly, etc.)
+    pub decorators: Vec<Decorator>,
+
     pub name: Identifier,
     pub type_annotation: Option<TypeAnnotation>,
     pub initializer: Option<Expression>,
@@ -236,11 +249,20 @@ pub struct FieldDecl {
 /// Method declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodDecl {
+    /// Decorators (@logged, @memoized, etc.)
+    pub decorators: Vec<Decorator>,
+
+    /// Abstract modifier (method has no body)
+    pub is_abstract: bool,
+
     pub name: Identifier,
     pub type_params: Option<Vec<TypeParameter>>,
     pub params: Vec<Parameter>,
     pub return_type: Option<TypeAnnotation>,
-    pub body: BlockStatement,
+
+    /// None if is_abstract is true
+    pub body: Option<BlockStatement>,
+
     pub is_static: bool,
     pub is_async: bool,
     pub span: Span,
@@ -255,53 +277,34 @@ pub struct ConstructorDecl {
 }
 
 // ============================================================================
-// Interface & Type Alias
+// Decorators
 // ============================================================================
 
-/// Interface declaration
+/// Decorator: @decorator or @decorator(arg1, arg2)
 ///
 /// # Example
 /// ```text
-/// interface Drawable {
-///     draw(): void;
-///     color: string;
-/// }
+/// @sealed
+/// class Foo { }
+///
+/// @logged
+/// method() { }
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub struct InterfaceDecl {
-    pub name: Identifier,
-    pub type_params: Option<Vec<TypeParameter>>,
-    pub extends: Vec<TypeAnnotation>,
-    pub members: Vec<InterfaceMember>,
+pub struct Decorator {
+    /// Decorator name/expression
+    pub expression: Expression,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum InterfaceMember {
-    Property(PropertySignature),
-    Method(MethodSignature),
-}
-
-/// Property signature in an interface
-#[derive(Debug, Clone, PartialEq)]
-pub struct PropertySignature {
-    pub name: Identifier,
-    pub type_annotation: TypeAnnotation,
-    pub optional: bool,
-    pub span: Span,
-}
-
-/// Method signature in an interface
-#[derive(Debug, Clone, PartialEq)]
-pub struct MethodSignature {
-    pub name: Identifier,
-    pub type_params: Option<Vec<TypeParameter>>,
-    pub params: Vec<Parameter>,
-    pub return_type: TypeAnnotation,
-    pub span: Span,
-}
+// ============================================================================
+// Type Alias (Interfaces BANNED)
+// ============================================================================
 
 /// Type alias: type Point = { x: number; y: number; }
+///
+/// NOTE: Raya does NOT support `interface` declarations (LANG.md §10).
+/// Use type aliases for all type definitions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAliasDecl {
     pub name: Identifier,

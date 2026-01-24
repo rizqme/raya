@@ -49,12 +49,12 @@ pub trait Visitor: Sized {
         walk_class_decl(self, decl);
     }
 
-    fn visit_interface_decl(&mut self, decl: &InterfaceDecl) {
-        walk_interface_decl(self, decl);
-    }
-
     fn visit_type_alias_decl(&mut self, decl: &TypeAliasDecl) {
         walk_type_alias_decl(self, decl);
+    }
+
+    fn visit_decorator(&mut self, decorator: &Decorator) {
+        walk_decorator(self, decorator);
     }
 
     fn visit_import_decl(&mut self, decl: &ImportDecl) {
@@ -169,7 +169,6 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
         Statement::VariableDecl(decl) => visitor.visit_variable_decl(decl),
         Statement::FunctionDecl(decl) => visitor.visit_function_decl(decl),
         Statement::ClassDecl(decl) => visitor.visit_class_decl(decl),
-        Statement::InterfaceDecl(decl) => visitor.visit_interface_decl(decl),
         Statement::TypeAliasDecl(decl) => visitor.visit_type_alias_decl(decl),
         Statement::ImportDecl(decl) => visitor.visit_import_decl(decl),
         Statement::ExportDecl(decl) => visitor.visit_export_decl(decl),
@@ -227,6 +226,10 @@ pub fn walk_function_decl<V: Visitor>(visitor: &mut V, decl: &FunctionDecl) {
         }
     }
     for param in &decl.params {
+        // Visit parameter decorators
+        for decorator in &param.decorators {
+            visitor.visit_decorator(decorator);
+        }
         visitor.visit_pattern(&param.pattern);
         if let Some(type_ann) = &param.type_annotation {
             visitor.visit_type_annotation(type_ann);
@@ -239,6 +242,11 @@ pub fn walk_function_decl<V: Visitor>(visitor: &mut V, decl: &FunctionDecl) {
 }
 
 pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
+    // Visit decorators
+    for decorator in &decl.decorators {
+        visitor.visit_decorator(decorator);
+    }
+
     visitor.visit_identifier(&decl.name);
     if let Some(extends) = &decl.extends {
         visitor.visit_type_annotation(extends);
@@ -249,6 +257,10 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
     for member in &decl.members {
         match member {
             ClassMember::Field(field) => {
+                // Visit field decorators
+                for decorator in &field.decorators {
+                    visitor.visit_decorator(decorator);
+                }
                 visitor.visit_identifier(&field.name);
                 if let Some(type_ann) = &field.type_annotation {
                     visitor.visit_type_annotation(type_ann);
@@ -258,8 +270,16 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
                 }
             }
             ClassMember::Method(method) => {
+                // Visit method decorators
+                for decorator in &method.decorators {
+                    visitor.visit_decorator(decorator);
+                }
                 visitor.visit_identifier(&method.name);
                 for param in &method.params {
+                    // Visit parameter decorators
+                    for decorator in &param.decorators {
+                        visitor.visit_decorator(decorator);
+                    }
                     visitor.visit_pattern(&param.pattern);
                     if let Some(type_ann) = &param.type_annotation {
                         visitor.visit_type_annotation(type_ann);
@@ -268,10 +288,17 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
                 if let Some(return_type) = &method.return_type {
                     visitor.visit_type_annotation(return_type);
                 }
-                visitor.visit_block_statement(&method.body);
+                // Body is None for abstract methods
+                if let Some(body) = &method.body {
+                    visitor.visit_block_statement(body);
+                }
             }
             ClassMember::Constructor(ctor) => {
                 for param in &ctor.params {
+                    // Visit parameter decorators
+                    for decorator in &param.decorators {
+                        visitor.visit_decorator(decorator);
+                    }
                     visitor.visit_pattern(&param.pattern);
                     if let Some(type_ann) = &param.type_annotation {
                         visitor.visit_type_annotation(type_ann);
@@ -283,34 +310,13 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
     }
 }
 
-pub fn walk_interface_decl<V: Visitor>(visitor: &mut V, decl: &InterfaceDecl) {
-    visitor.visit_identifier(&decl.name);
-    for extends in &decl.extends {
-        visitor.visit_type_annotation(extends);
-    }
-    for member in &decl.members {
-        match member {
-            InterfaceMember::Property(prop) => {
-                visitor.visit_identifier(&prop.name);
-                visitor.visit_type_annotation(&prop.type_annotation);
-            }
-            InterfaceMember::Method(method) => {
-                visitor.visit_identifier(&method.name);
-                for param in &method.params {
-                    visitor.visit_pattern(&param.pattern);
-                    if let Some(type_ann) = &param.type_annotation {
-                        visitor.visit_type_annotation(type_ann);
-                    }
-                }
-                visitor.visit_type_annotation(&method.return_type);
-            }
-        }
-    }
-}
-
 pub fn walk_type_alias_decl<V: Visitor>(visitor: &mut V, decl: &TypeAliasDecl) {
     visitor.visit_identifier(&decl.name);
     visitor.visit_type_annotation(&decl.type_annotation);
+}
+
+pub fn walk_decorator<V: Visitor>(visitor: &mut V, decorator: &Decorator) {
+    visitor.visit_expression(&decorator.expression);
 }
 
 pub fn walk_import_decl<V: Visitor>(_visitor: &mut V, _decl: &ImportDecl) {

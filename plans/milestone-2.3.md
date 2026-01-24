@@ -93,14 +93,37 @@ This milestone implements a **recursive descent parser** with **operator precede
 
 ---
 
-## Features Not Parsed (Intentionally Excluded)
+## Features Parsed with Special Semantics
 
-The following TypeScript features are **not** parsed by Raya, as they are banned per LANG.md §19:
+The following features are **parsed** but have Raya-specific semantics different from TypeScript:
+
+### Context-Dependent Operators
+- `delete` - **Parsed and allowed** for JSON object properties only (LANG.md §6.13)
+  - Banned for class instance properties
+  - Type checker enforces JSON-only usage
+
+- `typeof` - **Parsed and allowed** for specific contexts (LANG.md §6.13)
+  - Allowed: Bare union narrowing (primitives), JSON type checking
+  - Banned: Complex object type checking
+  - Type checker enforces restriction
+
+- `as` casting - **Parsed and allowed** with safe semantics only (LANG.md §4.6)
+  - Allowed: Safe widening, narrowing with evidence, JSON casts
+  - Banned: Unsound casts between unrelated types
+  - Type checker inserts runtime checks for JSON casts
+
+### Supported Advanced Features
+- **Decorators** - Full support with Raya semantics (LANG.md §9.9)
+- **Abstract classes** - Full support (LANG.md §9.8)
+- **Generics** - Full support with monomorphization (LANG.md §13)
+
+---
+
+## Features Not Parsed (Intentionally Excluded)
 
 ### Banned Operators/Keywords
 - `eval` - Arbitrary code execution (LANG.md §19.1)
 - `with` - Ambiguous scoping (LANG.md §19.1)
-- `delete` - Property deletion (LANG.md §19.1)
 - `var` - Use `let` or `const` instead (LANG.md §5.1)
 - `for-in` - Use `for-of` or explicit iteration (LANG.md §19.1)
 - `instanceof` - Use discriminated unions (LANG.md §4.7, §19.1)
@@ -109,7 +132,6 @@ The following TypeScript features are **not** parsed by Raya, as they are banned
 ### Banned Type Features
 - `any` type - Unsound type escape (LANG.md §19.2)
 - `!` non-null assertion - Bypasses null safety (LANG.md §19.2)
-- `as` casting (when unsound) - Only safe casts allowed (LANG.md §4.6)
 - `satisfies` operator - Not needed with sound inference (LANG.md §19.2)
 - Index signatures `[key: string]: T` - Use `Map<K, V>` instead (LANG.md §19.2)
 - Function overloading - Use union types (LANG.md §19.2)
@@ -124,14 +146,10 @@ The following TypeScript features are **not** parsed by Raya, as they are banned
 
 ### Future Features (Not in v0.5)
 - Dynamic imports `import()` - Planned for future (LANG.md §19.3)
-- Conditional types - Advanced feature (LANG.md §19.4)
-- Mapped types - Advanced feature (LANG.md §19.4)
-- Template literal types - Advanced feature (LANG.md §19.4)
-- Decorators - Planned for future (LANG.md §19.4)
-- Abstract classes - Planned for future (LANG.md §19.4)
-- Mixins - Advanced pattern (LANG.md §19.4)
-
-**Note:** `typeof` is parsed but semantically restricted to bare unions only (primitives). The type checker will enforce this restriction.
+- Conditional types - Advanced type-level feature (LANG.md §19.4)
+- Mapped types - Advanced type transformations (LANG.md §19.4)
+- Template literal types - String template types (LANG.md §19.4)
+- Mixins - Complex composition patterns (LANG.md §19.4)
 
 ---
 
@@ -566,35 +584,65 @@ Parse all statement types including declarations, control flow, and blocks.
 - `parse_class_declaration()` - Complete class syntax
 
 **Components:**
+- Decorators (optional): `@sealed`, `@logged`
+- `abstract` modifier (optional)
 - Class name
 - Type parameters
 - Extends clause
-- Implements clauses (multiple interfaces)
+- Implements clauses (type aliases only, not interfaces)
 - Members: fields, methods, constructor
 
 **Member parsing:**
+- `parse_decorators()` - Parse decorator list `@decorator1 @decorator2`
 - `parse_class_member()` - Dispatch to field/method/constructor
-- `parse_field_declaration()` - `x: number = 0;`
-- `parse_method_declaration()` - `foo(x: number): void { }`
+- `parse_field_declaration()` - `x: number = 0;` with optional decorators
+- `parse_method_declaration()` - `foo(x: number): void { }` with optional decorators
 - `parse_constructor_declaration()` - `constructor(x: number) { }`
+- `parse_abstract_method()` - `abstract area(): number;` (no body)
 
 **Modifiers:**
+- `abstract` - For classes and methods
 - `static` - Class-level vs instance-level
 - `async` - Async methods
 
-#### 3.4 Interface & Type Alias
+**Decorator syntax:**
+```typescript
+@classDecorator
+class Example {
+  @propertyDecorator
+  field: number;
 
-**Parsing functions:**
-- `parse_interface_declaration()` - Interface definitions
-- `parse_type_alias_declaration()` - Type aliases
+  @methodDecorator
+  method(@paramDecorator param: string): void { }
+}
+```
 
-**Interface members:**
-- Properties: `x: number;`, `y?: string;`
-- Methods: `foo(x: number): void;`
+#### 3.4 Type Aliases (Interfaces BANNED)
 
-**Type aliases:**
-- Simple: `type Point = { x: number; y: number };`
-- Generic: `type Result<T, E> = { status: "ok"; value: T } | { status: "error"; error: E };`
+**Parsing function:**
+- `parse_type_alias_declaration()` - Type alias definitions
+
+**IMPORTANT:** Raya does NOT support `interface` declarations (LANG.md §10). Use `type` aliases only.
+
+**Type alias syntax:**
+- **Simple object types:** `type Point = { x: number; y: number };`
+- **Generic types:** `type Result<T, E> = { status: "ok"; value: T } | { status: "error"; error: E };`
+- **Union types:** `type ID = string | number;`
+- **Intersection types:** `type Named = { name: string }; type Document = Named & { content: string };`
+- **Object members:**
+  - Properties: `x: number;`, `y?: string;`
+  - Methods: `foo(x: number): void;`
+
+**Classes can implement type aliases:**
+```typescript
+type Printable = {
+  print(): void;
+};
+
+class Document implements Printable {
+  print(): void { console.log(this.content); }
+}
+```
 
 #### 3.5 Control Flow Statements
 
@@ -667,7 +715,7 @@ Parse all statement types including declarations, control flow, and blocks.
 - [ ] Implement variable declarations with patterns
 - [ ] Implement function declarations
 - [ ] Implement class declarations with all members
-- [ ] Implement interface and type alias declarations
+- [ ] Implement type alias declarations (interfaces BANNED)
 - [ ] Implement all control flow statements
 - [ ] Implement block and expression statements
 - [ ] Implement import/export declarations
@@ -681,9 +729,8 @@ Parse all statement types including declarations, control flow, and blocks.
 **Declaration tests:**
 - Variables: `let`, `const`, with/without initializers
 - Functions: Regular, async, generic
-- Classes: Simple, generic, inheritance, implements
-- Interfaces: Properties, methods, extends
-- Type aliases: Simple, generic, unions
+- Classes: Simple, generic, inheritance, implements (type aliases)
+- Type aliases: Simple, generic, unions, object types, intersections
 
 **Control flow tests:**
 - All statement types with valid syntax
@@ -1083,6 +1130,9 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 - Arrows: `x => x`, `(x, y) => x + y`, `async x => await x`
 - Conditional: `x ? y : z`
 - Assignment: All assignment operators
+- **`typeof`:** `typeof id === "string"` (for bare unions and JSON)
+- **`delete`:** `delete obj[key]` (for JSON objects)
+- **`as` casting:** `value as Type` (safe casts only)
 
 **Arrays & Objects:**
 - Empty: `[]`, `{}`
@@ -1115,13 +1165,20 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 - Implements: `class Foo implements IFoo { }`
 - Generic: `class Box<T> { value: T; }`
 - Static members: `class Foo { static count: number; }`
+- **Abstract classes:** `abstract class Shape { abstract area(): number; }`
+- **Abstract methods:** Methods without implementation in abstract classes
+- **Decorators on classes:** `@sealed class Foo { }`
+- **Decorators on members:** `@logged method() { }`, `@validate field: number`
+- **Parameter decorators:** `method(@inject param: Service) { }`
 
-**Interfaces:**
-- Simple: `interface IFoo { }`
-- Properties: `interface IFoo { x: number; }`
-- Methods: `interface IFoo { bar(): void; }`
-- Extends: `interface IFoo extends IBar { }`
-- Generic: `interface Result<T, E> { }`
+**Type Aliases (interfaces BANNED):**
+- Simple object: `type Point = { x: number; y: number };`
+- Properties: `type Foo = { x: number; y?: string; };`
+- Methods: `type Callable = { bar(): void; };`
+- Union types: `type ID = string | number;`
+- Intersection: `type Named = { name: string }; type Document = Named & { content: string };`
+- Generic: `type Result<T, E> = { status: "ok"; value: T } | { status: "error"; error: E };`
+- Classes implementing types: `class Foo implements SomeType { }`
 
 **Control flow:**
 - If: All forms (`if`, `if-else`, `if-else if-else`)
