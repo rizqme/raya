@@ -408,6 +408,12 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
             visitor.visit_expression(&cond.alternate);
         }
         Expression::Call(call) => visitor.visit_call_expression(call),
+        Expression::AsyncCall(async_call) => {
+            visitor.visit_expression(&async_call.callee);
+            for arg in &async_call.arguments {
+                visitor.visit_expression(arg);
+            }
+        }
         Expression::Member(member) => visitor.visit_member_expression(member),
         Expression::Index(index) => {
             visitor.visit_expression(&index.object);

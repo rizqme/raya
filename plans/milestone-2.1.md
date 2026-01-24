@@ -1,10 +1,10 @@
 # Milestone 2.1: Lexer (Tokenization)
 
-**Status:** 📋 Planned
+**Status:** ✅ Complete
 **Priority:** High
 **Dependencies:** Milestone 1.x (VM Core complete)
-**Estimated Duration:** 1-2 weeks
-**Target Completion:** TBD
+**Actual Duration:** Completed
+**Completion Date:** 2026-01-24
 
 **Scope:**
 - Token type definitions for all Raya language constructs

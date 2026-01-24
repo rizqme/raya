@@ -58,6 +58,9 @@ pub enum Expression {
     /// Function call: foo(1, 2, 3)
     Call(CallExpression),
 
+    /// Async call: async foo() - wraps any call in a Task
+    AsyncCall(AsyncCallExpression),
+
     /// Member access: obj.prop
     Member(MemberExpression),
 
@@ -105,6 +108,7 @@ impl Expression {
             Expression::Logical(e) => &e.span,
             Expression::Conditional(e) => &e.span,
             Expression::Call(e) => &e.span,
+            Expression::AsyncCall(e) => &e.span,
             Expression::Member(e) => &e.span,
             Expression::Index(e) => &e.span,
             Expression::New(e) => &e.span,
@@ -351,6 +355,17 @@ pub struct ConditionalExpression {
 /// Function call: foo(1, 2, 3)
 #[derive(Debug, Clone, PartialEq)]
 pub struct CallExpression {
+    pub callee: Box<Expression>,
+    pub type_args: Option<Vec<TypeAnnotation>>,
+    pub arguments: Vec<Expression>,
+    pub span: Span,
+}
+
+/// Async call: async foo() - wraps any function call in a Task
+/// This converts a non-async function call into an async Task.
+/// If the function is already async, this has no additional effect.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AsyncCallExpression {
     pub callee: Box<Expression>,
     pub type_args: Option<Vec<TypeAnnotation>>,
     pub arguments: Vec<Expression>,

@@ -109,6 +109,42 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
             }))
         }
 
+        // async call expression: async foo()
+        // This wraps any function call in a Task, converting non-async calls to async
+        Token::Async => {
+            parser.advance();
+
+            // Parse the function call expression
+            let callee = parse_expression_with_precedence(parser, Precedence::Member)?;
+
+            // Expect a call (function call, member call, etc)
+            // The postfix parsing will handle the actual call syntax
+            // But we need to ensure it's a call expression
+            match &callee {
+                Expression::Call(call_expr) => {
+                    // Extract the parts from the CallExpression
+                    let span = parser.combine_spans(&start_span, &call_expr.span);
+                    Ok(Expression::AsyncCall(AsyncCallExpression {
+                        callee: call_expr.callee.clone(),
+                        type_args: call_expr.type_args.clone(),
+                        arguments: call_expr.arguments.clone(),
+                        span,
+                    }))
+                }
+                _ => {
+                    // Error: async must be followed by a function call
+                    Err(ParseError {
+                        kind: ParseErrorKind::InvalidSyntax {
+                            reason: "async keyword must be followed by a function call".to_string(),
+                        },
+                        span: start_span,
+                        message: "Expected function call after async".to_string(),
+                        suggestion: Some("Use: async foo()".to_string()),
+                    })
+                }
+            }
+        }
+
         // delete and void (TODO: not yet implemented)
         Token::Delete | Token::Void => {
             return Err(ParseError {
@@ -844,7 +880,9 @@ fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseErro
     Ok(params)
 }
 
-/// Parse block statement (stub - will be implemented in stmt parsing).
+/// Parse block statement for function bodies and control flow constructs.
+/// NOTE: BlockStatement is NOT a standalone statement in Raya - it's only used
+/// as part of functions, if/while/for/try statements, and arrow function bodies.
 fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseError> {
     let start_span = parser.current_span();
     let mut statements = Vec::new();

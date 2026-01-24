@@ -63,7 +63,10 @@ pub enum Statement {
     /// Try-catch-finally
     Try(TryStatement),
 
-    /// Block statement
+    /// Block statement (DEPRECATED - only kept for legacy AST compatibility)
+    /// NOTE: Raya does NOT support standalone { } blocks as statements.
+    /// BlockStatement is only used in function bodies, control flow (if/while/for/try),
+    /// and arrow function bodies. This variant should not be constructed by the parser.
     Block(BlockStatement),
 
     /// Empty statement (;)
@@ -418,7 +421,13 @@ pub struct CatchClause {
     pub span: Span,
 }
 
-/// Block statement
+/// Block statement - a sequence of statements wrapped in { }.
+/// NOTE: In Raya, this is NOT a standalone statement type. BlockStatement is only
+/// used as part of:
+/// - Function bodies (FunctionDeclaration.body)
+/// - Control flow constructs (if/while/for/try statements)
+/// - Arrow function bodies (ArrowBody::Block)
+/// At the statement level, { } is always parsed as an object literal expression.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockStatement {
     pub statements: Vec<Statement>,

@@ -2419,7 +2419,98 @@ async function main(): Task<void> {
 * Resumes when awaited Task completes
 * May resume on a different OS thread
 
-### 14.5 Task Lifecycle
+### 14.5 Async Call Expression
+
+The `async` keyword can be used as a prefix operator to explicitly wrap any function call in a Task:
+
+```ts
+// Non-async function
+function compute(x: number): number {
+  return x * 2;
+}
+
+// Wrap in Task explicitly
+const task = async compute(42);  // Creates Task<number>
+const result = await task;       // result: number = 84
+```
+
+**Semantics:**
+* `async foo()` immediately creates and starts a new Task that executes `foo()`
+* If `foo()` is already an async function, this has no additional effect (both create Tasks)
+* If `foo()` is non-async, this converts it to run in a Task
+* The `async` prefix binds to the entire call expression: `async obj.method(args)`
+
+**Use Cases:**
+
+```ts
+// 1. Convert synchronous function to async
+function heavyComputation(data: number[]): number {
+  // CPU-intensive work
+  return data.reduce((a, b) => a + b, 0);
+}
+
+async function processData(): Task<void> {
+  const data = [1, 2, 3, 4, 5];
+
+  // Run synchronous function in separate Task
+  const task = async heavyComputation(data);
+
+  // Do other work while computation runs
+  console.log("Computing...");
+
+  const result = await task;
+  console.log(result);
+}
+
+// 2. Explicit parallelization
+async function parallelSum(): Task<number> {
+  const data1 = [1, 2, 3];
+  const data2 = [4, 5, 6];
+  const data3 = [7, 8, 9];
+
+  // Run three synchronous computations in parallel Tasks
+  const t1 = async sum(data1);
+  const t2 = async sum(data2);
+  const t3 = async sum(data3);
+
+  // Wait for all to complete
+  return (await t1) + (await t2) + (await t3);
+}
+
+// 3. Method calls
+class Calculator {
+  compute(x: number): number {
+    return x * x;
+  }
+}
+
+const calc = new Calculator();
+const task = async calc.compute(10);  // Task<number>
+```
+
+**Comparison with `await`:**
+
+| Expression | Effect | Result Type |
+|------------|--------|-------------|
+| `foo()` | Execute synchronously | `T` |
+| `async foo()` | Create Task, execute concurrently | `Task<T>` |
+| `await foo()` | Execute and wait (if `foo` is async) | `T` |
+| `await async foo()` | Create Task, immediately wait | `T` |
+
+**Note:** `async foo()` is an expression, not a statement. It can be used anywhere an expression is valid:
+
+```ts
+// As function argument
+processTask(async compute(42));
+
+// In binary expression
+const sum = (await async compute(10)) + (await async compute(20));
+
+// In array
+const tasks = [async fn1(), async fn2(), async fn3()];
+```
+
+### 14.6 Task Lifecycle
 
 ```ts
 async function worker(): Task<number> {
@@ -2448,7 +2539,7 @@ async function main(): Task<void> {
 * `COMPLETED` — Finished successfully
 * `FAILED` — Terminated with error
 
-### 14.6 Task Composition
+### 14.7 Task Composition
 
 ```ts
 async function fetchUser(id: number): Task<User> {
@@ -2466,7 +2557,7 @@ async function getUserWithPosts(id: number): Task<[User, Post[]]> {
 }
 ```
 
-### 14.7 Concurrent Task Execution
+### 14.8 Concurrent Task Execution
 
 ```ts
 async function main(): Task<void> {
@@ -2482,7 +2573,7 @@ async function main(): Task<void> {
 }
 ```
 
-### 14.8 Task Cancellation
+### 14.9 Task Cancellation
 
 ```ts
 async function longRunningTask(): Task<void> {
@@ -2500,7 +2591,7 @@ async function main(): Task<void> {
 }
 ```
 
-### 14.9 Task vs Promise
+### 14.10 Task vs Promise
 
 Raya Tasks are similar to Promises but with key differences:
 

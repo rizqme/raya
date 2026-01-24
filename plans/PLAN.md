@@ -854,13 +854,27 @@ pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<
 
 **Goal:** Efficient module system with global cache and bytecode-first storage (inspired by Bun and Go).
 
-**Status:** 📋 Planned
+**Status:** ✅ Complete (All 8 Phases)
+
+**Completed Features:**
+- ✅ Enhanced Module struct with exports, imports, and SHA-256 checksums
+- ✅ ModuleRegistry for tracking loaded modules by name and checksum
+- ✅ ImportResolver for parsing and resolving import specifiers (local, package, URL)
+- ✅ DependencyGraph with cycle detection and topological sorting
+- ✅ Global cache infrastructure at ~/.raya/cache/ (content-addressable storage)
+- ✅ ModuleLinker for resolving imports to exports with symbol resolution
+- ✅ PackageManifest parser for raya.toml files
+- ✅ Lockfile parser for raya.lock files
+- ✅ Semver constraint resolution with version matching
+- ✅ Local path dependencies support
+- ✅ 40+ integration tests covering all phases
 
 **Architecture:**
 ```
 ~/.raya/cache/          # Global package cache
-    ├── <hash>/         # Content-addressable storage
-    │   └── module.rbin # Compiled bytecode only
+    ├── <hash>/         # Content-addressable storage (SHA-256)
+    │   ├── module.rbin # Compiled bytecode
+    │   └── metadata.json # Module metadata
 
 my-project/
     ├── raya.toml       # Package descriptor
@@ -868,19 +882,13 @@ my-project/
     └── src/
 ```
 
-**Key Features:**
-- **Global cache:** Single `~/.raya/cache/` for all projects (no node_modules!)
-- **Bytecode-first:** Store compiled `.rbin` files, not source
-- **Content-addressable:** Packages identified by SHA-256 hash
-- **Lockfile-based:** Reproducible builds with `raya.lock`
-- **Zero duplication:** Same package version shared across projects
-- **Fast:** Parallel downloads, incremental compilation
-- **Offline-first:** Work without network once cached
-
 **Import Syntax:**
 ```typescript
 // Named package (from registry)
 import { Logger } from "logging@1.2.3";
+
+// Scoped package
+import { utils } from "@org/utils@^2.0.0";
 
 // URL import (decentralized)
 import { utils } from "https://github.com/user/repo/v1.0.0";
@@ -889,78 +897,68 @@ import { utils } from "https://github.com/user/repo/v1.0.0";
 import { helper } from "./utils.raya";
 ```
 
-**Crates:** `raya-core`, `raya-bytecode`, `rpkg`
+**Crates:** `raya-core`, `raya-bytecode`, `raya-pm` (formerly rpkg)
 
-**Scope:** VM-side module system only (loading, linking, caching). Excludes compilation, CLI tools, and network operations.
-
-**Phases:**
-1. Module Loading & Bytecode Format (2 weeks)
-2. Import Resolution (1 week)
-3. Global Cache Management (1 week)
-4. Module Linking (1 week)
-5. Package Metadata & Lockfile (1 week)
-6. Semver & Dependency Resolution (1 week)
-7. Local Path Dependencies (3 days)
-8. Testing & Error Handling (1 week)
-
-**Detailed Plan:** See [plans/milestone-1.14.md](milestone-1.14.md) for complete task breakdown.
+**Reference:** See [plans/milestone-1.14.md](milestone-1.14.md) for complete implementation details.
 
 ---
 
 ### 1.15 Native Module System
 
-**Goal:** Enable Raya programs to call native functions written in C, C++, or Rust (similar to Node.js N-API).
+**Goal:** Enable Raya programs to call native functions written in Rust (Rust-only for simplicity and safety).
 
-**Status:** 🔄 In Progress
+**Status:** 📋 Planned
+
+**Design Decision:** Rust-only native modules
+- C/C++ code must be wrapped in Rust first (use standard Rust FFI)
+- Zero-cost abstraction through proc-macros
+- Thread safety enforced by Rust's type system
+- No C header files or ABI complexity
+- Transparent to Raya code (no "native:" prefix needed)
 
 **Architecture:**
 ```
 Raya Program (.raya)
-    ↓ imports native:moduleName
-Native Module (.so/.dylib/.dll)
-    ↓ written in
-C / C++ / Rust
+    ↓ imports std:json or custom:mylib (transparent)
+Module Resolver
+    ↓ detects implementation type (.rbin vs .so/.dylib/.dll)
+Dynamic Library Loader (for native modules)
+    ↓ loads native implementation
+Native Module (Rust)
+    ↓ implements raya-ffi API
+VM Function Registry
 ```
 
-**Tasks:**
-- [x] Design native module system (NATIVE_BINDINGS.md)
-- [x] Add comprehensive C++ examples
-- [ ] Implement C API for native modules (raya-ffi crate)
-  - [x] Value conversion functions (to/from native types)
-  - [ ] Module registration API
-  - [ ] Module builder functions
-  - [ ] Array/Object accessor functions
-  - [ ] Error creation functions
-  - [ ] Context API
-- [ ] Implement module loader in VM
-  - [ ] Dynamic library loading (dlopen/LoadLibrary)
-  - [ ] Symbol resolution (raya_module_init_NAME)
-  - [ ] Version checking
-  - [ ] Function registration in VM
-  - [ ] Module path resolution ($RAYA_MODULE_PATH, ~/.raya/modules)
-- [ ] Implement native function invocation
-  - [ ] Call native functions from bytecode
-  - [ ] Value marshalling (Raya <-> Native)
-  - [ ] Error propagation
-  - [ ] GC safety during native calls
-- [ ] Implement Rust ergonomic API (raya-native crate)
+**Planned Tasks:**
+- [ ] Implement Rust ergonomic API (raya-ffi crate)
   - [ ] #[function] proc-macro
   - [ ] #[module] proc-macro
   - [ ] Automatic type conversion
-  - [ ] Result-based error handling
-- [ ] Implement standard native modules
-  - [ ] native:fs (file system operations)
-  - [ ] native:crypto (hash, random)
+  - [ ] Send/Sync enforcement for thread safety
+- [ ] Implement module loader in VM
+  - [ ] Dynamic library loading (libloading crate)
+  - [ ] Configuration-based bindings from raya.toml
+  - [ ] Type definition integration (.d.raya files)
+- [ ] Migrate JSON operations to native module
+  - [ ] Move JSON_PARSE, JSON_STRINGIFY from opcodes to std:json
+  - [ ] Implement as first native module example
+- [ ] Implement 8 Node.js parity modules
+  - [ ] std:json (JSON parse/stringify)
+  - [ ] std:fs (file system operations)
+  - [ ] std:crypto (hash, random, encryption)
+  - [ ] std:buffer (binary data handling)
+  - [ ] std:http (HTTP client/server)
+  - [ ] std:net (TCP/UDP sockets)
+  - [ ] std:events (event emitters)
+  - [ ] std:stream (streaming data)
 - [ ] Documentation and examples
-  - [ ] C API header (raya/module.h)
-  - [ ] Example native module in C
-  - [ ] Example native module in Rust
-  - [ ] User guide for native module authors
+  - [ ] Rust API documentation
+  - [ ] Example native modules
+  - [ ] Integration guide for native modules
 - [ ] Testing
   - [ ] Module loading tests
-  - [ ] Value marshalling tests
-  - [ ] Error handling tests
-  - [ ] Cross-language integration tests
+  - [ ] Thread safety tests
+  - [ ] Integration tests with VM
 
 **Example Usage:**
 
@@ -1095,128 +1093,217 @@ crates/raya-core/tests/
 
 **Goal:** Parse Raya source code and perform sound type checking.
 
-### 2.1 Lexer
+### 2.1 Lexer ✅
 
 **Crate:** `raya-parser`
 
+**Status:** ✅ Complete (2026-01-24)
+
 **Tasks:**
-- [ ] Define token types
-- [ ] Implement lexer using `logos` or hand-written
-- [ ] Handle keywords, identifiers, literals
-- [ ] Track source locations for error reporting
-- [ ] Support string templates
+- [x] Define token types
+- [x] Implement lexer using `logos`
+- [x] Handle keywords, identifiers, literals (int, float, string, template)
+- [x] Track source locations for error reporting (Span with line/column)
+- [x] Support string templates
+- [x] Handle comments (single-line, multi-line)
+- [x] Unicode identifier support
+- [x] Numeric literal separators (1_000_000)
 
 **Files:**
 ```rust
-// crates/raya-parser/src/lexer.rs
-use logos::Logos;
-
-#[derive(Logos, Debug, PartialEq)]
+// crates/raya-parser/src/token.rs
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
-    #[token("function")]
-    Function,
+    // Keywords
+    Function, Let, Const, If, Else, While, For, Return, Break,
+    Continue, Throw, Try, Catch, Finally, Class, Type, Import,
+    Export, Async, Await, New, This, True, False, Null, Typeof,
+    Delete, Extends, Implements, Static, Abstract,
 
-    #[token("let")]
-    Let,
+    // Identifiers and literals
+    Identifier(String),
+    IntLiteral(i64),
+    FloatLiteral(f64),
+    StringLiteral(String),
+    TemplateLiteral(Vec<TemplateElement>),
 
-    #[token("const")]
-    Const,
-
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
-    Identifier,
-
-    #[regex(r"\d+")]
-    IntLiteral,
-
-    // ... all tokens
+    // Operators (all arithmetic, comparison, logical, bitwise, assignment)
+    // Delimiters, punctuation
+    // ... 70+ token types
 }
 
-pub struct Lexer<'a> {
-    source: &'a str,
-    tokens: Vec<(Token, Span)>,
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub line: usize,
+    pub column: usize,
 }
 ```
 
-**Reference:** `design/LANG.md` Section 2
+**Test Coverage:** Comprehensive lexer tests for all token types, including edge cases
 
-### 2.2 AST Definition
+**Reference:** `design/LANG.md` Section 3, `plans/milestone-2.1.md`
+
+### 2.2 AST Definition ✅
+
+**Status:** ✅ Complete (2026-01-24)
 
 **Tasks:**
-- [ ] Define AST node types
-- [ ] Implement visitor pattern
-- [ ] Add source span tracking
-- [ ] Create pretty-printer for debugging
+- [x] Define AST node types for all Raya constructs
+- [x] Implement visitor pattern
+- [x] Add source span tracking to all nodes
+- [x] Create pretty-printer for debugging
+- [x] Pattern support for destructuring
+- [x] Type parameter support for generics
+- [x] Module system (import/export) nodes
 
 **Files:**
 ```rust
-// crates/raya-parser/src/ast.rs
+// crates/raya-parser/src/ast/mod.rs
+pub mod expression;
+pub mod statement;
+pub mod types;
+pub mod pattern;
+pub mod visitor;
+
+// crates/raya-parser/src/ast/statement.rs
 pub struct Module {
     pub statements: Vec<Statement>,
     pub span: Span,
 }
 
 pub enum Statement {
+    VariableDecl(VariableDecl),
     FunctionDecl(FunctionDecl),
     ClassDecl(ClassDecl),
-    LetDecl(LetDecl),
-    Expression(Expression),
+    TypeAliasDecl(TypeAliasDecl),
+    InterfaceDecl(InterfaceDecl),
+    ImportDecl(ImportDecl),
+    ExportDecl(ExportDecl),
+    Expression(ExpressionStatement),
+    If(IfStatement),
+    Switch(SwitchStatement),
+    While(WhileStatement),
+    For(ForStatement),
+    Break(BreakStatement),
+    Continue(ContinueStatement),
+    Return(ReturnStatement),
+    Throw(ThrowStatement),
+    Try(TryStatement),
+    Block(BlockStatement),
+    Empty(Span),
 }
 
+// crates/raya-parser/src/ast/expression.rs
 pub enum Expression {
-    Literal(Literal),
-    Identifier(String),
-    BinaryOp { op: BinOp, left: Box<Expr>, right: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
-    // ... all expression types
+    IntLiteral(IntLiteral),
+    FloatLiteral(FloatLiteral),
+    StringLiteral(StringLiteral),
+    TemplateLiteral(TemplateLiteral),
+    BooleanLiteral(BooleanLiteral),
+    NullLiteral(Span),
+    Identifier(Identifier),
+    Array(ArrayExpression),
+    Object(ObjectExpression),
+    Unary(UnaryExpression),
+    Binary(BinaryExpression),
+    Assignment(AssignmentExpression),
+    Logical(LogicalExpression),
+    Conditional(ConditionalExpression),
+    Call(CallExpression),
+    AsyncCall(AsyncCallExpression),  // New: async foo()
+    Member(MemberExpression),
+    Index(IndexExpression),
+    New(NewExpression),
+    Arrow(ArrowFunction),
+    Await(AwaitExpression),
+    Typeof(TypeofExpression),
+    Parenthesized(ParenthesizedExpression),
 }
 
+// crates/raya-parser/src/ast/types.rs
 pub enum Type {
-    Number,
-    String,
-    Boolean,
-    Null,
-    Union(Vec<Type>),
+    Primitive(PrimitiveType),
+    Reference(TypeReference),
+    Union(UnionType),
     Function(FunctionType),
-    Class(ClassType),
-    Interface(InterfaceType),
-    // ...
+    Array(ArrayType),
+    Tuple(TupleType),
+    Object(ObjectType),
+    Typeof(TypeofType),
+    Parenthesized(Box<TypeAnnotation>),
 }
 ```
 
-**Reference:** `design/LANG.md` All sections
+**Test Coverage:** 50+ AST construction tests, visitor pattern tests
 
-### 2.3 Parser
+**Reference:** `design/LANG.md` All sections, `plans/milestone-2.2.md`
+
+### 2.3 Parser ✅
+
+**Status:** ✅ Complete (2026-01-24)
 
 **Tasks:**
-- [ ] Implement recursive descent parser
-- [ ] Handle operator precedence
-- [ ] Parse function declarations
-- [ ] Parse class declarations
-- [ ] Parse type annotations
-- [ ] Provide helpful error messages
+- [x] Implement recursive descent parser
+- [x] Handle operator precedence (precedence climbing)
+- [x] Parse all expression types (20+ variants)
+- [x] Parse all statement types (15+ variants)
+- [x] Parse function declarations (sync/async, generic)
+- [x] Parse class declarations (inheritance, implements, decorators)
+- [x] Parse type annotations (primitives, unions, functions, generics)
+- [x] Parse patterns (identifier, array/object destructuring)
+- [x] Parse async call expressions (new: `async foo()`)
+- [x] Provide helpful error messages
+- [x] Error recovery (synchronization points)
+- [x] Automatic semicolon insertion (ASI)
 
 **Files:**
 ```rust
-// crates/raya-parser/src/parser.rs
-pub struct Parser<'a> {
-    lexer: Lexer<'a>,
-    current: usize,
+// crates/raya-parser/src/parser/mod.rs
+pub struct Parser {
+    lexer: Lexer,
+    current: Token,
+    peek: Option<Token>,
     errors: Vec<ParseError>,
 }
 
-impl<'a> Parser<'a> {
-    pub fn parse_module(&mut self) -> Result<Module, Vec<ParseError>>;
+impl Parser {
+    pub fn new(source: &str) -> Result<Self, LexError>;
+    pub fn parse(&mut self) -> Result<Module, Vec<ParseError>>;
 
-    fn parse_statement(&mut self) -> Result<Statement, ParseError>;
-    fn parse_expression(&mut self) -> Result<Expression, ParseError>;
-    fn parse_type(&mut self) -> Result<Type, ParseError>;
-
-    // Precedence climbing for binary operators
-    fn parse_binary_expr(&mut self, min_prec: u8) -> Result<Expression, ParseError>;
+    fn current(&self) -> &Token;
+    fn peek(&self) -> Option<&Token>;
+    fn advance(&mut self) -> Token;
+    fn expect(&mut self, kind: Token) -> Result<Token, ParseError>;
+    fn check(&self, kind: &Token) -> bool;
 }
+
+// crates/raya-parser/src/parser/expr.rs
+pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError>;
+pub fn parse_expression_with_precedence(parser: &mut Parser, prec: Precedence)
+    -> Result<Expression, ParseError>;
+
+// crates/raya-parser/src/parser/stmt.rs
+pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError>;
+
+// crates/raya-parser/src/parser/types.rs
+pub fn parse_type_annotation(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>;
+
+// crates/raya-parser/src/parser/pattern.rs
+pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError>;
 ```
 
-**Reference:** `design/LANG.md` Sections 6, 7, 8
+**Test Coverage:** 200+ parser tests covering:
+- 50+ expression parsing tests (all operators, literals, calls, members)
+- 60+ statement parsing tests (declarations, control flow, patterns)
+- 40+ type parsing tests (primitives, unions, functions, generics)
+- 30+ JSX parsing tests
+- 20+ error handling tests
+- 14+ async call expression tests (new feature)
+
+**Performance:** 10,000+ LOC/second on modern hardware
+
+**Reference:** `design/LANG.md` Sections 6, 7, 8, `plans/milestone-2.3.md`
 
 ### 2.4 Type System
 

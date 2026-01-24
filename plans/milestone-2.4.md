@@ -387,15 +387,15 @@ impl fmt::Display for PrimitiveType {
 
 ### Tasks
 
-- [ ] Define `Type` enum with all variants
-- [ ] Define primitive, union, function, array, tuple types
-- [ ] Define object, class, interface types
-- [ ] Define type variable and generic types
-- [ ] Implement `Display` trait for all types
-- [ ] Add type equality (`PartialEq`, `Eq`)
-- [ ] Add type hashing (`Hash`)
-- [ ] Write 30+ unit tests for type construction
-- [ ] Test type display formatting
+- [x] Define `Type` enum with all variants
+- [x] Define primitive, union, function, array, tuple types
+- [x] Define object, class, interface types
+- [x] Define type variable and generic types
+- [x] Implement `Display` trait for all types
+- [x] Add type equality (`PartialEq`, `Eq`)
+- [x] Add type hashing (`Hash`)
+- [x] Write 30+ unit tests for type construction
+- [x] Test type display formatting
 
 ---
 
@@ -715,15 +715,15 @@ impl TypeNormalizer {
 
 ### Tasks
 
-- [ ] Implement subtype checking for all type combinations
-- [ ] Implement primitive coercion rules (number → string, etc.)
-- [ ] Implement type assignability with coercions
-- [ ] Implement type normalization (flatten unions, remove duplicates)
-- [ ] Add structural subtyping for objects
-- [ ] Add nominal subtyping for classes
-- [ ] Write 40+ unit tests for subtyping
-- [ ] Write 20+ tests for coercion rules
-- [ ] Write 15+ tests for normalization
+- [x] Implement subtype checking for all type combinations
+- [x] Implement primitive coercion rules (number → string, etc.)
+- [x] Implement type assignability with coercions
+- [x] Implement type normalization (flatten unions, remove duplicates)
+- [x] Add structural subtyping for objects
+- [x] Add nominal subtyping for classes
+- [x] Write 40+ unit tests for subtyping
+- [x] Write 20+ tests for coercion rules
+- [x] Write 15+ tests for normalization
 
 ---
 
@@ -937,13 +937,13 @@ pub enum UnifyError {
 
 ### Tasks
 
-- [ ] Implement generic type instantiation
-- [ ] Implement type variable substitution
-- [ ] Implement constraint checking for type parameters
-- [ ] Implement type variable unification
-- [ ] Add occurs check for infinite types
-- [ ] Write 25+ tests for generic instantiation
-- [ ] Write 15+ tests for unification
+- [x] Implement generic type instantiation
+- [x] Implement type variable substitution
+- [x] Implement constraint checking for type parameters
+- [x] Implement type variable unification
+- [x] Add occurs check for infinite types
+- [x] Write 25+ tests for generic instantiation
+- [x] Write 15+ tests for unification
 
 ---
 
@@ -1065,13 +1065,13 @@ impl TypeCache {
 
 ### Tasks
 
-- [ ] Implement type utility functions
-- [ ] Implement type cache/interning
-- [ ] Add comprehensive documentation
-- [ ] Write 100+ total unit tests
-- [ ] Add integration tests with parser AST types
-- [ ] Benchmark type operations
-- [ ] Profile memory usage
+- [x] Implement type utility functions
+- [x] Implement type cache/interning
+- [x] Add comprehensive documentation
+- [x] Write 100+ total unit tests
+- [ ] Add integration tests with parser AST types (Deferred to Milestone 2.5)
+- [ ] Benchmark type operations (Deferred)
+- [ ] Profile memory usage (Deferred)
 
 ---
 
@@ -1079,24 +1079,24 @@ impl TypeCache {
 
 ### Must Have
 
-- [ ] Complete type representation for all Raya types
-- [ ] Subtyping implementation for all type combinations
-- [ ] Implicit primitive coercion rules (number → string)
-- [ ] Type assignability checking
-- [ ] Generic type instantiation with constraints
-- [ ] Type normalization and simplification
-- [ ] Type equality and hashing
-- [ ] Pretty-printing for error messages
-- [ ] 100+ comprehensive unit tests
-- [ ] All tests passing
+- [x] Complete type representation for all Raya types
+- [x] Subtyping implementation for all type combinations
+- [x] Implicit primitive coercion rules (number → string)
+- [x] Type assignability checking
+- [x] Generic type instantiation with constraints
+- [x] Type normalization and simplification
+- [x] Type equality and hashing
+- [x] Pretty-printing for error messages
+- [x] 100+ comprehensive unit tests
+- [x] All tests passing
 
 ### Should Have
 
-- [ ] Type caching for performance
-- [ ] Type size estimates
-- [ ] Utility functions (is_nullable, remove_null, etc.)
-- [ ] Benchmark suite for type operations
-- [ ] Memory profiling
+- [x] Type caching for performance
+- [x] Type size estimates
+- [x] Utility functions (is_nullable, remove_null, etc.)
+- [ ] Benchmark suite for type operations (Deferred)
+- [ ] Memory profiling (Deferred)
 
 ### Nice to Have
 
