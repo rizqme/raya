@@ -78,6 +78,12 @@ pub enum Expression {
 
     /// Parenthesized: (expr)
     Parenthesized(ParenthesizedExpression),
+
+    /// JSX element: <div>content</div>
+    JsxElement(JsxElement),
+
+    /// JSX fragment: <>content</>
+    JsxFragment(JsxFragment),
 }
 
 impl Expression {
@@ -106,6 +112,8 @@ impl Expression {
             Expression::Await(e) => &e.span,
             Expression::Typeof(e) => &e.span,
             Expression::Parenthesized(e) => &e.span,
+            Expression::JsxElement(e) => &e.span,
+            Expression::JsxFragment(e) => &e.span,
         }
     }
 
@@ -409,5 +417,189 @@ pub struct TypeofExpression {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParenthesizedExpression {
     pub expression: Box<Expression>,
+    pub span: Span,
+}
+
+// ============================================================================
+// JSX / TSX Support
+// ============================================================================
+
+/// JSX element: <div className="foo">Hello</div>
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxElement {
+    /// Opening tag with name and attributes
+    pub opening: JsxOpeningElement,
+
+    /// Children elements, text, or expressions
+    pub children: Vec<JsxChild>,
+
+    /// Optional closing tag (None for self-closing)
+    pub closing: Option<JsxClosingElement>,
+
+    pub span: Span,
+}
+
+/// JSX opening tag: <div className="foo">
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxOpeningElement {
+    /// Element name (div, Button, etc.)
+    pub name: JsxElementName,
+
+    /// Attributes
+    pub attributes: Vec<JsxAttribute>,
+
+    /// Self-closing? <div />
+    pub self_closing: bool,
+
+    pub span: Span,
+}
+
+/// JSX closing tag: </div>
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxClosingElement {
+    pub name: JsxElementName,
+    pub span: Span,
+}
+
+/// JSX element name
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsxElementName {
+    /// Simple identifier: div, span, Button
+    Identifier(Identifier),
+
+    /// Namespaced: svg:path
+    Namespaced {
+        namespace: Identifier,
+        name: Identifier,
+    },
+
+    /// Member expression: React.Fragment, UI.Button
+    MemberExpression {
+        object: Box<JsxElementName>,
+        property: Identifier,
+    },
+}
+
+impl JsxElementName {
+    /// Get the string representation of the name
+    pub fn to_string(&self) -> String {
+        match self {
+            JsxElementName::Identifier(id) => id.name.clone(),
+            JsxElementName::Namespaced { namespace, name } => {
+                format!("{}:{}", namespace.name, name.name)
+            }
+            JsxElementName::MemberExpression { object, property } => {
+                format!("{}.{}", object.to_string(), property.name)
+            }
+        }
+    }
+
+    /// Check if this is an intrinsic element (lowercase HTML tag)
+    pub fn is_intrinsic(&self) -> bool {
+        match self {
+            JsxElementName::Identifier(id) => {
+                id.name.chars().next().map_or(false, |c| c.is_lowercase())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// JSX attribute
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsxAttribute {
+    /// Regular attribute: className="foo"
+    Attribute {
+        name: JsxAttributeName,
+        value: Option<JsxAttributeValue>,
+        span: Span,
+    },
+
+    /// Spread attribute: {...props}
+    Spread { argument: Expression, span: Span },
+}
+
+/// JSX attribute name
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsxAttributeName {
+    /// Simple: className
+    Identifier(Identifier),
+
+    /// Namespaced: xml:lang
+    Namespaced {
+        namespace: Identifier,
+        name: Identifier,
+    },
+}
+
+/// JSX attribute value
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsxAttributeValue {
+    /// String literal: "value"
+    StringLiteral(StringLiteral),
+
+    /// Expression: {value}
+    Expression(Expression),
+
+    /// Nested element: <Component prop={<div />} />
+    JsxElement(Box<JsxElement>),
+
+    /// Fragment: <Component prop={<>...</>} />
+    JsxFragment(Box<JsxFragment>),
+}
+
+/// JSX child node
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsxChild {
+    /// Text content
+    Text(JsxText),
+
+    /// Element: <div />
+    Element(JsxElement),
+
+    /// Fragment: <>...</>
+    Fragment(JsxFragment),
+
+    /// Expression: {value}
+    Expression(JsxExpression),
+}
+
+/// JSX text content
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxText {
+    pub value: String,
+    pub raw: String, // Preserves whitespace
+    pub span: Span,
+}
+
+/// JSX expression: {value}
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxExpression {
+    pub expression: Option<Expression>, // None for empty {}
+    pub span: Span,
+}
+
+/// JSX fragment: <>children</>
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxFragment {
+    /// Opening: <>
+    pub opening: JsxOpeningFragment,
+
+    /// Children
+    pub children: Vec<JsxChild>,
+
+    /// Closing: </>
+    pub closing: JsxClosingFragment,
+
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxOpeningFragment {
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsxClosingFragment {
     pub span: Span,
 }
