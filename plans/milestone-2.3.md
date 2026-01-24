@@ -93,6 +93,48 @@ This milestone implements a **recursive descent parser** with **operator precede
 
 ---
 
+## Features Not Parsed (Intentionally Excluded)
+
+The following TypeScript features are **not** parsed by Raya, as they are banned per LANG.md §19:
+
+### Banned Operators/Keywords
+- `eval` - Arbitrary code execution (LANG.md §19.1)
+- `with` - Ambiguous scoping (LANG.md §19.1)
+- `delete` - Property deletion (LANG.md §19.1)
+- `var` - Use `let` or `const` instead (LANG.md §5.1)
+- `for-in` - Use `for-of` or explicit iteration (LANG.md §19.1)
+- `instanceof` - Use discriminated unions (LANG.md §4.7, §19.1)
+- `arguments` - Use rest parameters instead (LANG.md §19.1)
+
+### Banned Type Features
+- `any` type - Unsound type escape (LANG.md §19.2)
+- `!` non-null assertion - Bypasses null safety (LANG.md §19.2)
+- `as` casting (when unsound) - Only safe casts allowed (LANG.md §4.6)
+- `satisfies` operator - Not needed with sound inference (LANG.md §19.2)
+- Index signatures `[key: string]: T` - Use `Map<K, V>` instead (LANG.md §19.2)
+- Function overloading - Use union types (LANG.md §19.2)
+- `enum` declarations - Use union of literals (LANG.md §19.2)
+- `namespace` declarations - Use modules (LANG.md §19.2)
+
+### Banned Module Features
+- `export default` - Use named exports (LANG.md §16.7)
+- `import foo from` (default import) - Use named imports (LANG.md §16.7)
+- `export =` - TypeScript legacy syntax (LANG.md §19.3)
+- CommonJS `require`/`module.exports` - Use ES modules (LANG.md §19.3)
+
+### Future Features (Not in v0.5)
+- Dynamic imports `import()` - Planned for future (LANG.md §19.3)
+- Conditional types - Advanced feature (LANG.md §19.4)
+- Mapped types - Advanced feature (LANG.md §19.4)
+- Template literal types - Advanced feature (LANG.md §19.4)
+- Decorators - Planned for future (LANG.md §19.4)
+- Abstract classes - Planned for future (LANG.md §19.4)
+- Mixins - Advanced pattern (LANG.md §19.4)
+
+**Note:** `typeof` is parsed but semantically restricted to bare unions only (primitives). The type checker will enforce this restriction.
+
+---
+
 ## Design Principles
 
 ### 1. One Function Per Grammar Rule
@@ -1015,9 +1057,11 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 
 **Literals:**
 - Integers: Decimal, hex, binary, octal
+- **Integers with separators:** `1_000_000`, `0xFF_FF`, `0b1010_0101`
 - Floats: Standard, scientific notation
+- **Floats with separators:** `3.14_159`, `1_000.5e6`
 - Strings: Single quote, double quote, escapes
-- Templates: Simple, with expressions
+- Templates: Simple, with expressions, nested expressions
 - Booleans: `true`, `false`
 - Null: `null`
 
@@ -1086,6 +1130,7 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 - Do-while: `do { } while (condition);`
 - For: All forms (C-style, infinite)
 - Break/Continue: With and without labels
+- **Labels:** `outer: while (...) { inner: while (...) { break outer; } }`
 - Return: With and without value
 - Throw: `throw error;`
 - Try-catch-finally: All combinations
@@ -1097,10 +1142,12 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 - Nested blocks
 
 **Imports/Exports:**
-- All import forms
-- All export forms
-- Re-exports
-- Default imports/exports
+- Named imports: `import { foo, bar }`
+- Namespace imports: `import * as Mod`
+- Named exports: `export { foo }`
+- Export declarations: `export const x = 1`
+- Re-exports: `export { foo } from "./mod"`
+- **Note:** Default imports/exports are NOT supported (banned in LANG.md §16.7)
 
 #### 3. Type Tests (40+ tests)
 
@@ -1121,6 +1168,7 @@ pub fn parse_type(source: &str) -> Result<TypeAnnotation, Vec<ParseError>>
 - Multiple params: `(x: number, y: string) => boolean`
 - No params: `() => void`
 - Optional params: `(x?: number) => void`
+- **Type predicates:** `(x: Animal) is Fish`, in function signatures
 
 **Arrays & Tuples:**
 - Arrays: `number[]`, `Array<string>`
