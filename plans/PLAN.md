@@ -1261,58 +1261,79 @@ pub struct DiscriminantInfo {
 
 **Reference:** `design/LANG.md` Section 4
 
-### 2.5 Type Checker
+### 2.5 Type Checker & Control Flow Analysis
+
+**Status:** See [milestone-2.5.md](milestone-2.5.md) for detailed plan
 
 **Tasks:**
-- [ ] Build symbol table
-- [ ] Implement type checking for expressions
+- [ ] Build symbol table and resolve names
+- [ ] Implement type inference for expressions
+- [ ] **Control flow-based type narrowing** (TypeScript-style)
+  - [ ] `typeof` guards for bare unions (string | number)
+  - [ ] Discriminant guards for discriminated unions
+  - [ ] Null checks (x !== null)
+  - [ ] Nested narrowing
 - [ ] Check function signatures
 - [ ] Validate class definitions
 - [ ] Enforce discriminated unions
 - [ ] Check exhaustiveness
-- [ ] Ban `typeof`, `instanceof`, `any`
+- [ ] Enforce context-dependent operators (typeof, delete, as)
 
 **Files:**
 ```rust
+// crates/raya-types/src/symbols.rs
+pub struct SymbolTable {
+    scopes: Vec<Scope>,
+    symbols: HashMap<SymbolId, Symbol>,
+}
+
+// crates/raya-types/src/binder.rs
+pub struct Binder {
+    symbols: SymbolTable,
+    errors: Vec<BindError>,
+}
+
 // crates/raya-types/src/checker.rs
 pub struct TypeChecker {
     symbols: SymbolTable,
+    type_map: HashMap<SymbolId, Type>,
+    narrowed_types: HashMap<SymbolId, Type>,  // From control flow
     errors: Vec<TypeError>,
-    current_scope: ScopeId,
 }
 
 impl TypeChecker {
-    pub fn check_module(&mut self, module: &Module) -> Result<TypedModule, Vec<TypeError>>;
-
-    fn check_statement(&mut self, stmt: &Statement) -> Result<TypedStatement, TypeError>;
-    fn check_expression(&mut self, expr: &Expression) -> Result<(TypedExpression, Type), TypeError>;
-
-    fn check_discriminated_union(&self, union: &UnionType) -> Result<(), TypeError>;
-    fn check_exhaustiveness(&self, union: &UnionType, cases: &[String]) -> Result<(), TypeError>;
+    pub fn check_module(&mut self, module: &Module) -> Result<(), Vec<TypeError>>;
+    fn check_statement(&mut self, stmt: &Statement);
+    fn infer_expression(&mut self, expr: &Expression) -> Option<Type>;
+    fn check_if_statement(&mut self, if_stmt: &IfStatement);  // With narrowing
 }
 
-pub struct SymbolTable {
-    scopes: Vec<Scope>,
-    symbols: HashMap<String, Symbol>,
+// crates/raya-types/src/control_flow.rs
+pub struct ControlFlowAnalyzer {
+    nodes: Vec<CfgNode>,
+    narrowing_map: HashMap<NodeId, NarrowingInfo>,
 }
 
-pub struct Symbol {
-    name: String,
-    ty: Type,
-    kind: SymbolKind,
-    span: Span,
+// crates/raya-types/src/type_guards.rs
+pub enum TypeGuard {
+    Typeof { variable: SymbolId, type_name: String, negated: bool },
+    Discriminant { variable: SymbolId, field: String, value: String, negated: bool },
+    NullCheck { variable: SymbolId, negated: bool },
 }
 
-pub enum SymbolKind {
-    Variable,
-    Function,
-    Class,
-    Interface,
-    TypeAlias,
+// crates/raya-types/src/narrowing.rs
+pub struct TypeNarrower {
+    type_env: HashMap<SymbolId, Type>,
+}
+
+impl TypeNarrower {
+    pub fn apply_guard(&mut self, guard: &TypeGuard, original: &Type) -> Type;
 }
 ```
 
-**Reference:** `design/LANG.md` Sections 4.7, 13A
+**Reference:**
+- `design/LANG.md` Sections 4, 4.7, 6.13
+- `plans/milestone-2.5.md` - Detailed implementation plan
 
 ### 2.6 Discriminant Inference
 
