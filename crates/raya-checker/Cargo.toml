@@ -1,0 +1,13 @@
+[package]
+name = "raya-checker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+raya-types = { path = "../raya-types" }
+raya-parser = { path = "../raya-parser" }
+rustc-hash = "2.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+raya-parser = { path = "../raya-parser" }

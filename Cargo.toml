@@ -5,6 +5,7 @@ members = [
     "crates/raya-core",
     "crates/raya-parser",
     "crates/raya-types",
+    "crates/raya-checker",
     "crates/raya-compiler",
     "crates/raya-stdlib",
     "crates/raya-cli",
@@ -69,6 +70,7 @@ raya-bytecode = { path = "crates/raya-bytecode" }
 raya-core = { path = "crates/raya-core" }
 raya-parser = { path = "crates/raya-parser" }
 raya-types = { path = "crates/raya-types" }
+raya-checker = { path = "crates/raya-checker" }
 raya-compiler = { path = "crates/raya-compiler" }
 raya-stdlib = { path = "crates/raya-stdlib" }
 raya-ffi = { path = "crates/raya-ffi" }
