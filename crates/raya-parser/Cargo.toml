@@ -6,8 +6,16 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Lexer and parser for the Raya language"
+description = "Lexer and parser for the Raya programming language"
 
 [dependencies]
-logos = { workspace = true }
-thiserror = { workspace = true }
+logos = "0.14"              # Lexer generator
+unicode-xid = "0.2"         # Unicode identifier support
+
+[dev-dependencies]
+criterion = "0.5"           # Benchmarking
+
+# Benchmarks will be added in Phase 6
+# [[bench]]
+# name = "lexer"
+# harness = false
