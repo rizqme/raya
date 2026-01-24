@@ -1,0 +1,489 @@
+use raya_parser::ast::*;
+use raya_parser::token::Span;
+
+// ============================================================================
+// Test Visitors
+// ============================================================================
+
+/// Visitor that counts all identifiers in the AST
+struct IdentifierCounter {
+    count: usize,
+}
+
+impl Visitor for IdentifierCounter {
+    fn visit_identifier(&mut self, _id: &Identifier) {
+        self.count += 1;
+    }
+}
+
+/// Visitor that counts different types of statements
+struct StatementCounter {
+    variable_decls: usize,
+    function_decls: usize,
+    class_decls: usize,
+    if_statements: usize,
+}
+
+impl Visitor for StatementCounter {
+    fn visit_variable_decl(&mut self, decl: &VariableDecl) {
+        self.variable_decls += 1;
+        walk_variable_decl(self, decl);
+    }
+
+    fn visit_function_decl(&mut self, decl: &FunctionDecl) {
+        self.function_decls += 1;
+        walk_function_decl(self, decl);
+    }
+
+    fn visit_class_decl(&mut self, decl: &ClassDecl) {
+        self.class_decls += 1;
+        walk_class_decl(self, decl);
+    }
+
+    fn visit_if_statement(&mut self, stmt: &IfStatement) {
+        self.if_statements += 1;
+        walk_if_statement(self, stmt);
+    }
+}
+
+/// Visitor that counts expressions by type
+struct ExpressionCounter {
+    binary_exprs: usize,
+    call_exprs: usize,
+    member_exprs: usize,
+    literals: usize,
+}
+
+impl Visitor for ExpressionCounter {
+    fn visit_binary_expression(&mut self, expr: &BinaryExpression) {
+        self.binary_exprs += 1;
+        walk_binary_expression(self, expr);
+    }
+
+    fn visit_call_expression(&mut self, expr: &CallExpression) {
+        self.call_exprs += 1;
+        walk_call_expression(self, expr);
+    }
+
+    fn visit_member_expression(&mut self, expr: &MemberExpression) {
+        self.member_exprs += 1;
+        walk_member_expression(self, expr);
+    }
+
+    fn visit_expression(&mut self, expr: &Expression) {
+        if expr.is_literal() {
+            self.literals += 1;
+        }
+        walk_expression(self, expr);
+    }
+}
+
+// ============================================================================
+// Visitor Tests
+// ============================================================================
+
+#[test]
+fn test_count_identifiers_in_variable_decl() {
+    let module = Module::new(
+        vec![Statement::VariableDecl(VariableDecl {
+            kind: VariableKind::Let,
+            pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(4, 5, 1, 5))),
+            type_annotation: None,
+            initializer: Some(Expression::Identifier(Identifier::new(
+                "y".to_string(),
+                Span::new(8, 9, 1, 9),
+            ))),
+            span: Span::new(0, 10, 1, 1),
+        })],
+        Span::new(0, 10, 1, 1),
+    );
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_module(&module);
+
+    // Should count "x" and "y"
+    assert_eq!(counter.count, 2);
+}
+
+#[test]
+fn test_count_identifiers_in_function() {
+    let module = Module::new(
+        vec![Statement::FunctionDecl(FunctionDecl {
+            name: Identifier::new("add".to_string(), Span::new(9, 12, 1, 10)),
+            type_params: None,
+            params: vec![
+                Parameter {
+                    pattern: Pattern::Identifier(Identifier::new(
+                        "x".to_string(),
+                        Span::new(13, 14, 1, 14),
+                    )),
+                    type_annotation: None,
+                    span: Span::new(13, 14, 1, 14),
+                },
+                Parameter {
+                    pattern: Pattern::Identifier(Identifier::new(
+                        "y".to_string(),
+                        Span::new(16, 17, 1, 17),
+                    )),
+                    type_annotation: None,
+                    span: Span::new(16, 17, 1, 17),
+                },
+            ],
+            return_type: None,
+            body: BlockStatement {
+                statements: vec![Statement::Return(ReturnStatement {
+                    value: Some(Expression::Binary(BinaryExpression {
+                        operator: BinaryOperator::Add,
+                        left: Box::new(Expression::Identifier(Identifier::new(
+                            "x".to_string(),
+                            Span::new(30, 31, 2, 12),
+                        ))),
+                        right: Box::new(Expression::Identifier(Identifier::new(
+                            "y".to_string(),
+                            Span::new(34, 35, 2, 16),
+                        ))),
+                        span: Span::new(30, 35, 2, 12),
+                    })),
+                    span: Span::new(23, 36, 2, 5),
+                })],
+                span: Span::new(19, 38, 1, 20),
+            },
+            is_async: false,
+            span: Span::new(0, 38, 1, 1),
+        })],
+        Span::new(0, 38, 1, 1),
+    );
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_module(&module);
+
+    // Should count: "add" (function name), "x" (param), "y" (param), "x" (in return), "y" (in return)
+    assert_eq!(counter.count, 5);
+}
+
+#[test]
+fn test_count_statements() {
+    let module = Module::new(
+        vec![
+            Statement::VariableDecl(VariableDecl {
+                kind: VariableKind::Let,
+                pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(4, 5, 1, 5))),
+                type_annotation: None,
+                initializer: None,
+                span: Span::new(0, 6, 1, 1),
+            }),
+            Statement::FunctionDecl(FunctionDecl {
+                name: Identifier::new("foo".to_string(), Span::new(17, 20, 2, 10)),
+                type_params: None,
+                params: vec![],
+                return_type: None,
+                body: BlockStatement {
+                    statements: vec![],
+                    span: Span::new(23, 25, 2, 24),
+                },
+                is_async: false,
+                span: Span::new(8, 25, 2, 1),
+            }),
+            Statement::If(IfStatement {
+                condition: Expression::BooleanLiteral(BooleanLiteral {
+                    value: true,
+                    span: Span::new(30, 34, 3, 5),
+                }),
+                then_branch: Box::new(Statement::Empty(Span::new(36, 37, 3, 11))),
+                else_branch: None,
+                span: Span::new(27, 37, 3, 1),
+            }),
+        ],
+        Span::new(0, 37, 1, 1),
+    );
+
+    let mut counter = StatementCounter {
+        variable_decls: 0,
+        function_decls: 0,
+        class_decls: 0,
+        if_statements: 0,
+    };
+    counter.visit_module(&module);
+
+    assert_eq!(counter.variable_decls, 1);
+    assert_eq!(counter.function_decls, 1);
+    assert_eq!(counter.class_decls, 0);
+    assert_eq!(counter.if_statements, 1);
+}
+
+#[test]
+fn test_count_expressions() {
+    // x + y.foo(42)
+    let expr = Expression::Binary(BinaryExpression {
+        operator: BinaryOperator::Add,
+        left: Box::new(Expression::Identifier(Identifier::new(
+            "x".to_string(),
+            Span::new(0, 1, 1, 1),
+        ))),
+        right: Box::new(Expression::Call(CallExpression {
+            callee: Box::new(Expression::Member(MemberExpression {
+                object: Box::new(Expression::Identifier(Identifier::new(
+                    "y".to_string(),
+                    Span::new(4, 5, 1, 5),
+                ))),
+                property: Identifier::new("foo".to_string(), Span::new(6, 9, 1, 7)),
+                optional: false,
+                span: Span::new(4, 9, 1, 5),
+            })),
+            type_args: None,
+            arguments: vec![Expression::IntLiteral(IntLiteral {
+                value: 42,
+                span: Span::new(10, 12, 1, 11),
+            })],
+            span: Span::new(4, 13, 1, 5),
+        })),
+        span: Span::new(0, 13, 1, 1),
+    });
+
+    let mut counter = ExpressionCounter {
+        binary_exprs: 0,
+        call_exprs: 0,
+        member_exprs: 0,
+        literals: 0,
+    };
+    counter.visit_expression(&expr);
+
+    assert_eq!(counter.binary_exprs, 1);
+    assert_eq!(counter.call_exprs, 1);
+    assert_eq!(counter.member_exprs, 1);
+    assert_eq!(counter.literals, 1); // The IntLiteral(42)
+}
+
+#[test]
+fn test_visit_nested_blocks() {
+    // if (true) { if (false) { x; } }
+    let stmt = Statement::If(IfStatement {
+        condition: Expression::BooleanLiteral(BooleanLiteral {
+            value: true,
+            span: Span::new(4, 8, 1, 5),
+        }),
+        then_branch: Box::new(Statement::Block(BlockStatement {
+            statements: vec![Statement::If(IfStatement {
+                condition: Expression::BooleanLiteral(BooleanLiteral {
+                    value: false,
+                    span: Span::new(16, 21, 1, 17),
+                }),
+                then_branch: Box::new(Statement::Block(BlockStatement {
+                    statements: vec![Statement::Expression(ExpressionStatement {
+                        expression: Expression::Identifier(Identifier::new(
+                            "x".to_string(),
+                            Span::new(25, 26, 1, 26),
+                        )),
+                        span: Span::new(25, 27, 1, 26),
+                    })],
+                    span: Span::new(23, 29, 1, 24),
+                })),
+                else_branch: None,
+                span: Span::new(12, 29, 1, 13),
+            })],
+            span: Span::new(10, 31, 1, 11),
+        })),
+        else_branch: None,
+        span: Span::new(0, 31, 1, 1),
+    });
+
+    let mut counter = StatementCounter {
+        variable_decls: 0,
+        function_decls: 0,
+        class_decls: 0,
+        if_statements: 0,
+    };
+    counter.visit_statement(&stmt);
+
+    assert_eq!(counter.if_statements, 2); // Both outer and inner if
+}
+
+#[test]
+fn test_visit_class_members() {
+    let class = ClassDecl {
+        name: Identifier::new("Point".to_string(), Span::new(6, 11, 1, 7)),
+        type_params: None,
+        extends: None,
+        implements: vec![],
+        members: vec![
+            ClassMember::Field(FieldDecl {
+                name: Identifier::new("x".to_string(), Span::new(18, 19, 2, 5)),
+                type_annotation: None,
+                initializer: Some(Expression::IntLiteral(IntLiteral {
+                    value: 0,
+                    span: Span::new(22, 23, 2, 9),
+                })),
+                is_static: false,
+                span: Span::new(18, 24, 2, 5),
+            }),
+            ClassMember::Method(MethodDecl {
+                name: Identifier::new("move".to_string(), Span::new(29, 33, 3, 5)),
+                type_params: None,
+                params: vec![],
+                return_type: None,
+                body: BlockStatement {
+                    statements: vec![],
+                    span: Span::new(36, 38, 3, 12),
+                },
+                is_static: false,
+                is_async: false,
+                span: Span::new(29, 38, 3, 5),
+            }),
+        ],
+        span: Span::new(0, 40, 1, 1),
+    };
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_class_decl(&class);
+
+    // Should count: "Point" (class name), "x" (field name), "move" (method name)
+    assert_eq!(counter.count, 3);
+}
+
+#[test]
+fn test_visit_type_annotations() {
+    // type Foo = { x: number; y: string }
+    let type_alias = TypeAliasDecl {
+        name: Identifier::new("Foo".to_string(), Span::new(5, 8, 1, 6)),
+        type_params: None,
+        type_annotation: TypeAnnotation {
+            ty: Type::Object(ObjectType::new(vec![
+                ObjectTypeMember::Property(ObjectTypeProperty {
+                    name: Identifier::new("x".to_string(), Span::new(13, 14, 1, 14)),
+                    ty: TypeAnnotation {
+                        ty: Type::Primitive(PrimitiveType::Number),
+                        span: Span::new(16, 22, 1, 17),
+                    },
+                    optional: false,
+                    span: Span::new(13, 22, 1, 14),
+                }),
+                ObjectTypeMember::Property(ObjectTypeProperty {
+                    name: Identifier::new("y".to_string(), Span::new(24, 25, 1, 25)),
+                    ty: TypeAnnotation {
+                        ty: Type::Primitive(PrimitiveType::String),
+                        span: Span::new(27, 33, 1, 28),
+                    },
+                    optional: false,
+                    span: Span::new(24, 33, 1, 25),
+                }),
+            ])),
+            span: Span::new(11, 35, 1, 12),
+        },
+        span: Span::new(0, 35, 1, 1),
+    };
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_type_alias_decl(&type_alias);
+
+    // Should count: "Foo" (type name), "x" (property name), "y" (property name)
+    assert_eq!(counter.count, 3);
+}
+
+#[test]
+fn test_visit_union_type() {
+    // type ID = string | number
+    let type_alias = TypeAliasDecl {
+        name: Identifier::new("ID".to_string(), Span::new(5, 7, 1, 6)),
+        type_params: None,
+        type_annotation: TypeAnnotation {
+            ty: Type::Union(UnionType::new(vec![
+                TypeAnnotation {
+                    ty: Type::Primitive(PrimitiveType::String),
+                    span: Span::new(10, 16, 1, 11),
+                },
+                TypeAnnotation {
+                    ty: Type::Primitive(PrimitiveType::Number),
+                    span: Span::new(19, 25, 1, 20),
+                },
+            ])),
+            span: Span::new(10, 25, 1, 11),
+        },
+        span: Span::new(0, 25, 1, 1),
+    };
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_type_alias_decl(&type_alias);
+
+    // Should count: "ID" (type name)
+    assert_eq!(counter.count, 1);
+}
+
+#[test]
+fn test_visit_arrow_function() {
+    let arrow = ArrowFunction {
+        params: vec![Parameter {
+            pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(1, 2, 1, 2))),
+            type_annotation: None,
+            span: Span::new(1, 2, 1, 2),
+        }],
+        return_type: None,
+        body: ArrowBody::Expression(Box::new(Expression::Binary(BinaryExpression {
+            operator: BinaryOperator::Add,
+            left: Box::new(Expression::Identifier(Identifier::new(
+                "x".to_string(),
+                Span::new(7, 8, 1, 8),
+            ))),
+            right: Box::new(Expression::IntLiteral(IntLiteral {
+                value: 1,
+                span: Span::new(11, 12, 1, 12),
+            })),
+            span: Span::new(7, 12, 1, 8),
+        }))),
+        is_async: false,
+        span: Span::new(0, 12, 1, 1),
+    };
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_arrow_function(&arrow);
+
+    // Should count: "x" (parameter), "x" (in expression)
+    assert_eq!(counter.count, 2);
+}
+
+#[test]
+fn test_visit_for_statement() {
+    // for (let i = 0; i < 10; i++) { }
+    let for_stmt = ForStatement {
+        init: Some(ForInit::VariableDecl(VariableDecl {
+            kind: VariableKind::Let,
+            pattern: Pattern::Identifier(Identifier::new("i".to_string(), Span::new(9, 10, 1, 10))),
+            type_annotation: None,
+            initializer: Some(Expression::IntLiteral(IntLiteral {
+                value: 0,
+                span: Span::new(13, 14, 1, 14),
+            })),
+            span: Span::new(5, 14, 1, 6),
+        })),
+        test: Some(Expression::Binary(BinaryExpression {
+            operator: BinaryOperator::LessThan,
+            left: Box::new(Expression::Identifier(Identifier::new(
+                "i".to_string(),
+                Span::new(16, 17, 1, 17),
+            ))),
+            right: Box::new(Expression::IntLiteral(IntLiteral {
+                value: 10,
+                span: Span::new(20, 22, 1, 21),
+            })),
+            span: Span::new(16, 22, 1, 17),
+        })),
+        update: Some(Expression::Unary(UnaryExpression {
+            operator: UnaryOperator::PostfixIncrement,
+            operand: Box::new(Expression::Identifier(Identifier::new(
+                "i".to_string(),
+                Span::new(24, 25, 1, 25),
+            ))),
+            span: Span::new(24, 27, 1, 25),
+        })),
+        body: Box::new(Statement::Block(BlockStatement {
+            statements: vec![],
+            span: Span::new(29, 31, 1, 30),
+        })),
+        span: Span::new(0, 31, 1, 1),
+    };
+
+    let mut counter = IdentifierCounter { count: 0 };
+    counter.visit_for_statement(&for_stmt);
+
+    // Should count: "i" (init), "i" (test), "i" (update)
+    assert_eq!(counter.count, 3);
+}
