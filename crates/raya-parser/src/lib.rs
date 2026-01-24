@@ -32,7 +32,9 @@
 pub mod token;
 pub mod lexer;
 pub mod ast;
+pub mod parser;
 
 // Re-exports for convenience
 pub use token::{Token, Span, TemplatePart};
 pub use lexer::{Lexer, LexError};
+pub use parser::{Parser, ParseError};

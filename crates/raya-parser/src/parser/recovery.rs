@@ -85,8 +85,7 @@ mod tests {
     #[test]
     fn test_sync_to_statement_boundary() {
         let source = "invalid tokens let x = 42;";
-        let lexer = Lexer::new(source);
-        let mut parser = Parser::new(lexer);
+        let mut parser = Parser::new(source).unwrap();
 
         // Skip "invalid"
         parser.advance();

@@ -1,7 +1,7 @@
 //! Statement parsing
 
 use super::{ParseError, Parser};
-use crate::ast::Statement;
+use crate::ast::{ExpressionStatement, Statement};
 use crate::token::Token;
 
 /// Parse a statement.
@@ -24,7 +24,27 @@ pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Import => todo!("parse import declaration"),
         Token::Export => todo!("parse export declaration"),
         Token::LeftBrace => todo!("parse block statement"),
-        Token::Semicolon => todo!("parse empty statement"),
-        _ => todo!("parse expression statement"),
+        Token::Semicolon => {
+            let span = parser.current_span();
+            parser.advance();
+            Ok(Statement::Empty(span))
+        }
+        _ => {
+            // Parse expression statement
+            let start_span = parser.current_span();
+            let expression = super::expr::parse_expression(parser)?;
+
+            // Optional semicolon
+            if parser.check(&Token::Semicolon) {
+                parser.advance();
+            }
+
+            let span = parser.combine_spans(&start_span, expression.span());
+
+            Ok(Statement::Expression(ExpressionStatement {
+                expression,
+                span,
+            }))
+        }
     }
 }
