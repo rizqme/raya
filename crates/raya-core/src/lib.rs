@@ -82,6 +82,10 @@ pub enum VmError {
     /// Snapshot error
     #[error("Snapshot error: {0}")]
     SnapshotError(String),
+
+    /// Task preempted (should be rescheduled, not failed)
+    #[error("Task preempted")]
+    TaskPreempted,
 }
 
 /// VM execution result

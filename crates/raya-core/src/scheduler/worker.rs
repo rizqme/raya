@@ -3,7 +3,7 @@
 use crate::scheduler::{Task, TaskId, TaskState};
 use crate::value::Value;
 use crate::vm::SafepointCoordinator;
-use crate::VmResult;
+use crate::{VmError, VmResult};
 use crossbeam_deque::{Injector, Stealer, Worker as CWorker};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
@@ -141,6 +141,22 @@ impl Worker {
                             waiters.len()
                         );
                     }
+                }
+                Err(VmError::TaskPreempted) => {
+                    // Clear execution time tracking
+                    task.clear_start_time();
+
+                    // Re-queue the task for execution
+                    #[cfg(debug_assertions)]
+                    eprintln!(
+                        "Worker {}: Task {} preempted, re-queueing",
+                        id,
+                        task.id().as_u64()
+                    );
+
+                    // Put it back in the Created state so it can be rescheduled
+                    task.set_state(TaskState::Created);
+                    injector.push(task.clone());
                 }
                 Err(e) => {
                     // Clear execution time tracking
@@ -286,9 +302,7 @@ impl Worker {
                 // Yield task - save state and return
                 task.set_ip(ip);
                 drop(stack_guard);
-                return Err(VmError::RuntimeError(
-                    "Task preempted - should be rescheduled".to_string(),
-                ));
+                return Err(VmError::TaskPreempted);
             }
 
             if ip >= code.len() {
