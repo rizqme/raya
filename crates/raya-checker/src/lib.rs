@@ -35,9 +35,11 @@
 
 pub mod symbols;
 pub mod binder;
+pub mod checker;
 pub mod error;
 
 // Re-export main types
 pub use symbols::{Symbol, SymbolKind, SymbolTable, SymbolFlags, Scope, ScopeId, ScopeKind};
 pub use binder::Binder;
+pub use checker::TypeChecker;
 pub use error::{BindError, CheckError};
