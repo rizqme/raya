@@ -1,5 +1,5 @@
 [package]
-name = "rayapm"
+name = "rpkg"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 description = "Package manager for Raya"
 
 [[bin]]
-name = "rayapm"
+name = "rpkg"
 path = "src/main.rs"
 
 [dependencies]
@@ -17,3 +17,11 @@ clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+toml = "0.8"
+dirs = "5.0"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3.8"

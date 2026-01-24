@@ -45,14 +45,14 @@ Implement the **Safepoint Infrastructure** to enable coordinated stop-the-world 
 
 ### Primary Goals
 
-- [ ] Implement `SafepointCoordinator` for managing STW pauses
-- [ ] Add lightweight safepoint polling mechanism
-- [ ] Create STW pause protocol (request, wait, resume)
-- [ ] Insert safepoints at strategic bytecode locations
-- [ ] Integrate with interpreter execution loop
-- [ ] Support multiple pause reasons (GC, snapshot, debug)
-- [ ] Add safepoint statistics and monitoring
-- [ ] Test coverage >85%
+- [x] Implement `SafepointCoordinator` for managing STW pauses
+- [x] Add lightweight safepoint polling mechanism
+- [x] Create STW pause protocol (request, wait, resume)
+- [x] Insert safepoints at strategic bytecode locations
+- [x] Integrate with interpreter execution loop
+- [x] Support multiple pause reasons (GC, snapshot, debug)
+- [x] Add safepoint statistics and monitoring
+- [x] Test coverage >85%
 
 ### Secondary Goals
 
@@ -114,12 +114,12 @@ This ensures:
 
 **Checklist:**
 
-- [ ] Define `SafepointCoordinator` struct
-- [ ] Add atomic flags for pending pause reasons
-- [ ] Implement worker count tracking
-- [ ] Create barrier for synchronization
-- [ ] Add pause reason enum
-- [ ] Implement statistics tracking
+- [x] Define `SafepointCoordinator` struct
+- [x] Add atomic flags for pending pause reasons
+- [x] Implement worker count tracking
+- [x] Create barrier for synchronization
+- [x] Add pause reason enum
+- [x] Implement statistics tracking
 
 **Implementation:**
 
@@ -191,12 +191,12 @@ struct SafepointStats {
 
 **Checklist:**
 
-- [ ] Implement fast-path poll check
-- [ ] Create slow-path safepoint handler
-- [ ] Add barrier waiting logic
-- [ ] Implement resume notification
-- [ ] Add timeout handling
-- [ ] Track poll frequency
+- [x] Implement fast-path poll check
+- [x] Create slow-path safepoint handler
+- [x] Add barrier waiting logic
+- [x] Implement resume notification
+- [x] Add timeout handling
+- [x] Track poll frequency
 
 **Implementation:**
 
@@ -299,12 +299,12 @@ impl SafepointCoordinator {
 
 **Checklist:**
 
-- [ ] Implement pause request for each reason
-- [ ] Add blocking wait for all workers
-- [ ] Create resume protocol
-- [ ] Handle concurrent pause requests
-- [ ] Add timeout handling
-- [ ] Implement pause priority
+- [x] Implement pause request for each reason
+- [x] Add blocking wait for all workers
+- [x] Create resume protocol
+- [x] Handle concurrent pause requests
+- [x] Add timeout handling
+- [x] Implement pause priority
 
 **Implementation:**
 
@@ -393,12 +393,12 @@ impl SafepointCoordinator {
 
 **Checklist:**
 
-- [ ] Add safepoint coordinator to VM
-- [ ] Insert polls at function calls
-- [ ] Insert polls at loop back-edges
-- [ ] Insert polls at allocation sites
-- [ ] Insert polls at await points
-- [ ] Add safepoint statistics reporting
+- [x] Add safepoint coordinator to VM
+- [x] Insert polls at function calls
+- [x] Insert polls at loop back-edges
+- [x] Insert polls at allocation sites
+- [x] Insert polls at await points
+- [x] Add safepoint statistics reporting
 
 **Implementation:**
 
@@ -480,11 +480,11 @@ impl Vm {
 
 **Checklist:**
 
-- [ ] Implement worker registration
-- [ ] Implement worker deregistration
-- [ ] Update worker count atomically
-- [ ] Rebuild barrier on count change
-- [ ] Handle dynamic worker addition/removal
+- [x] Implement worker registration
+- [x] Implement worker deregistration
+- [x] Update worker count atomically
+- [x] Rebuild barrier on count change
+- [x] Handle dynamic worker addition/removal
 
 **Implementation:**
 
@@ -664,16 +664,16 @@ Total: ~5-6 CPU cycles on modern hardware
 
 ### Must Have
 
-- [ ] SafepointCoordinator fully implemented
-- [ ] Safepoint polls at all required locations
-- [ ] STW pause protocol works correctly
-- [ ] Barrier synchronization verified
-- [ ] Statistics tracking functional
-- [ ] All unit tests pass (20+ tests)
-- [ ] All integration tests pass (10+ tests)
-- [ ] Test coverage >85%
-- [ ] Documentation complete
-- [ ] No race conditions in pause/resume
+- [x] SafepointCoordinator fully implemented
+- [x] Safepoint polls at all required locations
+- [x] STW pause protocol works correctly
+- [x] Barrier synchronization verified
+- [x] Statistics tracking functional
+- [x] All unit tests pass (20+ tests)
+- [x] All integration tests pass (10+ tests)
+- [x] Test coverage >85%
+- [x] Documentation complete
+- [x] No race conditions in pause/resume
 
 ### Nice to Have
 

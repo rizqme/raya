@@ -21,12 +21,11 @@
 /// - 0x90-0x9F: Control flow
 /// - 0xA0-0xAF: Function calls
 /// - 0xB0-0xBF: Object operations
-/// - 0xC0-0xCF: Array operations
-/// - 0xD0-0xDF: Task & concurrency
-/// - 0xE0-0xEF: Synchronization & error handling
-/// - 0xF0-0xFD: Advanced operations (closures, modules, reflection)
-/// - 0xFE: Reserved for extended opcodes
-/// - 0xFF: Extended opcode prefix
+/// - 0xC0-0xCF: Array & tuple operations
+/// - 0xD0-0xDF: Concurrency & tasks (spawn, mutex, semaphore)
+/// - 0xE0-0xEF: JSON operations (complete set)
+/// - 0xF0-0xF7: Closures & modules
+/// - 0xF8-0xFF: Exception handling & special
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Opcode {
@@ -247,7 +246,7 @@ pub enum Opcode {
     /// Get tuple element: pop index, pop tuple, push element
     TupleGet = 0xC8,
 
-    // ===== Task & Concurrency (0xD0-0xDF) =====
+    // ===== Concurrency & Tasks (0xD0-0xDF) =====
     /// Spawn new task (operands: u32 funcIndex, u16 argCount)
     Spawn = 0xD0,
     /// Await task completion: pop TaskHandle, push result
@@ -256,34 +255,51 @@ pub enum Opcode {
     Yield = 0xD2,
     /// Register continuation on task (operand: u32 funcIndex)
     TaskThen = 0xD3,
-
-    // ===== Synchronization & Error Handling (0xE0-0xEF) =====
     /// Create new mutex: push Mutex reference
-    NewMutex = 0xE0,
+    NewMutex = 0xD4,
     /// Acquire mutex: pop mutex (may block)
-    MutexLock = 0xE1,
+    MutexLock = 0xD5,
     /// Release mutex: pop mutex
-    MutexUnlock = 0xE2,
-    /// Throw exception: pop error value
-    Throw = 0xE3,
-    /// Trap with error code (operand: u16 errorCode)
-    Trap = 0xE4,
+    MutexUnlock = 0xD6,
+    /// Create new semaphore: pop initial permit count, push Semaphore reference
+    NewSemaphore = 0xD7,
+    /// Acquire semaphore permits: pop permit count, pop semaphore (may block)
+    SemAcquire = 0xD8,
+    /// Release semaphore permits: pop permit count, pop semaphore
+    SemRelease = 0xD9,
+    /// Wait for all tasks to complete: pop task array, push result array
+    /// Use for: Task.wait([task1, task2]) or Promise.all([task1, task2])
+    WaitAll = 0xDA,
 
-    // ===== Global Variables (0xE5-0xE6) =====
-    /// Load global variable (operand: u32 index)
-    LoadGlobal = 0xE5,
-    /// Store global variable (operand: u32 index)
-    StoreGlobal = 0xE6,
+    // ===== JSON Operations (0xE0-0xEF) - Complete Set =====
+    /// Parse JSON string: pop string, push json value
+    JsonParse = 0xE0,
+    /// Convert json to JSON string: pop json, push string
+    JsonStringify = 0xE1,
+    /// JSON property access: pop json object, push property value (operand: u32 propertyIndex)
+    JsonGet = 0xE2,
+    /// Set JSON object property: pop value, pop object (operand: u32 propertyIndex)
+    JsonSet = 0xE3,
+    /// Delete property from JSON object: pop object (operand: u32 propertyIndex)
+    JsonDelete = 0xE4,
+    /// JSON array indexing: pop index, pop json array, push element
+    JsonIndex = 0xE5,
+    /// Set JSON array element: pop value, pop index, pop array
+    JsonIndexSet = 0xE6,
+    /// Push element to JSON array: pop value, pop array
+    JsonPush = 0xE7,
+    /// Pop element from JSON array: pop array, push popped element
+    JsonPop = 0xE8,
+    /// Create new empty JSON object: push json object
+    JsonNewObject = 0xE9,
+    /// Create new empty JSON array: push json array
+    JsonNewArray = 0xEA,
+    /// Get object keys as array: pop json object, push string array
+    JsonKeys = 0xEB,
+    /// Get object/array length: pop json, push length
+    JsonLength = 0xEC,
 
-    // ===== JSON Operations (0xE7-0xE9) =====
-    /// JSON property access: pop json, push json (operand: u32 propertyIndex)
-    JsonGet = 0xE7,
-    /// JSON array indexing: pop index, pop json, push json
-    JsonIndex = 0xE8,
-    /// JSON type casting: pop json, push typed value (operand: u32 typeId)
-    JsonCast = 0xE9,
-
-    // ===== Closures (0xF0-0xF3) =====
+    // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
     MakeClosure = 0xF0,
     /// Capture local variable (operand: u16 localIndex)
@@ -292,33 +308,28 @@ pub enum Opcode {
     LoadCaptured = 0xF2,
     /// Store to captured variable (operand: u16 index)
     StoreCaptured = 0xF3,
-
-    // ===== Module Operations (0xF4) =====
     /// Load module namespace object (operand: u32 moduleIndex)
     LoadModule = 0xF4,
+    /// Load global variable (operand: u32 index)
+    LoadGlobal = 0xF5,
+    /// Store global variable (operand: u32 index)
+    StoreGlobal = 0xF6,
 
-    // ===== Reflection Operations (0xF5-0xFC) - Optional =====
-    // Only available when compiled with --emit-reflection
-    /// Pop value, push TypeInfo object
-    ReflectTypeof = 0xF5,
-    /// Push TypeInfo for type (operand: u32 typeIndex)
-    ReflectTypeinfo = 0xF6,
-    /// Pop TypeInfo, pop value, push boolean
-    ReflectInstanceof = 0xF7,
-    /// Pop object, push PropertyInfo array
-    ReflectGetProps = 0xF8,
-    /// Pop property name, pop object, push value
-    ReflectGetProp = 0xF9,
-    /// Pop value, pop property name, pop object, set property
-    ReflectSetProp = 0xFA,
-    /// Pop property name, pop object, push boolean
-    ReflectHasProp = 0xFB,
-    /// Pop N args, pop TypeInfo, construct instance (operand: u16 argCount)
-    ReflectConstruct = 0xFC,
-    // ===== Reserved (0xFD-0xFF) =====
-    // 0xFD: Reserved for future use
-    // 0xFE: Reserved for future use
-    // 0xFF: Extended opcode prefix (for 256+ opcodes)
+    // ===== Exception Handling & Special (0xF8-0xFF) =====
+    /// Throw exception: pop error value
+    Throw = 0xF8,
+    /// Begin try block (operands: i32 catchOffset, i32 finallyOffset)
+    /// Pushes exception handler onto handler stack
+    /// catchOffset: -1 if no catch, finallyOffset: -1 if no finally
+    Try = 0xF9,
+    /// End try-catch-finally block (no operands)
+    /// Pops exception handler from stack
+    EndTry = 0xFA,
+    /// Rethrow current exception (no operands)
+    /// Used in catch blocks to re-raise the exception
+    Rethrow = 0xFB,
+    /// Trap with error code (operand: u16 errorCode)
+    Trap = 0xFC,
 }
 
 impl Opcode {
@@ -449,46 +460,49 @@ impl Opcode {
             0xC7 => Some(Self::InitTuple),
             0xC8 => Some(Self::TupleGet),
 
-            // Task & concurrency
+            // Concurrency & tasks
             0xD0 => Some(Self::Spawn),
             0xD1 => Some(Self::Await),
             0xD2 => Some(Self::Yield),
             0xD3 => Some(Self::TaskThen),
+            0xD4 => Some(Self::NewMutex),
+            0xD5 => Some(Self::MutexLock),
+            0xD6 => Some(Self::MutexUnlock),
+            0xD7 => Some(Self::NewSemaphore),
+            0xD8 => Some(Self::SemAcquire),
+            0xD9 => Some(Self::SemRelease),
+            0xDA => Some(Self::WaitAll),
 
-            // Synchronization & error handling
-            0xE0 => Some(Self::NewMutex),
-            0xE1 => Some(Self::MutexLock),
-            0xE2 => Some(Self::MutexUnlock),
-            0xE3 => Some(Self::Throw),
-            0xE4 => Some(Self::Trap),
+            // JSON operations (complete set)
+            0xE0 => Some(Self::JsonParse),
+            0xE1 => Some(Self::JsonStringify),
+            0xE2 => Some(Self::JsonGet),
+            0xE3 => Some(Self::JsonSet),
+            0xE4 => Some(Self::JsonDelete),
+            0xE5 => Some(Self::JsonIndex),
+            0xE6 => Some(Self::JsonIndexSet),
+            0xE7 => Some(Self::JsonPush),
+            0xE8 => Some(Self::JsonPop),
+            0xE9 => Some(Self::JsonNewObject),
+            0xEA => Some(Self::JsonNewArray),
+            0xEB => Some(Self::JsonKeys),
+            0xEC => Some(Self::JsonLength),
 
-            // Global variables
-            0xE5 => Some(Self::LoadGlobal),
-            0xE6 => Some(Self::StoreGlobal),
-
-            // JSON operations
-            0xE7 => Some(Self::JsonGet),
-            0xE8 => Some(Self::JsonIndex),
-            0xE9 => Some(Self::JsonCast),
-
-            // Closures
+            // Closures & modules
             0xF0 => Some(Self::MakeClosure),
             0xF1 => Some(Self::CloseVar),
             0xF2 => Some(Self::LoadCaptured),
             0xF3 => Some(Self::StoreCaptured),
-
-            // Module operations
             0xF4 => Some(Self::LoadModule),
+            0xF5 => Some(Self::LoadGlobal),
+            0xF6 => Some(Self::StoreGlobal),
 
-            // Reflection operations
-            0xF5 => Some(Self::ReflectTypeof),
-            0xF6 => Some(Self::ReflectTypeinfo),
-            0xF7 => Some(Self::ReflectInstanceof),
-            0xF8 => Some(Self::ReflectGetProps),
-            0xF9 => Some(Self::ReflectGetProp),
-            0xFA => Some(Self::ReflectSetProp),
-            0xFB => Some(Self::ReflectHasProp),
-            0xFC => Some(Self::ReflectConstruct),
+            // Exception handling & special
+            0xF8 => Some(Self::Throw),
+            0xF9 => Some(Self::Try),
+            0xFA => Some(Self::EndTry),
+            0xFB => Some(Self::Rethrow),
+            0xFC => Some(Self::Trap),
 
             // Invalid opcodes
             _ => None,
@@ -605,26 +619,35 @@ impl Opcode {
             Self::NewMutex => "NEW_MUTEX",
             Self::MutexLock => "MUTEX_LOCK",
             Self::MutexUnlock => "MUTEX_UNLOCK",
-            Self::Throw => "THROW",
-            Self::Trap => "TRAP",
-            Self::LoadGlobal => "LOAD_GLOBAL",
-            Self::StoreGlobal => "STORE_GLOBAL",
+            Self::NewSemaphore => "NEW_SEMAPHORE",
+            Self::SemAcquire => "SEM_ACQUIRE",
+            Self::SemRelease => "SEM_RELEASE",
+            Self::WaitAll => "WAIT_ALL",
+            Self::JsonParse => "JSON_PARSE",
+            Self::JsonStringify => "JSON_STRINGIFY",
             Self::JsonGet => "JSON_GET",
+            Self::JsonSet => "JSON_SET",
+            Self::JsonDelete => "JSON_DELETE",
             Self::JsonIndex => "JSON_INDEX",
-            Self::JsonCast => "JSON_CAST",
+            Self::JsonIndexSet => "JSON_INDEX_SET",
+            Self::JsonPush => "JSON_PUSH",
+            Self::JsonPop => "JSON_POP",
+            Self::JsonNewObject => "JSON_NEW_OBJECT",
+            Self::JsonNewArray => "JSON_NEW_ARRAY",
+            Self::JsonKeys => "JSON_KEYS",
+            Self::JsonLength => "JSON_LENGTH",
             Self::MakeClosure => "MAKE_CLOSURE",
             Self::CloseVar => "CLOSE_VAR",
             Self::LoadCaptured => "LOAD_CAPTURED",
             Self::StoreCaptured => "STORE_CAPTURED",
             Self::LoadModule => "LOAD_MODULE",
-            Self::ReflectTypeof => "REFLECT_TYPEOF",
-            Self::ReflectTypeinfo => "REFLECT_TYPEINFO",
-            Self::ReflectInstanceof => "REFLECT_INSTANCEOF",
-            Self::ReflectGetProps => "REFLECT_GET_PROPS",
-            Self::ReflectGetProp => "REFLECT_GET_PROP",
-            Self::ReflectSetProp => "REFLECT_SET_PROP",
-            Self::ReflectHasProp => "REFLECT_HAS_PROP",
-            Self::ReflectConstruct => "REFLECT_CONSTRUCT",
+            Self::LoadGlobal => "LOAD_GLOBAL",
+            Self::StoreGlobal => "STORE_GLOBAL",
+            Self::Throw => "THROW",
+            Self::Try => "TRY",
+            Self::EndTry => "END_TRY",
+            Self::Rethrow => "RETHROW",
+            Self::Trap => "TRAP",
         }
     }
 
@@ -658,20 +681,6 @@ impl Opcode {
         self.is_jump() || self.is_return() || matches!(self, Self::Throw | Self::Trap)
     }
 
-    /// Check if this opcode is a reflection operation
-    pub fn is_reflection(self) -> bool {
-        matches!(
-            self,
-            Self::ReflectTypeof
-                | Self::ReflectTypeinfo
-                | Self::ReflectInstanceof
-                | Self::ReflectGetProps
-                | Self::ReflectGetProp
-                | Self::ReflectSetProp
-                | Self::ReflectHasProp
-                | Self::ReflectConstruct
-        )
-    }
 }
 
 #[cfg(test)]
@@ -732,10 +741,11 @@ mod tests {
 
     #[test]
     fn test_invalid_opcode() {
-        // Test invalid opcodes
-        assert_eq!(Opcode::from_u8(0xFD), None);
-        assert_eq!(Opcode::from_u8(0xFE), None);
-        assert_eq!(Opcode::from_u8(0xFF), None);
+        // Test invalid opcodes in truly unassigned ranges
+        assert_eq!(Opcode::from_u8(0xDB), None); // Unassigned (0xDB-0xDF range)
+        assert_eq!(Opcode::from_u8(0xED), None); // Unassigned (0xED-0xEF range)
+        assert_eq!(Opcode::from_u8(0xF7), None); // Unassigned (0xF7 slot)
+        assert_eq!(Opcode::from_u8(0xFD), None); // Unassigned (0xFD-0xFE range)
     }
 
     #[test]
@@ -789,19 +799,6 @@ mod tests {
         assert!(!Opcode::Iadd.is_terminator());
     }
 
-    #[test]
-    fn test_reflection_detection() {
-        assert!(Opcode::ReflectTypeof.is_reflection());
-        assert!(Opcode::ReflectTypeinfo.is_reflection());
-        assert!(Opcode::ReflectInstanceof.is_reflection());
-        assert!(Opcode::ReflectGetProps.is_reflection());
-        assert!(Opcode::ReflectGetProp.is_reflection());
-        assert!(Opcode::ReflectSetProp.is_reflection());
-        assert!(Opcode::ReflectHasProp.is_reflection());
-        assert!(Opcode::ReflectConstruct.is_reflection());
-        assert!(!Opcode::Call.is_reflection());
-        assert!(!Opcode::New.is_reflection());
-    }
 
     #[test]
     fn test_opcode_values() {

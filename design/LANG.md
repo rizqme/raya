@@ -3433,18 +3433,117 @@ async function c(): Task<void> {
 }
 ```
 
-### 19.3 Try-Catch (Limited in v0.5)
+### 19.3 Try-Catch-Finally
 
-Currently, errors terminate Tasks. Future versions will add try-catch:
+Raya supports exception handling with try-catch-finally blocks:
 
 ```ts
-// Future feature
+// Basic try-catch
 async function safe(): Task<void> {
   try {
     await riskyOperation();
   } catch (e) {
     console.error("Caught:", e);
   }
+}
+
+// Try-finally (cleanup)
+async function withCleanup(): Task<void> {
+  try {
+    await performWork();
+  } finally {
+    await cleanup();  // Always executes
+  }
+}
+
+// Try-catch-finally
+async function complete(): Task<void> {
+  try {
+    await riskyOperation();
+  } catch (e) {
+    console.error("Error:", e);
+  } finally {
+    await cleanup();  // Always executes
+  }
+}
+```
+
+**Semantics:**
+
+* **catch block** — Receives the exception as a value
+* **finally block** — Always executes (even if no exception)
+* **Rethrow** — Use `throw e;` in catch block to re-raise
+* **Stack unwinding** — Call frames unwound to handler
+* **Mutex safety** — Mutexes auto-unlock during unwinding
+
+**Exception propagation:**
+
+```ts
+async function inner(): Task<void> {
+  throw new Error("inner error");
+}
+
+async function middle(): Task<void> {
+  // No try-catch, exception propagates
+  await inner();
+}
+
+async function outer(): Task<void> {
+  try {
+    await middle();
+  } catch (e) {
+    // Catches exception from inner()
+    console.log("Caught:", e);
+  }
+}
+```
+
+**Finally guarantees:**
+
+```ts
+async function example(): Task<void> {
+  try {
+    if (Math.random() > 0.5) {
+      return;  // Finally still runs
+    }
+    throw new Error("error");  // Finally still runs
+  } finally {
+    console.log("Cleanup");  // Always prints
+  }
+}
+```
+
+**Rethrow pattern:**
+
+```ts
+async function logAndRethrow(): Task<void> {
+  try {
+    await riskyOperation();
+  } catch (e) {
+    console.error("Operation failed:", e);
+    throw e;  // Re-raise to caller
+  }
+}
+```
+
+**Mutex auto-unlock:**
+
+```ts
+async function safeAccess(): Task<void> {
+  const mtx = new Mutex();
+  mtx.lock();
+  try {
+    await operation();  // May throw
+  } finally {
+    mtx.unlock();  // Always unlocks
+  }
+}
+
+// Even without finally, mutexes auto-unlock on exception
+async function autoUnlock(): Task<void> {
+  const mtx = new Mutex();
+  mtx.lock();
+  await operation();  // If throws, mutex automatically unlocks
 }
 ```
 

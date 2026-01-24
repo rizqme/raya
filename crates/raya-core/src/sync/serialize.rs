@@ -86,7 +86,6 @@ impl SerializedMutex {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

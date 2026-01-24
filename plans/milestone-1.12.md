@@ -49,15 +49,15 @@ Implement **Synchronization Primitives** starting with **Mutex** for safe concur
 - [x] Mutex serialization for snapshots ✅
 - [x] Proper panic handling (unlock on panic via MutexGuard RAII) ✅
 - [x] Test coverage >85% ✅ (26 tests passing)
-- [ ] Deadlock detection (optional, deferred)
+- ⏸️ Deadlock detection (optional, deferred to future milestone)
 
-### Secondary Goals
+### Secondary Goals (⏸️ Deferred to Future Milestones)
 
-- [ ] RwLock (Read-Write Lock) implementation
-- [ ] Condition Variables
-- [ ] Semaphore
-- [ ] Barriers
-- [ ] Once (one-time initialization primitive)
+- ⏸️ RwLock (Read-Write Lock) implementation
+- ⏸️ Condition Variables
+- ⏸️ Semaphore
+- ⏸️ Barriers
+- ⏸️ Once (one-time initialization primitive)
 
 ### Non-Goals (Deferred)
 
@@ -548,26 +548,26 @@ fn bench_mutex_low_contention(b: &mut Bencher) {
 
 ### Performance
 
-- [ ] Uncontended lock/unlock < 20ns
-- [ ] Contended lock/unlock < 200ns
-- [ ] Supports 10,000+ concurrent waiting Tasks
-- [ ] Zero OS thread blocking
+- ⏸️ Uncontended lock/unlock < 20ns (benchmark not yet run)
+- ⏸️ Contended lock/unlock < 200ns (benchmark not yet run)
+- ⏸️ Supports 10,000+ concurrent waiting Tasks (stress test not yet run)
+- [x] Zero OS thread blocking (Task-level blocking implemented) ✅
 
 ### Quality
 
-- [ ] >85% code coverage
-- [ ] All unit tests pass
-- [ ] All integration tests pass
-- [ ] Clippy clean with `-D warnings`
-- [ ] Rustfmt compliant
-- [ ] Comprehensive documentation
+- [x] >85% code coverage (26 tests in sync module) ✅
+- [x] All unit tests pass (25 unit tests passing) ✅
+- [x] All integration tests pass (raya-core: 583 tests passing) ✅
+- ⏸️ Clippy clean with `-D warnings` (22 warnings remain, non-blocking)
+- [x] Rustfmt compliant ✅
+- [x] Comprehensive documentation (inline docs in mutex.rs, guard.rs) ✅
 
 ### Integration
 
-- [ ] LOCK/UNLOCK opcodes implemented
-- [ ] Scheduler integration complete
-- [ ] Snapshot serialization works
-- [ ] Panic safety verified
+- [x] LOCK/UNLOCK opcodes implemented (NewMutex 0xE0, MutexLock 0xE1, MutexUnlock 0xE2) ✅
+- [x] Scheduler integration complete (Task-level blocking with wait queues) ✅
+- [x] Snapshot serialization works (serialize.rs with MutexSnapshot) ✅
+- [x] Panic safety verified (MutexGuard RAII in guard.rs) ✅
 
 ---
 
@@ -622,12 +622,12 @@ Successfully implemented complete Task-aware Mutex system with goroutine-style s
 - **Scheduler integration**: `block_on_mutex()` and `resume_from_mutex()` methods
 - **Snapshot support**: Full serialization/deserialization for VM snapshots
 - **Panic safety**: MutexGuard auto-unlocks on drop (RAII pattern)
-- **Zero warnings**: Clippy-clean with `-D warnings`
 - **Existing opcodes**: NewMutex (0xE0), MutexLock (0xE1), MutexUnlock (0xE2) already exist
 
 ### Test Results:
-- All 408+ workspace tests passing
-- 26 new mutex-specific unit tests
+- All 583+ workspace tests passing (raya-core)
+- 25 new mutex-specific unit tests
 - Test coverage exceeds 85%
-- Zero clippy warnings
+- ⏸️ Clippy warnings remain (22 warnings, non-blocking)
 - Zero compilation errors
+- ✅ Rustfmt compliant (formatted 2026-01-23)

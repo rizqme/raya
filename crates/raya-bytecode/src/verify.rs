@@ -236,12 +236,20 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::MutexLock
         | Opcode::MutexUnlock
         | Opcode::Throw
-        | Opcode::ReflectTypeof
-        | Opcode::ReflectGetProps
-        | Opcode::ReflectGetProp
-        | Opcode::ReflectSetProp
-        | Opcode::ReflectHasProp
-        | Opcode::JsonIndex => 0,
+        | Opcode::JsonParse
+        | Opcode::JsonStringify
+        | Opcode::JsonIndex
+        | Opcode::JsonIndexSet
+        | Opcode::JsonPush
+        | Opcode::JsonPop
+        | Opcode::JsonNewObject
+        | Opcode::JsonNewArray
+        | Opcode::JsonKeys
+        | Opcode::JsonLength
+        | Opcode::NewSemaphore
+        | Opcode::SemAcquire
+        | Opcode::SemRelease
+        | Opcode::WaitAll => 0,
 
         // 2-byte operands (u16)
         Opcode::LoadLocal
@@ -273,10 +281,10 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::New
         | Opcode::NewArray
         | Opcode::LoadModule
-        | Opcode::ReflectTypeinfo
         | Opcode::TaskThen
         | Opcode::JsonGet
-        | Opcode::JsonCast => 4,
+        | Opcode::JsonSet
+        | Opcode::JsonDelete => 4,
 
         // 8-byte operands (f64)
         Opcode::ConstF64 => 8,
@@ -300,8 +308,10 @@ fn get_operand_size(opcode: Opcode) -> usize {
         // Special cases
         Opcode::LoadStatic | Opcode::StoreStatic => 4,
         Opcode::TupleGet => 0,
-        Opcode::ReflectInstanceof => 0,
-        Opcode::ReflectConstruct => 2,
+
+        // Exception handling (8 bytes: i32 catch_offset + i32 finally_offset)
+        Opcode::Try => 8,
+        Opcode::EndTry | Opcode::Rethrow => 0,
     }
 }
 
@@ -429,16 +439,34 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadCaptured => (0, 1),
         Opcode::StoreCaptured => (1, 0),
         Opcode::LoadModule => (0, 1),
-        Opcode::ReflectTypeof | Opcode::ReflectTypeinfo => (0, 1),
-        Opcode::ReflectInstanceof => (2, 1),
-        Opcode::ReflectGetProps => (1, 1),
-        Opcode::ReflectGetProp => (2, 1),
-        Opcode::ReflectSetProp => (3, 0),
-        Opcode::ReflectHasProp => (2, 1),
-        Opcode::ReflectConstruct => (0, 1),
-        Opcode::JsonGet => (1, 1),
-        Opcode::JsonIndex => (2, 1),
-        Opcode::JsonCast => (1, 1),
+
+        // JSON operations (complete set)
+        Opcode::JsonParse => (1, 1),       // Pop string, push json
+        Opcode::JsonStringify => (1, 1),   // Pop json, push string
+        Opcode::JsonGet => (1, 1),         // Pop json object, push value
+        Opcode::JsonSet => (2, 0),         // Pop value + object (mutates)
+        Opcode::JsonDelete => (1, 0),      // Pop object (mutates)
+        Opcode::JsonIndex => (2, 1),       // Pop index + json array, push element
+        Opcode::JsonIndexSet => (3, 0),    // Pop value + index + array (mutates)
+        Opcode::JsonPush => (2, 0),        // Pop value + array (mutates)
+        Opcode::JsonPop => (1, 1),         // Pop array, push popped element
+        Opcode::JsonNewObject => (0, 1),   // Push new empty json object
+        Opcode::JsonNewArray => (0, 1),    // Push new empty json array
+        Opcode::JsonKeys => (1, 1),        // Pop json object, push string array
+        Opcode::JsonLength => (1, 1),      // Pop json, push length
+
+        // Semaphore operations
+        Opcode::NewSemaphore => (1, 1),    // Pop permit count, push semaphore
+        Opcode::SemAcquire => (2, 0),      // Pop count, pop semaphore (may block)
+        Opcode::SemRelease => (2, 0),      // Pop count, pop semaphore
+
+        // Task waiting
+        Opcode::WaitAll => (1, 1),         // Pop task array, push result array
+
+        // Exception handling
+        Opcode::Try => (0, 0),      // Installs handler, no stack effect
+        Opcode::EndTry => (0, 0),   // Removes handler, no stack effect
+        Opcode::Rethrow => (0, 0),  // Rethrows, unwinds stack
     }
 }
 
@@ -557,7 +585,7 @@ mod tests {
             name: "test".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![0xFF], // Invalid opcode
+            code: vec![0xDB], // Invalid opcode (unassigned in 0xDB-0xDF range)
         });
 
         let result = verify_module(&module);

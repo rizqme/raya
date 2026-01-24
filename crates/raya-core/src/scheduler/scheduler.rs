@@ -1,6 +1,8 @@
 //! Main task scheduler coordinating worker threads
 
-use crate::scheduler::{PreemptMonitor, Task, TaskId, TaskState, Worker, DEFAULT_PREEMPT_THRESHOLD};
+use crate::scheduler::{
+    PreemptMonitor, Task, TaskId, TaskState, Worker, DEFAULT_PREEMPT_THRESHOLD,
+};
 use crate::vm::SafepointCoordinator;
 use crossbeam_deque::{Injector, Worker as CWorker};
 use parking_lot::RwLock;
@@ -320,7 +322,7 @@ impl Scheduler {
             .count();
 
         SchedulerStats {
-            tasks_spawned: 0, // TODO: Track this with atomic counter
+            tasks_spawned: 0,   // TODO: Track this with atomic counter
             tasks_completed: 0, // TODO: Track this with atomic counter
             active_tasks,
         }

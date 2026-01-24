@@ -41,7 +41,7 @@ rayavm/
 │   ├── raya-compiler/    # Code generation
 │   ├── raya-stdlib/      # Standard library
 │   ├── raya-cli/         # Unified CLI tool (raya)
-│   └── raya-pm/             # Package manager (legacy)
+│   └── raya-pm/             # Package manager (rpkg)
 ├── design/                 # Specification documents
 └── plans/                  # Implementation roadmap
 ```

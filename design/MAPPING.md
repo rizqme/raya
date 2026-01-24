@@ -2600,6 +2600,275 @@ The compiler should emit specialized opcodes based on static type information:
 
 ---
 
+## 17. Exception Handling
+
+### 17.1 Basic Try-Catch
+
+**Raya:**
+```ts
+try {
+  riskyOperation();
+} catch (e) {
+  console.log("Error: " + e);
+}
+```
+
+**Bytecode:**
+```
+TRY catch_offset=8 finally_offset=-1    // Install handler
+CALL riskyOperation                     // Protected code
+END_TRY                                 // Remove handler
+JMP end_offset                          // Skip catch block
+
+// catch block (offset 8):
+STORE_LOCAL 0                           // Store exception in local 0
+CONST_STR "Error: "
+LOAD_LOCAL 0
+SCONCAT
+CALL console.log
+// end:
+```
+
+**Explanation:**
+- TRY installs handler with catch at offset 8, no finally (-1)
+- Protected code executes normally
+- If exception thrown, jumps to offset 8
+- Exception value automatically on stack for catch
+- END_TRY removes handler when block completes
+
+---
+
+### 17.2 Try-Finally
+
+**Raya:**
+```ts
+try {
+  performWork();
+} finally {
+  cleanup();
+}
+```
+
+**Bytecode:**
+```
+TRY catch_offset=-1 finally_offset=12   // Install handler (no catch)
+CALL performWork                        // Protected code
+END_TRY                                 // Remove handler
+CALL cleanup                            // Finally block
+JMP end_offset                          // Done
+
+// finally block (offset 12):
+CALL cleanup                            // Finally cleanup
+END_TRY                                 // Remove handler
+RETHROW                                 // Re-raise if exception
+// end:
+```
+
+**Explanation:**
+- TRY with no catch (-1), finally at offset 12
+- If exception thrown, jumps to finally
+- Finally always executes (normal or exception path)
+- RETHROW continues exception propagation
+
+---
+
+### 17.3 Try-Catch-Finally
+
+**Raya:**
+```ts
+try {
+  riskyOperation();
+} catch (e) {
+  handleError(e);
+} finally {
+  cleanup();
+}
+```
+
+**Bytecode:**
+```
+TRY catch_offset=8 finally_offset=16    // Install handler
+CALL riskyOperation                     // Protected code
+END_TRY                                 // Remove handler
+CALL cleanup                            // Finally (normal path)
+JMP end_offset                          // Skip catch
+
+// catch block (offset 8):
+STORE_LOCAL 0                           // Store exception
+LOAD_LOCAL 0
+CALL handleError                        // Handle error
+CALL cleanup                            // Finally (catch path)
+JMP end_offset
+
+// finally block (offset 16):
+CALL cleanup                            // Finally (exception path)
+RETHROW                                 // Re-raise
+// end:
+```
+
+**Explanation:**
+- TRY with both catch and finally offsets
+- Normal path: code → finally → end
+- Exception path: code → catch → finally → end
+- Uncaught exception: code → finally → rethrow
+
+---
+
+### 17.4 Nested Try-Catch
+
+**Raya:**
+```ts
+try {
+  try {
+    innerOperation();
+  } catch (inner) {
+    handleInner(inner);
+  }
+} catch (outer) {
+  handleOuter(outer);
+}
+```
+
+**Bytecode:**
+```
+TRY catch_offset=20 finally_offset=-1   // Outer try
+TRY catch_offset=8 finally_offset=-1    // Inner try
+CALL innerOperation
+END_TRY                                 // Inner end
+JMP outer_end                           // Skip inner catch
+
+// inner catch (offset 8):
+STORE_LOCAL 0
+LOAD_LOCAL 0
+CALL handleInner
+END_TRY                                 // Outer end
+JMP end                                 // Skip outer catch
+
+// outer catch (offset 20):
+STORE_LOCAL 1
+LOAD_LOCAL 1
+CALL handleOuter
+// end:
+```
+
+**Explanation:**
+- Handler stack maintains LIFO order
+- Inner exception caught by inner handler
+- If inner doesn't catch, outer handler tries
+- END_TRY pops from handler stack
+
+---
+
+### 17.5 Rethrow Pattern
+
+**Raya:**
+```ts
+try {
+  operation();
+} catch (e) {
+  log(e);
+  throw e;  // Re-raise
+}
+```
+
+**Bytecode:**
+```
+TRY catch_offset=8 finally_offset=-1
+CALL operation
+END_TRY
+JMP end
+
+// catch block (offset 8):
+STORE_LOCAL 0                           // Store exception
+LOAD_LOCAL 0
+CALL log                                // Log it
+LOAD_LOCAL 0                            // Load exception
+THROW                                   // Throw it (unwinds to next handler)
+// end:
+```
+
+**Explanation:**
+- Catch block can rethrow with THROW
+- RETHROW opcode also available (for implicit rethrow)
+- Exception propagates to next handler in stack
+
+---
+
+### 17.6 Exception with Mutex (Auto-Unlock)
+
+**Raya:**
+```ts
+const mtx = new Mutex();
+mtx.lock();
+try {
+  await operation();
+} finally {
+  mtx.unlock();
+}
+```
+
+**Bytecode:**
+```
+NEW_MUTEX
+STORE_LOCAL 0                           // Store mutex
+LOAD_LOCAL 0
+MUTEX_LOCK                              // Lock mutex
+TRY catch_offset=-1 finally_offset=12   // Install handler
+LOAD_LOCAL 0
+AWAIT operation                         // Protected code
+END_TRY
+LOAD_LOCAL 0
+MUTEX_UNLOCK                            // Finally unlock
+JMP end
+
+// finally (offset 12):
+LOAD_LOCAL 0
+MUTEX_UNLOCK                            // Unlock on exception
+RETHROW                                 // Re-raise
+// end:
+```
+
+**Explanation:**
+- Mutex tracked by Task
+- If exception thrown between LOCK/UNLOCK, auto-unlocks
+- Finally block ensures explicit unlock
+- VM tracks mutexes per Task for auto-unlock during unwinding
+
+---
+
+### 17.7 Stack Unwinding
+
+When exception thrown:
+
+1. **Find handler:** Search exception_handlers stack (LIFO)
+2. **Execute finally:** If handler has finally_offset, execute it
+3. **Unwind stack:** Pop operand stack to handler's stack_size
+4. **Unwind frames:** Pop call frames to handler's frame_count
+5. **Unlock mutexes:** Unlock all mutexes acquired since handler
+6. **Jump to catch:** If handler has catch_offset, jump there
+7. **Continue unwinding:** If no catch, pop handler and repeat
+
+**Stack state during unwinding:**
+```
+Handler installed:
+  - stack_size = 5
+  - frame_count = 2
+  - mutex_count = 1
+
+Exception thrown:
+  - Current stack_size = 12
+  - Current frame_count = 4
+  - Current mutex_count = 3
+
+Unwinding:
+  - Pop stack: 12 → 5 (restore to handler)
+  - Pop frames: 4 → 2 (return to handler's frame)
+  - Unlock mutexes: 3 → 1 (unlock 2 mutexes)
+  - Jump to catch or finally
+```
+
+---
+
 ## Bytecode Verification
 
 Before execution, the VM verifies:

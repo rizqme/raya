@@ -125,7 +125,8 @@ impl SerializedTask {
 
         // Read task ID
         reader.read_exact(&mut buf)?;
-        let task_id = TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
+        let task_id =
+            TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
 
         // Read state
         let mut state_buf = [0u8; 1];
@@ -185,7 +186,10 @@ impl SerializedTask {
         reader.read_exact(&mut state_buf)?;
         let parent = if state_buf[0] == 1 {
             reader.read_exact(&mut buf)?;
-            Some(TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap)))
+            Some(TaskId::from_u64(byteswap::swap_u64(
+                u64::from_le_bytes(buf),
+                needs_byte_swap,
+            )))
         } else {
             None
         };
@@ -331,7 +335,8 @@ impl BlockedReason {
             0 => {
                 let mut buf = [0u8; 8];
                 reader.read_exact(&mut buf)?;
-                let task_id = TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
+                let task_id =
+                    TaskId::from_u64(byteswap::swap_u64(u64::from_le_bytes(buf), needs_byte_swap));
                 Ok(BlockedReason::AwaitingTask(task_id))
             }
             1 => {

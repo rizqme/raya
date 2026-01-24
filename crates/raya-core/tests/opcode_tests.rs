@@ -110,14 +110,7 @@ mod constants {
 
     #[test]
     fn test_const_i32_positive() {
-        let code = vec![
-            Opcode::ConstI32 as u8,
-            42,
-            0,
-            0,
-            0,
-            Opcode::Return as u8,
-        ];
+        let code = vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8];
         let result = execute_bytecode(code);
         assert_eq!(result, Value::i32(42));
     }
@@ -139,14 +132,7 @@ mod constants {
 
     #[test]
     fn test_const_i32_zero() {
-        let code = vec![
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::Return as u8,
-        ];
+        let code = vec![Opcode::ConstI32 as u8, 0, 0, 0, 0, Opcode::Return as u8];
         let result = execute_bytecode(code);
         assert_eq!(result, Value::i32(0));
     }
@@ -202,7 +188,7 @@ mod stack_ops {
             0,
             0,
             0,
-            Opcode::Pop as u8, // Pop 20
+            Opcode::Pop as u8,    // Pop 20
             Opcode::Return as u8, // Return 10
         ]);
         assert_eq!(result, Value::i32(10));
@@ -217,7 +203,7 @@ mod stack_ops {
             0,
             0,
             0,
-            Opcode::Dup as u8, // Stack: [5, 5]
+            Opcode::Dup as u8,  // Stack: [5, 5]
             Opcode::Iadd as u8, // Stack: [10]
             Opcode::Return as u8,
         ]);

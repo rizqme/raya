@@ -376,7 +376,10 @@ mod tests {
             "string"
         );
         assert_eq!(MarshalledValue::Array(vec![]).type_name(), "array");
-        assert_eq!(MarshalledValue::Object(HashMap::new()).type_name(), "object");
+        assert_eq!(
+            MarshalledValue::Object(HashMap::new()).type_name(),
+            "object"
+        );
         assert_eq!(MarshalledValue::ForeignHandle(1).type_name(), "foreign");
     }
 
@@ -390,7 +393,10 @@ mod tests {
             MarshalledValue::String("hello".to_string()).to_string(),
             "\"hello\""
         );
-        assert_eq!(MarshalledValue::ForeignHandle(123).to_string(), "Foreign(123)");
+        assert_eq!(
+            MarshalledValue::ForeignHandle(123).to_string(),
+            "Foreign(123)"
+        );
     }
 
     #[test]

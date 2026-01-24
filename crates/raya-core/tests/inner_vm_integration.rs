@@ -8,11 +8,11 @@
 use raya_bytecode::{Function, Module, Opcode};
 use raya_core::gc::GarbageCollector;
 use raya_core::value::Value;
+use raya_core::vm::{marshal, unmarshal, MarshalledValue};
 use raya_core::vm::{
     Capability, CapabilityError, CapabilityRegistry, ContextRegistry, InnerVm, ResourceLimits,
     VmContext, VmContextId, VmError, VmOptions,
 };
-use raya_core::vm::{marshal, unmarshal, MarshalledValue};
 use std::sync::Arc;
 
 // ============================================================================
@@ -221,10 +221,7 @@ impl Capability for TestCapability {
 
     fn invoke(&self, args: &[Value]) -> Result<Value, CapabilityError> {
         // Simple capability that returns the sum of i32 arguments
-        let sum: i32 = args
-            .iter()
-            .filter_map(|v| v.as_i32())
-            .sum();
+        let sum: i32 = args.iter().filter_map(|v| v.as_i32()).sum();
         Ok(Value::i32(sum))
     }
 
@@ -251,8 +248,7 @@ fn test_capability_registry() {
 
 #[test]
 fn test_capability_invocation() {
-    let registry = CapabilityRegistry::new()
-        .with_capability(Arc::new(TestCapability));
+    let registry = CapabilityRegistry::new().with_capability(Arc::new(TestCapability));
 
     let args = vec![Value::i32(10), Value::i32(20), Value::i32(30)];
     let result = registry.invoke("test", &args).unwrap();
@@ -313,10 +309,14 @@ fn test_multiple_capabilities() {
 
     assert_eq!(registry.len(), 2);
 
-    let result1 = registry.invoke("add", &[Value::i32(5), Value::i32(3)]).unwrap();
+    let result1 = registry
+        .invoke("add", &[Value::i32(5), Value::i32(3)])
+        .unwrap();
     assert_eq!(result1.as_i32(), Some(8));
 
-    let result2 = registry.invoke("mul", &[Value::i32(5), Value::i32(3)]).unwrap();
+    let result2 = registry
+        .invoke("mul", &[Value::i32(5), Value::i32(3)])
+        .unwrap();
     assert_eq!(result2.as_i32(), Some(15));
 }
 
@@ -353,7 +353,9 @@ fn test_marshal_string() {
 
     // Allocate string in ctx1
     let gc1 = ctx1.gc_mut();
-    let str_ptr = gc1.allocate(raya_core::object::RayaString::new("Hello World".to_string()));
+    let str_ptr = gc1.allocate(raya_core::object::RayaString::new(
+        "Hello World".to_string(),
+    ));
     let value = unsafe { Value::from_ptr(std::ptr::NonNull::new_unchecked(str_ptr.as_ptr())) };
 
     // Marshal to ctx2
@@ -552,8 +554,7 @@ fn test_three_level_nesting() {
 #[test]
 fn test_vm_with_capabilities() {
     let options = VmOptions {
-        capabilities: CapabilityRegistry::new()
-            .with_capability(Arc::new(TestCapability)),
+        capabilities: CapabilityRegistry::new().with_capability(Arc::new(TestCapability)),
         ..Default::default()
     };
 

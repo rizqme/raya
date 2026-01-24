@@ -36,7 +36,7 @@ rayavm/
 │   ├── raya-compiler/    # Code generation
 │   ├── raya-stdlib/      # Standard library
 │   ├── raya-cli/         # CLI tool (rayac)
-│   └── raya-pm/             # Package manager
+│   └── rpkg/             # Package manager
 ├── stdlib/                 # Raya standard library source
 ├── tests/                  # Integration tests
 ├── examples/               # Example programs
@@ -889,7 +889,7 @@ import { utils } from "https://github.com/user/repo/v1.0.0";
 import { helper } from "./utils.raya";
 ```
 
-**Crates:** `raya-core`, `raya-bytecode`, `raya-pm`
+**Crates:** `raya-core`, `raya-bytecode`, `rpkg`
 
 **Scope:** VM-side module system only (loading, linking, caching). Excludes compilation, CLI tools, and network operations.
 
@@ -1842,7 +1842,7 @@ pub fn console_error(args: &[Value]) {
 
 ## Phase 5: Package Manager
 
-**Goal:** Create `raya-pm` for managing Raya packages.
+**Goal:** Create `rpkg` for managing Raya packages.
 
 ### 5.1 Package Format
 
@@ -1880,7 +1880,7 @@ test-framework = "0.5.0"
 
 **Files:**
 ```rust
-// crates/raya-pm/src/registry.rs
+// crates/rpkg/src/registry.rs
 pub struct Registry {
     url: String,
     cache: PathBuf,
@@ -1894,19 +1894,19 @@ impl Registry {
 
 ### 5.3 CLI Commands
 
-**Crate:** `raya-pm`
+**Crate:** `rpkg`
 
 **Tasks:**
-- [ ] `raya-pm init` - Initialize new project
-- [ ] `raya-pm install` - Install dependencies
-- [ ] `raya-pm add <package>` - Add dependency
-- [ ] `raya-pm remove <package>` - Remove dependency
-- [ ] `raya-pm publish` - Publish to registry
-- [ ] `raya-pm search <query>` - Search packages
+- [ ] `rpkg init` - Initialize new project
+- [ ] `rpkg install` - Install dependencies
+- [ ] `rpkg add <package>` - Add dependency
+- [ ] `rpkg remove <package>` - Remove dependency
+- [ ] `rpkg publish` - Publish to registry
+- [ ] `rpkg search <query>` - Search packages
 
 **Files:**
 ```rust
-// crates/raya-pm/src/main.rs
+// crates/rpkg/src/main.rs
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -1936,7 +1936,7 @@ enum Commands {
 
 **Files:**
 ```rust
-// crates/raya-pm/src/resolver.rs
+// crates/rpkg/src/resolver.rs
 pub struct DependencyResolver {
     packages: HashMap<String, Vec<Version>>,
 }
@@ -2328,7 +2328,7 @@ function main(): void {
 
 ### Milestone 6: Tooling (Weeks 33-40)
 - [ ] CLI tool (rayac)
-- [ ] Package manager (raya-pm)
+- [ ] Package manager (rpkg)
 - [ ] Test framework
 - [ ] REPL
 - [ ] Code formatter

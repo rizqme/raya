@@ -8,5 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Standard library native implementations for Raya"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [dependencies]
 raya-core = { workspace = true }
+raya-ffi = { workspace = true }

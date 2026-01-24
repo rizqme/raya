@@ -271,7 +271,8 @@ impl Stack {
 
         // Calculate base pointer (points to first argument, or current SP if no args)
         let base_ptr = if arg_count > 0 {
-            self.sp.checked_sub(arg_count)
+            self.sp
+                .checked_sub(arg_count)
                 .ok_or_else(|| VmError::RuntimeError("Not enough arguments on stack".to_string()))?
         } else {
             self.sp

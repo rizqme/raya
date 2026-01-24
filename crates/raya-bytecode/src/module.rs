@@ -35,6 +35,41 @@ pub enum ModuleError {
     },
 }
 
+/// Symbol type for exports
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolType {
+    /// Function export
+    Function,
+    /// Class export
+    Class,
+    /// Constant export
+    Constant,
+}
+
+/// Exported symbol from a module
+#[derive(Debug, Clone)]
+pub struct Export {
+    /// Symbol name
+    pub name: String,
+    /// Type of symbol being exported
+    pub symbol_type: SymbolType,
+    /// Index into functions/classes/constants array
+    pub index: usize,
+}
+
+/// Imported symbol/module dependency
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Module specifier (e.g., "logging@1.2.3", "./utils.raya", "https://...")
+    pub module_specifier: String,
+    /// Symbol name to import
+    pub symbol: String,
+    /// Optional alias (for `import { foo as bar }`)
+    pub alias: Option<String>,
+    /// Version constraint (for semver resolution, e.g., "^1.2.0")
+    pub version_constraint: Option<String>,
+}
+
 /// A compiled Raya module
 #[derive(Debug, Clone)]
 pub struct Module {
@@ -52,6 +87,12 @@ pub struct Module {
     pub classes: Vec<ClassDef>,
     /// Module metadata
     pub metadata: Metadata,
+    /// Exported symbols
+    pub exports: Vec<Export>,
+    /// Imported dependencies
+    pub imports: Vec<Import>,
+    /// SHA-256 checksum for content-addressable storage
+    pub checksum: [u8; 32],
 }
 
 /// Module flags
@@ -242,6 +283,125 @@ impl Metadata {
     }
 }
 
+impl SymbolType {
+    /// Encode to u8
+    fn to_u8(&self) -> u8 {
+        match self {
+            SymbolType::Function => 0,
+            SymbolType::Class => 1,
+            SymbolType::Constant => 2,
+        }
+    }
+
+    /// Decode from u8
+    fn from_u8(value: u8) -> Result<Self, DecodeError> {
+        match value {
+            0 => Ok(SymbolType::Function),
+            1 => Ok(SymbolType::Class),
+            2 => Ok(SymbolType::Constant),
+            _ => Err(DecodeError::InvalidOpcode(value, 0)), // Reuse InvalidOpcode for invalid symbol type
+        }
+    }
+}
+
+impl Export {
+    /// Encode export to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write name
+        writer.emit_u32(self.name.len() as u32);
+        writer.buffer.extend_from_slice(self.name.as_bytes());
+
+        // Write symbol type
+        writer.emit_u8(self.symbol_type.to_u8());
+
+        // Write index
+        writer.emit_u32(self.index as u32);
+    }
+
+    /// Decode export from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        // Read name
+        let name = reader.read_string()?;
+
+        // Read symbol type
+        let symbol_type = SymbolType::from_u8(reader.read_u8()?)?;
+
+        // Read index
+        let index = reader.read_u32()? as usize;
+
+        Ok(Self { name, symbol_type, index })
+    }
+}
+
+impl Import {
+    /// Encode import to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write module specifier
+        writer.emit_u32(self.module_specifier.len() as u32);
+        writer.buffer.extend_from_slice(self.module_specifier.as_bytes());
+
+        // Write symbol name
+        writer.emit_u32(self.symbol.len() as u32);
+        writer.buffer.extend_from_slice(self.symbol.as_bytes());
+
+        // Write alias (optional)
+        match &self.alias {
+            Some(alias) => {
+                writer.emit_u8(1); // has alias
+                writer.emit_u32(alias.len() as u32);
+                writer.buffer.extend_from_slice(alias.as_bytes());
+            }
+            None => {
+                writer.emit_u8(0); // no alias
+            }
+        }
+
+        // Write version constraint (optional)
+        match &self.version_constraint {
+            Some(constraint) => {
+                writer.emit_u8(1); // has constraint
+                writer.emit_u32(constraint.len() as u32);
+                writer.buffer.extend_from_slice(constraint.as_bytes());
+            }
+            None => {
+                writer.emit_u8(0); // no constraint
+            }
+        }
+    }
+
+    /// Decode import from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        // Read module specifier
+        let module_specifier = reader.read_string()?;
+
+        // Read symbol name
+        let symbol = reader.read_string()?;
+
+        // Read alias
+        let has_alias = reader.read_u8()? != 0;
+        let alias = if has_alias {
+            Some(reader.read_string()?)
+        } else {
+            None
+        };
+
+        // Read version constraint
+        let has_constraint = reader.read_u8()? != 0;
+        let version_constraint = if has_constraint {
+            Some(reader.read_string()?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            module_specifier,
+            symbol,
+            alias,
+            version_constraint,
+        })
+    }
+}
+
 impl Module {
     /// Create a new empty module
     pub fn new(name: String) -> Self {
@@ -256,6 +416,9 @@ impl Module {
                 name,
                 source_file: None,
             },
+            exports: Vec::new(),
+            imports: Vec::new(),
+            checksum: [0; 32], // Will be computed during encode()
         }
     }
 
@@ -273,22 +436,27 @@ impl Module {
     /// Encode the module to binary format (.rbin)
     ///
     /// Format:
-    /// - Header: magic (4 bytes) + version (u32) + flags (u32) + checksum (u32)
+    /// - Header: magic (4 bytes) + version (u32) + flags (u32) + crc32 (u32) + checksum (32 bytes SHA-256)
     /// - Constant pool
     /// - Function table
     /// - Class table
-    /// - Bytecode section
-    /// - Metadata (if flags indicate)
+    /// - Export table
+    /// - Import table
+    /// - Metadata
     pub fn encode(&self) -> Vec<u8> {
+        use sha2::{Sha256, Digest};
+
         let mut writer = BytecodeWriter::new();
 
-        // Reserve space for header (we'll fill in checksum later)
+        // Reserve space for header (we'll fill in checksums later)
         let header_start = writer.offset();
         writer.buffer.extend_from_slice(&self.magic);
         writer.emit_u32(self.version);
         writer.emit_u32(self.flags);
-        let checksum_offset = writer.offset();
-        writer.emit_u32(0); // Placeholder for checksum
+        let crc32_offset = writer.offset();
+        writer.emit_u32(0); // Placeholder for CRC32
+        let sha256_offset = writer.offset();
+        writer.buffer.extend_from_slice(&[0u8; 32]); // Placeholder for SHA-256
 
         // Encode constant pool
         self.constants.encode(&mut writer);
@@ -305,19 +473,41 @@ impl Module {
             class.encode(&mut writer);
         }
 
+        // Encode exports
+        writer.emit_u32(self.exports.len() as u32);
+        for export in &self.exports {
+            export.encode(&mut writer);
+        }
+
+        // Encode imports
+        writer.emit_u32(self.imports.len() as u32);
+        for import in &self.imports {
+            import.encode(&mut writer);
+        }
+
         // Encode metadata
         self.metadata.encode(&mut writer);
 
-        // Calculate and write checksum (CRC32 of everything after the header)
-        let payload = &writer.buffer[header_start + 16..];
-        let checksum = crc32fast::hash(payload);
-        writer.patch_u32(checksum_offset, checksum);
+        // Calculate checksums (of everything after header)
+        let payload_start = header_start + 48; // Skip magic + version + flags + crc32 + sha256
+        let payload = writer.buffer[payload_start..].to_vec(); // Clone to avoid borrow issues
+        let crc32 = crc32fast::hash(&payload);
+        let hash = Sha256::digest(&payload);
+        let checksum_bytes: [u8; 32] = hash.into();
+
+        // Patch CRC32
+        writer.patch_u32(crc32_offset, crc32);
+
+        // Patch SHA-256
+        writer.buffer[sha256_offset..sha256_offset + 32].copy_from_slice(&checksum_bytes);
 
         writer.into_bytes()
     }
 
     /// Decode a module from binary format
     pub fn decode(data: &[u8]) -> Result<Self, ModuleError> {
+        use sha2::{Sha256, Digest};
+
         let mut reader = BytecodeReader::new(data);
 
         // Read header
@@ -333,15 +523,30 @@ impl Module {
         }
 
         let flags = reader.read_u32()?;
-        let stored_checksum = reader.read_u32()?;
+        let stored_crc32 = reader.read_u32()?;
 
-        // Verify checksum
-        let payload = &data[16..];
-        let calculated_checksum = crc32fast::hash(payload);
-        if stored_checksum != calculated_checksum {
+        // Read SHA-256 checksum
+        let stored_sha256 = reader.read_bytes(32)?;
+        let checksum: [u8; 32] = stored_sha256.try_into().unwrap();
+
+        // Verify checksums (skip magic + version + flags + crc32 + sha256)
+        let payload = &data[48..];
+
+        // Verify CRC32
+        let calculated_crc32 = crc32fast::hash(payload);
+        if stored_crc32 != calculated_crc32 {
             return Err(ModuleError::ChecksumMismatch {
-                expected: stored_checksum,
-                actual: calculated_checksum,
+                expected: stored_crc32,
+                actual: calculated_crc32,
+            });
+        }
+
+        // Verify SHA-256
+        let calculated_sha256 = Sha256::digest(payload);
+        if checksum != calculated_sha256.as_slice() {
+            return Err(ModuleError::ChecksumMismatch {
+                expected: stored_crc32, // Using CRC32 for error message
+                actual: calculated_crc32,
             });
         }
 
@@ -362,6 +567,20 @@ impl Module {
             classes.push(ClassDef::decode(&mut reader)?);
         }
 
+        // Decode exports
+        let export_count = reader.read_u32()? as usize;
+        let mut exports = Vec::with_capacity(export_count);
+        for _ in 0..export_count {
+            exports.push(Export::decode(&mut reader)?);
+        }
+
+        // Decode imports
+        let import_count = reader.read_u32()? as usize;
+        let mut imports = Vec::with_capacity(import_count);
+        for _ in 0..import_count {
+            imports.push(Import::decode(&mut reader)?);
+        }
+
         // Decode metadata
         let metadata = Metadata::decode(&mut reader)?;
 
@@ -373,6 +592,9 @@ impl Module {
             functions,
             classes,
             metadata,
+            exports,
+            imports,
+            checksum,
         })
     }
 }

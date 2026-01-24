@@ -12,9 +12,10 @@ use crate::gc::{GarbageCollector, GcStats, HeapStats};
 use crate::scheduler::TaskId;
 use crate::types::TypeRegistry;
 use crate::value::Value;
-use crate::vm::{CapabilityRegistry, ClassRegistry};
+use crate::vm::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
 use dashmap::DashMap;
 use parking_lot::RwLock;
+use raya_bytecode::Module;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -215,6 +216,7 @@ impl Default for VmOptions {
 /// - GC policy
 /// - Task registry for owned tasks
 /// - Class registry for loaded classes
+/// - Module registry for loaded modules
 /// - Optional parent for nesting
 pub struct VmContext {
     /// Unique context ID
@@ -240,6 +242,12 @@ pub struct VmContext {
 
     /// Class registry (loaded classes)
     class_registry: ClassRegistry,
+
+    /// Module registry (loaded bytecode modules)
+    module_registry: ModuleRegistry,
+
+    /// Native module registry (loaded native modules)
+    native_module_registry: crate::vm::NativeModuleRegistry,
 
     /// Parent context (for nested VMs)
     parent: Option<VmContextId>,
@@ -276,6 +284,8 @@ impl VmContext {
             type_registry: options.type_registry,
             task_registry: Vec::new(),
             class_registry: ClassRegistry::new(),
+            module_registry: ModuleRegistry::new(),
+            native_module_registry: crate::vm::NativeModuleRegistry::new(),
             parent: None,
             capabilities: options.capabilities,
         }
@@ -408,6 +418,91 @@ impl VmContext {
     /// Get the capability registry
     pub fn capabilities(&self) -> &CapabilityRegistry {
         &self.capabilities
+    }
+
+    /// Get the module registry
+    pub fn module_registry(&self) -> &ModuleRegistry {
+        &self.module_registry
+    }
+
+    /// Get mutable access to the module registry
+    pub fn module_registry_mut(&mut self) -> &mut ModuleRegistry {
+        &mut self.module_registry
+    }
+
+    /// Register a bytecode module in this context
+    ///
+    /// This registers the module's functions and classes, and adds it to the module registry.
+    ///
+    /// # Arguments
+    /// * `module` - The bytecode module to register
+    ///
+    /// # Returns
+    /// * `Ok(())` - Module registered successfully
+    /// * `Err(String)` - Registration failed
+    pub fn register_module(&mut self, module: Arc<Module>) -> Result<(), String> {
+        // TODO: Register functions from module.functions
+        // TODO: Register classes from module.classes
+        // For now, just register in the module registry
+        self.module_registry.register(module)
+    }
+
+    /// Get the native module registry
+    pub fn native_module_registry(&self) -> &crate::vm::NativeModuleRegistry {
+        &self.native_module_registry
+    }
+
+    /// Get mutable access to the native module registry
+    pub fn native_module_registry_mut(&mut self) -> &mut crate::vm::NativeModuleRegistry {
+        &mut self.native_module_registry
+    }
+
+    /// Register a native module in this context
+    ///
+    /// This adds the native module to the registry, making it available for import.
+    ///
+    /// # Arguments
+    /// * `module` - The native module to register
+    ///
+    /// # Returns
+    /// * `Ok(())` - Module registered successfully
+    /// * `Err(String)` - Registration failed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let module = Arc::new(NativeModule::new("math", "1.0.0"));
+    /// vm_context.register_native_module(module)?;
+    /// ```
+    pub fn register_native_module(&mut self, module: Arc<crate::vm::NativeModule>) -> Result<(), String> {
+        self.native_module_registry.register(module)
+    }
+
+    /// Register a native module with a custom name
+    ///
+    /// This allows registering a native module under a different name than its internal name.
+    /// Useful for standard library modules (e.g., registering as "std:json").
+    ///
+    /// # Arguments
+    /// * `name` - The name to register the module under
+    /// * `module` - The native module to register
+    ///
+    /// # Returns
+    /// * `Ok(())` - Module registered successfully
+    /// * `Err(String)` - Registration failed
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let json_module = Arc::new(NativeModule::new("json", "1.0.0"));
+    /// vm_context.register_native_module_as("std:json", json_module)?;
+    /// ```
+    pub fn register_native_module_as(
+        &mut self,
+        name: impl Into<String>,
+        module: Arc<crate::vm::NativeModule>,
+    ) -> Result<(), String> {
+        self.native_module_registry.register_as(name, module)
     }
 }
 

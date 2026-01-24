@@ -10,8 +10,8 @@ mod task;
 mod writer;
 
 pub use format::{
-    is_big_endian, is_little_endian, needs_byte_swap, SegmentType, SnapshotChecksum,
-    SnapshotError, SnapshotHeader, ENDIANNESS_MARKER, ENDIANNESS_MARKER_SWAPPED,
+    is_big_endian, is_little_endian, needs_byte_swap, SegmentType, SnapshotChecksum, SnapshotError,
+    SnapshotHeader, ENDIANNESS_MARKER, ENDIANNESS_MARKER_SWAPPED,
 };
 pub use heap::{HeapSnapshot, ObjectId};
 pub use reader::SnapshotReader;

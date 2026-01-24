@@ -526,10 +526,7 @@ fn test_json_gc_large_allocation() {
         if i > 0 {
             json.push(',');
         }
-        json.push_str(&format!(
-            r#"{{"id":{},"data":[1,2,3,4,5,6,7,8,9,10]}}"#,
-            i
-        ));
+        json.push_str(&format!(r#"{{"id":{},"data":[1,2,3,4,5,6,7,8,9,10]}}"#, i));
     }
     json.push(']');
 

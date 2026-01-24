@@ -6,6 +6,8 @@ mod context;
 mod interpreter;
 mod lifecycle;
 mod marshal;
+mod module_registry;
+mod native_module_registry;
 mod safepoint;
 
 pub use capabilities::{Capability, CapabilityError, CapabilityRegistry};
@@ -16,8 +18,9 @@ pub use context::{
 };
 pub use interpreter::Vm;
 pub use lifecycle::{
-    ContextSnapshot, FrameSnapshot, TaskSnapshot, VmError, VmSnapshot, VmStats,
-    Vm as InnerVm,
+    ContextSnapshot, FrameSnapshot, TaskSnapshot, Vm as InnerVm, VmError, VmSnapshot, VmStats,
 };
 pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, MarshalledValue};
+pub use module_registry::ModuleRegistry;
+pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};

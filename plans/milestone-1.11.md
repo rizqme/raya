@@ -51,16 +51,16 @@ Implement **VM Snapshotting** to enable safe pause, snapshot, transfer, and resu
 - [x] **BONUS: Endianness-aware snapshots with byte-swapping!** ✅
 - [x] **BONUS: Cross-platform snapshot portability!** ✅
 - [x] Support multi-context snapshotting (individual or full runtime) ✅
-- [ ] Add snapshot compression (optional) - Deferred
+- ⏸️ Add snapshot compression (optional, deferred to future milestone)
 - [x] Test coverage >85% ✅ (37 tests: 14 snapshot integration + 23 restore validation)
 
 ### Secondary Goals
 
-- [ ] Incremental snapshotting (only changed objects)
-- [ ] Differential snapshots (delta from previous snapshot)
-- [ ] Snapshot encryption support
-- [ ] Cross-version migration helpers
-- [ ] Snapshot inspection tools (debug utility)
+- ⏸️ Incremental snapshotting (only changed objects)
+- ⏸️ Differential snapshots (delta from previous snapshot)
+- ⏸️ Snapshot encryption support
+- ⏸️ Cross-version migration helpers
+- ⏸️ Snapshot inspection tools (debug utility)
 
 ### Non-Goals (Deferred)
 
@@ -175,7 +175,7 @@ Implement **VM Snapshotting** to enable safe pause, snapshot, transfer, and resu
 - [x] Add versioning support ✅
 - [x] Implement checksum calculation (SHA-256) ✅
 - [x] **BONUS: Endianness detection and byte-swapping!** ✅
-- [ ] Add compression support (optional) - Deferred
+- ⏸️ Add compression support (optional, deferred)
 
 **Implementation:**
 
@@ -1069,7 +1069,7 @@ impl BlockedReason {
 - [x] Coordinate stop-the-world pause (via SafepointCoordinator) ✅
 - [x] Serialize all segments ✅
 - [x] Calculate and write checksum (SHA-256) ✅
-- [ ] Support compression (optional) - Deferred
+- ⏸️ Support compression (optional, deferred)
 
 **Implementation:**
 
@@ -1484,11 +1484,11 @@ impl From<std::io::Error> for SnapshotError {
 
 **Checklist:**
 
-- [ ] Add `pause_at_safepoint()` method
-- [ ] Add `resume_from_pause()` method
-- [ ] Add `snapshot()` method
-- [ ] Add `restore_from_snapshot()` static method
-- [ ] Integrate with SafepointCoordinator
+- [x] Add `pause_at_safepoint()` method
+- [x] Add `resume_from_pause()` method
+- [x] Add `snapshot()` method
+- [x] Add `restore_from_snapshot()` static method
+- [x] Integrate with SafepointCoordinator
 
 **Implementation:**
 
@@ -1758,16 +1758,16 @@ if instruction_count % SAFEPOINT_INTERVAL == 0 {
 
 ### Must Have
 
-- [ ] Stop-the-world pause protocol functional
-- [ ] Complete snapshot format implemented
-- [ ] Heap serialization with reference preservation
-- [ ] Task state serialization with call stacks
-- [ ] Snapshot validation with checksums
-- [ ] Full restore from snapshot
-- [ ] All unit tests pass (20+ tests)
-- [ ] All integration tests pass (15+ tests)
-- [ ] Test coverage >85%
-- [ ] Documentation complete
+- [x] Stop-the-world pause protocol functional
+- [x] Complete snapshot format implemented
+- [x] Heap serialization with reference preservation
+- [x] Task state serialization with call stacks
+- [x] Snapshot validation with checksums
+- [x] Full restore from snapshot
+- [x] All unit tests pass (20+ tests)
+- [x] All integration tests pass (15+ tests)
+- [x] Test coverage >85%
+- [x] Documentation complete
 
 ### Nice to Have
 

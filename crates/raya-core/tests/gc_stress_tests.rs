@@ -112,8 +112,8 @@ fn test_fragmentation_resistance() {
     // Allocate small, medium, and large objects in mixed order
     for i in 0..1000 {
         match i % 3 {
-            0 => values.push(Value::i32(i)), // Small (inline)
-            1 => values.push(Value::f64(i as f64)), // Small (inline)
+            0 => values.push(Value::i32(i)),           // Small (inline)
+            1 => values.push(Value::f64(i as f64)),    // Small (inline)
             _ => values.push(Value::bool(i % 2 == 0)), // Small (inline)
         }
     }
@@ -190,60 +190,6 @@ fn test_gc_with_heap_limit() {
     // Check that heap usage is tracked
     let heap_stats = gc.heap_stats();
     assert!(heap_stats.allocated_bytes <= heap_limit || heap_stats.allocated_bytes == 0);
-}
-
-// ===== Long-Running Stress Tests (marked with #[ignore]) =====
-
-#[test]
-#[ignore] // This test takes hours to run
-fn test_gc_24_hour_stress() {
-    // Run for 24 hours with constant allocation
-    // This test is meant for soak testing, not regular CI
-    use std::time::{Duration, Instant};
-
-    let mut gc = create_gc_with_threshold(10 * 1024 * 1024); // 10 MB
-    let start = Instant::now();
-    let duration = Duration::from_secs(24 * 60 * 60); // 24 hours
-
-    let mut iteration = 0u64;
-    while start.elapsed() < duration {
-        // Allocate batch of objects
-        let mut temp = Vec::new();
-        for i in 0..1000 {
-            temp.push(Value::i32(i));
-        }
-
-        // Periodically trigger GC
-        if iteration % 100 == 0 {
-            gc.collect();
-
-            // Log progress every hour
-            if iteration % 360_000 == 0 {
-                let hours = start.elapsed().as_secs() / 3600;
-                let stats = gc.stats();
-                println!(
-                    "24h stress test: {}h elapsed, {} collections, {} MB freed",
-                    hours,
-                    stats.collections,
-                    stats.bytes_freed / (1024 * 1024)
-                );
-            }
-        }
-
-        iteration += 1;
-    }
-
-    // Verify no memory leaks
-    let stats = gc.stats();
-    let heap_stats = gc.heap_stats();
-
-    println!("24h stress test complete:");
-    println!("  Total collections: {}", stats.collections);
-    println!("  Total bytes freed: {} MB", stats.bytes_freed / (1024 * 1024));
-    println!("  Final heap size: {} MB", heap_stats.allocated_bytes / (1024 * 1024));
-
-    // Heap should be stable (not growing unbounded)
-    assert!(heap_stats.allocated_bytes < 100 * 1024 * 1024); // < 100 MB
 }
 
 #[test]

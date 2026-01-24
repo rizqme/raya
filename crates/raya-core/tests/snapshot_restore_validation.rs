@@ -499,7 +499,11 @@ fn test_large_snapshot_with_many_tasks() {
     let mut buf = Vec::new();
     writer.write_snapshot(&mut buf).unwrap();
 
-    println!("Large snapshot size: {} bytes ({} KB)", buf.len(), buf.len() / 1024);
+    println!(
+        "Large snapshot size: {} bytes ({} KB)",
+        buf.len(),
+        buf.len() / 1024
+    );
 
     // Read it back
     let reader = SnapshotReader::from_reader(&mut Cursor::new(&buf)).unwrap();
@@ -579,14 +583,17 @@ fn test_context_limits_preservation() {
 
 #[test]
 fn test_endianness_detection() {
-    use raya_core::snapshot::format::{is_little_endian, is_big_endian, SnapshotHeader};
+    use raya_core::snapshot::format::{is_big_endian, is_little_endian, SnapshotHeader};
 
     // Verify system endianness detection works
     let is_le = is_little_endian();
     let is_be = is_big_endian();
 
     // Exactly one should be true
-    assert!(is_le ^ is_be, "System must be either little-endian or big-endian");
+    assert!(
+        is_le ^ is_be,
+        "System must be either little-endian or big-endian"
+    );
 
     // Get endianness string
     let endian_str = SnapshotHeader::system_endianness();
@@ -641,8 +648,15 @@ fn test_snapshot_with_different_endianness_accepted() {
 
     // Validation should detect the different endianness and indicate byte-swapping is needed
     let result = header.validate();
-    assert!(result.is_ok(), "Should accept snapshot with different endianness");
-    assert_eq!(result.unwrap(), true, "Should indicate byte-swapping is needed");
+    assert!(
+        result.is_ok(),
+        "Should accept snapshot with different endianness"
+    );
+    assert_eq!(
+        result.unwrap(),
+        true,
+        "Should indicate byte-swapping is needed"
+    );
 }
 
 #[test]
@@ -684,7 +698,16 @@ fn test_byteswap_round_trip() {
     assert_eq!(byteswap::swap_i32(value_i32, false), value_i32);
     assert_eq!(
         byteswap::swap_i32(value_i32, true),
-        i32::from_le_bytes(value_i32.to_le_bytes().iter().copied().rev().collect::<Vec<_>>().try_into().unwrap())
+        i32::from_le_bytes(
+            value_i32
+                .to_le_bytes()
+                .iter()
+                .copied()
+                .rev()
+                .collect::<Vec<_>>()
+                .try_into()
+                .unwrap()
+        )
     );
 
     // i64
@@ -708,7 +731,9 @@ fn test_safepoint_snapshot_coordination() {
     let coord = SafepointCoordinator::new(4);
 
     // Request snapshot pause
-    coord.snapshot_pending.store(true, std::sync::atomic::Ordering::Release);
+    coord
+        .snapshot_pending
+        .store(true, std::sync::atomic::Ordering::Release);
 
     // Verify pause is pending
     assert!(coord.is_pause_pending());

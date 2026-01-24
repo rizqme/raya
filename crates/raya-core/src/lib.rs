@@ -26,8 +26,10 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(ambiguous_wide_pointer_comparisons)]
 
+pub mod ffi;
 pub mod gc;
 pub mod json;
+pub mod module;
 pub mod object;
 pub mod scheduler;
 pub mod snapshot;

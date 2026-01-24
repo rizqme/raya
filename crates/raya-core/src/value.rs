@@ -415,7 +415,10 @@ impl Value {
     ///
     /// This is used by snapshot deserialization when loading snapshots
     /// from different endianness systems.
-    pub fn decode_with_byteswap<R: std::io::Read>(reader: &mut R, needs_byte_swap: bool) -> std::io::Result<Self> {
+    pub fn decode_with_byteswap<R: std::io::Read>(
+        reader: &mut R,
+        needs_byte_swap: bool,
+    ) -> std::io::Result<Self> {
         use crate::snapshot::format::byteswap;
 
         let mut buf = [0u8; 8];

@@ -2,7 +2,7 @@
 
 **Single Unified CLI Tool**
 
-Inspired by Bun, Raya uses a single `raya` command for all operations instead of separate tools like `rayac` (compiler) and `raya-pm` (package manager).
+Inspired by Bun, Raya uses a single `raya` command for all operations instead of separate tools like `rayac` (compiler) and `rpkg` (package manager).
 
 ---
 
@@ -28,7 +28,7 @@ Instead of:
 ```bash
 # ❌ Multiple separate tools
 rayac run main.raya
-raya-pm install
+rpkg install
 rayafmt format src/
 ```
 
@@ -724,8 +724,8 @@ raya completions fish > ~/.config/fish/completions/raya.fish
 |------------|------|
 | `rayac run` | `raya run` |
 | `rayac build` | `raya build` |
-| `raya-pm install` | `raya install` |
-| `raya-pm add` | `raya add` |
+| `rpkg install` | `raya install` |
+| `rpkg add` | `raya add` |
 | `rayafmt format` | `raya fmt` |
 | `rayalint check` | `raya lint` |
 
@@ -812,14 +812,14 @@ Old commands can be supported via symlinks:
 
 ```bash
 ln -s raya /usr/local/bin/rayac
-ln -s raya /usr/local/bin/raya-pm
+ln -s raya /usr/local/bin/rpkg
 ```
 
 Then detect invocation name:
 ```rust
 match std::env::args().next().unwrap().as_str() {
     "rayac" => handle_compiler_mode(),
-    "raya-pm" => handle_package_manager_mode(),
+    "rpkg" => handle_package_manager_mode(),
     "raya" => handle_unified_mode(),
 }
 ```

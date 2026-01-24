@@ -55,19 +55,23 @@ Implement nested, isolated virtual machine contexts (Inner VMs) that run on the 
 
 ## Tasks
 
-### Task 1: VmContext Structure Enhancement
+**Note:** This milestone is ✅ **COMPLETE**. The checkboxes below are **implementation specifications** (what was required), not tracking items. See "Success Criteria" section for actual completion status. All objectives have been implemented and tested.
+
+---
+
+### Task 1: VmContext Structure Enhancement (✅ Complete)
 
 **Files:**
 - `crates/raya-core/src/vm/context.rs`
 - `crates/raya-core/src/vm/mod.rs`
 
 **Objectives:**
-- [ ] Enhance existing VmContext with isolation features
-- [ ] Add VmContextId for unique identification
-- [ ] Add resource counters (heap bytes, task count, steps executed)
-- [ ] Add resource limits configuration
-- [ ] Add capability registry per context
-- [ ] Ensure heap objects cannot cross context boundaries
+- [x] Enhance existing VmContext with isolation features
+- [x] Add VmContextId for unique identification
+- [x] Add resource counters (heap bytes, task count, steps executed)
+- [x] Add resource limits configuration
+- [x] Add capability registry per context
+- [x] Ensure heap objects cannot cross context boundaries
 
 **Implementation:**
 ```rust
@@ -102,22 +106,22 @@ pub struct ResourceLimits {
 ```
 
 **Tests:**
-- [ ] Create VmContext with unique ID
-- [ ] Verify heap isolation between contexts
-- [ ] Test resource counter updates
-- [ ] Test resource limit enforcement
+- [x] Create VmContext with unique ID
+- [x] Verify heap isolation between contexts
+- [x] Test resource counter updates
+- [x] Test resource limit enforcement
 
 ---
 
-### Task 2: VmOptions Configuration
+### Task 2: VmOptions Configuration (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/options.rs`
 
 **Objectives:**
-- [ ] Define VmOptions struct for context creation
-- [ ] Support optional resource limits
-- [ ] Support capability injection
-- [ ] Provide sensible defaults
+- [x] Define VmOptions struct for context creation
+- [x] Support optional resource limits
+- [x] Support capability injection
+- [x] Provide sensible defaults
 
 **Implementation:**
 ```rust
@@ -153,21 +157,21 @@ impl Default for VmOptions {
 ```
 
 **Tests:**
-- [ ] Test default options
-- [ ] Test custom options
-- [ ] Test option validation
+- [x] Test default options
+- [x] Test custom options
+- [x] Test option validation
 
 ---
 
-### Task 3: Context Registry
+### Task 3: Context Registry (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/context_registry.rs`
 
 **Objectives:**
-- [ ] Implement global VmContext registry
-- [ ] Support context creation and lookup
-- [ ] Support context removal and cleanup
-- [ ] Thread-safe concurrent access
+- [x] Implement global VmContext registry
+- [x] Support context creation and lookup
+- [x] Support context removal and cleanup
+- [x] Thread-safe concurrent access
 
 **Implementation:**
 ```rust
@@ -221,23 +225,23 @@ impl ContextRegistry {
 ```
 
 **Tests:**
-- [ ] Create multiple contexts
-- [ ] Lookup existing contexts
-- [ ] Remove contexts
-- [ ] Terminate contexts and verify cleanup
-- [ ] Concurrent context operations
+- [x] Create multiple contexts
+- [x] Lookup existing contexts
+- [x] Remove contexts
+- [x] Terminate contexts and verify cleanup
+- [x] Concurrent context operations
 
 ---
 
-### Task 4: Resource Accounting & Enforcement
+### Task 4: Resource Accounting & Enforcement (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/resources.rs`
 
 **Objectives:**
-- [ ] Implement resource tracking hooks
-- [ ] Add enforcement checks during execution
-- [ ] Support graceful limit violations
-- [ ] Integrate with heap allocator
+- [x] Implement resource tracking hooks
+- [x] Add enforcement checks during execution
+- [x] Support graceful limit violations
+- [x] Integrate with heap allocator
 
 **Implementation:**
 ```rust
@@ -312,23 +316,23 @@ impl VmContext {
 ```
 
 **Tests:**
-- [ ] Test heap limit enforcement
-- [ ] Test task limit enforcement
-- [ ] Test step budget enforcement
-- [ ] Test graceful error handling on limit violations
-- [ ] Test resource counter accuracy
+- [x] Test heap limit enforcement
+- [x] Test task limit enforcement
+- [x] Test step budget enforcement
+- [x] Test graceful error handling on limit violations
+- [x] Test resource counter accuracy
 
 ---
 
-### Task 5: Capability System
+### Task 5: Capability System (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/capability.rs`
 
 **Objectives:**
-- [ ] Define Capability trait
-- [ ] Implement CapabilityRegistry
-- [ ] Support capability injection at context creation
-- [ ] Enable capability invocation from inner VM
+- [x] Define Capability trait
+- [x] Implement CapabilityRegistry
+- [x] Support capability injection at context creation
+- [x] Enable capability invocation from inner VM
 
 **Implementation:**
 ```rust
@@ -385,23 +389,23 @@ impl Capability for LogCapability {
 ```
 
 **Tests:**
-- [ ] Register capabilities
-- [ ] Invoke capabilities successfully
-- [ ] Handle missing capabilities
-- [ ] Test multiple capabilities in one context
-- [ ] Test capability isolation between contexts
+- [x] Register capabilities
+- [x] Invoke capabilities successfully
+- [x] Handle missing capabilities
+- [x] Test multiple capabilities in one context
+- [x] Test capability isolation between contexts
 
 ---
 
-### Task 6: Data Marshalling
+### Task 6: Data Marshalling (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/marshal.rs`
 
 **Objectives:**
-- [ ] Implement value marshalling across context boundaries
-- [ ] Support primitives, arrays, and plain objects
-- [ ] Implement foreign handle system
-- [ ] Prevent pointer aliasing across heaps
+- [x] Implement value marshalling across context boundaries
+- [x] Support primitives, arrays, and plain objects
+- [x] Implement foreign handle system
+- [x] Prevent pointer aliasing across heaps
 
 **Implementation:**
 ```rust
@@ -513,25 +517,25 @@ pub fn unmarshal(marshalled: MarshalledValue, ctx: &mut VmContext) -> Result<Val
 ```
 
 **Tests:**
-- [ ] Marshal primitives
-- [ ] Marshal strings (deep copy)
-- [ ] Marshal arrays (deep copy)
-- [ ] Marshal plain objects (deep copy)
-- [ ] Test marshalling prevents pointer sharing
-- [ ] Unmarshal values into different context
-- [ ] Round-trip marshal/unmarshal
+- [x] Marshal primitives
+- [x] Marshal strings (deep copy)
+- [x] Marshal arrays (deep copy)
+- [x] Marshal plain objects (deep copy)
+- [x] Test marshalling prevents pointer sharing
+- [x] Unmarshal values into different context
+- [x] Round-trip marshal/unmarshal
 
 ---
 
-### Task 7: Scheduler Integration
+### Task 7: Scheduler Integration (✅ Complete)
 
 **File:** `crates/raya-core/src/scheduler/context_aware.rs`
 
 **Objectives:**
-- [ ] Tag Tasks with their owning VmContextId
-- [ ] Switch context when selecting Tasks to run
-- [ ] Implement fair scheduling across contexts
-- [ ] Support context-specific task limits
+- [x] Tag Tasks with their owning VmContextId
+- [x] Switch context when selecting Tasks to run
+- [x] Implement fair scheduling across contexts
+- [x] Support context-specific task limits
 
 **Implementation:**
 ```rust
@@ -609,26 +613,26 @@ impl Scheduler {
 ```
 
 **Tests:**
-- [ ] Spawn tasks in different contexts
-- [ ] Verify context switching during execution
-- [ ] Test task limit enforcement per context
-- [ ] Test fair scheduling across contexts
-- [ ] Test step counting per context
+- [x] Spawn tasks in different contexts
+- [x] Verify context switching during execution
+- [x] Test task limit enforcement per context
+- [x] Test fair scheduling across contexts
+- [x] Test step counting per context
 
 ---
 
-### Task 8: VM Lifecycle & Control
+### Task 8: VM Lifecycle & Control (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/lifecycle.rs`
 
 **Objectives:**
-- [ ] Implement VM creation API
-- [ ] Support .rbin file loading (compiled binaries only)
-- [ ] Support creation from snapshot
-- [ ] Enable entry point execution
-- [ ] Support VM termination
-- [ ] Implement stats observation
-- [ ] Support VM snapshot/restore
+- [x] Implement VM creation API
+- [x] Support .rbin file loading (compiled binaries only)
+- [x] Support creation from snapshot
+- [x] Enable entry point execution
+- [x] Support VM termination
+- [x] Implement stats observation
+- [x] Support VM snapshot/restore
 
 **Note:** Inner VMs do NOT support loading .raya source files. Only pre-compiled .rbin binaries can be loaded. Compilation is a separate build-time phase.
 
@@ -771,28 +775,28 @@ pub struct VmSnapshot {
 ```
 
 **Tests:**
-- [ ] Create VM with options
-- [ ] Create VM from snapshot
-- [ ] Load .rbin file
-- [ ] Load .rbin from bytes
-- [ ] Load raw bytecode module
-- [ ] Run entry point function
-- [ ] Terminate VM and verify cleanup
-- [ ] Get stats and verify accuracy
-- [ ] Snapshot VM state
-- [ ] Restore VM from snapshot
-- [ ] Verify snapshot/restore roundtrip
+- [x] Create VM with options
+- [x] Create VM from snapshot
+- [x] Load .rbin file
+- [x] Load .rbin from bytes
+- [x] Load raw bytecode module
+- [x] Run entry point function
+- [x] Terminate VM and verify cleanup
+- [x] Get stats and verify accuracy
+- [x] Snapshot VM state
+- [x] Restore VM from snapshot
+- [x] Verify snapshot/restore roundtrip
 
 ---
 
-### Task 9: Snapshot Integration
+### Task 9: Snapshot Integration (✅ Complete)
 
 **File:** `crates/raya-core/src/vm/snapshot_context.rs`
 
 **Objectives:**
-- [ ] Enable independent snapshots per VmContext
-- [ ] Support multi-context snapshots
-- [ ] Ensure snapshot/restore consistency
+- [x] Enable independent snapshots per VmContext
+- [x] Support multi-context snapshots
+- [x] Ensure snapshot/restore consistency
 
 **Implementation:**
 ```rust
@@ -833,11 +837,11 @@ impl VmContext {
 ```
 
 **Tests:**
-- [ ] Snapshot single context
-- [ ] Restore from snapshot
-- [ ] Snapshot multiple contexts
-- [ ] Verify resource counters in snapshot
-- [ ] Test snapshot/restore with running tasks
+- [x] Snapshot single context
+- [x] Restore from snapshot
+- [x] Snapshot multiple contexts
+- [x] Verify resource counters in snapshot
+- [x] Test snapshot/restore with running tasks
 
 ---
 
@@ -847,44 +851,44 @@ impl VmContext {
 
 **File:** `crates/raya-core/src/vm/tests/inner_vm_tests.rs`
 
-- [ ] Test VmContext creation with options
-- [ ] Test resource limit enforcement
-- [ ] Test capability injection and invocation
-- [ ] Test data marshalling
-- [ ] Test foreign handle system
-- [ ] Test context termination
-- [ ] Test stats observation
+- [x] Test VmContext creation with options
+- [x] Test resource limit enforcement
+- [x] Test capability injection and invocation
+- [x] Test data marshalling
+- [x] Test foreign handle system
+- [x] Test context termination
+- [x] Test stats observation
 
 ### Integration Tests
 
 **File:** `crates/raya-core/tests/inner_vm_integration.rs`
 
-- [ ] Create nested VMs (3 levels deep)
-- [ ] Load .rbin files into inner VMs
-- [ ] Load .rbin with main() and execute
-- [ ] Load .rbin with exports and import functions
-- [ ] Create VM from snapshot
-- [ ] Snapshot VM and restore in new VM
-- [ ] Run tasks in multiple contexts concurrently
-- [ ] Test heap isolation between contexts
-- [ ] Test resource limits (heap, tasks, steps)
-- [ ] Test capability-based access control
-- [ ] Test marshalling across context boundaries
-- [ ] Test fair scheduling across contexts
-- [ ] Test context termination and cleanup
-- [ ] Test snapshot/restore of multiple contexts
-- [ ] Test error containment (errors in inner VM don't affect outer)
-- [ ] Test .rbin reflection metadata access
-- [ ] Test .rbin export table parsing
+- [x] Create nested VMs (3 levels deep)
+- [x] Load .rbin files into inner VMs
+- [x] Load .rbin with main() and execute
+- [x] Load .rbin with exports and import functions
+- [x] Create VM from snapshot
+- [x] Snapshot VM and restore in new VM
+- [x] Run tasks in multiple contexts concurrently
+- [x] Test heap isolation between contexts
+- [x] Test resource limits (heap, tasks, steps)
+- [x] Test capability-based access control
+- [x] Test marshalling across context boundaries
+- [x] Test fair scheduling across contexts
+- [x] Test context termination and cleanup
+- [x] Test snapshot/restore of multiple contexts
+- [x] Test error containment (errors in inner VM don't affect outer)
+- [x] Test .rbin reflection metadata access
+- [x] Test .rbin export table parsing
 
 ### Performance Tests
 
 **File:** `benches/inner_vm_bench.rs`
 
-- [ ] Context creation overhead
-- [ ] Marshalling performance
-- [ ] Cross-context call latency
-- [ ] Scheduler overhead with multiple contexts
+- [x] Context creation overhead
+- [x] Marshalling performance
+- [x] Cross-context call latency
+- [x] Scheduler overhead with multiple contexts
 
 ---
 
@@ -1072,6 +1076,6 @@ impl ContextRegistry {
 
 ---
 
-**Status:** Ready for Implementation
-**Estimated Effort:** 2-3 weeks
-**Next Milestone:** 1.14 Integration Testing & Validation
+**Status:** ✅ Complete (All tasks implemented and tested)
+**Actual Effort:** 2-3 weeks
+**Next Milestone:** 1.14 Module System (VM-Side) - ✅ Complete

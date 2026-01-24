@@ -60,9 +60,9 @@ pub const fn is_big_endian() -> bool {
 /// * `Err(())` - Invalid marker (corrupted snapshot)
 pub fn needs_byte_swap(marker: u32) -> Result<bool, ()> {
     match marker {
-        ENDIANNESS_MARKER => Ok(false),         // Same endianness
-        ENDIANNESS_MARKER_SWAPPED => Ok(true),  // Different endianness
-        _ => Err(()),                            // Corrupted
+        ENDIANNESS_MARKER => Ok(false),        // Same endianness
+        ENDIANNESS_MARKER_SWAPPED => Ok(true), // Different endianness
+        _ => Err(()),                          // Corrupted
     }
 }
 

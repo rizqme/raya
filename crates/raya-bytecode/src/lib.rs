@@ -14,6 +14,8 @@ pub mod verify;
 
 pub use constants::ConstantPool;
 pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
-pub use module::{ClassDef, Function, Metadata, Method, Module, ModuleError};
+pub use module::{
+    ClassDef, Export, Function, Import, Metadata, Method, Module, ModuleError, SymbolType,
+};
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};

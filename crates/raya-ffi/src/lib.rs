@@ -8,6 +8,16 @@
 //! - Opaque pointers for VM objects
 //! - Manual memory management
 
+pub mod loader;
+
+// Re-export native module types from raya-core
+pub use raya_core::ffi::{FromRaya, NativeError, NativeFn, NativeModule, NativeValue, ToRaya};
+pub use loader::{Library, LoadError};
+
+// Re-export proc-macros from raya-native for convenience
+// This allows users to only depend on raya-ffi instead of both raya-ffi and raya-native
+pub use raya_native::{function, module};
+
 use raya_core::value::Value;
 use raya_core::vm::{InnerVm, VmError, VmOptions, VmSnapshot};
 use std::ffi::{CStr, CString};

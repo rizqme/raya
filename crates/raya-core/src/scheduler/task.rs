@@ -1,6 +1,7 @@
 //! Task structure and execution state
 
 use crate::stack::Stack;
+use crate::sync::MutexId;
 use crate::value::Value;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -52,6 +53,25 @@ pub enum TaskState {
     Failed,
 }
 
+/// Exception handler entry for try-catch-finally blocks
+#[derive(Debug, Clone)]
+pub struct ExceptionHandler {
+    /// Bytecode offset to catch block (-1 if no catch)
+    pub catch_offset: i32,
+
+    /// Bytecode offset to finally block (-1 if no finally)
+    pub finally_offset: i32,
+
+    /// Stack size when handler was installed (for unwinding)
+    pub stack_size: usize,
+
+    /// Call frame count when handler was installed (for unwinding)
+    pub frame_count: usize,
+
+    /// Number of mutexes held when handler was installed (for auto-unlock on unwind)
+    pub mutex_count: usize,
+}
+
 /// A lightweight green thread
 pub struct Task {
     /// Unique identifier
@@ -86,6 +106,15 @@ pub struct Task {
 
     /// When this task started executing (for preemption monitoring)
     start_time: Mutex<Option<Instant>>,
+
+    /// Exception handler stack (for try-catch-finally)
+    exception_handlers: Mutex<Vec<ExceptionHandler>>,
+
+    /// Currently thrown exception (if any)
+    current_exception: Mutex<Option<Value>>,
+
+    /// Mutexes currently held by this Task (for auto-unlock on exception)
+    held_mutexes: Mutex<Vec<MutexId>>,
 }
 
 impl Task {
@@ -107,6 +136,9 @@ impl Task {
             parent,
             preempt_requested: AtomicBool::new(false),
             start_time: Mutex::new(None),
+            exception_handlers: Mutex::new(Vec::new()),
+            current_exception: Mutex::new(None),
+            held_mutexes: Mutex::new(Vec::new()),
         }
     }
 
@@ -209,6 +241,79 @@ impl Task {
     /// Clear start time (when task yields or completes)
     pub fn clear_start_time(&self) {
         *self.start_time.lock().unwrap() = None;
+    }
+
+    /// Push an exception handler onto the stack
+    pub fn push_exception_handler(&self, handler: ExceptionHandler) {
+        self.exception_handlers.lock().unwrap().push(handler);
+    }
+
+    /// Pop an exception handler from the stack
+    pub fn pop_exception_handler(&self) -> Option<ExceptionHandler> {
+        self.exception_handlers.lock().unwrap().pop()
+    }
+
+    /// Get the topmost exception handler without removing it
+    pub fn peek_exception_handler(&self) -> Option<ExceptionHandler> {
+        self.exception_handlers.lock().unwrap().last().cloned()
+    }
+
+    /// Get the current exception (if any)
+    pub fn current_exception(&self) -> Option<Value> {
+        *self.current_exception.lock().unwrap()
+    }
+
+    /// Set the current exception
+    pub fn set_exception(&self, exception: Value) {
+        *self.current_exception.lock().unwrap() = Some(exception);
+    }
+
+    /// Clear the current exception
+    pub fn clear_exception(&self) {
+        *self.current_exception.lock().unwrap() = None;
+    }
+
+    /// Check if there is an active exception
+    pub fn has_exception(&self) -> bool {
+        self.current_exception.lock().unwrap().is_some()
+    }
+
+    /// Get the exception handler count (for debugging)
+    pub fn exception_handler_count(&self) -> usize {
+        self.exception_handlers.lock().unwrap().len()
+    }
+
+    /// Record that this task has acquired a mutex
+    pub fn add_held_mutex(&self, mutex_id: MutexId) {
+        self.held_mutexes.lock().unwrap().push(mutex_id);
+    }
+
+    /// Record that this task has released a mutex
+    pub fn remove_held_mutex(&self, mutex_id: MutexId) {
+        let mut mutexes = self.held_mutexes.lock().unwrap();
+        if let Some(pos) = mutexes.iter().position(|&id| id == mutex_id) {
+            mutexes.remove(pos);
+        }
+    }
+
+    /// Get the number of mutexes currently held
+    pub fn held_mutex_count(&self) -> usize {
+        self.held_mutexes.lock().unwrap().len()
+    }
+
+    /// Take all mutexes held after a certain count (for exception unwinding)
+    pub fn take_mutexes_since(&self, count: usize) -> Vec<MutexId> {
+        let mut mutexes = self.held_mutexes.lock().unwrap();
+        if mutexes.len() > count {
+            mutexes.drain(count..).collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Get all held mutexes (for debugging)
+    pub fn get_held_mutexes(&self) -> Vec<MutexId> {
+        self.held_mutexes.lock().unwrap().clone()
     }
 }
 
@@ -382,5 +487,112 @@ mod tests {
         let handle2 = handle;
 
         assert_eq!(handle.task_id(), handle2.task_id());
+    }
+
+    #[test]
+    fn test_exception_handler_push_pop() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+
+        assert_eq!(task.exception_handler_count(), 0);
+
+        let handler = ExceptionHandler {
+            catch_offset: 100,
+            finally_offset: 200,
+            stack_size: 5,
+            frame_count: 2,
+            mutex_count: 0,
+        };
+
+        task.push_exception_handler(handler.clone());
+        assert_eq!(task.exception_handler_count(), 1);
+
+        let popped = task.pop_exception_handler().unwrap();
+        assert_eq!(popped.catch_offset, 100);
+        assert_eq!(popped.finally_offset, 200);
+        assert_eq!(popped.stack_size, 5);
+        assert_eq!(popped.frame_count, 2);
+
+        assert_eq!(task.exception_handler_count(), 0);
+    }
+
+    #[test]
+    fn test_exception_handler_peek() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+
+        let handler = ExceptionHandler {
+            catch_offset: 100,
+            finally_offset: -1,
+            stack_size: 5,
+            frame_count: 2,
+            mutex_count: 0,
+        };
+
+        task.push_exception_handler(handler.clone());
+
+        let peeked = task.peek_exception_handler().unwrap();
+        assert_eq!(peeked.catch_offset, 100);
+        assert_eq!(peeked.finally_offset, -1);
+
+        // Peek should not remove the handler
+        assert_eq!(task.exception_handler_count(), 1);
+    }
+
+    #[test]
+    fn test_exception_handler_stack() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+
+        let handler1 = ExceptionHandler {
+            catch_offset: 100,
+            finally_offset: -1,
+            stack_size: 5,
+            frame_count: 2,
+            mutex_count: 0,
+        };
+
+        let handler2 = ExceptionHandler {
+            catch_offset: 200,
+            finally_offset: 250,
+            stack_size: 10,
+            frame_count: 3,
+            mutex_count: 0,
+        };
+
+        task.push_exception_handler(handler1);
+        task.push_exception_handler(handler2);
+
+        assert_eq!(task.exception_handler_count(), 2);
+
+        // Pop should return handler2 first (LIFO)
+        let popped2 = task.pop_exception_handler().unwrap();
+        assert_eq!(popped2.catch_offset, 200);
+
+        let popped1 = task.pop_exception_handler().unwrap();
+        assert_eq!(popped1.catch_offset, 100);
+
+        assert_eq!(task.exception_handler_count(), 0);
+        assert!(task.pop_exception_handler().is_none());
+    }
+
+    #[test]
+    fn test_current_exception() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+
+        assert!(!task.has_exception());
+        assert!(task.current_exception().is_none());
+
+        let error = Value::i32(42);
+        task.set_exception(error);
+
+        assert!(task.has_exception());
+        assert_eq!(task.current_exception(), Some(Value::i32(42)));
+
+        task.clear_exception();
+
+        assert!(!task.has_exception());
+        assert!(task.current_exception().is_none());
     }
 }

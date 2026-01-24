@@ -13,6 +13,7 @@ members = [
     "crates/raya-test",
     "crates/raya-pm",
     "crates/raya-ffi",
+    "crates/raya-native",
 ]
 
 [workspace.package]
@@ -70,6 +71,8 @@ raya-parser = { path = "crates/raya-parser" }
 raya-types = { path = "crates/raya-types" }
 raya-compiler = { path = "crates/raya-compiler" }
 raya-stdlib = { path = "crates/raya-stdlib" }
+raya-ffi = { path = "crates/raya-ffi" }
+raya-native = { path = "crates/raya-native" }
 
 [profile.release]
 lto = true

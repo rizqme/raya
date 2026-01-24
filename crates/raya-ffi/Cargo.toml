@@ -15,6 +15,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 raya-core = { workspace = true }
 raya-bytecode = { workspace = true }
+raya-native = { workspace = true }
 
 # Error handling
 thiserror = { workspace = true }
@@ -22,9 +23,14 @@ thiserror = { workspace = true }
 # Thread-safe primitives
 parking_lot = { workspace = true }
 
+# Platform-specific dependencies
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # For testing the C API
 libc = "0.2"
+raya-native = { workspace = true }
 
 [features]
 default = []

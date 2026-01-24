@@ -12,6 +12,7 @@ description = "Bytecode definitions and encoding for the Raya VM"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+sha2 = { workspace = true }
 crc32fast = "1.3"
 
 [dev-dependencies]

@@ -1,0 +1,28 @@
+[package]
+name = "raya-native"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Rust ergonomic API for writing Raya native modules"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+# Proc-macro dependencies
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full", "extra-traits"] }
+
+# Internal dependencies
+raya-core = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# For testing the generated code
+raya-bytecode = { workspace = true }

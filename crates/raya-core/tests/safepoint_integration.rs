@@ -326,23 +326,34 @@ fn test_safepoint_on_object_literal() {
         code: vec![
             // OBJECT_LITERAL (should trigger safepoint poll)
             Opcode::ObjectLiteral as u8,
-            0, 0, // class index 0
-            2, 0, // field count 2
+            0,
+            0, // class index 0
+            2,
+            0, // field count 2
             // Push field 0 value
             Opcode::ConstI32 as u8,
-            10, 0, 0, 0,
+            10,
+            0,
+            0,
+            0,
             // INIT_OBJECT field 0
             Opcode::InitObject as u8,
-            0, 0,
+            0,
+            0,
             // Push field 1 value
             Opcode::ConstI32 as u8,
-            20, 0, 0, 0,
+            20,
+            0,
+            0,
+            0,
             // INIT_OBJECT field 1
             Opcode::InitObject as u8,
-            1, 0,
+            1,
+            0,
             // Load field 0 to verify
             Opcode::LoadField as u8,
-            0, 0,
+            0,
+            0,
             Opcode::Return as u8,
         ],
     });
@@ -367,29 +378,54 @@ fn test_safepoint_on_array_literal() {
         code: vec![
             // ARRAY_LITERAL (should trigger safepoint poll)
             Opcode::ArrayLiteral as u8,
-            0, 0, // type index 0
-            3, 0, 0, 0, // length 3
+            0,
+            0, // type index 0
+            3,
+            0,
+            0,
+            0, // length 3
             // Push element 0
             Opcode::ConstI32 as u8,
-            10, 0, 0, 0,
+            10,
+            0,
+            0,
+            0,
             // INIT_ARRAY index 0
             Opcode::InitArray as u8,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             // Push element 1
             Opcode::ConstI32 as u8,
-            20, 0, 0, 0,
+            20,
+            0,
+            0,
+            0,
             // INIT_ARRAY index 1
             Opcode::InitArray as u8,
-            1, 0, 0, 0,
+            1,
+            0,
+            0,
+            0,
             // Push element 2
             Opcode::ConstI32 as u8,
-            30, 0, 0, 0,
+            30,
+            0,
+            0,
+            0,
             // INIT_ARRAY index 2
             Opcode::InitArray as u8,
-            2, 0, 0, 0,
+            2,
+            0,
+            0,
+            0,
             // Load element 1 to verify
             Opcode::ConstI32 as u8,
-            1, 0, 0, 0,
+            1,
+            0,
+            0,
+            0,
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
@@ -420,51 +456,81 @@ fn test_safepoint_at_all_allocation_types() {
         code: vec![
             // 1. Object allocation (NEW)
             Opcode::New as u8,
-            0, 0,
+            0,
+            0,
             Opcode::StoreLocal as u8,
             0,
-
             // 2. Array allocation (NEW_ARRAY)
             Opcode::ConstI32 as u8,
-            3, 0, 0, 0,
+            3,
+            0,
+            0,
+            0,
             Opcode::NewArray as u8,
-            0, 0,
+            0,
+            0,
             Opcode::StoreLocal as u8,
             1,
-
             // 3. Object literal (OBJECT_LITERAL)
             Opcode::ObjectLiteral as u8,
-            0, 0, // class 0
-            2, 0, // field count 2
+            0,
+            0, // class 0
+            2,
+            0, // field count 2
             Opcode::ConstI32 as u8,
-            1, 0, 0, 0,
+            1,
+            0,
+            0,
+            0,
             Opcode::InitObject as u8,
-            0, 0,
+            0,
+            0,
             Opcode::ConstI32 as u8,
-            2, 0, 0, 0,
+            2,
+            0,
+            0,
+            0,
             Opcode::InitObject as u8,
-            1, 0,
+            1,
+            0,
             Opcode::StoreLocal as u8,
             2,
-
             // 4. Array literal (ARRAY_LITERAL)
             Opcode::ArrayLiteral as u8,
-            0, 0, // type 0
-            2, 0, 0, 0, // length 2
+            0,
+            0, // type 0
+            2,
+            0,
+            0,
+            0, // length 2
             Opcode::ConstI32 as u8,
-            5, 0, 0, 0,
+            5,
+            0,
+            0,
+            0,
             Opcode::InitArray as u8,
-            0, 0, 0, 0,
+            0,
+            0,
+            0,
+            0,
             Opcode::ConstI32 as u8,
-            6, 0, 0, 0,
+            6,
+            0,
+            0,
+            0,
             Opcode::InitArray as u8,
-            1, 0, 0, 0,
+            1,
+            0,
+            0,
+            0,
             Opcode::StoreLocal as u8,
             3,
-
             // Return 42 to verify execution completed
             Opcode::ConstI32 as u8,
-            42, 0, 0, 0,
+            42,
+            0,
+            0,
+            0,
             Opcode::Return as u8,
         ],
     });
@@ -493,15 +559,24 @@ fn test_safepoint_integration_with_gc() {
         local_count: 0,
         code: vec![
             // Allocate multiple objects
-            Opcode::New as u8, 0, 0,
+            Opcode::New as u8,
+            0,
+            0,
             Opcode::Pop as u8,
-            Opcode::New as u8, 0, 0,
+            Opcode::New as u8,
+            0,
+            0,
             Opcode::Pop as u8,
-            Opcode::New as u8, 0, 0,
+            Opcode::New as u8,
+            0,
+            0,
             Opcode::Pop as u8,
             // Return success
             Opcode::ConstI32 as u8,
-            1, 0, 0, 0,
+            1,
+            0,
+            0,
+            0,
             Opcode::Return as u8,
         ],
     });

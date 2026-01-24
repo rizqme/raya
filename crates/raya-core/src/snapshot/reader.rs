@@ -106,7 +106,10 @@ impl SnapshotReader {
         })
     }
 
-    fn parse_task_segment(data: &[u8], needs_byte_swap: bool) -> Result<Vec<SerializedTask>, SnapshotError> {
+    fn parse_task_segment(
+        data: &[u8],
+        needs_byte_swap: bool,
+    ) -> Result<Vec<SerializedTask>, SnapshotError> {
         use crate::snapshot::format::byteswap;
 
         let mut reader = data;

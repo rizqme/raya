@@ -23,6 +23,10 @@ pub enum VmError {
     #[error("Invalid binary format: {0}")]
     InvalidBinaryFormat(String),
 
+    /// Checksum mismatch (module integrity verification failed)
+    #[error("Checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+
     /// Context not found
     #[error("Context not found: {0:?}")]
     ContextNotFound(VmContextId),
@@ -183,10 +187,11 @@ impl Vm {
     /// # }
     /// ```
     pub fn load_rbin_bytes(&self, bytes: &[u8]) -> Result<(), VmError> {
+        use sha2::{Digest, Sha256};
+
         // Parse the .rbin format
-        let module = Module::decode(bytes).map_err(|e| {
-            VmError::InvalidBinaryFormat(format!("Failed to parse .rbin: {:?}", e))
-        })?;
+        let module = Module::decode(bytes)
+            .map_err(|e| VmError::InvalidBinaryFormat(format!("Failed to parse .rbin: {:?}", e)))?;
 
         // Verify magic number
         if &module.magic != b"RAYA" {
@@ -195,17 +200,36 @@ impl Vm {
             ));
         }
 
+        // Compute checksum of the payload (excluding header)
+        // The checksum in the module was computed during encoding
+        // We need to verify it matches
+        let payload_start = 48; // Header size: magic(4) + version(4) + flags(4) + crc32(4) + sha256(32)
+        if bytes.len() < payload_start {
+            return Err(VmError::InvalidBinaryFormat(
+                "File too small to contain valid header".to_string(),
+            ));
+        }
+
+        let payload = &bytes[payload_start..];
+        let hash = Sha256::digest(payload);
+        let computed_checksum: [u8; 32] = hash.into();
+
+        // Verify checksum
+        if module.checksum != computed_checksum {
+            return Err(VmError::ChecksumMismatch {
+                expected: hex::encode(module.checksum),
+                actual: hex::encode(computed_checksum),
+            });
+        }
+
         // Get write access to the context
-        let mut _context = self.context.write();
+        let mut context = self.context.write();
 
-        // TODO: Load the module into the context
-        // - Register functions from module.functions
-        // - Register classes from module.classes
-        // - Load constants into constant pool
-        // - Store type metadata
-        // - Register exports
+        // Register the module
+        context
+            .register_module(Arc::new(module))
+            .map_err(|e| VmError::ExecutionError(format!("Failed to register module: {}", e)))?;
 
-        // For now, just validate it's a proper .rbin file
         Ok(())
     }
 

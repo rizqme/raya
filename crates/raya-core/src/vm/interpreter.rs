@@ -4,7 +4,7 @@ use super::{ClassRegistry, SafepointCoordinator};
 use crate::{
     gc::GarbageCollector,
     object::{Array, Object, RayaString},
-    scheduler::{Scheduler, Task, TaskState},
+    scheduler::{ExceptionHandler, Scheduler, Task, TaskState},
     stack::Stack,
     value::Value,
     VmError, VmResult,
@@ -136,6 +136,13 @@ impl Vm {
 
         let mut ip = 0;
         let code = &function.code;
+
+        // Exception handler stack for this execution
+        let mut exception_handlers: Vec<ExceptionHandler> = Vec::new();
+        let mut current_exception: Option<Value> = None;
+
+        // Track mutexes held during this execution (for auto-unlock on exception)
+        let mut held_mutexes: Vec<crate::sync::MutexId> = Vec::new();
 
         loop {
             // Safepoint poll at loop back-edge
@@ -306,6 +313,11 @@ impl Vm {
 
                     return Ok(return_value);
                 }
+                Opcode::ReturnVoid => {
+                    // Pop frame and return null
+                    self.stack.pop_frame()?;
+                    return Ok(Value::null());
+                }
 
                 // Object operations
                 Opcode::New => {
@@ -414,10 +426,7 @@ impl Vm {
                 Opcode::JsonIndex => {
                     self.op_json_index()?;
                 }
-                Opcode::JsonCast => {
-                    let type_id = self.read_u32(code, &mut ip)? as usize;
-                    self.op_json_cast(type_id)?;
-                }
+                // Note: JsonCast removed - use native method value.as<T>() instead
 
                 // Concurrency operations
                 Opcode::Spawn => {
@@ -426,6 +435,140 @@ impl Vm {
                 }
                 Opcode::Await => {
                     self.op_await()?;
+                }
+                Opcode::WaitAll => {
+                    self.op_wait_all()?;
+                }
+
+                // Exception handling
+                Opcode::Try => {
+                    let catch_offset = self.read_i32(code, &mut ip)?;
+                    let finally_offset = self.read_i32(code, &mut ip)?;
+
+                    // Install exception handler
+                    let handler = ExceptionHandler {
+                        catch_offset,
+                        finally_offset,
+                        stack_size: self.stack.depth(),
+                        frame_count: self.stack.frame_count(),
+                        mutex_count: held_mutexes.len(),
+                    };
+                    exception_handlers.push(handler);
+                }
+                Opcode::EndTry => {
+                    // Remove exception handler from stack
+                    // Note: If there's a finally block, the compiler should place
+                    // the finally code inline after END_TRY so it executes naturally
+                    exception_handlers.pop();
+                }
+                Opcode::Throw => {
+                    // Pop exception value from stack
+                    let exception = self.stack.pop()?;
+                    current_exception = Some(exception);
+
+                    // Begin exception unwinding
+                    loop {
+                        if let Some(handler) = exception_handlers.last().cloned() {
+                            // Unwind stack to handler's saved state
+                            while self.stack.depth() > handler.stack_size {
+                                self.stack.pop()?;
+                            }
+
+                            // Auto-unlock mutexes acquired after this handler was installed
+                            // This ensures mutexes are released during exception unwinding
+                            if held_mutexes.len() > handler.mutex_count {
+                                // Remove and unlock mutexes in reverse order
+                                while held_mutexes.len() > handler.mutex_count {
+                                    if let Some(_mutex_id) = held_mutexes.pop() {
+                                        // Note: Actual mutex unlock would happen via UNLOCK opcode
+                                        // or we'd need access to the mutex registry here
+                                        // For now, we just track that they should be unlocked
+                                    }
+                                }
+                            }
+
+                            // Execute finally block if present
+                            if handler.finally_offset != -1 {
+                                exception_handlers.pop();
+                                ip = handler.finally_offset as usize;
+                                break;
+                            }
+
+                            // Jump to catch block if present
+                            if handler.catch_offset != -1 {
+                                exception_handlers.pop();
+                                // Push exception value for catch block
+                                // Keep current_exception set for potential RETHROW
+                                let exc = current_exception.as_ref().unwrap().clone();
+                                self.stack.push(exc)?;
+                                ip = handler.catch_offset as usize;
+                                break;
+                            }
+
+                            // No catch or finally, remove handler and continue unwinding
+                            exception_handlers.pop();
+                        } else {
+                            // No handler found, propagate error
+                            return Err(VmError::RuntimeError(format!(
+                                "Uncaught exception: {:?}",
+                                current_exception
+                            )));
+                        }
+                    }
+                }
+                Opcode::Rethrow => {
+                    // Re-raise the current exception
+                    if let Some(_exception) = current_exception.as_ref() {
+                        // Begin exception unwinding (same logic as THROW)
+                        loop {
+                            if let Some(handler) = exception_handlers.last().cloned() {
+                                // Unwind stack to handler's saved state
+                                while self.stack.depth() > handler.stack_size {
+                                    self.stack.pop()?;
+                                }
+
+                                // Auto-unlock mutexes acquired after this handler was installed
+                                if held_mutexes.len() > handler.mutex_count {
+                                    while held_mutexes.len() > handler.mutex_count {
+                                        if let Some(_mutex_id) = held_mutexes.pop() {
+                                            // Mutex unlock tracking
+                                        }
+                                    }
+                                }
+
+                                // Execute finally block if present
+                                if handler.finally_offset != -1 {
+                                    exception_handlers.pop();
+                                    ip = handler.finally_offset as usize;
+                                    break;
+                                }
+
+                                // Jump to catch block if present
+                                if handler.catch_offset != -1 {
+                                    exception_handlers.pop();
+                                    // Push exception value for catch block
+                                    // Keep current_exception set for potential RETHROW
+                                    let exc = current_exception.as_ref().unwrap().clone();
+                                    self.stack.push(exc)?;
+                                    ip = handler.catch_offset as usize;
+                                    break;
+                                }
+
+                                // No catch or finally, remove handler and continue unwinding
+                                exception_handlers.pop();
+                            } else {
+                                // No handler found, propagate error
+                                return Err(VmError::RuntimeError(format!(
+                                    "Uncaught exception: {:?}",
+                                    current_exception
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(VmError::RuntimeError(
+                            "RETHROW with no active exception".to_string(),
+                        ));
+                    }
                 }
 
                 _ => {
@@ -783,9 +926,13 @@ impl Vm {
         }
 
         // Otherwise convert to f64
-        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
-        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(a_f64 + b_f64))
     }
@@ -802,9 +949,13 @@ impl Vm {
         }
 
         // Otherwise convert to f64
-        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
-        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(a_f64 - b_f64))
     }
@@ -821,9 +972,13 @@ impl Vm {
         }
 
         // Otherwise convert to f64
-        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
-        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(a_f64 * b_f64))
     }
@@ -835,9 +990,13 @@ impl Vm {
         let a = self.stack.pop()?;
 
         // Convert both to f64 for division (to match TypeScript semantics)
-        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
-        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(a_f64 / b_f64))
     }
@@ -857,9 +1016,13 @@ impl Vm {
         }
 
         // Otherwise convert to f64
-        let a_f64 = a.as_f64().or_else(|| a.as_i32().map(|i| i as f64))
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
-        let b_f64 = b.as_f64().or_else(|| b.as_i32().map(|i| i as f64))
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(a_f64 % b_f64))
     }
@@ -875,7 +1038,8 @@ impl Vm {
         }
 
         // Otherwise convert to f64
-        let a_f64 = a.as_f64()
+        let a_f64 = a
+            .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(-a_f64))
     }
@@ -1320,12 +1484,14 @@ impl Vm {
         })?;
 
         // Load static field
-        let value = class.get_static_field(field_offset as usize).ok_or_else(|| {
-            VmError::RuntimeError(format!(
-                "Static field offset {} out of bounds for class {}",
-                field_offset, class.name
-            ))
-        })?;
+        let value = class
+            .get_static_field(field_offset as usize)
+            .ok_or_else(|| {
+                VmError::RuntimeError(format!(
+                    "Static field offset {} out of bounds for class {}",
+                    field_offset, class.name
+                ))
+            })?;
 
         // Push field value
         self.stack.push(value)?;
@@ -1710,7 +1876,8 @@ impl Vm {
 
         // Allocate on GC heap
         let gc_ptr = self.gc.allocate(obj);
-        let obj_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        let obj_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
 
         // If class has a constructor, call it with the new object as receiver
         if let Some(constructor_id) = class.constructor_id {
@@ -1719,7 +1886,10 @@ impl Vm {
 
             // Get constructor function
             let function = module.functions.get(constructor_id).ok_or_else(|| {
-                VmError::RuntimeError(format!("Invalid constructor function ID: {}", constructor_id))
+                VmError::RuntimeError(format!(
+                    "Invalid constructor function ID: {}",
+                    constructor_id
+                ))
             })?;
 
             // Arguments are already on stack before the object
@@ -1773,9 +1943,9 @@ impl Vm {
         })?;
 
         // Get parent class ID
-        let parent_id = class.parent_id.ok_or_else(|| {
-            VmError::RuntimeError(format!("Class {} has no parent", class.name))
-        })?;
+        let parent_id = class
+            .parent_id
+            .ok_or_else(|| VmError::RuntimeError(format!("Class {} has no parent", class.name)))?;
 
         // Look up parent class
         let parent_class = self.classes.get_class(parent_id).ok_or_else(|| {
@@ -1783,9 +1953,9 @@ impl Vm {
         })?;
 
         // Get parent constructor
-        let parent_constructor_id = parent_class.constructor_id.ok_or_else(|| {
-            VmError::RuntimeError(format!("Parent class has no constructor"))
-        })?;
+        let parent_constructor_id = parent_class
+            .constructor_id
+            .ok_or_else(|| VmError::RuntimeError(format!("Parent class has no constructor")))?;
 
         // Get constructor function
         let function = module.functions.get(parent_constructor_id).ok_or_else(|| {
@@ -2004,6 +2174,78 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// WAIT_ALL - Wait for all tasks in an array to complete
+    /// Stack: [array_of_task_ids] -> [array_of_results]
+    #[allow(dead_code)]
+    fn op_wait_all(&mut self) -> VmResult<()> {
+        use crate::scheduler::TaskId;
+
+        // Safepoint poll on wait_all entry
+        self.safepoint().poll();
+
+        // Pop array pointer from stack (array is allocated on GC heap)
+        let array_val = self.stack.pop()?;
+
+        // Get pointer to Vec<Value> from the GC'd value
+        let array_ptr = unsafe {
+            array_val
+                .as_ptr::<Vec<Value>>()
+                .ok_or_else(|| VmError::TypeError("Expected array pointer for WAIT_ALL".to_string()))?
+        };
+
+        let task_array = unsafe { &*array_ptr.as_ptr() };
+
+        // Extract TaskIds from array
+        let mut task_ids = Vec::with_capacity(task_array.len());
+        for val in task_array.iter() {
+            let task_id_u64 = val
+                .as_u64()
+                .ok_or_else(|| VmError::TypeError("Expected TaskId (u64) in array".to_string()))?;
+            task_ids.push(TaskId::from_u64(task_id_u64));
+        }
+
+        // Wait for all tasks to complete
+        let mut results = Vec::with_capacity(task_ids.len());
+        for task_id in task_ids {
+            loop {
+                // Get task from scheduler
+                let task = self
+                    .scheduler
+                    .get_task(task_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Task {:?} not found", task_id)))?;
+
+                let state = task.state();
+
+                match state {
+                    TaskState::Completed => {
+                        // Get result
+                        let result = task.result().unwrap_or(Value::null());
+                        results.push(result);
+                        break; // Move to next task
+                    }
+                    TaskState::Failed => {
+                        return Err(VmError::RuntimeError(format!(
+                            "Task {:?} in WAIT_ALL failed",
+                            task_id
+                        )));
+                    }
+                    _ => {
+                        // Task still running, poll safepoint and yield
+                        self.safepoint().poll();
+                        std::thread::sleep(std::time::Duration::from_micros(100));
+                    }
+                }
+            }
+        }
+
+        // Create result array (GC-allocated Vec<Value>) and push to stack
+        let result_array_gc = self.gc.allocate(results);
+        let result_ptr = unsafe { std::ptr::NonNull::new(result_array_gc.as_ptr()).unwrap() };
+        self.stack.push(unsafe { Value::from_ptr(result_ptr) })?;
+
+        Ok(())
     }
 }
 

@@ -148,10 +148,7 @@ fn test_multiple_closures_concurrent() {
         })
         .collect();
 
-    let results: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     // Verify results
     for (i, result) in results.iter().enumerate() {
@@ -162,9 +159,9 @@ fn test_multiple_closures_concurrent() {
 #[test]
 fn test_closure_concurrent_independent_state() {
     // Test that closures in different threads have independent state
-    use std::thread;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::Arc;
+    use std::thread;
 
     let counter = Arc::new(AtomicI32::new(0));
 
@@ -179,10 +176,7 @@ fn test_closure_concurrent_independent_state() {
         })
         .collect();
 
-    let results: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     // All closures should have executed
     assert_eq!(results.len(), 10);
@@ -194,8 +188,8 @@ fn test_closure_concurrent_independent_state() {
 #[test]
 fn test_closure_shared_read_only_state() {
     // Test closures sharing read-only captured state across threads
-    use std::thread;
     use std::sync::Arc;
+    use std::thread;
 
     let shared_value = Arc::new(42i32);
 
@@ -210,10 +204,7 @@ fn test_closure_shared_read_only_state() {
         })
         .collect();
 
-    let results: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     // Verify results
     for (i, result) in results.iter().enumerate() {
@@ -224,8 +215,8 @@ fn test_closure_shared_read_only_state() {
 #[test]
 fn test_closure_concurrent_mutation_with_mutex() {
     // Test closures with shared mutable state (using Mutex)
-    use std::thread;
     use std::sync::{Arc, Mutex};
+    use std::thread;
 
     let shared_vec = Arc::new(Mutex::new(Vec::new()));
 
@@ -342,9 +333,7 @@ fn test_recursive_closure_fibonacci() {
 fn test_closure_inline_optimization() {
     // Test that simple closures can be inlined
 
-    let result = (0..1000)
-        .map(|i| i * 2)
-        .sum::<i32>();
+    let result = (0..1000).map(|i| i * 2).sum::<i32>();
 
     assert_eq!(result, 999000);
 }
@@ -367,10 +356,7 @@ fn test_closure_heavy_workload() {
         })
         .collect();
 
-    let results: Vec<_> = handles
-        .into_iter()
-        .map(|h| h.join().unwrap())
-        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
     assert_eq!(results.len(), 8);
 }
@@ -396,8 +382,8 @@ fn test_closure_with_result() {
 #[test]
 fn test_closure_panic_recovery() {
     // Test that panicking closure can be caught
-    use std::thread;
     use std::panic;
+    use std::thread;
 
     let handle = thread::spawn(|| {
         panic::catch_unwind(|| {

@@ -23,18 +23,9 @@
 //!
 //! ## Usage
 //!
-//! ```rust,ignore
-//! // In interpreter loop
-//! fn execute_opcode(&mut self, opcode: Opcode) -> VmResult<()> {
-//!     match opcode {
-//!         Opcode::New => {
-//!             self.safepoint().poll();  // Before allocation
-//!             // ... allocate object
-//!         }
-//!         // ...
-//!     }
-//! }
-//! ```
+//! Safepoint polling should be inserted before allocations in the interpreter loop.
+//! Call `safepoint().poll()` before operations that allocate memory to ensure
+//! the VM can pause for garbage collection or snapshotting when needed.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
