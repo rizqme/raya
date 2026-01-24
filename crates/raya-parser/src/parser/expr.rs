@@ -11,6 +11,13 @@ pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
 }
 
 /// Parse an expression with precedence climbing.
+///
+/// Standard precedence climbing algorithm:
+/// - Parse left operand
+/// - While next operator has precedence >= min_precedence:
+///   - Consume operator
+///   - Parse right operand with higher precedence (for left-assoc) or same (for right-assoc)
+///   - Combine into binary expression
 fn parse_expression_with_precedence(
     parser: &mut Parser,
     min_precedence: Precedence,
@@ -20,7 +27,16 @@ fn parse_expression_with_precedence(
     loop {
         let current_precedence = get_precedence(parser.current());
 
-        if current_precedence <= min_precedence {
+        // Standard precedence climbing: continue while current_prec >= min_prec
+        // Special case: allow postfix operators through even if precedence is None
+        // (they will be handled in parse_infix -> parse_postfix)
+        let is_postfix = matches!(
+            parser.current(),
+            Token::LeftParen | Token::Dot | Token::QuestionDot | Token::LeftBracket
+                | Token::PlusPlus | Token::MinusMinus
+        );
+
+        if !is_postfix && (current_precedence == Precedence::None || current_precedence < min_precedence) {
             break;
         }
 
@@ -219,9 +235,12 @@ fn parse_infix(
 
         parser.advance();
 
+        // Standard precedence climbing (same as binary operators)
         let next_precedence = if is_right_associative(&op_token) {
+            // Right-associative: allow same precedence on right
             precedence
         } else {
+            // Left-associative: require higher precedence on right
             Precedence::from(precedence as u8 + 1)
         };
 
@@ -270,13 +289,18 @@ fn parse_infix(
 
     parser.advance();
 
-    let next_precedence = if is_right_associative(&op_token) {
+    // Standard precedence climbing:
+    // For left-associative: use current_prec + 1 (prevent same-level ops from binding on right)
+    // For right-associative: use current_prec (allow same-level ops to bind on right)
+    let next_min_precedence = if is_right_associative(&op_token) {
+        // Right-associative: allow same precedence on right (e.g., 2 ** 3 ** 4 = 2 ** (3 ** 4))
         precedence
     } else {
-        Precedence::from(precedence as u8 + 1)
+        // Left-associative: require higher precedence on right (e.g., 1 + 2 + 3 = (1 + 2) + 3)
+        Precedence::from((precedence as u8) + 1)
     };
 
-    let right = parse_expression_with_precedence(parser, next_precedence)?;
+    let right = parse_expression_with_precedence(parser, next_min_precedence)?;
     let span = parser.combine_spans(&start_span, right.span());
 
     let binary = Expression::Binary(BinaryExpression {

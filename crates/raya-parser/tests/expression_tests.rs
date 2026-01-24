@@ -128,24 +128,30 @@ fn test_parse_binary_precedence() {
 
     // Should parse as: 1 + (2 * 3)
     match &module.statements[0] {
-        Statement::Expression(expr_stmt) => match &expr_stmt.expression {
-            Expression::Binary(bin) => {
-                assert!(matches!(bin.operator, BinaryOperator::Add));
-                // Left is 1
-                match &*bin.left {
-                    Expression::IntLiteral(lit) => assert_eq!(lit.value, 1),
-                    Expression::FloatLiteral(lit) => assert_eq!(lit.value, 1.0),
-                    _ => panic!("Expected literal"),
-                }
-                // Right is (2 * 3)
-                match &*bin.right {
-                    Expression::Binary(inner) => {
-                        assert!(matches!(inner.operator, BinaryOperator::Multiply));
+        Statement::Expression(expr_stmt) => {
+            // Debug: print what we actually got
+            println!("Got expression: {:?}", expr_stmt.expression);
+
+            match &expr_stmt.expression {
+                Expression::Binary(bin) => {
+                    println!("Binary operator: {:?}", bin.operator);
+                    assert!(matches!(bin.operator, BinaryOperator::Add), "Expected Add, got {:?}", bin.operator);
+                    // Left is 1
+                    match &*bin.left {
+                        Expression::IntLiteral(lit) => assert_eq!(lit.value, 1),
+                        Expression::FloatLiteral(lit) => assert_eq!(lit.value, 1.0),
+                        _ => panic!("Expected literal"),
                     }
-                    _ => panic!("Expected binary expression for 2 * 3"),
+                    // Right is (2 * 3)
+                    match &*bin.right {
+                        Expression::Binary(inner) => {
+                            assert!(matches!(inner.operator, BinaryOperator::Multiply));
+                        }
+                        _ => panic!("Expected binary expression for 2 * 3"),
+                    }
                 }
+                other => panic!("Expected binary expression, got {:?}", other),
             }
-            _ => panic!("Expected binary expression"),
         },
         _ => panic!("Expected expression statement"),
     }
@@ -588,6 +594,87 @@ fn test_parse_complex_precedence() {
                         assert!(matches!(right_bin.operator, BinaryOperator::Divide));
                     }
                     _ => panic!("Expected binary expression on right"),
+                }
+            }
+            _ => panic!("Expected binary expression"),
+        },
+        _ => panic!("Expected expression statement"),
+    }
+}
+#[test]
+fn test_parse_left_associativity() {
+    let source = "1 + 2 + 3";
+    let parser = Parser::new(source).unwrap();
+    let module = parser.parse().unwrap();
+
+    // Should parse as (1 + 2) + 3
+    match &module.statements[0] {
+        Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+            Expression::Binary(outer) => {
+                // Outer is ... + 3
+                assert!(matches!(outer.operator, BinaryOperator::Add));
+                match &*outer.right {
+                    Expression::IntLiteral(lit) => assert_eq!(lit.value, 3),
+                    Expression::FloatLiteral(lit) => assert_eq!(lit.value, 3.0),
+                    _ => panic!("Expected 3"),
+                }
+                // Left is (1 + 2)
+                match &*outer.left {
+                    Expression::Binary(inner) => {
+                        assert!(matches!(inner.operator, BinaryOperator::Add));
+                        match &*inner.left {
+                            Expression::IntLiteral(lit) => assert_eq!(lit.value, 1),
+                            Expression::FloatLiteral(lit) => assert_eq!(lit.value, 1.0),
+                            _ => panic!("Expected 1"),
+                        }
+                        match &*inner.right {
+                            Expression::IntLiteral(lit) => assert_eq!(lit.value, 2),
+                            Expression::FloatLiteral(lit) => assert_eq!(lit.value, 2.0),
+                            _ => panic!("Expected 2"),
+                        }
+                    }
+                    _ => panic!("Expected binary expression for 1 + 2"),
+                }
+            }
+            _ => panic!("Expected binary expression"),
+        },
+        _ => panic!("Expected expression statement"),
+    }
+}
+
+#[test]
+fn test_parse_right_associativity() {
+    let source = "2 ** 3 ** 4";
+    let parser = Parser::new(source).unwrap();
+    let module = parser.parse().unwrap();
+
+    // Should parse as 2 ** (3 ** 4)
+    match &module.statements[0] {
+        Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+            Expression::Binary(outer) => {
+                // Outer is 2 ** ...
+                assert!(matches!(outer.operator, BinaryOperator::Exponent));
+                match &*outer.left {
+                    Expression::IntLiteral(lit) => assert_eq!(lit.value, 2),
+                    Expression::FloatLiteral(lit) => assert_eq!(lit.value, 2.0),
+                    _ => panic!("Expected 2"),
+                }
+                // Right is (3 ** 4)
+                match &*outer.right {
+                    Expression::Binary(inner) => {
+                        assert!(matches!(inner.operator, BinaryOperator::Exponent));
+                        match &*inner.left {
+                            Expression::IntLiteral(lit) => assert_eq!(lit.value, 3),
+                            Expression::FloatLiteral(lit) => assert_eq!(lit.value, 3.0),
+                            _ => panic!("Expected 3"),
+                        }
+                        match &*inner.right {
+                            Expression::IntLiteral(lit) => assert_eq!(lit.value, 4),
+                            Expression::FloatLiteral(lit) => assert_eq!(lit.value, 4.0),
+                            _ => panic!("Expected 4"),
+                        }
+                    }
+                    _ => panic!("Expected binary expression for 3 ** 4"),
                 }
             }
             _ => panic!("Expected binary expression"),
