@@ -78,6 +78,7 @@ fn test_function_decl_simple() {
         type_params: None,
         params: vec![
             Parameter {
+                decorators: vec![],
                 pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(13, 14, 1, 14))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -86,6 +87,7 @@ fn test_function_decl_simple() {
                 span: Span::new(13, 22, 1, 14),
             },
             Parameter {
+                decorators: vec![],
                 pattern: Pattern::Identifier(Identifier::new("y".to_string(), Span::new(24, 25, 1, 25))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -138,12 +140,15 @@ fn test_function_decl_async() {
 #[test]
 fn test_class_decl_simple() {
     let class = ClassDecl {
+        decorators: vec![],
+        is_abstract: false,
         name: Identifier::new("Point".to_string(), Span::new(6, 11, 1, 7)),
         type_params: None,
         extends: None,
         implements: vec![],
         members: vec![
             ClassMember::Field(FieldDecl {
+                decorators: vec![],
                 name: Identifier::new("x".to_string(), Span::new(18, 19, 2, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -154,6 +159,7 @@ fn test_class_decl_simple() {
                 span: Span::new(18, 28, 2, 5),
             }),
             ClassMember::Field(FieldDecl {
+                decorators: vec![],
                 name: Identifier::new("y".to_string(), Span::new(33, 34, 3, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -175,6 +181,8 @@ fn test_class_decl_simple() {
 #[test]
 fn test_class_with_extends() {
     let class = ClassDecl {
+        decorators: vec![],
+        is_abstract: false,
         name: Identifier::new("Square".to_string(), Span::new(6, 12, 1, 7)),
         type_params: None,
         extends: Some(TypeAnnotation {
@@ -193,9 +201,14 @@ fn test_class_with_extends() {
 }
 
 // ============================================================================
-// Interface Declaration Tests
+// Type Alias Tests (Interfaces BANNED in Raya - use type aliases instead)
 // ============================================================================
 
+// NOTE: Raya does NOT support `interface` declarations (LANG.md §10).
+// Use type aliases for all type definitions.
+//
+// The test below is commented out as interfaces are banned:
+/*
 #[test]
 fn test_interface_decl() {
     let interface = InterfaceDecl {
@@ -229,6 +242,7 @@ fn test_interface_decl() {
     assert_eq!(interface.name.name, "Drawable");
     assert_eq!(interface.members.len(), 2);
 }
+*/
 
 // ============================================================================
 // Control Flow Statement Tests

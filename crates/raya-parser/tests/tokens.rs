@@ -22,12 +22,12 @@ fn assert_tokens(source: &str, expected: Vec<Token>) {
 }
 
 // Keywords tests
+// NOTE: 'var' is BANNED in Raya (LANG.md §19.1) - use 'let' or 'const' instead
 #[test]
 fn test_keywords_variables() {
-    assert_tokens("let const var", vec![
+    assert_tokens("let const", vec![
         Token::Let,
         Token::Const,
-        Token::Var,
     ]);
 }
 
@@ -63,9 +63,10 @@ fn test_keywords_switch() {
     ]);
 }
 
+// NOTE: 'interface' is BANNED in Raya (LANG.md §10) - use 'type' aliases instead
 #[test]
 fn test_keywords_oop() {
-    assert_tokens("class new this super static extends implements interface", vec![
+    assert_tokens("class new this super static extends implements", vec![
         Token::Class,
         Token::New,
         Token::This,
@@ -73,18 +74,17 @@ fn test_keywords_oop() {
         Token::Static,
         Token::Extends,
         Token::Implements,
-        Token::Interface,
     ]);
 }
 
+// NOTE: 'enum' is BANNED in Raya (LANG.md §19.2) - use union of literals instead
 #[test]
 fn test_keywords_types() {
-    assert_tokens("type typeof instanceof void enum", vec![
+    assert_tokens("type typeof instanceof void", vec![
         Token::Type,
         Token::Typeof,
         Token::Instanceof,
         Token::Void,
-        Token::Enum,
     ]);
 }
 
