@@ -75,7 +75,20 @@ impl Cache {
     /// ```
     pub fn init() -> Result<Self, CacheError> {
         let root = Self::cache_dir()?;
+        Self::new(root)
+    }
 
+    /// Create a cache with a custom root directory
+    ///
+    /// This is useful for testing or custom cache locations.
+    ///
+    /// # Arguments
+    /// * `root` - Root directory for the cache
+    ///
+    /// # Returns
+    /// * `Ok(Cache)` - Successfully initialized cache
+    /// * `Err(CacheError)` - Failed to create cache directory
+    pub fn new(root: PathBuf) -> Result<Self, CacheError> {
         // Create cache directory structure
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("tmp"))?;
@@ -299,15 +312,21 @@ impl Cache {
 mod tests {
     use super::*;
 
+    fn temp_cache() -> Cache {
+        let temp_dir = tempfile::tempdir().unwrap();
+        Cache::new(temp_dir.path().to_path_buf()).unwrap()
+    }
+
     #[test]
     fn test_cache_init() {
-        let cache = Cache::init();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(temp_dir.path().to_path_buf());
         assert!(cache.is_ok());
     }
 
     #[test]
     fn test_store_and_retrieve() {
-        let cache = Cache::init().unwrap();
+        let cache = temp_cache();
         let test_data = b"test module data";
 
         // Store
@@ -323,7 +342,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_store() {
-        let cache = Cache::init().unwrap();
+        let cache = temp_cache();
         let test_data = b"test module data";
 
         // Store twice
@@ -336,7 +355,7 @@ mod tests {
 
     #[test]
     fn test_module_not_found() {
-        let cache = Cache::init().unwrap();
+        let cache = temp_cache();
         let nonexistent_hash = [0u8; 32];
 
         let result = cache.retrieve(&nonexistent_hash);
@@ -346,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_exists() {
-        let cache = Cache::init().unwrap();
+        let cache = temp_cache();
         let test_data = b"test module data";
 
         let hash = cache.store(test_data).unwrap();
