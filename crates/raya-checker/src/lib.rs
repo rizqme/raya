@@ -39,6 +39,7 @@ pub mod checker;
 pub mod error;
 pub mod type_guards;
 pub mod narrowing;
+pub mod exhaustiveness;
 
 // Re-export main types
 pub use symbols::{Symbol, SymbolKind, SymbolTable, SymbolFlags, Scope, ScopeId, ScopeKind};
@@ -47,3 +48,4 @@ pub use checker::TypeChecker;
 pub use error::{BindError, CheckError};
 pub use type_guards::TypeGuard;
 pub use narrowing::TypeEnv;
+pub use exhaustiveness::ExhaustivenessResult;

@@ -8,6 +8,7 @@ use crate::error::CheckError;
 use crate::symbols::SymbolTable;
 use crate::type_guards::{extract_type_guard, TypeGuard};
 use crate::narrowing::{apply_type_guard, TypeEnv};
+use crate::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use raya_parser::ast::*;
 use raya_types::{AssignabilityContext, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
@@ -258,8 +259,23 @@ impl<'a> TypeChecker<'a> {
 
     /// Check switch statement
     fn check_switch(&mut self, switch_stmt: &SwitchStatement) {
-        // Check discriminant
-        self.check_expr(&switch_stmt.discriminant);
+        // Check discriminant and get its type
+        let discriminant_ty = self.check_expr(&switch_stmt.discriminant);
+
+        // Check exhaustiveness for discriminated unions
+        let exhaustiveness = check_switch_exhaustiveness(
+            self.type_ctx,
+            discriminant_ty,
+            switch_stmt,
+        );
+
+        // Report non-exhaustive matches
+        if let ExhaustivenessResult::NonExhaustive(missing) = exhaustiveness {
+            self.errors.push(CheckError::NonExhaustiveMatch {
+                missing,
+                span: switch_stmt.span,
+            });
+        }
 
         // Check cases
         for case in &switch_stmt.cases {
@@ -543,12 +559,19 @@ impl<'a> TypeChecker<'a> {
         let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
         if !assign_ctx.is_assignable(source, target) {
             self.errors.push(CheckError::TypeMismatch {
-                expected: format!("{:?}", target),
-                actual: format!("{:?}", source),
+                expected: self.format_type(target),
+                actual: self.format_type(source),
                 span,
                 note: None,
             });
         }
+    }
+
+    /// Format a type for display in error messages
+    fn format_type(&self, ty: TypeId) -> String {
+        // For now, use Debug formatting
+        // TODO: Implement proper type formatting (e.g., "string | number" instead of "TypeId(...)")
+        format!("{:?}", ty)
     }
 
     /// Get type of expression (for external use)
