@@ -3,6 +3,7 @@
 //! When the parser encounters an error, it uses these strategies to
 //! resynchronize and continue parsing to find more errors.
 
+use super::guards::LoopGuard;
 use super::Parser;
 use crate::token::Token;
 
@@ -11,7 +12,15 @@ use crate::token::Token;
 /// This is used after encountering a parse error to skip tokens until
 /// we reach a point where statement parsing can resume.
 pub fn sync_to_statement_boundary(parser: &mut Parser) {
+    // Loop guard to prevent infinite loops in recovery itself
+    let mut guard = LoopGuard::new("statement_recovery");
+
     while !parser.at_eof() {
+        // Emergency stop if recovery loops too long
+        if guard.check().is_err() {
+            return;
+        }
+
         match parser.current() {
             // Statement-starting tokens
             Token::Function
@@ -40,8 +49,9 @@ pub fn sync_to_statement_boundary(parser: &mut Parser) {
                 return;
             }
 
-            // Closing brace might end a block
+            // Closing brace might end a block - advance past it to avoid infinite loop
             Token::RightBrace => {
+                parser.advance();
                 return;
             }
 
@@ -55,10 +65,22 @@ pub fn sync_to_statement_boundary(parser: &mut Parser) {
 
 /// Synchronize to the next expression boundary.
 pub fn sync_to_expression_boundary(parser: &mut Parser) {
+    // Loop guard to prevent infinite loops in recovery itself
+    let mut guard = LoopGuard::new("expression_recovery");
+
     while !parser.at_eof() {
+        // Emergency stop if recovery loops too long
+        if guard.check().is_err() {
+            return;
+        }
+
         match parser.current() {
             // Expression delimiters
-            Token::Semicolon | Token::Comma | Token::RightParen | Token::RightBrace | Token::RightBracket => {
+            Token::Semicolon
+            | Token::Comma
+            | Token::RightParen
+            | Token::RightBrace
+            | Token::RightBracket => {
                 return;
             }
 
@@ -72,7 +94,22 @@ pub fn sync_to_expression_boundary(parser: &mut Parser) {
 
 /// Skip tokens until we find one of the expected tokens.
 pub fn skip_until(parser: &mut Parser, expected: &[Token]) {
-    while !parser.at_eof() && !parser.check_any(expected) {
+    // Loop guard to prevent infinite loops
+    let mut guard = LoopGuard::new("skip_until");
+
+    while !parser.at_eof() {
+        // Emergency stop if recovery loops too long
+        if guard.check().is_err() {
+            return;
+        }
+
+        // Check if current token matches any expected
+        for t in expected {
+            if parser.check(t) {
+                return;
+            }
+        }
+
         parser.advance();
     }
 }

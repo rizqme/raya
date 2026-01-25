@@ -5,6 +5,8 @@
 
 pub mod error;
 pub mod expr;
+pub mod guards;
+pub mod jsx;
 pub mod pattern;
 pub mod precedence;
 pub mod recovery;
@@ -12,6 +14,7 @@ pub mod stmt;
 pub mod types;
 
 use crate::ast::*;
+use crate::interner::Interner;
 use crate::lexer::Lexer;
 use crate::token::{Span, Token};
 
@@ -25,11 +28,17 @@ pub struct Parser {
     /// Pre-tokenized input
     tokens: Vec<(Token, Span)>,
 
+    /// String interner for resolving symbols
+    interner: Interner,
+
     /// Current position in token stream
     pos: usize,
 
     /// Accumulated parse errors (allows continuing after errors)
     errors: Vec<ParseError>,
+
+    /// Current recursion depth (for preventing stack overflow)
+    depth: usize,
 }
 
 impl Parser {
@@ -37,7 +46,7 @@ impl Parser {
     pub fn new(source: &str) -> Result<Self, Vec<crate::lexer::LexError>> {
         // Tokenize the entire input first
         let lexer = Lexer::new(source);
-        let mut tokens = lexer.tokenize()?;
+        let (mut tokens, interner) = lexer.tokenize()?;
 
         // Add EOF token if not present
         if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
@@ -51,8 +60,10 @@ impl Parser {
 
         Ok(Self {
             tokens,
+            interner,
             pos: 0,
             errors: Vec::new(),
+            depth: 0,
         })
     }
 
@@ -94,19 +105,19 @@ impl Parser {
     // ========================================================================
 
     /// Get the current token.
-    #[inline]
+    #[inline(always)]
     pub fn current(&self) -> &Token {
         &self.tokens[self.pos].0
     }
 
     /// Get the current token's span.
-    #[inline]
+    #[inline(always)]
     pub fn current_span(&self) -> Span {
         self.tokens[self.pos].1
     }
 
     /// Peek at the next token (lookahead).
-    #[inline]
+    #[inline(always)]
     pub fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.pos + 1).map(|(tok, _)| tok)
     }
@@ -117,7 +128,10 @@ impl Parser {
         self.tokens.get(self.pos + 1).map(|(_, span)| *span)
     }
 
-    /// Advance to the next token, returning the previous current token.
+    /// Advance to the next token, returning the current token.
+    ///
+    /// Note: This clones the token. Consider using current() + advance_without_return() if you don't need the value.
+    #[inline]
     pub fn advance(&mut self) -> Token {
         let tok = self.tokens[self.pos].0.clone();
         if self.pos < self.tokens.len() - 1 {
@@ -126,26 +140,48 @@ impl Parser {
         tok
     }
 
+    /// Advance without returning the token (avoids clone).
+    #[inline(always)]
+    pub fn advance_without_return(&mut self) {
+        if self.pos < self.tokens.len() - 1 {
+            self.pos += 1;
+        }
+    }
+
     /// Check if the current token matches the given kind.
-    #[inline]
+    #[inline(always)]
     pub fn check(&self, expected: &Token) -> bool {
         std::mem::discriminant(self.current()) == std::mem::discriminant(expected)
     }
 
     /// Check if the current token matches any of the given kinds.
+    #[inline]
     pub fn check_any(&self, expected: &[Token]) -> bool {
         expected.iter().any(|tok| self.check(tok))
     }
 
     /// Check if we've reached EOF.
-    #[inline]
+    #[inline(always)]
     pub fn at_eof(&self) -> bool {
         matches!(self.current(), Token::Eof)
+    }
+
+    /// Resolve a symbol to its string representation.
+    #[inline]
+    pub fn resolve(&self, symbol: crate::interner::Symbol) -> &str {
+        self.interner.resolve(symbol)
+    }
+
+    /// Intern a new string, returning its symbol.
+    #[inline]
+    pub fn intern(&mut self, s: &str) -> crate::interner::Symbol {
+        self.interner.intern(s)
     }
 
     /// Consume the current token if it matches the expected kind.
     ///
     /// Returns Ok(token) on match, or Err(ParseError) on mismatch.
+    #[inline]
     pub fn expect(&mut self, expected: Token) -> Result<Token, ParseError> {
         if self.check(&expected) {
             Ok(self.advance())
@@ -155,6 +191,7 @@ impl Parser {
     }
 
     /// Consume the current token if it matches any of the expected kinds.
+    #[inline]
     pub fn expect_any(&mut self, expected: &[Token]) -> Result<Token, ParseError> {
         if self.check_any(expected) {
             Ok(self.advance())
@@ -218,6 +255,39 @@ impl Parser {
             line: start.line,
             column: start.column,
         }
+    }
+
+    // ========================================================================
+    // Parser Guards (Loop & Depth Protection)
+    // ========================================================================
+
+    /// Enter a recursive parsing context
+    ///
+    /// Returns a RAII guard that automatically decrements depth on drop.
+    /// Returns error if maximum depth exceeded.
+    #[inline]
+    pub fn enter_depth(&mut self, name: &'static str) -> Result<guards::DepthGuard<'_>, ParseError> {
+        guards::DepthGuard::new(&mut self.depth, name)
+    }
+
+    /// Assert that parser position advanced
+    ///
+    /// Prevents silent infinite loops where position doesn't change
+    #[inline]
+    pub fn assert_progress(&self, old_pos: usize) -> Result<(), ParseError> {
+        if self.pos == old_pos {
+            return Err(ParseError::parser_stuck(
+                "Parser position did not advance",
+                self.current_span(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Get current parser position (for progress tracking)
+    #[inline]
+    pub fn position(&self) -> usize {
+        self.pos
     }
 
     // ========================================================================

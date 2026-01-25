@@ -2,10 +2,30 @@
 
 use super::{ParseError, Parser};
 use crate::ast::*;
+use crate::interner::Symbol;
 use crate::token::Token;
 
 /// Parse a statement.
 pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    // Check depth before entering
+    parser.depth += 1;
+    if parser.depth > super::guards::MAX_PARSE_DEPTH {
+        parser.depth -= 1;
+        return Err(ParseError::parser_limit_exceeded(
+            format!("Maximum nesting depth ({}) exceeded in statement", super::guards::MAX_PARSE_DEPTH),
+            parser.current_span(),
+        ));
+    }
+
+    // Use inner function so `?` can be used freely while ensuring depth is always decremented
+    let result = parse_statement_inner(parser);
+
+    parser.depth -= 1;
+    result
+}
+
+/// Inner statement parsing logic - allows use of `?` operator
+fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
     match parser.current() {
         Token::Let | Token::Const => parse_variable_declaration(parser),
         Token::Function => parse_function_declaration(parser),
@@ -194,7 +214,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
             span: name_span,
         }
     } else {
-        return Err(parser.unexpected_token(&[Token::Identifier("".to_string())]));
+        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
     };
 
     // Optional type parameters
@@ -238,8 +258,10 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 /// Parse function parameters
 fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("function_parameters");
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
+        guard.check()?;
         let start_span = parser.current_span();
 
         // TODO: Parse decorators when implemented
@@ -280,8 +302,10 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
 /// Parse type parameters (generics)
 fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, ParseError> {
     let mut type_params = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("type_parameters");
 
     while !parser.check(&Token::Greater) && !parser.at_eof() {
+        guard.check()?;
         let start_span = parser.current_span();
 
         let name = if let Token::Identifier(name) = parser.current() {
@@ -292,7 +316,7 @@ fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, Pars
                 span: start_span,
             }
         } else {
-            return Err(parser.unexpected_token(&[Token::Identifier("".to_string())]));
+            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
         };
 
         // Optional constraint: T extends Foo
@@ -339,8 +363,10 @@ fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, Pars
 fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseError> {
     let start_span = parser.current_span();
     let mut statements = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("block_statements");
 
     while !parser.check(&Token::RightBrace) && !parser.at_eof() {
+        guard.check()?;
         let stmt = parse_statement(parser)?;
         statements.push(stmt);
     }

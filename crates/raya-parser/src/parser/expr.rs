@@ -2,12 +2,26 @@
 
 use super::{ParseError, ParseErrorKind, Parser};
 use crate::ast::*;
+use crate::interner::Symbol;
 use crate::token::{Span, Token};
 use super::precedence::{get_precedence, is_right_associative, Precedence};
 
 /// Parse an expression (entry point).
 pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
-    parse_expression_with_precedence(parser, Precedence::None)
+    // Check depth before entering (manual guard to avoid borrow issues)
+    parser.depth += 1;
+    if parser.depth > super::guards::MAX_PARSE_DEPTH {
+        parser.depth -= 1;
+        return Err(ParseError::parser_limit_exceeded(
+            format!("Maximum nesting depth ({}) exceeded in expression", super::guards::MAX_PARSE_DEPTH),
+            parser.current_span(),
+        ));
+    }
+
+    let result = parse_expression_with_precedence(parser, Precedence::None);
+
+    parser.depth -= 1;
+    result
 }
 
 /// Parse an expression with precedence climbing.
@@ -594,19 +608,31 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             Ok(expr)
         }
 
-        // Array literal
+        // Array literal: [1, 2, 3], [...arr1, ...arr2]
         Token::LeftBracket => {
             parser.advance();
-            let mut elements = Vec::new();
+            let mut elements = Vec::with_capacity(8); // Most arrays < 8 elements
+            let mut guard = super::guards::LoopGuard::new("array_elements");
 
             while !parser.check(&Token::RightBracket) && !parser.at_eof() {
+                guard.check()?;
                 if parser.check(&Token::Comma) {
                     // Hole in array
                     elements.push(None);
                     parser.advance();
+                } else if parser.check(&Token::DotDotDot) {
+                    // Spread element: ...arr
+                    parser.advance();
+                    let expr = parse_expression(parser)?;
+                    elements.push(Some(ArrayElement::Spread(expr)));
+
+                    if !parser.check(&Token::RightBracket) {
+                        parser.expect(Token::Comma)?;
+                    }
                 } else {
+                    // Regular element
                     let elem = parse_expression(parser)?;
-                    elements.push(Some(elem));
+                    elements.push(Some(ArrayElement::Expression(elem)));
 
                     if !parser.check(&Token::RightBracket) {
                         parser.expect(Token::Comma)?;
@@ -624,9 +650,11 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Object literal
         Token::LeftBrace => {
             parser.advance();
-            let mut properties = Vec::new();
+            let mut properties = Vec::with_capacity(8); // Most objects < 8 properties
+            let mut guard = super::guards::LoopGuard::new("object_properties");
 
             while !parser.check(&Token::RightBrace) && !parser.at_eof() {
+                guard.check()?;
                 let prop = parse_object_property(parser)?;
                 properties.push(prop);
 
@@ -654,13 +682,18 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             });
         }
 
+        // JSX element or fragment: <div>...</div> or <>...</>
+        Token::Less if super::jsx::looks_like_jsx(parser) => {
+            super::jsx::parse_jsx(parser)
+        }
+
         _ => Err(ParseError {
             kind: ParseErrorKind::UnexpectedToken {
                 expected: vec![
-                    Token::Identifier("".to_string()),
+                    Token::Identifier(Symbol::dummy()),
                     Token::IntLiteral(0),
                     Token::FloatLiteral(0.0),
-                    Token::StringLiteral("".to_string()),
+                    Token::StringLiteral(Symbol::dummy()),
                     Token::True,
                     Token::False,
                     Token::Null,
@@ -679,9 +712,11 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
 /// Parse function call arguments.
 fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
-    let mut arguments = Vec::new();
+    let mut arguments = Vec::with_capacity(4); // Most calls have < 4 arguments
+    let mut guard = super::guards::LoopGuard::new("call_arguments");
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
+        guard.check()?;
         let arg = parse_expression(parser)?;
         arguments.push(arg);
 
@@ -698,8 +733,13 @@ fn parse_arguments(parser: &mut Parser) -> Result<Vec<Expression>, ParseError> {
 fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseError> {
     let start_span = parser.current_span();
 
-    // TODO: Handle spread properties: { ...obj }
-    // For now, spread properties are not supported
+    // Spread property: { ...obj }
+    if parser.check(&Token::DotDotDot) {
+        parser.advance();
+        let argument = parse_expression(parser)?;
+        let span = parser.combine_spans(&start_span, &parser.current_span());
+        return Ok(ObjectProperty::Spread(SpreadProperty { argument, span }));
+    }
 
     // Property key
     let key = if let Token::Identifier(name) = parser.current() {
@@ -728,21 +768,11 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         parser.advance();
         let expr = parse_expression(parser)?;
         parser.expect(Token::RightBracket)?;
-
-        // For now, we need to handle computed properties
-        // TODO: This is a simplification - real implementation needs computed property support
-        return Err(ParseError {
-            kind: ParseErrorKind::InvalidSyntax {
-                reason: "Computed properties not yet supported".to_string(),
-            },
-            span: parser.current_span(),
-            message: "Computed properties not implemented".to_string(),
-            suggestion: None,
-        });
+        PropertyKey::Computed(expr)
     } else {
         return Err(parser.unexpected_token(&[
-            Token::Identifier("".to_string()),
-            Token::StringLiteral("".to_string()),
+            Token::Identifier(Symbol::dummy()),
+            Token::StringLiteral(Symbol::dummy()),
         ]));
     };
 
@@ -842,10 +872,12 @@ fn parse_arrow_function_body(
 }
 
 /// Parse parameter list (simplified stub - will be implemented in pattern parsing).
-fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
-    let mut params = Vec::new();
+pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
+    let mut params = Vec::with_capacity(4); // Most functions have < 4 parameters
+    let mut guard = super::guards::LoopGuard::new("function_parameters");
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
+        guard.check()?;
         let start_span = parser.current_span();
 
         if let Token::Identifier(name) = parser.current() {
@@ -869,7 +901,7 @@ fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseErro
                 span: start_span,
             });
         } else {
-            return Err(parser.unexpected_token(&[Token::Identifier("".to_string())]));
+            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
         }
 
         if !parser.check(&Token::RightParen) {
@@ -886,8 +918,10 @@ fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseErro
 fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseError> {
     let start_span = parser.current_span();
     let mut statements = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("block_statements");
 
     while !parser.check(&Token::RightBrace) && !parser.at_eof() {
+        guard.check()?;
         let stmt = super::stmt::parse_statement(parser)?;
         statements.push(stmt);
     }
