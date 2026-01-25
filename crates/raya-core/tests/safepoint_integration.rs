@@ -95,10 +95,10 @@ fn test_safepoint_on_allocation() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Set field x = 42
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             42,
             0,
@@ -108,7 +108,7 @@ fn test_safepoint_on_allocation() {
             0,
             // Load field x
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadFieldFast as u8,
             0,
             Opcode::Return as u8,
@@ -143,10 +143,10 @@ fn test_safepoint_on_array_allocation() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Get array length
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ArrayLen as u8,
             Opcode::Return as u8,
         ],
@@ -459,7 +459,7 @@ fn test_safepoint_at_all_allocation_types() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // 2. Array allocation (NEW_ARRAY)
             Opcode::ConstI32 as u8,
             3,
@@ -470,7 +470,7 @@ fn test_safepoint_at_all_allocation_types() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            1,
+            1, 0,
             // 3. Object literal (OBJECT_LITERAL)
             Opcode::ObjectLiteral as u8,
             0,
@@ -494,7 +494,7 @@ fn test_safepoint_at_all_allocation_types() {
             1,
             0,
             Opcode::StoreLocal as u8,
-            2,
+            2, 0,
             // 4. Array literal (ARRAY_LITERAL)
             Opcode::ArrayLiteral as u8,
             0,
@@ -524,7 +524,7 @@ fn test_safepoint_at_all_allocation_types() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            3,
+            3, 0,
             // Return 42 to verify execution completed
             Opcode::ConstI32 as u8,
             42,

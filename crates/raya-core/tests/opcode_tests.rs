@@ -68,11 +68,6 @@ fn u16_bytes(val: u16) -> [u8; 2] {
     val.to_le_bytes()
 }
 
-/// Helper to encode u8 as a single byte (for local variable indices)
-fn u8_byte(val: u8) -> u8 {
-    val
-}
-
 // ===== Constants (0x00-0x0F) =====
 
 #[cfg(test)]
@@ -1167,67 +1162,69 @@ mod composite {
         // while i > 1:
         //   result = result * i
         //   i = i - 1
-        let bytes0 = u8_byte(0); // result
-        let bytes1 = u8_byte(1); // i
-        let loop_start_offset = i16_bytes(-31); // Jump back to loop condition
+        let mut code = Vec::new();
 
-        let result = execute_bytecode(vec![
-            // result = 1 (local 0)
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            bytes0,
-            // i = 5 (local 1)
-            Opcode::ConstI32 as u8,
-            5,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            bytes1,
-            // Loop: while i > 1
-            Opcode::LoadLocal as u8,
-            bytes1,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Igt as u8,
-            Opcode::JmpIfFalse as u8,
-            20,
-            0, // Jump to end if i <= 1
-            // result = result * i
-            Opcode::LoadLocal as u8,
-            bytes0,
-            Opcode::LoadLocal as u8,
-            bytes1,
-            Opcode::Imul as u8,
-            Opcode::StoreLocal as u8,
-            bytes0,
-            // i = i - 1
-            Opcode::LoadLocal as u8,
-            bytes1,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Isub as u8,
-            Opcode::StoreLocal as u8,
-            bytes1,
-            // Jump back to loop start
-            Opcode::Jmp as u8,
-            loop_start_offset[0],
-            loop_start_offset[1],
-            // Return result
-            Opcode::LoadLocal as u8,
-            bytes0,
-            Opcode::Return as u8,
-        ]);
+        // result = 1 (local 0)
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&1i32.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+
+        // i = 5 (local 1)
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&5i32.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+
+        // Loop start
+        let loop_start = code.len();
+
+        // while i > 1
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&1i32.to_le_bytes());
+        code.push(Opcode::Igt as u8);
+        code.push(Opcode::JmpIfFalse as u8);
+        let jmp_if_false_pos = code.len();
+        code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+
+        // result = result * i
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(Opcode::Imul as u8);
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+
+        // i = i - 1
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&1i32.to_le_bytes());
+        code.push(Opcode::Isub as u8);
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+
+        // Jump back to loop start
+        code.push(Opcode::Jmp as u8);
+        let current_pos = code.len() + 2;
+        let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+        code.extend_from_slice(&backward_offset.to_le_bytes());
+
+        // Loop end - patch forward jump
+        let loop_end = code.len();
+        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
+        code[jmp_if_false_pos..jmp_if_false_pos + 2]
+            .copy_from_slice(&forward_offset.to_le_bytes());
+
+        // Return result
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::Return as u8);
+
+        let result = execute_bytecode(code);
         assert_eq!(result, Value::i32(120)); // 5! = 120
     }
 
@@ -1236,87 +1233,87 @@ mod composite {
         // Compute 7th Fibonacci number iteratively
         // a = 0, b = 1, count = 7
         // for i in 0..count: a, b = b, a + b
-        let bytes_a = u8_byte(0);
-        let bytes_b = u8_byte(1);
-        let bytes_i = u8_byte(2);
-        let bytes_tmp = u8_byte(3);
-        let loop_start_offset = i16_bytes(-39);
+        let mut code = Vec::new();
 
-        let result = execute_bytecode(vec![
-            // a = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            bytes_a,
-            // b = 1
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            bytes_b,
-            // i = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            bytes_i,
-            // Loop: while i < 7
-            Opcode::LoadLocal as u8,
-            bytes_i,
-            Opcode::ConstI32 as u8,
-            7,
-            0,
-            0,
-            0,
-            Opcode::Ilt as u8,
-            Opcode::JmpIfFalse as u8,
-            28,
-            0, // Jump to end if i >= 7
-            // tmp = a + b
-            Opcode::LoadLocal as u8,
-            bytes_a,
-            Opcode::LoadLocal as u8,
-            bytes_b,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            bytes_tmp,
-            // a = b
-            Opcode::LoadLocal as u8,
-            bytes_b,
-            Opcode::StoreLocal as u8,
-            bytes_a,
-            // b = tmp
-            Opcode::LoadLocal as u8,
-            bytes_tmp,
-            Opcode::StoreLocal as u8,
-            bytes_b,
-            // i = i + 1
-            Opcode::LoadLocal as u8,
-            bytes_i,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            bytes_i,
-            // Jump back to loop start
-            Opcode::Jmp as u8,
-            loop_start_offset[0],
-            loop_start_offset[1],
-            // Return a
-            Opcode::LoadLocal as u8,
-            bytes_a,
-            Opcode::Return as u8,
-        ]);
+        // a = 0 (local 0)
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&0i32.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+
+        // b = 1 (local 1)
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&1i32.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+
+        // i = 0 (local 2)
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&0i32.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&2u16.to_le_bytes());
+
+        // Loop start
+        let loop_start = code.len();
+
+        // while i < 7
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&2u16.to_le_bytes());
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&7i32.to_le_bytes());
+        code.push(Opcode::Ilt as u8);
+        code.push(Opcode::JmpIfFalse as u8);
+        let jmp_if_false_pos = code.len();
+        code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+
+        // tmp = a + b (local 3)
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(Opcode::Iadd as u8);
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&3u16.to_le_bytes());
+
+        // a = b
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+
+        // b = tmp
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&3u16.to_le_bytes());
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&1u16.to_le_bytes());
+
+        // i = i + 1
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&2u16.to_le_bytes());
+        code.push(Opcode::ConstI32 as u8);
+        code.extend_from_slice(&1i32.to_le_bytes());
+        code.push(Opcode::Iadd as u8);
+        code.push(Opcode::StoreLocal as u8);
+        code.extend_from_slice(&2u16.to_le_bytes());
+
+        // Jump back to loop start
+        code.push(Opcode::Jmp as u8);
+        let current_pos = code.len() + 2;
+        let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+        code.extend_from_slice(&backward_offset.to_le_bytes());
+
+        // Loop end - patch forward jump
+        let loop_end = code.len();
+        let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
+        code[jmp_if_false_pos..jmp_if_false_pos + 2]
+            .copy_from_slice(&forward_offset.to_le_bytes());
+
+        // Return a
+        code.push(Opcode::LoadLocal as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(Opcode::Return as u8);
+
+        let result = execute_bytecode(code);
         assert_eq!(result, Value::i32(13)); // 7th Fibonacci number is 13
     }
 
