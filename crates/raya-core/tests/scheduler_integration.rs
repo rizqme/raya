@@ -31,80 +31,81 @@ fn create_simple_task(name: &str, result: i32) -> Arc<Task> {
 
 fn create_compute_task(name: &str, iterations: u32) -> Arc<Task> {
     let mut module = Module::new("test".to_string());
+
+    // Build bytecode with correct u16 operands for LoadLocal/StoreLocal
+    let mut code = Vec::new();
+
+    // Initialize counter = 0 (local 0)
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&0i32.to_le_bytes());
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes()); // u16 index
+
+    // Initialize result = 0 (local 1)
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&0i32.to_le_bytes());
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes()); // u16 index
+
+    // Loop start - remember this offset for backward jump
+    let loop_start = code.len();
+
+    // Load counter (local 0)
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+
+    // Load iterations constant
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&(iterations as i32).to_le_bytes());
+
+    // Compare: counter < iterations
+    code.push(Opcode::Ilt as u8);
+
+    // Jump to end if false (will patch offset later)
+    code.push(Opcode::JmpIfFalse as u8);
+    let jmp_if_false_offset_pos = code.len();
+    code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+
+    // result = result + 1
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.push(Opcode::Iadd as u8);
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+
+    // counter = counter + 1
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.push(Opcode::Iadd as u8);
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+
+    // Jump back to loop start
+    code.push(Opcode::Jmp as u8);
+    let current_pos = code.len() + 2; // After the jump offset bytes
+    let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+    code.extend_from_slice(&backward_offset.to_le_bytes());
+
+    // Loop end - patch forward jump offset
+    let loop_end = code.len();
+    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 2) as isize) as i16;
+    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 2]
+        .copy_from_slice(&forward_offset.to_le_bytes());
+
+    // Return result (local 1)
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+    code.push(Opcode::Return as u8);
+
     module.functions.push(Function {
         name: name.to_string(),
         param_count: 0,
         local_count: 2, // counter and result
-        code: vec![
-            // Initialize counter = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            0,
-            0,
-            // Initialize result = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            1,
-            0,
-            // Loop start (offset 18)
-            Opcode::LoadLocal as u8,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            (iterations & 0xFF) as u8,
-            ((iterations >> 8) & 0xFF) as u8,
-            ((iterations >> 16) & 0xFF) as u8,
-            ((iterations >> 24) & 0xFF) as u8,
-            Opcode::Ilt as u8,
-            Opcode::JmpIfFalse as u8,
-            30,
-            0, // Jump to end if counter >= iterations
-            // result = result + 1
-            Opcode::LoadLocal as u8,
-            1,
-            0,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            1,
-            0,
-            // counter = counter + 1
-            Opcode::LoadLocal as u8,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            0,
-            0,
-            // Jump back to loop start (byte 16)
-            // Current position after Jmp operands: byte 55
-            // Offset = 16 - 55 = -39
-            Opcode::Jmp as u8,
-            (-39i16 & 0xFF) as u8,
-            (((-39i16) >> 8) & 0xFF) as u8,
-            // End: return result
-            Opcode::LoadLocal as u8,
-            1,
-            0,
-            Opcode::Return as u8,
-        ],
+        code,
     });
 
     Arc::new(Task::new(0, Arc::new(module), None))
