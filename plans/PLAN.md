@@ -1305,16 +1305,38 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError>;
 
 **Reference:** `design/LANG.md` Sections 6, 7, 8, `plans/milestone-2.3.md`
 
-### 2.4 Type System
+### 2.4 Type System ✅
 
 **Crate:** `raya-types`
 
+**Status:** ✅ Complete (2026-01-24)
+
 **Tasks:**
-- [ ] Implement type representation
-- [ ] Build type inference engine
-- [ ] Add subtyping rules
-- [ ] Implement discriminated union checking
-- [ ] Track type parameters for generics
+- [x] Implement type representation
+- [x] Build type inference engine
+- [x] Add subtyping rules
+- [x] Implement discriminated union checking
+- [x] Track type parameters for generics
+- [x] Implicit primitive coercions (number → string)
+- [x] Structural subtyping
+- [x] Generic type instantiation and unification
+
+### 2.5 Type Checker & Control Flow Analysis ✅
+
+**Crate:** `raya-checker`
+
+**Status:** ✅ Complete (2026-01-25)
+
+**Tasks:**
+- [x] Symbol tables with scope management
+- [x] Name resolution and binding
+- [x] Bidirectional type checking for expressions and statements
+- [x] Type guard detection (typeof, discriminant, nullish)
+- [x] Control flow-based type narrowing
+- [x] Type environment tracking through branches
+- [x] Exhaustiveness checking for discriminated unions
+- [x] Generic type inference
+- [x] Comprehensive error reporting
 
 **Files:**
 ```rust
