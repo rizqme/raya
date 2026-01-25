@@ -184,11 +184,11 @@ impl Vm {
 
                 // Local variables
                 Opcode::LoadLocal => {
-                    let index = self.read_u8(code, &mut ip)?;
+                    let index = self.read_u16(code, &mut ip)?;
                     self.op_load_local(index as usize)?;
                 }
                 Opcode::StoreLocal => {
-                    let index = self.read_u8(code, &mut ip)?;
+                    let index = self.read_u16(code, &mut ip)?;
                     self.op_store_local(index as usize)?;
                 }
                 Opcode::LoadLocal0 => self.op_load_local(0)?,
@@ -2513,18 +2513,18 @@ mod tests {
                 0,
                 0,
                 Opcode::StoreLocal as u8,
-                0,
+                0, 0, // u16 index 0
                 Opcode::ConstI32 as u8,
                 10,
                 0,
                 0,
                 0,
                 Opcode::StoreLocal as u8,
-                1,
+                1, 0, // u16 index 1
                 Opcode::LoadLocal as u8,
-                0,
+                0, 0, // u16 index 0
                 Opcode::LoadLocal as u8,
-                1,
+                1, 0, // u16 index 1
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],

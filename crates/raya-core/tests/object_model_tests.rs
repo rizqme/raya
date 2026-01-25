@@ -31,10 +31,10 @@ fn test_object_creation_and_field_access() {
             0,
             0, // class index 0
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // obj.x = 10
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             10,
             0,
@@ -45,7 +45,7 @@ fn test_object_creation_and_field_access() {
             0, // field offset 0
             // obj.y = 20
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             20,
             0,
@@ -56,7 +56,7 @@ fn test_object_creation_and_field_access() {
             0, // field offset 1
             // return obj.x
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             0,
             0, // field offset 0
@@ -88,10 +88,10 @@ fn test_array_creation_and_access() {
             0,
             0, // type index 0
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // arr[0] = 10
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             0,
             0,
@@ -105,7 +105,7 @@ fn test_array_creation_and_access() {
             Opcode::StoreElem as u8,
             // arr[1] = 20
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -119,7 +119,7 @@ fn test_array_creation_and_access() {
             Opcode::StoreElem as u8,
             // arr[2] = 30
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             2,
             0,
@@ -133,7 +133,7 @@ fn test_array_creation_and_access() {
             Opcode::StoreElem as u8,
             // return arr[1]
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             1,
             0,
@@ -169,10 +169,10 @@ fn test_array_length() {
             0,
             0, // type index 0
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // return arr.length
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ArrayLen as u8,
             Opcode::Return as u8,
         ],
@@ -208,10 +208,10 @@ fn test_multiple_objects() {
             0,
             0, // class 0
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Point.x = 5
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             5,
             0,
@@ -222,7 +222,7 @@ fn test_multiple_objects() {
             0,
             // Point.y = 10
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             10,
             0,
@@ -236,10 +236,10 @@ fn test_multiple_objects() {
             1,
             0, // class 1
             Opcode::StoreLocal as u8,
-            1,
+            1, 0,
             // Rectangle.x2 = 100 (field index 2)
             Opcode::LoadLocal as u8,
-            1,
+            1, 0,
             Opcode::ConstI32 as u8,
             100,
             0,
@@ -250,18 +250,18 @@ fn test_multiple_objects() {
             0,
             // Calculate Point.x + Point.y + Rectangle.x2
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             0,
             0, // Point.x
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             1,
             0, // Point.y
             Opcode::Iadd as u8,
             Opcode::LoadLocal as u8,
-            1,
+            1, 0,
             Opcode::LoadField as u8,
             2,
             0, // Rectangle.x2
@@ -295,10 +295,10 @@ fn test_object_with_gc() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Set x = 42
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             42,
             0,
@@ -309,7 +309,7 @@ fn test_object_with_gc() {
             0,
             // Load x and return it (object should survive GC)
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             0,
             0,
@@ -519,10 +519,10 @@ fn test_optional_field_non_null() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Set x = 42
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             42,
             0,
@@ -533,7 +533,7 @@ fn test_optional_field_non_null() {
             0,
             // Load object and access optional field
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::OptionalField as u8,
             0,
             0, // field offset 0
@@ -599,10 +599,10 @@ fn test_constructor_no_args() {
             0, // arg count 0
             // Store returned object
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Load object and set field directly
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             42,
             0,
@@ -613,7 +613,7 @@ fn test_constructor_no_args() {
             0,
             // Load and return field 0 to verify
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             0,
             0,
@@ -675,10 +675,10 @@ fn test_constructor_basic() {
             2, // arg count 2
             // Store returned object
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Load and return field 0 to verify
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             0,
             0,
@@ -695,20 +695,20 @@ fn test_constructor_basic() {
         code: vec![
             // Load 'this' (param 0)
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             // Load x (param 1)
             Opcode::LoadLocal as u8,
-            1,
+            1, 0,
             // Set this.x = x
             Opcode::StoreField as u8,
             0,
             0,
             // Load 'this'
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             // Load y (param 2)
             Opcode::LoadLocal as u8,
-            2,
+            2, 0,
             // Set this.y = y
             Opcode::StoreField as u8,
             1,
@@ -765,10 +765,10 @@ fn test_call_super() {
             2,
             // Store object
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Return field 1 (radius) to verify
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadField as u8,
             1,
             0,
@@ -785,9 +785,9 @@ fn test_call_super() {
         code: vec![
             // this.color = color
             Opcode::LoadLocal as u8,
-            0, // this
+            0, 0, // this
             Opcode::LoadLocal as u8,
-            1, // color
+            1, 0, // color
             Opcode::StoreField as u8,
             0,
             0, // field 0 (color)
@@ -805,9 +805,9 @@ fn test_call_super() {
         code: vec![
             // Call super(color) - CALL_SUPER needs 'this' + args on stack
             Opcode::LoadLocal as u8,
-            0, // this
+            0, 0, // this
             Opcode::LoadLocal as u8,
-            2, // color
+            2, 0, // color
             // CALL_SUPER class=1 (Circle, which has Shape as parent), arg_count=1
             Opcode::CallSuper as u8,
             1,
@@ -815,9 +815,9 @@ fn test_call_super() {
             1, // arg count 1 (just color)
             // Now set radius (field 1)
             Opcode::LoadLocal as u8,
-            0, // this
+            0, 0, // this
             Opcode::LoadLocal as u8,
-            1, // radius
+            1, 0, // radius
             Opcode::StoreField as u8,
             1,
             0, // field 1 (radius)

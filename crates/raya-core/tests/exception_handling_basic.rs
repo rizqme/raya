@@ -48,9 +48,9 @@ fn test_basic_try_catch() {
     code.push(Opcode::Throw as u8);
     // catch block starts here at byte 15:
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -103,9 +103,9 @@ fn test_throw_with_catch() {
 
     // catch block at offset 15:
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -155,13 +155,13 @@ fn test_try_finally() {
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&42i32.to_le_bytes());
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::EndTry as u8);
     // Finally block inline (executes on normal flow):
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&100i32.to_le_bytes());
     code.push(Opcode::StoreLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
     // Return void
     code.push(Opcode::ReturnVoid as u8);
 
@@ -209,7 +209,7 @@ fn test_nested_try_catch() {
 
     // Inner catch block (offset 24)
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     // Note: No END_TRY here - handler already popped when jumping to catch
 
     // After inner try-catch, throw outer exception
@@ -221,9 +221,9 @@ fn test_nested_try_catch() {
 
     // Outer catch block (offset 33 now, was 34)
     code.push(Opcode::StoreLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -269,9 +269,9 @@ fn test_exception_propagation() {
 
     // Outer catch block (offset 29)
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -312,16 +312,16 @@ fn test_rethrow_in_catch() {
 
     // Inner catch block (offset 24) - catches then rethrows
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Rethrow as u8);
 
     code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached)
 
     // Outer catch block (offset 28)
     code.push(Opcode::StoreLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -357,7 +357,7 @@ fn test_finally_always_executes() {
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&42i32.to_le_bytes());
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
 
     code.push(Opcode::EndTry as u8);
 
@@ -365,7 +365,7 @@ fn test_finally_always_executes() {
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&100i32.to_le_bytes());
     code.push(Opcode::StoreLocal as u8);
-    code.push(1u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
 
     code.push(Opcode::ReturnVoid as u8);
 
@@ -401,9 +401,9 @@ fn test_exception_with_await() {
 
     // catch block (offset 15)
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -428,7 +428,7 @@ fn test_exception_value_types() {
     code.push(Opcode::Throw as u8);
     // catch block (offset 11)
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -445,7 +445,7 @@ fn test_exception_value_types() {
     code2.push(Opcode::Throw as u8);
     // catch block (offset 11)
     code2.push(Opcode::StoreLocal as u8);
-    code2.push(0u8);
+    code2.extend_from_slice(&0u16.to_le_bytes());
     code2.push(Opcode::Return as u8);
 
     let module2 = create_module_with_code(code2);
@@ -463,7 +463,7 @@ fn test_exception_value_types() {
     code3.push(Opcode::Throw as u8);
     // catch block (offset 19)
     code3.push(Opcode::StoreLocal as u8);
-    code3.push(0u8);
+    code3.extend_from_slice(&0u16.to_le_bytes());
     code3.push(Opcode::Return as u8);
 
     let module3 = create_module_with_code(code3);
@@ -518,9 +518,9 @@ fn test_deep_call_stack_unwinding() {
     // Outer catch block (offset 39)
     // This should catch the exception after unwinding 3 levels
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);
@@ -571,9 +571,9 @@ fn test_exception_in_finally() {
 
     // Outer catch block (offset 31)
     code.push(Opcode::StoreLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
-    code.push(0u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
 
     let module = create_module_with_code(code);

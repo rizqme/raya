@@ -66,18 +66,18 @@ fn test_local_variables() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             Opcode::ConstI32 as u8,
             10,
             0,
             0,
             0,
             Opcode::StoreLocal as u8,
-            1,
+            1, 0,
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadLocal as u8,
-            1,
+            1, 0,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
@@ -196,7 +196,7 @@ fn test_division_and_modulo() {
             0,
             Opcode::Idiv as u8,
             Opcode::StoreLocal as u8,
-            0,
+            0, 0,
             // Store 17 % 5 in local 1
             Opcode::ConstI32 as u8,
             17,
@@ -210,12 +210,12 @@ fn test_division_and_modulo() {
             0,
             Opcode::Imod as u8,
             Opcode::StoreLocal as u8,
-            1,
+            1, 0,
             // Return local 0 + local 1 (3 + 2 = 5)
             Opcode::LoadLocal as u8,
-            0,
+            0, 0,
             Opcode::LoadLocal as u8,
-            1,
+            1, 0,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
@@ -278,68 +278,74 @@ fn test_comparison_operations() {
 fn test_simple_loop() {
     // Bytecode: sum = 0; for (i = 0; i < 5; i++) { sum += i }
     let mut module = Module::new("test".to_string());
+
+    let mut code = Vec::new();
+
+    // sum = 0
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&0i32.to_le_bytes());
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+
+    // i = 0
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&0i32.to_le_bytes());
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+
+    // Loop start
+    let loop_start = code.len();
+
+    // Check: i < 5
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&5i32.to_le_bytes());
+    code.push(Opcode::Ilt as u8);
+    code.push(Opcode::JmpIfFalse as u8);
+    let jmp_if_false_offset_pos = code.len();
+    code.extend_from_slice(&0i16.to_le_bytes()); // Placeholder
+
+    // sum = sum + i
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+    code.push(Opcode::Iadd as u8);
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+
+    // i = i + 1
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+    code.push(Opcode::ConstI32 as u8);
+    code.extend_from_slice(&1i32.to_le_bytes());
+    code.push(Opcode::Iadd as u8);
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&1u16.to_le_bytes());
+
+    // Jump back to loop start
+    code.push(Opcode::Jmp as u8);
+    let current_pos = code.len() + 2;
+    let backward_offset = (loop_start as isize - current_pos as isize) as i16;
+    code.extend_from_slice(&backward_offset.to_le_bytes());
+
+    // Loop end - patch forward jump
+    let loop_end = code.len();
+    let forward_offset = (loop_end as isize - (jmp_if_false_offset_pos + 2) as isize) as i16;
+    code[jmp_if_false_offset_pos..jmp_if_false_offset_pos + 2]
+        .copy_from_slice(&forward_offset.to_le_bytes());
+
+    // Return sum
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(Opcode::Return as u8);
+
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 2, // local 0: sum, local 1: i
-        code: vec![
-            // sum = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            0,
-            // i = 0
-            Opcode::ConstI32 as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::StoreLocal as u8,
-            1,
-            // Loop start (IP = 14)
-            // Check: i < 5
-            Opcode::LoadLocal as u8,
-            1,
-            Opcode::ConstI32 as u8,
-            5,
-            0,
-            0,
-            0,
-            Opcode::Ilt as u8,
-            Opcode::JmpIfFalse as u8,
-            20,
-            0, // Jump to end if false (IP 45)
-            // sum = sum + i
-            Opcode::LoadLocal as u8,
-            0,
-            Opcode::LoadLocal as u8,
-            1,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            0,
-            // i = i + 1
-            Opcode::LoadLocal as u8,
-            1,
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
-            Opcode::Iadd as u8,
-            Opcode::StoreLocal as u8,
-            1,
-            // Jump back to loop start (offset = -31)
-            Opcode::Jmp as u8,
-            225,
-            255, // -31 as i16 in little-endian
-            // Loop end - return sum
-            Opcode::LoadLocal as u8,
-            0,
-            Opcode::Return as u8,
-        ],
+        code,
     };
     module.functions.push(main_fn);
 
