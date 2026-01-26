@@ -7,6 +7,21 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub(crate) u32);
 
+impl TypeId {
+    /// Create a new TypeId from a raw value
+    ///
+    /// Note: This should generally only be used internally or for interop.
+    /// Prefer using TypeContext methods to get well-known type IDs.
+    pub const fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    /// Get the raw value of this TypeId
+    pub const fn as_u32(&self) -> u32 {
+        self.0
+    }
+}
+
 impl fmt::Display for TypeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "TypeId({})", self.0)

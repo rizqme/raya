@@ -1793,30 +1793,41 @@ pub struct BasicBlock {
 }
 ```
 
-### 3.2 Monomorphization
+### 3.2 Monomorphization ✅
+
+**Status:** Complete
 
 **Tasks:**
-- [ ] Collect all generic instantiations
-- [ ] Generate specialized versions of generic functions
-- [ ] Generate specialized versions of generic classes
-- [ ] Track monomorphized types
+- [x] Collect all generic instantiations
+- [x] Generate specialized versions of generic functions
+- [x] Generate specialized versions of generic classes
+- [x] Track monomorphized types
+- [x] Type parameter substitution
+- [x] Call site rewriting
+- [x] Integration into compiler pipeline
 
-**Files:**
-```rust
-// crates/raya-compiler/src/monomorphize.rs
-pub struct Monomorphizer {
-    instantiations: HashMap<(FunctionId, Vec<Type>), FunctionId>,
-}
+**Files Implemented:**
+```
+crates/raya-compiler/src/monomorphize/
+├── mod.rs              # MonoKey, MonomorphizationContext, GenericId, entry point
+├── collect.rs          # InstantiationCollector, GenericFunctionInfo, GenericClassInfo
+├── substitute.rs       # TypeSubstitution for replacing type parameters
+├── specialize.rs       # Monomorphizer (function/class specialization)
+└── rewrite.rs          # CallSiteRewriter, TypeAwareRewriter
 
-impl Monomorphizer {
-    pub fn monomorphize(&mut self, module: &TypedModule) -> MonomorphizedModule {
-        // Replace all generic types with concrete types
-        // Generate specialized functions/classes
-    }
-}
+crates/raya-compiler/src/lib.rs           # Added compile_to_optimized_ir() with monomorphization
+crates/raya-compiler/tests/monomorphize_tests.rs  # 25 comprehensive tests
 ```
 
-**Reference:** `design/LANG.md` Section 13.7
+**Key Components:**
+- `MonoKey`: Unique identifier for each specialization (generic ID + type args)
+- `MonomorphizationContext`: Tracks all specialized functions and classes
+- `TypeSubstitution`: Applies type parameter mappings to IR structures
+- `InstantiationCollector`: Discovers which generic instantiations are needed
+- `Monomorphizer`: Performs function and class specialization with name mangling
+- `CallSiteRewriter`: Rewrites call sites to use specialized versions
+
+**Reference:** `design/LANG.md` Section 13.7, `plans/milestone-3.2.md`
 
 ### 3.3 Code Generation
 
