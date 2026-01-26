@@ -11,7 +11,6 @@ members = [
     "crates/raya-cli",
     "crates/raya-fmt",
     "crates/raya-lsp",
-    "crates/raya-test",
     "crates/raya-pm",
     "crates/raya-ffi",
     "crates/raya-native",
