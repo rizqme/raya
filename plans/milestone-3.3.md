@@ -180,17 +180,67 @@ impl CodeGenerator {
 
 ---
 
-### Phase 5b: SEQ Pointer Check Optimization (Runtime)
+### Phase 5b: SEQ Multi-Level Optimization (Runtime)
 
-**Goal:** Optimize SEQ opcode to check pointer equality first before string comparison.
+**Goal:** Optimize SEQ opcode with multiple fast-path checks before full string comparison.
 
 **Motivation:**
-Even when we can't use IEQ at compile time, we can still optimize SEQ at runtime:
+Modern JS engines use multiple optimization levels for string comparison:
+1. **Pointer equality** - Same object reference → O(1)
+2. **Length check** - Different lengths → can't be equal → O(1)
+3. **Hash check** - Cached hash mismatch → can't be equal → O(1)
+4. **Character comparison** - Only if all else fails → O(n)
+
 ```typescript
 let x = "hello";
 let y = x;        // y points to same string as x
 
 x == y  // SEQ called, but pointers are same → return true immediately
+```
+
+**String Object Structure:**
+
+```rust
+// crates/raya-core/src/value.rs
+
+/// String object with cached metadata for fast comparison
+pub struct RayaString {
+    /// The actual string data
+    data: String,
+    /// Cached hash (computed lazily on first comparison)
+    hash: Cell<Option<u64>>,
+}
+
+impl RayaString {
+    pub fn new(data: String) -> Self {
+        Self {
+            data,
+            hash: Cell::new(None),
+        }
+    }
+
+    /// Get length in O(1)
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Get or compute hash (O(n) first time, O(1) subsequent)
+    pub fn hash(&self) -> u64 {
+        if let Some(h) = self.hash.get() {
+            return h;
+        }
+        let h = self.compute_hash();
+        self.hash.set(Some(h));
+        h
+    }
+
+    fn compute_hash(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = rustc_hash::FxHasher::default();
+        self.data.hash(&mut hasher);
+        hasher.finish()
+    }
+}
 ```
 
 **Implementation (in raya-core VM):**
@@ -202,39 +252,72 @@ fn execute_seq(&mut self) -> Result<()> {
     let right = self.pop_string()?;
     let left = self.pop_string()?;
 
-    // Optimization: Check pointer equality first (O(1))
+    // Level 1: Pointer equality (O(1))
     if std::ptr::eq(left.as_ptr(), right.as_ptr()) {
         self.push(Value::bool(true));
         return Ok(());
     }
 
-    // Fall back to character comparison (O(n))
-    let result = left == right;
+    // Level 2: Length check (O(1))
+    if left.len() != right.len() {
+        self.push(Value::bool(false));
+        return Ok(());
+    }
+
+    // Level 3: Hash check (O(1) if cached, O(n) first time)
+    // Only compute hash for strings longer than threshold
+    const HASH_THRESHOLD: usize = 16;
+    if left.len() > HASH_THRESHOLD {
+        if left.hash() != right.hash() {
+            self.push(Value::bool(false));
+            return Ok(());
+        }
+    }
+
+    // Level 4: Character comparison (O(n))
+    let result = left.as_str() == right.as_str();
     self.push(Value::bool(result));
     Ok(())
 }
 ```
 
 **Why this helps:**
-1. **Same constant pool entry** → Same pointer → O(1)
-2. **Variable assigned from another** → Same pointer → O(1)
-3. **Different strings** → Full comparison → O(n) (no worse than before)
+
+| Check | Cost | When it helps |
+|-------|------|---------------|
+| Pointer | O(1) | Same object reference |
+| Length | O(1) | Different length strings (very common) |
+| Hash | O(1)* | Different strings, same length |
+| Characters | O(n) | Only when strings might actually match |
+
+*O(1) after first computation, O(n) on first access (amortized)
 
 **Combined optimization flow:**
 
 ```
 Compile time:
-  Both constants? → Use IEQ (compare indices)
-  Otherwise      → Use SEQ
+  String literal union type? → Use IEQ (compare indices)
+  Otherwise                  → Use SEQ
 
 Runtime (SEQ):
-  Same pointer?  → Return true immediately (O(1))
-  Otherwise      → Compare characters (O(n))
+  1. Same pointer?     → Return true (O(1))
+  2. Different length? → Return false (O(1))
+  3. Different hash?   → Return false (O(1) amortized)
+  4. Compare chars     → Return result (O(n))
 ```
+
+**Hash Threshold Rationale:**
+- For short strings (≤16 bytes), direct comparison is fast enough
+- For longer strings, hash check amortizes well over multiple comparisons
+- Threshold can be tuned based on benchmarks
 
 **Tests:**
 - [ ] SEQ returns true immediately for same pointer
-- [ ] SEQ correctly compares different strings
+- [ ] SEQ returns false immediately for different lengths
+- [ ] SEQ returns false for different hashes (same length)
+- [ ] SEQ correctly compares equal strings with same hash
+- [ ] Hash is computed lazily (not on string creation)
+- [ ] Hash is cached (subsequent access is O(1))
 - [ ] No performance regression for different strings
 
 ---
