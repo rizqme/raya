@@ -214,7 +214,7 @@ mod tests {
 
         let num = ctx.number_type();
         let str = ctx.string_type();
-        let union = ctx.union_type(vec![num, str], None);
+        let union = ctx.union_type(vec![num, str]);
 
         let mut assign_ctx = AssignabilityContext::new(&ctx);
 

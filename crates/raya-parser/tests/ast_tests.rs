@@ -1,5 +1,16 @@
 use raya_parser::ast::*;
 use raya_parser::token::Span;
+use raya_parser::Interner;
+
+// Helper to create Symbol from string for tests
+fn intern(interner: &mut Interner, s: &str) -> raya_parser::Symbol {
+    interner.intern(s)
+}
+
+// Helper to create an Identifier with interned name
+fn ident(interner: &mut Interner, name: &str, span: Span) -> Identifier {
+    Identifier::new(interner.intern(name), span)
+}
 
 // ============================================================================
 // Module Tests
@@ -30,9 +41,11 @@ fn test_module_with_statements() {
 
 #[test]
 fn test_variable_decl_let() {
+    let mut interner = Interner::new();
+
     let decl = VariableDecl {
         kind: VariableKind::Let,
-        pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(4, 5, 1, 5))),
+        pattern: Pattern::Identifier(ident(&mut interner, "x", Span::new(4, 5, 1, 5))),
         type_annotation: None,
         initializer: Some(Expression::IntLiteral(IntLiteral {
             value: 42,
@@ -48,9 +61,11 @@ fn test_variable_decl_let() {
 
 #[test]
 fn test_variable_decl_const() {
+    let mut interner = Interner::new();
+
     let decl = VariableDecl {
         kind: VariableKind::Const,
-        pattern: Pattern::Identifier(Identifier::new("y".to_string(), Span::new(6, 7, 1, 7))),
+        pattern: Pattern::Identifier(ident(&mut interner, "y", Span::new(6, 7, 1, 7))),
         type_annotation: Some(TypeAnnotation {
             ty: Type::Primitive(PrimitiveType::Number),
             span: Span::new(9, 15, 1, 10),
@@ -73,13 +88,16 @@ fn test_variable_decl_const() {
 
 #[test]
 fn test_function_decl_simple() {
+    let mut interner = Interner::new();
+    let add_name = intern(&mut interner, "add");
+
     let func = FunctionDecl {
-        name: Identifier::new("add".to_string(), Span::new(9, 12, 1, 10)),
+        name: Identifier::new(add_name, Span::new(9, 12, 1, 10)),
         type_params: None,
         params: vec![
             Parameter {
                 decorators: vec![],
-                pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(13, 14, 1, 14))),
+                pattern: Pattern::Identifier(ident(&mut interner, "x", Span::new(13, 14, 1, 14))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(16, 22, 1, 17),
@@ -88,7 +106,7 @@ fn test_function_decl_simple() {
             },
             Parameter {
                 decorators: vec![],
-                pattern: Pattern::Identifier(Identifier::new("y".to_string(), Span::new(24, 25, 1, 25))),
+                pattern: Pattern::Identifier(ident(&mut interner, "y", Span::new(24, 25, 1, 25))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(27, 33, 1, 28),
@@ -108,7 +126,7 @@ fn test_function_decl_simple() {
         span: Span::new(0, 45, 1, 1),
     };
 
-    assert_eq!(func.name.name, "add");
+    assert_eq!(interner.resolve(func.name.name), "add");
     assert_eq!(func.params.len(), 2);
     assert!(func.return_type.is_some());
     assert!(!func.is_async);
@@ -116,8 +134,10 @@ fn test_function_decl_simple() {
 
 #[test]
 fn test_function_decl_async() {
+    let mut interner = Interner::new();
+
     let func = FunctionDecl {
-        name: Identifier::new("fetch".to_string(), Span::new(15, 20, 1, 16)),
+        name: ident(&mut interner, "fetch", Span::new(15, 20, 1, 16)),
         type_params: None,
         params: vec![],
         return_type: None,
@@ -130,7 +150,7 @@ fn test_function_decl_async() {
     };
 
     assert!(func.is_async);
-    assert_eq!(func.name.name, "fetch");
+    assert_eq!(interner.resolve(func.name.name), "fetch");
 }
 
 // ============================================================================
@@ -139,17 +159,19 @@ fn test_function_decl_async() {
 
 #[test]
 fn test_class_decl_simple() {
+    let mut interner = Interner::new();
+
     let class = ClassDecl {
         decorators: vec![],
         is_abstract: false,
-        name: Identifier::new("Point".to_string(), Span::new(6, 11, 1, 7)),
+        name: ident(&mut interner, "Point", Span::new(6, 11, 1, 7)),
         type_params: None,
         extends: None,
         implements: vec![],
         members: vec![
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
-                name: Identifier::new("x".to_string(), Span::new(18, 19, 2, 5)),
+                name: ident(&mut interner, "x", Span::new(18, 19, 2, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(21, 27, 2, 8),
@@ -160,7 +182,7 @@ fn test_class_decl_simple() {
             }),
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
-                name: Identifier::new("y".to_string(), Span::new(33, 34, 3, 5)),
+                name: ident(&mut interner, "y", Span::new(33, 34, 3, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(36, 42, 3, 8),
@@ -173,21 +195,23 @@ fn test_class_decl_simple() {
         span: Span::new(0, 45, 1, 1),
     };
 
-    assert_eq!(class.name.name, "Point");
+    assert_eq!(interner.resolve(class.name.name), "Point");
     assert_eq!(class.members.len(), 2);
     assert!(class.extends.is_none());
 }
 
 #[test]
 fn test_class_with_extends() {
+    let mut interner = Interner::new();
+
     let class = ClassDecl {
         decorators: vec![],
         is_abstract: false,
-        name: Identifier::new("Square".to_string(), Span::new(6, 12, 1, 7)),
+        name: ident(&mut interner, "Square", Span::new(6, 12, 1, 7)),
         type_params: None,
         extends: Some(TypeAnnotation {
             ty: Type::Reference(TypeReference {
-                name: Identifier::new("Shape".to_string(), Span::new(21, 26, 1, 22)),
+                name: ident(&mut interner, "Shape", Span::new(21, 26, 1, 22)),
                 type_args: None,
             }),
             span: Span::new(21, 26, 1, 22),
@@ -199,50 +223,6 @@ fn test_class_with_extends() {
 
     assert!(class.extends.is_some());
 }
-
-// ============================================================================
-// Type Alias Tests (Interfaces BANNED in Raya - use type aliases instead)
-// ============================================================================
-
-// NOTE: Raya does NOT support `interface` declarations (LANG.md §10).
-// Use type aliases for all type definitions.
-//
-// The test below is commented out as interfaces are banned:
-/*
-#[test]
-fn test_interface_decl() {
-    let interface = InterfaceDecl {
-        name: Identifier::new("Drawable".to_string(), Span::new(10, 18, 1, 11)),
-        type_params: None,
-        extends: vec![],
-        members: vec![
-            InterfaceMember::Property(PropertySignature {
-                name: Identifier::new("color".to_string(), Span::new(25, 30, 2, 5)),
-                type_annotation: TypeAnnotation {
-                    ty: Type::Primitive(PrimitiveType::String),
-                    span: Span::new(32, 38, 2, 12),
-                },
-                optional: false,
-                span: Span::new(25, 39, 2, 5),
-            }),
-            InterfaceMember::Method(MethodSignature {
-                name: Identifier::new("draw".to_string(), Span::new(44, 48, 3, 5)),
-                type_params: None,
-                params: vec![],
-                return_type: TypeAnnotation {
-                    ty: Type::Primitive(PrimitiveType::Void),
-                    span: Span::new(52, 56, 3, 13),
-                },
-                span: Span::new(44, 57, 3, 5),
-            }),
-        ],
-        span: Span::new(0, 59, 1, 1),
-    };
-
-    assert_eq!(interface.name.name, "Drawable");
-    assert_eq!(interface.members.len(), 2);
-}
-*/
 
 // ============================================================================
 // Control Flow Statement Tests
@@ -330,9 +310,11 @@ fn test_switch_statement() {
 
 #[test]
 fn test_statement_is_declaration() {
+    let mut interner = Interner::new();
+
     let var_decl = Statement::VariableDecl(VariableDecl {
         kind: VariableKind::Let,
-        pattern: Pattern::Identifier(Identifier::new("x".to_string(), Span::new(0, 1, 1, 1))),
+        pattern: Pattern::Identifier(ident(&mut interner, "x", Span::new(0, 1, 1, 1))),
         type_annotation: None,
         initializer: None,
         span: Span::new(0, 1, 1, 1),
@@ -346,12 +328,14 @@ fn test_statement_is_declaration() {
 
 #[test]
 fn test_expression_is_literal() {
+    let mut interner = Interner::new();
+
     let int_lit = Expression::IntLiteral(IntLiteral {
         value: 42,
         span: Span::new(0, 2, 1, 1),
     });
 
-    let id = Expression::Identifier(Identifier::new("x".to_string(), Span::new(0, 1, 1, 1)));
+    let id = Expression::Identifier(ident(&mut interner, "x", Span::new(0, 1, 1, 1)));
 
     assert!(int_lit.is_literal());
     assert!(!id.is_literal());
@@ -363,33 +347,37 @@ fn test_expression_is_literal() {
 
 #[test]
 fn test_import_named() {
+    let mut interner = Interner::new();
+
     let import = ImportDecl {
         specifiers: vec![
             ImportSpecifier::Named {
-                name: Identifier::new("foo".to_string(), Span::new(9, 12, 1, 10)),
+                name: ident(&mut interner, "foo", Span::new(9, 12, 1, 10)),
                 alias: None,
             },
             ImportSpecifier::Named {
-                name: Identifier::new("bar".to_string(), Span::new(14, 17, 1, 15)),
-                alias: Some(Identifier::new("baz".to_string(), Span::new(21, 24, 1, 22))),
+                name: ident(&mut interner, "bar", Span::new(14, 17, 1, 15)),
+                alias: Some(ident(&mut interner, "baz", Span::new(21, 24, 1, 22))),
             },
         ],
         source: StringLiteral {
-            value: "./module".to_string(),
+            value: intern(&mut interner, "./module"),
             span: Span::new(31, 41, 1, 32),
         },
         span: Span::new(0, 42, 1, 1),
     };
 
     assert_eq!(import.specifiers.len(), 2);
-    assert_eq!(import.source.value, "./module");
+    assert_eq!(interner.resolve(import.source.value), "./module");
 }
 
 #[test]
 fn test_export_named() {
+    let mut interner = Interner::new();
+
     let export = ExportDecl::Named {
         specifiers: vec![ExportSpecifier {
-            name: Identifier::new("foo".to_string(), Span::new(9, 12, 1, 10)),
+            name: ident(&mut interner, "foo", Span::new(9, 12, 1, 10)),
             alias: None,
         }],
         source: None,

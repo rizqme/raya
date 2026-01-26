@@ -303,7 +303,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let num = ctx.number_type();
         let str = ctx.string_type();
-        let union = ctx.union_type(vec![num, str], None);
+        let union = ctx.union_type(vec![num, str]);
         let mut sub_ctx = SubtypingContext::new(&ctx);
 
         // number <: number | string

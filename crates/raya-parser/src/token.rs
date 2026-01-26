@@ -4,6 +4,7 @@
 //! including keywords, operators, literals, and special tokens.
 
 use std::fmt;
+use crate::interner::Symbol;
 
 /// A token in the Raya programming language.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,14 +75,14 @@ pub enum Token {
     // Literals
     IntLiteral(i64),
     FloatLiteral(f64),
-    StringLiteral(String),
+    StringLiteral(Symbol),  // Interned string
     TemplateLiteral(Vec<TemplatePart>),
     True,
     False,
     Null,
 
     // Identifiers
-    Identifier(String),
+    Identifier(Symbol),  // Interned identifier
 
     // Operators
     // Arithmetic
@@ -138,6 +139,7 @@ pub enum Token {
     Question,
     QuestionQuestion,
     QuestionDot,
+    DotDotDot, // ... for spread/rest
     Dot,
     Colon,
     Arrow,
@@ -161,7 +163,7 @@ pub enum Token {
 /// A part of a template literal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
-    String(String),
+    String(Symbol),  // Interned string part
     Expression(Vec<(Token, Span)>),
 }
 
@@ -255,12 +257,12 @@ impl fmt::Display for Token {
             Token::In => write!(f, "in"),
             Token::IntLiteral(n) => write!(f, "{}", n),
             Token::FloatLiteral(n) => write!(f, "{}", n),
-            Token::StringLiteral(s) => write!(f, "\"{}\"", s),
+            Token::StringLiteral(_) => write!(f, "\"<string>\""),
             Token::TemplateLiteral(_) => write!(f, "`...`"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
             Token::Null => write!(f, "null"),
-            Token::Identifier(s) => write!(f, "{}", s),
+            Token::Identifier(_) => write!(f, "<identifier>"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),
@@ -302,6 +304,7 @@ impl fmt::Display for Token {
             Token::Question => write!(f, "?"),
             Token::QuestionQuestion => write!(f, "??"),
             Token::QuestionDot => write!(f, "?."),
+            Token::DotDotDot => write!(f, "..."),
             Token::Dot => write!(f, "."),
             Token::Colon => write!(f, ":"),
             Token::Arrow => write!(f, "=>"),

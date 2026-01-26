@@ -22,12 +22,13 @@
 14. [Concurrency Model](#14-concurrency-model)
 15. [Synchronization](#15-synchronization)
 16. [Module System](#16-module-system)
-17. [Standard Library](#17-standard-library)
-18. [Optional Reflection System](#18-optional-reflection-system)
-19. [Banned Features](#19-banned-features)
-20. [Error Handling](#20-error-handling)
-21. [Memory Model](#21-memory-model)
-22. [Examples](#22-examples)
+17. [JSX/TSX Support](#17-jsxtsx-support)
+18. [Standard Library](#18-standard-library)
+19. [Optional Reflection System](#19-optional-reflection-system)
+20. [Banned Features](#20-banned-features)
+21. [Error Handling](#21-error-handling)
+22. [Memory Model](#22-memory-model)
+23. [Examples](#23-examples)
 
 ---
 
@@ -2904,7 +2905,201 @@ Modules are initialized in dependency order (topological sort):
 
 ---
 
-## 17. Standard Library
+## 17. JSX/TSX Support
+
+Raya supports JSX syntax for declarative UI construction, similar to React and other UI frameworks. JSX expressions compile to function calls at compile time.
+
+### 17.1 JSX Elements
+
+Basic JSX element syntax:
+
+```tsx
+const element = <div className="container">Hello World</div>;
+```
+
+Compiles to:
+
+```ts
+const element = createElement("div", { className: "container" }, "Hello World");
+```
+
+### 17.2 JSX Fragments
+
+Fragments allow grouping multiple elements without a wrapper:
+
+```tsx
+const fragment = (
+  <>
+    <h1>Title</h1>
+    <p>Content</p>
+  </>
+);
+```
+
+Compiles to:
+
+```ts
+const fragment = createElement(Fragment, null,
+  createElement("h1", null, "Title"),
+  createElement("p", null, "Content")
+);
+```
+
+### 17.3 JSX Expressions
+
+JavaScript expressions can be embedded with `{}`:
+
+```tsx
+const name = "World";
+const greeting = <div>Hello {name}!</div>;
+
+const count = 5;
+const message = <p>You have {count > 0 ? count : "no"} items</p>;
+```
+
+### 17.4 JSX Attributes
+
+Attributes use camelCase naming:
+
+```tsx
+<div
+  className="box"
+  id="main"
+  style={{ color: "red", fontSize: 14 }}
+  onClick={handleClick}
+  data-value={42}
+/>
+```
+
+### 17.5 Spread Attributes
+
+Object spread in attributes:
+
+```tsx
+const props = { className: "box", id: "main" };
+const element = <div {...props} />;
+```
+
+Compiles to:
+
+```ts
+const props = { className: "box", id: "main" };
+const element = createElement("div", props);
+```
+
+### 17.6 JSX Children
+
+Children can be text, expressions, or nested elements:
+
+```tsx
+const complex = (
+  <div>
+    <h1>{title}</h1>
+    {items.map(item => <Item key={item.id} data={item} />)}
+    <footer>End</footer>
+  </div>
+);
+```
+
+### 17.7 Self-Closing Tags
+
+Elements without children use self-closing syntax:
+
+```tsx
+<img src="photo.jpg" />
+<br />
+<Component prop={value} />
+```
+
+### 17.8 Component Elements
+
+Components are referenced by capitalized identifiers:
+
+```tsx
+// Built-in elements (lowercase)
+<div />
+<span />
+
+// Component elements (capitalized)
+<MyComponent />
+<UserProfile user={currentUser} />
+```
+
+### 17.9 Member Expression Components
+
+Namespace-style component references:
+
+```tsx
+<UI.Button variant="primary" />
+<Form.Input type="text" />
+```
+
+### 17.10 JSX Type Checking
+
+JSX elements are type-checked like regular expressions:
+
+```tsx
+type ButtonProps = {
+  label: string;
+  onClick: () => void;
+};
+
+function Button(props: ButtonProps) {
+  return <button onClick={props.onClick}>{props.label}</button>;
+}
+
+// Type error: missing 'onClick'
+const btn = <Button label="Click" />;  // ERROR
+
+// Correct
+const btn = <Button label="Click" onClick={() => console.log("clicked")} />;
+```
+
+### 17.11 JSX Transformation
+
+JSX transforms to `createElement` calls:
+
+```tsx
+// Source
+<Component prop1={value1} prop2={value2}>
+  <Child />
+  {expression}
+</Component>
+
+// Compiled
+createElement(Component,
+  { prop1: value1, prop2: value2 },
+  createElement(Child, null),
+  expression
+)
+```
+
+The `createElement` function must be in scope (typically imported from a UI framework).
+
+### 17.12 File Extension
+
+Files containing JSX must use `.tsx` extension:
+
+```
+component.tsx   // Contains JSX
+utils.raya      // Plain Raya, no JSX
+```
+
+### 17.13 JSX in Raya vs React
+
+**Similarities:**
+- Same syntax for elements, attributes, children
+- Same transformation to function calls
+- Type checking for props
+
+**Differences:**
+- Raya requires explicit `createElement` import
+- No React-specific features (hooks, effects, etc.)
+- Framework-agnostic - works with any UI library
+
+---
+
+## 18. Standard Library
 
 ### 17.1 Console
 
@@ -3535,7 +3730,7 @@ function decodeApiData(json: JsonValue): Result<ApiData, Error> {
 
 ---
 
-## 18. Optional Reflection System
+## 19. Optional Reflection System
 
 Raya provides an **optional reflection capability** that can be enabled at compile time. By default, Raya compiles with **zero runtime type information**. However, when reflection is enabled, the compiler emits type metadata that allows runtime type introspection.
 
@@ -3822,7 +4017,7 @@ Even with reflection enabled, Raya maintains its type safety guarantees:
 
 ---
 
-## 19. Banned Features
+## 20. Banned Features
 
 ### 19.1 JavaScript Runtime Features
 
@@ -3882,7 +4077,7 @@ Even with reflection enabled, Raya maintains its type safety guarantees:
 
 ---
 
-## 20. Error Handling
+## 21. Error Handling
 
 ### 20.1 Runtime Errors
 
@@ -4041,7 +4236,7 @@ async function autoUnlock(): Task<void> {
 
 ---
 
-## 21. Memory Model
+## 22. Memory Model
 
 ### 21.1 Garbage Collection
 
@@ -4095,7 +4290,7 @@ Raya guarantees:
 
 ---
 
-## 22. Examples
+## 23. Examples
 
 ### 22.1 Discriminated Unions Example
 

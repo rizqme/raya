@@ -16,13 +16,13 @@ fn test_typeof_narrowing_if_else() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     // Should pass - x is narrowed to string in then branch, number in else branch
@@ -51,13 +51,13 @@ fn test_typeof_narrowing_negated() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     // Should pass - x is narrowed to number when not string
@@ -74,13 +74,13 @@ fn test_no_narrowing_without_guard() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     // Should fail - x is not narrowed, still string | number, can't assign to string
@@ -107,15 +107,69 @@ fn test_narrowing_with_boolean_variable() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     // Should pass - no narrowing happens since typeof is assigned to variable
     assert!(result.is_ok(), "Expected no errors, got: {:?}", result);
+}
+
+#[test]
+fn test_forbidden_field_access_type() {
+    let source = r#"
+        let x: string | number = 42;
+        let t = x.$type;
+    "#;
+
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    let mut type_ctx = TypeContext::new();
+    let binder = Binder::new(&mut type_ctx, &interner);
+    let symbols = binder.bind_module(&module).unwrap();
+
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let result = checker.check_module(&module);
+
+    // Should fail - accessing $type on bare union is forbidden
+    assert!(result.is_err(), "Expected error for $type access");
+    let errors = result.unwrap_err();
+    assert!(
+        errors.iter().any(|e| matches!(e, raya_checker::error::CheckError::ForbiddenFieldAccess { field, .. } if field == "$type")),
+        "Expected ForbiddenFieldAccess error for $type, got: {:?}",
+        errors
+    );
+}
+
+#[test]
+fn test_forbidden_field_access_value() {
+    let source = r#"
+        let x: string | number = "hello";
+        let v = x.$value;
+    "#;
+
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    let mut type_ctx = TypeContext::new();
+    let binder = Binder::new(&mut type_ctx, &interner);
+    let symbols = binder.bind_module(&module).unwrap();
+
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let result = checker.check_module(&module);
+
+    // Should fail - accessing $value on bare union is forbidden
+    assert!(result.is_err(), "Expected error for $value access");
+    let errors = result.unwrap_err();
+    assert!(
+        errors.iter().any(|e| matches!(e, raya_checker::error::CheckError::ForbiddenFieldAccess { field, .. } if field == "$value")),
+        "Expected ForbiddenFieldAccess error for $value, got: {:?}",
+        errors
+    );
 }

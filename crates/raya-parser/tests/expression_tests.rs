@@ -7,7 +7,7 @@ use raya_parser::parser::Parser;
 fn test_parse_number_literal() {
     let source = "42";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -24,12 +24,12 @@ fn test_parse_number_literal() {
 fn test_parse_string_literal() {
     let source = r#""hello""#;
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
-            Expression::StringLiteral(lit) => assert_eq!(lit.value, "hello"),
+            Expression::StringLiteral(lit) => assert_eq!(interner.resolve(lit.value), "hello"),
             _ => panic!("Expected string literal"),
         },
         _ => panic!("Expected expression statement"),
@@ -40,7 +40,7 @@ fn test_parse_string_literal() {
 fn test_parse_boolean_literals() {
     let source = "true";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -52,7 +52,7 @@ fn test_parse_boolean_literals() {
 
     let source = "false";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -67,7 +67,7 @@ fn test_parse_boolean_literals() {
 fn test_parse_null_literal() {
     let source = "null";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -82,11 +82,11 @@ fn test_parse_null_literal() {
 fn test_parse_identifier() {
     let source = "myVariable";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
-            Expression::Identifier(id) => assert_eq!(id.name, "myVariable"),
+            Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myVariable"),
             _ => panic!("Expected identifier expression"),
         },
         _ => panic!("Expected expression statement"),
@@ -97,7 +97,7 @@ fn test_parse_identifier() {
 fn test_parse_binary_addition() {
     let source = "1 + 2";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -124,7 +124,7 @@ fn test_parse_binary_addition() {
 fn test_parse_binary_precedence() {
     let source = "1 + 2 * 3";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     // Should parse as: 1 + (2 * 3)
     match &module.statements[0] {
@@ -161,7 +161,7 @@ fn test_parse_binary_precedence() {
 fn test_parse_unary_negation() {
     let source = "-42";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -183,7 +183,7 @@ fn test_parse_unary_negation() {
 fn test_parse_unary_not() {
     let source = "!true";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -200,7 +200,7 @@ fn test_parse_unary_not() {
 fn test_parse_array_literal() {
     let source = "[1, 2, 3]";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -208,8 +208,8 @@ fn test_parse_array_literal() {
                 assert_eq!(arr.elements.len(), 3);
                 // Check first element is 1
                 match &arr.elements[0] {
-                    Some(Expression::IntLiteral(lit)) => assert_eq!(lit.value, 1),
-                    Some(Expression::FloatLiteral(lit)) => assert_eq!(lit.value, 1.0),
+                    Some(ArrayElement::Expression(Expression::IntLiteral(lit))) => assert_eq!(lit.value, 1),
+                    Some(ArrayElement::Expression(Expression::FloatLiteral(lit))) => assert_eq!(lit.value, 1.0),
                     _ => panic!("Expected element"),
                 }
             }
@@ -223,7 +223,7 @@ fn test_parse_array_literal() {
 fn test_parse_empty_array() {
     let source = "[]";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -240,7 +240,7 @@ fn test_parse_empty_array() {
 fn test_parse_object_literal() {
     let source = "{ x: 1, y: 2 }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -250,7 +250,7 @@ fn test_parse_object_literal() {
                 match &obj.properties[0] {
                     ObjectProperty::Property(prop) => {
                         match &prop.key {
-                            PropertyKey::Identifier(id) => assert_eq!(id.name, "x"),
+                            PropertyKey::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                             _ => panic!("Expected identifier key"),
                         }
                         match &prop.value {
@@ -272,7 +272,7 @@ fn test_parse_object_literal() {
 fn test_parse_empty_object() {
     let source = "{}";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -289,17 +289,17 @@ fn test_parse_empty_object() {
 fn test_parse_member_access() {
     let source = "obj.property";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Member(mem) => {
                 assert!(!mem.optional);
                 match &*mem.object {
-                    Expression::Identifier(id) => assert_eq!(id.name, "obj"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "obj"),
                     _ => panic!("Expected identifier"),
                 }
-                assert_eq!(mem.property.name, "property");
+                assert_eq!(interner.resolve(mem.property.name), "property");
             }
             _ => panic!("Expected member expression"),
         },
@@ -311,13 +311,13 @@ fn test_parse_member_access() {
 fn test_parse_computed_member_access() {
     let source = r#"obj["key"]"#;
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Index(idx) => {
                 match &*idx.index {
-                    Expression::StringLiteral(lit) => assert_eq!(lit.value, "key"),
+                    Expression::StringLiteral(lit) => assert_eq!(interner.resolve(lit.value), "key"),
                     _ => panic!("Expected string literal"),
                 }
             }
@@ -331,14 +331,14 @@ fn test_parse_computed_member_access() {
 fn test_parse_function_call() {
     let source = "foo()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Call(call) => {
                 assert_eq!(call.arguments.len(), 0);
                 match &*call.callee {
-                    Expression::Identifier(id) => assert_eq!(id.name, "foo"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "foo"),
                     _ => panic!("Expected identifier"),
                 }
             }
@@ -352,7 +352,7 @@ fn test_parse_function_call() {
 fn test_parse_function_call_with_args() {
     let source = "foo(1, 2)";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -374,17 +374,17 @@ fn test_parse_function_call_with_args() {
 fn test_parse_chained_member_access() {
     let source = "a.b.c";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Member(mem) => {
                 // Outermost is a.b accessing c
-                assert_eq!(mem.property.name, "c");
+                assert_eq!(interner.resolve(mem.property.name), "c");
                 // Object should be a.b
                 match &*mem.object {
                     Expression::Member(inner) => {
-                        assert_eq!(inner.property.name, "b");
+                        assert_eq!(interner.resolve(inner.property.name), "b");
                     }
                     _ => panic!("Expected member expression"),
                 }
@@ -399,14 +399,14 @@ fn test_parse_chained_member_access() {
 fn test_parse_assignment() {
     let source = "x = 42";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Assignment(assign) => {
                 assert!(matches!(assign.operator, AssignmentOperator::Assign));
                 match &*assign.left {
-                    Expression::Identifier(id) => assert_eq!(id.name, "x"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                     _ => panic!("Expected identifier"),
                 }
                 match &*assign.right {
@@ -425,7 +425,7 @@ fn test_parse_assignment() {
 fn test_parse_compound_assignment() {
     let source = "x += 5";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -442,13 +442,13 @@ fn test_parse_compound_assignment() {
 fn test_parse_conditional_expression() {
     let source = "x ? 1 : 2";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::Conditional(cond) => {
                 match &*cond.test {
-                    Expression::Identifier(id) => assert_eq!(id.name, "x"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                     _ => panic!("Expected identifier"),
                 }
                 match &*cond.consequent {
@@ -472,7 +472,7 @@ fn test_parse_conditional_expression() {
 fn test_parse_logical_operators() {
     let source = "a && b";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -486,7 +486,7 @@ fn test_parse_logical_operators() {
 
     let source = "a || b";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -503,7 +503,7 @@ fn test_parse_logical_operators() {
 fn test_parse_nullish_coalescing() {
     let source = "a ?? b";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -534,7 +534,7 @@ fn test_parse_comparison_operators() {
 
     for (source, expected_op) in tests {
         let parser = Parser::new(source).unwrap();
-        let module = parser.parse().unwrap();
+        let (module, _interner) = parser.parse().unwrap();
 
         match &module.statements[0] {
             Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -557,7 +557,7 @@ fn test_parse_comparison_operators() {
 fn test_parse_grouped_expression() {
     let source = "(1 + 2)";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -574,7 +574,7 @@ fn test_parse_grouped_expression() {
 fn test_parse_complex_precedence() {
     let source = "a + b * c - d / e";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     // Should parse as: (a + (b * c)) - (d / e)
     match &module.statements[0] {
@@ -605,7 +605,7 @@ fn test_parse_complex_precedence() {
 fn test_parse_left_associativity() {
     let source = "1 + 2 + 3";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     // Should parse as (1 + 2) + 3
     match &module.statements[0] {
@@ -646,7 +646,7 @@ fn test_parse_left_associativity() {
 fn test_parse_right_associativity() {
     let source = "2 ** 3 ** 4";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     // Should parse as 2 ** (3 ** 4)
     match &module.statements[0] {

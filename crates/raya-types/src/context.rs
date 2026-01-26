@@ -2,6 +2,7 @@
 
 use crate::ty::{Type, TypeId};
 use crate::error::TypeError;
+use crate::discriminant::{Discriminant, DiscriminantInference};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -132,6 +133,21 @@ impl TypeContext {
         self.intern(Type::Unknown)
     }
 
+    /// Create a string literal type
+    pub fn string_literal(&mut self, value: impl Into<String>) -> TypeId {
+        self.intern(Type::StringLiteral(value.into()))
+    }
+
+    /// Create a number literal type
+    pub fn number_literal(&mut self, value: f64) -> TypeId {
+        self.intern(Type::NumberLiteral(value))
+    }
+
+    /// Create a boolean literal type
+    pub fn boolean_literal(&mut self, value: bool) -> TypeId {
+        self.intern(Type::BooleanLiteral(value))
+    }
+
     /// Create an array type
     pub fn array_type(&mut self, element: TypeId) -> TypeId {
         self.intern(Type::Array(crate::ty::ArrayType { element }))
@@ -152,7 +168,9 @@ impl TypeContext {
     }
 
     /// Create a union type
-    pub fn union_type(&mut self, members: Vec<TypeId>, discriminant: Option<String>) -> TypeId {
+    ///
+    /// Automatically infers discriminant field if the union is discriminated.
+    pub fn union_type(&mut self, members: Vec<TypeId>) -> TypeId {
         // Normalize: remove duplicates and flatten nested unions
         let mut normalized_members = Vec::new();
         for &member in &members {
@@ -173,10 +191,68 @@ impl TypeContext {
             return normalized_members[0];
         }
 
+        // Check if this is a bare primitive union
+        let detector = crate::bare_union::BareUnionDetector::new(self);
+        let is_bare = detector.is_bare_primitive_union(&normalized_members);
+
+        let (discriminant, internal_union) = if is_bare {
+            // Transform bare union to internal representation
+            let primitives = detector.extract_primitives(&normalized_members);
+
+            // Validate no duplicates
+            if let Err(_) = detector.validate_no_duplicates(&primitives) {
+                // If there are duplicates, treat as regular union (will error later)
+                let disc = {
+                    let inference = DiscriminantInference::new(self);
+                    inference.infer(&normalized_members).ok()
+                };
+                (disc, None)
+            } else {
+                // Transform to internal discriminated union
+                let mut transform = crate::bare_union::BareUnionTransform::new(self);
+                let internal = transform.transform(&primitives);
+                (None, Some(internal))
+            }
+        } else {
+            // Try to infer discriminant for regular discriminated unions
+            let disc = {
+                let inference = DiscriminantInference::new(self);
+                inference.infer(&normalized_members).ok()
+            };
+            (disc, None)
+        };
+
         self.intern(Type::Union(crate::ty::UnionType {
             members: normalized_members,
             discriminant,
+            is_bare,
+            internal_union,
         }))
+    }
+
+    /// Get discriminant information for a union type
+    pub fn get_discriminant(&self, union_id: TypeId) -> Option<&Discriminant> {
+        if let Some(Type::Union(union)) = self.get(union_id) {
+            union.discriminant.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Get the internal representation of a bare union
+    ///
+    /// For bare unions, this returns the internal discriminated union TypeId.
+    /// Returns None if the type is not a bare union or doesn't have an internal representation.
+    pub fn get_bare_union_internal(&self, union_id: TypeId) -> Option<TypeId> {
+        if let Some(Type::Union(union)) = self.get(union_id) {
+            if union.is_bare {
+                union.internal_union
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     }
 
     /// Get a display string for a type
@@ -287,7 +363,7 @@ mod tests {
 
         let num = ctx.number_type();
         let str = ctx.string_type();
-        let union = ctx.union_type(vec![num, str], None);
+        let union = ctx.union_type(vec![num, str]);
 
         match ctx.get(union) {
             Some(Type::Union(u)) => {
@@ -308,10 +384,10 @@ mod tests {
         let bool = ctx.boolean_type();
 
         // Create num | str
-        let union1 = ctx.union_type(vec![num, str], None);
+        let union1 = ctx.union_type(vec![num, str]);
 
         // Create (num | str) | bool - should flatten to num | str | bool
-        let union2 = ctx.union_type(vec![union1, bool], None);
+        let union2 = ctx.union_type(vec![union1, bool]);
 
         match ctx.get(union2) {
             Some(Type::Union(u)) => {
@@ -332,7 +408,7 @@ mod tests {
         let str = ctx.string_type();
 
         // Create num | str | num - should deduplicate to num | str
-        let union = ctx.union_type(vec![num, str, num], None);
+        let union = ctx.union_type(vec![num, str, num]);
 
         match ctx.get(union) {
             Some(Type::Union(u)) => {
@@ -351,7 +427,7 @@ mod tests {
         let num = ctx.number_type();
 
         // Single member union should just return the member
-        let union = ctx.union_type(vec![num], None);
+        let union = ctx.union_type(vec![num]);
         assert_eq!(union, num);
     }
 

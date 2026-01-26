@@ -61,7 +61,7 @@ impl TypeEnv {
                     *ty1
                 } else {
                     // Different types - create union
-                    ctx.union_type(vec![*ty1, *ty2], None)
+                    ctx.union_type(vec![*ty1, *ty2])
                 };
                 merged.set(var.clone(), union_ty);
             }
@@ -97,6 +97,21 @@ pub fn apply_type_guard(
         TypeGuard::Nullish { negated, .. } => {
             apply_nullish_guard(ctx, ty, *negated)
         }
+        TypeGuard::IsArray { negated, .. } => {
+            apply_is_array_guard(ctx, ty, *negated)
+        }
+        TypeGuard::IsInteger { negated, .. } => {
+            apply_is_integer_guard(ctx, ty, *negated)
+        }
+        TypeGuard::IsNaN { negated, .. } => {
+            apply_is_nan_guard(ctx, ty, *negated)
+        }
+        TypeGuard::IsFinite { negated, .. } => {
+            apply_is_finite_guard(ctx, ty, *negated)
+        }
+        TypeGuard::TypePredicate { predicate, negated, .. } => {
+            apply_type_predicate_guard(ctx, ty, predicate, *negated)
+        }
     }
 }
 
@@ -107,6 +122,14 @@ fn apply_typeof_guard(
     type_name: &str,
     negated: bool,
 ) -> Option<TypeId> {
+    // Check if this is a bare union (for primitive type narrowing)
+    if let Some(Type::Union(union)) = ctx.get(ty) {
+        if union.is_bare {
+            return apply_typeof_guard_bare_union(ctx, ty, type_name, negated);
+        }
+    }
+
+    // Non-bare union: use standard typeof narrowing
     // Map type name to TypeId
     let target_ty = match type_name {
         "string" => ctx.string_type(),
@@ -123,6 +146,68 @@ fn apply_typeof_guard(
     } else {
         // typeof x === "string" - narrow to string
         Some(target_ty)
+    }
+}
+
+/// Apply typeof guard to a bare primitive union
+fn apply_typeof_guard_bare_union(
+    ctx: &mut TypeContext,
+    union_ty: TypeId,
+    type_name: &str,
+    negated: bool,
+) -> Option<TypeId> {
+    use raya_types::PrimitiveType;
+
+    // Map type name to PrimitiveType
+    let target_prim = match type_name {
+        "number" => PrimitiveType::Number,
+        "string" => PrimitiveType::String,
+        "boolean" => PrimitiveType::Boolean,
+        "null" => PrimitiveType::Null,
+        _ => return Some(union_ty), // Unknown type name, no narrowing
+    };
+
+    if negated {
+        // typeof x !== "string" - remove string from union
+        remove_primitive_from_bare_union(ctx, union_ty, target_prim)
+    } else {
+        // typeof x === "string" - narrow to string
+        Some(ctx.intern(Type::Primitive(target_prim)))
+    }
+}
+
+/// Remove a primitive type from a bare union
+fn remove_primitive_from_bare_union(
+    ctx: &mut TypeContext,
+    union_id: TypeId,
+    to_remove: raya_types::PrimitiveType,
+) -> Option<TypeId> {
+    let union = match ctx.get(union_id) {
+        Some(Type::Union(u)) if u.is_bare => u.clone(),
+        _ => return Some(union_id),
+    };
+
+    // Filter out the primitive to remove
+    let remaining: Vec<TypeId> = union.members.iter()
+        .filter(|&&member| {
+            if let Some(Type::Primitive(prim)) = ctx.get(member) {
+                *prim != to_remove
+            } else {
+                true
+            }
+        })
+        .copied()
+        .collect();
+
+    if remaining.is_empty() {
+        // No members left - unreachable
+        Some(ctx.never_type())
+    } else if remaining.len() == 1 {
+        // Single member - return it directly
+        Some(remaining[0])
+    } else {
+        // Multiple members - return new union
+        Some(ctx.union_type(remaining))
     }
 }
 
@@ -170,7 +255,7 @@ fn apply_discriminant_guard(
                 Some(matching_members[0])
             } else {
                 // Multiple variants - return union
-                Some(ctx.union_type(matching_members, None))
+                Some(ctx.union_type(matching_members))
             }
         }
         Type::Object(obj) => {
@@ -236,7 +321,7 @@ fn remove_from_union(
                 Some(remaining[0])
             } else {
                 // Multiple members - return union
-                Some(ctx.union_type(remaining, None))
+                Some(ctx.union_type(remaining))
             }
         }
         _ => {
@@ -330,7 +415,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let num_ty = ctx.number_type();
         let str_ty = ctx.string_type();
-        let union_ty = ctx.union_type(vec![num_ty, str_ty], None);
+        let union_ty = ctx.union_type(vec![num_ty, str_ty]);
 
         let guard = TypeGuard::TypeOf {
             var: "x".to_string(),
@@ -347,7 +432,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let num_ty = ctx.number_type();
         let str_ty = ctx.string_type();
-        let union_ty = ctx.union_type(vec![num_ty, str_ty], None);
+        let union_ty = ctx.union_type(vec![num_ty, str_ty]);
 
         let guard = TypeGuard::TypeOf {
             var: "x".to_string(),
@@ -364,7 +449,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let str_ty = ctx.string_type();
         let null_ty = ctx.null_type();
-        let union_ty = ctx.union_type(vec![str_ty, null_ty], None);
+        let union_ty = ctx.union_type(vec![str_ty, null_ty]);
 
         let guard = TypeGuard::Nullish {
             var: "x".to_string(),
@@ -380,7 +465,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let str_ty = ctx.string_type();
         let null_ty = ctx.null_type();
-        let union_ty = ctx.union_type(vec![str_ty, null_ty], None);
+        let union_ty = ctx.union_type(vec![str_ty, null_ty]);
 
         let guard = TypeGuard::Nullish {
             var: "x".to_string(),
@@ -397,7 +482,7 @@ mod tests {
         let num_ty = ctx.number_type();
         let str_ty = ctx.string_type();
         let bool_ty = ctx.boolean_type();
-        let union_ty = ctx.union_type(vec![num_ty, str_ty, bool_ty], None);
+        let union_ty = ctx.union_type(vec![num_ty, str_ty, bool_ty]);
 
         let result = remove_from_union(&mut ctx, union_ty, str_ty).unwrap();
 
@@ -410,5 +495,194 @@ mod tests {
             }
             _ => panic!("Expected union type"),
         }
+    }
+}
+
+/// Apply Array.isArray guard
+fn apply_is_array_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    negated: bool,
+) -> Option<TypeId> {
+    use raya_types::ty::ArrayType;
+
+    if negated {
+        // !Array.isArray(x) - remove array types from union
+        if let Some(Type::Union(union)) = ctx.get(ty) {
+            let remaining: Vec<TypeId> = union.members.iter()
+                .filter(|&&member| !matches!(ctx.get(member), Some(Type::Array(_))))
+                .copied()
+                .collect();
+
+            if remaining.is_empty() {
+                return Some(ctx.never_type());
+            } else if remaining.len() == 1 {
+                return Some(remaining[0]);
+            } else {
+                return Some(ctx.union_type(remaining));
+            }
+        }
+        Some(ty)
+    } else {
+        // Array.isArray(x) - narrow to array type only
+        if let Some(Type::Array(_)) = ctx.get(ty) {
+            Some(ty)
+        } else if let Some(Type::Union(union)) = ctx.get(ty) {
+            // Find array members
+            let arrays: Vec<TypeId> = union.members.iter()
+                .filter(|&&member| matches!(ctx.get(member), Some(Type::Array(_))))
+                .copied()
+                .collect();
+
+            if arrays.is_empty() {
+                Some(ctx.never_type())
+            } else if arrays.len() == 1 {
+                Some(arrays[0])
+            } else {
+                Some(ctx.union_type(arrays))
+            }
+        } else {
+            // Non-array type - narrowed to never
+            Some(ctx.never_type())
+        }
+    }
+}
+
+/// Apply Number.isInteger guard
+///
+/// Note: In Raya, we don't distinguish int/float at runtime for bare unions,
+/// but this can still be useful for documentation and future optimizations.
+fn apply_is_integer_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    negated: bool,
+) -> Option<TypeId> {
+    use raya_types::PrimitiveType;
+
+    // For now, Number.isInteger just validates it's a number
+    // In the future, we could track integer-ness more precisely
+    if negated {
+        // !Number.isInteger(x) - could be float, string, etc.
+        // For bare unions containing number, this doesn't narrow much
+        Some(ty)
+    } else {
+        // Number.isInteger(x) - narrow to number type
+        if matches!(ctx.get(ty), Some(Type::Primitive(PrimitiveType::Number))) {
+            Some(ty)
+        } else if let Some(Type::Union(union)) = ctx.get(ty) {
+            // Find number members
+            let numbers: Vec<TypeId> = union.members.iter()
+                .filter(|&&member| {
+                    matches!(ctx.get(member), Some(Type::Primitive(PrimitiveType::Number)))
+                })
+                .copied()
+                .collect();
+
+            if numbers.is_empty() {
+                Some(ctx.never_type())
+            } else if numbers.len() == 1 {
+                Some(numbers[0])
+            } else {
+                Some(ctx.union_type(numbers))
+            }
+        } else {
+            Some(ctx.never_type())
+        }
+    }
+}
+
+/// Apply Number.isNaN guard
+fn apply_is_nan_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    negated: bool,
+) -> Option<TypeId> {
+    // NaN is a special number value
+    // For negated (!Number.isNaN), we know it's not NaN but still could be number
+    // For non-negated, we know it IS NaN
+
+    if negated {
+        // !Number.isNaN(x) - not NaN, but could be any other value
+        Some(ty)
+    } else {
+        // Number.isNaN(x) - it's NaN (a number value)
+        // In practice, this narrows to number type
+        Some(ctx.number_type())
+    }
+}
+
+/// Apply Number.isFinite guard
+fn apply_is_finite_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    negated: bool,
+) -> Option<TypeId> {
+    use raya_types::PrimitiveType;
+
+    if negated {
+        // !Number.isFinite(x) - could be Infinity, NaN, or non-number
+        Some(ty)
+    } else {
+        // Number.isFinite(x) - finite number (excludes Infinity and NaN)
+        // Narrows to number type
+        if matches!(ctx.get(ty), Some(Type::Primitive(PrimitiveType::Number))) {
+            Some(ty)
+        } else if let Some(Type::Union(union)) = ctx.get(ty) {
+            let numbers: Vec<TypeId> = union.members.iter()
+                .filter(|&&member| {
+                    matches!(ctx.get(member), Some(Type::Primitive(PrimitiveType::Number)))
+                })
+                .copied()
+                .collect();
+
+            if numbers.is_empty() {
+                Some(ctx.never_type())
+            } else if numbers.len() == 1 {
+                Some(numbers[0])
+            } else {
+                Some(ctx.union_type(numbers))
+            }
+        } else {
+            Some(ctx.never_type())
+        }
+    }
+}
+
+/// Apply custom type predicate guard (isString, isObject, etc.)
+fn apply_type_predicate_guard(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    predicate: &str,
+    negated: bool,
+) -> Option<TypeId> {
+    use raya_types::PrimitiveType;
+
+    // Map predicate names to types
+    let target_ty = match predicate {
+        "isString" => Some(ctx.string_type()),
+        "isNumber" => Some(ctx.number_type()),
+        "isBoolean" => Some(ctx.boolean_type()),
+        "isNull" => Some(ctx.null_type()),
+        "isObject" => {
+            // isObject could mean any object type
+            // For now, we can't narrow precisely without more context
+            return Some(ty);
+        }
+        "isFunction" => {
+            // isFunction would narrow to function types
+            // For now, return as-is
+            return Some(ty);
+        }
+        _ => None,
+    };
+
+    let target_ty = target_ty?;
+
+    if negated {
+        // !isString(x) - remove string from union
+        remove_from_union(ctx, ty, target_ty)
+    } else {
+        // isString(x) - narrow to string
+        Some(target_ty)
     }
 }

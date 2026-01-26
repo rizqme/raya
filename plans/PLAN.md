@@ -1525,30 +1525,175 @@ impl BareUnionTransform {
 
 **Reference:** `design/LANG.md` Section 4.3
 
-### 2.8 Error Reporting
+### 2.8 Error Reporting ✅
+
+**Status:** ✅ Complete (2026-01-25)
 
 **Tasks:**
-- [ ] Create helpful error messages
-- [ ] Show source code context
-- [ ] Suggest fixes (e.g., "use discriminated union instead of typeof")
-- [ ] Support multiple error formats (human, JSON)
+- [x] Create helpful error messages with codespan-reporting
+- [x] Show source code context
+- [x] Suggest fixes (e.g., "use discriminated union instead of typeof")
+- [x] Support multiple error formats (human, JSON)
+- [x] Error code mapping (E2xxx for type errors, E3xxx for bind errors)
+- [x] Comprehensive diagnostic infrastructure
 
 **Files:**
 ```rust
-// crates/raya-parser/src/error.rs
-pub struct ParseError {
-    pub kind: ErrorKind,
-    pub span: Span,
-    pub message: String,
-    pub suggestion: Option<String>,
+// crates/raya-checker/src/diagnostic.rs
+pub struct Diagnostic {
+    inner: CsDiagnostic<usize>,
+    code: Option<ErrorCode>,
 }
 
-impl ParseError {
-    pub fn format(&self, source: &str) -> String {
-        // Pretty-print with source context
-    }
+impl Diagnostic {
+    pub fn from_check_error(error: &CheckError, file_id: usize) -> Self;
+    pub fn from_bind_error(error: &BindError, file_id: usize) -> Self;
+    pub fn emit(&self, files: &SimpleFiles<String, String>) -> Result<(), ...>;
+    pub fn to_json(&self, files: &SimpleFiles<String, String>) -> Result<String, ...>;
+}
+
+// Error codes: E2001-E2015 (type checking), E3001-E3004 (binding)
+```
+
+**Reference:** `plans/milestone-2.8.md`
+
+### 2.9 Advanced Parser Features ✅
+
+**Status:** ✅ Complete (2026-01-25)
+
+**Goal:** Implement advanced parsing features deferred from Milestone 2.3: destructuring, JSX/TSX, spread/rest operators, decorators.
+
+**Dependencies:**
+- Milestone 2.3 (Parser) ✅ Complete
+
+**Tasks:**
+- [x] **Phase 1: Destructuring Patterns** ✅
+  - [x] Array destructuring with defaults, nesting, rest elements
+  - [x] Object destructuring with renaming, defaults, rest properties
+  - [x] Integration with variable declarations and function parameters
+  - [x] Added `PatternElement` with default values
+  - [x] Added `...` token (Token::DotDotDot) to lexer
+- [x] **Phase 2: JSX/TSX Support** ✅
+  - [x] JSX elements, fragments, attributes (all AST nodes)
+  - [x] Spread attributes: {...props}
+  - [x] JSX children (text, expressions, nested elements)
+  - [x] JSX parser implementation in parser/jsx.rs
+  - [x] Integration with expression parser
+  - Note: Full lexer mode switching deferred (simplified text parsing implemented)
+- [x] **Phase 3: Advanced Features** ✅
+  - [x] Spread operators in arrays: [...arr1, ...arr2]
+  - [x] Spread operators in objects: { ...obj1, ...obj2 }
+  - [x] Rest parameters (already supported via destructuring patterns)
+  - [x] Computed property names: { [expr]: value }
+  - Note: Decorator parsing already implemented in milestone 2.3
+
+**New AST Nodes:**
+```rust
+// Destructuring patterns
+pub struct ArrayPattern {
+    pub elements: Vec<Option<Pattern>>,
+    pub rest: Option<Box<Pattern>>,
+    pub span: Span,
+}
+
+pub struct ObjectPattern {
+    pub properties: Vec<ObjectPatternProperty>,
+    pub rest: Option<Identifier>,
+    pub span: Span,
+}
+
+// JSX
+pub enum JsxChild {
+    Element(JsxElement),
+    Expression(Expression),
+    Text(String),
+}
+
+// Decorators
+pub struct Decorator {
+    pub name: Identifier,
+    pub arguments: Option<Vec<Expression>>,
+    pub span: Span,
 }
 ```
+
+**Reference:** `plans/milestone-2.9.md` (Complete implementation plan)
+
+### 2.10 Parser Hardening & Robustness 📋
+
+**Status:** 📋 Planning (2026-01-25)
+
+**Goal:** Harden the parser to gracefully handle malformed, incomplete, or pathological source code without hanging, crashing, or consuming excessive resources.
+
+**Dependencies:**
+- Milestone 2.9 (Advanced Parser Features) ✅ Complete
+
+**Motivation:**
+The parser currently has potential infinite loops (discovered in JSX hyphenated attribute parsing) and no protection against deeply nested structures or malformed input. This milestone adds comprehensive safeguards.
+
+**Tasks:**
+- [ ] **Phase 1: Loop Protection** (Week 1)
+  - [ ] Audit all parser loops (while/loop constructs)
+  - [ ] Implement `LoopGuard` helper with iteration limits (10,000 default)
+  - [ ] Apply loop guards to all parsing loops
+  - [ ] Add progress assertion helpers to detect stuck parser
+  - [ ] Test with pathological inputs
+- [ ] **Phase 2: Recursion Depth Limits** (Week 2)
+  - [ ] Add depth tracking to Parser struct
+  - [ ] Implement `DepthGuard` RAII helper
+  - [ ] Apply depth guards to all recursive parse functions
+  - [ ] Set max depth limit (500 levels default)
+  - [ ] Add depth limit tests for arrays, objects, expressions
+- [ ] **Phase 3: Enhanced Error Recovery** (Week 3)
+  - [ ] Improve recovery strategy with synchronization points
+  - [ ] Add error collection mode (parse multiple errors)
+  - [ ] Implement statement/expression boundary recovery
+  - [ ] Add `Parser::new_with_recovery()` mode
+  - [ ] Test multi-error scenarios
+- [ ] **Phase 4: Special Case Hardening** (Week 4)
+  - [ ] Fix JSX text parsing with loop guards
+  - [ ] Add template literal parsing guards
+  - [ ] Ensure string/regex termination in lexer
+  - [ ] Test operator precedence edge cases
+  - [ ] Test very long identifiers, strings, argument lists
+- [ ] **Phase 5: Fuzzing Infrastructure** (Ongoing)
+  - [ ] Set up cargo-fuzz integration
+  - [ ] Create fuzzing corpus with known problematic inputs
+  - [ ] Add fuzzing to CI pipeline
+  - [ ] Run extended fuzzing sessions (1+ hour)
+  - [ ] Fix any discovered crashes/hangs
+
+**New Error Types:**
+```rust
+pub enum ParseError {
+    // ... existing variants ...
+    ParserLimitExceeded { message: String, span: Span },
+    ParserStuck { message: String, span: Span },
+    Recovered,
+}
+```
+
+**Configuration:**
+```rust
+pub struct ParserConfig {
+    pub max_loop_iterations: usize,     // 10,000
+    pub max_depth: usize,               // 500
+    pub max_identifier_length: usize,   // 100,000
+    pub max_string_length: usize,       // 1,000,000
+    pub recovery_mode: bool,
+}
+```
+
+**Success Criteria:**
+- ✅ All loops have iteration guards
+- ✅ All recursive functions have depth guards
+- ✅ Parser never hangs on malformed input
+- ✅ Parser never panics (verified by fuzzing)
+- ✅ 25+ hardening tests passing
+- ✅ Fuzzing runs 1 hour without crashes
+- ✅ No regressions in existing tests
+
+**Reference:** `plans/milestone-2.10.md` (Complete implementation plan)
 
 ---
 

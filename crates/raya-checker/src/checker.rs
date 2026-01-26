@@ -10,6 +10,7 @@ use crate::type_guards::{extract_type_guard, TypeGuard};
 use crate::narrowing::{apply_type_guard, TypeEnv};
 use crate::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use raya_parser::ast::*;
+use raya_parser::{Interner, Symbol as ParserSymbol};
 use raya_types::{AssignabilityContext, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
 
@@ -19,6 +20,11 @@ fn get_guard_var(guard: &TypeGuard) -> &String {
         TypeGuard::TypeOf { var, .. } => var,
         TypeGuard::Discriminant { var, .. } => var,
         TypeGuard::Nullish { var, .. } => var,
+        TypeGuard::IsArray { var, .. } => var,
+        TypeGuard::IsInteger { var, .. } => var,
+        TypeGuard::IsNaN { var, .. } => var,
+        TypeGuard::IsFinite { var, .. } => var,
+        TypeGuard::TypePredicate { var, .. } => var,
     }
 }
 
@@ -40,6 +46,27 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
             var: var.clone(),
             negated: !negated,
         },
+        TypeGuard::IsArray { var, negated } => TypeGuard::IsArray {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsInteger { var, negated } => TypeGuard::IsInteger {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsNaN { var, negated } => TypeGuard::IsNaN {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::IsFinite { var, negated } => TypeGuard::IsFinite {
+            var: var.clone(),
+            negated: !negated,
+        },
+        TypeGuard::TypePredicate { var, predicate, negated } => TypeGuard::TypePredicate {
+            var: var.clone(),
+            predicate: predicate.clone(),
+            negated: !negated,
+        },
     }
 }
 
@@ -49,6 +76,7 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
 pub struct TypeChecker<'a> {
     type_ctx: &'a mut TypeContext,
     symbols: &'a SymbolTable,
+    interner: &'a Interner,
 
     /// Map from expression to its inferred type
     expr_types: FxHashMap<usize, TypeId>,
@@ -61,18 +89,50 @@ pub struct TypeChecker<'a> {
 
     /// Type environment tracking narrowed types in current scope
     type_env: TypeEnv,
+
+    /// Current scope ID for variable resolution
+    /// The checker tracks its own scope position as it walks the AST
+    current_scope: crate::symbols::ScopeId,
+
+    /// Next scope ID to be entered
+    /// This mirrors the scope creation in the binder
+    next_scope_id: u32,
 }
 
 impl<'a> TypeChecker<'a> {
     /// Create a new type checker
-    pub fn new(type_ctx: &'a mut TypeContext, symbols: &'a SymbolTable) -> Self {
+    pub fn new(type_ctx: &'a mut TypeContext, symbols: &'a SymbolTable, interner: &'a Interner) -> Self {
         TypeChecker {
             type_ctx,
             symbols,
+            interner,
             expr_types: FxHashMap::default(),
             errors: Vec::new(),
             current_function_return_type: None,
             type_env: TypeEnv::new(),
+            current_scope: crate::symbols::ScopeId(0), // Start at global scope
+            next_scope_id: 1, // Global is 0, next scope will be 1
+        }
+    }
+
+    /// Resolve a parser Symbol to a String
+    #[inline]
+    fn resolve(&self, sym: ParserSymbol) -> String {
+        self.interner.resolve(sym).to_string()
+    }
+
+    /// Enter a new scope (like entering a block or function)
+    /// Mirrors what the binder does when it pushes a scope
+    fn enter_scope(&mut self) {
+        let scope_id = crate::symbols::ScopeId(self.next_scope_id);
+        self.next_scope_id += 1;
+        self.current_scope = scope_id;
+    }
+
+    /// Exit the current scope, returning to parent
+    fn exit_scope(&mut self) {
+        if let Some(parent) = self.symbols.get_parent_scope_id(self.current_scope) {
+            self.current_scope = parent;
         }
     }
 
@@ -107,9 +167,13 @@ impl<'a> TypeChecker<'a> {
             Statement::While(while_stmt) => self.check_while(while_stmt),
             Statement::For(for_stmt) => self.check_for(for_stmt),
             Statement::Block(block) => {
+                // Enter block scope (mirrors binder's push_scope)
+                self.enter_scope();
                 for stmt in &block.statements {
                     self.check_stmt(stmt);
                 }
+                // Exit block scope (mirrors binder's pop_scope)
+                self.exit_scope();
             }
             Statement::Switch(switch_stmt) => self.check_switch(switch_stmt),
             Statement::Try(try_stmt) => self.check_try(try_stmt),
@@ -123,10 +187,11 @@ impl<'a> TypeChecker<'a> {
             let init_ty = self.check_expr(init);
 
             // If there's a type annotation, check that initializer is assignable
-            if let Some(ref ty_annot) = decl.type_annotation {
+            if let Some(ref _ty_annot) = decl.type_annotation {
                 // Get the declared type from symbol table
                 if let Pattern::Identifier(ident) = &decl.pattern {
-                    if let Some(symbol) = self.symbols.resolve(&ident.name) {
+                    let name = self.resolve(ident.name);
+                    if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                         self.check_assignable(init_ty, symbol.ty, *init.span());
                     }
                 }
@@ -137,7 +202,8 @@ impl<'a> TypeChecker<'a> {
     /// Check function declaration
     fn check_function(&mut self, func: &FunctionDecl) {
         // Get return type from symbol table
-        if let Some(symbol) = self.symbols.resolve(&func.name.name) {
+        let func_name = self.resolve(func.name.name);
+        if let Some(symbol) = self.symbols.resolve_from_scope(&func_name, self.current_scope) {
             if let Some(raya_types::Type::Function(func_ty)) = self.type_ctx.get(symbol.ty) {
                 let return_ty = func_ty.return_type;
 
@@ -145,10 +211,16 @@ impl<'a> TypeChecker<'a> {
                 let prev_return_ty = self.current_function_return_type;
                 self.current_function_return_type = Some(return_ty);
 
+                // Enter function scope (mirrors binder's push_scope for function)
+                self.enter_scope();
+
                 // Check body
                 for stmt in &func.body.statements {
                     self.check_stmt(stmt);
                 }
+
+                // Exit function scope
+                self.exit_scope();
 
                 // Restore previous return type
                 self.current_function_return_type = prev_return_ty;
@@ -187,14 +259,14 @@ impl<'a> TypeChecker<'a> {
         self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
 
         // Try to extract type guard from condition
-        let type_guard = extract_type_guard(&if_stmt.condition);
+        let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
 
         // Save current environment
         let saved_env = self.type_env.clone();
 
         // Apply type guard for then branch
         if let Some(ref guard) = type_guard {
-            if let Some(symbol) = self.symbols.resolve(&get_guard_var(guard)) {
+            if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(guard), self.current_scope) {
                 if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, guard) {
                     self.type_env.set(get_guard_var(guard).clone(), narrowed_ty);
                 }
@@ -212,7 +284,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(ref guard) = type_guard {
                 // Apply negated guard
                 let negated_guard = negate_guard(guard);
-                if let Some(symbol) = self.symbols.resolve(&get_guard_var(&negated_guard)) {
+                if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(&negated_guard), self.current_scope) {
                     if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, &negated_guard) {
                         self.type_env.set(get_guard_var(&negated_guard).clone(), narrowed_ty);
                     }
@@ -235,12 +307,39 @@ impl<'a> TypeChecker<'a> {
         let bool_ty = self.type_ctx.boolean_type();
         self.check_assignable(cond_ty, bool_ty, *while_stmt.condition.span());
 
-        // Check body
+        // Try to extract type guard from condition
+        let type_guard = extract_type_guard(&while_stmt.condition, self.interner);
+
+        // Save current environment
+        let saved_env = self.type_env.clone();
+
+        // Apply type guard for loop body
+        if let Some(ref guard) = type_guard {
+            if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(guard), self.current_scope) {
+                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, guard) {
+                    self.type_env.set(get_guard_var(guard).clone(), narrowed_ty);
+                }
+            }
+        }
+
+        // Binder creates a Loop scope, but the body statement (often a Block)
+        // will create its own scope. We need to mirror binder's behavior.
+        self.enter_scope(); // Loop scope
+
+        // Check body - if it's a Block, it will enter another scope
         self.check_stmt(&while_stmt.body);
+
+        self.exit_scope(); // Exit loop scope
+
+        // Restore environment after loop
+        self.type_env = saved_env;
     }
 
     /// Check for loop
     fn check_for(&mut self, for_stmt: &ForStatement) {
+        // Enter loop scope (mirrors binder)
+        self.enter_scope();
+
         // Check test condition if present
         if let Some(ref test) = for_stmt.test {
             let cond_ty = self.check_expr(test);
@@ -255,6 +354,9 @@ impl<'a> TypeChecker<'a> {
 
         // Check body
         self.check_stmt(&for_stmt.body);
+
+        // Exit loop scope
+        self.exit_scope();
     }
 
     /// Check switch statement
@@ -267,6 +369,7 @@ impl<'a> TypeChecker<'a> {
             self.type_ctx,
             discriminant_ty,
             switch_stmt,
+            self.interner,
         );
 
         // Report non-exhaustive matches
@@ -332,6 +435,10 @@ impl<'a> TypeChecker<'a> {
             Expression::Object(obj) => self.check_object(obj),
             Expression::Conditional(cond) => self.check_conditional(cond),
             Expression::Assignment(assign) => self.check_assignment(assign),
+            Expression::Typeof(_) => {
+                // typeof always returns a string
+                self.type_ctx.string_type()
+            }
             _ => self.type_ctx.unknown_type(),
         };
 
@@ -344,17 +451,19 @@ impl<'a> TypeChecker<'a> {
 
     /// Check identifier
     fn check_identifier(&mut self, ident: &Identifier) -> TypeId {
+        let name = self.resolve(ident.name);
+
         // First check for narrowed type in type environment
-        if let Some(narrowed_ty) = self.type_env.get(&ident.name) {
+        if let Some(narrowed_ty) = self.type_env.get(&name) {
             return narrowed_ty;
         }
 
-        // Otherwise look up in symbol table
-        match self.symbols.resolve(&ident.name) {
+        // Otherwise look up in symbol table from current scope
+        match self.symbols.resolve_from_scope(&name, self.current_scope) {
             Some(symbol) => symbol.ty,
             None => {
                 self.errors.push(CheckError::UndefinedVariable {
-                    name: ident.name.clone(),
+                    name,
                     span: ident.span,
                 });
                 self.type_ctx.unknown_type()
@@ -493,6 +602,20 @@ impl<'a> TypeChecker<'a> {
     fn check_member(&mut self, member: &MemberExpression) -> TypeId {
         let object_ty = self.check_expr(&member.object);
 
+        // Check for forbidden access to $type/$value on bare unions
+        let property_name = self.resolve(member.property.name);
+        if property_name == "$type" || property_name == "$value" {
+            if let Some(raya_types::Type::Union(union)) = self.type_ctx.get(object_ty) {
+                if union.is_bare {
+                    self.errors.push(CheckError::ForbiddenFieldAccess {
+                        field: property_name,
+                        span: member.span,
+                    });
+                    return self.type_ctx.unknown_type();
+                }
+            }
+        }
+
         // For now, return unknown for member access
         // TODO: Implement property type lookup for objects/classes
         self.type_ctx.unknown_type()
@@ -508,15 +631,28 @@ impl<'a> TypeChecker<'a> {
 
         // Find first non-None element to infer type
         let first_ty = arr.elements.iter()
-            .find_map(|elem| elem.as_ref().map(|e| self.check_expr(e)))
+            .find_map(|elem_opt| {
+                elem_opt.as_ref().map(|elem| match elem {
+                    ArrayElement::Expression(expr) => self.check_expr(expr),
+                    ArrayElement::Spread(expr) => {
+                        // For spread, the type should be element type of the array
+                        let spread_ty = self.check_expr(expr);
+                        // TODO: Extract element type from array type
+                        spread_ty
+                    }
+                })
+            })
             .unwrap_or_else(|| self.type_ctx.unknown_type());
 
         // Check all elements have compatible types
         for elem_opt in &arr.elements {
             if let Some(elem) = elem_opt {
-                let elem_ty = self.check_expr(elem);
+                let (elem_ty, elem_span) = match elem {
+                    ArrayElement::Expression(expr) => (self.check_expr(expr), *expr.span()),
+                    ArrayElement::Spread(expr) => (self.check_expr(expr), *expr.span()),
+                };
                 // TODO: Compute union type instead of requiring exact match
-                self.check_assignable(elem_ty, first_ty, *elem.span());
+                self.check_assignable(elem_ty, first_ty, elem_span);
             }
         }
 
@@ -541,7 +677,7 @@ impl<'a> TypeChecker<'a> {
         let else_ty = self.check_expr(&cond.alternate);
 
         // Return union of both types
-        self.type_ctx.union_type(vec![then_ty, else_ty], None)
+        self.type_ctx.union_type(vec![then_ty, else_ty])
     }
 
     /// Check assignment expression
@@ -585,77 +721,29 @@ impl<'a> TypeChecker<'a> {
 mod tests {
     use super::*;
     use crate::binder::Binder;
-    use raya_parser::Span;
+    use raya_parser::Parser;
 
-    fn make_span() -> Span {
-        Span::new(0, 0, 1, 1)
-    }
+    fn parse_and_check(source: &str) -> Result<(), Vec<CheckError>> {
+        let parser = Parser::new(source).unwrap();
+        let (module, interner) = parser.parse().unwrap();
 
-    fn make_ident(name: &str) -> Identifier {
-        Identifier {
-            name: name.to_string(),
-            span: make_span(),
-        }
+        let mut type_ctx = TypeContext::new();
+        let binder = Binder::new(&mut type_ctx, &interner);
+        let symbols = binder.bind_module(&module).unwrap();
+
+        let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+        checker.check_module(&module)
     }
 
     #[test]
     fn test_check_simple_arithmetic() {
-        let mut type_ctx = TypeContext::new();
-
-        // Create AST: 1 + 2
-        let expr = Expression::Binary(BinaryExpression {
-            operator: BinaryOperator::Add,
-            left: Box::new(Expression::IntLiteral(IntLiteral {
-                value: 1,
-                span: make_span(),
-            })),
-            right: Box::new(Expression::IntLiteral(IntLiteral {
-                value: 2,
-                span: make_span(),
-            })),
-            span: make_span(),
-        });
-
-        let module = Module {
-            statements: vec![Statement::Expression(ExpressionStatement {
-                expression: expr,
-                span: make_span(),
-            })],
-            span: make_span(),
-        };
-
-        // Bind and check
-        let binder = Binder::new(&mut type_ctx);
-        let symbols = binder.bind_module(&module).unwrap();
-
-        let checker = TypeChecker::new(&mut type_ctx, &symbols);
-        let result = checker.check_module(&module);
-
+        let result = parse_and_check("1 + 2;");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_check_undefined_variable() {
-        let mut type_ctx = TypeContext::new();
-
-        // Create AST: x (undefined variable)
-        let expr = Expression::Identifier(make_ident("x"));
-
-        let module = Module {
-            statements: vec![Statement::Expression(ExpressionStatement {
-                expression: expr,
-                span: make_span(),
-            })],
-            span: make_span(),
-        };
-
-        // Bind and check
-        let binder = Binder::new(&mut type_ctx);
-        let symbols = binder.bind_module(&module).unwrap();
-
-        let checker = TypeChecker::new(&mut type_ctx, &symbols);
-        let result = checker.check_module(&module);
-
+        let result = parse_and_check("x;");
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert_eq!(errors.len(), 1);
@@ -664,37 +752,7 @@ mod tests {
 
     #[test]
     fn test_check_type_mismatch() {
-        use raya_parser::ast::{PrimitiveType as AstPrim, Type as AstType};
-
-        let mut type_ctx = TypeContext::new();
-
-        // Create AST: let x: number = "hello"
-        let decl = VariableDecl {
-            kind: VariableKind::Let,
-            pattern: Pattern::Identifier(make_ident("x")),
-            type_annotation: Some(TypeAnnotation {
-                ty: AstType::Primitive(AstPrim::Number),
-                span: make_span(),
-            }),
-            initializer: Some(Expression::StringLiteral(StringLiteral {
-                value: "hello".to_string(),
-                span: make_span(),
-            })),
-            span: make_span(),
-        };
-
-        let module = Module {
-            statements: vec![Statement::VariableDecl(decl)],
-            span: make_span(),
-        };
-
-        // Bind and check
-        let binder = Binder::new(&mut type_ctx);
-        let symbols = binder.bind_module(&module).unwrap();
-
-        let checker = TypeChecker::new(&mut type_ctx, &symbols);
-        let result = checker.check_module(&module);
-
+        let result = parse_and_check(r#"let x: number = "hello";"#);
         assert!(result.is_err());
         let errors = result.unwrap_err();
         assert_eq!(errors.len(), 1);

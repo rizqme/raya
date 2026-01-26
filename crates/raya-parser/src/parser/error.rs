@@ -73,6 +73,19 @@ pub enum ParseErrorKind {
         operator: String,
         context: String,
     },
+
+    /// Parser exceeded iteration/depth/size limit
+    ParserLimitExceeded {
+        message: String,
+    },
+
+    /// Parser got stuck (position didn't advance)
+    ParserStuck {
+        message: String,
+    },
+
+    /// Error was recovered, parsing continued
+    Recovered,
 }
 
 impl fmt::Display for ParseError {
@@ -159,5 +172,41 @@ impl ParseError {
     pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
         self
+    }
+
+    /// Create a "parser limit exceeded" error.
+    pub fn parser_limit_exceeded(message: impl Into<String>, span: Span) -> Self {
+        let message = message.into();
+        Self {
+            kind: ParseErrorKind::ParserLimitExceeded {
+                message: message.clone(),
+            },
+            span,
+            message: format!("Parser limit exceeded: {}", message),
+            suggestion: None,
+        }
+    }
+
+    /// Create a "parser stuck" error.
+    pub fn parser_stuck(message: impl Into<String>, span: Span) -> Self {
+        let message = message.into();
+        Self {
+            kind: ParseErrorKind::ParserStuck {
+                message: message.clone(),
+            },
+            span,
+            message: format!("Parser stuck: {}", message),
+            suggestion: None,
+        }
+    }
+
+    /// Create a "recovered" marker error.
+    pub fn recovered() -> Self {
+        Self {
+            kind: ParseErrorKind::Recovered,
+            span: Span::new(0, 0, 0, 0),
+            message: "Error recovered".to_string(),
+            suggestion: None,
+        }
     }
 }

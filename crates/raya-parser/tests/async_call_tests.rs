@@ -11,14 +11,14 @@ use raya_parser::parser::Parser;
 fn test_parse_async_call_simple() {
     let source = "async myFn()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::AsyncCall(async_call) => {
                 // Check that callee is myFn
                 match &*async_call.callee {
-                    Expression::Identifier(id) => assert_eq!(id.name, "myFn"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myFn"),
                     _ => panic!("Expected identifier callee"),
                 }
                 // Check no arguments
@@ -34,14 +34,14 @@ fn test_parse_async_call_simple() {
 fn test_parse_async_call_with_args() {
     let source = "async myFn(1, 2, 3)";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::AsyncCall(async_call) => {
                 // Check that callee is myFn
                 match &*async_call.callee {
-                    Expression::Identifier(id) => assert_eq!(id.name, "myFn"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myFn"),
                     _ => panic!("Expected identifier callee"),
                 }
                 // Check arguments
@@ -66,7 +66,7 @@ fn test_parse_async_call_with_args() {
 fn test_parse_async_call_member() {
     let source = "async obj.method()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -74,9 +74,9 @@ fn test_parse_async_call_member() {
                 // Check that callee is obj.method
                 match &*async_call.callee {
                     Expression::Member(member) => {
-                        assert_eq!(member.property.name, "method");
+                        assert_eq!(interner.resolve(member.property.name), "method");
                         match &*member.object {
-                            Expression::Identifier(id) => assert_eq!(id.name, "obj"),
+                            Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "obj"),
                             _ => panic!("Expected identifier object"),
                         }
                     }
@@ -93,7 +93,7 @@ fn test_parse_async_call_member() {
 fn test_parse_async_call_chained_member() {
     let source = "async obj.nested.method()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -101,10 +101,10 @@ fn test_parse_async_call_chained_member() {
                 // Check that callee is obj.nested.method
                 match &*async_call.callee {
                     Expression::Member(outer_member) => {
-                        assert_eq!(outer_member.property.name, "method");
+                        assert_eq!(interner.resolve(outer_member.property.name), "method");
                         match &*outer_member.object {
                             Expression::Member(inner_member) => {
-                                assert_eq!(inner_member.property.name, "nested");
+                                assert_eq!(interner.resolve(inner_member.property.name), "nested");
                             }
                             _ => panic!("Expected nested member expression"),
                         }
@@ -126,14 +126,14 @@ fn test_parse_async_call_chained_member() {
 fn test_parse_async_call_in_assignment() {
     let source = "let task = async myFn();";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
             match &decl.initializer {
                 Some(Expression::AsyncCall(async_call)) => {
                     match &*async_call.callee {
-                        Expression::Identifier(id) => assert_eq!(id.name, "myFn"),
+                        Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myFn"),
                         _ => panic!("Expected identifier callee"),
                     }
                 }
@@ -148,7 +148,7 @@ fn test_parse_async_call_in_assignment() {
 fn test_parse_async_call_assigned_to_const() {
     let source = "const task = async fetchData(url);";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -156,7 +156,7 @@ fn test_parse_async_call_assigned_to_const() {
             match &decl.initializer {
                 Some(Expression::AsyncCall(async_call)) => {
                     match &*async_call.callee {
-                        Expression::Identifier(id) => assert_eq!(id.name, "fetchData"),
+                        Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "fetchData"),
                         _ => panic!("Expected identifier callee"),
                     }
                     assert_eq!(async_call.arguments.len(), 1);
@@ -179,14 +179,14 @@ fn test_parse_async_call_assigned_to_const() {
 fn test_parse_async_call_with_type_args() {
     let source = "async genericFn<number>()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
             Expression::AsyncCall(async_call) => {
                 // Check that callee is genericFn
                 match &*async_call.callee {
-                    Expression::Identifier(id) => assert_eq!(id.name, "genericFn"),
+                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "genericFn"),
                     _ => panic!("Expected identifier callee"),
                 }
                 // Check type arguments
@@ -208,7 +208,7 @@ fn test_parse_async_call_with_type_args() {
 fn test_parse_regular_call_without_async() {
     let source = "myFn()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -227,7 +227,7 @@ fn test_parse_async_vs_await() {
     // async foo() creates a Task immediately
     let source1 = "async foo()";
     let parser1 = Parser::new(source1).unwrap();
-    let module1 = parser1.parse().unwrap();
+    let (module1, _interner1) = parser1.parse().unwrap();
 
     match &module1.statements[0] {
         Statement::Expression(expr_stmt) => {
@@ -239,7 +239,7 @@ fn test_parse_async_vs_await() {
     // await foo() waits for a Task/Promise to complete
     let source2 = "await foo()";
     let parser2 = Parser::new(source2).unwrap();
-    let module2 = parser2.parse().unwrap();
+    let (module2, _interner2) = parser2.parse().unwrap();
 
     match &module2.statements[0] {
         Statement::Expression(expr_stmt) => {
@@ -279,7 +279,7 @@ fn test_async_with_non_call_expression_fails() {
 fn test_parse_async_call_in_binary_expression() {
     let source = "let x = async foo() + bar()";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => match &decl.initializer {
@@ -304,7 +304,7 @@ fn test_parse_multiple_async_calls() {
         let task3 = async save();
     "#;
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 3);
 
@@ -325,7 +325,7 @@ fn test_parse_multiple_async_calls() {
 fn test_parse_async_call_as_argument() {
     let source = "processTask(async compute())";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -335,7 +335,7 @@ fn test_parse_async_call_as_argument() {
                 match &call.arguments[0] {
                     Expression::AsyncCall(async_call) => {
                         match &*async_call.callee {
-                            Expression::Identifier(id) => assert_eq!(id.name, "compute"),
+                            Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "compute"),
                             _ => panic!("Expected identifier"),
                         }
                     }

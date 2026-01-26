@@ -20,7 +20,7 @@ pub fn normalize_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
     };
 
     match ty_data {
-        Type::Union(union) => normalize_union(ctx, &union.members, union.discriminant),
+        Type::Union(union) => normalize_union(ctx, &union.members),
         Type::Array(arr) => {
             let elem = normalize_type(ctx, arr.element);
             ctx.array_type(elem)
@@ -50,7 +50,6 @@ pub fn normalize_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
 fn normalize_union(
     ctx: &mut TypeContext,
     members: &[TypeId],
-    discriminant: Option<String>,
 ) -> TypeId {
     let never = ctx.never_type();
     let mut normalized_members = Vec::new();
@@ -90,7 +89,8 @@ fn normalize_union(
         return normalized_members[0];
     }
 
-    ctx.union_type(normalized_members, discriminant)
+    // Discriminant will be inferred automatically
+    ctx.union_type(normalized_members)
 }
 
 /// Simplify a type by removing unnecessary complexity
@@ -112,7 +112,7 @@ pub fn simplify_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
             }
 
             // Otherwise normalize
-            normalize_union(ctx, &union.members, union.discriminant)
+            normalize_union(ctx, &union.members)
         }
         _ => normalize_type(ctx, ty),
     }
@@ -196,7 +196,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let num = ctx.number_type();
         let str = ctx.string_type();
-        let union = ctx.union_type(vec![num, str], None);
+        let union = ctx.union_type(vec![num, str]);
 
         let normalized = normalize_type(&mut ctx, union);
         assert_eq!(normalized, union);
@@ -210,8 +210,8 @@ mod tests {
         let bool_ty = ctx.boolean_type();
 
         // Create (num | str) | bool
-        let union1 = ctx.union_type(vec![num, str], None);
-        let union2 = ctx.union_type(vec![union1, bool_ty], None);
+        let union1 = ctx.union_type(vec![num, str]);
+        let union2 = ctx.union_type(vec![union1, bool_ty]);
 
         let normalized = normalize_type(&mut ctx, union2);
 
@@ -234,7 +234,7 @@ mod tests {
         let str = ctx.string_type();
 
         // Create num | str | num
-        let union = ctx.union_type(vec![num, str, num], None);
+        let union = ctx.union_type(vec![num, str, num]);
 
         let normalized = normalize_type(&mut ctx, union);
 
@@ -253,7 +253,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let num = ctx.number_type();
 
-        let union = ctx.union_type(vec![num], None);
+        let union = ctx.union_type(vec![num]);
         let normalized = normalize_type(&mut ctx, union);
 
         assert_eq!(normalized, num);
@@ -265,7 +265,7 @@ mod tests {
         let num = ctx.number_type();
         let never = ctx.never_type();
 
-        let union = ctx.union_type(vec![num, never], None);
+        let union = ctx.union_type(vec![num, never]);
         let normalized = normalize_type(&mut ctx, union);
 
         // Should be just num
@@ -277,7 +277,7 @@ mod tests {
         let mut ctx = TypeContext::new();
         let never = ctx.never_type();
 
-        let union = ctx.union_type(vec![never], None);
+        let union = ctx.union_type(vec![never]);
         let normalized = normalize_type(&mut ctx, union);
 
         // Should be never
@@ -290,7 +290,7 @@ mod tests {
         let num = ctx.number_type();
         let unknown = ctx.unknown_type();
 
-        let union = ctx.union_type(vec![num, unknown], None);
+        let union = ctx.union_type(vec![num, unknown]);
         let simplified = simplify_type(&mut ctx, union);
 
         // Should be unknown
@@ -344,7 +344,7 @@ mod tests {
         let num = ctx.number_type();
         let str = ctx.string_type();
 
-        let union = ctx.union_type(vec![num, str], None);
+        let union = ctx.union_type(vec![num, str]);
         let primitives = extract_primitive_union_members(&ctx, union);
 
         assert_eq!(
@@ -368,7 +368,7 @@ mod tests {
         let num = ctx.number_type();
         let arr = ctx.array_type(num);
 
-        let union = ctx.union_type(vec![num, arr], None);
+        let union = ctx.union_type(vec![num, arr]);
         let primitives = extract_primitive_union_members(&ctx, union);
 
         assert_eq!(primitives, None);

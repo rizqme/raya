@@ -68,12 +68,12 @@ impl Module {
 /// Represents a name for a variable, function, class, etc.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Identifier {
-    pub name: String,
+    pub name: crate::interner::Symbol,
     pub span: Span,
 }
 
 impl Identifier {
-    pub fn new(name: String, span: Span) -> Self {
+    pub fn new(name: crate::interner::Symbol, span: Span) -> Self {
         Self { name, span }
     }
 }

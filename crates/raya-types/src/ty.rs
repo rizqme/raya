@@ -1,5 +1,6 @@
 //! Core type definitions for the Raya type system
 
+use crate::discriminant::Discriminant;
 use std::fmt;
 
 /// Unique identifier for a type in the type context
@@ -39,6 +40,33 @@ impl fmt::Display for PrimitiveType {
     }
 }
 
+impl PrimitiveType {
+    /// Get the string representation for typeof operator
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            PrimitiveType::Number => "number",
+            PrimitiveType::String => "string",
+            PrimitiveType::Boolean => "boolean",
+            PrimitiveType::Null => "null",
+            PrimitiveType::Void => "void",
+        }
+    }
+
+    /// Check if this is a valid bare union primitive
+    ///
+    /// Bare unions can only contain: number, string, boolean, null
+    /// Void is excluded because it doesn't represent a value type.
+    pub fn is_bare_union_primitive(&self) -> bool {
+        matches!(
+            self,
+            PrimitiveType::Number
+                | PrimitiveType::String
+                | PrimitiveType::Boolean
+                | PrimitiveType::Null
+        )
+    }
+}
+
 /// Type reference to a named type (class, interface, type alias)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TypeReference {
@@ -53,8 +81,12 @@ pub struct TypeReference {
 pub struct UnionType {
     /// Members of the union
     pub members: Vec<TypeId>,
-    /// Optional discriminant field name for discriminated unions
-    pub discriminant: Option<String>,
+    /// Optional discriminant information for discriminated unions
+    pub discriminant: Option<Discriminant>,
+    /// Flag indicating if this is a bare primitive union
+    pub is_bare: bool,
+    /// Internal representation for bare unions (transformed to discriminated union)
+    pub internal_union: Option<TypeId>,
 }
 
 /// Function type: (T1, T2, ..., Tn) => R
@@ -166,7 +198,7 @@ pub struct GenericType {
 }
 
 /// The core type representation in Raya
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Type {
     /// Primitive type (number, string, boolean, null, void)
     Primitive(PrimitiveType),
@@ -200,6 +232,15 @@ pub enum Type {
 
     /// Generic instantiation: Map<string, number>
     Generic(GenericType),
+
+    /// String literal type: "hello"
+    StringLiteral(String),
+
+    /// Number literal type: 42, 3.14
+    NumberLiteral(f64),
+
+    /// Boolean literal type: true, false
+    BooleanLiteral(bool),
 
     /// Bottom type (unreachable code)
     Never,
@@ -323,6 +364,9 @@ impl fmt::Display for Type {
                 }
                 write!(f, "]")
             }
+            Type::StringLiteral(s) => write!(f, "\"{}\"", s),
+            Type::NumberLiteral(n) => write!(f, "{}", n),
+            Type::BooleanLiteral(b) => write!(f, "{}", b),
             Type::Never => write!(f, "never"),
             Type::Unknown => write!(f, "unknown"),
         }
@@ -376,6 +420,64 @@ impl Type {
         match self {
             Type::Function(f) => Some(f),
             _ => None,
+        }
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Type::Primitive(a), Type::Primitive(b)) => a == b,
+            (Type::Reference(a), Type::Reference(b)) => a == b,
+            (Type::Union(a), Type::Union(b)) => a == b,
+            (Type::Function(a), Type::Function(b)) => a == b,
+            (Type::Array(a), Type::Array(b)) => a == b,
+            (Type::Tuple(a), Type::Tuple(b)) => a == b,
+            (Type::Object(a), Type::Object(b)) => a == b,
+            (Type::Class(a), Type::Class(b)) => a == b,
+            (Type::Interface(a), Type::Interface(b)) => a == b,
+            (Type::TypeVar(a), Type::TypeVar(b)) => a == b,
+            (Type::Generic(a), Type::Generic(b)) => a == b,
+            (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
+            (Type::NumberLiteral(a), Type::NumberLiteral(b)) => {
+                // Compare f64 by bits for exact equality
+                a.to_bits() == b.to_bits()
+            }
+            (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
+            (Type::Never, Type::Never) => true,
+            (Type::Unknown, Type::Unknown) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Type {}
+
+impl std::hash::Hash for Type {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // Hash discriminant
+        std::mem::discriminant(self).hash(state);
+
+        match self {
+            Type::Primitive(p) => p.hash(state),
+            Type::Reference(r) => r.hash(state),
+            Type::Union(u) => u.hash(state),
+            Type::Function(f) => f.hash(state),
+            Type::Array(a) => a.hash(state),
+            Type::Tuple(t) => t.hash(state),
+            Type::Object(o) => o.hash(state),
+            Type::Class(c) => c.hash(state),
+            Type::Interface(i) => i.hash(state),
+            Type::TypeVar(tv) => tv.hash(state),
+            Type::Generic(g) => g.hash(state),
+            Type::StringLiteral(s) => s.hash(state),
+            Type::NumberLiteral(n) => {
+                // Hash f64 by converting to bits (this is safe for equality)
+                n.to_bits().hash(state);
+            }
+            Type::BooleanLiteral(b) => b.hash(state),
+            Type::Never => {}
+            Type::Unknown => {}
         }
     }
 }

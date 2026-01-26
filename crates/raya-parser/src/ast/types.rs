@@ -46,6 +46,15 @@ pub enum Type {
     /// Typeof type: typeof value (only for bare unions)
     Typeof(TypeofType),
 
+    /// String literal type: "foo"
+    StringLiteral(crate::interner::Symbol),
+
+    /// Number literal type: 42
+    NumberLiteral(f64),
+
+    /// Boolean literal type: true | false
+    BooleanLiteral(bool),
+
     /// Parenthesized type: (number | string)
     Parenthesized(Box<TypeAnnotation>),
 }

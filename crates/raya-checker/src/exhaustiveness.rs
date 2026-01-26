@@ -5,6 +5,7 @@
 //! are handled.
 
 use raya_parser::ast::{Expression, SwitchCase, SwitchStatement};
+use raya_parser::Interner;
 use raya_types::{Type, TypeContext, TypeId};
 use std::collections::HashSet;
 
@@ -29,6 +30,7 @@ pub enum ExhaustivenessResult {
 /// * `ctx` - Type context for looking up types
 /// * `discriminant_ty` - Type of the switch discriminant
 /// * `switch_stmt` - The switch statement to check
+/// * `interner` - Interner for resolving symbol names
 ///
 /// # Returns
 /// * `ExhaustivenessResult::Exhaustive` - All variants covered
@@ -39,6 +41,7 @@ pub fn check_switch_exhaustiveness(
     ctx: &TypeContext,
     discriminant_ty: TypeId,
     switch_stmt: &SwitchStatement,
+    interner: &Interner,
 ) -> ExhaustivenessResult {
     // Check if there's a default case
     if has_default_case(&switch_stmt.cases) {
@@ -52,7 +55,7 @@ pub fn check_switch_exhaustiveness(
     };
 
     // Extract tested variants from cases
-    let tested_variants = extract_tested_variants(&switch_stmt.cases);
+    let tested_variants = extract_tested_variants(&switch_stmt.cases, interner);
 
     // Find missing variants
     let missing: Vec<String> = all_variants
@@ -98,6 +101,63 @@ pub fn check_variants_exhaustive(
     }
 }
 
+/// Get the discriminant field name for a union type
+///
+/// Returns None if the type is not a discriminated union.
+pub fn get_discriminant_field(ctx: &TypeContext, ty: TypeId) -> Option<String> {
+    let type_def = ctx.get(ty)?;
+
+    match type_def {
+        Type::Union(union_ty) => {
+            let discriminant = union_ty.discriminant.as_ref()?;
+            Some(discriminant.field_name.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Check exhaustiveness for typeof-based switch on bare union
+///
+/// This checks that all primitive types in a bare union are covered
+/// by typeof checks in a switch statement.
+pub fn check_typeof_exhaustiveness(
+    ctx: &TypeContext,
+    bare_union: TypeId,
+    tested_types: &HashSet<String>,
+) -> Option<Vec<String>> {
+    use raya_types::PrimitiveType;
+
+    let type_def = ctx.get(bare_union)?;
+
+    match type_def {
+        Type::Union(union_ty) if union_ty.is_bare => {
+            // Extract all primitive type names from the bare union
+            let all_types: HashSet<String> = union_ty.members.iter()
+                .filter_map(|&member| {
+                    if let Some(Type::Primitive(prim)) = ctx.get(member) {
+                        Some(prim.type_name().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            // Find missing types
+            let missing: Vec<String> = all_types.iter()
+                .filter(|t| !tested_types.contains(*t))
+                .cloned()
+                .collect();
+
+            if missing.is_empty() {
+                None
+            } else {
+                Some(missing)
+            }
+        }
+        _ => None, // Not a bare union
+    }
+}
+
 /// Extract all variant values from a discriminated union type
 ///
 /// Returns None if the type is not a discriminated union.
@@ -107,14 +167,10 @@ fn extract_union_variants(ctx: &TypeContext, ty: TypeId) -> Option<HashSet<Strin
     match type_def {
         Type::Union(union_ty) => {
             let discriminant = union_ty.discriminant.as_ref()?;
-            let mut variants = HashSet::new();
 
-            // For each member of the union, extract the discriminant value
-            for member_id in &union_ty.members {
-                if let Some(variant) = extract_discriminant_value(ctx, *member_id, discriminant) {
-                    variants.insert(variant);
-                }
-            }
+            // Use the value_map from discriminant inference
+            // The value_map contains all discriminant values that exist in the union
+            let variants: HashSet<String> = discriminant.value_map.keys().cloned().collect();
 
             if variants.is_empty() {
                 None
@@ -139,11 +195,14 @@ fn extract_discriminant_value(
             // Find the discriminant property
             let prop = obj.properties.iter().find(|p| p.name == discriminant_field)?;
 
-            // For now, we assume discriminant values are property names
-            // In a full implementation with string literal types, we'd extract the literal value
-            // Since we don't have string literal types yet, we use a placeholder
-            // TODO: Extract actual string literal value when string literal types are implemented
-            Some(format!("variant_{}", discriminant_field))
+            // Extract the literal value from the discriminant field's type
+            let field_type = ctx.get(prop.ty)?;
+            match field_type {
+                Type::StringLiteral(s) => Some(s.clone()),
+                Type::NumberLiteral(n) => Some(n.to_string()),
+                Type::BooleanLiteral(b) => Some(b.to_string()),
+                _ => None,
+            }
         }
         _ => None,
     }
@@ -155,12 +214,12 @@ fn has_default_case(cases: &[SwitchCase]) -> bool {
 }
 
 /// Extract all tested variants from switch cases
-fn extract_tested_variants(cases: &[SwitchCase]) -> HashSet<String> {
+fn extract_tested_variants(cases: &[SwitchCase], interner: &Interner) -> HashSet<String> {
     let mut variants = HashSet::new();
 
     for case in cases {
         if let Some(ref test) = case.test {
-            if let Some(variant) = extract_variant_from_expression(test) {
+            if let Some(variant) = extract_variant_from_expression(test, interner) {
                 variants.insert(variant);
             }
         }
@@ -172,9 +231,9 @@ fn extract_tested_variants(cases: &[SwitchCase]) -> HashSet<String> {
 /// Extract a variant string from a case test expression
 ///
 /// For now, this only handles string literals.
-fn extract_variant_from_expression(expr: &Expression) -> Option<String> {
+fn extract_variant_from_expression(expr: &Expression, interner: &Interner) -> Option<String> {
     match expr {
-        Expression::StringLiteral(s) => Some(s.value.clone()),
+        Expression::StringLiteral(s) => Some(interner.resolve(s.value).to_string()),
         _ => None,
     }
 }
@@ -182,77 +241,48 @@ fn extract_variant_from_expression(expr: &Expression) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use raya_parser::Parser;
+    use raya_parser::ast::Statement;
+
+    fn parse_switch(source: &str) -> (SwitchStatement, Interner) {
+        let parser = Parser::new(source).unwrap();
+        let (module, interner) = parser.parse().unwrap();
+        match &module.statements[0] {
+            Statement::Switch(switch_stmt) => (switch_stmt.clone(), interner),
+            _ => panic!("Expected switch statement"),
+        }
+    }
 
     #[test]
     fn test_has_default_case() {
-        use raya_parser::ast::{BlockStatement, SwitchCase};
-        use raya_parser::Span;
-
-        let span = Span::new(0, 0, 1, 1);
-        let empty_block = BlockStatement {
-            statements: vec![],
-            span,
-        };
-
         // No default case
-        let cases = vec![
-            SwitchCase {
-                test: Some(Expression::StringLiteral(raya_parser::ast::StringLiteral {
-                    value: "ok".to_string(),
-                    span,
-                })),
-                consequent: vec![],
-                span,
-            },
-        ];
-        assert!(!has_default_case(&cases));
+        let (switch_stmt, _interner) = parse_switch(r#"
+            switch (x) {
+                case "ok": break;
+            }
+        "#);
+        assert!(!has_default_case(&switch_stmt.cases));
 
         // Has default case
-        let cases_with_default = vec![
-            SwitchCase {
-                test: Some(Expression::StringLiteral(raya_parser::ast::StringLiteral {
-                    value: "ok".to_string(),
-                    span,
-                })),
-                consequent: vec![],
-                span,
-            },
-            SwitchCase {
-                test: None,
-                consequent: vec![],
-                span,
-            },
-        ];
-        assert!(has_default_case(&cases_with_default));
+        let (switch_stmt, _interner) = parse_switch(r#"
+            switch (x) {
+                case "ok": break;
+                default: break;
+            }
+        "#);
+        assert!(has_default_case(&switch_stmt.cases));
     }
 
     #[test]
     fn test_extract_tested_variants() {
-        use raya_parser::ast::SwitchCase;
-        use raya_parser::Span;
+        let (switch_stmt, interner) = parse_switch(r#"
+            switch (x) {
+                case "ok": break;
+                case "error": break;
+            }
+        "#);
 
-        let span = Span::new(0, 0, 1, 1);
-
-        let cases = vec![
-            SwitchCase {
-                test: Some(Expression::StringLiteral(raya_parser::ast::StringLiteral {
-                    value: "ok".to_string(),
-                    span,
-                })),
-                consequent: vec![],
-                span,
-            },
-            SwitchCase {
-                test: Some(Expression::StringLiteral(raya_parser::ast::StringLiteral {
-                    value: "error".to_string(),
-                    span,
-                })),
-                consequent: vec![],
-                span,
-            },
-        ];
-
-        let variants = extract_tested_variants(&cases);
+        let variants = extract_tested_variants(&switch_stmt.cases, &interner);
         assert_eq!(variants.len(), 2);
         assert!(variants.contains("ok"));
         assert!(variants.contains("error"));
@@ -260,15 +290,14 @@ mod tests {
 
     #[test]
     fn test_extract_variant_from_string_literal() {
-        use raya_parser::Span;
+        let parser = Parser::new(r#""test_variant""#).unwrap();
+        let (module, interner) = parser.parse().unwrap();
+        let expr = match &module.statements[0] {
+            Statement::Expression(expr_stmt) => &expr_stmt.expression,
+            _ => panic!("Expected expression statement"),
+        };
 
-        let span = Span::new(0, 0, 1, 1);
-        let expr = Expression::StringLiteral(raya_parser::ast::StringLiteral {
-            value: "test_variant".to_string(),
-            span,
-        });
-
-        let variant = extract_variant_from_expression(&expr);
+        let variant = extract_variant_from_expression(expr, &interner);
         assert_eq!(variant, Some("test_variant".to_string()));
     }
 
@@ -281,5 +310,36 @@ mod tests {
         // Since we don't have a real discriminated union type in tests,
         // we can only test the logic with mock data
         // The actual integration with TypeContext would be tested in integration tests
+    }
+
+    #[test]
+    fn test_typeof_exhaustiveness_bare_union() {
+        let mut ctx = TypeContext::new();
+
+        // Create bare union: string | number | boolean
+        let string = ctx.string_type();
+        let number = ctx.number_type();
+        let boolean = ctx.boolean_type();
+        let bare_union = ctx.union_type(vec![string, number, boolean]);
+
+        // Test exhaustive case - all types covered
+        let mut tested = HashSet::new();
+        tested.insert("string".to_string());
+        tested.insert("number".to_string());
+        tested.insert("boolean".to_string());
+
+        let result = check_typeof_exhaustiveness(&ctx, bare_union, &tested);
+        assert!(result.is_none(), "Should be exhaustive");
+
+        // Test non-exhaustive case - missing boolean
+        let mut tested_partial = HashSet::new();
+        tested_partial.insert("string".to_string());
+        tested_partial.insert("number".to_string());
+
+        let result = check_typeof_exhaustiveness(&ctx, bare_union, &tested_partial);
+        assert!(result.is_some(), "Should be non-exhaustive");
+        let missing = result.unwrap();
+        assert_eq!(missing.len(), 1);
+        assert!(missing.contains(&"boolean".to_string()));
     }
 }

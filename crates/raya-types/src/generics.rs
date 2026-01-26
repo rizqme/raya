@@ -9,7 +9,7 @@
 use crate::context::TypeContext;
 use crate::error::TypeError;
 use crate::subtyping::SubtypingContext;
-use crate::ty::{Type, TypeId, TypeVar};
+use crate::ty::{Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Context for generic type operations
@@ -94,13 +94,13 @@ impl<'a> GenericContext<'a> {
 
             Type::Union(union) => {
                 let member_ids = union.members.clone();
-                let discriminant = union.discriminant.clone();
 
                 let mut members = Vec::new();
                 for member in member_ids {
                     members.push(self.apply_substitution(member)?);
                 }
-                Ok(self.type_ctx.union_type(members, discriminant))
+                // Discriminant will be re-inferred for the substituted members
+                Ok(self.type_ctx.union_type(members))
             }
 
             Type::Generic(gen) => {
@@ -375,6 +375,7 @@ impl<'a> GenericContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ty::TypeVar;
 
     #[test]
     fn test_type_var_substitution() {

@@ -69,8 +69,9 @@ impl Parser {
 
     /// Parse the entire source file into a Module AST.
     ///
-    /// Returns the Module on success, or all accumulated errors on failure.
-    pub fn parse(mut self) -> Result<Module, Vec<ParseError>> {
+    /// Returns the Module and Interner on success, or all accumulated errors on failure.
+    /// The Interner is needed to resolve Symbol values back to strings.
+    pub fn parse(mut self) -> Result<(Module, crate::interner::Interner), Vec<ParseError>> {
         let start_span = self.current_span();
         let mut statements = Vec::new();
 
@@ -97,7 +98,7 @@ impl Parser {
             return Err(self.errors);
         }
 
-        Ok(Module { statements, span })
+        Ok((Module { statements, span }, self.interner))
     }
 
     // ========================================================================

@@ -4,6 +4,7 @@
 //! It converts source code into a stream of tokens with precise source location information.
 
 use crate::token::{Span, TemplatePart, Token};
+use crate::interner::Interner;
 use logos::Logos;
 
 /// Logos-based token enum for lexing.
@@ -320,6 +321,9 @@ enum LogosToken {
     #[token("?")]
     Question,
 
+    #[token("...")]
+    DotDotDot,
+
     #[token(".")]
     Dot,
 
@@ -526,6 +530,7 @@ pub struct Lexer<'a> {
     source: &'a str,
     tokens: Vec<(Token, Span)>,
     errors: Vec<LexError>,
+    interner: Interner,
 }
 
 /// Lexer error types.
@@ -544,6 +549,7 @@ impl<'a> Lexer<'a> {
             source,
             tokens: Vec::new(),
             errors: Vec::new(),
+            interner: Interner::with_capacity(256), // Preallocate for typical file
         }
     }
 
@@ -556,7 +562,7 @@ impl<'a> Lexer<'a> {
             .join("\n")
     }
 
-    pub fn tokenize(mut self) -> Result<Vec<(Token, Span)>, Vec<LexError>> {
+    pub fn tokenize(mut self) -> Result<(Vec<(Token, Span)>, Interner), Vec<LexError>> {
         let mut pos = 0;
         let mut line = 1u32;
         let mut column = 1u32;
@@ -647,13 +653,13 @@ impl<'a> Lexer<'a> {
         self.tokens.push((Token::Eof, eof_span));
 
         if self.errors.is_empty() {
-            Ok(self.tokens)
+            Ok((self.tokens, self.interner))
         } else {
             Err(self.errors)
         }
     }
 
-    fn convert_token(&self, logos_token: LogosToken) -> Token {
+    fn convert_token(&mut self, logos_token: LogosToken) -> Token {
         match logos_token {
             LogosToken::Function => Token::Function,
             LogosToken::Class => Token::Class,
@@ -702,10 +708,10 @@ impl<'a> Lexer<'a> {
             LogosToken::True => Token::True,
             LogosToken::False => Token::False,
             LogosToken::Null => Token::Null,
-            LogosToken::Identifier(s) => Token::Identifier(s),
+            LogosToken::Identifier(s) => Token::Identifier(self.interner.intern(&s)),
             LogosToken::IntLiteral(n) => Token::IntLiteral(n),
             LogosToken::FloatLiteral(n) => Token::FloatLiteral(n),
-            LogosToken::StringLiteral(s) => Token::StringLiteral(s),
+            LogosToken::StringLiteral(s) => Token::StringLiteral(self.interner.intern(&s)),
             LogosToken::EqualEqualEqual => Token::EqualEqualEqual,
             LogosToken::BangEqualEqual => Token::BangEqualEqual,
             LogosToken::GreaterGreaterGreater => Token::GreaterGreaterGreater,
@@ -748,6 +754,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Caret => Token::Caret,
             LogosToken::Equal => Token::Equal,
             LogosToken::Question => Token::Question,
+            LogosToken::DotDotDot => Token::DotDotDot,
             LogosToken::Dot => Token::Dot,
             LogosToken::Colon => Token::Colon,
             LogosToken::At => Token::At,
@@ -766,7 +773,7 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn lex_template(&self, start: usize) -> Result<(Vec<TemplatePart>, usize), LexError> {
+    fn lex_template(&mut self, start: usize) -> Result<(Vec<TemplatePart>, usize), LexError> {
         let mut parts = Vec::new();
         let mut string_part = String::new();
         let bytes = self.source.as_bytes();
@@ -779,7 +786,8 @@ impl<'a> Lexer<'a> {
                 '`' => {
                     // End of template literal
                     if !string_part.is_empty() {
-                        parts.push(TemplatePart::String(string_part));
+                        let sym = self.interner.intern(&string_part);
+                        parts.push(TemplatePart::String(sym));
                     }
                     return Ok((parts, pos + 1));
                 }
@@ -891,7 +899,8 @@ impl<'a> Lexer<'a> {
                 '$' if pos + 1 < bytes.len() && bytes[pos + 1] as char == '{' => {
                     // Expression interpolation
                     if !string_part.is_empty() {
-                        parts.push(TemplatePart::String(string_part.clone()));
+                        let sym = self.interner.intern(&string_part);
+                        parts.push(TemplatePart::String(sym));
                         string_part.clear();
                     }
 
@@ -924,7 +933,7 @@ impl<'a> Lexer<'a> {
                     let expr_str = &self.source[expr_start..pos];
                     let expr_lexer = Lexer::new(expr_str);
                     match expr_lexer.tokenize() {
-                        Ok(tokens) => {
+                        Ok((tokens, _interner)) => {
                             // Remove EOF token from the end
                             let tokens_without_eof: Vec<_> = tokens
                                 .into_iter()

@@ -1,15 +1,16 @@
 [package]
 name = "raya-compiler"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
-description = "Compiler for Raya (AST to bytecode)"
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-raya-bytecode = { workspace = true }
-raya-parser = { workspace = true }
-raya-types = { workspace = true }
-thiserror = { workspace = true }
+raya-bytecode = { path = "../raya-bytecode" }
+raya-parser = { path = "../raya-parser" }
+raya-types = { path = "../raya-types" }
+rustc-hash = "2.0"
+thiserror = "2.0"
+
+[dev-dependencies]
+raya-parser = { path = "../raya-parser" }
+raya-bytecode = { path = "../raya-bytecode" }
+raya-types = { path = "../raya-types" }

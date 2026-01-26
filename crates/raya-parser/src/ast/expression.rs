@@ -168,7 +168,7 @@ pub struct FloatLiteral {
 /// String literal: "hello"
 #[derive(Debug, Clone, PartialEq)]
 pub struct StringLiteral {
-    pub value: String,
+    pub value: crate::interner::Symbol,
     pub span: Span,
 }
 
@@ -181,7 +181,7 @@ pub struct TemplateLiteral {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
-    String(String),
+    String(crate::interner::Symbol),
     Expression(Box<Expression>),
 }
 
@@ -196,11 +196,20 @@ pub struct BooleanLiteral {
 // Array and Object Expressions
 // ============================================================================
 
-/// Array expression: [1, 2, 3]
+/// Array expression: [1, 2, 3], [...arr1, ...arr2]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrayExpression {
-    pub elements: Vec<Option<Expression>>,
+    pub elements: Vec<Option<ArrayElement>>,
     pub span: Span,
+}
+
+/// Array element (expression or spread)
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArrayElement {
+    /// Regular expression: 42
+    Expression(Expression),
+    /// Spread element: ...arr
+    Spread(Expression),
 }
 
 /// Object expression: { x: 1, y: 2 }
@@ -228,6 +237,8 @@ pub enum PropertyKey {
     Identifier(Identifier),
     StringLiteral(StringLiteral),
     IntLiteral(IntLiteral),
+    /// Computed property name: [expr]
+    Computed(Expression),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -497,23 +508,23 @@ pub enum JsxElementName {
 
 impl JsxElementName {
     /// Get the string representation of the name
-    pub fn to_string(&self) -> String {
+    pub fn to_string(&self, interner: &crate::interner::Interner) -> String {
         match self {
-            JsxElementName::Identifier(id) => id.name.clone(),
+            JsxElementName::Identifier(id) => interner.resolve(id.name).to_string(),
             JsxElementName::Namespaced { namespace, name } => {
-                format!("{}:{}", namespace.name, name.name)
+                format!("{}:{}", interner.resolve(namespace.name), interner.resolve(name.name))
             }
             JsxElementName::MemberExpression { object, property } => {
-                format!("{}.{}", object.to_string(), property.name)
+                format!("{}.{}", object.to_string(interner), interner.resolve(property.name))
             }
         }
     }
 
     /// Check if this is an intrinsic element (lowercase HTML tag)
-    pub fn is_intrinsic(&self) -> bool {
+    pub fn is_intrinsic(&self, interner: &crate::interner::Interner) -> bool {
         match self {
             JsxElementName::Identifier(id) => {
-                id.name.chars().next().map_or(false, |c| c.is_lowercase())
+                interner.resolve(id.name).chars().next().map_or(false, |c| c.is_lowercase())
             }
             _ => false,
         }

@@ -11,6 +11,7 @@ description = "Lexer and parser for the Raya programming language"
 [dependencies]
 logos = "0.14"              # Lexer generator
 unicode-xid = "0.2"         # Unicode identifier support
+rustc-hash = "2.0"          # Fast hashing for interner
 
 [dev-dependencies]
 criterion = "0.5"           # Benchmarking

@@ -186,6 +186,15 @@ pub enum CheckError {
         /// Location of constraint violation
         span: Span,
     },
+
+    /// Forbidden access to internal bare union fields ($type, $value)
+    #[error("Cannot access internal field '{field}' on bare union. Use typeof for type narrowing.")]
+    ForbiddenFieldAccess {
+        /// Field name ($type or $value)
+        field: String,
+        /// Location of field access
+        span: Span,
+    },
 }
 
 impl CheckError {
@@ -206,6 +215,7 @@ impl CheckError {
             CheckError::ReturnOutsideFunction { span } => *span,
             CheckError::GenericInstantiationError { span, .. } => *span,
             CheckError::ConstraintViolation { span, .. } => *span,
+            CheckError::ForbiddenFieldAccess { span, .. } => *span,
         }
     }
 }

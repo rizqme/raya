@@ -11,7 +11,7 @@ use raya_parser::parser::Parser;
 fn test_parse_number_type() {
     let source = "let x: number;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -26,7 +26,7 @@ fn test_parse_number_type() {
 fn test_parse_union_type() {
     let source = "let x: number | string;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -46,7 +46,7 @@ fn test_parse_union_type() {
 fn test_parse_array_type() {
     let source = "let x: number[];";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -69,7 +69,7 @@ fn test_parse_array_type() {
 fn test_parse_tuple_type() {
     let source = "let x: [number, string];";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -89,7 +89,7 @@ fn test_parse_tuple_type() {
 fn test_parse_function_type() {
     let source = "let x: (x: number) => string;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
@@ -109,7 +109,7 @@ fn test_parse_function_type() {
 fn test_parse_object_type() {
     let source = "let x: { x: number; y: string };";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {

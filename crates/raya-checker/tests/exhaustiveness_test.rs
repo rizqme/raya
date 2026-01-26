@@ -32,13 +32,13 @@ fn test_basic_program_with_if_chains() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     // Should pass - all branches are covered with else
@@ -55,13 +55,13 @@ fn test_type_checking_still_works() {
     "#;
 
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx);
+    let binder = Binder::new(&mut type_ctx, &interner);
     let symbols = binder.bind_module(&module).unwrap();
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let result = checker.check_module(&module);
 
     assert!(result.is_ok(), "Expected no errors, got: {:?}", result);

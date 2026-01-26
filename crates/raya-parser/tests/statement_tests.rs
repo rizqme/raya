@@ -11,14 +11,14 @@ use raya_parser::parser::Parser;
 fn test_parse_let_declaration() {
     let source = "let x = 42;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
             assert!(matches!(decl.kind, VariableKind::Let));
             match &decl.pattern {
-                Pattern::Identifier(id) => assert_eq!(id.name, "x"),
+                Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
                 _ => panic!("Expected identifier pattern"),
             }
             assert!(decl.initializer.is_some());
@@ -31,14 +31,14 @@ fn test_parse_let_declaration() {
 fn test_parse_const_declaration() {
     let source = "const y = 10;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::VariableDecl(decl) => {
             assert!(matches!(decl.kind, VariableKind::Const));
             match &decl.pattern {
-                Pattern::Identifier(id) => assert_eq!(id.name, "y"),
+                Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "y"),
                 _ => panic!("Expected identifier pattern"),
             }
             assert!(decl.initializer.is_some());
@@ -51,7 +51,7 @@ fn test_parse_const_declaration() {
 fn test_parse_let_with_type_annotation() {
     let source = "let x: number = 42;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -68,7 +68,7 @@ fn test_parse_let_with_type_annotation() {
 fn test_parse_let_without_initializer() {
     let source = "let x;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -97,12 +97,12 @@ fn test_const_requires_initializer() {
 fn test_parse_function_declaration() {
     let source = "function add(a, b) { return a + b; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
-            assert_eq!(func.name.name, "add");
+            assert_eq!(interner.resolve(func.name.name), "add");
             assert_eq!(func.params.len(), 2);
             assert!(!func.is_async);
         }
@@ -114,12 +114,12 @@ fn test_parse_function_declaration() {
 fn test_parse_async_function() {
     let source = "async function fetchData() { return 42; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
-            assert_eq!(func.name.name, "fetchData");
+            assert_eq!(interner.resolve(func.name.name), "fetchData");
             assert!(func.is_async);
         }
         _ => panic!("Expected function declaration"),
@@ -130,12 +130,12 @@ fn test_parse_async_function() {
 fn test_parse_function_with_return_type() {
     let source = "function getValue(): number { return 42; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
-            assert_eq!(func.name.name, "getValue");
+            assert_eq!(interner.resolve(func.name.name), "getValue");
             assert!(func.return_type.is_some());
         }
         _ => panic!("Expected function declaration"),
@@ -146,16 +146,16 @@ fn test_parse_function_with_return_type() {
 fn test_parse_function_with_type_parameters() {
     let source = "function identity<T>(value) { return value; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
-            assert_eq!(func.name.name, "identity");
+            assert_eq!(interner.resolve(func.name.name), "identity");
             assert!(func.type_params.is_some());
             let type_params = func.type_params.as_ref().unwrap();
             assert_eq!(type_params.len(), 1);
-            assert_eq!(type_params[0].name.name, "T");
+            assert_eq!(interner.resolve(type_params[0].name.name), "T");
         }
         _ => panic!("Expected function declaration"),
     }
@@ -169,7 +169,7 @@ fn test_parse_function_with_type_parameters() {
 fn test_parse_if_statement() {
     let source = "if (x > 0) { return x; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -184,7 +184,7 @@ fn test_parse_if_statement() {
 fn test_parse_if_else_statement() {
     let source = "if (x > 0) { return x; } else { return 0; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -199,7 +199,7 @@ fn test_parse_if_else_statement() {
 fn test_parse_if_else_if_statement() {
     let source = "if (x > 0) { return 1; } else if (x < 0) { return -1; } else { return 0; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -225,7 +225,7 @@ fn test_parse_if_else_if_statement() {
 fn test_parse_while_statement() {
     let source = "while (x > 0) { x = x - 1; }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -247,7 +247,7 @@ fn test_parse_while_statement() {
 fn test_parse_for_statement() {
     let source = "for (let i = 0; i < 10; i = i + 1) { console.log(i); }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -264,7 +264,7 @@ fn test_parse_for_statement() {
 fn test_parse_for_statement_no_init() {
     let source = "for (; i < 10; i = i + 1) { console.log(i); }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -281,7 +281,7 @@ fn test_parse_for_statement_no_init() {
 fn test_parse_for_statement_expression_init() {
     let source = "for (i = 0; i < 10; i = i + 1) { console.log(i); }";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -304,7 +304,7 @@ fn test_parse_for_statement_expression_init() {
 fn test_parse_return_statement() {
     let source = "return 42;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -319,7 +319,7 @@ fn test_parse_return_statement() {
 fn test_parse_return_statement_no_value() {
     let source = "return;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -334,7 +334,7 @@ fn test_parse_return_statement_no_value() {
 fn test_parse_break_statement() {
     let source = "break;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -347,7 +347,7 @@ fn test_parse_break_statement() {
 fn test_parse_continue_statement() {
     let source = "continue;";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -360,7 +360,7 @@ fn test_parse_continue_statement() {
 fn test_parse_throw_statement() {
     let source = "throw new Error();";
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
@@ -391,7 +391,7 @@ fn test_parse_multiple_statements() {
         }
     "#;
     let parser = Parser::new(source).unwrap();
-    let module = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 4);
     assert!(matches!(module.statements[0], Statement::VariableDecl(_)));

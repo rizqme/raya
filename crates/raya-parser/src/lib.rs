@@ -16,7 +16,7 @@
 //!
 //! let lexer = Lexer::new(source);
 //! match lexer.tokenize() {
-//!     Ok(tokens) => {
+//!     Ok((tokens, _interner)) => {
 //!         for (token, span) in tokens {
 //!             println!("{:?} at {}:{}", token, span.line, span.column);
 //!         }
@@ -33,8 +33,10 @@ pub mod token;
 pub mod lexer;
 pub mod ast;
 pub mod parser;
+pub mod interner;
 
 // Re-exports for convenience
 pub use token::{Token, Span, TemplatePart};
 pub use lexer::{Lexer, LexError};
 pub use parser::{Parser, ParseError};
+pub use interner::{Interner, Symbol};

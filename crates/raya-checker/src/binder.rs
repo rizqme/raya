@@ -6,6 +6,7 @@
 use crate::error::BindError;
 use crate::symbols::{Symbol, SymbolFlags, SymbolKind, SymbolTable, ScopeKind};
 use raya_parser::ast::*;
+use raya_parser::Interner;
 use raya_types::{TypeContext, TypeId};
 
 /// Binder - builds symbol tables from AST
@@ -16,15 +17,23 @@ use raya_types::{TypeContext, TypeId};
 pub struct Binder<'a> {
     symbols: SymbolTable,
     type_ctx: &'a mut TypeContext,
+    interner: &'a Interner,
 }
 
 impl<'a> Binder<'a> {
     /// Create a new binder
-    pub fn new(type_ctx: &'a mut TypeContext) -> Self {
+    pub fn new(type_ctx: &'a mut TypeContext, interner: &'a Interner) -> Self {
         Binder {
             symbols: SymbolTable::new(),
             type_ctx,
+            interner,
         }
+    }
+
+    /// Resolve a parser Symbol to a String
+    #[inline]
+    fn resolve(&self, sym: raya_parser::Symbol) -> String {
+        self.interner.resolve(sym).to_string()
     }
 
     /// Bind a module (entry point)
@@ -74,7 +83,7 @@ impl<'a> Binder<'a> {
 
         // Extract identifier from pattern (simplified - only handles Identifier pattern)
         let (name, span) = match &decl.pattern {
-            Pattern::Identifier(ident) => (ident.name.clone(), ident.span),
+            Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
             _ => {
                 // TODO: Handle destructuring patterns
                 return Ok(());
@@ -122,7 +131,7 @@ impl<'a> Binder<'a> {
         let func_ty = self.type_ctx.function_type(param_types, return_ty, func.is_async);
 
         let symbol = Symbol {
-            name: func.name.name.clone(),
+            name: self.resolve(func.name.name),
             kind: SymbolKind::Function,
             ty: func_ty,
             flags: SymbolFlags {
@@ -153,7 +162,7 @@ impl<'a> Binder<'a> {
 
             // Extract identifier from pattern (simplified)
             let (param_name, param_span) = match &param.pattern {
-                Pattern::Identifier(ident) => (ident.name.clone(), ident.span),
+                Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
                 _ => continue, // Skip destructuring for now
             };
 
@@ -194,7 +203,7 @@ impl<'a> Binder<'a> {
         let class_ty = self.type_ctx.unknown_type();
 
         let symbol = Symbol {
-            name: class.name.name.clone(),
+            name: self.resolve(class.name.name),
             kind: SymbolKind::Class,
             ty: class_ty,
             flags: SymbolFlags {
@@ -248,7 +257,7 @@ impl<'a> Binder<'a> {
         let ty = self.resolve_type_annotation(&alias.type_annotation)?;
 
         let symbol = Symbol {
-            name: alias.name.name.clone(),
+            name: self.resolve(alias.name.name),
             kind: SymbolKind::TypeAlias,
             ty,
             flags: SymbolFlags::default(),
@@ -337,7 +346,7 @@ impl<'a> Binder<'a> {
             // Bind catch parameter
             if let Some(ref param) = catch.param {
                 let (param_name, param_span) = match param {
-                    Pattern::Identifier(ident) => (ident.name.clone(), ident.span),
+                    Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
                     _ => {
                         // TODO: Handle destructuring
                         ("error".to_string(), catch.body.span)
@@ -397,18 +406,19 @@ impl<'a> Binder<'a> {
 
             AstType::Reference(type_ref) => {
                 // Check if it's a user-defined type
-                if let Some(symbol) = self.symbols.resolve(&type_ref.name.name) {
+                let name = self.resolve(type_ref.name.name);
+                if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias {
                         Ok(symbol.ty)
                     } else {
                         Err(BindError::NotAType {
-                            name: type_ref.name.name.clone(),
+                            name,
                             span,
                         })
                     }
                 } else {
                     Err(BindError::UndefinedType {
-                        name: type_ref.name.name.clone(),
+                        name,
                         span,
                     })
                 }
@@ -434,7 +444,7 @@ impl<'a> Binder<'a> {
                     .iter()
                     .map(|t| self.resolve_type_annotation(t))
                     .collect();
-                Ok(self.type_ctx.union_type(member_tys?, None))
+                Ok(self.type_ctx.union_type(member_tys?))
             }
 
             AstType::Function(func) => {
@@ -449,14 +459,67 @@ impl<'a> Binder<'a> {
                 Ok(self.type_ctx.function_type(param_tys?, return_ty, false))
             }
 
-            AstType::Object(_) => {
-                // TODO: Build object type from properties
-                Ok(self.type_ctx.unknown_type())
+            AstType::Object(obj) => {
+                use raya_parser::ast::ObjectTypeMember;
+                use raya_types::ty::{ObjectType, PropertySignature};
+
+                let mut properties = Vec::new();
+
+                for member in &obj.members {
+                    match member {
+                        ObjectTypeMember::Property(prop) => {
+                            let prop_type = self.resolve_type_annotation(&prop.ty)?;
+                            properties.push(PropertySignature {
+                                name: self.resolve(prop.name.name),
+                                ty: prop_type,
+                                optional: prop.optional,
+                                readonly: false, // TODO: support readonly modifier
+                            });
+                        }
+                        ObjectTypeMember::Method(method) => {
+                            // Resolve method as a function type
+                            let param_tys: Result<Vec<_>, _> = method
+                                .params
+                                .iter()
+                                .map(|p| self.resolve_type_annotation(&p.ty))
+                                .collect();
+
+                            let return_ty = self.resolve_type_annotation(&method.return_type)?;
+                            let func_ty = self.type_ctx.function_type(param_tys?, return_ty, false);
+
+                            properties.push(PropertySignature {
+                                name: self.resolve(method.name.name),
+                                ty: func_ty,
+                                optional: false,
+                                readonly: false,
+                            });
+                        }
+                    }
+                }
+
+                let object_type = ObjectType {
+                    properties,
+                    index_signature: None,
+                };
+
+                Ok(self.type_ctx.intern(raya_types::ty::Type::Object(object_type)))
             }
 
             AstType::Typeof(_) => {
                 // typeof types are resolved during type checking
                 Ok(self.type_ctx.unknown_type())
+            }
+
+            AstType::StringLiteral(s) => {
+                Ok(self.type_ctx.string_literal(self.interner.resolve(*s).to_string()))
+            }
+
+            AstType::NumberLiteral(n) => {
+                Ok(self.type_ctx.number_literal(*n))
+            }
+
+            AstType::BooleanLiteral(b) => {
+                Ok(self.type_ctx.boolean_literal(*b))
             }
 
             AstType::Parenthesized(inner) => {
@@ -482,42 +545,21 @@ impl<'a> Binder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raya_parser::Span;
-    use raya_parser::ast::{Type as AstType, PrimitiveType as AstPrim};
+    use raya_parser::Parser;
 
-    fn make_ident(name: &str) -> Identifier {
-        Identifier {
-            name: name.to_string(),
-            span: Span::new(0, 0, 1, 1),
-        }
-    }
+    fn parse_and_bind(source: &str) -> (SymbolTable, TypeContext) {
+        let parser = Parser::new(source).unwrap();
+        let (module, interner) = parser.parse().unwrap();
 
-    fn make_span() -> Span {
-        Span::new(0, 0, 1, 1)
+        let mut ctx = TypeContext::new();
+        let binder = Binder::new(&mut ctx, &interner);
+        let symbols = binder.bind_module(&module).unwrap();
+        (symbols, ctx)
     }
 
     #[test]
     fn test_bind_simple_variable() {
-        let mut ctx = TypeContext::new();
-        let binder = Binder::new(&mut ctx);
-
-        let decl = VariableDecl {
-            kind: VariableKind::Let,
-            pattern: Pattern::Identifier(make_ident("x")),
-            type_annotation: Some(TypeAnnotation {
-                ty: AstType::Primitive(AstPrim::Number),
-                span: make_span(),
-            }),
-            initializer: None,
-            span: make_span(),
-        };
-
-        let module = Module {
-            statements: vec![Statement::VariableDecl(decl)],
-            span: make_span(),
-        };
-
-        let symbols = binder.bind_module(&module).unwrap();
+        let (symbols, _ctx) = parse_and_bind("let x: number = 42;");
 
         // Should be able to resolve x
         let symbol = symbols.resolve("x").unwrap();
@@ -527,50 +569,9 @@ mod tests {
 
     #[test]
     fn test_bind_function() {
-        let mut ctx = TypeContext::new();
-        let binder = Binder::new(&mut ctx);
-
-        let func = FunctionDecl {
-            name: make_ident("add"),
-            type_params: None,
-            params: vec![
-                Parameter {
-                    decorators: vec![],
-                    pattern: Pattern::Identifier(make_ident("a")),
-                    type_annotation: Some(TypeAnnotation {
-                        ty: AstType::Primitive(AstPrim::Number),
-                        span: make_span(),
-                    }),
-                    span: make_span(),
-                },
-                Parameter {
-                    decorators: vec![],
-                    pattern: Pattern::Identifier(make_ident("b")),
-                    type_annotation: Some(TypeAnnotation {
-                        ty: AstType::Primitive(AstPrim::Number),
-                        span: make_span(),
-                    }),
-                    span: make_span(),
-                },
-            ],
-            return_type: Some(TypeAnnotation {
-                ty: AstType::Primitive(AstPrim::Number),
-                span: make_span(),
-            }),
-            body: BlockStatement {
-                statements: vec![],
-                span: make_span(),
-            },
-            is_async: false,
-            span: make_span(),
-        };
-
-        let module = Module {
-            statements: vec![Statement::FunctionDecl(func)],
-            span: make_span(),
-        };
-
-        let symbols = binder.bind_module(&module).unwrap();
+        let (symbols, _ctx) = parse_and_bind(
+            "function add(a: number, b: number): number { return a + b; }"
+        );
 
         // Should be able to resolve add
         let symbol = symbols.resolve("add").unwrap();

@@ -179,8 +179,13 @@ impl SymbolTable {
     ///
     /// Searches from current scope to global scope, returning the first match.
     pub fn resolve(&self, name: &str) -> Option<&Symbol> {
-        let mut scope_id = self.current_scope;
+        self.resolve_from_scope(name, self.current_scope)
+    }
 
+    /// Resolve a symbol by name from a specific scope, walking up the scope chain
+    ///
+    /// Searches from the given scope to global scope, returning the first match.
+    pub fn resolve_from_scope(&self, name: &str, mut scope_id: ScopeId) -> Option<&Symbol> {
         loop {
             let scope = &self.scopes[scope_id.0 as usize];
 
@@ -215,6 +220,11 @@ impl SymbolTable {
     /// Get the global scope
     pub fn global_scope(&self) -> &Scope {
         &self.scopes[0]
+    }
+
+    /// Get the parent scope ID of a given scope
+    pub fn get_parent_scope_id(&self, scope_id: ScopeId) -> Option<ScopeId> {
+        self.scopes[scope_id.0 as usize].parent
     }
 }
 

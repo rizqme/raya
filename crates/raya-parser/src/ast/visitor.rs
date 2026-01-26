@@ -464,7 +464,10 @@ pub fn walk_member_expression<V: Visitor>(visitor: &mut V, expr: &MemberExpressi
 pub fn walk_array_expression<V: Visitor>(visitor: &mut V, expr: &ArrayExpression) {
     for elem in &expr.elements {
         if let Some(elem) = elem {
-            visitor.visit_expression(elem);
+            match elem {
+                ArrayElement::Expression(e) => visitor.visit_expression(e),
+                ArrayElement::Spread(e) => visitor.visit_expression(e),
+            }
         }
     }
 }
@@ -473,6 +476,10 @@ pub fn walk_object_expression<V: Visitor>(visitor: &mut V, expr: &ObjectExpressi
     for prop in &expr.properties {
         match prop {
             ObjectProperty::Property(p) => {
+                // Visit computed property key if present
+                if let PropertyKey::Computed(expr) = &p.key {
+                    visitor.visit_expression(expr);
+                }
                 visitor.visit_expression(&p.value);
             }
             ObjectProperty::Spread(s) => {
@@ -554,6 +561,9 @@ pub fn walk_type_annotation<V: Visitor>(visitor: &mut V, ty: &TypeAnnotation) {
         }
         Type::Object(obj) => visitor.visit_object_type(obj),
         Type::Typeof(typeof_ty) => visitor.visit_expression(&typeof_ty.argument),
+        Type::StringLiteral(_) => {}
+        Type::NumberLiteral(_) => {}
+        Type::BooleanLiteral(_) => {}
         Type::Parenthesized(ty) => visitor.visit_type_annotation(ty),
     }
 }
@@ -601,14 +611,26 @@ pub fn walk_pattern<V: Visitor>(visitor: &mut V, pattern: &Pattern) {
         Pattern::Array(arr) => {
             for elem in &arr.elements {
                 if let Some(elem) = elem {
-                    visitor.visit_pattern(elem);
+                    visitor.visit_pattern(&elem.pattern);
+                    if let Some(default) = &elem.default {
+                        visitor.visit_expression(default);
+                    }
                 }
+            }
+            if let Some(rest) = &arr.rest {
+                visitor.visit_pattern(rest);
             }
         }
         Pattern::Object(obj) => {
             for prop in &obj.properties {
                 visitor.visit_identifier(&prop.key);
                 visitor.visit_pattern(&prop.value);
+                if let Some(default) = &prop.default {
+                    visitor.visit_expression(default);
+                }
+            }
+            if let Some(rest) = &obj.rest {
+                visitor.visit_identifier(rest);
             }
         }
     }
