@@ -509,6 +509,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             Ok(Expression::NullLiteral(start_span))
         }
 
+        // This expression
+        Token::This => {
+            parser.advance();
+            Ok(Expression::This(start_span))
+        }
+
         // Integer literal
         Token::IntLiteral(value) => {
             let value = *value;

@@ -87,6 +87,9 @@ pub enum Expression {
 
     /// JSX fragment: <>content</>
     JsxFragment(JsxFragment),
+
+    /// This expression: this
+    This(Span),
 }
 
 impl Expression {
@@ -118,6 +121,7 @@ impl Expression {
             Expression::Parenthesized(e) => &e.span,
             Expression::JsxElement(e) => &e.span,
             Expression::JsxFragment(e) => &e.span,
+            Expression::This(span) => span,
         }
     }
 

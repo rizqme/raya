@@ -384,7 +384,8 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         | Expression::FloatLiteral(_)
         | Expression::StringLiteral(_)
         | Expression::BooleanLiteral(_)
-        | Expression::NullLiteral(_) => {}
+        | Expression::NullLiteral(_)
+        | Expression::This(_) => {}
         Expression::Identifier(id) => visitor.visit_identifier(id),
         Expression::TemplateLiteral(lit) => {
             for part in &lit.parts {
