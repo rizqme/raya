@@ -5,7 +5,7 @@
 
 #![allow(unused_imports)]
 
-use raya_bytecode::{Function, Module, Opcode};
+use raya_compiler::{Function, Module, Opcode};
 use raya_core::gc::GarbageCollector;
 use raya_core::value::Value;
 use raya_core::vm::{marshal, unmarshal, MarshalledValue};

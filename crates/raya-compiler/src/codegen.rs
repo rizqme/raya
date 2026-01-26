@@ -2,10 +2,10 @@
 
 use crate::error::{CompileError, CompileResult};
 use crate::module_builder::{FunctionBuilder, ModuleBuilder};
-use raya_bytecode::{Module, Opcode};
+use crate::bytecode::{Module, Opcode};
 use raya_parser::ast::*;
 use raya_parser::{Interner, Symbol as ParserSymbol};
-use raya_types::TypeContext;
+use raya_parser::TypeContext;
 use rustc_hash::FxHashMap;
 
 /// Main code generator

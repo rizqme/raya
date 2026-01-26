@@ -7,7 +7,7 @@ use crate::scheduler::TaskId;
 use crate::value::Value;
 use crate::vm::{VmContext, VmContextId, VmOptions};
 use parking_lot::RwLock;
-use raya_bytecode::Module;
+use raya_compiler::Module;
 use std::path::Path;
 use std::sync::Arc;
 use thiserror::Error;

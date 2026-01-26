@@ -7,7 +7,7 @@
 //! - Method dispatch via vtables
 //! - GC integration with objects
 
-use raya_bytecode::{Function, Module, Opcode};
+use raya_compiler::{Function, Module, Opcode};
 use raya_core::object::Class;
 use raya_core::value::Value;
 use raya_core::vm::Vm;

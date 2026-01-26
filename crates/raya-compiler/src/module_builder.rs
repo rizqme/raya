@@ -1,7 +1,7 @@
 //! Module builder for constructing bytecode modules
 
 use crate::error::{CompileError, CompileResult};
-use raya_bytecode::{Function, Module, Opcode};
+use crate::bytecode::{Function, Module, Opcode};
 use rustc_hash::FxHashMap;
 
 /// Helper for building bytecode modules

@@ -14,7 +14,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 raya-core = { workspace = true }
-raya-bytecode = { workspace = true }
+raya-compiler = { workspace = true }
 raya-native = { workspace = true }
 
 # Error handling

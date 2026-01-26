@@ -3,7 +3,7 @@
 #![allow(clippy::identity_op)]
 #![allow(unused_variables)]
 
-use raya_bytecode::{Function, Module, Opcode};
+use raya_compiler::{Function, Module, Opcode};
 use raya_core::scheduler::{Scheduler, Task, TaskState};
 use raya_core::value::Value;
 use std::sync::Arc;

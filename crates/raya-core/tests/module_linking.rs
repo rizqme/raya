@@ -2,7 +2,7 @@
 //!
 //! Tests the ModuleLinker for resolving imports to exports.
 
-use raya_bytecode::{ConstantPool, Export, Function, Import, Metadata, Module, SymbolType};
+use raya_compiler::{ConstantPool, Export, Function, Import, Metadata, Module, SymbolType};
 use raya_core::module::{LinkError, ModuleLinker};
 use std::sync::Arc;
 

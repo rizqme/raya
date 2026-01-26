@@ -2,7 +2,7 @@
 //!
 //! Handles resolving imported symbols from module exports and linking modules together.
 
-use raya_bytecode::{Export, Import, Module, SymbolType};
+use raya_compiler::{Export, Import, Module, SymbolType};
 use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
@@ -96,7 +96,7 @@ impl ModuleLinker {
     /// # Example
     /// ```no_run
     /// # use raya_core::module::ModuleLinker;
-    /// # use raya_bytecode::Import;
+    /// # use raya_compiler::Import;
     /// # let mut linker = ModuleLinker::new();
     /// # let import = Import {
     /// #     module_specifier: "logging".to_string(),
@@ -225,7 +225,7 @@ impl Default for ModuleLinker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raya_bytecode::{ConstantPool, Metadata};
+    use raya_compiler::{ConstantPool, Metadata};
 
     fn create_test_module(name: &str) -> Module {
         Module {

@@ -2,6 +2,7 @@
 //!
 //! This crate implements the compiler that transforms typed AST into bytecode.
 
+pub mod bytecode;
 pub mod codegen;
 pub mod error;
 pub mod module_builder;
@@ -10,10 +11,15 @@ pub use codegen::CodeGenerator;
 pub use error::{CompileError, CompileResult};
 pub use module_builder::ModuleBuilder;
 
-use raya_bytecode::Module;
+// Re-export bytecode types for convenience
+pub use bytecode::{
+    BytecodeReader, BytecodeWriter, ClassDef, ConstantPool, DecodeError, Export, Function,
+    Import, Metadata, Method, Module, ModuleError, Opcode, SymbolType, VerifyError, verify_module,
+};
+
 use raya_parser::ast;
 use raya_parser::Interner;
-use raya_types::TypeContext;
+use raya_parser::TypeContext;
 
 /// Main compiler entry point
 pub struct Compiler<'a> {

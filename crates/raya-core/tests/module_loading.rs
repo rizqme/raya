@@ -2,8 +2,8 @@
 //!
 //! Tests the complete module loading pipeline from .rbin bytes to registered modules.
 
-use raya_bytecode::module::{Function, Module};
-use raya_bytecode::Opcode;
+use raya_compiler::{Function, Module};
+use raya_compiler::Opcode;
 use raya_core::vm::{InnerVm, VmOptions};
 
 /// Helper to create a simple test module
@@ -133,7 +133,7 @@ fn test_invalid_magic_number() {
 
 #[test]
 fn test_module_with_exports() {
-    use raya_bytecode::module::{Export, SymbolType};
+    use raya_compiler::{Export, SymbolType};
 
     // Create a VM
     let vm = InnerVm::new(VmOptions::default()).unwrap();
@@ -161,7 +161,7 @@ fn test_module_with_exports() {
 
 #[test]
 fn test_module_with_imports() {
-    use raya_bytecode::module::Import;
+    use raya_compiler::Import;
 
     // Create a VM
     let vm = InnerVm::new(VmOptions::default()).unwrap();

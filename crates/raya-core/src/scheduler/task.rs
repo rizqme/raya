@@ -84,7 +84,7 @@ pub struct Task {
     function_id: usize,
 
     /// Module containing the function
-    module: Arc<raya_bytecode::Module>,
+    module: Arc<raya_compiler::Module>,
 
     /// Execution stack
     stack: Mutex<Stack>,
@@ -121,7 +121,7 @@ impl Task {
     /// Create a new Task
     pub fn new(
         function_id: usize,
-        module: Arc<raya_bytecode::Module>,
+        module: Arc<raya_compiler::Module>,
         parent: Option<TaskId>,
     ) -> Self {
         Self {
@@ -163,7 +163,7 @@ impl Task {
     }
 
     /// Get the module
-    pub fn module(&self) -> &Arc<raya_bytecode::Module> {
+    pub fn module(&self) -> &Arc<raya_compiler::Module> {
         &self.module
     }
 
@@ -349,7 +349,7 @@ impl<T> Copy for TaskHandle<T> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raya_bytecode::{Function, Module, Opcode};
+    use raya_compiler::{Function, Module, Opcode};
 
     fn create_test_module() -> Arc<Module> {
         let mut module = Module::new("test".to_string());

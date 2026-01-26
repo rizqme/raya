@@ -9,7 +9,7 @@ rust-version.workspace = true
 description = "Core runtime for the Raya VM (interpreter, GC, scheduler)"
 
 [dependencies]
-raya-bytecode = { workspace = true }
+raya-compiler = { workspace = true }
 crossbeam = { workspace = true }
 crossbeam-deque = { workspace = true }
 parking_lot = { workspace = true }

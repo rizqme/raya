@@ -12,18 +12,16 @@ rustflags = ["-C", "link-arg=-fuse-ld=lld"]
 
 [alias]
 # Useful aliases
-b = "build"
-br = "build --release"
-t = "test"
-tw = "test --workspace"
-c = "check"
-cw = "check --workspace"
+b = "build --workspace"
+br = "build --workspace --release"
+t = "test --workspace"
+c = "check --workspace"
 r = "run"
 
 # Benchmark aliases
 bench-all = "bench --workspace"
 bench-vm = "bench -p raya-core"
-bench-bc = "bench -p raya-bytecode"
+bench-compiler = "bench -p raya-compiler"
 
 # Development aliases
 dev = "watch -x 'check --workspace'"

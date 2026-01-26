@@ -1,16 +1,15 @@
 //! Basic code generation tests for Phase 1
 
-use raya_bytecode::Opcode;
+use raya_compiler::Opcode;
 use raya_compiler::Compiler;
-use raya_parser::{Interner, Parser};
-use raya_types::TypeContext;
+use raya_parser::{Interner, Parser, TypeContext};
 
 fn parse(source: &str) -> (raya_parser::ast::Module, Interner) {
     let parser = Parser::new(source).expect("Failed to tokenize");
     parser.parse().expect("Failed to parse")
 }
 
-fn compile(source: &str) -> raya_bytecode::Module {
+fn compile(source: &str) -> raya_compiler::Module {
     let (module, interner) = parse(source);
     let type_ctx = TypeContext::new();
     let mut compiler = Compiler::new(type_ctx, &interner);

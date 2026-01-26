@@ -35,8 +35,20 @@ pub mod ast;
 pub mod parser;
 pub mod interner;
 
+// Type system modules (merged from raya-types)
+pub mod types;
+
+// Type checker modules (merged from raya-checker)
+pub mod checker;
+
 // Re-exports for convenience
 pub use token::{Token, Span, TemplatePart};
 pub use lexer::{Lexer, LexError};
 pub use parser::{Parser, ParseError};
 pub use interner::{Interner, Symbol};
+
+// Type system re-exports
+pub use types::{Type, TypeId, TypeContext};
+
+// Checker re-exports
+pub use checker::{TypeChecker, CheckError, SymbolTable};

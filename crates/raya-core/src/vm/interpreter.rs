@@ -9,7 +9,7 @@ use crate::{
     value::Value,
     VmError, VmResult,
 };
-use raya_bytecode::{Module, Opcode};
+use raya_compiler::{Module, Opcode};
 use std::sync::Arc;
 
 /// Raya virtual machine
@@ -122,7 +122,7 @@ impl Vm {
     /// Execute a single function
     fn execute_function(
         &mut self,
-        function: &raya_bytecode::module::Function,
+        function: &raya_compiler::Function,
         module: &Module,
     ) -> VmResult<Value> {
         // Push initial frame
@@ -2107,7 +2107,7 @@ impl Vm {
 
     /// SPAWN - Create a new Task and start it
     #[allow(dead_code)]
-    fn op_spawn(&mut self, func_index: usize, module: &raya_bytecode::Module) -> VmResult<()> {
+    fn op_spawn(&mut self, func_index: usize, module: &raya_compiler::Module) -> VmResult<()> {
         // Safepoint poll before task creation
         self.safepoint().poll();
 
@@ -2258,7 +2258,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raya_bytecode::module::Function;
+    use raya_compiler::Function;
 
     #[test]
     fn test_vm_creation() {

@@ -346,7 +346,7 @@ impl Drop for Scheduler {
 mod tests {
     use super::*;
     use crate::scheduler::TaskState;
-    use raya_bytecode::{Function, Module, Opcode};
+    use raya_compiler::{Function, Module, Opcode};
     use std::thread;
     use std::time::Duration;
 

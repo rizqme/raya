@@ -252,7 +252,7 @@ impl Worker {
         use crate::gc::GarbageCollector;
         use crate::vm::ClassRegistry;
         use crate::VmError;
-        use raya_bytecode::Opcode;
+        use raya_compiler::Opcode;
 
         // Get the function to execute
         let module = task.module();
@@ -531,7 +531,7 @@ mod tests {
     use super::*;
     use crate::scheduler::Task;
     use crossbeam_deque::Injector;
-    use raya_bytecode::{Function, Module, Opcode};
+    use raya_compiler::{Function, Module, Opcode};
 
     fn create_test_task(name: &str) -> Arc<Task> {
         let mut module = Module::new("test".to_string());

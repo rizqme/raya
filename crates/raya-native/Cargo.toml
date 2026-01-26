@@ -25,4 +25,4 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 # For testing the generated code
-raya-bytecode = { workspace = true }
+raya-compiler = { workspace = true }

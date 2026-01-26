@@ -3,7 +3,7 @@
 //! The ModuleRegistry maintains a mapping of loaded modules by both name and checksum,
 //! enabling deduplication and efficient module lookups.
 
-use raya_bytecode::Module;
+use raya_compiler::Module;
 use std::collections::HashMap;
 use std::sync::Arc;
 

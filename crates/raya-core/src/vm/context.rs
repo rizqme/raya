@@ -15,7 +15,7 @@ use crate::value::Value;
 use crate::vm::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use raya_bytecode::Module;
+use raya_compiler::Module;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;

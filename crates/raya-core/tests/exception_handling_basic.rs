@@ -12,7 +12,7 @@
 //! Task-aware and implements TRY/END_TRY/RETHROW opcodes, these
 //! tests should be updated to verify actual exception behavior.
 
-use raya_bytecode::{Module, Function, Opcode};
+use raya_compiler::{Module, Function, Opcode};
 use raya_core::{Vm, VmError};
 
 fn create_module_with_code(code: Vec<u8>) -> Module {
