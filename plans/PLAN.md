@@ -1619,9 +1619,9 @@ pub struct Decorator {
 
 **Reference:** `plans/milestone-2.9.md` (Complete implementation plan)
 
-### 2.10 Parser Hardening & Robustness 📋
+### 2.10 Parser Hardening & Robustness ✅
 
-**Status:** 📋 Planning (2026-01-25)
+**Status:** ✅ Complete (2026-01-26)
 
 **Goal:** Harden the parser to gracefully handle malformed, incomplete, or pathological source code without hanging, crashing, or consuming excessive resources.
 
@@ -1632,36 +1632,36 @@ pub struct Decorator {
 The parser currently has potential infinite loops (discovered in JSX hyphenated attribute parsing) and no protection against deeply nested structures or malformed input. This milestone adds comprehensive safeguards.
 
 **Tasks:**
-- [ ] **Phase 1: Loop Protection** (Week 1)
-  - [ ] Audit all parser loops (while/loop constructs)
-  - [ ] Implement `LoopGuard` helper with iteration limits (10,000 default)
-  - [ ] Apply loop guards to all parsing loops
-  - [ ] Add progress assertion helpers to detect stuck parser
-  - [ ] Test with pathological inputs
-- [ ] **Phase 2: Recursion Depth Limits** (Week 2)
-  - [ ] Add depth tracking to Parser struct
-  - [ ] Implement `DepthGuard` RAII helper
-  - [ ] Apply depth guards to all recursive parse functions
-  - [ ] Set max depth limit (500 levels default)
-  - [ ] Add depth limit tests for arrays, objects, expressions
-- [ ] **Phase 3: Enhanced Error Recovery** (Week 3)
-  - [ ] Improve recovery strategy with synchronization points
-  - [ ] Add error collection mode (parse multiple errors)
-  - [ ] Implement statement/expression boundary recovery
-  - [ ] Add `Parser::new_with_recovery()` mode
-  - [ ] Test multi-error scenarios
-- [ ] **Phase 4: Special Case Hardening** (Week 4)
-  - [ ] Fix JSX text parsing with loop guards
-  - [ ] Add template literal parsing guards
-  - [ ] Ensure string/regex termination in lexer
-  - [ ] Test operator precedence edge cases
-  - [ ] Test very long identifiers, strings, argument lists
-- [ ] **Phase 5: Fuzzing Infrastructure** (Ongoing)
-  - [ ] Set up cargo-fuzz integration
-  - [ ] Create fuzzing corpus with known problematic inputs
-  - [ ] Add fuzzing to CI pipeline
-  - [ ] Run extended fuzzing sessions (1+ hour)
-  - [ ] Fix any discovered crashes/hangs
+- [x] **Phase 1: Loop Protection**
+  - [x] Audit all parser loops (while/loop constructs)
+  - [x] Implement `LoopGuard` helper with iteration limits (10,000 default)
+  - [x] Apply loop guards to all parsing loops
+  - [x] Add progress assertion helpers to detect stuck parser
+  - [x] Test with pathological inputs
+- [x] **Phase 2: Recursion Depth Limits**
+  - [x] Add depth tracking to Parser struct
+  - [x] Implement `DepthGuard` RAII helper
+  - [x] Apply depth guards to all recursive parse functions
+  - [x] Set max depth limit (500 levels default)
+  - [x] Add depth limit tests for arrays, objects, expressions
+- [x] **Phase 3: Enhanced Error Recovery**
+  - [x] Improve recovery strategy with synchronization points
+  - [x] Add error collection mode (parse multiple errors)
+  - [x] Implement statement/expression boundary recovery
+  - [x] Add `Parser::new_with_recovery()` mode
+  - [x] Test multi-error scenarios
+- [x] **Phase 4: Special Case Hardening**
+  - [x] Fix JSX text parsing with loop guards
+  - [x] Add template literal parsing guards
+  - [x] Ensure string/regex termination in lexer
+  - [x] Test operator precedence edge cases
+  - [x] Test very long identifiers, strings, argument lists
+- [x] **Phase 5: Fuzzing Infrastructure**
+  - [x] Set up cargo-fuzz integration
+  - [x] Create fuzzing corpus with known problematic inputs
+  - [x] Add fuzzing to CI pipeline
+  - [x] Run extended fuzzing sessions (1+ hour)
+  - [x] Fix any discovered crashes/hangs
 
 **New Error Types:**
 ```rust
@@ -1694,6 +1694,69 @@ pub struct ParserConfig {
 - ✅ No regressions in existing tests
 
 **Reference:** `plans/milestone-2.10.md` (Complete implementation plan)
+
+### 2.11 Parser Feature Completion ✅
+
+**Status:** ✅ Complete (2026-01-26)
+
+**Goal:** Complete remaining parser features for full LANG.md specification compliance.
+
+**Dependencies:**
+- Milestone 2.10 (Parser Hardening) ✅ Complete
+
+**Tasks:**
+- [x] **Phase 1: Access Modifiers**
+  - [x] Add Visibility enum (Public, Protected, Private)
+  - [x] Update FieldDecl and MethodDecl with visibility field
+  - [x] Parse private/protected/public modifiers for class members
+  - [x] Support visibility with static, abstract, async modifiers
+  - [x] 13 visibility tests passing
+- [x] **Phase 2: Static Fields/Methods**
+  - [x] Verify static field parsing with initializers
+  - [x] Verify static method parsing
+  - [x] Test static with visibility modifiers
+  - [x] Test static async methods
+- [x] **Phase 3: Decorator Parsing**
+  - [x] Parse @name decorators
+  - [x] Parse @name(args) decorator calls
+  - [x] Parse @module.decorator member access decorators
+  - [x] Apply decorators to classes, methods, fields
+  - [x] Support multiple decorators on single element
+  - [x] 12 decorator tests passing
+- [x] **Phase 4: Template Literal Interpolation**
+  - [x] Fix lexer whitespace handling before backtick
+  - [x] Fix interner sharing between lexer and sub-lexer
+  - [x] Parse ${expression} interpolations
+  - [x] Support complex expressions (member access, calls, binary, ternary)
+  - [x] Handle consecutive interpolations and edge cases
+  - [x] 12 template literal tests passing
+- [x] **Phase 5: Rest Patterns**
+  - [x] Add Pattern::Rest variant and RestPattern struct
+  - [x] Parse ...rest in array destructuring
+  - [x] Parse ...rest in object destructuring
+  - [x] Parse rest parameters in functions
+  - [x] Enforce rest-must-be-last validation
+  - [x] 9 rest pattern tests passing
+
+**New AST Types:**
+```rust
+pub enum Visibility {
+    Public,
+    Protected,
+    Private,
+}
+
+pub struct RestPattern {
+    pub argument: Box<Pattern>,
+    pub span: Span,
+}
+```
+
+**Test Coverage:**
+- 46 new parser tests for Milestone 2.11 features
+- All workspace tests passing
+
+**Reference:** `plans/milestone-2.11.md` (Complete implementation plan)
 
 ---
 
@@ -2681,6 +2744,6 @@ raya-lsp
 
 ---
 
-**Status:** Planning Complete
-**Version:** v0.1 (Implementation Plan)
-**Last Updated:** 2026-01-04
+**Status:** Implementation In Progress
+**Version:** v0.2 (Implementation Plan)
+**Last Updated:** 2026-01-26

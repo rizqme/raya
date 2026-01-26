@@ -48,6 +48,9 @@ pub enum Statement {
     /// For loop
     For(ForStatement),
 
+    /// For-of loop
+    ForOf(ForOfStatement),
+
     /// Break statement
     Break(BreakStatement),
 
@@ -89,6 +92,7 @@ impl Statement {
             Statement::While(s) => &s.span,
             Statement::DoWhile(s) => &s.span,
             Statement::For(s) => &s.span,
+            Statement::ForOf(s) => &s.span,
             Statement::Break(s) => &s.span,
             Statement::Continue(s) => &s.span,
             Statement::Return(s) => &s.span,
@@ -236,11 +240,32 @@ pub enum ClassMember {
     Constructor(ConstructorDecl),
 }
 
+/// Visibility modifier for class members (Java-like semantics)
+///
+/// | Modifier | Same Class | Subclass | Other Classes |
+/// |----------|------------|----------|---------------|
+/// | Private  | ✅         | ❌        | ❌             |
+/// | Protected| ✅         | ✅        | ❌             |
+/// | Public   | ✅         | ✅        | ✅             |
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visibility {
+    /// Private - only accessible within the same class
+    Private,
+    /// Protected - accessible within the same class and subclasses
+    Protected,
+    /// Public - accessible from anywhere (default)
+    #[default]
+    Public,
+}
+
 /// Field declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDecl {
     /// Decorators (@validate, @readonly, etc.)
     pub decorators: Vec<Decorator>,
+
+    /// Visibility modifier (private/protected/public)
+    pub visibility: Visibility,
 
     pub name: Identifier,
     pub type_annotation: Option<TypeAnnotation>,
@@ -254,6 +279,9 @@ pub struct FieldDecl {
 pub struct MethodDecl {
     /// Decorators (@logged, @memoized, etc.)
     pub decorators: Vec<Decorator>,
+
+    /// Visibility modifier (private/protected/public)
+    pub visibility: Visibility,
 
     /// Abstract modifier (method has no body)
     pub is_abstract: bool,
@@ -375,6 +403,27 @@ pub struct ForStatement {
 pub enum ForInit {
     VariableDecl(VariableDecl),
     Expression(Expression),
+}
+
+/// For-of loop: for (const item of collection) { ... }
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForOfStatement {
+    /// Left side of the for-of (variable declaration or identifier pattern)
+    pub left: ForOfLeft,
+    /// Right side expression (the iterable)
+    pub right: Expression,
+    /// Loop body
+    pub body: Box<Statement>,
+    pub span: Span,
+}
+
+/// Left-hand side of a for-of statement
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForOfLeft {
+    /// let/const pattern
+    VariableDecl(VariableDecl),
+    /// Existing variable
+    Pattern(Pattern),
 }
 
 /// Break statement

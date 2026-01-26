@@ -984,3 +984,205 @@ fn test_parse_multiple_statements() {
     assert!(matches!(module.statements[2], Statement::FunctionDecl(_)));
     assert!(matches!(module.statements[3], Statement::If(_)));
 }
+
+// ============================================================================
+// Do-While Loops
+// ============================================================================
+
+#[test]
+fn test_parse_do_while_loop() {
+    let source = r#"
+        do {
+            x = x + 1;
+        } while (x < 10);
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::DoWhile(stmt) => {
+            // Check body is a block statement
+            assert!(matches!(stmt.body.as_ref(), Statement::Block(_)));
+            // Check condition is present
+            assert!(matches!(stmt.condition, Expression::Binary(_)));
+        }
+        _ => panic!("Expected do-while statement"),
+    }
+}
+
+#[test]
+fn test_parse_do_while_without_semicolon() {
+    let source = r#"
+        do {
+            x = x + 1;
+        } while (x < 10)
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    assert!(matches!(module.statements[0], Statement::DoWhile(_)));
+}
+
+// ============================================================================
+// For-Of Loops
+// ============================================================================
+
+#[test]
+fn test_parse_for_of_with_const() {
+    let source = r#"
+        for (const item of items) {
+            console.log(item);
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::ForOf(stmt) => {
+            // Check left side is a variable declaration
+            match &stmt.left {
+                ForOfLeft::VariableDecl(decl) => {
+                    assert!(matches!(decl.kind, VariableKind::Const));
+                    match &decl.pattern {
+                        Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "item"),
+                        _ => panic!("Expected identifier pattern"),
+                    }
+                }
+                _ => panic!("Expected variable declaration"),
+            }
+            // Check right side is items identifier
+            match &stmt.right {
+                Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "items"),
+                _ => panic!("Expected identifier expression"),
+            }
+            // Check body is a block statement
+            assert!(matches!(stmt.body.as_ref(), Statement::Block(_)));
+        }
+        _ => panic!("Expected for-of statement"),
+    }
+}
+
+#[test]
+fn test_parse_for_of_with_let() {
+    let source = r#"
+        for (let x of collection) {
+            process(x);
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::ForOf(stmt) => {
+            match &stmt.left {
+                ForOfLeft::VariableDecl(decl) => {
+                    assert!(matches!(decl.kind, VariableKind::Let));
+                    match &decl.pattern {
+                        Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
+                        _ => panic!("Expected identifier pattern"),
+                    }
+                }
+                _ => panic!("Expected variable declaration"),
+            }
+            match &stmt.right {
+                Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "collection"),
+                _ => panic!("Expected identifier expression"),
+            }
+        }
+        _ => panic!("Expected for-of statement"),
+    }
+}
+
+#[test]
+fn test_parse_for_of_with_existing_variable() {
+    let source = r#"
+        for (item of items) {
+            handle(item);
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::ForOf(stmt) => {
+            match &stmt.left {
+                ForOfLeft::Pattern(Pattern::Identifier(id)) => {
+                    assert_eq!(interner.resolve(id.name), "item");
+                }
+                _ => panic!("Expected pattern identifier"),
+            }
+            match &stmt.right {
+                Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "items"),
+                _ => panic!("Expected identifier expression"),
+            }
+        }
+        _ => panic!("Expected for-of statement"),
+    }
+}
+
+#[test]
+fn test_parse_for_of_with_array_expression() {
+    let source = r#"
+        for (const num of [1, 2, 3]) {
+            sum = sum + num;
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::ForOf(stmt) => {
+            // Check right side is an array expression
+            assert!(matches!(stmt.right, Expression::Array(_)));
+        }
+        _ => panic!("Expected for-of statement"),
+    }
+}
+
+#[test]
+fn test_parse_traditional_for_still_works() {
+    let source = r#"
+        for (let i = 0; i < 10; i = i + 1) {
+            doSomething(i);
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::For(stmt) => {
+            assert!(stmt.init.is_some());
+            assert!(stmt.test.is_some());
+            assert!(stmt.update.is_some());
+        }
+        _ => panic!("Expected traditional for statement"),
+    }
+}
+
+#[test]
+fn test_parse_for_without_init() {
+    let source = r#"
+        for (; i < 10; i = i + 1) {
+            doSomething(i);
+        }
+    "#;
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::For(stmt) => {
+            assert!(stmt.init.is_none());
+            assert!(stmt.test.is_some());
+            assert!(stmt.update.is_some());
+        }
+        _ => panic!("Expected traditional for statement"),
+    }
+}

@@ -67,6 +67,42 @@ impl Parser {
         })
     }
 
+    /// Create a new parser from pre-tokenized input.
+    ///
+    /// This is used internally for parsing template literal expressions
+    /// where we already have tokens from the lexer.
+    pub(crate) fn from_tokens(mut tokens: Vec<(Token, Span)>, interner: Interner) -> Self {
+        // Add EOF token if not present
+        if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
+            let eof_span = if let Some((_, last_span)) = tokens.last() {
+                Span::new(last_span.end, last_span.end, last_span.line, last_span.column)
+            } else {
+                Span::new(0, 0, 1, 1)
+            };
+            tokens.push((Token::Eof, eof_span));
+        }
+
+        Self {
+            tokens,
+            interner,
+            pos: 0,
+            errors: Vec::new(),
+            depth: 0,
+        }
+    }
+
+    /// Parse a single expression from this parser.
+    ///
+    /// Used for parsing template literal expressions.
+    pub(crate) fn parse_single_expression(&mut self) -> Result<Expression, ParseError> {
+        expr::parse_expression(self)
+    }
+
+    /// Get a clone of the interner (for template expression parsing).
+    pub(crate) fn interner_clone(&self) -> Interner {
+        self.interner.clone()
+    }
+
     /// Parse the entire source file into a Module AST.
     ///
     /// Returns the Module and Interner on success, or all accumulated errors on failure.

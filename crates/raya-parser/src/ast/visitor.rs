@@ -81,6 +81,10 @@ pub trait Visitor: Sized {
         walk_for_statement(self, stmt);
     }
 
+    fn visit_for_of_statement(&mut self, stmt: &ForOfStatement) {
+        walk_for_of_statement(self, stmt);
+    }
+
     fn visit_block_statement(&mut self, stmt: &BlockStatement) {
         walk_block_statement(self, stmt);
     }
@@ -181,6 +185,7 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
             visitor.visit_expression(&stmt.condition);
         }
         Statement::For(stmt) => visitor.visit_for_statement(stmt),
+        Statement::ForOf(stmt) => visitor.visit_for_of_statement(stmt),
         Statement::Break(_) | Statement::Continue(_) => {}
         Statement::Return(stmt) => {
             if let Some(value) = &stmt.value {
@@ -369,6 +374,15 @@ pub fn walk_for_statement<V: Visitor>(visitor: &mut V, stmt: &ForStatement) {
     if let Some(update) = &stmt.update {
         visitor.visit_expression(update);
     }
+    visitor.visit_statement(&stmt.body);
+}
+
+pub fn walk_for_of_statement<V: Visitor>(visitor: &mut V, stmt: &ForOfStatement) {
+    match &stmt.left {
+        ForOfLeft::VariableDecl(decl) => visitor.visit_variable_decl(decl),
+        ForOfLeft::Pattern(pattern) => visitor.visit_pattern(pattern),
+    }
+    visitor.visit_expression(&stmt.right);
     visitor.visit_statement(&stmt.body);
 }
 
@@ -633,6 +647,9 @@ pub fn walk_pattern<V: Visitor>(visitor: &mut V, pattern: &Pattern) {
             if let Some(rest) = &obj.rest {
                 visitor.visit_identifier(rest);
             }
+        }
+        Pattern::Rest(rest) => {
+            visitor.visit_pattern(&rest.argument);
         }
     }
 }

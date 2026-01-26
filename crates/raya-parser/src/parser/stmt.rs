@@ -55,10 +55,11 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             }
         }
 
-        Token::Class | Token::Abstract => parse_class_declaration(parser),
+        Token::Class | Token::Abstract | Token::At => parse_class_declaration(parser),
         Token::Type => parse_type_alias_declaration(parser),
         Token::If => parse_if_statement(parser),
         Token::While => parse_while_statement(parser),
+        Token::Do => parse_do_while_statement(parser),
         Token::For => parse_for_statement(parser),
         Token::Switch => parse_switch_statement(parser),
         Token::Try => parse_try_statement(parser),
@@ -451,18 +452,55 @@ fn parse_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }))
 }
 
-/// Parse for statement
+/// Parse do-while statement: do { ... } while (condition);
+fn parse_do_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::Do)?;
+
+    // Parse body (must be a block statement)
+    parser.expect(Token::LeftBrace)?;
+    let body_block = parse_block_statement(parser)?;
+    let body = Box::new(Statement::Block(body_block));
+
+    // Parse while keyword and condition
+    parser.expect(Token::While)?;
+    parser.expect(Token::LeftParen)?;
+    let condition = super::expr::parse_expression(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    // Optional semicolon
+    if parser.check(&Token::Semicolon) {
+        parser.advance();
+    }
+
+    let span = parser.combine_spans(&start_span, &parser.current_span());
+
+    Ok(Statement::DoWhile(DoWhileStatement {
+        body,
+        condition,
+        span,
+    }))
+}
+
+/// Parse for statement (handles both traditional for and for-of)
 fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::For)?;
     parser.expect(Token::LeftParen)?;
 
-    // Parse init
-    let init = if parser.check(&Token::Semicolon) {
-        parser.advance(); // consume semicolon
-        None
-    } else if parser.check(&Token::Let) || parser.check(&Token::Const) {
-        // Variable declaration (don't parse the semicolon, we'll do it after)
+    // Check if this is a for-of loop or traditional for loop
+    // for (let/const pattern of iterable) { }
+    // for (pattern of iterable) { }
+    // for (init; test; update) { }
+
+    if parser.check(&Token::Semicolon) {
+        // for (; ...) - traditional for loop with no init
+        parser.advance();
+        return parse_traditional_for(parser, start_span, None);
+    }
+
+    if parser.check(&Token::Let) || parser.check(&Token::Const) {
+        // Could be for-of or traditional for with variable declaration
         let kind = match parser.current() {
             Token::Let => VariableKind::Let,
             Token::Const => VariableKind::Const,
@@ -472,6 +510,20 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
         let pattern = super::pattern::parse_pattern(parser)?;
 
+        // Check for 'of' keyword - this is a for-of loop
+        if parser.check(&Token::Of) {
+            parser.advance();
+            let decl = VariableDecl {
+                kind,
+                pattern,
+                type_annotation: None,
+                initializer: None,
+                span: start_span,
+            };
+            return parse_for_of(parser, start_span, ForOfLeft::VariableDecl(decl));
+        }
+
+        // Otherwise, this is a traditional for loop
         let type_annotation = if parser.check(&Token::Colon) {
             parser.advance();
             Some(super::types::parse_type_annotation(parser)?)
@@ -496,15 +548,90 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
             span,
         };
 
-        parser.expect(Token::Semicolon)?; // consume semicolon after variable declaration
-        Some(ForInit::VariableDecl(decl))
-    } else {
-        // Expression
-        let expr = super::expr::parse_expression(parser)?;
-        parser.expect(Token::Semicolon)?; // consume semicolon after expression
-        Some(ForInit::Expression(expr))
+        parser.expect(Token::Semicolon)?;
+        return parse_traditional_for(parser, start_span, Some(ForInit::VariableDecl(decl)));
+    }
+
+    // For traditional for loop with expression init OR for-of with existing variable
+    // First, check if it's a simple identifier that could be for-of
+    if let Token::Identifier(_) = parser.current() {
+        // Parse pattern first to check for for-of
+        let pattern = super::pattern::parse_pattern(parser)?;
+
+        if parser.check(&Token::Of) {
+            parser.advance();
+            return parse_for_of(parser, start_span, ForOfLeft::Pattern(pattern));
+        }
+
+        // Not a for-of, so this pattern is part of an expression
+        // Convert pattern back to expression and continue parsing the full expression
+        let base_expr = pattern_to_expression(pattern)?;
+        let expr = parse_expression_from_base(parser, base_expr)?;
+        parser.expect(Token::Semicolon)?;
+        return parse_traditional_for(parser, start_span, Some(ForInit::Expression(expr)));
+    }
+
+    // Traditional for loop with non-identifier expression init
+    let expr = super::expr::parse_expression(parser)?;
+    parser.expect(Token::Semicolon)?;
+    parse_traditional_for(parser, start_span, Some(ForInit::Expression(expr)))
+}
+
+/// Convert a pattern to an expression (only works for simple identifier patterns)
+fn pattern_to_expression(pattern: Pattern) -> Result<Expression, ParseError> {
+    match pattern {
+        Pattern::Identifier(id) => Ok(Expression::Identifier(id)),
+        _ => {
+            use super::ParseErrorKind;
+            Err(ParseError {
+                kind: ParseErrorKind::InvalidSyntax {
+                    reason: "Cannot use destructuring pattern in for loop initializer expression".to_string(),
+                },
+                span: pattern.span().clone(),
+                message: "Invalid for loop initializer".to_string(),
+                suggestion: Some("Use a simple identifier or add a semicolon".to_string()),
+            })
+        }
+    }
+}
+
+/// Continue parsing an expression starting from a base expression (identifier)
+/// This handles assignment expressions like `i = 0`
+fn parse_expression_from_base(parser: &mut Parser, base: Expression) -> Result<Expression, ParseError> {
+    // Check for assignment operators
+    let operator = match parser.current() {
+        Token::Equal => Some(AssignmentOperator::Assign),
+        Token::PlusEqual => Some(AssignmentOperator::AddAssign),
+        Token::MinusEqual => Some(AssignmentOperator::SubAssign),
+        Token::StarEqual => Some(AssignmentOperator::MulAssign),
+        Token::SlashEqual => Some(AssignmentOperator::DivAssign),
+        Token::PercentEqual => Some(AssignmentOperator::ModAssign),
+        _ => None,
     };
 
+    if let Some(op) = operator {
+        let start_span = base.span().clone();
+        parser.advance();
+        let right = super::expr::parse_expression(parser)?;
+        let span = parser.combine_spans(&start_span, right.span());
+        return Ok(Expression::Assignment(AssignmentExpression {
+            operator: op,
+            left: Box::new(base),
+            right: Box::new(right),
+            span,
+        }));
+    }
+
+    // No assignment, just return the base expression
+    Ok(base)
+}
+
+/// Parse the rest of a traditional for loop after the init part
+fn parse_traditional_for(
+    parser: &mut Parser,
+    start_span: Span,
+    init: Option<ForInit>,
+) -> Result<Statement, ParseError> {
     // Parse test
     let test = if parser.check(&Token::Semicolon) {
         None
@@ -532,6 +659,31 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         init,
         test,
         update,
+        body,
+        span,
+    }))
+}
+
+/// Parse the rest of a for-of loop after the 'of' keyword
+fn parse_for_of(
+    parser: &mut Parser,
+    start_span: Span,
+    left: ForOfLeft,
+) -> Result<Statement, ParseError> {
+    // Parse the iterable expression
+    let right = super::expr::parse_expression(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    // Parse body (must be a block statement)
+    parser.expect(Token::LeftBrace)?;
+    let body_block = parse_block_statement(parser)?;
+    let body = Box::new(Statement::Block(body_block));
+
+    let span = parser.combine_spans(&start_span, body.span());
+
+    Ok(Statement::ForOf(ForOfStatement {
+        left,
+        right,
         body,
         span,
     }))
@@ -844,8 +996,8 @@ fn parse_try_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 fn parse_class_declaration(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
 
-    // TODO: Parse decorators when implemented
-    let decorators = vec![];
+    // Parse decorators
+    let decorators = parse_decorators(parser)?;
 
     // Parse 'abstract' modifier
     let is_abstract = if parser.check(&Token::Abstract) {
@@ -940,10 +1092,27 @@ fn parse_class_members(parser: &mut Parser) -> Result<Vec<ClassMember>, ParseErr
 fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let start_span = parser.current_span();
 
-    // TODO: Parse decorators when implemented
-    let decorators = vec![];
+    // Parse decorators
+    let decorators = parse_decorators(parser)?;
 
-    // Parse modifiers
+    // Parse visibility modifier (private/protected/public)
+    let visibility = match parser.current() {
+        Token::Private => {
+            parser.advance();
+            Visibility::Private
+        }
+        Token::Protected => {
+            parser.advance();
+            Visibility::Protected
+        }
+        Token::Public => {
+            parser.advance();
+            Visibility::Public
+        }
+        _ => Visibility::Public, // Default is public
+    };
+
+    // Parse other modifiers
     let is_abstract = if parser.check(&Token::Abstract) {
         parser.advance();
         true
@@ -1027,6 +1196,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
         Ok(ClassMember::Method(MethodDecl {
             decorators,
+            visibility,
             is_abstract,
             name,
             type_params,
@@ -1069,6 +1239,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
         Ok(ClassMember::Field(FieldDecl {
             decorators,
+            visibility,
             name,
             type_annotation,
             initializer,
@@ -1094,6 +1265,103 @@ fn parse_constructor(parser: &mut Parser, start_span: Span) -> Result<ClassMembe
         body,
         span,
     }))
+}
+
+// ============================================================================
+// Decorator Parsing
+// ============================================================================
+
+/// Parse decorators: @name or @name(args)
+fn parse_decorators(parser: &mut Parser) -> Result<Vec<Decorator>, ParseError> {
+    let mut decorators = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("decorators");
+
+    while parser.check(&Token::At) {
+        guard.check()?;
+        decorators.push(parse_decorator(parser)?);
+    }
+
+    Ok(decorators)
+}
+
+/// Parse a single decorator: @name or @name(args)
+fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::At)?;
+
+    // Parse decorator expression: identifier, member access, or call
+    let mut expression = if let Token::Identifier(name) = parser.current() {
+        let name_sym = name.clone();
+        let ident_span = parser.current_span();
+        parser.advance();
+
+        Expression::Identifier(Identifier {
+            name: name_sym,
+            span: ident_span,
+        })
+    } else {
+        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+    };
+
+    // Handle member access: @module.decorator
+    while parser.check(&Token::Dot) {
+        parser.advance();
+        if let Token::Identifier(name) = parser.current() {
+            let name_sym = name.clone();
+            let member_span = parser.current_span();
+            parser.advance();
+
+            let end_span = member_span.clone();
+            let span = parser.combine_spans(expression.span(), &end_span);
+
+            expression = Expression::Member(MemberExpression {
+                object: Box::new(expression),
+                property: Identifier {
+                    name: name_sym,
+                    span: member_span,
+                },
+                optional: false,
+                span,
+            });
+        } else {
+            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+        }
+    }
+
+    // Check for call: @decorator(args)
+    if parser.check(&Token::LeftParen) {
+        let call_start = expression.span().clone();
+        parser.advance();
+
+        let mut arguments = Vec::new();
+        let mut guard = super::guards::LoopGuard::new("decorator_args");
+
+        if !parser.check(&Token::RightParen) {
+            loop {
+                guard.check()?;
+                arguments.push(super::expr::parse_expression(parser)?);
+                if parser.check(&Token::Comma) {
+                    parser.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let end_span = parser.current_span();
+        parser.expect(Token::RightParen)?;
+
+        let span = parser.combine_spans(&call_start, &end_span);
+        expression = Expression::Call(CallExpression {
+            callee: Box::new(expression),
+            type_args: None,
+            arguments,
+            span,
+        });
+    }
+
+    let span = parser.combine_spans(&start_span, expression.span());
+    Ok(Decorator { expression, span })
 }
 
 // ============================================================================

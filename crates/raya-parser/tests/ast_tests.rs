@@ -171,6 +171,7 @@ fn test_class_decl_simple() {
         members: vec![
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
+                visibility: Visibility::Public,
                 name: ident(&mut interner, "x", Span::new(18, 19, 2, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -182,6 +183,7 @@ fn test_class_decl_simple() {
             }),
             ClassMember::Field(FieldDecl {
                 decorators: vec![],
+                visibility: Visibility::Public,
                 name: ident(&mut interner, "y", Span::new(33, 34, 3, 5)),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),

@@ -159,6 +159,9 @@ enum LogosToken {
     #[token("in")]
     In,
 
+    #[token("of")]
+    Of,
+
     #[token("true")]
     True,
 
@@ -553,6 +556,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Create a new lexer with an existing interner.
+    ///
+    /// This is used internally for lexing template literal expressions
+    /// where we need to share the interner with the parent lexer.
+    fn with_interner(source: &'a str, interner: Interner) -> Self {
+        Self {
+            source,
+            tokens: Vec::new(),
+            errors: Vec::new(),
+            interner,
+        }
+    }
+
     /// Format all errors with source context
     pub fn format_errors(errors: &[LexError], source: &str) -> String {
         errors
@@ -568,6 +584,65 @@ impl<'a> Lexer<'a> {
         let mut column = 1u32;
 
         while pos < self.source.len() {
+            // Skip whitespace and comments manually before checking for template literal
+            // This is needed because logos skips whitespace internally, but we need to
+            // check for backticks BEFORE logos processes them
+            let bytes = self.source.as_bytes();
+            while pos < bytes.len() {
+                let ch = bytes[pos];
+                match ch {
+                    b' ' | b'\t' | b'\r' => {
+                        column += 1;
+                        pos += 1;
+                    }
+                    b'\n' => {
+                        line += 1;
+                        column = 1;
+                        pos += 1;
+                    }
+                    b'/' if pos + 1 < bytes.len() => {
+                        // Check for comments
+                        match bytes[pos + 1] {
+                            b'/' => {
+                                // Line comment - skip to end of line
+                                pos += 2;
+                                column += 2;
+                                while pos < bytes.len() && bytes[pos] != b'\n' {
+                                    pos += 1;
+                                    column += 1;
+                                }
+                            }
+                            b'*' => {
+                                // Block comment - skip to */
+                                pos += 2;
+                                column += 2;
+                                while pos + 1 < bytes.len() {
+                                    if bytes[pos] == b'*' && bytes[pos + 1] == b'/' {
+                                        pos += 2;
+                                        column += 2;
+                                        break;
+                                    }
+                                    if bytes[pos] == b'\n' {
+                                        line += 1;
+                                        column = 1;
+                                    } else {
+                                        column += 1;
+                                    }
+                                    pos += 1;
+                                }
+                            }
+                            _ => break, // Not a comment, stop skipping
+                        }
+                    }
+                    _ => break, // Not whitespace, stop skipping
+                }
+            }
+
+            // Check if we reached the end after skipping whitespace
+            if pos >= self.source.len() {
+                break;
+            }
+
             // Check for template literal first
             if self.source.as_bytes()[pos] == b'`' {
                 let start_span = Span::new(pos, pos + 1, line, column);
@@ -705,6 +780,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Public => Token::Public,
             LogosToken::Yield => Token::Yield,
             LogosToken::In => Token::In,
+            LogosToken::Of => Token::Of,
             LogosToken::True => Token::True,
             LogosToken::False => Token::False,
             LogosToken::Null => Token::Null,
@@ -930,10 +1006,15 @@ impl<'a> Lexer<'a> {
                     }
 
                     // Extract and tokenize the expression
+                    // We pass the current interner to the sub-lexer and take back
+                    // the updated interner (with any new symbols from the expression)
                     let expr_str = &self.source[expr_start..pos];
-                    let expr_lexer = Lexer::new(expr_str);
+                    let current_interner = std::mem::take(&mut self.interner);
+                    let expr_lexer = Lexer::with_interner(expr_str, current_interner);
                     match expr_lexer.tokenize() {
-                        Ok((tokens, _interner)) => {
+                        Ok((tokens, updated_interner)) => {
+                            // Put the updated interner back
+                            self.interner = updated_interner;
                             // Remove EOF token from the end
                             let tokens_without_eof: Vec<_> = tokens
                                 .into_iter()

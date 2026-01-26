@@ -39,6 +39,7 @@ impl Symbol {
 ///
 /// Strings are stored once and referred to by small integer symbols.
 /// This reduces memory usage and makes string comparison O(1).
+#[derive(Clone)]
 pub struct Interner {
     /// Map from string to symbol index
     map: FxHashMap<String, Symbol>,

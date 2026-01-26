@@ -241,7 +241,6 @@ Template expressions must be of type `string`, `number`, or `boolean`.
 
 ```
 ?:  (ternary)
-?.  (optional chaining)
 ??  (nullish coalescing)
 ```
 
@@ -249,7 +248,7 @@ Template expressions must be of type `string`, `number`, or `boolean`.
 
 From highest to lowest:
 
-1. Member access: `.`, `[]`, `?.`
+1. Member access: `.`, `[]`
 2. Function call, `new`
 3. Postfix: `++`, `--`
 4. Prefix: `!`, `~`, `+`, `-`, `typeof`, `++`, `--`
@@ -1146,28 +1145,7 @@ let name: string | null = null;
 let display = name ?? "Anonymous";  // display: string
 ```
 
-### 6.7 Optional Chaining
-
-```ts
-obj?.property
-obj?.[expression]
-func?.(args)
-```
-
-Type rules:
-* If base is `T | null`, result includes `null`
-
-```ts
-interface User {
-  name: string;
-  address?: { city: string };
-}
-
-let user: User | null = getUser();
-let city = user?.address?.city;  // city: string | null
-```
-
-### 6.8 Function Call Expressions
+### 6.7 Function Call Expressions
 
 ```ts
 func(arg1, arg2)
@@ -1429,16 +1407,6 @@ while (true) {
 }
 ```
 
-Labels are supported:
-
-```ts
-outer: for (const i of items) {
-  for (const j of others) {
-    if (done) break outer;
-  }
-}
-```
-
 ### 7.9 Return Statements
 
 ```ts
@@ -1486,15 +1454,7 @@ function greet(name: string): void {
 * All parameters must have type annotations
 * Return type can be inferred or explicit
 
-### 8.2 Function Expressions
-
-```ts
-const add = function(a: number, b: number): number {
-  return a + b;
-};
-```
-
-### 8.3 Arrow Functions
+### 8.2 Arrow Functions
 
 ```ts
 const add = (a: number, b: number): number => a + b;
@@ -1504,7 +1464,7 @@ const greet = (name: string): void => {
 };
 ```
 
-### 8.4 Optional Parameters
+### 8.3 Optional Parameters
 
 ```ts
 function greet(name: string, title?: string): void {
@@ -1521,7 +1481,7 @@ greet("Alice", "Dr.");       // OK
 
 Optional parameters have type `T | null`.
 
-### 8.5 Default Parameters
+### 8.4 Default Parameters
 
 ```ts
 function greet(name: string, greeting: string = "Hello"): void {
@@ -1532,7 +1492,7 @@ greet("Alice");           // "Hello, Alice"
 greet("Alice", "Hi");     // "Hi, Alice"
 ```
 
-### 8.6 Rest Parameters
+### 8.5 Rest Parameters
 
 ```ts
 function sum(...numbers: number[]): number {
@@ -1550,7 +1510,7 @@ Type rules:
 * Must be last parameter
 * Type must be an array `T[]`
 
-### 8.7 Function Overloading - BANNED
+### 8.6 Function Overloading - BANNED
 
 Raya does not support function overloading. Use union types instead:
 
@@ -1569,7 +1529,7 @@ function process(x: string | number): string | number {
 }
 ```
 
-### 8.8 Async Functions
+### 8.7 Async Functions
 
 See [Section 14: Concurrency Model](#14-concurrency-model)
 
@@ -1838,16 +1798,75 @@ calc.add(2, 3);  // Logs: "Calling add with [2, 3]" then "Result: 5"
 * Dependency injection
 * Metadata emission
 
-### 9.10 Access Modifiers - Future Feature
+### 9.10 Access Modifiers
 
-Not in v0.5. All members are public.
-
-### 9.11 Class Expressions
+Raya supports Java-like access modifiers for class members:
 
 ```ts
-const Point = class {
-  constructor(public x: number, public y: number) {}
-};
+class BankAccount {
+  private balance: number;
+  protected accountNumber: string;
+  public owner: string;
+
+  constructor(owner: string, initialBalance: number) {
+    this.owner = owner;
+    this.balance = initialBalance;
+    this.accountNumber = generateAccountNumber();
+  }
+
+  public deposit(amount: number): void {
+    this.balance += amount;
+  }
+
+  public getBalance(): number {
+    return this.balance;
+  }
+
+  private validateAmount(amount: number): boolean {
+    return amount > 0 && amount <= this.balance;
+  }
+
+  protected logTransaction(type: string, amount: number): void {
+    console.log(`${type}: ${amount}`);
+  }
+}
+```
+
+**Visibility rules (Java-like):**
+
+| Modifier | Same Class | Subclass | Other Classes |
+|----------|------------|----------|---------------|
+| `private` | ✅ | ❌ | ❌ |
+| `protected` | ✅ | ✅ | ❌ |
+| `public` | ✅ | ✅ | ✅ |
+| (default) | ✅ | ✅ | ✅ |
+
+**Notes:**
+* Default visibility is `public` (if no modifier specified)
+* Access modifiers apply to both fields and methods
+* Cannot override with less restrictive visibility
+* Private members are not inherited
+
+```ts
+class SavingsAccount extends BankAccount {
+  private interestRate: number = 0.02;
+
+  calculateInterest(): number {
+    // ✅ Can access protected member
+    this.logTransaction("interest", this.getBalance() * this.interestRate);
+
+    // ❌ Cannot access private member
+    // this.balance; // Error: 'balance' is private
+
+    return this.getBalance() * this.interestRate;
+  }
+}
+
+const account = new SavingsAccount("Alice", 1000);
+account.deposit(100);       // ✅ Public method
+account.owner;              // ✅ Public field
+// account.balance;         // ❌ Private field
+// account.accountNumber;   // ❌ Protected field
 ```
 
 ---
@@ -4444,7 +4463,7 @@ class Stack<T> {
     return this.items[this.items.length - 1] ?? null;
   }
 
-  get size(): number {
+  getSize(): number {
     return this.items.length;
   }
 }

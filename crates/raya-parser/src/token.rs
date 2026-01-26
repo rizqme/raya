@@ -71,6 +71,7 @@ pub enum Token {
     Public,
     Yield,
     In,
+    Of,
 
     // Literals
     IntLiteral(i64),
@@ -255,6 +256,7 @@ impl fmt::Display for Token {
             Token::Public => write!(f, "public"),
             Token::Yield => write!(f, "yield"),
             Token::In => write!(f, "in"),
+            Token::Of => write!(f, "of"),
             Token::IntLiteral(n) => write!(f, "{}", n),
             Token::FloatLiteral(n) => write!(f, "{}", n),
             Token::StringLiteral(_) => write!(f, "\"<string>\""),
@@ -372,6 +374,7 @@ impl Token {
                 | Token::Public
                 | Token::Yield
                 | Token::In
+                | Token::Of
         )
     }
 

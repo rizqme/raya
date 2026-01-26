@@ -547,7 +547,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // Template literal
         Token::TemplateLiteral(parts) => {
-            let parts = convert_template_parts(parts.clone())?;
+            let parts = convert_template_parts(parser, parts.clone())?;
             parser.advance();
             Ok(Expression::TemplateLiteral(TemplateLiteral {
                 parts,
@@ -819,6 +819,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
 
 /// Convert token template parts to AST template parts.
 fn convert_template_parts(
+    parser: &Parser,
     token_parts: Vec<crate::token::TemplatePart>,
 ) -> Result<Vec<TemplatePart>, ParseError> {
     let mut result = Vec::new();
@@ -828,17 +829,12 @@ fn convert_template_parts(
             crate::token::TemplatePart::String(s) => {
                 result.push(TemplatePart::String(s));
             }
-            crate::token::TemplatePart::Expression(_tokens) => {
-                // TODO: Parse the token sequence into an expression
-                // For now, return an error
-                return Err(ParseError {
-                    kind: ParseErrorKind::InvalidSyntax {
-                        reason: "Template literal expressions not yet implemented".to_string(),
-                    },
-                    span: Span::new(0, 0, 0, 0),
-                    message: "Template expressions not supported yet".to_string(),
-                    suggestion: None,
-                });
+            crate::token::TemplatePart::Expression(tokens) => {
+                // Parse the token sequence into an expression using a sub-parser
+                let interner = parser.interner_clone();
+                let mut sub_parser = Parser::from_tokens(tokens, interner);
+                let expr = sub_parser.parse_single_expression()?;
+                result.push(TemplatePart::Expression(Box::new(expr)));
             }
         }
     }

@@ -58,7 +58,25 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
     let start_span = parser.current_span();
 
     let mut base_type = match parser.current() {
-        // Primitive types
+        // Void keyword as a type
+        Token::Void => {
+            parser.advance();
+            TypeAnnotation {
+                ty: Type::Primitive(PrimitiveType::Void),
+                span: start_span,
+            }
+        }
+
+        // Null keyword as a type
+        Token::Null => {
+            parser.advance();
+            TypeAnnotation {
+                ty: Type::Primitive(PrimitiveType::Null),
+                span: start_span,
+            }
+        }
+
+        // Primitive types via identifiers
         Token::Identifier(name) => {
             let name_sym = *name;
             parser.advance();

@@ -1,7 +1,7 @@
 //! Pattern parsing (for destructuring and parameter bindings)
 
 use super::{ParseError, Parser};
-use crate::ast::{ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement};
+use crate::ast::{ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement, RestPattern};
 use crate::interner::Symbol;
 use crate::token::Token;
 
@@ -20,6 +20,17 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
     let start_span = parser.current_span();
 
     let result = match parser.current() {
+        // Rest pattern: ...args (for function parameters)
+        Token::DotDotDot => {
+            parser.advance();
+            let argument = parse_pattern(parser)?;
+            let span = parser.combine_spans(&start_span, argument.span());
+            Ok(Pattern::Rest(RestPattern {
+                argument: Box::new(argument),
+                span,
+            }))
+        }
+
         // Array destructuring: [a, b, c], [x, ...rest], [y = 10]
         Token::LeftBracket => parse_array_pattern(parser),
 
@@ -40,6 +51,7 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
             Token::Identifier(Symbol::dummy()),
             Token::LeftBracket,
             Token::LeftBrace,
+            Token::DotDotDot,
         ])),
     };
 

@@ -18,6 +18,9 @@ pub enum Pattern {
     /// Object destructuring: { x, y } (Phase 2)
     #[doc(hidden)]
     Object(ObjectPattern),
+
+    /// Rest pattern: ...args (used in function parameters)
+    Rest(RestPattern),
 }
 
 impl Pattern {
@@ -26,8 +29,18 @@ impl Pattern {
             Pattern::Identifier(id) => &id.span,
             Pattern::Array(p) => &p.span,
             Pattern::Object(p) => &p.span,
+            Pattern::Rest(p) => &p.span,
         }
     }
+}
+
+/// Rest pattern for function parameters
+/// Example: function foo(...args: string[])
+#[derive(Debug, Clone, PartialEq)]
+pub struct RestPattern {
+    /// The underlying pattern (usually an identifier)
+    pub argument: Box<Pattern>,
+    pub span: Span,
 }
 
 /// Array destructuring pattern
