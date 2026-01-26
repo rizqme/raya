@@ -1838,6 +1838,8 @@ crates/raya-compiler/tests/monomorphize_tests.rs  # 25 comprehensive tests
 - [ ] Emit function prologues/epilogues
 - [ ] Generate vtables for classes
 - [ ] Emit closures with captured variables
+- [ ] String comparison optimization (constant pool index comparison for literals)
+- [ ] Track value origins (Constant vs Computed) for optimization
 
 **Files:**
 ```rust
