@@ -593,6 +593,14 @@ impl<'a> TypeChecker<'a> {
     fn check_identifier(&mut self, ident: &Identifier) -> TypeId {
         let name = self.resolve(ident.name);
 
+        // Check for builtin functions
+        if name == "sleep" {
+            // sleep(ms: number): void
+            let number_ty = self.type_ctx.number_type();
+            let void_ty = self.type_ctx.void_type();
+            return self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        }
+
         // First check for narrowed type in type environment
         if let Some(narrowed_ty) = self.type_env.get(&name) {
             return narrowed_ty;

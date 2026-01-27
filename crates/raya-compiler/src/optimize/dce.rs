@@ -180,6 +180,12 @@ impl DeadCodeEliminator {
             IrInstr::AwaitAll { tasks, .. } => {
                 used.insert(tasks.id);
             }
+            IrInstr::Sleep { duration_ms } => {
+                used.insert(duration_ms.id);
+            }
+            IrInstr::Yield => {
+                // No register uses
+            }
             IrInstr::SetupTry { .. } | IrInstr::EndTry | IrInstr::PopToLocal { .. } => {
                 // No register uses
             }

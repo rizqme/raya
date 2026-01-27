@@ -276,6 +276,12 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::AwaitAll { dest, tasks } => {
             format!("{} = await_all {}", dest, tasks)
         }
+        IrInstr::Sleep { duration_ms } => {
+            format!("sleep {}", duration_ms)
+        }
+        IrInstr::Yield => {
+            "yield".to_string()
+        }
         IrInstr::SetupTry { catch_block, finally_block } => {
             if let Some(finally) = finally_block {
                 format!("setup_try catch={}, finally={}", catch_block, finally)

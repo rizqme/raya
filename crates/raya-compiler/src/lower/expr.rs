@@ -361,6 +361,18 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Expression::Identifier(ident) = &*call.callee {
+            // Check for builtin functions first
+            let name = self.interner.resolve(ident.name);
+            if name == "sleep" {
+                // sleep(ms) - emit Sleep instruction
+                if !args.is_empty() {
+                    self.emit(IrInstr::Sleep {
+                        duration_ms: args[0].clone(),
+                    });
+                }
+                return dest;
+            }
+
             // Check if it's a direct function call
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 // Check if this is an async function - emit Spawn instead of Call

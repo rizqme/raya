@@ -293,6 +293,9 @@ pub enum Opcode {
     /// Spawn new task from closure (operand: u16 argCount)
     /// Stack: [args..., closure] -> TaskHandle
     SpawnClosure = 0xDB,
+    /// Sleep for given milliseconds: pop ms
+    /// Stack: [duration_ms] -> []
+    Sleep = 0xDF,
 
     // ===== RefCell Operations (0xDC-0xDE) =====
     /// Allocate a new RefCell with initial value from stack
@@ -521,6 +524,7 @@ impl Opcode {
             0xD9 => Some(Self::SemRelease),
             0xDA => Some(Self::WaitAll),
             0xDB => Some(Self::SpawnClosure),
+            0xDF => Some(Self::Sleep),
 
             // RefCell operations
             0xDC => Some(Self::NewRefCell),
@@ -689,6 +693,7 @@ impl Opcode {
             Self::SemRelease => "SEM_RELEASE",
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
+            Self::Sleep => "SLEEP",
             Self::JsonParse => "JSON_PARSE",
             Self::JsonStringify => "JSON_STRINGIFY",
             Self::JsonGet => "JSON_GET",

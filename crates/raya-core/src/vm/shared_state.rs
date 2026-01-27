@@ -1359,6 +1359,29 @@ impl<'a> TaskExecutor<'a> {
                     }
                 }
 
+                Opcode::Sleep => {
+                    // Pop duration (milliseconds) from stack
+                    let duration_val = stack_guard.pop()?;
+                    let ms = duration_val.as_i64().unwrap_or(0) as u64;
+
+                    // Sleep for the duration
+                    if ms > 0 {
+                        drop(stack_guard);
+                        std::thread::sleep(Duration::from_millis(ms));
+                        stack_guard = self.task.stack().lock().unwrap();
+                    }
+                    // For ms == 0, just yield
+                    self.state.safepoint.poll();
+                }
+
+                Opcode::Yield => {
+                    // Voluntary yield
+                    drop(stack_guard);
+                    self.state.safepoint.poll();
+                    std::thread::yield_now();
+                    stack_guard = self.task.stack().lock().unwrap();
+                }
+
                 // ===== String Operations =====
                 Opcode::Sconcat => {
                     let b_val = stack_guard.pop()?;

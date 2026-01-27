@@ -242,6 +242,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::ArrayLen
         | Opcode::Await
         | Opcode::Yield
+        | Opcode::Sleep
         | Opcode::NewMutex
         | Opcode::MutexLock
         | Opcode::MutexUnlock
@@ -446,6 +447,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::SpawnClosure => (1, 1), // pops closure + args (dynamic), pushes TaskHandle
         Opcode::Await => (1, 1),
         Opcode::Yield => (0, 0),
+        Opcode::Sleep => (1, 0),  // pops duration_ms
         Opcode::TaskThen => (1, 1),
         Opcode::NewMutex => (0, 1),
         Opcode::MutexLock | Opcode::MutexUnlock => (1, 0),

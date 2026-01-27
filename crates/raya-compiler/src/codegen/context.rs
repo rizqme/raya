@@ -590,6 +590,18 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
+            IrInstr::Sleep { duration_ms } => {
+                // Push duration onto stack
+                self.emit_load_register(ctx, duration_ms);
+                // Emit sleep opcode
+                ctx.emit(Opcode::Sleep);
+            }
+
+            IrInstr::Yield => {
+                // Emit yield opcode
+                ctx.emit(Opcode::Yield);
+            }
+
             IrInstr::SetupTry { catch_block, finally_block } => {
                 // Emit Try opcode with catch and finally offsets
                 ctx.emit(Opcode::Try);

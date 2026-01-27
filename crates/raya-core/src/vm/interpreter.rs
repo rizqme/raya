@@ -718,6 +718,25 @@ impl Vm {
                     self.stack.push(unsafe { Value::from_ptr(result_ptr) })?;
                 }
 
+                Opcode::Sleep => {
+                    // Pop duration (milliseconds) from stack
+                    let duration_val = self.stack.pop()?;
+                    let ms = duration_val.as_i64().unwrap_or(0) as u64;
+
+                    // Sleep for the duration
+                    if ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                    }
+                    // For ms == 0, just yield to other tasks
+                    self.safepoint().poll();
+                }
+
+                Opcode::Yield => {
+                    // Voluntary yield to the scheduler
+                    self.safepoint().poll();
+                    std::thread::yield_now();
+                }
+
                 // Closure operations
                 Opcode::MakeClosure => {
                     // Safepoint poll before allocation

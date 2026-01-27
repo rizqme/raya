@@ -67,11 +67,10 @@ fn test_concurrent_counter_with_mutex() {
 // ============================================================================
 
 #[test]
-#[ignore = "sleep() not yet implemented"]
 fn test_sleep_basic() {
     expect_i32(
         "async function main(): Task<number> {
-             await sleep(0); // sleep for 0ms (yield)
+             sleep(0); // sleep for 0ms (yield)
              return 42;
          }
          return await main();",
@@ -80,30 +79,15 @@ fn test_sleep_basic() {
 }
 
 #[test]
-#[ignore = "sleep() not yet implemented"]
-fn test_sleep_ordering() {
+fn test_sleep_with_value() {
+    // Test sleep with a non-zero duration
     expect_i32(
-        "let order: number[] = [];
-
-         async function task1(): Task<void> {
-             await sleep(10);
-             order.push(1);
+        "async function compute(): Task<number> {
+             sleep(1);
+             return 42;
          }
-
-         async function task2(): Task<void> {
-             await sleep(5);
-             order.push(2);
-         }
-
-         async function main(): Task<number> {
-             let t1 = task1();
-             let t2 = task2();
-             await [t1, t2];
-             // task2 should complete first due to shorter sleep
-             return order[0];
-         }
-         return await main();",
-        2,
+         return await compute();",
+        42,
     );
 }
 

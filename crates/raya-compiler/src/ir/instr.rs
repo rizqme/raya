@@ -294,6 +294,16 @@ pub enum IrInstr {
         tasks: Register,
     },
 
+    /// Sleep for a duration in milliseconds
+    /// Suspends the current task for the specified duration
+    Sleep {
+        duration_ms: Register,
+    },
+
+    /// Yield execution to the scheduler
+    /// Allows other tasks to run
+    Yield,
+
     /// Set up exception handler for try block
     /// catch_block: BasicBlockId to jump to on exception (receives exception value)
     /// finally_block: Optional BasicBlockId for finally clause
@@ -347,7 +357,9 @@ impl IrInstr {
             | IrInstr::StoreRefCell { .. }
             | IrInstr::PopToLocal { .. }
             | IrInstr::SetupTry { .. }
-            | IrInstr::EndTry => None,
+            | IrInstr::EndTry
+            | IrInstr::Sleep { .. }
+            | IrInstr::Yield => None,
         }
     }
 
@@ -378,6 +390,8 @@ impl IrInstr {
                 | IrInstr::AwaitAll { .. }
                 | IrInstr::SetupTry { .. }
                 | IrInstr::EndTry
+                | IrInstr::Sleep { .. }
+                | IrInstr::Yield
         )
     }
 }
