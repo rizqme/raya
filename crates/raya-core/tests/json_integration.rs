@@ -345,9 +345,7 @@ fn test_stringify_preserves_types() {
     assert!(stringified.starts_with("3.14"));
 
     // String
-    let str_val = JsonValue::String(gc.allocate(RayaString {
-        data: "hello".to_string(),
-    }));
+    let str_val = JsonValue::String(gc.allocate(RayaString::new("hello".to_string())));
     assert_eq!(stringify::stringify(&str_val).unwrap(), r#""hello""#);
 
     // Empty array
@@ -398,9 +396,7 @@ fn test_stringify_special_characters() {
     let mut gc = GarbageCollector::default();
 
     // Create string with special characters
-    let special = RayaString {
-        data: "Line1\nLine2\tTab\rReturn\"Quote\\Backslash".to_string(),
-    };
+    let special = RayaString::new("Line1\nLine2\tTab\rReturn\"Quote\\Backslash".to_string());
     let str_ptr = gc.allocate(special);
     let json_val = raya_core::json::JsonValue::String(str_ptr);
 

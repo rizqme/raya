@@ -185,17 +185,27 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::Idiv
         | Opcode::Imod
         | Opcode::Ineg
+        | Opcode::Ipow
+        | Opcode::Ishl
+        | Opcode::Ishr
+        | Opcode::Iushr
+        | Opcode::Iand
+        | Opcode::Ior
+        | Opcode::Ixor
+        | Opcode::Inot
         | Opcode::Fadd
         | Opcode::Fsub
         | Opcode::Fmul
         | Opcode::Fdiv
         | Opcode::Fneg
+        | Opcode::Fpow
         | Opcode::Nadd
         | Opcode::Nsub
         | Opcode::Nmul
         | Opcode::Ndiv
         | Opcode::Nmod
         | Opcode::Nneg
+        | Opcode::Npow
         | Opcode::Ieq
         | Opcode::Ine
         | Opcode::Ilt
@@ -249,7 +259,10 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::NewSemaphore
         | Opcode::SemAcquire
         | Opcode::SemRelease
-        | Opcode::WaitAll => 0,
+        | Opcode::WaitAll
+        | Opcode::NewRefCell
+        | Opcode::LoadRefCell
+        | Opcode::StoreRefCell => 0,
 
         // 2-byte operands (u16)
         Opcode::LoadLocal
@@ -265,6 +278,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::CloseVar
         | Opcode::LoadCaptured
         | Opcode::StoreCaptured
+        | Opcode::SetClosureCapture
         | Opcode::Trap => 2,
 
         // 4-byte operands (i32 or u32)
@@ -386,10 +400,11 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::ConstI32 | Opcode::ConstF64 | Opcode::ConstStr | Opcode::LoadConst => (0, 1),
         Opcode::LoadLocal | Opcode::LoadLocal0 | Opcode::LoadLocal1 => (0, 1),
         Opcode::StoreLocal | Opcode::StoreLocal0 | Opcode::StoreLocal1 => (1, 0),
-        Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod => (2, 1),
-        Opcode::Ineg | Opcode::Fneg | Opcode::Nneg => (1, 1),
-        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv => (2, 1),
-        Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod => (2, 1),
+        Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => (2, 1),
+        Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => (2, 1),
+        Opcode::Ineg | Opcode::Fneg | Opcode::Nneg | Opcode::Inot => (1, 1),
+        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow => (2, 1),
+        Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod | Opcode::Npow => (2, 1),
         Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => (2, 1),
         Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => (2, 1),
         Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => (2, 1),
@@ -438,7 +453,13 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::CloseVar => (1, 1),
         Opcode::LoadCaptured => (0, 1),
         Opcode::StoreCaptured => (1, 0),
+        Opcode::SetClosureCapture => (2, 1), // Pop closure + value, push closure
         Opcode::LoadModule => (0, 1),
+
+        // RefCell operations (for capture-by-reference)
+        Opcode::NewRefCell => (1, 1),    // Pop initial value, push refcell ptr
+        Opcode::LoadRefCell => (1, 1),   // Pop refcell ptr, push value
+        Opcode::StoreRefCell => (2, 0),  // Pop refcell ptr + value
 
         // JSON operations (complete set)
         Opcode::JsonParse => (1, 1),       // Pop string, push json
@@ -585,7 +606,7 @@ mod tests {
             name: "test".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![0xDB], // Invalid opcode (unassigned in 0xDB-0xDF range)
+            code: vec![0xDE], // Invalid opcode (unassigned in 0xDE-0xDF range)
         });
 
         let result = verify_module(&module);

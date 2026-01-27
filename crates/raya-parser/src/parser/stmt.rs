@@ -279,7 +279,17 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
             None
         };
 
-        let span = if let Some(ref type_ann) = type_annotation {
+        // Optional default value (e.g., `x: number = 10`)
+        let default_value = if parser.check(&Token::Equal) {
+            parser.advance();
+            Some(super::expr::parse_expression(parser)?)
+        } else {
+            None
+        };
+
+        let span = if let Some(ref default) = default_value {
+            parser.combine_spans(&start_span, default.span())
+        } else if let Some(ref type_ann) = type_annotation {
             parser.combine_spans(&start_span, &type_ann.span)
         } else {
             parser.combine_spans(&start_span, pattern.span())
@@ -289,6 +299,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
             decorators,
             pattern,
             type_annotation,
+            default_value,
             span,
         });
 

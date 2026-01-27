@@ -81,6 +81,22 @@ pub enum Opcode {
     Imod = 0x24,
     /// Integer negation: pop a, push -a
     Ineg = 0x25,
+    /// Integer power: pop b, pop a, push a ** b
+    Ipow = 0x26,
+    /// Integer shift left: pop b, pop a, push a << b
+    Ishl = 0x27,
+    /// Integer shift right (signed): pop b, pop a, push a >> b
+    Ishr = 0x28,
+    /// Integer shift right (unsigned): pop b, pop a, push a >>> b
+    Iushr = 0x29,
+    /// Integer bitwise AND: pop b, pop a, push a & b
+    Iand = 0x2A,
+    /// Integer bitwise OR: pop b, pop a, push a | b
+    Ior = 0x2B,
+    /// Integer bitwise XOR: pop b, pop a, push a ^ b
+    Ixor = 0x2C,
+    /// Integer bitwise NOT: pop a, push ~a
+    Inot = 0x2D,
 
     // ===== Float Arithmetic (0x30-0x3F) =====
     /// Float addition: pop b, pop a, push a + b
@@ -93,6 +109,8 @@ pub enum Opcode {
     Fdiv = 0x33,
     /// Float negation: pop a, push -a
     Fneg = 0x34,
+    /// Float power: pop b, pop a, push a ** b
+    Fpow = 0x35,
 
     // ===== Number Arithmetic - Generic (0x40-0x4F) =====
     /// Number addition: pop b, pop a, push a + b (dynamic)
@@ -107,6 +125,8 @@ pub enum Opcode {
     Nmod = 0x44,
     /// Number negation: pop a, push -a (dynamic)
     Nneg = 0x45,
+    /// Number power: pop b, pop a, push a ** b (dynamic)
+    Npow = 0x46,
 
     // ===== Integer Comparison (0x50-0x5F) =====
     /// Integer equality: pop b, pop a, push a == b
@@ -314,6 +334,21 @@ pub enum Opcode {
     LoadGlobal = 0xF5,
     /// Store global variable (operand: u32 index)
     StoreGlobal = 0xF6,
+    /// Set a closure's capture (operand: u16 captureIndex)
+    /// Stack: [closure, value] -> [closure]
+    /// Used for recursive closures to patch the capture after creation
+    SetClosureCapture = 0xF7,
+
+    // ===== RefCell Operations (for capture-by-reference) =====
+    /// Allocate a new RefCell with initial value from stack
+    /// Stack: [value] -> [refcell_ptr]
+    NewRefCell = 0xDB,
+    /// Load value from RefCell
+    /// Stack: [refcell_ptr] -> [value]
+    LoadRefCell = 0xDC,
+    /// Store value to RefCell
+    /// Stack: [refcell_ptr, value] -> []
+    StoreRefCell = 0xDD,
 
     // ===== Exception Handling & Special (0xF8-0xFF) =====
     /// Throw exception: pop error value
@@ -366,6 +401,14 @@ impl Opcode {
             0x23 => Some(Self::Idiv),
             0x24 => Some(Self::Imod),
             0x25 => Some(Self::Ineg),
+            0x26 => Some(Self::Ipow),
+            0x27 => Some(Self::Ishl),
+            0x28 => Some(Self::Ishr),
+            0x29 => Some(Self::Iushr),
+            0x2A => Some(Self::Iand),
+            0x2B => Some(Self::Ior),
+            0x2C => Some(Self::Ixor),
+            0x2D => Some(Self::Inot),
 
             // Float arithmetic
             0x30 => Some(Self::Fadd),
@@ -373,6 +416,7 @@ impl Opcode {
             0x32 => Some(Self::Fmul),
             0x33 => Some(Self::Fdiv),
             0x34 => Some(Self::Fneg),
+            0x35 => Some(Self::Fpow),
 
             // Number arithmetic
             0x40 => Some(Self::Nadd),
@@ -381,6 +425,7 @@ impl Opcode {
             0x43 => Some(Self::Ndiv),
             0x44 => Some(Self::Nmod),
             0x45 => Some(Self::Nneg),
+            0x46 => Some(Self::Npow),
 
             // Integer comparison
             0x50 => Some(Self::Ieq),
@@ -488,6 +533,11 @@ impl Opcode {
             0xEB => Some(Self::JsonKeys),
             0xEC => Some(Self::JsonLength),
 
+            // RefCell operations (for capture-by-reference)
+            0xDB => Some(Self::NewRefCell),
+            0xDC => Some(Self::LoadRefCell),
+            0xDD => Some(Self::StoreRefCell),
+
             // Closures & modules
             0xF0 => Some(Self::MakeClosure),
             0xF1 => Some(Self::CloseVar),
@@ -496,6 +546,7 @@ impl Opcode {
             0xF4 => Some(Self::LoadModule),
             0xF5 => Some(Self::LoadGlobal),
             0xF6 => Some(Self::StoreGlobal),
+            0xF7 => Some(Self::SetClosureCapture),
 
             // Exception handling & special
             0xF8 => Some(Self::Throw),
@@ -541,17 +592,27 @@ impl Opcode {
             Self::Idiv => "IDIV",
             Self::Imod => "IMOD",
             Self::Ineg => "INEG",
+            Self::Ipow => "IPOW",
+            Self::Ishl => "ISHL",
+            Self::Ishr => "ISHR",
+            Self::Iushr => "IUSHR",
+            Self::Iand => "IAND",
+            Self::Ior => "IOR",
+            Self::Ixor => "IXOR",
+            Self::Inot => "INOT",
             Self::Fadd => "FADD",
             Self::Fsub => "FSUB",
             Self::Fmul => "FMUL",
             Self::Fdiv => "FDIV",
             Self::Fneg => "FNEG",
+            Self::Fpow => "FPOW",
             Self::Nadd => "NADD",
             Self::Nsub => "NSUB",
             Self::Nmul => "NMUL",
             Self::Ndiv => "NDIV",
             Self::Nmod => "NMOD",
             Self::Nneg => "NNEG",
+            Self::Npow => "NPOW",
             Self::Ieq => "IEQ",
             Self::Ine => "INE",
             Self::Ilt => "ILT",
@@ -643,6 +704,10 @@ impl Opcode {
             Self::LoadModule => "LOAD_MODULE",
             Self::LoadGlobal => "LOAD_GLOBAL",
             Self::StoreGlobal => "STORE_GLOBAL",
+            Self::SetClosureCapture => "SET_CLOSURE_CAPTURE",
+            Self::NewRefCell => "NEW_REFCELL",
+            Self::LoadRefCell => "LOAD_REFCELL",
+            Self::StoreRefCell => "STORE_REFCELL",
             Self::Throw => "THROW",
             Self::Try => "TRY",
             Self::EndTry => "END_TRY",
@@ -742,10 +807,14 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Test invalid opcodes in truly unassigned ranges
-        assert_eq!(Opcode::from_u8(0xDB), None); // Unassigned (0xDB-0xDF range)
+        assert_eq!(Opcode::from_u8(0xDE), None); // Unassigned (0xDE-0xDF range)
         assert_eq!(Opcode::from_u8(0xED), None); // Unassigned (0xED-0xEF range)
-        assert_eq!(Opcode::from_u8(0xF7), None); // Unassigned (0xF7 slot)
+        assert_eq!(Opcode::from_u8(0xF7), Some(Opcode::SetClosureCapture));
         assert_eq!(Opcode::from_u8(0xFD), None); // Unassigned (0xFD-0xFE range)
+        // RefCell opcodes should be valid
+        assert_eq!(Opcode::from_u8(0xDB), Some(Opcode::NewRefCell));
+        assert_eq!(Opcode::from_u8(0xDC), Some(Opcode::LoadRefCell));
+        assert_eq!(Opcode::from_u8(0xDD), Some(Opcode::StoreRefCell));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! Converts AST statements to IR instructions.
 
 use super::Lowerer;
-use crate::ir::{IrInstr, Terminator};
+use crate::ir::{BinaryOp, IrInstr, Register, Terminator};
 use raya_parser::ast::{self, Statement};
 use raya_parser::TypeId;
 
@@ -59,6 +59,13 @@ impl<'a> Lowerer<'a> {
         // Jump to body (do-while executes body first)
         self.set_terminator(Terminator::Jump(body_block));
 
+        // Push loop context for break/continue
+        // For continue in do-while, jump to condition block
+        self.loop_stack.push(super::LoopContext {
+            break_target: exit_block,
+            continue_target: cond_block,
+        });
+
         // Body block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(body_block, "dowhile.body"));
@@ -67,6 +74,9 @@ impl<'a> Lowerer<'a> {
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(cond_block));
         }
+
+        // Pop loop context
+        self.loop_stack.pop();
 
         // Condition block
         self.current_function_mut()
@@ -85,10 +95,190 @@ impl<'a> Lowerer<'a> {
         self.current_block = exit_block;
     }
 
-    fn lower_for_of(&mut self, _for_of: &ast::ForOfStatement) {
-        // For-of loops require iterator support
-        // For now, emit an empty block
-        // A full implementation would iterate over the iterable
+    fn lower_for_of(&mut self, for_of: &ast::ForOfStatement) {
+        // For-of loops are desugared to index-based iteration:
+        // for (let x of arr) { body }
+        // becomes:
+        // let _idx = 0;
+        // let _len = arr.length;
+        // while (_idx < _len) {
+        //     let x = arr[_idx];
+        //     body;
+        //     _idx = _idx + 1;
+        // }
+
+        let number_ty = TypeId::new(2); // number type
+
+        // Lower the iterable (array) expression
+        let array_reg = self.lower_expr(&for_of.right);
+
+        // Get array length: _len = arr.length
+        let len_reg = self.alloc_register(number_ty);
+        self.emit(IrInstr::ArrayLen {
+            dest: len_reg.clone(),
+            array: array_reg.clone(),
+        });
+
+        // Initialize index: _idx = 0
+        let idx_local = self.allocate_anonymous_local();
+        let idx_reg = self.alloc_register(number_ty);
+        self.emit(IrInstr::Assign {
+            dest: idx_reg.clone(),
+            value: crate::ir::IrValue::Constant(crate::ir::IrConstant::I32(0)),
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: idx_local,
+            value: idx_reg.clone(),
+        });
+
+        // Create blocks
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let update_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        // Jump to header
+        self.set_terminator(Terminator::Jump(header_block));
+
+        // Header block: compare index < length
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "forof.header"));
+        self.current_block = header_block;
+
+        // Load current index
+        let current_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: current_idx.clone(),
+            index: idx_local,
+        });
+
+        // Compare: _idx < _len
+        let cond_reg = self.alloc_register(TypeId::new(4)); // boolean type
+        self.emit(IrInstr::BinaryOp {
+            dest: cond_reg.clone(),
+            op: crate::ir::BinaryOp::Less,
+            left: current_idx.clone(),
+            right: len_reg.clone(),
+        });
+
+        // Branch: if condition is true, go to body; else go to exit
+        self.set_terminator(Terminator::Branch {
+            cond: cond_reg,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Push loop context for break/continue
+        self.loop_stack.push(super::LoopContext {
+            break_target: exit_block,
+            continue_target: update_block,
+        });
+
+        // Body block
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "forof.body"));
+        self.current_block = body_block;
+
+        // Load current index again (might be different register after block switch)
+        let body_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: body_idx.clone(),
+            index: idx_local,
+        });
+
+        // Load element: x = arr[_idx]
+        // Get the element type from the array type
+        let elem_ty = if array_reg.ty.as_u32() >= 5 {
+            // Array types start at TypeId 5+, element type is encoded
+            // For simplicity, use number type as default
+            number_ty
+        } else {
+            number_ty
+        };
+
+        let elem_reg = self.alloc_register(elem_ty);
+        self.emit(IrInstr::LoadElement {
+            dest: elem_reg.clone(),
+            array: array_reg.clone(),
+            index: body_idx,
+        });
+
+        // Bind the loop variable
+        match &for_of.left {
+            ast::ForOfLeft::VariableDecl(decl) => {
+                if let ast::Pattern::Identifier(ident) = &decl.pattern {
+                    let local_idx = self.allocate_local(ident.name);
+                    self.local_registers.insert(local_idx, elem_reg.clone());
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: elem_reg,
+                    });
+                }
+            }
+            ast::ForOfLeft::Pattern(pattern) => {
+                // For existing variable pattern
+                if let ast::Pattern::Identifier(ident) = pattern {
+                    if let Some(local_idx) = self.lookup_local(ident.name) {
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: elem_reg,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Lower the body
+        self.lower_stmt(&for_of.body);
+
+        // Jump to update block if not terminated
+        if !self.current_block_is_terminated() {
+            self.set_terminator(Terminator::Jump(update_block));
+        }
+
+        // Pop loop context
+        self.loop_stack.pop();
+
+        // Update block: _idx = _idx + 1
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(update_block, "forof.update"));
+        self.current_block = update_block;
+
+        // Load current index
+        let update_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: update_idx.clone(),
+            index: idx_local,
+        });
+
+        // Increment: _idx + 1
+        let one_reg = self.alloc_register(number_ty);
+        self.emit(IrInstr::Assign {
+            dest: one_reg.clone(),
+            value: crate::ir::IrValue::Constant(crate::ir::IrConstant::I32(1)),
+        });
+
+        let new_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::BinaryOp {
+            dest: new_idx.clone(),
+            op: crate::ir::BinaryOp::Add,
+            left: update_idx,
+            right: one_reg,
+        });
+
+        // Store incremented index
+        self.emit(IrInstr::StoreLocal {
+            index: idx_local,
+            value: new_idx,
+        });
+
+        // Jump back to header
+        self.set_terminator(Terminator::Jump(header_block));
+
+        // Exit block
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "forof.exit"));
+        self.current_block = exit_block;
     }
 
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
@@ -106,29 +296,82 @@ impl<'a> Lowerer<'a> {
         // Allocate local slot
         let local_idx = self.allocate_local(name);
 
-        // Get type from annotation or infer from initializer
-        let ty = decl
-            .type_annotation
-            .as_ref()
-            .map(|t| self.resolve_type_annotation(t))
-            .unwrap_or(TypeId::new(0));
+        // Check if this variable needs RefCell wrapping (captured by closure)
+        let needs_refcell = self.refcell_vars.contains(&name);
 
         // If there's an initializer, evaluate and store
+        // The register from lowering the expression will have the correct inferred type
         if let Some(init) = &decl.initializer {
+            // Track class type for field access resolution
+            if let ast::Expression::New(new_expr) = init {
+                if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                    if let Some(&class_id) = self.class_map.get(&ident.name) {
+                        self.variable_class_map.insert(name, class_id);
+                    }
+                }
+            }
+
             let value = self.lower_expr(init);
-            self.local_registers.insert(local_idx, value.clone());
-            self.emit(IrInstr::StoreLocal {
-                index: local_idx,
-                value,
-            });
+
+            if needs_refcell {
+                // Wrap the value in a RefCell
+                let refcell_ty = TypeId::new(0); // RefCell type
+                let refcell_reg = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::NewRefCell {
+                    dest: refcell_reg.clone(),
+                    initial_value: value.clone(),
+                });
+                // Store the RefCell pointer as the local
+                self.local_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: refcell_reg,
+                });
+            } else {
+                // Use the type from the initializer expression (already inferred during lowering)
+                // This correctly handles cases like `let x = 42;` where x should be number
+                self.local_registers.insert(local_idx, value.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value,
+                });
+            }
         } else {
+            // No initializer - get type from annotation or default to number
+            let ty = decl
+                .type_annotation
+                .as_ref()
+                .map(|t| self.resolve_type_annotation(t))
+                .unwrap_or(TypeId::new(0));
             // Store null for uninitialized variables
             let null_reg = self.lower_null_literal();
-            self.local_registers.insert(local_idx, null_reg.clone());
-            self.emit(IrInstr::StoreLocal {
-                index: local_idx,
-                value: null_reg,
-            });
+
+            if needs_refcell {
+                // Wrap null in a RefCell
+                let refcell_ty = TypeId::new(0);
+                let refcell_reg = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::NewRefCell {
+                    dest: refcell_reg.clone(),
+                    initial_value: null_reg,
+                });
+                // Create a typed register for the local
+                let typed_reg = Register { id: refcell_reg.id, ty: refcell_ty };
+                self.local_registers.insert(local_idx, typed_reg.clone());
+                self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: refcell_reg,
+                });
+            } else {
+                // Create a typed register for the local
+                let typed_reg = Register { id: null_reg.id, ty };
+                self.local_registers.insert(local_idx, typed_reg.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: null_reg,
+                });
+            }
         }
     }
 
@@ -207,6 +450,12 @@ impl<'a> Lowerer<'a> {
             else_block: exit_block,
         });
 
+        // Push loop context for break/continue
+        self.loop_stack.push(super::LoopContext {
+            break_target: exit_block,
+            continue_target: header_block,
+        });
+
         // Body block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(body_block, "while.body"));
@@ -216,6 +465,9 @@ impl<'a> Lowerer<'a> {
             self.set_terminator(Terminator::Jump(header_block));
         }
 
+        // Pop loop context
+        self.loop_stack.pop();
+
         // Exit block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "while.exit"));
@@ -223,10 +475,35 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_for(&mut self, for_stmt: &ast::ForStatement) {
+        // Track if we need per-iteration binding for a captured loop variable
+        // This implements JavaScript/TypeScript `let` semantics where each iteration
+        // gets a fresh binding, so closures capture the value from their iteration.
+        let mut loop_var_info: Option<(raya_parser::Symbol, u16)> = None;
+
         // Lower initializer
         if let Some(init) = &for_stmt.init {
             match init {
-                ast::ForInit::VariableDecl(decl) => self.lower_var_decl(decl),
+                ast::ForInit::VariableDecl(decl) => {
+                    // Check if this is a captured variable (needs per-iteration binding)
+                    // Use loop_captured_vars which tracks ALL captured variables (read or write)
+                    if let ast::Pattern::Identifier(ident) = &decl.pattern {
+                        let is_captured = self.loop_captured_vars.contains(&ident.name);
+                        if is_captured {
+                            // This variable is captured by a closure - we'll need per-iteration binding
+                            // Ensure it gets RefCell treatment even for read-only captures
+                            self.refcell_vars.insert(ident.name);
+                            // Get the local index after lowering
+                            self.lower_var_decl(decl);
+                            if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                                loop_var_info = Some((ident.name, local_idx));
+                            }
+                        } else {
+                            self.lower_var_decl(decl);
+                        }
+                    } else {
+                        self.lower_var_decl(decl);
+                    }
+                }
                 ast::ForInit::Expression(expr) => {
                     self.lower_expr(expr);
                 }
@@ -258,14 +535,90 @@ impl<'a> Lowerer<'a> {
             self.set_terminator(Terminator::Jump(body_block));
         }
 
+        // Push loop context for break/continue
+        // For continue, jump to update_block to execute the update expression
+        self.loop_stack.push(super::LoopContext {
+            break_target: exit_block,
+            continue_target: update_block,
+        });
+
         // Body block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(body_block, "for.body"));
         self.current_block = body_block;
+
+        // Per-iteration binding setup: if the loop variable is captured,
+        // create a fresh RefCell for this iteration and copy the current value into it
+        let original_refcell: Option<(u16, Register)> = if let Some((_sym, local_idx)) = &loop_var_info {
+            if let Some(orig_refcell) = self.refcell_registers.get(local_idx).cloned() {
+                // Load current value from loop variable's RefCell
+                let refcell_ty = TypeId::new(0);
+                let value_reg = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::LoadRefCell {
+                    dest: value_reg.clone(),
+                    refcell: orig_refcell.clone(),
+                });
+
+                // Create per-iteration RefCell with this value
+                let iter_refcell = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::NewRefCell {
+                    dest: iter_refcell.clone(),
+                    initial_value: value_reg,
+                });
+
+                // Replace mappings so closures in the body capture the per-iteration RefCell
+                self.refcell_registers.insert(*local_idx, iter_refcell.clone());
+                self.local_registers.insert(*local_idx, iter_refcell.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: *local_idx,
+                    value: iter_refcell,
+                });
+
+                Some((*local_idx, orig_refcell))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         self.lower_stmt(&for_stmt.body);
+
+        // Before jumping to update, copy back from per-iteration RefCell to original
+        // so the update expression (i = i + 1) operates on the loop counter
+        if let Some((local_idx, orig_refcell)) = &original_refcell {
+            if !self.current_block_is_terminated() {
+                // Load value from per-iteration RefCell
+                if let Some(iter_refcell) = self.refcell_registers.get(local_idx).cloned() {
+                    let refcell_ty = TypeId::new(0);
+                    let value = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: value.clone(),
+                        refcell: iter_refcell,
+                    });
+                    // Store to original RefCell
+                    self.emit(IrInstr::StoreRefCell {
+                        refcell: orig_refcell.clone(),
+                        value,
+                    });
+                }
+
+                // Restore original RefCell mapping for update expression
+                self.refcell_registers.insert(*local_idx, orig_refcell.clone());
+                self.local_registers.insert(*local_idx, orig_refcell.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: *local_idx,
+                    value: orig_refcell.clone(),
+                });
+            }
+        }
+
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(update_block));
         }
+
+        // Pop loop context
+        self.loop_stack.pop();
 
         // Update block
         self.current_function_mut()
@@ -283,24 +636,39 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_block(&mut self, block: &ast::BlockStatement) {
+        // Save current local_map state for scope management
+        // This allows nested scopes to shadow outer variables without
+        // overwriting the outer variable's slot mapping
+        let saved_local_map = self.local_map.clone();
+
         for stmt in &block.statements {
             self.lower_stmt(stmt);
             if self.current_block_is_terminated() {
                 break;
             }
         }
+
+        // Restore local_map to exit the block scope
+        // This ensures outer variables are accessible again after the block
+        self.local_map = saved_local_map;
     }
 
     fn lower_break(&mut self, _brk: &ast::BreakStatement) {
-        // In a real implementation, we'd need to track the loop exit block
-        // For now, emit unreachable (break handling requires loop context)
-        self.set_terminator(Terminator::Unreachable);
+        if let Some(loop_ctx) = self.loop_stack.last() {
+            self.set_terminator(Terminator::Jump(loop_ctx.break_target));
+        } else {
+            // Break outside of loop - should be caught by type checker
+            self.set_terminator(Terminator::Unreachable);
+        }
     }
 
     fn lower_continue(&mut self, _cont: &ast::ContinueStatement) {
-        // In a real implementation, we'd need to track the loop header block
-        // For now, emit unreachable (continue handling requires loop context)
-        self.set_terminator(Terminator::Unreachable);
+        if let Some(loop_ctx) = self.loop_stack.last() {
+            self.set_terminator(Terminator::Jump(loop_ctx.continue_target));
+        } else {
+            // Continue outside of loop - should be caught by type checker
+            self.set_terminator(Terminator::Unreachable);
+        }
     }
 
     fn lower_throw(&mut self, throw: &ast::ThrowStatement) {

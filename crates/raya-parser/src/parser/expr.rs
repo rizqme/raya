@@ -174,7 +174,9 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // new operator
         Token::New => {
             parser.advance();
-            let callee = parse_expression_with_precedence(parser, Precedence::Member)?;
+            // Parse callee - only allow identifiers and member access, not calls
+            // The parentheses belong to `new`, not a function call
+            let callee = parse_new_callee(parser)?;
 
             let arguments = if parser.check(&Token::LeftParen) {
                 parser.advance();
@@ -481,6 +483,103 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
     Ok(expr)
 }
 
+/// Parse the callee of a `new` expression.
+///
+/// This is a restricted form of expression parsing that allows:
+/// - Identifiers: `new Foo()`
+/// - Member access: `new Foo.Bar()`, `new a.b.c()`
+/// - Index access: `new classes[0]()`
+/// - Nested new: `new new Foo()()`
+///
+/// But NOT function calls - the `()` belongs to `new`, not a call expression.
+fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
+    let start_span = parser.current_span();
+
+    // Start with an identifier (or nested new)
+    let mut expr = if parser.check(&Token::New) {
+        // Nested new: `new new Foo()`
+        parser.advance();
+        let inner_callee = parse_new_callee(parser)?;
+        let arguments = if parser.check(&Token::LeftParen) {
+            parser.advance();
+            parse_arguments(parser)?
+        } else {
+            vec![]
+        };
+        let span = parser.combine_spans(&start_span, &parser.current_span());
+        Expression::New(NewExpression {
+            callee: Box::new(inner_callee),
+            type_args: None,
+            arguments,
+            span,
+        })
+    } else if let Token::Identifier(name) = parser.current() {
+        let name = name.clone();
+        parser.advance();
+        Expression::Identifier(Identifier {
+            name,
+            span: start_span,
+        })
+    } else {
+        return Err(ParseError {
+            kind: ParseErrorKind::UnexpectedToken {
+                expected: vec![Token::Identifier(Symbol::dummy())],
+                found: parser.current().clone(),
+            },
+            span: parser.current_span(),
+            message: "Expected class name after 'new'".to_string(),
+            suggestion: None,
+        });
+    };
+
+    // Allow member access (dot notation) and index access, but NOT calls
+    loop {
+        match parser.current() {
+            Token::Dot => {
+                parser.advance();
+                if let Token::Identifier(name) = parser.current() {
+                    let name = name.clone();
+                    let end_span = parser.current_span();
+                    parser.advance();
+                    let span = parser.combine_spans(&start_span, &end_span);
+                    expr = Expression::Member(MemberExpression {
+                        object: Box::new(expr),
+                        property: Identifier {
+                            name,
+                            span: end_span,
+                        },
+                        optional: false,
+                        span,
+                    });
+                } else {
+                    return Err(ParseError {
+                        kind: ParseErrorKind::InvalidSyntax {
+                            reason: "Expected property name after '.'".to_string(),
+                        },
+                        span: parser.current_span(),
+                        message: "Expected identifier after '.'".to_string(),
+                        suggestion: None,
+                    });
+                }
+            }
+            Token::LeftBracket => {
+                parser.advance();
+                let index = parse_expression(parser)?;
+                parser.expect(Token::RightBracket)?;
+                let span = parser.combine_spans(&start_span, &parser.current_span());
+                expr = Expression::Index(IndexExpression {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                    span,
+                });
+            }
+            _ => break,
+        }
+    }
+
+    Ok(expr)
+}
+
 /// Parse a primary expression (literal, identifier, grouped expression, etc.).
 pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
     let start_span = parser.current_span();
@@ -513,6 +612,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         Token::This => {
             parser.advance();
             Ok(Expression::This(start_span))
+        }
+
+        // Super expression (for parent class access)
+        Token::Super => {
+            parser.advance();
+            Ok(Expression::Super(start_span))
         }
 
         // Integer literal
@@ -572,6 +677,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                     span: start_span,
                 }),
                 type_annotation: None,
+                default_value: None,
                 span: start_span,
             }];
 
@@ -588,28 +694,75 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             }))
         }
 
-        // Grouped expression
+        // Grouped expression or arrow function
         Token::LeftParen => {
             parser.advance();
 
-            // Check for arrow function with no parameters: () => ...
+            // Check for arrow function with no parameters: () => ... or (): type => ...
             if parser.check(&Token::RightParen) {
-                if let Some(Token::Arrow) = parser.peek() {
-                    parser.advance(); // consume )
+                parser.advance(); // consume )
+
+                // Check for return type annotation: (): type => ...
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance(); // consume :
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
+
+                if parser.check(&Token::Arrow) {
                     parser.advance(); // consume =>
-                    return parse_arrow_function_body(parser, vec![], start_span);
+                    return parse_arrow_function_body_with_type(parser, vec![], return_type, start_span);
                 }
+
+                // Not an arrow function - error (empty parens not valid as expression)
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: vec![Token::Arrow],
+                        found: parser.current().clone(),
+                    },
+                    span: parser.current_span(),
+                    message: "Expected '=>' after empty parameter list".to_string(),
+                    suggestion: None,
+                });
             }
 
+            // Use lookahead to determine if this is arrow function parameters or expression
+            // Arrow params: (x: type, y) => ... or (x, y): type => ...
+            // Expression: (x + y), (x), etc.
+            if looks_like_arrow_params(parser) {
+                // Parse as arrow function parameters
+                let params = try_parse_arrow_params(parser)?;
+                parser.expect(Token::RightParen)?;
+
+                // Check for return type annotation
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance(); // consume :
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
+
+                // Must have arrow
+                if parser.check(&Token::Arrow) {
+                    parser.advance();
+                    return parse_arrow_function_body_with_type(parser, params, return_type, start_span);
+                }
+
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: vec![Token::Arrow],
+                        found: parser.current().clone(),
+                    },
+                    span: parser.current_span(),
+                    message: "Expected '=>' after parameter list".to_string(),
+                    suggestion: None,
+                });
+            }
+
+            // Parse as regular expression (parentheses just group, don't wrap)
             let expr = parse_expression(parser)?;
             parser.expect(Token::RightParen)?;
-
-            // Check for arrow function: (x) => ... or (x, y) => ...
-            if parser.check(&Token::Arrow) {
-                parser.advance();
-                // Convert expression to parameter (simplified - real implementation would be more complex)
-                return parse_arrow_function_body(parser, vec![], start_span);
-            }
 
             Ok(expr)
         }
@@ -848,6 +1001,16 @@ fn parse_arrow_function_body(
     params: Vec<Parameter>,
     start_span: Span,
 ) -> Result<Expression, ParseError> {
+    parse_arrow_function_body_with_type(parser, params, None, start_span)
+}
+
+/// Parse arrow function body with optional return type.
+fn parse_arrow_function_body_with_type(
+    parser: &mut Parser,
+    params: Vec<Parameter>,
+    return_type: Option<TypeAnnotation>,
+    start_span: Span,
+) -> Result<Expression, ParseError> {
     let body = if parser.check(&Token::LeftBrace) {
         parser.advance();
         ArrowBody::Block(parse_block_statement(parser)?)
@@ -866,11 +1029,113 @@ fn parse_arrow_function_body(
 
     Ok(Expression::Arrow(ArrowFunction {
         params,
-        return_type: None,
+        return_type,
         body,
         is_async: false,
         span,
     }))
+}
+
+/// Check if the current position looks like arrow function parameters.
+/// Uses lookahead without consuming tokens.
+/// Arrow params pattern: identifier followed by `:`, `,`, or `)`
+/// Expression pattern: identifier followed by operators (+, -, *, /, etc.)
+fn looks_like_arrow_params(parser: &Parser) -> bool {
+    // First token must be an identifier
+    if !matches!(parser.current(), Token::Identifier(_)) {
+        return false;
+    }
+
+    // Check what follows the identifier
+    match parser.peek() {
+        // Type annotation - definitely parameters
+        Some(Token::Colon) => true,
+        // Comma - multiple params, definitely parameters
+        Some(Token::Comma) => true,
+        // Closing paren - could be either (x) expr or (x) =>
+        // Need more context - we'll parse as expression and handle single-ident case specially
+        Some(Token::RightParen) => {
+            // Lookahead further: if followed by `:` or `=>`, it's arrow params
+            // We can only look one token ahead, so assume it's expression by default
+            // The expression parsing will handle (x) correctly
+            false
+        }
+        // Any operator means it's an expression
+        _ => false,
+    }
+}
+
+/// Try to parse arrow function parameters.
+/// Returns Err if the content doesn't look like parameters (but is a valid expression).
+fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
+    let mut params = Vec::with_capacity(4);
+    let mut guard = super::guards::LoopGuard::new("arrow_params");
+
+    while !parser.check(&Token::RightParen) && !parser.at_eof() {
+        guard.check()?;
+        let start_span = parser.current_span();
+
+        // Parameter must start with an identifier
+        if let Token::Identifier(name) = parser.current().clone() {
+            parser.advance();
+
+            // Optional type annotation
+            let type_annotation = if parser.check(&Token::Colon) {
+                parser.advance();
+                Some(super::types::parse_type_annotation(parser)?)
+            } else {
+                None
+            };
+
+            // Optional default value
+            let default_value = if parser.check(&Token::Equal) {
+                parser.advance();
+                Some(parse_expression(parser)?)
+            } else {
+                None
+            };
+
+            params.push(Parameter {
+                decorators: vec![],
+                pattern: Pattern::Identifier(Identifier {
+                    name,
+                    span: start_span,
+                }),
+                type_annotation,
+                default_value,
+                span: start_span,
+            });
+
+            // Comma or end
+            if parser.check(&Token::Comma) {
+                parser.advance();
+            } else if !parser.check(&Token::RightParen) {
+                // Not a comma and not closing paren - not valid params
+                return Err(ParseError {
+                    kind: ParseErrorKind::UnexpectedToken {
+                        expected: vec![Token::Comma, Token::RightParen],
+                        found: parser.current().clone(),
+                    },
+                    span: parser.current_span(),
+                    message: "Expected ',' or ')' in parameter list".to_string(),
+                    suggestion: None,
+                });
+            }
+        } else {
+            // Doesn't start with identifier - not valid params
+            return Err(ParseError {
+                kind: ParseErrorKind::UnexpectedToken {
+                    expected: vec![Token::Identifier(Symbol::dummy())],
+                    found: parser.current().clone(),
+                },
+                span: parser.current_span(),
+                message: "Expected parameter name".to_string(),
+                suggestion: None,
+            });
+        }
+    }
+
+    Ok(params)
 }
 
 /// Parse parameter list (simplified stub - will be implemented in pattern parsing).
@@ -893,6 +1158,14 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                 None
             };
 
+            // Parse default value if present (e.g., `x: number = 10`)
+            let default_value = if parser.check(&Token::Equal) {
+                parser.advance();
+                Some(parse_expression(parser)?)
+            } else {
+                None
+            };
+
             params.push(Parameter {
                 decorators: vec![],
                 pattern: Pattern::Identifier(Identifier {
@@ -900,6 +1173,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                     span: start_span,
                 }),
                 type_annotation,
+                default_value,
                 span: start_span,
             });
         } else {

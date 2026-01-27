@@ -376,56 +376,21 @@ fn test_safepoint_on_array_literal() {
         param_count: 0,
         local_count: 0,
         code: vec![
+            // Push elements first
+            Opcode::ConstI32 as u8,
+            10, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            20, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            30, 0, 0, 0,
             // ARRAY_LITERAL (should trigger safepoint poll)
+            // Pops 3 elements, creates array [10, 20, 30]
             Opcode::ArrayLiteral as u8,
-            0,
-            0, // type index 0
-            3,
-            0,
-            0,
-            0, // length 3
-            // Push element 0
+            0, 0, 0, 0, // type index 0 (u32)
+            3, 0, 0, 0, // length 3 (u32)
+            // Load element 1 to verify (should be 20)
             Opcode::ConstI32 as u8,
-            10,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index 0
-            Opcode::InitArray as u8,
-            0,
-            0,
-            0,
-            0,
-            // Push element 1
-            Opcode::ConstI32 as u8,
-            20,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index 1
-            Opcode::InitArray as u8,
-            1,
-            0,
-            0,
-            0,
-            // Push element 2
-            Opcode::ConstI32 as u8,
-            30,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index 2
-            Opcode::InitArray as u8,
-            2,
-            0,
-            0,
-            0,
-            // Load element 1 to verify
-            Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
+            1, 0, 0, 0,
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
@@ -496,33 +461,14 @@ fn test_safepoint_at_all_allocation_types() {
             Opcode::StoreLocal as u8,
             2, 0,
             // 4. Array literal (ARRAY_LITERAL)
+            // Push elements first
+            Opcode::ConstI32 as u8,
+            5, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            6, 0, 0, 0,
             Opcode::ArrayLiteral as u8,
-            0,
-            0, // type 0
-            2,
-            0,
-            0,
-            0, // length 2
-            Opcode::ConstI32 as u8,
-            5,
-            0,
-            0,
-            0,
-            Opcode::InitArray as u8,
-            0,
-            0,
-            0,
-            0,
-            Opcode::ConstI32 as u8,
-            6,
-            0,
-            0,
-            0,
-            Opcode::InitArray as u8,
-            1,
-            0,
-            0,
-            0,
+            0, 0, 0, 0, // type 0 (u32)
+            2, 0, 0, 0, // length 2 (u32)
             Opcode::StoreLocal as u8,
             3, 0,
             // Return 42 to verify execution completed

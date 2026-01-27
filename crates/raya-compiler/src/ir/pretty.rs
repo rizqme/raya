@@ -149,6 +149,12 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreLocal { index, value } => {
             format!("store_local {} = {}", index, value)
         }
+        IrInstr::LoadGlobal { dest, index } => {
+            format!("{} = load_global {}", dest, index)
+        }
+        IrInstr::StoreGlobal { index, value } => {
+            format!("store_global {} = {}", index, value)
+        }
         IrInstr::LoadField { dest, object, field } => {
             format!("{} = load_field {}.field{}", dest, object, field)
         }
@@ -203,6 +209,9 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::ArrayLen { dest, array } => {
             format!("{} = array_len {}", dest, array)
         }
+        IrInstr::StringLen { dest, string } => {
+            format!("{} = string_len {}", dest, string)
+        }
         IrInstr::Typeof { dest, operand } => {
             format!("{} = typeof {}", dest, operand)
         }
@@ -212,6 +221,43 @@ fn format_instr(instr: &IrInstr) -> String {
                 .map(|(block, reg)| format!("[{}: {}]", block, reg))
                 .collect();
             format!("{} = phi {}", dest, srcs.join(", "))
+        }
+        IrInstr::MakeClosure { dest, func, captures } => {
+            let caps: Vec<String> = captures.iter().map(|c| format!("{}", c)).collect();
+            format!("{} = make_closure {}({})", dest, func, caps.join(", "))
+        }
+        IrInstr::LoadCaptured { dest, index } => {
+            format!("{} = load_captured {}", dest, index)
+        }
+        IrInstr::StoreCaptured { index, value } => {
+            format!("store_captured {} = {}", index, value)
+        }
+        IrInstr::SetClosureCapture { closure, index, value } => {
+            format!("set_closure_capture {}.captures[{}] = {}", closure, index, value)
+        }
+        IrInstr::NewRefCell { dest, initial_value } => {
+            format!("{} = new_refcell({})", dest, initial_value)
+        }
+        IrInstr::LoadRefCell { dest, refcell } => {
+            format!("{} = load_refcell({})", dest, refcell)
+        }
+        IrInstr::StoreRefCell { refcell, value } => {
+            format!("store_refcell {} = {}", refcell, value)
+        }
+        IrInstr::CallClosure { dest, closure, args } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            if let Some(d) = dest {
+                format!("{} = call_closure {}({})", d, closure, args_str.join(", "))
+            } else {
+                format!("call_closure {}({})", closure, args_str.join(", "))
+            }
+        }
+        IrInstr::StringCompare { dest, left, right, mode, negate } => {
+            let op = if *negate { "!=" } else { "==" };
+            format!("{} = string_compare({}) {} {} {}", dest, mode, left, op, right)
+        }
+        IrInstr::ToString { dest, operand } => {
+            format!("{} = to_string {}", dest, operand)
         }
     }
 }

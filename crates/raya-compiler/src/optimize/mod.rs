@@ -4,9 +4,11 @@
 
 mod constant_fold;
 mod dce;
+mod phi_elim;
 
 pub use constant_fold::ConstantFolder;
 pub use dce::DeadCodeEliminator;
+pub use phi_elim::PhiEliminator;
 
 use crate::ir::IrModule;
 
@@ -45,7 +47,13 @@ impl Optimizer {
 
     /// Run all optimization passes on the module
     pub fn optimize(&self, module: &mut IrModule) {
+        // PHI elimination always runs (required for code generation)
+        // even at OptLevel::None
+        let phi_elim = PhiEliminator::new();
+
         if self.level == OptLevel::None {
+            // Still need to eliminate PHIs for code generation
+            phi_elim.eliminate(module);
             return;
         }
 
@@ -61,6 +69,9 @@ impl Optimizer {
         if self.level == OptLevel::Full {
             folder.fold(module);
         }
+
+        // PHI elimination must run last (required for bytecode generation)
+        phi_elim.eliminate(module);
     }
 
     /// Get statistics about optimizations performed

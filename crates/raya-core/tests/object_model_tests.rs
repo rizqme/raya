@@ -381,65 +381,31 @@ fn test_object_literal() {
 
 #[test]
 fn test_array_literal() {
-    // Test ARRAY_LITERAL + INIT_ARRAY opcodes
-    // Creates [10, 20, 30] using literal syntax
+    // Test ARRAY_LITERAL opcode
+    // ARRAY_LITERAL pops elements from stack and creates array
+    // So we push elements first: [10, 20, 30]
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
         name: "main".to_string(),
         param_count: 0,
         local_count: 0,
         code: vec![
+            // Push elements in order (first element first)
+            Opcode::ConstI32 as u8,
+            10, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            20, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            30, 0, 0, 0,
             // ARRAY_LITERAL type=0, length=3
+            // Pops 3 elements, creates array [10, 20, 30]
             Opcode::ArrayLiteral as u8,
-            0,
-            0, // type index 0
-            3,
-            0,
-            0,
-            0, // length 3
-            // Push value for index 0 (10)
-            Opcode::ConstI32 as u8,
-            10,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index=0
-            Opcode::InitArray as u8,
-            0,
-            0,
-            0,
-            0,
-            // Push value for index 1 (20)
-            Opcode::ConstI32 as u8,
-            20,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index=1
-            Opcode::InitArray as u8,
-            1,
-            0,
-            0,
-            0,
-            // Push value for index 2 (30)
-            Opcode::ConstI32 as u8,
-            30,
-            0,
-            0,
-            0,
-            // INIT_ARRAY index=2
-            Opcode::InitArray as u8,
-            2,
-            0,
-            0,
-            0,
+            0, 0, 0, 0, // type index 0 (u32)
+            3, 0, 0, 0, // length 3 (u32)
             // Array is now on stack with all elements set
-            // Read element 1 to verify
+            // Read element 1 to verify (should be 20)
             Opcode::ConstI32 as u8,
-            1,
-            0,
-            0,
-            0,
+            1, 0, 0, 0,
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],

@@ -186,6 +186,8 @@ pub struct Parameter {
 
     pub pattern: Pattern,
     pub type_annotation: Option<TypeAnnotation>,
+    /// Default value for the parameter (e.g., `x: number = 10`)
+    pub default_value: Option<Expression>,
     pub span: Span,
 }
 

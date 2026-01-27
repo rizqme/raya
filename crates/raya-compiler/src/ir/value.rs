@@ -64,6 +64,28 @@ impl std::fmt::Display for IrValue {
     }
 }
 
+/// Tracks where a value originated from
+///
+/// This is used for optimization purposes, particularly for string comparisons.
+/// Values that come from constants can be compared by index rather than by content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ValueOrigin {
+    /// Value is from the constant pool (string literal, number literal, etc.)
+    Constant(u16),
+    /// Value was computed at runtime (concat, function return, etc.)
+    Computed,
+    /// Value is from a variable of a string literal union type
+    /// The type guarantees it must be one of the known constants
+    LiteralUnion,
+}
+
+impl ValueOrigin {
+    /// Check if this origin allows index-based comparison
+    pub fn allows_index_comparison(&self) -> bool {
+        matches!(self, ValueOrigin::Constant(_) | ValueOrigin::LiteralUnion)
+    }
+}
+
 /// Constant values in IR
 #[derive(Debug, Clone, PartialEq)]
 pub enum IrConstant {
@@ -151,5 +173,18 @@ mod tests {
     fn test_constant_as_f64() {
         assert_eq!(IrConstant::F64(3.14).as_f64(), Some(3.14));
         assert_eq!(IrConstant::I32(42).as_f64(), Some(42.0));
+    }
+
+    #[test]
+    fn test_value_origin_allows_index_comparison() {
+        // Constant values allow index comparison
+        assert!(ValueOrigin::Constant(0).allows_index_comparison());
+        assert!(ValueOrigin::Constant(42).allows_index_comparison());
+
+        // Literal unions allow index comparison
+        assert!(ValueOrigin::LiteralUnion.allows_index_comparison());
+
+        // Computed values do NOT allow index comparison
+        assert!(!ValueOrigin::Computed.allows_index_comparison());
     }
 }

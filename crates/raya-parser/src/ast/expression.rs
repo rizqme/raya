@@ -90,6 +90,9 @@ pub enum Expression {
 
     /// This expression: this
     This(Span),
+
+    /// Super expression: super (for parent class access)
+    Super(Span),
 }
 
 impl Expression {
@@ -122,6 +125,7 @@ impl Expression {
             Expression::JsxElement(e) => &e.span,
             Expression::JsxFragment(e) => &e.span,
             Expression::This(span) => span,
+            Expression::Super(span) => span,
         }
     }
 

@@ -46,6 +46,19 @@ pub enum BindError {
         /// Location of invalid type expression
         span: Span,
     },
+
+    /// Invalid type arguments for built-in generic type
+    #[error("Type '{name}' expects {expected} type argument(s), got {actual}")]
+    InvalidTypeArguments {
+        /// Type name
+        name: String,
+        /// Expected number of type arguments
+        expected: usize,
+        /// Actual number of type arguments
+        actual: usize,
+        /// Location of type reference
+        span: Span,
+    },
 }
 
 /// Errors that can occur during type checking
@@ -228,6 +241,7 @@ impl BindError {
             BindError::UndefinedType { span, .. } => *span,
             BindError::NotAType { span, .. } => *span,
             BindError::InvalidTypeExpr { span, .. } => *span,
+            BindError::InvalidTypeArguments { span, .. } => *span,
         }
     }
 }

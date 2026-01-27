@@ -175,6 +175,29 @@ impl SymbolTable {
         Ok(())
     }
 
+    /// Define a symbol in a specific scope
+    ///
+    /// Returns an error if a symbol with the same name already exists in that scope.
+    pub fn define_in_scope(&mut self, scope_id: ScopeId, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
+        let scope = &mut self.scopes[scope_id.0 as usize];
+
+        // Check for duplicate
+        if let Some(existing) = scope.symbols.get(&symbol.name) {
+            return Err(DuplicateSymbolError {
+                name: symbol.name.clone(),
+                original: existing.span,
+                duplicate: symbol.span,
+            });
+        }
+
+        // Set the scope ID
+        symbol.scope_id = scope_id;
+
+        // Insert symbol
+        scope.symbols.insert(symbol.name.clone(), symbol);
+        Ok(())
+    }
+
     /// Resolve a symbol by name, walking up the scope chain
     ///
     /// Searches from current scope to global scope, returning the first match.
@@ -225,6 +248,20 @@ impl SymbolTable {
     /// Get the parent scope ID of a given scope
     pub fn get_parent_scope_id(&self, scope_id: ScopeId) -> Option<ScopeId> {
         self.scopes[scope_id.0 as usize].parent
+    }
+
+    /// Update the type of a symbol in a specific scope
+    ///
+    /// This is used to update inferred types after type checking.
+    /// Returns true if the symbol was found and updated.
+    pub fn update_type(&mut self, scope_id: ScopeId, name: &str, new_ty: TypeId) -> bool {
+        if let Some(scope) = self.scopes.get_mut(scope_id.0 as usize) {
+            if let Some(symbol) = scope.symbols.get_mut(name) {
+                symbol.ty = new_ty;
+                return true;
+            }
+        }
+        false
     }
 }
 

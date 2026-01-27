@@ -44,4 +44,7 @@ pub enum CompileError {
 
     #[error("Internal compiler error: {message}")]
     InternalError { message: String },
+
+    #[error("Bytecode verification failed: {message}")]
+    Verification { message: String },
 }

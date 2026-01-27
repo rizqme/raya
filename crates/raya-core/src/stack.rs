@@ -52,6 +52,9 @@ pub struct CallFrame {
 
     /// Number of arguments passed to this function
     pub arg_count: usize,
+
+    /// Closure pointer (for closure calls, None for regular function calls)
+    pub closure: Option<crate::value::Value>,
 }
 
 impl CallFrame {
@@ -69,6 +72,26 @@ impl CallFrame {
             base_pointer,
             local_count,
             arg_count,
+            closure: None,
+        }
+    }
+
+    /// Create a new call frame for a closure call
+    pub fn new_closure(
+        function_id: usize,
+        return_ip: usize,
+        base_pointer: usize,
+        local_count: usize,
+        arg_count: usize,
+        closure: crate::value::Value,
+    ) -> Self {
+        Self {
+            function_id,
+            return_ip,
+            base_pointer,
+            local_count,
+            arg_count,
+            closure: Some(closure),
         }
     }
 

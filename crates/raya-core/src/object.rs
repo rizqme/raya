@@ -1,6 +1,8 @@
 //! Object model and class system
 
 use crate::value::Value;
+use std::cell::Cell;
+use std::hash::{Hash, Hasher};
 
 /// Object instance (heap-allocated)
 #[derive(Debug, Clone)]
@@ -247,19 +249,169 @@ impl Array {
             ))
         }
     }
+
+    /// Push element to end of array, returns new length
+    pub fn push(&mut self, value: Value) -> usize {
+        self.elements.push(value);
+        self.elements.len()
+    }
+
+    /// Pop element from end of array
+    pub fn pop(&mut self) -> Option<Value> {
+        self.elements.pop()
+    }
+
+    /// Shift element from beginning of array
+    pub fn shift(&mut self) -> Option<Value> {
+        if self.elements.is_empty() {
+            None
+        } else {
+            Some(self.elements.remove(0))
+        }
+    }
+
+    /// Unshift element to beginning of array, returns new length
+    pub fn unshift(&mut self, value: Value) -> usize {
+        self.elements.insert(0, value);
+        self.elements.len()
+    }
+
+    /// Find index of value, returns -1 if not found
+    pub fn index_of(&self, value: Value) -> i32 {
+        for (i, elem) in self.elements.iter().enumerate() {
+            // Use equality check - Value implements PartialEq
+            if *elem == value {
+                return i as i32;
+            }
+        }
+        -1
+    }
+
+    /// Check if array contains value
+    pub fn includes(&self, value: Value) -> bool {
+        self.index_of(value) >= 0
+    }
 }
 
-/// String object (heap-allocated)
+/// Closure object (heap-allocated)
+///
+/// A closure captures the function ID and any captured variables from
+/// the enclosing scope. When the closure is called, the captured values
+/// are available to the function body.
 #[derive(Debug, Clone)]
+pub struct Closure {
+    /// Function ID (index into module's function table)
+    pub func_id: usize,
+    /// Captured variable values
+    pub captures: Vec<Value>,
+}
+
+impl Closure {
+    /// Create a new closure with captured variables
+    pub fn new(func_id: usize, captures: Vec<Value>) -> Self {
+        Self { func_id, captures }
+    }
+
+    /// Get the function ID
+    pub fn func_id(&self) -> usize {
+        self.func_id
+    }
+
+    /// Get a captured variable by index
+    pub fn get_captured(&self, index: usize) -> Option<Value> {
+        self.captures.get(index).copied()
+    }
+
+    /// Set a captured variable by index
+    pub fn set_captured(&mut self, index: usize, value: Value) -> Result<(), String> {
+        if index < self.captures.len() {
+            self.captures[index] = value;
+            Ok(())
+        } else {
+            Err(format!(
+                "Captured variable index {} out of bounds (closure has {} captures)",
+                index,
+                self.captures.len()
+            ))
+        }
+    }
+
+    /// Get number of captured variables
+    pub fn capture_count(&self) -> usize {
+        self.captures.len()
+    }
+}
+
+/// RefCell - A heap-allocated mutable cell for capture-by-reference semantics
+///
+/// When a variable is captured by a closure AND modified (either in the closure
+/// or in the outer scope), both need to share the same storage. RefCell provides
+/// this shared mutable storage - both the outer scope and closure hold a pointer
+/// to the same RefCell, and all reads/writes go through it.
+#[derive(Debug, Clone)]
+pub struct RefCell {
+    /// The contained value
+    pub value: Value,
+}
+
+impl RefCell {
+    /// Create a new RefCell with an initial value
+    pub fn new(value: Value) -> Self {
+        Self { value }
+    }
+
+    /// Get the current value
+    pub fn get(&self) -> Value {
+        self.value
+    }
+
+    /// Set a new value
+    pub fn set(&mut self, value: Value) {
+        self.value = value;
+    }
+}
+
+/// String object (heap-allocated) with cached metadata for fast comparison
+///
+/// The hash is computed lazily on first comparison and cached for O(1)
+/// subsequent access. This enables the multi-level SEQ optimization:
+/// 1. Pointer equality (O(1))
+/// 2. Length check (O(1))
+/// 3. Hash check (O(1) after first computation)
+/// 4. Character comparison (O(n)) - only if all else fails
 pub struct RayaString {
     /// UTF-8 string data
     pub data: String,
+    /// Cached hash (computed lazily on first comparison)
+    hash: Cell<Option<u64>>,
+}
+
+impl std::fmt::Debug for RayaString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RayaString")
+            .field("data", &self.data)
+            .field("hash", &self.hash.get())
+            .finish()
+    }
+}
+
+impl Clone for RayaString {
+    fn clone(&self) -> Self {
+        Self {
+            data: self.data.clone(),
+            // Copy cached hash if available
+            hash: Cell::new(self.hash.get()),
+        }
+    }
 }
 
 impl RayaString {
     /// Create a new string
     pub fn new(data: String) -> Self {
-        Self { data }
+        Self {
+            data,
+            hash: Cell::new(None),
+        }
     }
 
     /// Get string length (in bytes)
@@ -270,6 +422,23 @@ impl RayaString {
     /// Check if string is empty
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    /// Get or compute hash (O(n) first time, O(1) subsequent)
+    pub fn hash(&self) -> u64 {
+        if let Some(h) = self.hash.get() {
+            return h;
+        }
+        let h = self.compute_hash();
+        self.hash.set(Some(h));
+        h
+    }
+
+    /// Compute hash using FxHasher for speed
+    fn compute_hash(&self) -> u64 {
+        let mut hasher = rustc_hash::FxHasher::default();
+        self.data.hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Concatenate two strings

@@ -116,6 +116,13 @@ impl ConstantFolder {
             (BinaryOp::Mod, IrConstant::I32(a), IrConstant::I32(b)) if *b != 0 => {
                 Some(IrConstant::I32(a % b))
             }
+            (BinaryOp::Pow, IrConstant::I32(a), IrConstant::I32(b)) if *b >= 0 => {
+                Some(IrConstant::I32(a.wrapping_pow(*b as u32)))
+            }
+            (BinaryOp::Pow, IrConstant::I32(a), IrConstant::I32(b)) if *b < 0 => {
+                // Negative exponent with integer base returns float
+                Some(IrConstant::F64((*a as f64).powi(*b)))
+            }
 
             // Float arithmetic
             (BinaryOp::Add, IrConstant::F64(a), IrConstant::F64(b)) => {
@@ -129,6 +136,14 @@ impl ConstantFolder {
             }
             (BinaryOp::Div, IrConstant::F64(a), IrConstant::F64(b)) => {
                 Some(IrConstant::F64(a / b))
+            }
+            (BinaryOp::Pow, IrConstant::F64(a), IrConstant::F64(b)) => {
+                Some(IrConstant::F64(a.powf(*b)))
+            }
+
+            // String addition (concatenation)
+            (BinaryOp::Add, IrConstant::String(a), IrConstant::String(b)) => {
+                Some(IrConstant::String(format!("{}{}", a, b)))
             }
 
             // Integer comparisons

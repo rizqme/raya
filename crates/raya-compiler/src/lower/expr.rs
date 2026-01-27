@@ -2,10 +2,68 @@
 //!
 //! Converts AST expressions to IR instructions.
 
-use super::Lowerer;
-use crate::ir::{BinaryOp, IrConstant, IrInstr, IrValue, Register, UnaryOp};
-use raya_parser::ast::{self, Expression};
+use super::{ClassFieldInfo, Lowerer};
+use crate::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, UnaryOp};
+use raya_parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
+use raya_parser::interner::Symbol;
 use raya_parser::TypeId;
+
+// ============================================================================
+// Built-in Method IDs (must match raya-core/src/builtin.rs)
+// ============================================================================
+
+/// Built-in array method IDs
+mod builtin_array {
+    pub const PUSH: u16 = 0x0100;
+    pub const POP: u16 = 0x0101;
+    pub const SHIFT: u16 = 0x0102;
+    pub const UNSHIFT: u16 = 0x0103;
+    pub const INDEX_OF: u16 = 0x0104;
+    pub const INCLUDES: u16 = 0x0105;
+}
+
+/// Built-in string method IDs
+mod builtin_string {
+    pub const CHAR_AT: u16 = 0x0200;
+    pub const SUBSTRING: u16 = 0x0201;
+    pub const TO_UPPER_CASE: u16 = 0x0202;
+    pub const TO_LOWER_CASE: u16 = 0x0203;
+    pub const TRIM: u16 = 0x0204;
+    pub const INDEX_OF: u16 = 0x0205;
+    pub const INCLUDES: u16 = 0x0206;
+}
+
+/// Look up built-in method ID by method name and object type
+fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
+    // Array types (TypeId >= 5) or unknown (TypeId 0)
+    if obj_type_id >= 5 || obj_type_id == 0 {
+        match method_name {
+            "push" => return Some(builtin_array::PUSH),
+            "pop" => return Some(builtin_array::POP),
+            "shift" => return Some(builtin_array::SHIFT),
+            "unshift" => return Some(builtin_array::UNSHIFT),
+            "indexOf" => return Some(builtin_array::INDEX_OF),
+            "includes" => return Some(builtin_array::INCLUDES),
+            _ => {}
+        }
+    }
+
+    // String type (TypeId 3)
+    if obj_type_id == 3 {
+        match method_name {
+            "charAt" => return Some(builtin_string::CHAR_AT),
+            "substring" => return Some(builtin_string::SUBSTRING),
+            "toUpperCase" => return Some(builtin_string::TO_UPPER_CASE),
+            "toLowerCase" => return Some(builtin_string::TO_LOWER_CASE),
+            "trim" => return Some(builtin_string::TRIM),
+            "indexOf" => return Some(builtin_string::INDEX_OF),
+            "includes" => return Some(builtin_string::INCLUDES),
+            _ => {}
+        }
+    }
+
+    None
+}
 
 impl<'a> Lowerer<'a> {
     /// Lower an expression, returning the register holding its value
@@ -32,6 +90,9 @@ impl<'a> Lowerer<'a> {
             Expression::New(new_expr) => self.lower_new(new_expr),
             Expression::Await(await_expr) => self.lower_await(await_expr),
             Expression::Logical(logical) => self.lower_logical(logical),
+            Expression::TemplateLiteral(template) => self.lower_template_literal(template),
+            Expression::This(_) => self.lower_this(),
+            Expression::Super(_) => self.lower_super(),
             _ => {
                 // For unhandled expressions, emit a null placeholder
                 self.lower_null_literal()
@@ -91,9 +152,27 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_identifier(&mut self, ident: &ast::Identifier) -> Register {
-        // Look up the variable in the local map
+        // Look up the variable in the local map (current function's locals)
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
-            // Get the type from the local register
+            // Check if this is a RefCell variable
+            if self.refcell_registers.contains_key(&local_idx) {
+                // Load the RefCell pointer
+                let refcell_ty = TypeId::new(0);
+                let refcell_reg = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::LoadLocal {
+                    dest: refcell_reg.clone(),
+                    index: local_idx,
+                });
+                // Load the value from the RefCell
+                let value_ty = TypeId::new(0); // Would need to track the inner type
+                let dest = self.alloc_register(value_ty);
+                self.emit(IrInstr::LoadRefCell {
+                    dest: dest.clone(),
+                    refcell: refcell_reg,
+                });
+                return dest;
+            }
+
             let ty = self
                 .local_registers
                 .get(&local_idx)
@@ -104,12 +183,84 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 index: local_idx,
             });
-            dest
-        } else {
-            // Unknown variable - could be a global or error
-            // For now, return a null placeholder
-            self.lower_null_literal()
+            return dest;
         }
+
+        // Check if we've already captured this variable
+        if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
+            let ty = self.captures[idx].ty;
+            let is_refcell = self.captures[idx].is_refcell;
+            let capture_idx = idx as u16;
+
+            if is_refcell {
+                // Load the RefCell pointer from captured
+                let refcell_ty = TypeId::new(0);
+                let refcell_reg = self.alloc_register(refcell_ty);
+                self.emit(IrInstr::LoadCaptured {
+                    dest: refcell_reg.clone(),
+                    index: capture_idx,
+                });
+                // Load the value from the RefCell
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::LoadRefCell {
+                    dest: dest.clone(),
+                    refcell: refcell_reg,
+                });
+                return dest;
+            } else {
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::LoadCaptured {
+                    dest: dest.clone(),
+                    index: capture_idx,
+                });
+                return dest;
+            }
+        }
+
+        // Check ancestor variables (from enclosing scopes)
+        if let Some(ref ancestors) = self.ancestor_variables {
+            if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                // Variable is from an enclosing scope - capture it
+                let ty = ancestor_var.ty;
+                let is_refcell = ancestor_var.is_refcell;
+                let capture_idx = self.captures.len() as u16;
+                self.captures.push(super::CaptureInfo {
+                    symbol: ident.name,
+                    source: ancestor_var.source,
+                    capture_idx,
+                    ty,
+                    is_refcell,
+                });
+
+                if is_refcell {
+                    // Load the RefCell pointer from captured
+                    let refcell_ty = TypeId::new(0);
+                    let refcell_reg = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: refcell_reg.clone(),
+                        index: capture_idx,
+                    });
+                    // Load the value from the RefCell
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: dest.clone(),
+                        refcell: refcell_reg,
+                    });
+                    return dest;
+                } else {
+                    let dest = self.alloc_register(ty);
+                    self.emit(IrInstr::LoadCaptured {
+                        dest: dest.clone(),
+                        index: capture_idx,
+                    });
+                    return dest;
+                }
+            }
+        }
+
+        // Unknown variable - could be a global or error
+        // For now, return a null placeholder
+        self.lower_null_literal()
     }
 
     fn lower_binary(&mut self, binary: &ast::BinaryExpression) -> Register {
@@ -149,8 +300,67 @@ impl<'a> Lowerer<'a> {
         // Try to resolve the callee
         let dest = self.alloc_register(TypeId::new(0));
 
+        // Handle super() constructor call
+        if let Expression::Super(_) = &*call.callee {
+            if let Some(current_class_id) = self.current_class {
+                // Get parent class
+                if let Some(parent_id) = self
+                    .class_info_map
+                    .get(&current_class_id)
+                    .and_then(|info| info.parent_class)
+                {
+                    // Get parent's constructor
+                    if let Some(parent_ctor) = self
+                        .class_info_map
+                        .get(&parent_id)
+                        .and_then(|info| info.constructor)
+                    {
+                        // Call parent constructor with 'this' as first argument
+                        let mut ctor_args = vec![self.lower_this()];
+                        ctor_args.extend(args);
+                        self.emit(IrInstr::Call {
+                            dest: None, // Constructor doesn't return
+                            func: parent_ctor,
+                            args: ctor_args,
+                        });
+                    }
+                }
+            }
+            return dest;
+        }
+
+        // Handle super.method() call
+        if let Expression::Member(member) = &*call.callee {
+            if let Expression::Super(_) = &*member.object {
+                let method_name_symbol = member.property.name;
+                if let Some(current_class_id) = self.current_class {
+                    // Get parent class
+                    if let Some(parent_id) = self
+                        .class_info_map
+                        .get(&current_class_id)
+                        .and_then(|info| info.parent_class)
+                    {
+                        // Look up method in parent class
+                        if let Some(&parent_method_id) =
+                            self.method_map.get(&(parent_id, method_name_symbol))
+                        {
+                            // Call parent method with 'this' as first argument
+                            let mut method_args = vec![self.lower_this()];
+                            method_args.extend(args);
+                            self.emit(IrInstr::Call {
+                                dest: Some(dest.clone()),
+                                func: parent_method_id,
+                                args: method_args,
+                            });
+                            return dest;
+                        }
+                    }
+                }
+            }
+        }
+
         if let Expression::Identifier(ident) = &*call.callee {
-            // Direct function call
+            // Check if it's a direct function call
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 self.emit(IrInstr::Call {
                     dest: Some(dest.clone()),
@@ -159,38 +369,187 @@ impl<'a> Lowerer<'a> {
                 });
                 return dest;
             }
+
+            // Otherwise, it might be a closure stored in a variable
+            if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                // Load the closure from the local variable
+                let closure_ty = self
+                    .local_registers
+                    .get(&local_idx)
+                    .map(|r| r.ty)
+                    .unwrap_or(TypeId::new(0));
+                let closure = self.alloc_register(closure_ty);
+                self.emit(IrInstr::LoadLocal {
+                    dest: closure.clone(),
+                    index: local_idx,
+                });
+
+                // Call the closure
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
         }
 
-        // For member calls or unknown callees, emit a method call placeholder
+        // For member calls, resolve method to builtin ID or user-defined method
         if let Expression::Member(member) = &*call.callee {
+            let method_name_symbol = member.property.name;
+            let method_name = self.interner.resolve(method_name_symbol);
+
+            // Check if this is a static method call (e.g., Utils.double(21))
+            if let Expression::Identifier(ident) = &*member.object {
+                if let Some(&class_id) = self.class_map.get(&ident.name) {
+                    // This is a class identifier, check for static methods
+                    if let Some(&func_id) = self.static_method_map.get(&(class_id, method_name_symbol)) {
+                        // Static method call - no 'this' parameter
+                        self.emit(IrInstr::Call {
+                            dest: Some(dest.clone()),
+                            func: func_id,
+                            args,
+                        });
+                        return dest;
+                    }
+                }
+            }
+
+            // Try to determine the class type of the object for method resolution
+            let class_id = self.infer_class_id(&member.object);
+
+            // Check if this is a user-defined class method (including inherited methods)
+            if let Some(class_id) = class_id {
+                if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+                    // Lower the object (receiver) first
+                    let object = self.lower_expr(&member.object);
+
+                    // Build args with 'this' as first argument
+                    let mut method_args = vec![object];
+                    method_args.extend(args);
+
+                    // Call the method function
+                    self.emit(IrInstr::Call {
+                        dest: Some(dest.clone()),
+                        func: func_id,
+                        args: method_args,
+                    });
+                    return dest;
+                }
+            }
+
+            // Fall back to builtin method handling
             let object = self.lower_expr(&member.object);
+            let obj_type_id = object.ty.as_u32();
+
+            // Look up builtin method ID
+            let method_id = lookup_builtin_method(obj_type_id, method_name).unwrap_or(0);
+
             self.emit(IrInstr::CallMethod {
                 dest: Some(dest.clone()),
                 object,
-                method: 0, // Would need to resolve method index
+                method: method_id,
                 args,
             });
             return dest;
         }
 
-        // Fallback: call with function ID 0
-        self.emit(IrInstr::Call {
+        // Fallback: callee is an expression (e.g., (getFunc())())
+        // Lower the callee as an expression, then call it as a closure
+        let closure = self.lower_expr(&call.callee);
+        self.emit(IrInstr::CallClosure {
             dest: Some(dest.clone()),
-            func: crate::ir::FunctionId::new(0),
+            closure,
             args,
         });
         dest
     }
 
     fn lower_member(&mut self, member: &ast::MemberExpression) -> Register {
-        let object = self.lower_expr(&member.object);
-        let dest = self.alloc_register(TypeId::new(0));
+        let prop_name = self.interner.resolve(member.property.name);
 
-        // For now, use field index 0 - would need type info to resolve actual field
+        // Check if this is a static field access (e.g., Math.PI where Math is a class)
+        if let Expression::Identifier(ident) = &*member.object {
+            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                // This is a class identifier, check for static fields
+                // Extract global_index first to avoid borrow conflict
+                let global_index = self.class_info_map.get(&class_id).and_then(|class_info| {
+                    class_info
+                        .static_fields
+                        .iter()
+                        .find(|f| self.interner.resolve(f.name) == prop_name)
+                        .map(|sf| sf.global_index)
+                });
+
+                if let Some(index) = global_index {
+                    // Found a static field - emit LoadGlobal
+                    let dest = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::LoadGlobal {
+                        dest: dest.clone(),
+                        index,
+                    });
+                    return dest;
+                }
+            }
+        }
+
+        // Try to determine the class type of the object for field resolution
+        let class_id = match &*member.object {
+            // Handle 'this.field' - use current class context
+            Expression::This(_) => self.current_class,
+            // Handle 'obj.field' where obj is a variable
+            Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+            _ => None,
+        };
+
+        let object = self.lower_expr(&member.object);
+
+        // Check for built-in properties on primitive types
+        if prop_name == "length" {
+            let obj_ty = object.ty.as_u32();
+
+            // String type (TypeId 3)
+            if obj_ty == 3 {
+                let dest = self.alloc_register(TypeId::new(1)); // i32 result
+                self.emit(IrInstr::StringLen {
+                    dest: dest.clone(),
+                    string: object,
+                });
+                return dest;
+            }
+
+            // Array types start at TypeId 5 (array<T>)
+            // For now, check if it could be an array by checking type > 4
+            // or if we're accessing .length on something that looks like an array
+            if obj_ty >= 5 || obj_ty == 0 {
+                let dest = self.alloc_register(TypeId::new(1)); // i32 result
+                self.emit(IrInstr::ArrayLen {
+                    dest: dest.clone(),
+                    array: object,
+                });
+                return dest;
+            }
+        }
+
+        // Look up field index by name if we know the class type (including inherited fields)
+        let field_index = if let Some(class_id) = class_id {
+            // Get all fields including parent fields
+            let all_fields = self.get_all_fields(class_id);
+            all_fields
+                .iter()
+                .find(|f| self.interner.resolve(f.name) == prop_name)
+                .map(|f| f.index)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        // Fall back to field access for objects
+        let dest = self.alloc_register(TypeId::new(0));
         self.emit(IrInstr::LoadField {
             dest: dest.clone(),
             object,
-            field: 0,
+            field: field_index,
         });
         dest
     }
@@ -263,22 +622,171 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
-        let value = self.lower_expr(&assign.right);
+        // For compound assignment, we need to load the current value first
+        let binary_op = match assign.operator {
+            AssignmentOperator::Assign => None,
+            AssignmentOperator::AddAssign => Some(BinaryOp::Add),
+            AssignmentOperator::SubAssign => Some(BinaryOp::Sub),
+            AssignmentOperator::MulAssign => Some(BinaryOp::Mul),
+            AssignmentOperator::DivAssign => Some(BinaryOp::Div),
+            AssignmentOperator::ModAssign => Some(BinaryOp::Mod),
+            AssignmentOperator::AndAssign => Some(BinaryOp::BitAnd),
+            AssignmentOperator::OrAssign => Some(BinaryOp::BitOr),
+            AssignmentOperator::XorAssign => Some(BinaryOp::BitXor),
+            AssignmentOperator::LeftShiftAssign => Some(BinaryOp::ShiftLeft),
+            AssignmentOperator::RightShiftAssign => Some(BinaryOp::ShiftRight),
+            AssignmentOperator::UnsignedRightShiftAssign => Some(BinaryOp::UnsignedShiftRight),
+        };
+
+        let rhs = self.lower_expr(&assign.right);
+
+        // Compute the final value to store
+        let value = if let Some(op) = binary_op {
+            // Compound assignment: load current value, apply operation
+            let current = self.lower_expr(&assign.left);
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::BinaryOp {
+                dest: dest.clone(),
+                op,
+                left: current,
+                right: rhs,
+            });
+            dest
+        } else {
+            rhs
+        };
 
         match &*assign.left {
             Expression::Identifier(ident) => {
                 if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    self.emit(IrInstr::StoreLocal {
-                        index: local_idx,
-                        value: value.clone(),
-                    });
+                    // Check if this is a RefCell variable
+                    if self.refcell_registers.contains_key(&local_idx) {
+                        // Load the RefCell pointer
+                        let refcell_ty = TypeId::new(0);
+                        let refcell_reg = self.alloc_register(refcell_ty);
+                        self.emit(IrInstr::LoadLocal {
+                            dest: refcell_reg.clone(),
+                            index: local_idx,
+                        });
+                        // Store the value to the RefCell
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value: value.clone(),
+                        });
+                    } else {
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: value.clone(),
+                        });
+
+                        // Check for self-recursive closure: if we just assigned a closure
+                        // that captured this variable, patch the closure's capture
+                        if let Some((closure_reg, ref captures)) = self.last_closure_info.take() {
+                            if let Some(&(_, capture_idx)) = captures.iter().find(|(sym, _)| *sym == ident.name) {
+                                // This closure captured the variable we're assigning to
+                                // Emit SetClosureCapture to patch the closure with itself
+                                self.emit(IrInstr::SetClosureCapture {
+                                    closure: closure_reg,
+                                    index: capture_idx,
+                                    value: value.clone(),
+                                });
+                            }
+                        }
+                    }
+                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
+                    // Variable is captured - handle assignment to captured variable
+                    let is_refcell = self.captures[idx].is_refcell;
+                    let capture_idx = idx as u16;
+
+                    if is_refcell {
+                        // Load the RefCell pointer from captured
+                        let refcell_ty = TypeId::new(0);
+                        let refcell_reg = self.alloc_register(refcell_ty);
+                        self.emit(IrInstr::LoadCaptured {
+                            dest: refcell_reg.clone(),
+                            index: capture_idx,
+                        });
+                        // Store the value to the RefCell
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value: value.clone(),
+                        });
+                    } else {
+                        // Non-RefCell captured variable - use StoreCaptured
+                        self.emit(IrInstr::StoreCaptured {
+                            index: capture_idx,
+                            value: value.clone(),
+                        });
+                    }
+                } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
+                    // Variable not captured yet but exists in ancestor scope - add to captures
+                    if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                        let ty = ancestor_var.ty;
+                        let is_refcell = ancestor_var.is_refcell;
+                        let capture_idx = self.captures.len() as u16;
+                        self.captures.push(super::CaptureInfo {
+                            symbol: ident.name,
+                            source: ancestor_var.source,
+                            capture_idx,
+                            ty,
+                            is_refcell,
+                        });
+
+                        if is_refcell {
+                            // Load the RefCell pointer from captured
+                            let refcell_ty = TypeId::new(0);
+                            let refcell_reg = self.alloc_register(refcell_ty);
+                            self.emit(IrInstr::LoadCaptured {
+                                dest: refcell_reg.clone(),
+                                index: capture_idx,
+                            });
+                            // Store the value to the RefCell
+                            self.emit(IrInstr::StoreRefCell {
+                                refcell: refcell_reg,
+                                value: value.clone(),
+                            });
+                        } else {
+                            // Non-RefCell captured variable - use StoreCaptured
+                            self.emit(IrInstr::StoreCaptured {
+                                index: capture_idx,
+                                value: value.clone(),
+                            });
+                        }
+                    }
                 }
             }
             Expression::Member(member) => {
+                let prop_name = self.interner.resolve(member.property.name);
+
+                // Try to determine the class type of the object for field resolution
+                let class_id = match &*member.object {
+                    // Handle 'this.field' - use current class context
+                    Expression::This(_) => self.current_class,
+                    // Handle 'obj.field' where obj is a variable
+                    Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+                    _ => None,
+                };
+
+                // Look up field index by name if we know the class type
+                let field_index = if let Some(class_id) = class_id {
+                    if let Some(class_info) = self.class_info_map.get(&class_id) {
+                        class_info
+                            .fields
+                            .iter()
+                            .find(|f| self.interner.resolve(f.name) == prop_name)
+                            .map(|f| f.index)
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
                 let object = self.lower_expr(&member.object);
                 self.emit(IrInstr::StoreField {
                     object,
-                    field: 0, // Would need to resolve actual field index
+                    field: field_index,
                     value: value.clone(),
                 });
             }
@@ -317,6 +825,8 @@ impl<'a> Lowerer<'a> {
         self.current_block = then_block;
         let then_val = self.lower_expr(&cond.consequent);
         let then_result = then_val.clone();
+        // Capture actual block after lowering (may differ if expression has control flow)
+        let then_exit_block = self.current_block;
         self.set_terminator(crate::ir::Terminator::Jump(merge_block));
 
         // Else branch
@@ -325,6 +835,8 @@ impl<'a> Lowerer<'a> {
         self.current_block = else_block;
         let else_val = self.lower_expr(&cond.alternate);
         let else_result = else_val.clone();
+        // Capture actual block after lowering (may differ if expression has control flow)
+        let else_exit_block = self.current_block;
         self.set_terminator(crate::ir::Terminator::Jump(merge_block));
 
         // Merge block with phi
@@ -335,15 +847,254 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(then_result.ty);
         self.emit(IrInstr::Phi {
             dest: dest.clone(),
-            sources: vec![(then_block, then_result), (else_block, else_result)],
+            sources: vec![(then_exit_block, then_result), (else_exit_block, else_result)],
         });
 
         dest
     }
 
-    fn lower_arrow(&mut self, _arrow: &ast::ArrowFunction) -> Register {
-        // Arrow functions create closures - for now just return null
-        self.lower_null_literal()
+    fn lower_arrow(&mut self, arrow: &ast::ArrowFunction) -> Register {
+        // Generate unique name for the arrow function
+        let arrow_name = format!("__arrow_{}", self.arrow_counter);
+        self.arrow_counter += 1;
+
+        // Allocate function ID for the arrow
+        let func_id = crate::ir::FunctionId::new(self.next_function_id);
+        self.next_function_id += 1;
+
+        // Save current lowerer state
+        let saved_register = self.next_register;
+        let saved_block = self.next_block;
+        let saved_local_map = self.local_map.clone();
+        let saved_local_registers = self.local_registers.clone();
+        let saved_refcell_registers = self.refcell_registers.clone();
+        let saved_next_local = self.next_local;
+        let saved_function = self.current_function.take();
+        let saved_current_block = self.current_block;
+        let saved_ancestor_variables = self.ancestor_variables.take();
+        let saved_captures = std::mem::take(&mut self.captures);
+
+        // Build ancestor_variables for the child arrow:
+        // 1. Current local_map becomes ImmediateParentLocal for the child
+        // 2. Current ancestor_variables become Ancestor for the child
+        let mut new_ancestor_vars = rustc_hash::FxHashMap::default();
+
+        // Add current locals as immediate parent locals
+        for (sym, &local_idx) in &saved_local_map {
+            let ty = saved_local_registers
+                .get(&local_idx)
+                .map(|r| r.ty)
+                .unwrap_or(TypeId::new(0));
+            let is_refcell = saved_refcell_registers.contains_key(&local_idx);
+            new_ancestor_vars.insert(
+                *sym,
+                super::AncestorVar {
+                    source: super::AncestorSource::ImmediateParentLocal(local_idx),
+                    ty,
+                    is_refcell,
+                },
+            );
+        }
+
+        // Add existing ancestor variables (they stay as Ancestor for nested arrows)
+        if let Some(ref existing) = saved_ancestor_variables {
+            for (sym, var) in existing {
+                // Don't override if already in locals (shadowing)
+                if !new_ancestor_vars.contains_key(sym) {
+                    new_ancestor_vars.insert(
+                        *sym,
+                        super::AncestorVar {
+                            source: super::AncestorSource::Ancestor,
+                            ty: var.ty,
+                            is_refcell: var.is_refcell,
+                        },
+                    );
+                }
+            }
+        }
+
+        self.ancestor_variables = Some(new_ancestor_vars);
+        self.captures.clear();
+
+        // Reset per-function state
+        self.next_register = 0;
+        self.next_block = 0;
+        self.local_map.clear();
+        self.local_registers.clear();
+        self.next_local = 0;
+
+        // Create parameter registers
+        let mut params = Vec::new();
+        for param in &arrow.params {
+            let ty = param
+                .type_annotation
+                .as_ref()
+                .map(|t| self.resolve_type_annotation(t))
+                .unwrap_or(TypeId::new(0));
+            let reg = self.alloc_register(ty);
+
+            if let ast::Pattern::Identifier(ident) = &param.pattern {
+                let local_idx = self.allocate_local(ident.name);
+                self.local_registers.insert(local_idx, reg.clone());
+            }
+            params.push(reg);
+        }
+
+        // Get return type
+        let return_ty = arrow
+            .return_type
+            .as_ref()
+            .map(|t| self.resolve_type_annotation(t))
+            .unwrap_or_else(|| TypeId::new(0));
+
+        // Create the arrow function
+        let ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
+        self.current_function = Some(ir_func);
+
+        // Create entry block
+        let entry_block = self.alloc_block();
+        self.current_block = entry_block;
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        // Lower arrow body
+        match &arrow.body {
+            ast::ArrowBody::Expression(expr) => {
+                let result = self.lower_expr(expr);
+                self.set_terminator(crate::ir::Terminator::Return(Some(result)));
+            }
+            ast::ArrowBody::Block(block) => {
+                for stmt in &block.statements {
+                    self.lower_stmt(stmt);
+                }
+                // Ensure the function ends with a return
+                if !self.current_block_is_terminated() {
+                    self.set_terminator(crate::ir::Terminator::Return(None));
+                }
+            }
+        }
+
+        // Collect captures discovered during lowering
+        let captured_vars: Vec<_> = self.captures.clone();
+        // Save the child's ancestor_variables for capture propagation
+        let child_ancestor_variables = self.ancestor_variables.take();
+
+        // Take the completed arrow function and add to pending with its func_id
+        let arrow_func = self.current_function.take().unwrap();
+        self.pending_arrow_functions.push((func_id.as_u32(), arrow_func));
+
+        // Restore saved state
+        self.next_register = saved_register;
+        self.next_block = saved_block;
+        self.local_map = saved_local_map;
+        self.local_registers = saved_local_registers;
+        self.refcell_registers = saved_refcell_registers;
+        self.next_local = saved_next_local;
+        self.current_function = saved_function;
+        self.current_block = saved_current_block;
+        self.ancestor_variables = saved_ancestor_variables;
+        self.captures = saved_captures;
+
+        // Load captured variables and build captures list for MakeClosure
+        let mut capture_regs = Vec::new();
+        for cap in &captured_vars {
+            let ty = cap.ty;
+            let cap_reg = self.alloc_register(ty);
+
+            match cap.source {
+                super::AncestorSource::ImmediateParentLocal(local_idx) => {
+                    // Variable is in immediate parent's locals - load directly
+                    self.emit(IrInstr::LoadLocal {
+                        dest: cap_reg.clone(),
+                        index: local_idx,
+                    });
+                }
+                super::AncestorSource::Ancestor => {
+                    // Variable is from a further ancestor
+                    // First check if it's actually available as a local in current scope
+                    if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
+                        // It's a local in current scope - load directly
+                        self.emit(IrInstr::LoadLocal {
+                            dest: cap_reg.clone(),
+                            index: local_idx,
+                        });
+                    } else {
+                        // Not in our locals - we must capture it too
+                        // Check if parent already captured it
+                        let parent_capture_idx = self
+                            .captures
+                            .iter()
+                            .position(|c| c.symbol == cap.symbol)
+                            .map(|i| i as u16);
+
+                        let capture_idx = if let Some(idx) = parent_capture_idx {
+                            idx
+                        } else {
+                            // Add to parent's captures (propagate up)
+                            // Look up where the CURRENT (parent) function gets this variable from
+                            // using the child's ancestor_variables (which describes the parent's sources)
+                            let (source, is_refcell) = if let Some(ref ancestors) = child_ancestor_variables {
+                                if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
+                                    (ancestor_var.source, ancestor_var.is_refcell)
+                                } else {
+                                    // Variable not in child's ancestors - should not happen
+                                    // Fall back to loading from locals if available
+                                    if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
+                                        (super::AncestorSource::ImmediateParentLocal(local_idx), cap.is_refcell)
+                                    } else {
+                                        (super::AncestorSource::Ancestor, cap.is_refcell)
+                                    }
+                                }
+                            } else {
+                                // No child ancestors - check our own locals
+                                if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
+                                    // Check if it's a RefCell
+                                    let is_refcell = self.refcell_registers.contains_key(&local_idx);
+                                    (super::AncestorSource::ImmediateParentLocal(local_idx), is_refcell)
+                                } else {
+                                    (super::AncestorSource::Ancestor, cap.is_refcell)
+                                }
+                            };
+
+                            let idx = self.captures.len() as u16;
+                            self.captures.push(super::CaptureInfo {
+                                symbol: cap.symbol,
+                                source,
+                                capture_idx: idx,
+                                ty: cap.ty,
+                                is_refcell,
+                            });
+                            idx
+                        };
+
+                        self.emit(IrInstr::LoadCaptured {
+                            dest: cap_reg.clone(),
+                            index: capture_idx,
+                        });
+                    }
+                }
+            }
+            capture_regs.push(cap_reg);
+        }
+
+        // Create closure: emit MakeClosure instruction with captures
+        let closure_ty = TypeId::new(0); // Generic function type
+        let dest = self.alloc_register(closure_ty);
+        self.emit(IrInstr::MakeClosure {
+            dest: dest.clone(),
+            func: func_id,
+            captures: capture_regs,
+        });
+
+        // Store info about this closure for self-recursive detection
+        let capture_info: Vec<_> = captured_vars
+            .iter()
+            .enumerate()
+            .map(|(i, cap)| (cap.symbol, i as u16))
+            .collect();
+        self.last_closure_info = Some((dest.clone(), capture_info));
+
+        dest
     }
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
@@ -358,15 +1109,79 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
-        // For now, create a simple object
         let dest = self.alloc_register(TypeId::new(0));
 
-        if let Expression::Identifier(_ident) = &*new_expr.callee {
-            // Would need to resolve class ID from type context
-            self.emit(IrInstr::NewObject {
-                dest: dest.clone(),
-                class: crate::ir::ClassId::new(0),
-            });
+        if let Expression::Identifier(ident) = &*new_expr.callee {
+            // Look up class ID from class_map
+            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                // Create the object
+                self.emit(IrInstr::NewObject {
+                    dest: dest.clone(),
+                    class: class_id,
+                });
+
+                // Initialize all fields (including inherited parent fields) with default values
+                let all_fields = self.get_all_fields(class_id);
+                for field in &all_fields {
+                    if let Some(ref init_expr) = field.initializer {
+                        // Lower the initializer expression
+                        let value = self.lower_expr(init_expr);
+                        // Store it to the field
+                        self.emit(IrInstr::StoreField {
+                            object: dest.clone(),
+                            field: field.index,
+                            value,
+                        });
+                    }
+                }
+
+                let constructor_func_id = self
+                    .class_info_map
+                    .get(&class_id)
+                    .and_then(|info| info.constructor);
+
+                // Call the constructor if one exists
+                if let Some(ctor_func_id) = constructor_func_id {
+                    // Get constructor parameter info for default values
+                    let ctor_params = self
+                        .class_info_map
+                        .get(&class_id)
+                        .map(|info| info.constructor_params.clone())
+                        .unwrap_or_default();
+
+                    // Lower constructor arguments
+                    let mut args = Vec::new();
+                    args.push(dest.clone()); // Pass 'this' as first argument
+
+                    // Add provided arguments
+                    for arg in &new_expr.arguments {
+                        args.push(self.lower_expr(arg));
+                    }
+
+                    // Fill in default values for missing arguments
+                    let provided_count = new_expr.arguments.len();
+                    for (i, param_info) in ctor_params.iter().enumerate() {
+                        if i >= provided_count {
+                            if let Some(ref default_expr) = param_info.default_value {
+                                args.push(self.lower_expr(default_expr));
+                            }
+                        }
+                    }
+
+                    // Call the constructor (it doesn't return a value we care about)
+                    self.emit(IrInstr::Call {
+                        dest: None, // Constructor return value is discarded
+                        func: ctor_func_id,
+                        args,
+                    });
+                }
+            } else {
+                // Unknown class - emit NewObject with class ID 0 as fallback
+                self.emit(IrInstr::NewObject {
+                    dest: dest.clone(),
+                    class: crate::ir::ClassId::new(0),
+                });
+            }
         }
 
         dest
@@ -378,6 +1193,90 @@ impl<'a> Lowerer<'a> {
         self.lower_expr(&await_expr.argument)
     }
 
+    fn lower_this(&mut self) -> Register {
+        // Return the 'this' register if we're inside a method
+        if let Some(ref this_reg) = self.this_register {
+            this_reg.clone()
+        } else {
+            // If not in a method context, return null
+            self.lower_null_literal()
+        }
+    }
+
+    fn lower_super(&mut self) -> Register {
+        // 'super' refers to the same object as 'this', just with parent class semantics
+        // The actual parent method dispatch is handled in lower_call
+        self.lower_this()
+    }
+
+    /// Find a method in a class or its parent classes.
+    /// Returns the function ID if found.
+    fn find_method(&self, class_id: ClassId, method_name: Symbol) -> Option<FunctionId> {
+        // First check this class
+        if let Some(&func_id) = self.method_map.get(&(class_id, method_name)) {
+            return Some(func_id);
+        }
+
+        // Check parent class recursively
+        if let Some(parent_id) = self
+            .class_info_map
+            .get(&class_id)
+            .and_then(|info| info.parent_class)
+        {
+            return self.find_method(parent_id, method_name);
+        }
+
+        None
+    }
+
+    /// Get all fields for a class, including inherited fields from parent classes.
+    /// Returns fields in order: parent fields first, then child fields.
+    fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
+        let mut all_fields = Vec::new();
+
+        // First, get parent fields (recursively)
+        if let Some(class_info) = self.class_info_map.get(&class_id) {
+            if let Some(parent_id) = class_info.parent_class {
+                all_fields.extend(self.get_all_fields(parent_id));
+            }
+            // Then add this class's fields
+            all_fields.extend(class_info.fields.clone());
+        }
+
+        all_fields
+    }
+
+    /// Infer the class ID of an expression (for method call resolution)
+    fn infer_class_id(&self, expr: &Expression) -> Option<ClassId> {
+        match expr {
+            // 'this' uses current class context
+            Expression::This(_) => self.current_class,
+            // Variable lookup
+            Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+            // Method call: if we know the class and method, check if it returns the same class
+            Expression::Call(call) => {
+                if let Expression::Member(member) = &*call.callee {
+                    let obj_class_id = self.infer_class_id(&member.object)?;
+                    let method_name = member.property.name;
+                    // If the method exists on the class, assume it returns 'this' (same class)
+                    // This is a simplification - ideally we'd check the return type
+                    if self.method_map.contains_key(&(obj_class_id, method_name)) {
+                        return Some(obj_class_id);
+                    }
+                }
+                None
+            }
+            // New expression: return the class being instantiated
+            Expression::New(new_expr) => {
+                if let Expression::Identifier(ident) = &*new_expr.callee {
+                    return self.class_map.get(&ident.name).copied();
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn lower_logical(&mut self, logical: &ast::LogicalExpression) -> Register {
         // Logical operators need short-circuit evaluation
         let left = self.lower_expr(&logical.left);
@@ -385,24 +1284,34 @@ impl<'a> Lowerer<'a> {
         let eval_right = self.alloc_block();
         let merge_block = self.alloc_block();
 
-        let is_and = matches!(logical.operator, ast::LogicalOperator::And);
-
-        // Short-circuit: if (left is false for &&) or (left is true for ||), skip right
-        if is_and {
-            self.set_terminator(crate::ir::Terminator::Branch {
-                cond: left.clone(),
-                then_block: eval_right,
-                else_block: merge_block,
-            });
-        } else {
-            self.set_terminator(crate::ir::Terminator::Branch {
-                cond: left.clone(),
-                then_block: merge_block,
-                else_block: eval_right,
-            });
-        }
-
         let left_block = self.current_block;
+
+        match logical.operator {
+            ast::LogicalOperator::And => {
+                // &&: if left is falsy, return left; else evaluate and return right
+                self.set_terminator(crate::ir::Terminator::Branch {
+                    cond: left.clone(),
+                    then_block: eval_right,
+                    else_block: merge_block,
+                });
+            }
+            ast::LogicalOperator::Or => {
+                // ||: if left is truthy, return left; else evaluate and return right
+                self.set_terminator(crate::ir::Terminator::Branch {
+                    cond: left.clone(),
+                    then_block: merge_block,
+                    else_block: eval_right,
+                });
+            }
+            ast::LogicalOperator::NullishCoalescing => {
+                // ??: if left is null, evaluate and return right; else return left
+                self.set_terminator(crate::ir::Terminator::BranchIfNull {
+                    value: left.clone(),
+                    null_block: eval_right,
+                    not_null_block: merge_block,
+                });
+            }
+        }
 
         // Evaluate right side
         self.current_function_mut()
@@ -412,18 +1321,105 @@ impl<'a> Lowerer<'a> {
         self.set_terminator(crate::ir::Terminator::Jump(merge_block));
         let right_block = self.current_block;
 
-        // Merge
+        // Merge - use left type for PHI since nullish coalescing can return left's value
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::new(merge_block));
         self.current_block = merge_block;
 
-        let dest = self.alloc_register(TypeId::new(4)); // boolean
+        let dest = self.alloc_register(left.ty);
         self.emit(IrInstr::Phi {
             dest: dest.clone(),
             sources: vec![(left_block, left), (right_block, right)],
         });
 
         dest
+    }
+
+    fn lower_template_literal(&mut self, template: &ast::TemplateLiteral) -> Register {
+        let string_ty = TypeId::new(3); // string type
+
+        // If no parts, return empty string
+        if template.parts.is_empty() {
+            let dest = self.alloc_register(string_ty);
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::String(String::new())),
+            });
+            return dest;
+        }
+
+        // Check if all parts are strings - we can concatenate at compile time
+        let all_strings = template.parts.iter().all(|p| matches!(p, TemplatePart::String(_)));
+
+        if all_strings {
+            // Compile-time concatenation
+            let mut result = String::new();
+            for part in &template.parts {
+                if let TemplatePart::String(sym) = part {
+                    result.push_str(self.interner.resolve(*sym));
+                }
+            }
+            let dest = self.alloc_register(string_ty);
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::String(result)),
+            });
+            return dest;
+        }
+
+        // Mixed parts - need runtime concatenation
+        // Convert each part to a string register, then concatenate
+        let mut part_registers: Vec<Register> = Vec::new();
+
+        for part in &template.parts {
+            match part {
+                TemplatePart::String(sym) => {
+                    let s = self.interner.resolve(*sym).to_string();
+                    let reg = self.alloc_register(string_ty);
+                    self.emit(IrInstr::Assign {
+                        dest: reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(s)),
+                    });
+                    part_registers.push(reg);
+                }
+                TemplatePart::Expression(expr) => {
+                    let expr_reg = self.lower_expr(expr);
+                    // Convert to string if not already a string
+                    if expr_reg.ty.as_u32() == 3 {
+                        // Already a string
+                        part_registers.push(expr_reg);
+                    } else {
+                        // Need to convert to string
+                        let str_reg = self.alloc_register(string_ty);
+                        self.emit(IrInstr::ToString {
+                            dest: str_reg.clone(),
+                            operand: expr_reg,
+                        });
+                        part_registers.push(str_reg);
+                    }
+                }
+            }
+        }
+
+        // Concatenate all parts
+        if part_registers.len() == 1 {
+            return part_registers.into_iter().next().unwrap();
+        }
+
+        // Chain concatenation: ((a + b) + c) + d ...
+        let mut result = part_registers.remove(0);
+        for part in part_registers {
+            let concat_result = self.alloc_register(string_ty);
+            self.emit(IrInstr::BinaryOp {
+                dest: concat_result.clone(),
+                op: BinaryOp::Concat,
+                left: result,
+                right: part,
+            });
+            result = concat_result;
+        }
+
+        result
     }
 
     /// Convert AST binary operator to IR binary operator
@@ -448,7 +1444,7 @@ impl<'a> Lowerer<'a> {
             ast::BinaryOperator::LeftShift => BinaryOp::ShiftLeft,
             ast::BinaryOperator::RightShift => BinaryOp::ShiftRight,
             ast::BinaryOperator::UnsignedRightShift => BinaryOp::UnsignedShiftRight,
-            ast::BinaryOperator::Exponent => BinaryOp::Add, // TODO: Add exponent to IR
+            ast::BinaryOperator::Exponent => BinaryOp::Pow,
         }
     }
 

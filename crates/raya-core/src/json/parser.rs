@@ -116,7 +116,7 @@ impl<'a> Parser<'a> {
                         self.input[start..end].to_string()
                     };
 
-                    let raya_str = RayaString { data: string_data };
+                    let raya_str = RayaString::new(string_data);
                     let str_ptr = self.gc.allocate(raya_str);
                     return Ok(JsonValue::String(str_ptr));
                 }

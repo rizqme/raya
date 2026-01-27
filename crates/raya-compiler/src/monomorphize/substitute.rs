@@ -5,7 +5,7 @@
 
 use crate::ir::block::{BasicBlock, Terminator};
 use crate::ir::function::IrFunction;
-use crate::ir::instr::IrInstr;
+use crate::ir::instr::{IrInstr, StringCompareMode};
 use crate::ir::value::{IrValue, Register, RegisterId};
 use raya_parser::{TypeContext, TypeId};
 use rustc_hash::FxHashMap;
@@ -123,6 +123,14 @@ impl TypeSubstitution {
                 index: *index,
                 value: self.apply_register(value),
             },
+            IrInstr::LoadGlobal { dest, index } => IrInstr::LoadGlobal {
+                dest: self.apply_register(dest),
+                index: *index,
+            },
+            IrInstr::StoreGlobal { index, value } => IrInstr::StoreGlobal {
+                index: *index,
+                value: self.apply_register(value),
+            },
             IrInstr::LoadField {
                 dest,
                 object,
@@ -189,6 +197,10 @@ impl TypeSubstitution {
                 dest: self.apply_register(dest),
                 array: self.apply_register(array),
             },
+            IrInstr::StringLen { dest, string } => IrInstr::StringLen {
+                dest: self.apply_register(dest),
+                string: self.apply_register(string),
+            },
             IrInstr::Typeof { dest, operand } => IrInstr::Typeof {
                 dest: self.apply_register(dest),
                 operand: self.apply_register(operand),
@@ -199,6 +211,66 @@ impl TypeSubstitution {
                     .iter()
                     .map(|(block, reg)| (*block, self.apply_register(reg)))
                     .collect(),
+            },
+            IrInstr::MakeClosure {
+                dest,
+                func,
+                captures,
+            } => IrInstr::MakeClosure {
+                dest: self.apply_register(dest),
+                func: *func,
+                captures: captures.iter().map(|c| self.apply_register(c)).collect(),
+            },
+            IrInstr::LoadCaptured { dest, index } => IrInstr::LoadCaptured {
+                dest: self.apply_register(dest),
+                index: *index,
+            },
+            IrInstr::StoreCaptured { index, value } => IrInstr::StoreCaptured {
+                index: *index,
+                value: self.apply_register(value),
+            },
+            IrInstr::SetClosureCapture { closure, index, value } => IrInstr::SetClosureCapture {
+                closure: self.apply_register(closure),
+                index: *index,
+                value: self.apply_register(value),
+            },
+            IrInstr::NewRefCell { dest, initial_value } => IrInstr::NewRefCell {
+                dest: self.apply_register(dest),
+                initial_value: self.apply_register(initial_value),
+            },
+            IrInstr::LoadRefCell { dest, refcell } => IrInstr::LoadRefCell {
+                dest: self.apply_register(dest),
+                refcell: self.apply_register(refcell),
+            },
+            IrInstr::StoreRefCell { refcell, value } => IrInstr::StoreRefCell {
+                refcell: self.apply_register(refcell),
+                value: self.apply_register(value),
+            },
+            IrInstr::CallClosure {
+                dest,
+                closure,
+                args,
+            } => IrInstr::CallClosure {
+                dest: dest.as_ref().map(|d| self.apply_register(d)),
+                closure: self.apply_register(closure),
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
+            IrInstr::StringCompare {
+                dest,
+                left,
+                right,
+                mode,
+                negate,
+            } => IrInstr::StringCompare {
+                dest: self.apply_register(dest),
+                left: self.apply_register(left),
+                right: self.apply_register(right),
+                mode: *mode,
+                negate: *negate,
+            },
+            IrInstr::ToString { dest, operand } => IrInstr::ToString {
+                dest: self.apply_register(dest),
+                operand: self.apply_register(operand),
             },
         }
     }
@@ -218,6 +290,15 @@ impl TypeSubstitution {
                 cond: self.apply_register(cond),
                 then_block: *then_block,
                 else_block: *else_block,
+            },
+            Terminator::BranchIfNull {
+                value,
+                null_block,
+                not_null_block,
+            } => Terminator::BranchIfNull {
+                value: self.apply_register(value),
+                null_block: *null_block,
+                not_null_block: *not_null_block,
             },
             Terminator::Switch {
                 value,

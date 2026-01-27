@@ -54,7 +54,7 @@ pub fn parse(json_str: &RayaString, gc: &mut GarbageCollector) -> VmResult<JsonV
 /// ```
 pub fn stringify(json_value: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<RayaString> {
     let json_str = raya_core::json::stringify::stringify(json_value)?;
-    Ok(RayaString { data: json_str })
+    Ok(RayaString::new(json_str))
 }
 
 #[cfg(test)]
@@ -67,30 +67,22 @@ mod tests {
         let mut gc = GarbageCollector::default();
 
         // Null
-        let input = RayaString {
-            data: "null".to_string(),
-        };
+        let input = RayaString::new("null".to_string());
         let result = parse(&input, &mut gc).unwrap();
         assert!(result.is_null());
 
         // Boolean
-        let input = RayaString {
-            data: "true".to_string(),
-        };
+        let input = RayaString::new("true".to_string());
         let result = parse(&input, &mut gc).unwrap();
         assert_eq!(result.as_bool(), Some(true));
 
         // Number
-        let input = RayaString {
-            data: "42.5".to_string(),
-        };
+        let input = RayaString::new("42.5".to_string());
         let result = parse(&input, &mut gc).unwrap();
         assert_eq!(result.as_number(), Some(42.5));
 
         // String
-        let input = RayaString {
-            data: "\"hello\"".to_string(),
-        };
+        let input = RayaString::new("\"hello\"".to_string());
         let result = parse(&input, &mut gc).unwrap();
         assert!(result.is_string());
     }
@@ -99,9 +91,7 @@ mod tests {
     fn test_parse_array() {
         let mut gc = GarbageCollector::default();
 
-        let input = RayaString {
-            data: "[1, 2, 3]".to_string(),
-        };
+        let input = RayaString::new("[1, 2, 3]".to_string());
         let result = parse(&input, &mut gc).unwrap();
 
         assert!(result.is_array());
@@ -117,9 +107,7 @@ mod tests {
     fn test_parse_object() {
         let mut gc = GarbageCollector::default();
 
-        let input = RayaString {
-            data: "{\"name\": \"Alice\", \"age\": 30}".to_string(),
-        };
+        let input = RayaString::new("{\"name\": \"Alice\", \"age\": 30}".to_string());
         let result = parse(&input, &mut gc).unwrap();
 
         assert!(result.is_object());
@@ -156,9 +144,7 @@ mod tests {
         let mut gc = GarbageCollector::default();
 
         let json_str = "{\"name\":\"Alice\",\"age\":30,\"active\":true}";
-        let input = RayaString {
-            data: json_str.to_string(),
-        };
+        let input = RayaString::new(json_str.to_string());
 
         // Parse
         let parsed = parse(&input, &mut gc).unwrap();
@@ -167,9 +153,7 @@ mod tests {
         let result = stringify(&parsed, &mut gc).unwrap();
 
         // Parse again to compare structure
-        let reparsed_input = RayaString {
-            data: result.data.clone(),
-        };
+        let reparsed_input = RayaString::new(result.data.clone());
         let reparsed = parse(&reparsed_input, &mut gc).unwrap();
 
         // Verify structure
@@ -187,9 +171,7 @@ mod tests {
     fn test_parse_error() {
         let mut gc = GarbageCollector::default();
 
-        let input = RayaString {
-            data: "{invalid json}".to_string(),
-        };
+        let input = RayaString::new("{invalid json}".to_string());
         let result = parse(&input, &mut gc);
 
         assert!(result.is_err());
@@ -213,9 +195,7 @@ mod tests {
         }
         "#;
 
-        let input = RayaString {
-            data: json_str.to_string(),
-        };
+        let input = RayaString::new(json_str.to_string());
 
         // Parse
         let parsed = parse(&input, &mut gc).unwrap();
@@ -225,9 +205,7 @@ mod tests {
         let result = stringify(&parsed, &mut gc).unwrap();
 
         // Verify it can be parsed again
-        let reparsed_input = RayaString {
-            data: result.data.clone(),
-        };
+        let reparsed_input = RayaString::new(result.data.clone());
         let reparsed = parse(&reparsed_input, &mut gc).unwrap();
 
         // Check structure

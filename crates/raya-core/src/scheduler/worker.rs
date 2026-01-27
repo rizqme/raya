@@ -277,14 +277,19 @@ impl Worker {
         let stack = task.stack();
         let mut stack_guard = stack.lock().unwrap();
 
-        // Allocate space for local variables (push null values)
-        for _ in 0..function.local_count {
-            stack_guard.push(Value::null())?;
-        }
-        let locals_base = stack_guard.depth() - function.local_count;
-
         // Get/set instruction pointer
         let mut ip = task.ip();
+
+        // Only allocate locals on fresh start (ip == 0)
+        // On resumption, the stack already contains locals and operand values
+        if ip == 0 {
+            // Allocate space for local variables (push null values)
+            for _ in 0..function.local_count {
+                stack_guard.push(Value::null())?;
+            }
+        }
+        // Locals are always at the bottom of the stack (indices 0..local_count)
+        let locals_base = 0;
 
         // Main execution loop
         loop {

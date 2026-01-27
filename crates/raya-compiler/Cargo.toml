@@ -14,3 +14,4 @@ crc32fast = "1.3"
 
 [dev-dependencies]
 raya-parser = { path = "../raya-parser" }
+raya-core = { path = "../raya-core" }

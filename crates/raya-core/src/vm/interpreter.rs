@@ -2,8 +2,9 @@
 
 use super::{ClassRegistry, SafepointCoordinator};
 use crate::{
+    builtin,
     gc::GarbageCollector,
-    object::{Array, Object, RayaString},
+    object::{Array, Closure, Object, RayaString},
     scheduler::{ExceptionHandler, Scheduler, Task, TaskState},
     stack::Stack,
     value::Value,
@@ -18,12 +19,16 @@ pub struct Vm {
     gc: GarbageCollector,
     /// Operand stack
     stack: Stack,
-    /// Global variables
+    /// Global variables (string-keyed)
     globals: rustc_hash::FxHashMap<String, Value>,
+    /// Global variables (index-based, for static fields)
+    globals_by_index: Vec<Value>,
     /// Class registry
     pub classes: ClassRegistry,
     /// Task scheduler
     scheduler: Scheduler,
+    /// Stack of currently executing closures (for LoadCaptured access)
+    closure_stack: Vec<Value>,
 }
 
 impl Vm {
@@ -42,8 +47,10 @@ impl Vm {
             gc: GarbageCollector::default(),
             stack: Stack::new(),
             globals: rustc_hash::FxHashMap::default(),
+            globals_by_index: Vec::new(),
             classes: ClassRegistry::new(),
             scheduler,
+            closure_stack: Vec::new(),
         }
     }
 
@@ -107,6 +114,16 @@ impl Vm {
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module
         module.validate().map_err(|e| VmError::RuntimeError(e))?;
+
+        // Register classes from the module
+        for (i, class_def) in module.classes.iter().enumerate() {
+            let class = crate::object::Class::new(
+                i,
+                class_def.name.clone(),
+                class_def.field_count,
+            );
+            self.classes.register_class(class);
+        }
 
         // Find main function
         let main_fn = module
@@ -181,6 +198,13 @@ impl Vm {
                     let value = self.read_f64(code, &mut ip)?;
                     self.op_const_f64(value)?;
                 }
+                Opcode::ConstStr => {
+                    let index = self.read_u16(code, &mut ip)? as usize;
+                    let s = module.constants.strings.get(index).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Invalid string constant index: {}", index))
+                    })?;
+                    self.op_const_str(s)?;
+                }
 
                 // Local variables
                 Opcode::LoadLocal => {
@@ -196,6 +220,16 @@ impl Vm {
                 Opcode::StoreLocal0 => self.op_store_local(0)?,
                 Opcode::StoreLocal1 => self.op_store_local(1)?,
 
+                // Global variables (for static fields)
+                Opcode::LoadGlobal => {
+                    let index = self.read_u32(code, &mut ip)?;
+                    self.op_load_global_index(index as usize)?;
+                }
+                Opcode::StoreGlobal => {
+                    let index = self.read_u32(code, &mut ip)?;
+                    self.op_store_global_index(index as usize)?;
+                }
+
                 // Arithmetic - Integer
                 Opcode::Iadd => self.op_iadd()?,
                 Opcode::Isub => self.op_isub()?,
@@ -203,6 +237,14 @@ impl Vm {
                 Opcode::Idiv => self.op_idiv()?,
                 Opcode::Imod => self.op_imod()?,
                 Opcode::Ineg => self.op_ineg()?,
+                Opcode::Ipow => self.op_ipow()?,
+                Opcode::Ishl => self.op_ishl()?,
+                Opcode::Ishr => self.op_ishr()?,
+                Opcode::Iushr => self.op_iushr()?,
+                Opcode::Iand => self.op_iand()?,
+                Opcode::Ior => self.op_ior()?,
+                Opcode::Ixor => self.op_ixor()?,
+                Opcode::Inot => self.op_inot()?,
 
                 // Arithmetic - Float
                 Opcode::Fadd => self.op_fadd()?,
@@ -210,6 +252,7 @@ impl Vm {
                 Opcode::Fmul => self.op_fmul()?,
                 Opcode::Fdiv => self.op_fdiv()?,
                 Opcode::Fneg => self.op_fneg()?,
+                Opcode::Fpow => self.op_fpow()?,
 
                 // Arithmetic - Number (generic)
                 Opcode::Nadd => self.op_nadd()?,
@@ -218,6 +261,7 @@ impl Vm {
                 Opcode::Ndiv => self.op_ndiv()?,
                 Opcode::Nmod => self.op_nmod()?,
                 Opcode::Nneg => self.op_nneg()?,
+                Opcode::Npow => self.op_npow()?,
 
                 // Comparisons - Integer
                 Opcode::Ieq => self.op_ieq()?,
@@ -285,17 +329,25 @@ impl Vm {
                     // Safepoint poll before function call
                     self.safepoint().poll();
 
-                    let func_index = self.read_u16(code, &mut ip)?;
-                    if func_index as usize >= module.functions.len() {
-                        return Err(VmError::RuntimeError(format!(
-                            "Invalid function index: {}",
-                            func_index
-                        )));
-                    }
-                    let callee = &module.functions[func_index as usize];
+                    let func_index = self.read_u32(code, &mut ip)?;
+                    let arg_count = self.read_u16(code, &mut ip)? as usize;
 
-                    // Execute callee (recursive call)
-                    let result = self.execute_function(callee, module)?;
+                    let result = if func_index == 0xFFFFFFFF {
+                        // Closure call: closure is on stack below arguments
+                        self.op_call_closure(arg_count, module)?
+                    } else {
+                        // Regular function call
+                        if func_index as usize >= module.functions.len() {
+                            return Err(VmError::RuntimeError(format!(
+                                "Invalid function index: {}",
+                                func_index
+                            )));
+                        }
+                        let callee = &module.functions[func_index as usize];
+
+                        // Execute callee (recursive call)
+                        self.execute_function(callee, module)?
+                    };
 
                     // Push result
                     self.stack.push(result)?;
@@ -385,7 +437,7 @@ impl Vm {
                     // Safepoint poll before allocation
                     self.safepoint().poll();
 
-                    let type_index = self.read_u16(code, &mut ip)? as usize;
+                    let type_index = self.read_u32(code, &mut ip)? as usize;
                     let length = self.read_u32(code, &mut ip)?;
                     self.op_array_literal(type_index, length)?;
                 }
@@ -397,11 +449,18 @@ impl Vm {
                 // String operations
                 Opcode::Sconcat => self.op_sconcat()?,
                 Opcode::Slen => self.op_slen()?,
+                Opcode::Seq => self.op_seq()?,
+                Opcode::Sne => self.op_sne()?,
+                Opcode::Slt => self.op_slt()?,
+                Opcode::Sle => self.op_sle()?,
+                Opcode::Sgt => self.op_sgt()?,
+                Opcode::Sge => self.op_sge()?,
+                Opcode::ToString => self.op_to_string()?,
 
                 // Method dispatch
                 Opcode::CallMethod => {
-                    let method_index = self.read_u16(code, &mut ip)? as usize;
-                    let arg_count = self.read_u8(code, &mut ip)? as usize;
+                    let method_index = self.read_u32(code, &mut ip)? as usize;
+                    let arg_count = self.read_u16(code, &mut ip)? as usize;
                     self.op_call_method(method_index, arg_count, module)?;
                 }
                 Opcode::CallConstructor => {
@@ -438,6 +497,39 @@ impl Vm {
                 }
                 Opcode::WaitAll => {
                     self.op_wait_all()?;
+                }
+
+                // Closure operations
+                Opcode::MakeClosure => {
+                    // Safepoint poll before allocation
+                    self.safepoint().poll();
+
+                    let func_index = self.read_u32(code, &mut ip)? as usize;
+                    let capture_count = self.read_u16(code, &mut ip)? as usize;
+                    self.op_make_closure(func_index, capture_count)?;
+                }
+                Opcode::LoadCaptured => {
+                    let capture_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_load_captured(capture_index)?;
+                }
+                Opcode::StoreCaptured => {
+                    let capture_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_store_captured(capture_index)?;
+                }
+                Opcode::SetClosureCapture => {
+                    let capture_index = self.read_u16(code, &mut ip)? as usize;
+                    self.op_set_closure_capture(capture_index)?;
+                }
+
+                // RefCell operations (for capture-by-reference)
+                Opcode::NewRefCell => {
+                    self.op_new_refcell()?;
+                }
+                Opcode::LoadRefCell => {
+                    self.op_load_refcell()?;
+                }
+                Opcode::StoreRefCell => {
+                    self.op_store_refcell()?;
                 }
 
                 // Exception handling
@@ -716,6 +808,19 @@ impl Vm {
         self.stack.push(Value::f64(value))
     }
 
+    /// CONST_STR - Push string constant
+    fn op_const_str(&mut self, s: &str) -> VmResult<()> {
+        // Create a RayaString from the constant
+        let raya_str = crate::object::RayaString::new(s.to_string());
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(raya_str);
+
+        // Push as a pointer value
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)
+    }
+
     // ===== Local Variable Operations =====
 
     /// LOAD_LOCAL - Push local variable onto stack
@@ -730,6 +835,25 @@ impl Vm {
     fn op_store_local(&mut self, index: usize) -> VmResult<()> {
         let value = self.stack.pop()?;
         self.stack.store_local(index, value)
+    }
+
+    /// LOAD_GLOBAL (indexed) - Push global variable onto stack
+    #[inline]
+    fn op_load_global_index(&mut self, index: usize) -> VmResult<()> {
+        let value = self.globals_by_index.get(index).copied().unwrap_or(Value::null());
+        self.stack.push(value)
+    }
+
+    /// STORE_GLOBAL (indexed) - Pop stack, store in global variable
+    #[inline]
+    fn op_store_global_index(&mut self, index: usize) -> VmResult<()> {
+        let value = self.stack.pop()?;
+        // Grow the globals array if needed
+        if index >= self.globals_by_index.len() {
+            self.globals_by_index.resize(index + 1, Value::null());
+        }
+        self.globals_by_index[index] = value;
+        Ok(())
     }
 
     // ===== Integer Arithmetic Operations =====
@@ -835,6 +959,138 @@ impl Vm {
         self.stack.push(Value::i32(-a))
     }
 
+    /// IPOW - Power of two integers
+    #[inline]
+    fn op_ipow(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+
+        if b < 0 {
+            // Negative exponent for integer - return as float
+            self.stack.push(Value::f64((a as f64).powi(b)))
+        } else {
+            self.stack.push(Value::i32(a.wrapping_pow(b as u32)))
+        }
+    }
+
+    /// ISHL - Shift left two integers
+    #[inline]
+    fn op_ishl(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        // JavaScript shift semantics: shift amount is masked to 5 bits
+        self.stack.push(Value::i32(a << (b & 0x1f)))
+    }
+
+    /// ISHR - Signed shift right two integers
+    #[inline]
+    fn op_ishr(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        // JavaScript shift semantics: shift amount is masked to 5 bits
+        self.stack.push(Value::i32(a >> (b & 0x1f)))
+    }
+
+    /// IUSHR - Unsigned shift right two integers
+    #[inline]
+    fn op_iushr(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        // JavaScript shift semantics: treat a as unsigned, shift amount masked to 5 bits
+        self.stack.push(Value::i32(((a as u32) >> (b & 0x1f)) as i32))
+    }
+
+    /// IAND - Bitwise AND two integers
+    #[inline]
+    fn op_iand(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        self.stack.push(Value::i32(a & b))
+    }
+
+    /// IOR - Bitwise OR two integers
+    #[inline]
+    fn op_ior(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        self.stack.push(Value::i32(a | b))
+    }
+
+    /// IXOR - Bitwise XOR two integers
+    #[inline]
+    fn op_ixor(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        self.stack.push(Value::i32(a ^ b))
+    }
+
+    /// INOT - Bitwise NOT an integer
+    #[inline]
+    fn op_inot(&mut self) -> VmResult<()> {
+        let a = self
+            .stack
+            .pop()?
+            .as_i32()
+            .ok_or_else(|| VmError::TypeError("Expected i32".to_string()))?;
+        self.stack.push(Value::i32(!a))
+    }
+
     // ===== Float Arithmetic Operations (Placeholder) =====
 
     /// FADD - Add two floats
@@ -910,6 +1166,22 @@ impl Vm {
             .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
         self.stack.push(Value::f64(-a))
+    }
+
+    /// FPOW - Power of two floats
+    #[inline]
+    fn op_fpow(&mut self) -> VmResult<()> {
+        let b = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = self
+            .stack
+            .pop()?
+            .as_f64()
+            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        self.stack.push(Value::f64(a.powf(b)))
     }
 
     // ===== Number Arithmetic Operations (Generic) =====
@@ -1042,6 +1314,31 @@ impl Vm {
             .as_f64()
             .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
         self.stack.push(Value::f64(-a_f64))
+    }
+
+    /// NPOW - Power of two numbers (i32 or f64)
+    #[inline]
+    fn op_npow(&mut self) -> VmResult<()> {
+        let b = self.stack.pop()?;
+        let a = self.stack.pop()?;
+
+        // Try i32 ** i32 first (only if exponent is non-negative)
+        if let (Some(a_i32), Some(b_i32)) = (a.as_i32(), b.as_i32()) {
+            if b_i32 >= 0 {
+                return self.stack.push(Value::i32(a_i32.wrapping_pow(b_i32 as u32)));
+            }
+        }
+
+        // Otherwise convert to f64
+        let a_f64 = a
+            .as_f64()
+            .or_else(|| a.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        let b_f64 = b
+            .as_f64()
+            .or_else(|| b.as_i32().map(|i| i as f64))
+            .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+        self.stack.push(Value::f64(a_f64.powf(b_f64)))
     }
 
     // ===== Comparison Operations =====
@@ -1555,6 +1852,214 @@ impl Vm {
         Ok(())
     }
 
+    // ===== Closure Operations =====
+
+    /// MAKE_CLOSURE - Create a closure object
+    /// Stack: [captures...] -> [closure]
+    #[allow(dead_code)]
+    fn op_make_closure(&mut self, func_index: usize, capture_count: usize) -> VmResult<()> {
+        // Pop captured variables from stack (in reverse order)
+        let mut captures = Vec::with_capacity(capture_count);
+        for _ in 0..capture_count {
+            captures.push(self.stack.pop()?);
+        }
+        captures.reverse(); // Restore original order
+
+        // Create closure object
+        let closure = Closure::new(func_index, captures);
+
+        // Allocate on GC heap
+        let gc_ptr = self.gc.allocate(closure);
+
+        // Push GC pointer as value
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
+    /// LOAD_CAPTURED - Load a captured variable from current closure
+    /// Stack: [] -> [value]
+    fn op_load_captured(&mut self, capture_index: usize) -> VmResult<()> {
+        // Get the current closure from the closure stack
+        let closure_val = self.closure_stack.last().ok_or_else(|| {
+            VmError::RuntimeError("LoadCaptured called without active closure".to_string())
+        })?;
+
+        // Get closure from GC heap
+        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+
+        // Get the captured value
+        let value = closure.get_captured(capture_index).ok_or_else(|| {
+            VmError::RuntimeError(format!(
+                "Capture index {} out of bounds (closure has {} captures)",
+                capture_index,
+                closure.capture_count()
+            ))
+        })?;
+
+        self.stack.push(value)?;
+        Ok(())
+    }
+
+    /// STORE_CAPTURED - Store a value to a captured variable
+    /// Stack: [value] -> []
+    #[allow(dead_code)]
+    fn op_store_captured(&mut self, _capture_index: usize) -> VmResult<()> {
+        // Note: This requires tracking the current closure context
+        // For now, return an error - full implementation needs closure context in call frames
+        Err(VmError::RuntimeError(
+            "StoreCaptured not yet fully implemented - needs closure context tracking".to_string(),
+        ))
+    }
+
+    /// SET_CLOSURE_CAPTURE - Set a closure's capture to a value
+    /// Stack: [closure, value] -> [closure]
+    /// Used for recursive closures where the closure captures itself
+    fn op_set_closure_capture(&mut self, capture_index: usize) -> VmResult<()> {
+        // Pop value
+        let value = self.stack.pop()?;
+
+        // Pop closure (will be pushed back)
+        let closure_val = self.stack.pop()?;
+
+        // Check it's a pointer (closure object)
+        if !closure_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected closure for SetClosureCapture".to_string(),
+            ));
+        }
+
+        // Get closure from GC heap and modify its capture
+        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+        let closure = unsafe { &mut *closure_ptr.unwrap().as_ptr() };
+
+        closure.set_captured(capture_index, value).map_err(|e| {
+            VmError::RuntimeError(e)
+        })?;
+
+        // Push closure back
+        self.stack.push(closure_val)?;
+        Ok(())
+    }
+
+    /// NEW_REFCELL - Allocate a new RefCell with initial value
+    /// Stack: [value] -> [refcell_ptr]
+    fn op_new_refcell(&mut self) -> VmResult<()> {
+        use crate::object::RefCell;
+
+        // Pop initial value
+        let initial_value = self.stack.pop()?;
+
+        // Allocate RefCell on heap
+        let refcell = RefCell::new(initial_value);
+        let gc_ptr = self.gc.allocate(refcell);
+
+        // Push pointer
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)?;
+        Ok(())
+    }
+
+    /// LOAD_REFCELL - Load value from RefCell
+    /// Stack: [refcell_ptr] -> [value]
+    fn op_load_refcell(&mut self) -> VmResult<()> {
+        use crate::object::RefCell;
+
+        // Pop RefCell pointer
+        let refcell_val = self.stack.pop()?;
+
+        if !refcell_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected RefCell pointer for LoadRefCell".to_string(),
+            ));
+        }
+
+        // Get value from RefCell
+        let refcell_ptr = unsafe { refcell_val.as_ptr::<RefCell>() };
+        let refcell = unsafe { &*refcell_ptr.unwrap().as_ptr() };
+        let value = refcell.get();
+
+        // Push value
+        self.stack.push(value)?;
+        Ok(())
+    }
+
+    /// STORE_REFCELL - Store value to RefCell
+    /// Stack: [refcell_ptr, value] -> []
+    fn op_store_refcell(&mut self) -> VmResult<()> {
+        use crate::object::RefCell;
+
+        // Pop value and RefCell pointer
+        let value = self.stack.pop()?;
+        let refcell_val = self.stack.pop()?;
+
+        if !refcell_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected RefCell pointer for StoreRefCell".to_string(),
+            ));
+        }
+
+        // Set value in RefCell
+        let refcell_ptr = unsafe { refcell_val.as_ptr::<RefCell>() };
+        let refcell = unsafe { &mut *refcell_ptr.unwrap().as_ptr() };
+        refcell.set(value);
+
+        Ok(())
+    }
+
+    /// Call a closure
+    /// Stack: [closure, args...] -> [result]
+    fn op_call_closure(&mut self, arg_count: usize, module: &Module) -> VmResult<Value> {
+        // Pop arguments (in reverse order)
+        let mut args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            args.push(self.stack.pop()?);
+        }
+        args.reverse();
+
+        // Pop closure
+        let closure_val = self.stack.pop()?;
+
+        // Check it's a pointer (closure object)
+        if !closure_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected closure for call".to_string(),
+            ));
+        }
+
+        // Get closure from GC heap
+        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+
+        // Get the function
+        let func_index = closure.func_id();
+        if func_index >= module.functions.len() {
+            return Err(VmError::RuntimeError(format!(
+                "Invalid function index in closure: {}",
+                func_index
+            )));
+        }
+
+        // Push arguments back onto stack for the function call
+        for arg in args {
+            self.stack.push(arg)?;
+        }
+
+        // Push closure onto closure stack for LoadCaptured access
+        self.closure_stack.push(closure_val);
+
+        // Execute the closure's function
+        let callee = &module.functions[func_index];
+        let result = self.execute_function(callee, module);
+
+        // Pop closure from closure stack
+        self.closure_stack.pop();
+
+        result
+    }
+
     // ===== Array Operations =====
 
     /// NEW_ARRAY - Allocate new array
@@ -1685,8 +2190,8 @@ impl Vm {
         Ok(())
     }
 
-    /// ARRAY_LITERAL - Create array literal
-    /// Stack: [] -> [array]
+    /// ARRAY_LITERAL - Create array literal from stack values
+    /// Stack: [elem0, elem1, ..., elemN-1] -> [array]
     #[allow(dead_code)]
     fn op_array_literal(&mut self, type_index: usize, length: u32) -> VmResult<()> {
         // Bounds check (reasonable maximum)
@@ -1697,8 +2202,19 @@ impl Vm {
             )));
         }
 
-        // Create array with null elements
-        let arr = Array::new(type_index, length as usize);
+        // Pop elements from stack in reverse order (last pushed = last element)
+        let mut elements = Vec::with_capacity(length as usize);
+        for _ in 0..length {
+            elements.push(self.stack.pop()?);
+        }
+        // Reverse to get correct order (first pushed = first element)
+        elements.reverse();
+
+        // Create array with the elements
+        let mut arr = Array::new(type_index, length as usize);
+        for (i, elem) in elements.into_iter().enumerate() {
+            arr.set(i, elem).map_err(|e| VmError::RuntimeError(e))?;
+        }
 
         // Allocate on GC heap
         let gc_ptr = self.gc.allocate(arr);
@@ -1802,9 +2318,242 @@ impl Vm {
         Ok(())
     }
 
+    /// SEQ - String equality comparison with multi-level optimization
+    ///
+    /// Optimization levels (in order of checking):
+    /// 1. Pointer equality - Same object reference → O(1)
+    /// 2. Length check - Different lengths → can't be equal → O(1)
+    /// 3. Hash check - Cached hash mismatch → can't be equal → O(1) amortized
+    /// 4. Character comparison - Only if all else fails → O(n)
+    #[allow(dead_code)]
+    fn op_seq(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        // SAFETY: Values are tagged as pointers, managed by GC
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+
+        let ptr1 = str1_ptr.unwrap().as_ptr();
+        let ptr2 = str2_ptr.unwrap().as_ptr();
+
+        // Level 1: Pointer equality (O(1))
+        // Same object reference means definitely equal
+        if std::ptr::eq(ptr1, ptr2) {
+            return self.stack.push(Value::bool(true));
+        }
+
+        let str1 = unsafe { &*ptr1 };
+        let str2 = unsafe { &*ptr2 };
+
+        // Level 2: Length check (O(1))
+        // Different lengths means definitely not equal
+        if str1.len() != str2.len() {
+            return self.stack.push(Value::bool(false));
+        }
+
+        // Level 3: Hash check (O(1) if cached, O(n) first time)
+        // Only compute hash for strings longer than threshold
+        // For short strings, direct comparison is faster
+        const HASH_THRESHOLD: usize = 16;
+        if str1.len() > HASH_THRESHOLD {
+            if str1.hash() != str2.hash() {
+                return self.stack.push(Value::bool(false));
+            }
+        }
+
+        // Level 4: Character comparison (O(n))
+        // Only reached if all fast paths failed
+        self.stack.push(Value::bool(str1.data == str2.data))
+    }
+
+    /// SNE - String inequality comparison with multi-level optimization
+    #[allow(dead_code)]
+    fn op_sne(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+
+        let ptr1 = str1_ptr.unwrap().as_ptr();
+        let ptr2 = str2_ptr.unwrap().as_ptr();
+
+        // Level 1: Pointer equality - same reference means not unequal
+        if std::ptr::eq(ptr1, ptr2) {
+            return self.stack.push(Value::bool(false));
+        }
+
+        let str1 = unsafe { &*ptr1 };
+        let str2 = unsafe { &*ptr2 };
+
+        // Level 2: Length check - different lengths means definitely unequal
+        if str1.len() != str2.len() {
+            return self.stack.push(Value::bool(true));
+        }
+
+        // Level 3: Hash check for longer strings
+        const HASH_THRESHOLD: usize = 16;
+        if str1.len() > HASH_THRESHOLD {
+            if str1.hash() != str2.hash() {
+                return self.stack.push(Value::bool(true));
+            }
+        }
+
+        // Level 4: Character comparison
+        self.stack.push(Value::bool(str1.data != str2.data))
+    }
+
+    /// SLT - String less than comparison
+    #[allow(dead_code)]
+    fn op_slt(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+        let str1 = unsafe { &*str1_ptr.unwrap().as_ptr() };
+        let str2 = unsafe { &*str2_ptr.unwrap().as_ptr() };
+
+        self.stack.push(Value::bool(str1.data < str2.data))
+    }
+
+    /// SLE - String less or equal comparison
+    #[allow(dead_code)]
+    fn op_sle(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+        let str1 = unsafe { &*str1_ptr.unwrap().as_ptr() };
+        let str2 = unsafe { &*str2_ptr.unwrap().as_ptr() };
+
+        self.stack.push(Value::bool(str1.data <= str2.data))
+    }
+
+    /// SGT - String greater than comparison
+    #[allow(dead_code)]
+    fn op_sgt(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+        let str1 = unsafe { &*str1_ptr.unwrap().as_ptr() };
+        let str2 = unsafe { &*str2_ptr.unwrap().as_ptr() };
+
+        self.stack.push(Value::bool(str1.data > str2.data))
+    }
+
+    /// SGE - String greater or equal comparison
+    #[allow(dead_code)]
+    fn op_sge(&mut self) -> VmResult<()> {
+        let str2_val = self.stack.pop()?;
+        let str1_val = self.stack.pop()?;
+
+        if !str1_val.is_ptr() || !str2_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected strings for comparison".to_string(),
+            ));
+        }
+
+        let str1_ptr = unsafe { str1_val.as_ptr::<RayaString>() };
+        let str2_ptr = unsafe { str2_val.as_ptr::<RayaString>() };
+        let str1 = unsafe { &*str1_ptr.unwrap().as_ptr() };
+        let str2 = unsafe { &*str2_ptr.unwrap().as_ptr() };
+
+        self.stack.push(Value::bool(str1.data >= str2.data))
+    }
+
+    /// TO_STRING - Convert a value to its string representation
+    #[allow(dead_code)]
+    fn op_to_string(&mut self) -> VmResult<()> {
+        // Safepoint poll before allocation
+        self.safepoint().poll();
+
+        let val = self.stack.pop()?;
+
+        // Convert value based on its type
+        let result_string = if val.is_null() {
+            "null".to_string()
+        } else if val.is_bool() {
+            if let Some(b) = val.as_bool() {
+                if b { "true".to_string() } else { "false".to_string() }
+            } else {
+                "false".to_string()
+            }
+        } else if val.is_i32() {
+            if let Some(i) = val.as_i32() {
+                i.to_string()
+            } else {
+                "0".to_string()
+            }
+        } else if val.is_f64() {
+            if let Some(f) = val.as_f64() {
+                f.to_string()
+            } else {
+                "0".to_string()
+            }
+        } else if val.is_ptr() {
+            // Check if it's already a string - just push it back
+            let ptr = unsafe { val.as_ptr::<RayaString>() };
+            if ptr.is_some() {
+                // It's a string, just push it back
+                self.stack.push(val)?;
+                return Ok(());
+            }
+            // Other pointer types - use "[object]" placeholder
+            "[object]".to_string()
+        } else {
+            // Unknown type
+            "[unknown]".to_string()
+        };
+
+        // Allocate result string on GC heap
+        let result = RayaString::new(result_string);
+        let gc_ptr = self.gc.allocate(result);
+
+        // Push result
+        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        self.stack.push(value)?;
+
+        Ok(())
+    }
+
     // ===== Method Dispatch =====
 
-    /// CALL_METHOD - Call method via vtable dispatch
+    /// CALL_METHOD - Call method via vtable dispatch or built-in method
     #[allow(dead_code)]
     fn op_call_method(
         &mut self,
@@ -1812,6 +2561,19 @@ impl Vm {
         arg_count: usize,
         module: &Module,
     ) -> VmResult<()> {
+        let method_id = method_index as u16;
+
+        // Check for built-in array methods
+        if builtin::is_array_method(method_id) {
+            return self.call_array_method(method_id, arg_count);
+        }
+
+        // Check for built-in string methods
+        if builtin::is_string_method(method_id) {
+            return self.call_string_method(method_id, arg_count);
+        }
+
+        // Fall through to vtable dispatch for user-defined methods
         // Peek at object (receiver) on stack without popping
         // Object is at stack position: stack_top - arg_count
         let receiver_pos = self
@@ -1855,6 +2617,193 @@ impl Vm {
         self.execute_function(function, module)?;
 
         Ok(())
+    }
+
+    /// Execute built-in array method
+    fn call_array_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        // Stack layout: [array, arg1, arg2, ...] (arg_count arguments)
+        // For push: [array, value] -> [new_length]
+        // For pop: [array] -> [popped_value]
+
+        match method_id {
+            builtin::array::PUSH => {
+                // push(value) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.push expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for push method".to_string(),
+                    ));
+                }
+
+                // Get mutable array reference
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                // Push element and return new length
+                let new_len = arr.push(value);
+                self.stack.push(Value::i32(new_len as i32))?;
+
+                Ok(())
+            }
+
+            builtin::array::POP => {
+                // pop() - arg_count should be 0
+                if arg_count != 0 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.pop expects 0 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for pop method".to_string(),
+                    ));
+                }
+
+                // Get mutable array reference
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                // Pop element and return it (or null if empty)
+                let result = arr.pop().unwrap_or(Value::null());
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::SHIFT => {
+                // shift() - arg_count should be 0
+                if arg_count != 0 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.shift expects 0 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for shift method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                let result = arr.shift().unwrap_or(Value::null());
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::UNSHIFT => {
+                // unshift(value) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.unshift expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for unshift method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                let new_len = arr.unshift(value);
+                self.stack.push(Value::i32(new_len as i32))?;
+
+                Ok(())
+            }
+
+            builtin::array::INDEX_OF => {
+                // indexOf(value) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.indexOf expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for indexOf method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                let index = arr.index_of(value);
+                self.stack.push(Value::i32(index))?;
+
+                Ok(())
+            }
+
+            builtin::array::INCLUDES => {
+                // includes(value) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.includes expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for includes method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                let result = arr.includes(value);
+                self.stack.push(Value::bool(result))?;
+
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented array method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in string method (placeholder)
+    fn call_string_method(&mut self, method_id: u16, _arg_count: usize) -> VmResult<()> {
+        // TODO: Implement string methods
+        Err(VmError::RuntimeError(format!(
+            "String method 0x{:04X} not yet implemented",
+            method_id
+        )))
     }
 
     /// CALL_CONSTRUCTOR - Call class constructor

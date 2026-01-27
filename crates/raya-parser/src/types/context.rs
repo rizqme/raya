@@ -148,6 +148,15 @@ impl TypeContext {
         self.intern(Type::BooleanLiteral(value))
     }
 
+    /// Create a type variable (type parameter)
+    pub fn type_variable(&mut self, name: impl Into<String>) -> TypeId {
+        self.intern(Type::TypeVar(super::ty::TypeVar {
+            name: name.into(),
+            constraint: None,
+            default: None,
+        }))
+    }
+
     /// Create an array type
     pub fn array_type(&mut self, element: TypeId) -> TypeId {
         self.intern(Type::Array(super::ty::ArrayType { element }))

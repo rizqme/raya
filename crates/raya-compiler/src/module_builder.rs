@@ -1,13 +1,14 @@
 //! Module builder for constructing bytecode modules
 
 use crate::error::{CompileError, CompileResult};
-use crate::bytecode::{Function, Module, Opcode};
+use crate::bytecode::{ClassDef, Function, Module, Opcode};
 use rustc_hash::FxHashMap;
 
 /// Helper for building bytecode modules
 pub struct ModuleBuilder {
     name: String,
     functions: Vec<Function>,
+    classes: Vec<ClassDef>,
     constants: Vec<Vec<u8>>,
     constant_map: FxHashMap<Vec<u8>, u16>,
 }
@@ -17,6 +18,7 @@ impl ModuleBuilder {
         Self {
             name,
             functions: Vec::new(),
+            classes: Vec::new(),
             constants: Vec::new(),
             constant_map: FxHashMap::default(),
         }
@@ -25,6 +27,11 @@ impl ModuleBuilder {
     /// Add a function to the module
     pub fn add_function(&mut self, function: Function) {
         self.functions.push(function);
+    }
+
+    /// Add a class to the module
+    pub fn add_class(&mut self, class: ClassDef) {
+        self.classes.push(class);
     }
 
     /// Add a string constant to the constant pool, returning its index
@@ -48,6 +55,7 @@ impl ModuleBuilder {
     pub fn build(self) -> Module {
         let mut module = Module::new(self.name);
         module.functions = self.functions;
+        module.classes = self.classes;
         // Add string constants to constant pool
         for data in self.constants {
             if let Ok(s) = String::from_utf8(data) {
@@ -138,6 +146,16 @@ impl FunctionBuilder {
     /// Get current code position (for jump offsets)
     pub fn current_position(&self) -> usize {
         self.code.len()
+    }
+
+    /// Get mutable access to the code buffer
+    pub fn code_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.code
+    }
+
+    /// Set the local count (for IR-based code generation)
+    pub fn set_local_count(&mut self, count: u16) {
+        self.local_count = count;
     }
 
     /// Patch a jump offset at a given position

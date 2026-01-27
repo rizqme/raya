@@ -5,13 +5,15 @@
 //! context for type operations.
 
 use super::error::CheckError;
-use super::symbols::SymbolTable;
+use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_type_guard, TypeGuard};
 use super::narrowing::{apply_type_guard, TypeEnv};
 use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
+use super::captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo, FreeVariableCollector};
 use crate::ast::*;
 use crate::{Interner, Symbol as ParserSymbol};
-use crate::types::{AssignabilityContext, TypeContext, TypeId};
+use crate::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
+use crate::types::normalize::contains_type_variables;
 use rustc_hash::FxHashMap;
 
 /// Get the variable name from a type guard
@@ -28,7 +30,23 @@ fn get_guard_var(guard: &TypeGuard) -> &String {
     }
 }
 
+/// Inferred types for variables without type annotations
+///
+/// Maps (scope_id, variable_name) to the inferred TypeId.
+/// These should be applied to the symbol table using `update_type`.
+pub type InferredTypes = FxHashMap<(u32, String), TypeId>;
+
+/// Result of type checking a module
+#[derive(Debug)]
+pub struct CheckResult {
+    /// Inferred types for variables without type annotations
+    pub inferred_types: InferredTypes,
+    /// Capture information for all closures in the module
+    pub captures: ModuleCaptureInfo,
+}
+
 /// Negate a type guard
+
 fn negate_guard(guard: &TypeGuard) -> TypeGuard {
     match guard {
         TypeGuard::TypeOf { var, type_name, negated } => TypeGuard::TypeOf {
@@ -97,6 +115,17 @@ pub struct TypeChecker<'a> {
     /// Next scope ID to be entered
     /// This mirrors the scope creation in the binder
     next_scope_id: u32,
+
+    /// Stack of scope IDs for tracking parent scopes
+    /// Used when inside expressions (arrow functions) where binder didn't create scopes
+    scope_stack: Vec<super::symbols::ScopeId>,
+
+    /// Inferred types for variables without type annotations
+    /// Maps (scope_id, variable_name) -> inferred_type
+    inferred_var_types: FxHashMap<(u32, String), TypeId>,
+
+    /// Capture information for all closures
+    capture_info: ModuleCaptureInfo,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -112,6 +141,9 @@ impl<'a> TypeChecker<'a> {
             type_env: TypeEnv::new(),
             current_scope: super::symbols::ScopeId(0), // Start at global scope
             next_scope_id: 1, // Global is 0, next scope will be 1
+            scope_stack: vec![super::symbols::ScopeId(0)], // Start with global on stack
+            inferred_var_types: FxHashMap::default(),
+            capture_info: ModuleCaptureInfo::new(),
         }
     }
 
@@ -124,6 +156,7 @@ impl<'a> TypeChecker<'a> {
     /// Enter a new scope (like entering a block or function)
     /// Mirrors what the binder does when it pushes a scope
     fn enter_scope(&mut self) {
+        self.scope_stack.push(self.current_scope);
         let scope_id = super::symbols::ScopeId(self.next_scope_id);
         self.next_scope_id += 1;
         self.current_scope = scope_id;
@@ -131,19 +164,28 @@ impl<'a> TypeChecker<'a> {
 
     /// Exit the current scope, returning to parent
     fn exit_scope(&mut self) {
-        if let Some(parent) = self.symbols.get_parent_scope_id(self.current_scope) {
+        // Use our own stack instead of querying symbol table
+        // This handles cases where we're inside expressions (arrow functions)
+        // that the binder didn't create scopes for
+        if let Some(parent) = self.scope_stack.pop() {
             self.current_scope = parent;
         }
     }
 
     /// Check a module
-    pub fn check_module(mut self, module: &Module) -> Result<(), Vec<CheckError>> {
+    ///
+    /// Returns the check result containing inferred types and capture information.
+    /// Inferred types should be applied to the symbol table using `update_type`.
+    pub fn check_module(mut self, module: &Module) -> Result<CheckResult, Vec<CheckError>> {
         for stmt in &module.statements {
             self.check_stmt(stmt);
         }
 
         if self.errors.is_empty() {
-            Ok(())
+            Ok(CheckResult {
+                inferred_types: self.inferred_var_types,
+                captures: self.capture_info,
+            })
         } else {
             Err(self.errors)
         }
@@ -177,6 +219,7 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Switch(switch_stmt) => self.check_switch(switch_stmt),
             Statement::Try(try_stmt) => self.check_try(try_stmt),
+            Statement::ForOf(for_of) => self.check_for_of(for_of),
             _ => {}
         }
     }
@@ -186,15 +229,30 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref init) = decl.initializer {
             let init_ty = self.check_expr(init);
 
-            // If there's a type annotation, check that initializer is assignable
-            if let Some(ref _ty_annot) = decl.type_annotation {
-                // Get the declared type from symbol table
-                if let Pattern::Identifier(ident) = &decl.pattern {
-                    let name = self.resolve(ident.name);
+            if let Pattern::Identifier(ident) = &decl.pattern {
+                let name = self.resolve(ident.name);
+
+                // Determine the variable's type
+                let var_ty = if decl.type_annotation.is_some() {
+                    // Get the declared type from symbol table
                     if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                         self.check_assignable(init_ty, symbol.ty, *init.span());
+                        symbol.ty
+                    } else {
+                        init_ty
                     }
-                }
+                } else {
+                    // No type annotation - infer type from initializer
+                    // Store the inferred type for later lookups
+                    self.inferred_var_types.insert(
+                        (self.current_scope.0, name.clone()),
+                        init_ty
+                    );
+                    init_ty
+                };
+
+                // Also add to type_env so nested arrow functions can see it
+                self.type_env.set(name, var_ty);
             }
         }
     }
@@ -340,6 +398,16 @@ impl<'a> TypeChecker<'a> {
         // Enter loop scope (mirrors binder)
         self.enter_scope();
 
+        // Check initializer if present
+        if let Some(ref init) = for_stmt.init {
+            match init {
+                ForInit::VariableDecl(decl) => self.check_var_decl(decl),
+                ForInit::Expression(expr) => {
+                    self.check_expr(expr);
+                }
+            }
+        }
+
         // Check test condition if present
         if let Some(ref test) = for_stmt.test {
             let cond_ty = self.check_expr(test);
@@ -354,6 +422,57 @@ impl<'a> TypeChecker<'a> {
 
         // Check body
         self.check_stmt(&for_stmt.body);
+
+        // Exit loop scope
+        self.exit_scope();
+    }
+
+    /// Check for-of loop
+    fn check_for_of(&mut self, for_of: &ForOfStatement) {
+        // Enter loop scope
+        self.enter_scope();
+
+        // Check the iterable (right side) and get its type
+        let iterable_ty = self.check_expr(&for_of.right);
+
+        // Get the element type from the array
+        // For now, we only support arrays
+        let elem_ty = if let Some(crate::types::Type::Array(arr)) = self.type_ctx.get(iterable_ty) {
+            arr.element
+        } else {
+            // Not an array - report error and use unknown type
+            self.errors.push(CheckError::TypeMismatch {
+                expected: "array".to_string(),
+                actual: self.format_type(iterable_ty),
+                span: *for_of.right.span(),
+                note: Some("for-of loops require an iterable (array)".to_string()),
+            });
+            self.type_ctx.unknown_type()
+        };
+
+        // Handle the loop variable (left side)
+        // The binder should have already registered the variable
+        // We just need to ensure its type matches the element type
+        match &for_of.left {
+            ForOfLeft::VariableDecl(decl) => {
+                // Variable declared in the for-of: `for (let x of arr)`
+                // The type should be the element type of the array
+                if let Pattern::Identifier(ident) = &decl.pattern {
+                    let name = self.resolve(ident.name);
+                    // Store inferred type for the loop variable
+                    self.inferred_var_types.insert(
+                        (self.current_scope.0, name),
+                        elem_ty
+                    );
+                }
+            }
+            ForOfLeft::Pattern(_) => {
+                // Existing variable: `for (x of arr)` - type already bound
+            }
+        }
+
+        // Check body
+        self.check_stmt(&for_of.body);
 
         // Exit loop scope
         self.exit_scope();
@@ -439,6 +558,10 @@ impl<'a> TypeChecker<'a> {
                 // typeof always returns a string
                 self.type_ctx.string_type()
             }
+            Expression::Arrow(arrow) => self.check_arrow(arrow),
+            Expression::Index(index) => self.check_index(index),
+            Expression::New(new_expr) => self.check_new(new_expr),
+            Expression::This(_) => self.check_this(),
             _ => self.type_ctx.unknown_type(),
         };
 
@@ -458,9 +581,17 @@ impl<'a> TypeChecker<'a> {
             return narrowed_ty;
         }
 
-        // Otherwise look up in symbol table from current scope
+        // Look up in symbol table from current scope, walking up the scope chain
         match self.symbols.resolve_from_scope(&name, self.current_scope) {
-            Some(symbol) => symbol.ty,
+            Some(symbol) => {
+                // Check if we have an inferred type for this variable
+                // (for variables declared without type annotations)
+                let scope_id = symbol.scope_id.0;
+                if let Some(&inferred_ty) = self.inferred_var_types.get(&(scope_id, name.clone())) {
+                    return inferred_ty;
+                }
+                symbol.ty
+            }
             None => {
                 self.errors.push(CheckError::UndefinedVariable {
                     name,
@@ -477,8 +608,29 @@ impl<'a> TypeChecker<'a> {
         let right_ty = self.check_expr(&bin.right);
 
         match bin.operator {
-            BinaryOperator::Add
-            | BinaryOperator::Subtract
+            BinaryOperator::Add => {
+                // Add can be either numeric or string concatenation
+                let string_ty = self.type_ctx.string_type();
+                let number_ty = self.type_ctx.number_type();
+
+                // Check if either operand IS a string type (exact match or assignable)
+                let left_is_string = left_ty == string_ty;
+                let right_is_string = right_ty == string_ty;
+
+                if left_is_string || right_is_string {
+                    // String concatenation - both operands should be strings
+                    self.check_assignable(left_ty, string_ty, *bin.left.span());
+                    self.check_assignable(right_ty, string_ty, *bin.right.span());
+                    string_ty
+                } else {
+                    // Numeric addition
+                    self.check_assignable(left_ty, number_ty, *bin.left.span());
+                    self.check_assignable(right_ty, number_ty, *bin.right.span());
+                    number_ty
+                }
+            }
+
+            BinaryOperator::Subtract
             | BinaryOperator::Multiply
             | BinaryOperator::Divide
             | BinaryOperator::Modulo
@@ -522,12 +674,65 @@ impl<'a> TypeChecker<'a> {
         let left_ty = self.check_expr(&log.left);
         let right_ty = self.check_expr(&log.right);
 
-        // Logical operations require boolean operands
-        let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(left_ty, bool_ty, *log.left.span());
-        self.check_assignable(right_ty, bool_ty, *log.right.span());
+        match log.operator {
+            LogicalOperator::NullishCoalescing => {
+                // For x ?? y:
+                // - x can be any type (typically T | null)
+                // - y is the fallback value
+                // - Result is the non-null part of x's type, or union with y
 
-        bool_ty
+                // Get the non-null type from left operand
+                let non_null_ty = self.get_non_null_type(left_ty);
+
+                // Right side should be assignable to the non-null type
+                // (or we take a union of both)
+                if non_null_ty != right_ty {
+                    // Check if right is assignable to non-null left type
+                    let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+                    if !assign_ctx.is_assignable(right_ty, non_null_ty) {
+                        // If not directly assignable, result is union of both
+                        return self.type_ctx.union_type(vec![non_null_ty, right_ty]);
+                    }
+                }
+
+                non_null_ty
+            }
+            LogicalOperator::And | LogicalOperator::Or => {
+                // Logical AND/OR require boolean operands
+                let bool_ty = self.type_ctx.boolean_type();
+                self.check_assignable(left_ty, bool_ty, *log.left.span());
+                self.check_assignable(right_ty, bool_ty, *log.right.span());
+                bool_ty
+            }
+        }
+    }
+
+    /// Get the non-null type from a type (removes null from unions)
+    fn get_non_null_type(&mut self, ty: TypeId) -> TypeId {
+        let null_ty = self.type_ctx.null_type();
+
+        // If it's exactly null, return never (no non-null part)
+        if ty == null_ty {
+            return self.type_ctx.never_type();
+        }
+
+        // Check if it's a union type
+        if let Some(union) = self.type_ctx.get(ty).and_then(|t| t.as_union()) {
+            // Filter out null from the union members
+            let non_null_members: Vec<TypeId> = union.members.iter()
+                .filter(|&&m| m != null_ty)
+                .copied()
+                .collect();
+
+            match non_null_members.len() {
+                0 => self.type_ctx.never_type(),
+                1 => non_null_members[0],
+                _ => self.type_ctx.union_type(non_null_members),
+            }
+        } else {
+            // Not a union, return as-is (already non-null)
+            ty
+        }
     }
 
     /// Check unary expression
@@ -563,6 +768,11 @@ impl<'a> TypeChecker<'a> {
     fn check_call(&mut self, call: &CallExpression) -> TypeId {
         let callee_ty = self.check_expr(&call.callee);
 
+        // Check all argument types first (before creating GenericContext)
+        let arg_types: Vec<(TypeId, crate::Span)> = call.arguments.iter()
+            .map(|arg| (self.check_expr(arg), *arg.span()))
+            .collect();
+
         // Clone the function type to avoid borrow checker issues
         let func_ty_opt = self.type_ctx.get(callee_ty).cloned();
 
@@ -570,23 +780,44 @@ impl<'a> TypeChecker<'a> {
         match func_ty_opt {
             Some(crate::types::Type::Function(func)) => {
                 // Check argument count
-                if call.arguments.len() != func.params.len() {
+                if arg_types.len() != func.params.len() {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
-                        actual: call.arguments.len(),
+                        actual: arg_types.len(),
                         span: call.span,
                     });
                 }
 
-                // Check argument types
-                for (i, arg) in call.arguments.iter().enumerate() {
-                    if let Some(&param_ty) = func.params.get(i) {
-                        let arg_ty = self.check_expr(arg);
-                        self.check_assignable(arg_ty, param_ty, *arg.span());
-                    }
-                }
+                // Check if this is a generic function (contains type variables)
+                let is_generic = func.params.iter().any(|&p| contains_type_variables(self.type_ctx, p))
+                    || contains_type_variables(self.type_ctx, func.return_type);
 
-                func.return_type
+                if is_generic {
+                    // Use type unification for generic functions
+                    let mut gen_ctx = GenericContext::new(self.type_ctx);
+
+                    // Unify each argument type with parameter type
+                    for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                        if let Some(&param_ty) = func.params.get(i) {
+                            // Attempt unification
+                            let _ = gen_ctx.unify(param_ty, *arg_ty);
+                        }
+                    }
+
+                    // Apply substitutions to return type
+                    match gen_ctx.apply_substitution(func.return_type) {
+                        Ok(substituted_return) => substituted_return,
+                        Err(_) => func.return_type,
+                    }
+                } else {
+                    // Non-generic function - use simple type checking
+                    for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                        if let Some(&param_ty) = func.params.get(i) {
+                            self.check_assignable(*arg_ty, param_ty, *arg_span);
+                        }
+                    }
+                    func.return_type
+                }
             }
             _ => {
                 self.errors.push(CheckError::NotCallable {
@@ -596,6 +827,375 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx.unknown_type()
             }
         }
+    }
+
+    /// Collect free variables from an expression
+    fn collect_free_vars_expr(&self, expr: &Expression, collector: &mut FreeVariableCollector) {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                collector.reference(&name);
+            }
+            Expression::Binary(bin) => {
+                self.collect_free_vars_expr(&bin.left, collector);
+                self.collect_free_vars_expr(&bin.right, collector);
+            }
+            Expression::Logical(log) => {
+                self.collect_free_vars_expr(&log.left, collector);
+                self.collect_free_vars_expr(&log.right, collector);
+            }
+            Expression::Unary(un) => {
+                self.collect_free_vars_expr(&un.operand, collector);
+            }
+            Expression::Assignment(assign) => {
+                // LHS is an assignment target
+                if let Expression::Identifier(ident) = assign.left.as_ref() {
+                    let name = self.resolve(ident.name);
+                    collector.assign(&name);
+                } else {
+                    self.collect_free_vars_expr(&assign.left, collector);
+                }
+                self.collect_free_vars_expr(&assign.right, collector);
+            }
+            Expression::Call(call) => {
+                self.collect_free_vars_expr(&call.callee, collector);
+                for arg in &call.arguments {
+                    self.collect_free_vars_expr(arg, collector);
+                }
+            }
+            Expression::Member(member) => {
+                self.collect_free_vars_expr(&member.object, collector);
+            }
+            Expression::Index(idx) => {
+                self.collect_free_vars_expr(&idx.object, collector);
+                self.collect_free_vars_expr(&idx.index, collector);
+            }
+            Expression::Array(arr) => {
+                for elem_opt in &arr.elements {
+                    if let Some(elem) = elem_opt {
+                        match elem {
+                            ArrayElement::Expression(e) => self.collect_free_vars_expr(e, collector),
+                            ArrayElement::Spread(e) => self.collect_free_vars_expr(e, collector),
+                        }
+                    }
+                }
+            }
+            Expression::Object(obj) => {
+                for prop in &obj.properties {
+                    match prop {
+                        ObjectProperty::Property(p) => {
+                            self.collect_free_vars_expr(&p.value, collector);
+                        }
+                        ObjectProperty::Spread(spread) => {
+                            self.collect_free_vars_expr(&spread.argument, collector);
+                        }
+                    }
+                }
+            }
+            Expression::Conditional(cond) => {
+                self.collect_free_vars_expr(&cond.test, collector);
+                self.collect_free_vars_expr(&cond.consequent, collector);
+                self.collect_free_vars_expr(&cond.alternate, collector);
+            }
+            Expression::Arrow(inner_arrow) => {
+                // Nested arrow: create new collector for its body
+                // but note what it captures from our scope
+                let mut inner_collector = FreeVariableCollector::new();
+                for param in &inner_arrow.params {
+                    if let crate::ast::Pattern::Identifier(ident) = &param.pattern {
+                        inner_collector.bind(self.resolve(ident.name));
+                    }
+                }
+                match &inner_arrow.body {
+                    ArrowBody::Expression(e) => self.collect_free_vars_expr(e, &mut inner_collector),
+                    ArrowBody::Block(b) => self.collect_free_vars_block(b, &mut inner_collector),
+                }
+                // Free vars of inner closure that aren't bound locally are our free vars too
+                for var in inner_collector.free_variables() {
+                    if !collector.bound_vars.contains(var) {
+                        if inner_collector.is_assigned(var) {
+                            collector.assign(var);
+                        } else {
+                            collector.reference(var);
+                        }
+                    }
+                }
+            }
+            Expression::Typeof(ty) => {
+                self.collect_free_vars_expr(&ty.argument, collector);
+            }
+            Expression::TemplateLiteral(tpl) => {
+                for part in &tpl.parts {
+                    if let TemplatePart::Expression(expr) = part {
+                        self.collect_free_vars_expr(expr, collector);
+                    }
+                }
+            }
+            // Literals don't have free variables
+            Expression::IntLiteral(_)
+            | Expression::FloatLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_) => {}
+            // Other expressions - handle remaining cases
+            _ => {}
+        }
+    }
+
+    /// Collect free variables from a block
+    fn collect_free_vars_block(&self, block: &BlockStatement, collector: &mut FreeVariableCollector) {
+        for stmt in &block.statements {
+            self.collect_free_vars_stmt(stmt, collector);
+        }
+    }
+
+    /// Collect free variables from a statement
+    fn collect_free_vars_stmt(&self, stmt: &Statement, collector: &mut FreeVariableCollector) {
+        match stmt {
+            Statement::Expression(expr_stmt) => {
+                self.collect_free_vars_expr(&expr_stmt.expression, collector);
+            }
+            Statement::VariableDecl(decl) => {
+                // Initializer is evaluated before binding
+                if let Some(ref init) = decl.initializer {
+                    self.collect_free_vars_expr(init, collector);
+                }
+                // Then bind the variable
+                if let Pattern::Identifier(ident) = &decl.pattern {
+                    collector.bind(self.resolve(ident.name));
+                }
+            }
+            Statement::Return(ret) => {
+                if let Some(ref val) = ret.value {
+                    self.collect_free_vars_expr(val, collector);
+                }
+            }
+            Statement::If(if_stmt) => {
+                self.collect_free_vars_expr(&if_stmt.condition, collector);
+                self.collect_free_vars_stmt(&if_stmt.then_branch, collector);
+                if let Some(ref else_branch) = if_stmt.else_branch {
+                    self.collect_free_vars_stmt(else_branch, collector);
+                }
+            }
+            Statement::While(while_stmt) => {
+                self.collect_free_vars_expr(&while_stmt.condition, collector);
+                self.collect_free_vars_stmt(&while_stmt.body, collector);
+            }
+            Statement::For(for_stmt) => {
+                if let Some(ref init) = for_stmt.init {
+                    match init {
+                        ForInit::VariableDecl(decl) => {
+                            if let Some(ref init_expr) = decl.initializer {
+                                self.collect_free_vars_expr(init_expr, collector);
+                            }
+                            if let Pattern::Identifier(ident) = &decl.pattern {
+                                collector.bind(self.resolve(ident.name));
+                            }
+                        }
+                        ForInit::Expression(e) => self.collect_free_vars_expr(e, collector),
+                    }
+                }
+                if let Some(ref test) = for_stmt.test {
+                    self.collect_free_vars_expr(test, collector);
+                }
+                if let Some(ref update) = for_stmt.update {
+                    self.collect_free_vars_expr(update, collector);
+                }
+                self.collect_free_vars_stmt(&for_stmt.body, collector);
+            }
+            Statement::ForOf(for_of) => {
+                self.collect_free_vars_expr(&for_of.right, collector);
+                match &for_of.left {
+                    ForOfLeft::VariableDecl(decl) => {
+                        if let Pattern::Identifier(ident) = &decl.pattern {
+                            collector.bind(self.resolve(ident.name));
+                        }
+                    }
+                    ForOfLeft::Pattern(p) => {
+                        if let Pattern::Identifier(ident) = p {
+                            collector.assign(&self.resolve(ident.name));
+                        }
+                    }
+                }
+                self.collect_free_vars_stmt(&for_of.body, collector);
+            }
+            Statement::Block(block) => {
+                self.collect_free_vars_block(block, collector);
+            }
+            Statement::Switch(switch_stmt) => {
+                self.collect_free_vars_expr(&switch_stmt.discriminant, collector);
+                for case in &switch_stmt.cases {
+                    if let Some(ref test) = case.test {
+                        self.collect_free_vars_expr(test, collector);
+                    }
+                    for stmt in &case.consequent {
+                        self.collect_free_vars_stmt(stmt, collector);
+                    }
+                }
+            }
+            Statement::Try(try_stmt) => {
+                self.collect_free_vars_block(&try_stmt.body, collector);
+                if let Some(ref catch) = try_stmt.catch_clause {
+                    // Catch variable is bound in catch block
+                    if let Some(ref param) = catch.param {
+                        if let Pattern::Identifier(ident) = param {
+                            collector.bind(self.resolve(ident.name));
+                        }
+                    }
+                    self.collect_free_vars_block(&catch.body, collector);
+                }
+                if let Some(ref finally) = try_stmt.finally_clause {
+                    self.collect_free_vars_block(finally, collector);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Check arrow function
+    fn check_arrow(&mut self, arrow: &crate::ast::ArrowFunction) -> TypeId {
+        // Save current type environment - parameters are scoped to the arrow body
+        let saved_env = self.type_env.clone();
+
+        // Collect parameter names for binding
+        let mut param_names = Vec::new();
+        let mut param_types = Vec::new();
+
+        for param in &arrow.params {
+            let param_ty = param
+                .type_annotation
+                .as_ref()
+                .map(|t| self.resolve_type_annotation(t))
+                .unwrap_or_else(|| self.type_ctx.unknown_type());
+            param_types.push(param_ty);
+
+            // Add parameter to type environment so it can be resolved in body
+            if let crate::ast::Pattern::Identifier(ident) = &param.pattern {
+                let name = self.resolve(ident.name);
+                param_names.push(name.clone());
+                self.type_env.set(name, param_ty);
+            }
+        }
+
+        // Collect free variables from the arrow body
+        let mut collector = FreeVariableCollector::new();
+        for name in &param_names {
+            collector.bind(name.clone());
+        }
+
+        match &arrow.body {
+            ArrowBody::Expression(expr) => {
+                self.collect_free_vars_expr(expr, &mut collector);
+            }
+            ArrowBody::Block(block) => {
+                self.collect_free_vars_block(block, &mut collector);
+            }
+        }
+
+        // Build capture info from free variables
+        let mut closure_captures = ClosureCaptures::new();
+        for var_name in collector.free_variables() {
+            // Look up the variable in outer scopes
+            if let Some(symbol) = self.symbols.resolve_from_scope(var_name, self.current_scope) {
+                // Check if this is actually from an outer scope (not global built-in)
+                if symbol.scope_id.0 < self.current_scope.0 || symbol.scope_id == super::symbols::ScopeId(0) {
+                    // Get the type (prefer inferred type if available)
+                    let ty = self.inferred_var_types
+                        .get(&(symbol.scope_id.0, var_name.clone()))
+                        .copied()
+                        .unwrap_or(symbol.ty);
+
+                    closure_captures.add(CaptureInfo {
+                        name: var_name.clone(),
+                        ty,
+                        defining_scope: symbol.scope_id,
+                        is_mutated: collector.is_assigned(var_name),
+                        capture_span: arrow.span, // Use arrow span as capture site
+                    });
+                }
+            }
+        }
+
+        // Store capture info for this closure
+        if !closure_captures.is_empty() {
+            self.capture_info.insert(ClosureId(arrow.span), closure_captures);
+        }
+
+        // Determine return type
+        let return_ty = match &arrow.body {
+            crate::ast::ArrowBody::Expression(expr) => {
+                // For expression body, the return type is the expression's type
+                let expr_ty = self.check_expr(expr);
+                arrow
+                    .return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or(expr_ty)
+            }
+            crate::ast::ArrowBody::Block(block) => {
+                // Check block statements
+                for stmt in &block.statements {
+                    self.check_stmt(stmt);
+                }
+                // Use the return type annotation or infer void
+                arrow
+                    .return_type
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or_else(|| self.type_ctx.void_type())
+            }
+        };
+
+        // Restore type environment
+        self.type_env = saved_env;
+
+        // Create function type
+        self.type_ctx
+            .function_type(param_types, return_ty, arrow.is_async)
+    }
+
+    /// Check index access
+    fn check_index(&mut self, index: &crate::ast::IndexExpression) -> TypeId {
+        let object_ty = self.check_expr(&index.object);
+        let _index_ty = self.check_expr(&index.index);
+
+        // Get element type if object is an array
+        if let Some(crate::types::Type::Array(arr)) = self.type_ctx.get(object_ty) {
+            arr.element
+        } else {
+            // For other types (objects with index signature), return unknown
+            self.type_ctx.unknown_type()
+        }
+    }
+
+    /// Check new expression (class instantiation)
+    fn check_new(&mut self, new_expr: &crate::ast::NewExpression) -> TypeId {
+        // Get the callee type (should be a class)
+        if let Expression::Identifier(ident) = &*new_expr.callee {
+            let name = self.resolve(ident.name);
+            // Look up the class symbol to get its type
+            if let Some(symbol) = self.symbols.resolve(&name) {
+                if symbol.kind == SymbolKind::Class {
+                    // Check constructor arguments (for now, just check them)
+                    for arg in &new_expr.arguments {
+                        self.check_expr(arg);
+                    }
+                    return symbol.ty;
+                }
+            }
+        }
+        // Check arguments even if we can't determine the class
+        for arg in &new_expr.arguments {
+            self.check_expr(arg);
+        }
+        self.type_ctx.unknown_type()
+    }
+
+    /// Check this expression
+    fn check_this(&mut self) -> TypeId {
+        // Return the current class type if we're inside a class method
+        // For now, return unknown - this will be enhanced with class context
+        self.type_ctx.unknown_type()
     }
 
     /// Check member access
@@ -616,17 +1216,128 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // For now, return unknown for member access
-        // TODO: Implement property type lookup for objects/classes
+        // Get the type for property lookup
+        let obj_type = self.type_ctx.get(object_ty).cloned();
+
+        // Check for built-in array methods
+        if let Some(crate::types::Type::Array(arr)) = &obj_type {
+            let elem_ty = arr.element;
+            if let Some(method_type) = self.get_array_method_type(&property_name, elem_ty) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in string methods
+        if let Some(crate::types::Type::Primitive(crate::types::PrimitiveType::String)) = &obj_type {
+            if let Some(method_type) = self.get_string_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for class properties and methods
+        if let Some(crate::types::Type::Class(class)) = &obj_type {
+            // If this is a placeholder class type (empty methods), look up the symbol to get the full type
+            let actual_class = if class.methods.is_empty() && class.properties.is_empty() {
+                // Look up class by name in symbol table
+                if let Some(symbol) = self.symbols.resolve(&class.name) {
+                    if symbol.kind == SymbolKind::Class {
+                        self.type_ctx.get(symbol.ty).and_then(|t| {
+                            if let crate::types::Type::Class(c) = t {
+                                Some(c.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let class_to_use = actual_class.as_ref().unwrap_or(class);
+
+            // Check properties
+            for prop in &class_to_use.properties {
+                if prop.name == property_name {
+                    return prop.ty;
+                }
+            }
+            // Check methods
+            for method in &class_to_use.methods {
+                if method.name == property_name {
+                    return method.ty;
+                }
+            }
+        }
+
+        // For now, return unknown for other member access
+        // TODO: Implement property type lookup for interfaces and other types
         self.type_ctx.unknown_type()
+    }
+
+    /// Get the type of a built-in array method
+    fn get_array_method_type(&mut self, method_name: &str, elem_ty: TypeId) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+
+        match method_name {
+            // push(value: T) -> number
+            "push" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // pop() -> T
+            "pop" => Some(self.type_ctx.function_type(vec![], elem_ty, false)),
+            // shift() -> T
+            "shift" => Some(self.type_ctx.function_type(vec![], elem_ty, false)),
+            // unshift(value: T) -> number
+            "unshift" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // indexOf(value: T) -> number
+            "indexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // includes(value: T) -> boolean
+            "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
+            // length property (not a method, but handled here for convenience)
+            "length" => Some(number_ty),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in string method
+    fn get_string_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+
+        match method_name {
+            // length property
+            "length" => Some(number_ty),
+            // charAt(index: number) -> string
+            "charAt" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // substring(start: number, end: number) -> string
+            "substring" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], string_ty, false)),
+            // toUpperCase() -> string
+            "toUpperCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // toLowerCase() -> string
+            "toLowerCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // trim() -> string
+            "trim" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // indexOf(searchStr: string) -> number
+            "indexOf" => Some(self.type_ctx.function_type(vec![string_ty], number_ty, false)),
+            // includes(searchStr: string) -> boolean
+            "includes" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            _ => None,
+        }
     }
 
     /// Check array literal
     fn check_array(&mut self, arr: &ArrayExpression) -> TypeId {
         if arr.elements.is_empty() {
-            // Empty array - infer as unknown[]
-            let unknown = self.type_ctx.unknown_type();
-            return self.type_ctx.array_type(unknown);
+            // Empty array - infer as never[]
+            // never is the bottom type, so never[] <: T[] for any T
+            // This allows empty arrays to be assigned to any typed array
+            let never = self.type_ctx.never_type();
+            return self.type_ctx.array_type(never);
         }
 
         // Find first non-None element to infer type
@@ -715,6 +1426,105 @@ impl<'a> TypeChecker<'a> {
         let expr_id = expr as *const _ as usize;
         self.expr_types.get(&expr_id).copied()
     }
+
+    /// Resolve a type annotation to a TypeId
+    fn resolve_type_annotation(&mut self, ty_annot: &TypeAnnotation) -> TypeId {
+        self.resolve_type(&ty_annot.ty)
+    }
+
+    /// Resolve a type AST node to a TypeId
+    fn resolve_type(&mut self, ty: &crate::ast::Type) -> TypeId {
+        use crate::ast::Type as AstType;
+
+        match ty {
+            AstType::Primitive(prim) => self.resolve_primitive(*prim),
+
+            AstType::Reference(type_ref) => {
+                // Check if it's a user-defined type or type parameter
+                let name = self.resolve(type_ref.name.name);
+                if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                    symbol.ty
+                } else {
+                    // Type not found - return unknown
+                    self.type_ctx.unknown_type()
+                }
+            }
+
+            AstType::Array(arr) => {
+                let elem_ty = self.resolve_type_annotation(&arr.element_type);
+                self.type_ctx.array_type(elem_ty)
+            }
+
+            AstType::Tuple(tuple) => {
+                let elem_tys: Vec<_> = tuple
+                    .element_types
+                    .iter()
+                    .map(|e| self.resolve_type_annotation(e))
+                    .collect();
+                self.type_ctx.tuple_type(elem_tys)
+            }
+
+            AstType::Union(union) => {
+                let member_tys: Vec<_> = union
+                    .types
+                    .iter()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .collect();
+                self.type_ctx.union_type(member_tys)
+            }
+
+            AstType::Function(func) => {
+                let param_tys: Vec<_> = func
+                    .params
+                    .iter()
+                    .map(|p| self.resolve_type_annotation(&p.ty))
+                    .collect();
+
+                let return_ty = self.resolve_type_annotation(&func.return_type);
+
+                self.type_ctx.function_type(param_tys, return_ty, false)
+            }
+
+            AstType::Object(_obj) => {
+                // TODO: Implement object type resolution
+                self.type_ctx.unknown_type()
+            }
+
+            AstType::Typeof(_) => {
+                // typeof types are resolved during type checking
+                self.type_ctx.unknown_type()
+            }
+
+            AstType::StringLiteral(s) => {
+                self.type_ctx.string_literal(self.interner.resolve(*s).to_string())
+            }
+
+            AstType::NumberLiteral(n) => {
+                self.type_ctx.number_literal(*n)
+            }
+
+            AstType::BooleanLiteral(b) => {
+                self.type_ctx.boolean_literal(*b)
+            }
+
+            AstType::Parenthesized(inner) => {
+                self.resolve_type_annotation(inner)
+            }
+        }
+    }
+
+    /// Resolve a primitive type to TypeId
+    fn resolve_primitive(&mut self, prim: crate::ast::PrimitiveType) -> TypeId {
+        use crate::ast::PrimitiveType as AstPrim;
+
+        match prim {
+            AstPrim::Number => self.type_ctx.number_type(),
+            AstPrim::String => self.type_ctx.string_type(),
+            AstPrim::Boolean => self.type_ctx.boolean_type(),
+            AstPrim::Null => self.type_ctx.null_type(),
+            AstPrim::Void => self.type_ctx.void_type(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -732,7 +1542,7 @@ mod tests {
         let symbols = binder.bind_module(&module).unwrap();
 
         let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
-        checker.check_module(&module)
+        checker.check_module(&module).map(|_| ())
     }
 
     #[test]

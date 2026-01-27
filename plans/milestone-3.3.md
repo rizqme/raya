@@ -1,6 +1,6 @@
 # Milestone 3.3: Code Generation
 
-**Status:** Planned
+**Status:** Complete ✅
 **Dependencies:** Milestone 3.1 (IR) ✅, Milestone 3.2 (Monomorphization) ✅
 **Reference:** `design/MAPPING.md`
 
@@ -173,10 +173,10 @@ impl CodeGenerator {
 | `x == userInput()` | string | O(n) SEQ | O(n) SEQ | 1x |
 
 **Tests:**
-- [ ] Constant-constant comparison uses IEQ
-- [ ] Constant-variable (from literal) uses IEQ
-- [ ] Computed string falls back to SEQ
-- [ ] String literal union comparison uses IEQ
+- [x] Constant-constant comparison uses IEQ
+- [x] Constant-variable (from literal) uses IEQ
+- [x] Computed string falls back to SEQ
+- [x] String literal union comparison uses IEQ
 
 ---
 
@@ -312,13 +312,13 @@ Runtime (SEQ):
 - Threshold can be tuned based on benchmarks
 
 **Tests:**
-- [ ] SEQ returns true immediately for same pointer
-- [ ] SEQ returns false immediately for different lengths
-- [ ] SEQ returns false for different hashes (same length)
-- [ ] SEQ correctly compares equal strings with same hash
-- [ ] Hash is computed lazily (not on string creation)
-- [ ] Hash is cached (subsequent access is O(1))
-- [ ] No performance regression for different strings
+- [x] SEQ returns true immediately for same pointer
+- [x] SEQ returns false immediately for different lengths
+- [x] SEQ returns false for different hashes (same length)
+- [x] SEQ correctly compares equal strings with same hash
+- [x] Hash is computed lazily (not on string creation)
+- [x] Hash is cached (subsequent access is O(1))
+- [x] No performance regression for different strings
 
 ---
 

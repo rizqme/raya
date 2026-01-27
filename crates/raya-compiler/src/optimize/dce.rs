@@ -111,6 +111,9 @@ impl DeadCodeEliminator {
             IrInstr::ArrayLen { array, .. } => {
                 used.insert(array.id);
             }
+            IrInstr::StringLen { string, .. } => {
+                used.insert(string.id);
+            }
             IrInstr::Typeof { operand, .. } => {
                 used.insert(operand.id);
             }
@@ -119,8 +122,46 @@ impl DeadCodeEliminator {
                     used.insert(reg.id);
                 }
             }
-            IrInstr::LoadLocal { .. } | IrInstr::NewObject { .. } => {
+            IrInstr::MakeClosure { captures, .. } => {
+                for capture in captures {
+                    used.insert(capture.id);
+                }
+            }
+            IrInstr::StoreCaptured { value, .. } => {
+                used.insert(value.id);
+            }
+            IrInstr::SetClosureCapture { closure, value, .. } => {
+                used.insert(closure.id);
+                used.insert(value.id);
+            }
+            IrInstr::NewRefCell { initial_value, .. } => {
+                used.insert(initial_value.id);
+            }
+            IrInstr::LoadRefCell { refcell, .. } => {
+                used.insert(refcell.id);
+            }
+            IrInstr::StoreRefCell { refcell, value } => {
+                used.insert(refcell.id);
+                used.insert(value.id);
+            }
+            IrInstr::CallClosure { closure, args, .. } => {
+                used.insert(closure.id);
+                for arg in args {
+                    used.insert(arg.id);
+                }
+            }
+            IrInstr::LoadLocal { .. } | IrInstr::NewObject { .. } | IrInstr::LoadCaptured { .. } | IrInstr::LoadGlobal { .. } => {
                 // No register uses
+            }
+            IrInstr::StoreGlobal { value, .. } => {
+                used.insert(value.id);
+            }
+            IrInstr::StringCompare { left, right, .. } => {
+                used.insert(left.id);
+                used.insert(right.id);
+            }
+            IrInstr::ToString { operand, .. } => {
+                used.insert(operand.id);
             }
         }
     }
@@ -130,6 +171,9 @@ impl DeadCodeEliminator {
         match term {
             Terminator::Branch { cond, .. } => {
                 used.insert(cond.id);
+            }
+            Terminator::BranchIfNull { value, .. } => {
+                used.insert(value.id);
             }
             Terminator::Return(Some(reg)) => {
                 used.insert(reg.id);

@@ -149,9 +149,7 @@ mod tests {
     fn test_stringify_string() {
         let mut gc = GarbageCollector::default();
 
-        let raya_str = RayaString {
-            data: "hello".to_string(),
-        };
+        let raya_str = RayaString::new("hello".to_string());
         let str_ptr = gc.allocate(raya_str);
         let value = JsonValue::String(str_ptr);
 
@@ -163,9 +161,7 @@ mod tests {
     fn test_stringify_string_escapes() {
         let mut gc = GarbageCollector::default();
 
-        let raya_str = RayaString {
-            data: "hello\nworld\t\"test\"".to_string(),
-        };
+        let raya_str = RayaString::new("hello\nworld\t\"test\"".to_string());
         let str_ptr = gc.allocate(raya_str);
         let value = JsonValue::String(str_ptr);
 
@@ -195,9 +191,7 @@ mod tests {
 
         let mut obj = rustc_hash::FxHashMap::default();
 
-        let name_str = RayaString {
-            data: "Alice".to_string(),
-        };
+        let name_str = RayaString::new("Alice".to_string());
         let name_ptr = gc.allocate(name_str);
         obj.insert("name".to_string(), JsonValue::String(name_ptr));
         obj.insert("age".to_string(), JsonValue::Number(30.0));

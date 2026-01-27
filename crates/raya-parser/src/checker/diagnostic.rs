@@ -260,6 +260,12 @@ impl Diagnostic {
                     .with_code(ErrorCode("E3004"))
                     .with_primary_label(file_id, *span, "invalid type")
             }
+
+            InvalidTypeArguments { name, expected, actual, span } => {
+                Diagnostic::error(format!("Type '{}' expects {} type argument(s), got {}", name, expected, actual))
+                    .with_code(ErrorCode("E3005"))
+                    .with_primary_label(file_id, *span, "wrong number of type arguments")
+            }
         }
     }
 

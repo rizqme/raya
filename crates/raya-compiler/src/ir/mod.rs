@@ -20,7 +20,7 @@ pub mod value;
 
 pub use block::{BasicBlock, BasicBlockId, Terminator};
 pub use function::IrFunction;
-pub use instr::{BinaryOp, ClassId, FunctionId, IrInstr, UnaryOp};
+pub use instr::{BinaryOp, ClassId, FunctionId, IrInstr, StringCompareMode, UnaryOp};
 pub use module::{IrClass, IrField, IrModule};
 pub use pretty::PrettyPrint;
-pub use value::{IrConstant, IrValue, Register, RegisterId};
+pub use value::{IrConstant, IrValue, Register, RegisterId, ValueOrigin};

@@ -67,6 +67,7 @@ impl<'a> Binder<'a> {
             Statement::Switch(switch_stmt) => self.bind_switch(switch_stmt),
             Statement::While(while_stmt) => self.bind_while(while_stmt),
             Statement::For(for_stmt) => self.bind_for(for_stmt),
+            Statement::ForOf(for_of) => self.bind_for_of(for_of),
             Statement::Try(try_stmt) => self.bind_try(try_stmt),
             // Other statements don't introduce bindings
             _ => Ok(()),
@@ -113,7 +114,38 @@ impl<'a> Binder<'a> {
 
     /// Bind function declaration
     fn bind_function(&mut self, func: &FunctionDecl) -> Result<(), BindError> {
+        // Get parent scope ID before pushing (for defining function symbol)
+        let parent_scope_id = self.symbols.current_scope_id();
+
+        // Push function scope - type parameters, parameters, and body all share this scope
+        self.symbols.push_scope(ScopeKind::Function);
+
+        // Bind type parameters first (before resolving parameter types)
+        if let Some(ref type_params) = func.type_params {
+            for type_param in type_params {
+                let param_name = self.resolve(type_param.name.name);
+                // Create a type variable for this type parameter
+                let type_var = self.type_ctx.type_variable(param_name.clone());
+
+                let tp_symbol = Symbol {
+                    name: param_name,
+                    kind: SymbolKind::TypeParameter,
+                    ty: type_var,
+                    flags: SymbolFlags::default(),
+                    scope_id: self.symbols.current_scope_id(),
+                    span: type_param.span,
+                };
+
+                self.symbols.define(tp_symbol).map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
+            }
+        }
+
         // Build function type from parameters and return type
+        // Type parameters are now in scope, so we can resolve them in param types
         let mut param_types = Vec::new();
         for param in &func.params {
             let param_ty = match &param.type_annotation {
@@ -128,8 +160,9 @@ impl<'a> Binder<'a> {
             None => self.type_ctx.void_type(),
         };
 
-        let func_ty = self.type_ctx.function_type(param_types, return_ty, func.is_async);
+        let func_ty = self.type_ctx.function_type(param_types.clone(), return_ty, func.is_async);
 
+        // Define function symbol in parent scope (so it can be called recursively)
         let symbol = Symbol {
             name: self.resolve(func.name.name),
             kind: SymbolKind::Function,
@@ -140,26 +173,19 @@ impl<'a> Binder<'a> {
                 is_async: func.is_async,
                 is_readonly: false,
             },
-            scope_id: self.symbols.current_scope_id(),
+            scope_id: parent_scope_id,  // Define in parent scope
             span: func.name.span,
         };
 
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+        self.symbols.define_in_scope(parent_scope_id, symbol).map_err(|err| BindError::DuplicateSymbol {
             name: err.name,
             original: err.original,
             duplicate: err.duplicate,
         })?;
 
-        // Bind function body in new scope
-        self.symbols.push_scope(ScopeKind::Function);
-
-        // Bind parameters
-        for param in &func.params {
-            let param_ty = match &param.type_annotation {
-                Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
-                None => self.type_ctx.unknown_type(),
-            };
-
+        // Bind parameters in the function scope
+        // Note: param types are already resolved above, we use param_types[i]
+        for (i, param) in func.params.iter().enumerate() {
             // Extract identifier from pattern (simplified)
             let (param_name, param_span) = match &param.pattern {
                 Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
@@ -169,7 +195,7 @@ impl<'a> Binder<'a> {
             let param_symbol = Symbol {
                 name: param_name,
                 kind: SymbolKind::Variable,
-                ty: param_ty,
+                ty: param_types[i],
                 flags: SymbolFlags {
                     is_exported: false,
                     is_const: true,
@@ -198,12 +224,24 @@ impl<'a> Binder<'a> {
 
     /// Bind class declaration
     fn bind_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
-        // For now, create a simple class type
-        // TODO: Build full class type with properties and methods
-        let class_ty = self.type_ctx.unknown_type();
+        use crate::types::ty::{ClassType, PropertySignature, MethodSignature, Type};
+
+        let class_name = self.resolve(class.name.name);
+
+        // First, create a placeholder class type and define the symbol
+        // This allows the class name to be used as a return type in methods
+        let placeholder_type = ClassType {
+            name: class_name.clone(),
+            type_params: vec![],
+            properties: vec![],
+            methods: vec![],
+            extends: None,
+            implements: vec![],
+        };
+        let class_ty = self.type_ctx.intern(Type::Class(placeholder_type));
 
         let symbol = Symbol {
-            name: self.resolve(class.name.name),
+            name: class_name.clone(),
             kind: SymbolKind::Class,
             ty: class_ty,
             flags: SymbolFlags {
@@ -221,6 +259,79 @@ impl<'a> Binder<'a> {
             original: err.original,
             duplicate: err.duplicate,
         })?;
+
+        // Now collect properties and methods (class name is now resolvable)
+        let mut properties = Vec::new();
+        let mut methods = Vec::new();
+
+        for member in &class.members {
+            match member {
+                ClassMember::Field(field) => {
+                    let field_name = self.resolve(field.name.name);
+                    let field_ty = if let Some(ref ann) = field.type_annotation {
+                        self.resolve_type_annotation(ann)?
+                    } else {
+                        self.type_ctx.unknown_type()
+                    };
+                    properties.push(PropertySignature {
+                        name: field_name,
+                        ty: field_ty,
+                        optional: false,
+                        readonly: false,
+                    });
+                }
+                ClassMember::Method(method) => {
+                    let method_name = self.resolve(method.name.name);
+                    // Create function type for the method
+                    let mut params = Vec::new();
+                    for p in &method.params {
+                        let param_ty = if let Some(ref ann) = p.type_annotation {
+                            self.resolve_type_annotation(ann)?
+                        } else {
+                            self.type_ctx.unknown_type()
+                        };
+                        params.push(param_ty);
+                    }
+                    // Placeholder for return type - will be fixed up below
+                    let return_ty = if let Some(ref ann) = method.return_type {
+                        self.resolve_type_annotation(ann)?
+                    } else {
+                        self.type_ctx.void_type()
+                    };
+                    methods.push((method_name, params, return_ty, method.is_async));
+                }
+                _ => {}
+            }
+        }
+
+        // Create method signatures with proper return types
+        // If return type equals the placeholder class_ty, we need to create a self-referential type
+        // We'll create the full class type first, then fix up method return types that reference it
+
+        // First pass: create method signatures (return types may reference placeholder)
+        let method_sigs: Vec<MethodSignature> = methods
+            .into_iter()
+            .map(|(name, params, return_ty, is_async)| {
+                // For now, use the return_ty as-is. Self-referential types will use placeholder.
+                let func_ty = self.type_ctx.function_type(params, return_ty, is_async);
+                MethodSignature { name, ty: func_ty }
+            })
+            .collect();
+
+        // Create the full class type with properties and methods
+        let full_class_type = ClassType {
+            name: class_name.clone(),
+            type_params: vec![],
+            properties,
+            methods: method_sigs,
+            extends: None,
+            implements: vec![],
+        };
+        let full_class_ty = self.type_ctx.intern(Type::Class(full_class_type));
+
+        // Update the symbol's type with the full class type
+        let scope_id = self.symbols.current_scope_id();
+        self.symbols.update_type(scope_id, &class_name, full_class_ty);
 
         // Bind class members in class scope
         self.symbols.push_scope(ScopeKind::Class);
@@ -332,6 +443,25 @@ impl<'a> Binder<'a> {
         Ok(())
     }
 
+    /// Bind for-of loop
+    fn bind_for_of(&mut self, for_of: &ForOfStatement) -> Result<(), BindError> {
+        self.symbols.push_scope(ScopeKind::Loop);
+
+        // Bind the loop variable
+        match &for_of.left {
+            ForOfLeft::VariableDecl(decl) => self.bind_var_decl(decl)?,
+            ForOfLeft::Pattern(_) => {
+                // Existing variable - already bound in outer scope
+            }
+        }
+
+        // Bind body
+        self.bind_stmt(&for_of.body)?;
+
+        self.symbols.pop_scope();
+        Ok(())
+    }
+
     /// Bind try-catch statement
     fn bind_try(&mut self, try_stmt: &TryStatement) -> Result<(), BindError> {
         // Bind try block
@@ -405,10 +535,29 @@ impl<'a> Binder<'a> {
             AstType::Primitive(prim) => Ok(self.resolve_primitive(*prim)),
 
             AstType::Reference(type_ref) => {
-                // Check if it's a user-defined type
+                // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
+
+                // Handle built-in generic types
+                if name == "Array" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let elem_ty = self.resolve_type_annotation(&type_args[0])?;
+                            return Ok(self.type_ctx.array_type(elem_ty));
+                        }
+                    }
+                    return Err(BindError::InvalidTypeArguments {
+                        name,
+                        expected: 1,
+                        actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
+                        span,
+                    });
+                }
+
                 if let Some(symbol) = self.symbols.resolve(&name) {
-                    if symbol.kind == SymbolKind::TypeAlias {
+                    if symbol.kind == SymbolKind::TypeAlias
+                        || symbol.kind == SymbolKind::TypeParameter
+                        || symbol.kind == SymbolKind::Class {
                         Ok(symbol.ty)
                     } else {
                         Err(BindError::NotAType {

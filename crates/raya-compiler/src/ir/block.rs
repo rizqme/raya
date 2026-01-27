@@ -97,11 +97,18 @@ pub enum Terminator {
     /// Unconditional jump to target block
     Jump(BasicBlockId),
 
-    /// Conditional branch based on condition register
+    /// Conditional branch based on condition register (truthy/falsy)
     Branch {
         cond: Register,
         then_block: BasicBlockId,
         else_block: BasicBlockId,
+    },
+
+    /// Conditional branch based on null check
+    BranchIfNull {
+        value: Register,
+        null_block: BasicBlockId,
+        not_null_block: BasicBlockId,
     },
 
     /// Return from function with optional value
@@ -131,6 +138,11 @@ impl Terminator {
                 else_block,
                 ..
             } => vec![*then_block, *else_block],
+            Terminator::BranchIfNull {
+                null_block,
+                not_null_block,
+                ..
+            } => vec![*null_block, *not_null_block],
             Terminator::Return(_) => vec![],
             Terminator::Switch { cases, default, .. } => {
                 let mut succs: Vec<_> = cases.iter().map(|(_, block)| *block).collect();
@@ -157,6 +169,15 @@ impl std::fmt::Display for Terminator {
                 then_block,
                 else_block,
             } => write!(f, "branch {} ? {} : {}", cond, then_block, else_block),
+            Terminator::BranchIfNull {
+                value,
+                null_block,
+                not_null_block,
+            } => write!(
+                f,
+                "branch_if_null {} ? {} : {}",
+                value, null_block, not_null_block
+            ),
             Terminator::Return(None) => write!(f, "return"),
             Terminator::Return(Some(reg)) => write!(f, "return {}", reg),
             Terminator::Switch {

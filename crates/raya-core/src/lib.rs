@@ -26,6 +26,7 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(ambiguous_wide_pointer_comparisons)]
 
+pub mod builtin;
 pub mod ffi;
 pub mod gc;
 pub mod json;
