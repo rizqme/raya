@@ -112,7 +112,6 @@ fn test_sleep_ordering() {
 // ============================================================================
 
 #[test]
-#[ignore = "Concurrent error handling not yet implemented"]
 fn test_await_array_with_failure() {
     // If one task fails, await [...] should propagate the error
     expect_i32(

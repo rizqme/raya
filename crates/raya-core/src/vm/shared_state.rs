@@ -1271,7 +1271,7 @@ impl<'a> TaskExecutor<'a> {
 
                     // Wait for all tasks
                     let mut results = vec![Value::null(); task_ids.len()];
-                    loop {
+                    'wait_all_outer: loop {
                         let mut all_done = true;
 
                         for (i, task_id) in task_ids.iter().enumerate() {
@@ -1290,10 +1290,43 @@ impl<'a> TaskExecutor<'a> {
                                     results[i] = task.result().unwrap_or(Value::null());
                                 }
                                 TaskState::Failed => {
-                                    return Err(VmError::RuntimeError(format!(
-                                        "Task {:?} failed",
-                                        task_id
-                                    )));
+                                    // Handle failed task - re-throw exception
+                                    if let Some(exc) = task.current_exception() {
+                                        current_exception = Some(exc.clone());
+
+                                        loop {
+                                            if let Some(handler) = exception_handlers.last().cloned() {
+                                                while stack_guard.depth() > handler.stack_size {
+                                                    stack_guard.pop()?;
+                                                }
+
+                                                if handler.catch_offset != -1 {
+                                                    exception_handlers.pop();
+                                                    stack_guard.push(exc)?;
+                                                    ip = handler.catch_offset as usize;
+                                                    break 'wait_all_outer;
+                                                }
+
+                                                if handler.finally_offset != -1 {
+                                                    exception_handlers.pop();
+                                                    ip = handler.finally_offset as usize;
+                                                    break 'wait_all_outer;
+                                                }
+
+                                                exception_handlers.pop();
+                                            } else {
+                                                return Err(VmError::RuntimeError(format!(
+                                                    "Uncaught exception from task {:?} in WAIT_ALL",
+                                                    task_id
+                                                )));
+                                            }
+                                        }
+                                    } else {
+                                        return Err(VmError::RuntimeError(format!(
+                                            "Task {:?} failed",
+                                            task_id
+                                        )));
+                                    }
                                 }
                                 _ => {
                                     all_done = false;
@@ -1302,7 +1335,21 @@ impl<'a> TaskExecutor<'a> {
                         }
 
                         if all_done {
-                            break;
+                            // Create result array
+                            let result_arr = Array::new(0, results.len());
+                            let gc_ptr = self.state.gc.lock().allocate(result_arr);
+                            let arr_value =
+                                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+
+                            // Initialize array elements
+                            let result_arr_ptr = unsafe { arr_value.as_ptr::<Array>() };
+                            let result_arr = unsafe { &mut *result_arr_ptr.unwrap().as_ptr() };
+                            for (i, result) in results.into_iter().enumerate() {
+                                result_arr.set(i, result).map_err(|e| VmError::RuntimeError(e))?;
+                            }
+
+                            stack_guard.push(arr_value)?;
+                            break 'wait_all_outer;
                         }
 
                         drop(stack_guard);
@@ -1310,21 +1357,6 @@ impl<'a> TaskExecutor<'a> {
                         std::thread::sleep(Duration::from_micros(100));
                         stack_guard = self.task.stack().lock().unwrap();
                     }
-
-                    // Create result array
-                    let result_arr = Array::new(0, results.len());
-                    let gc_ptr = self.state.gc.lock().allocate(result_arr);
-                    let arr_value =
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
-
-                    // Initialize array elements
-                    let arr_ptr = unsafe { arr_value.as_ptr::<Array>() };
-                    let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
-                    for (i, result) in results.into_iter().enumerate() {
-                        arr.set(i, result).map_err(|e| VmError::RuntimeError(e))?;
-                    }
-
-                    stack_guard.push(arr_value)?;
                 }
 
                 // ===== String Operations =====

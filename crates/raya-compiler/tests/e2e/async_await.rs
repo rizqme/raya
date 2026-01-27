@@ -230,7 +230,6 @@ fn test_async_method_using_this() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async error handling not yet implemented"]
 fn test_async_try_catch() {
     expect_i32(
         "async function mayFail(shouldFail: boolean): Task<number> {

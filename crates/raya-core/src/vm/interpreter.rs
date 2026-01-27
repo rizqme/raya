@@ -622,7 +622,100 @@ impl Vm {
                     }
                 }
                 Opcode::WaitAll => {
-                    self.op_wait_all()?;
+                    use crate::scheduler::TaskId;
+
+                    self.safepoint().poll();
+
+                    // Pop array pointer from stack (array is allocated on GC heap)
+                    let array_val = self.stack.pop()?;
+                    let array_ptr = unsafe {
+                        array_val
+                            .as_ptr::<Vec<Value>>()
+                            .ok_or_else(|| VmError::TypeError("Expected array pointer for WAIT_ALL".to_string()))?
+                    };
+                    let task_array = unsafe { &*array_ptr.as_ptr() };
+
+                    // Extract TaskIds from array
+                    let mut task_ids = Vec::with_capacity(task_array.len());
+                    for val in task_array.iter() {
+                        let task_id_u64 = val
+                            .as_u64()
+                            .ok_or_else(|| VmError::TypeError("Expected TaskId (u64) in array".to_string()))?;
+                        task_ids.push(TaskId::from_u64(task_id_u64));
+                    }
+
+                    // Wait for all tasks to complete
+                    let mut results = Vec::with_capacity(task_ids.len());
+                    'wait_all_outer: for task_id in task_ids {
+                        'wait_task: loop {
+                            let task = self
+                                .scheduler
+                                .get_task(task_id)
+                                .ok_or_else(|| VmError::RuntimeError(format!("Task {:?} not found", task_id)))?;
+
+                            match task.state() {
+                                TaskState::Completed => {
+                                    let result = task.result().unwrap_or(Value::null());
+                                    results.push(result);
+                                    break 'wait_task;
+                                }
+                                TaskState::Failed => {
+                                    // Handle failed task - re-throw exception
+                                    if let Some(exc) = task.current_exception() {
+                                        self.current_exception = Some(exc.clone());
+
+                                        let current_frame = self.stack.frame_count();
+                                        loop {
+                                            if let Some(handler) = self.exception_handlers.last().cloned() {
+                                                if handler.frame_count < current_frame {
+                                                    self.stack.pop_frame()?;
+                                                    return Ok(Value::null());
+                                                }
+
+                                                while self.stack.depth() > handler.stack_size {
+                                                    self.stack.pop()?;
+                                                }
+
+                                                if handler.catch_offset != -1 {
+                                                    self.exception_handlers.pop();
+                                                    self.stack.push(exc)?;
+                                                    ip = handler.catch_offset as usize;
+                                                    break 'wait_all_outer;
+                                                }
+
+                                                if handler.finally_offset != -1 {
+                                                    self.exception_handlers.pop();
+                                                    ip = handler.finally_offset as usize;
+                                                    break 'wait_all_outer;
+                                                }
+
+                                                self.exception_handlers.pop();
+                                            } else {
+                                                return Err(VmError::RuntimeError(format!(
+                                                    "Uncaught exception from task {:?} in WAIT_ALL",
+                                                    task_id
+                                                )));
+                                            }
+                                        }
+                                    } else {
+                                        return Err(VmError::RuntimeError(format!(
+                                            "Task {:?} in WAIT_ALL failed",
+                                            task_id
+                                        )));
+                                    }
+                                }
+                                _ => {
+                                    self.safepoint().poll();
+                                    std::thread::sleep(std::time::Duration::from_micros(100));
+                                }
+                            }
+                        }
+                    }
+
+                    // All tasks completed successfully - create result array
+                    let result_array_gc = self.gc.allocate(results);
+                    let result_ptr = unsafe { std::ptr::NonNull::new(result_array_gc.as_ptr()).unwrap() };
+                    self.stack.push(unsafe { Value::from_ptr(result_ptr) })?;
                 }
 
                 // Closure operations
