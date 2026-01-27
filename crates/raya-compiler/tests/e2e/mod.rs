@@ -17,5 +17,6 @@ mod decorators;
 mod async_await;
 mod closures;
 mod concurrency;
+mod exceptions;
 
 pub use harness::*;

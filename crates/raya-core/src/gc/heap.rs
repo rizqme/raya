@@ -225,6 +225,10 @@ impl Drop for Heap {
     }
 }
 
+// SAFETY: Heap is only accessed through a Mutex in SharedVmState,
+// which ensures synchronized access to the raw pointers.
+unsafe impl Send for Heap {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

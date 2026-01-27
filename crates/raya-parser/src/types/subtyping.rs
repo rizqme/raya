@@ -50,7 +50,7 @@ impl<'a> SubtypingContext<'a> {
             // Never is subtype of everything
             (Type::Never, _) => true,
 
-            // Everything is subtype of Unknown
+            // Everything is subtype of Unknown (Unknown is top type)
             (_, Type::Unknown) => true,
 
             // Primitive subtyping (only reflexive)
@@ -89,6 +89,9 @@ impl<'a> SubtypingContext<'a> {
 
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
+
+            // Task subtyping: Task<T> <: Task<U> if T <: U (covariant)
+            (Type::Task(t1), Type::Task(t2)) => self.is_subtype(t1.result, t2.result),
 
             // Tuple subtyping: [T1, T2, ..., Tn] <: [U1, U2, ..., Um]
             // if n = m and Ti <: Ui for all i

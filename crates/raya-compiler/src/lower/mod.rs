@@ -99,6 +99,13 @@ enum AncestorSource {
     Ancestor,
 }
 
+/// Information about `this` from an ancestor scope (for arrow functions in methods)
+#[derive(Clone, Copy, Debug)]
+struct AncestorThisInfo {
+    /// Where to load `this` from
+    source: AncestorSource,
+}
+
 /// Information about a variable from an ancestor scope
 #[derive(Clone, Debug)]
 struct AncestorVar {
@@ -145,6 +152,8 @@ pub struct Lowerer<'a> {
     next_local: u16,
     /// Function name to ID mapping
     function_map: FxHashMap<Symbol, FunctionId>,
+    /// Set of async function IDs (functions that should be spawned as Tasks)
+    async_functions: FxHashSet<FunctionId>,
     /// Class name to ID mapping
     class_map: FxHashMap<Symbol, ClassId>,
     /// Class info (fields, initializers) for lowering `new` expressions
@@ -179,12 +188,21 @@ pub struct Lowerer<'a> {
     current_class: Option<ClassId>,
     /// Register holding `this` in current method
     this_register: Option<Register>,
+    /// Info about `this` from ancestor scope (for arrow functions inside methods)
+    this_ancestor_info: Option<AncestorThisInfo>,
+    /// Capture index of `this` if it was captured (for LoadCaptured)
+    this_captured_idx: Option<u16>,
     /// Method name to function ID mapping (for method calls)
     method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
     /// Static method name to function ID mapping
     static_method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
     /// Next global variable index (for static fields)
     next_global_index: u16,
+    /// Set of function IDs that are async closures (should be spawned as Tasks)
+    async_closures: FxHashSet<FunctionId>,
+    /// Map from local variable index to function ID for closures stored in variables
+    /// Used to track async closures for SpawnClosure emission
+    closure_locals: FxHashMap<u16, FunctionId>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -201,6 +219,7 @@ impl<'a> Lowerer<'a> {
             local_registers: FxHashMap::default(),
             next_local: 0,
             function_map: FxHashMap::default(),
+            async_functions: FxHashSet::default(),
             class_map: FxHashMap::default(),
             class_info_map: FxHashMap::default(),
             next_function_id: 0,
@@ -217,9 +236,13 @@ impl<'a> Lowerer<'a> {
             variable_class_map: FxHashMap::default(),
             current_class: None,
             this_register: None,
+            this_ancestor_info: None,
+            this_captured_idx: None,
             method_map: FxHashMap::default(),
             static_method_map: FxHashMap::default(),
             next_global_index: 0,
+            async_closures: FxHashSet::default(),
+            closure_locals: FxHashMap::default(),
         }
     }
 
@@ -234,6 +257,10 @@ impl<'a> Lowerer<'a> {
                     let id = FunctionId::new(self.next_function_id);
                     self.next_function_id += 1;
                     self.function_map.insert(func.name.name, id);
+                    // Track async functions for Spawn emission
+                    if func.is_async {
+                        self.async_functions.insert(id);
+                    }
                 }
                 Statement::ClassDecl(class) => {
                     let class_id = ClassId::new(self.next_class_id);
@@ -304,6 +331,11 @@ impl<'a> Lowerer<'a> {
                             if method.body.is_some() {
                                 let func_id = FunctionId::new(self.next_function_id);
                                 self.next_function_id += 1;
+
+                                // Track async methods
+                                if method.is_async {
+                                    self.async_functions.insert(func_id);
+                                }
 
                                 if method.is_static {
                                     // Static method

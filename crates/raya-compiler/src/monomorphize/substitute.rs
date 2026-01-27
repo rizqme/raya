@@ -272,6 +272,30 @@ impl TypeSubstitution {
                 dest: self.apply_register(dest),
                 operand: self.apply_register(operand),
             },
+            IrInstr::Spawn { dest, func, args } => IrInstr::Spawn {
+                dest: self.apply_register(dest),
+                func: *func,
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
+            IrInstr::SpawnClosure { dest, closure, args } => IrInstr::SpawnClosure {
+                dest: self.apply_register(dest),
+                closure: self.apply_register(closure),
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
+            IrInstr::Await { dest, task } => IrInstr::Await {
+                dest: self.apply_register(dest),
+                task: self.apply_register(task),
+            },
+            IrInstr::AwaitAll { dest, tasks } => IrInstr::AwaitAll {
+                dest: self.apply_register(dest),
+                tasks: self.apply_register(tasks),
+            },
+            IrInstr::SetupTry { catch_block, finally_block } => IrInstr::SetupTry {
+                catch_block: *catch_block,
+                finally_block: *finally_block,
+            },
+            IrInstr::EndTry => IrInstr::EndTry,
+            IrInstr::PopToLocal { index } => IrInstr::PopToLocal { index: *index },
         }
     }
 

@@ -9,6 +9,7 @@ mod marshal;
 mod module_registry;
 mod native_module_registry;
 mod safepoint;
+mod shared_state;
 
 pub use capabilities::{Capability, CapabilityError, CapabilityRegistry};
 pub use capabilities::{HttpCapability, LogCapability, ReadCapability};
@@ -24,3 +25,4 @@ pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, Marsha
 pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
+pub use shared_state::{SharedVmState, TaskExecutor};

@@ -8,14 +8,15 @@ const MAX_LOOP_ITERATIONS: usize = 10_000;
 
 /// Maximum nesting depth before rejecting parse
 ///
-/// NOTE: This is set conservatively to 35 because:
+/// NOTE: This is set conservatively to 30 because:
 /// - In debug builds, Rust's call stack can overflow before higher limits
-/// - Object expressions have deeper call stacks (overflow at ~39 levels)
+/// - Object expressions have deeper call stacks (overflow at ~39 levels in debug)
 /// - Arrays/expressions can go higher (~50 levels) but we use one limit for all
-/// - 35 levels is still far more than any realistic code needs
+/// - 30 levels is still far more than any realistic code needs
 /// - In release builds with optimization, this could be higher, but we keep it
 ///   low for safety and consistency across build modes
-pub const MAX_PARSE_DEPTH: usize = 35;
+/// - This gives a safety margin before stack overflow in test threads
+pub const MAX_PARSE_DEPTH: usize = 30;
 
 /// Default span for errors without location
 #[inline]

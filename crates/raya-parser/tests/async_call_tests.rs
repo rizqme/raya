@@ -172,10 +172,7 @@ fn test_parse_async_call_assigned_to_const() {
 // Async Call with Type Arguments
 // ============================================================================
 
-// Note: Type arguments in call expressions are not yet fully implemented
-// This test is commented out until that feature is complete
 #[test]
-#[ignore]
 fn test_parse_async_call_with_type_args() {
     let source = "async genericFn<number>()";
     let parser = Parser::new(source).unwrap();

@@ -466,6 +466,10 @@ impl Default for GarbageCollector {
     }
 }
 
+// SAFETY: GarbageCollector is only accessed through a Mutex in SharedVmState,
+// which ensures synchronized access to the internal heap and raw pointers.
+unsafe impl Send for GarbageCollector {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

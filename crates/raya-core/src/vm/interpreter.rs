@@ -29,6 +29,12 @@ pub struct Vm {
     scheduler: Scheduler,
     /// Stack of currently executing closures (for LoadCaptured access)
     closure_stack: Vec<Value>,
+    /// Exception handler stack (shared across all function calls)
+    exception_handlers: Vec<ExceptionHandler>,
+    /// Current exception being processed
+    current_exception: Option<Value>,
+    /// Held mutexes for exception unwinding
+    held_mutexes: Vec<crate::sync::MutexId>,
 }
 
 impl Vm {
@@ -51,6 +57,9 @@ impl Vm {
             classes: ClassRegistry::new(),
             scheduler,
             closure_stack: Vec::new(),
+            exception_handlers: Vec::new(),
+            current_exception: None,
+            held_mutexes: Vec::new(),
         }
     }
 
@@ -154,12 +163,8 @@ impl Vm {
         let mut ip = 0;
         let code = &function.code;
 
-        // Exception handler stack for this execution
-        let mut exception_handlers: Vec<ExceptionHandler> = Vec::new();
-        let mut current_exception: Option<Value> = None;
-
-        // Track mutexes held during this execution (for auto-unlock on exception)
-        let mut held_mutexes: Vec<crate::sync::MutexId> = Vec::new();
+        // Use VM-level exception state (shared across function calls)
+        // These are self.exception_handlers, self.current_exception, self.held_mutexes
 
         loop {
             // Safepoint poll at loop back-edge
@@ -349,8 +354,51 @@ impl Vm {
                         self.execute_function(callee, module)?
                     };
 
-                    // Push result
-                    self.stack.push(result)?;
+                    // Check for pending exception from callee
+                    if self.current_exception.is_some() {
+                        // Exception is propagating - find handler in this frame
+                        let current_frame = self.stack.frame_count();
+                        loop {
+                            if let Some(handler) = self.exception_handlers.last().cloned() {
+                                if handler.frame_count < current_frame {
+                                    // Handler is in a caller - continue propagating
+                                    self.stack.pop_frame()?;
+                                    return Ok(Value::null());
+                                }
+
+                                // Unwind stack to handler's saved state
+                                while self.stack.depth() > handler.stack_size {
+                                    self.stack.pop()?;
+                                }
+
+                                // Jump to catch block if present
+                                if handler.catch_offset != -1 {
+                                    self.exception_handlers.pop();
+                                    let exc = self.current_exception.take().unwrap();
+                                    self.stack.push(exc)?;
+                                    ip = handler.catch_offset as usize;
+                                    break;
+                                }
+
+                                // No catch, try finally
+                                if handler.finally_offset != -1 {
+                                    self.exception_handlers.pop();
+                                    ip = handler.finally_offset as usize;
+                                    break;
+                                }
+
+                                self.exception_handlers.pop();
+                            } else {
+                                return Err(VmError::RuntimeError(format!(
+                                    "Uncaught exception: {:?}",
+                                    self.current_exception
+                                )));
+                            }
+                        }
+                    } else {
+                        // Normal return - push result
+                        self.stack.push(result)?;
+                    }
                 }
                 Opcode::Return => {
                     // Pop return value (or null if none)
@@ -490,10 +538,88 @@ impl Vm {
                 // Concurrency operations
                 Opcode::Spawn => {
                     let func_index = self.read_u16(code, &mut ip)? as usize;
-                    self.op_spawn(func_index, module)?;
+                    let arg_count = self.read_u16(code, &mut ip)? as usize;
+                    self.op_spawn(func_index, arg_count, module)?;
+                }
+                Opcode::SpawnClosure => {
+                    let arg_count = self.read_u16(code, &mut ip)? as usize;
+                    self.op_spawn_closure(arg_count, module)?;
                 }
                 Opcode::Await => {
-                    self.op_await()?;
+                    use crate::scheduler::TaskId;
+
+                    self.safepoint().poll();
+
+                    let task_id_val = self.stack.pop()?;
+                    let task_id_u64 = task_id_val
+                        .as_u64()
+                        .ok_or_else(|| VmError::TypeError("Expected TaskId".to_string()))?;
+                    let task_id = TaskId::from_u64(task_id_u64);
+
+                    'await_loop: loop {
+                        let task = self.scheduler.get_task(task_id).ok_or_else(|| {
+                            VmError::RuntimeError(format!("Task {:?} not found", task_id))
+                        })?;
+
+                        match task.state() {
+                            TaskState::Completed => {
+                                let result = task.result().unwrap_or(Value::null());
+                                self.stack.push(result)?;
+                                break 'await_loop;
+                            }
+                            TaskState::Failed => {
+                                if let Some(exc) = task.current_exception() {
+                                    // Re-throw the exception
+                                    self.current_exception = Some(exc.clone());
+
+                                    let current_frame = self.stack.frame_count();
+                                    loop {
+                                        if let Some(handler) =
+                                            self.exception_handlers.last().cloned()
+                                        {
+                                            if handler.frame_count < current_frame {
+                                                self.stack.pop_frame()?;
+                                                return Ok(Value::null());
+                                            }
+
+                                            while self.stack.depth() > handler.stack_size {
+                                                self.stack.pop()?;
+                                            }
+
+                                            if handler.catch_offset != -1 {
+                                                self.exception_handlers.pop();
+                                                self.stack.push(exc)?;
+                                                ip = handler.catch_offset as usize;
+                                                break 'await_loop;
+                                            }
+
+                                            if handler.finally_offset != -1 {
+                                                self.exception_handlers.pop();
+                                                ip = handler.finally_offset as usize;
+                                                break 'await_loop;
+                                            }
+
+                                            self.exception_handlers.pop();
+                                        } else {
+                                            return Err(VmError::RuntimeError(format!(
+                                                "Uncaught exception from task {:?}",
+                                                task_id
+                                            )));
+                                        }
+                                    }
+                                } else {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Awaited task {:?} failed",
+                                        task_id
+                                    )));
+                                }
+                            }
+                            _ => {
+                                self.safepoint().poll();
+                                std::thread::sleep(std::time::Duration::from_micros(100));
+                            }
+                        }
+                    }
                 }
                 Opcode::WaitAll => {
                     self.op_wait_all()?;
@@ -534,95 +660,111 @@ impl Vm {
 
                 // Exception handling
                 Opcode::Try => {
+                    // Read relative offsets and convert to absolute positions
+                    // Offsets are relative to the position after reading them
+                    // -1 means "no catch/finally block"
                     let catch_offset = self.read_i32(code, &mut ip)?;
-                    let finally_offset = self.read_i32(code, &mut ip)?;
+                    let catch_abs = if catch_offset >= 0 {
+                        (ip as i32 + catch_offset) as i32
+                    } else {
+                        -1 // No catch block
+                    };
 
-                    // Install exception handler
+                    let finally_offset = self.read_i32(code, &mut ip)?;
+                    let finally_abs = if finally_offset > 0 {
+                        (ip as i32 + finally_offset) as i32
+                    } else {
+                        -1 // No finally block (0 or negative)
+                    };
+
+                    // Install exception handler with absolute positions
                     let handler = ExceptionHandler {
-                        catch_offset,
-                        finally_offset,
+                        catch_offset: catch_abs,
+                        finally_offset: finally_abs,
                         stack_size: self.stack.depth(),
                         frame_count: self.stack.frame_count(),
-                        mutex_count: held_mutexes.len(),
+                        mutex_count: self.held_mutexes.len(),
                     };
-                    exception_handlers.push(handler);
+                    self.exception_handlers.push(handler);
                 }
                 Opcode::EndTry => {
                     // Remove exception handler from stack
                     // Note: If there's a finally block, the compiler should place
                     // the finally code inline after END_TRY so it executes naturally
-                    exception_handlers.pop();
+                    self.exception_handlers.pop();
                 }
                 Opcode::Throw => {
                     // Pop exception value from stack
                     let exception = self.stack.pop()?;
-                    current_exception = Some(exception);
+                    self.current_exception = Some(exception);
 
                     // Begin exception unwinding
+                    let current_frame = self.stack.frame_count();
                     loop {
-                        if let Some(handler) = exception_handlers.last().cloned() {
+                        if let Some(handler) = self.exception_handlers.last().cloned() {
+                            // Check if handler is in a caller frame
+                            if handler.frame_count < current_frame {
+                                // Handler is in a caller - return from this function
+                                // The caller's Call opcode will handle the exception
+                                self.stack.pop_frame()?;
+                                return Ok(Value::null()); // Return value is ignored when exception is pending
+                            }
+
                             // Unwind stack to handler's saved state
                             while self.stack.depth() > handler.stack_size {
                                 self.stack.pop()?;
                             }
 
                             // Auto-unlock mutexes acquired after this handler was installed
-                            // This ensures mutexes are released during exception unwinding
-                            if held_mutexes.len() > handler.mutex_count {
-                                // Remove and unlock mutexes in reverse order
-                                while held_mutexes.len() > handler.mutex_count {
-                                    if let Some(_mutex_id) = held_mutexes.pop() {
-                                        // Note: Actual mutex unlock would happen via UNLOCK opcode
-                                        // or we'd need access to the mutex registry here
-                                        // For now, we just track that they should be unlocked
-                                    }
+                            if self.held_mutexes.len() > handler.mutex_count {
+                                while self.held_mutexes.len() > handler.mutex_count {
+                                    self.held_mutexes.pop();
                                 }
-                            }
-
-                            // Execute finally block if present
-                            if handler.finally_offset != -1 {
-                                exception_handlers.pop();
-                                ip = handler.finally_offset as usize;
-                                break;
                             }
 
                             // Jump to catch block if present
                             if handler.catch_offset != -1 {
-                                exception_handlers.pop();
+                                self.exception_handlers.pop();
                                 // Push exception value for catch block
-                                // Keep current_exception set for potential RETHROW
-                                let exc = current_exception.as_ref().unwrap().clone();
+                                let exc = self.current_exception.as_ref().unwrap().clone();
                                 self.stack.push(exc)?;
                                 ip = handler.catch_offset as usize;
                                 break;
                             }
 
+                            // No catch block, execute finally block if present
+                            if handler.finally_offset != -1 {
+                                self.exception_handlers.pop();
+                                ip = handler.finally_offset as usize;
+                                break;
+                            }
+
                             // No catch or finally, remove handler and continue unwinding
-                            exception_handlers.pop();
+                            self.exception_handlers.pop();
                         } else {
                             // No handler found, propagate error
                             return Err(VmError::RuntimeError(format!(
                                 "Uncaught exception: {:?}",
-                                current_exception
+                                self.current_exception
                             )));
                         }
                     }
                 }
                 Opcode::Rethrow => {
                     // Re-raise the current exception
-                    if let Some(_exception) = current_exception.as_ref() {
+                    if let Some(_exception) = self.current_exception.as_ref() {
                         // Begin exception unwinding (same logic as THROW)
                         loop {
-                            if let Some(handler) = exception_handlers.last().cloned() {
+                            if let Some(handler) = self.exception_handlers.last().cloned() {
                                 // Unwind stack to handler's saved state
                                 while self.stack.depth() > handler.stack_size {
                                     self.stack.pop()?;
                                 }
 
                                 // Auto-unlock mutexes acquired after this handler was installed
-                                if held_mutexes.len() > handler.mutex_count {
-                                    while held_mutexes.len() > handler.mutex_count {
-                                        if let Some(_mutex_id) = held_mutexes.pop() {
+                                if self.held_mutexes.len() > handler.mutex_count {
+                                    while self.held_mutexes.len() > handler.mutex_count {
+                                        if let Some(_mutex_id) = self.held_mutexes.pop() {
                                             // Mutex unlock tracking
                                         }
                                     }
@@ -630,29 +772,29 @@ impl Vm {
 
                                 // Execute finally block if present
                                 if handler.finally_offset != -1 {
-                                    exception_handlers.pop();
+                                    self.exception_handlers.pop();
                                     ip = handler.finally_offset as usize;
                                     break;
                                 }
 
                                 // Jump to catch block if present
                                 if handler.catch_offset != -1 {
-                                    exception_handlers.pop();
+                                    self.exception_handlers.pop();
                                     // Push exception value for catch block
                                     // Keep current_exception set for potential RETHROW
-                                    let exc = current_exception.as_ref().unwrap().clone();
+                                    let exc = self.current_exception.as_ref().unwrap().clone();
                                     self.stack.push(exc)?;
                                     ip = handler.catch_offset as usize;
                                     break;
                                 }
 
                                 // No catch or finally, remove handler and continue unwinding
-                                exception_handlers.pop();
+                                self.exception_handlers.pop();
                             } else {
                                 // No handler found, propagate error
                                 return Err(VmError::RuntimeError(format!(
                                     "Uncaught exception: {:?}",
-                                    current_exception
+                                    self.current_exception
                                 )));
                             }
                         }
@@ -3056,20 +3198,81 @@ impl Vm {
 
     /// SPAWN - Create a new Task and start it
     #[allow(dead_code)]
-    fn op_spawn(&mut self, func_index: usize, module: &raya_compiler::Module) -> VmResult<()> {
+    fn op_spawn(
+        &mut self,
+        func_index: usize,
+        arg_count: usize,
+        module: &raya_compiler::Module,
+    ) -> VmResult<()> {
         // Safepoint poll before task creation
         self.safepoint().poll();
 
-        // Create new Task with the given function
-        let task = Arc::new(Task::new(
+        // Pop arguments from the stack (they were pushed in reverse order by codegen)
+        // Popping gives us the correct order, so no reverse needed
+        let mut args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            args.push(self.stack.pop()?);
+        }
+
+        // Create new Task with the given function and args
+        let task = Arc::new(Task::with_args(
             func_index,
             Arc::new(module.clone()),
             None, // No parent task (VM is the spawner, not another task)
+            args,
         ));
 
         // Spawn task on scheduler
         let task_id = self.scheduler.spawn(task).ok_or_else(|| {
             VmError::RuntimeError("Failed to spawn task: concurrent task limit reached".to_string())
+        })?;
+
+        // Push TaskId as u64 value onto stack
+        self.stack.push(Value::u64(task_id.as_u64()))?;
+
+        Ok(())
+    }
+
+    /// SPAWN_CLOSURE - Spawn a new Task from a closure
+    #[allow(dead_code)]
+    fn op_spawn_closure(
+        &mut self,
+        arg_count: usize,
+        module: &raya_compiler::Module,
+    ) -> VmResult<()> {
+        // Safepoint poll before task creation
+        self.safepoint().poll();
+
+        // Pop closure from stack
+        let closure_val = self.stack.pop()?;
+        if !closure_val.is_ptr() {
+            return Err(VmError::TypeError("Expected closure for SpawnClosure".to_string()));
+        }
+
+        let closure_ptr = unsafe { closure_val.as_ptr::<crate::object::Closure>() };
+        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+
+        // Pop arguments (already in correct order after pop)
+        let mut args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            args.push(self.stack.pop()?);
+        }
+
+        // Prepend captures to args - captures become first locals in the spawned task
+        let mut task_args = closure.captures.clone();
+        task_args.extend(args);
+
+        // Create new Task with the closure's function
+        let task = Arc::new(Task::with_args(
+            closure.func_id,
+            Arc::new(module.clone()),
+            None,
+            task_args,
+        ));
+
+        // Spawn task on scheduler
+        let task_id = self.scheduler.spawn(task).ok_or_else(|| {
+            VmError::RuntimeError("Failed to spawn closure task: concurrent task limit reached".to_string())
         })?;
 
         // Push TaskId as u64 value onto stack
@@ -3111,10 +3314,50 @@ impl Vm {
                     return Ok(());
                 }
                 TaskState::Failed => {
-                    return Err(VmError::RuntimeError(format!(
-                        "Awaited task {:?} failed",
-                        task_id
-                    )));
+                    // Check if the task has an exception to re-throw
+                    if let Some(exc) = task.current_exception() {
+                        // Push exception onto stack and trigger throw handling
+                        self.stack.push(exc.clone())?;
+                        self.current_exception = Some(exc);
+
+                        // Begin exception unwinding
+                        let current_frame = self.stack.frame_count();
+                        loop {
+                            if let Some(handler) = self.exception_handlers.last().cloned() {
+                                if handler.frame_count < current_frame {
+                                    self.stack.pop_frame()?;
+                                    return Ok(());
+                                }
+
+                                while self.stack.depth() > handler.stack_size {
+                                    self.stack.pop()?;
+                                }
+
+                                if handler.catch_offset != -1 {
+                                    self.exception_handlers.pop();
+                                    // Exception already on stack
+                                    return Ok(());
+                                }
+
+                                if handler.finally_offset != -1 {
+                                    self.exception_handlers.pop();
+                                    return Ok(());
+                                }
+
+                                self.exception_handlers.pop();
+                            } else {
+                                return Err(VmError::RuntimeError(format!(
+                                    "Uncaught exception from task {:?}",
+                                    task_id
+                                )));
+                            }
+                        }
+                    } else {
+                        return Err(VmError::RuntimeError(format!(
+                            "Awaited task {:?} failed",
+                            task_id
+                        )));
+                    }
                 }
                 _ => {
                     // Task still running, poll safepoint and yield

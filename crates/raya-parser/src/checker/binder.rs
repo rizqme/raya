@@ -554,6 +554,22 @@ impl<'a> Binder<'a> {
                     });
                 }
 
+                // Handle Task<T> for async functions
+                if name == "Task" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let result_ty = self.resolve_type_annotation(&type_args[0])?;
+                            return Ok(self.type_ctx.task_type(result_ty));
+                        }
+                    }
+                    return Err(BindError::InvalidTypeArguments {
+                        name,
+                        expected: 1,
+                        actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
+                        span,
+                    });
+                }
+
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter

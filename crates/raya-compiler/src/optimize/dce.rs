@@ -163,6 +163,26 @@ impl DeadCodeEliminator {
             IrInstr::ToString { operand, .. } => {
                 used.insert(operand.id);
             }
+            IrInstr::Spawn { args, .. } => {
+                for arg in args {
+                    used.insert(arg.id);
+                }
+            }
+            IrInstr::SpawnClosure { closure, args, .. } => {
+                used.insert(closure.id);
+                for arg in args {
+                    used.insert(arg.id);
+                }
+            }
+            IrInstr::Await { task, .. } => {
+                used.insert(task.id);
+            }
+            IrInstr::AwaitAll { tasks, .. } => {
+                used.insert(tasks.id);
+            }
+            IrInstr::SetupTry { .. } | IrInstr::EndTry | IrInstr::PopToLocal { .. } => {
+                // No register uses
+            }
         }
     }
 

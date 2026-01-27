@@ -70,6 +70,11 @@ impl<'a> GenericContext<'a> {
                 Ok(self.type_ctx.array_type(elem))
             }
 
+            Type::Task(task) => {
+                let result = self.apply_substitution(task.result)?;
+                Ok(self.type_ctx.task_type(result))
+            }
+
             Type::Tuple(tuple) => {
                 let elem_ids = tuple.elements.clone();
                 let mut elements = Vec::new();
@@ -274,6 +279,9 @@ impl<'a> GenericContext<'a> {
 
             // Array unification
             (Type::Array(a1), Type::Array(a2)) => self.unify(a1.element, a2.element),
+
+            // Task unification
+            (Type::Task(t1), Type::Task(t2)) => self.unify(t1.result, t2.result),
 
             // Tuple unification
             (Type::Tuple(t1), Type::Tuple(t2)) => {

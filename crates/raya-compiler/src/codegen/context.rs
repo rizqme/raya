@@ -31,6 +31,8 @@ struct FunctionContext {
     block_positions: FxHashMap<BasicBlockId, usize>,
     /// Pending jumps that need patching (source position, target block)
     pending_jumps: Vec<(usize, BasicBlockId)>,
+    /// Pending i32 jumps for try blocks (source position, target block)
+    pending_try_jumps: Vec<(usize, BasicBlockId)>,
 }
 
 impl FunctionContext {
@@ -41,6 +43,7 @@ impl FunctionContext {
             next_slot: param_count as u16,
             block_positions: FxHashMap::default(),
             pending_jumps: Vec::new(),
+            pending_try_jumps: Vec::new(),
         }
     }
 
@@ -110,8 +113,17 @@ impl FunctionContext {
         self.emit_i16(0);
     }
 
+    /// Record a pending i32 try jump to be patched (for try/catch/finally offsets)
+    fn record_pending_try_jump(&mut self, target: BasicBlockId) {
+        let pos = self.current_position();
+        self.pending_try_jumps.push((pos, target));
+        // Emit placeholder (i32 for try block offsets)
+        self.emit_i32(0);
+    }
+
     /// Patch all pending jumps
     fn patch_jumps(&mut self) {
+        // Patch i16 jumps (regular jumps)
         for (source_pos, target_block) in &self.pending_jumps {
             if let Some(&target_pos) = self.block_positions.get(target_block) {
                 // Calculate relative offset
@@ -122,6 +134,21 @@ impl FunctionContext {
                 let code = self.builder.code_mut();
                 code[*source_pos] = bytes[0];
                 code[*source_pos + 1] = bytes[1];
+            }
+        }
+
+        // Patch i32 try jumps (for exception handling)
+        for (source_pos, target_block) in &self.pending_try_jumps {
+            if let Some(&target_pos) = self.block_positions.get(target_block) {
+                // Calculate relative offset
+                // Jump is relative to the instruction AFTER the offset (4 bytes for i32)
+                let offset = target_pos as i32 - (*source_pos as i32 + 4);
+                let bytes = offset.to_le_bytes();
+                let code = self.builder.code_mut();
+                code[*source_pos] = bytes[0];
+                code[*source_pos + 1] = bytes[1];
+                code[*source_pos + 2] = bytes[2];
+                code[*source_pos + 3] = bytes[3];
             }
         }
     }
@@ -512,6 +539,81 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::ToString);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Spawn { dest, func, args } => {
+                // Push arguments onto stack in reverse order
+                for arg in args.iter().rev() {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit spawn opcode with function index and arg count
+                ctx.emit(Opcode::Spawn);
+                ctx.emit_u16(func.as_u32() as u16);
+                ctx.emit_u16(args.len() as u16);
+                // Store the Task handle result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::SpawnClosure { dest, closure, args } => {
+                // Push arguments onto stack in reverse order
+                for arg in args.iter().rev() {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Push the closure onto stack
+                self.emit_load_register(ctx, closure);
+                // Emit SpawnClosure: pops closure and args, pushes TaskHandle
+                ctx.emit(Opcode::SpawnClosure);
+                ctx.emit_u16(args.len() as u16);
+                // Store the Task handle result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Await { dest, task } => {
+                // Push the task handle onto stack
+                self.emit_load_register(ctx, task);
+                // Emit await opcode - suspends until task completes
+                ctx.emit(Opcode::Await);
+                // Store the result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::AwaitAll { dest, tasks } => {
+                // Push the tasks array onto stack
+                self.emit_load_register(ctx, tasks);
+                // Emit wait_all opcode - suspends until all tasks complete
+                ctx.emit(Opcode::WaitAll);
+                // Store the results array
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::SetupTry { catch_block, finally_block } => {
+                // Emit Try opcode with catch and finally offsets
+                ctx.emit(Opcode::Try);
+                // Record pending jump for catch block (i32 offset)
+                ctx.record_pending_try_jump(*catch_block);
+                // Record pending jump for finally block (i32 offset, 0 if no finally)
+                if let Some(finally) = finally_block {
+                    ctx.record_pending_try_jump(*finally);
+                } else {
+                    // No finally block - emit 0 offset
+                    ctx.emit_i32(0);
+                }
+            }
+
+            IrInstr::EndTry => {
+                // Emit EndTry opcode to remove exception handler
+                ctx.emit(Opcode::EndTry);
+            }
+
+            IrInstr::PopToLocal { index } => {
+                // Pop exception from stack directly to local (no register load)
+                // The VM pushes the exception value before jumping to catch block
+                ctx.emit(Opcode::StoreLocal);
+                ctx.emit_u16(*index);
             }
         }
 

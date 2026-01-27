@@ -326,6 +326,9 @@ fn get_operand_size(opcode: Opcode) -> usize {
         // Exception handling (8 bytes: i32 catch_offset + i32 finally_offset)
         Opcode::Try => 8,
         Opcode::EndTry | Opcode::Rethrow => 0,
+
+        // SpawnClosure has 2-byte operand (u16 argCount)
+        Opcode::SpawnClosure => 2,
     }
 }
 
@@ -439,7 +442,8 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::TupleLiteral => (0, 1),
         Opcode::InitTuple => (0, 0),
         Opcode::TupleGet => (2, 1),
-        Opcode::Spawn => (0, 1),
+        Opcode::Spawn => (0, 1),       // pops args (dynamic), pushes TaskHandle
+        Opcode::SpawnClosure => (1, 1), // pops closure + args (dynamic), pushes TaskHandle
         Opcode::Await => (1, 1),
         Opcode::Yield => (0, 0),
         Opcode::TaskThen => (1, 1),
@@ -606,7 +610,7 @@ mod tests {
             name: "test".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![0xDE], // Invalid opcode (unassigned in 0xDE-0xDF range)
+            code: vec![0xDF], // Invalid opcode (unassigned)
         });
 
         let result = verify_module(&module);

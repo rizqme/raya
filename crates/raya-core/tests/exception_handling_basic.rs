@@ -41,7 +41,7 @@ fn test_basic_try_catch() {
 
     let mut code = vec![];
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&15i32.to_le_bytes());   // catch_offset (absolute byte offset)
+    code.extend_from_slice(&10i32.to_le_bytes());   // catch_offset (relative: 15 - 5 = 10)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // finally_offset (-1 = none)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&42i32.to_le_bytes());
@@ -67,7 +67,7 @@ fn test_try_end_try_no_exception() {
     // TRY/END_TRY without exception should execute normally
     let mut code = vec![];
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&20i32.to_le_bytes());   // catch offset (won't be used)
+    code.extend_from_slice(&15i32.to_le_bytes());   // catch offset (won't be used, relative from ip=5)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&42i32.to_le_bytes());
@@ -95,13 +95,13 @@ fn test_throw_with_catch() {
 
     let mut code = vec![];
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&15i32.to_le_bytes());   // catch at byte 15
+    code.extend_from_slice(&10i32.to_le_bytes());   // catch relative offset (target 15 - ip 5 = 10)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&99i32.to_le_bytes());
     code.push(Opcode::Throw as u8);  // throws, should jump to catch
 
-    // catch block at offset 15:
+    // catch block at byte 15:
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
@@ -192,22 +192,22 @@ fn test_nested_try_catch() {
 
     let mut code = vec![];
 
-    // Outer TRY
+    // Outer TRY (starts at byte 0)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&33i32.to_le_bytes());   // outer catch_offset
+    code.extend_from_slice(&28i32.to_le_bytes());   // outer catch relative (target 33 - ip 5 = 28)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Inner TRY
+    // Inner TRY (starts at byte 9)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&24i32.to_le_bytes());   // inner catch_offset
+    code.extend_from_slice(&10i32.to_le_bytes());   // inner catch relative (target 24 - ip 14 = 10)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Throw inner exception
+    // Throw inner exception (byte 18)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&111i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
-    // Inner catch block (offset 24)
+    // Inner catch block (byte 24)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     // Note: No END_TRY here - handler already popped when jumping to catch
@@ -249,25 +249,25 @@ fn test_exception_propagation() {
 
     let mut code = vec![];
 
-    // Outer TRY with catch
+    // Outer TRY with catch (starts at byte 0)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&29i32.to_le_bytes());   // outer catch_offset
+    code.extend_from_slice(&21i32.to_le_bytes());   // outer catch relative (target 26 - ip 5 = 21)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Middle TRY without catch (should propagate)
+    // Middle TRY without catch (starts at byte 9, should propagate)
     code.push(Opcode::Try as u8);
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no catch
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Throw exception
+    // Throw exception (byte 18)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&555i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
-    code.push(Opcode::EndTry as u8); // middle END_TRY (won't be reached)
-    code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached)
+    code.push(Opcode::EndTry as u8); // middle END_TRY (won't be reached, byte 24)
+    code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached, byte 25)
 
-    // Outer catch block (offset 29)
+    // Outer catch block (byte 26)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
@@ -295,29 +295,29 @@ fn test_rethrow_in_catch() {
 
     let mut code = vec![];
 
-    // Outer TRY
+    // Outer TRY (starts at byte 0)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&28i32.to_le_bytes());   // outer catch_offset
+    code.extend_from_slice(&24i32.to_le_bytes());   // outer catch relative (target 29 - ip 5 = 24)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Inner TRY
+    // Inner TRY (starts at byte 9)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&24i32.to_le_bytes());   // inner catch_offset
+    code.extend_from_slice(&10i32.to_le_bytes());   // inner catch relative (target 24 - ip 14 = 10)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Throw exception
+    // Throw exception (byte 18)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&333i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
-    // Inner catch block (offset 24) - catches then rethrows
+    // Inner catch block (byte 24) - catches then rethrows
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Rethrow as u8);
 
-    code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached)
+    code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached, byte 28)
 
-    // Outer catch block (offset 28)
+    // Outer catch block (byte 29)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&1u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
@@ -391,7 +391,7 @@ fn test_exception_with_await() {
     let mut code = vec![];
 
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&15i32.to_le_bytes());   // catch_offset
+    code.extend_from_slice(&10i32.to_le_bytes());   // catch relative (target 15 - ip 5 = 10)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
     // Simulate async operation that throws
@@ -399,7 +399,7 @@ fn test_exception_with_await() {
     code.extend_from_slice(&444i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
-    // catch block (offset 15)
+    // catch block (byte 15)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);
@@ -422,11 +422,11 @@ fn test_exception_value_types() {
     // Test 1: Throw null
     let mut code = vec![];
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&11i32.to_le_bytes());   // catch_offset (9+1+1=11)
+    code.extend_from_slice(&6i32.to_le_bytes());    // catch relative (target 11 - ip 5 = 6)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
     code.push(Opcode::ConstNull as u8);
     code.push(Opcode::Throw as u8);
-    // catch block (offset 11)
+    // catch block (byte 11)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::Return as u8);
@@ -439,11 +439,11 @@ fn test_exception_value_types() {
     // Test 2: Throw boolean
     let mut code2 = vec![];
     code2.push(Opcode::Try as u8);
-    code2.extend_from_slice(&11i32.to_le_bytes());   // catch_offset (9+1+1=11)
+    code2.extend_from_slice(&6i32.to_le_bytes());   // catch relative (target 11 - ip 5 = 6)
     code2.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
     code2.push(Opcode::ConstTrue as u8);
     code2.push(Opcode::Throw as u8);
-    // catch block (offset 11)
+    // catch block (byte 11)
     code2.push(Opcode::StoreLocal as u8);
     code2.extend_from_slice(&0u16.to_le_bytes());
     code2.push(Opcode::Return as u8);
@@ -456,12 +456,12 @@ fn test_exception_value_types() {
     // Test 3: Throw float
     let mut code3 = vec![];
     code3.push(Opcode::Try as u8);
-    code3.extend_from_slice(&19i32.to_le_bytes());   // catch_offset (9+9+1=19)
+    code3.extend_from_slice(&14i32.to_le_bytes());  // catch relative (target 19 - ip 5 = 14)
     code3.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
     code3.push(Opcode::ConstF64 as u8);
     code3.extend_from_slice(&3.14f64.to_le_bytes());
     code3.push(Opcode::Throw as u8);
-    // catch block (offset 19)
+    // catch block (byte 19)
     code3.push(Opcode::StoreLocal as u8);
     code3.extend_from_slice(&0u16.to_le_bytes());
     code3.push(Opcode::Return as u8);
@@ -490,32 +490,32 @@ fn test_deep_call_stack_unwinding() {
 
     let mut code = vec![];
 
-    // Outer TRY with catch at offset 39
+    // Outer TRY with catch (starts at byte 0)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&39i32.to_le_bytes());   // catch_offset
+    code.extend_from_slice(&31i32.to_le_bytes());   // catch relative (target 36 - ip 5 = 31)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Middle TRY (no catch, will propagate)
-    code.push(Opcode::Try as u8);
-    code.extend_from_slice(&(-1i32).to_le_bytes()); // no catch
-    code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
-
-    // Inner TRY (no catch, will propagate)
+    // Middle TRY (no catch, will propagate, starts at byte 9)
     code.push(Opcode::Try as u8);
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no catch
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Throw exception from innermost level
+    // Inner TRY (no catch, will propagate, starts at byte 18)
+    code.push(Opcode::Try as u8);
+    code.extend_from_slice(&(-1i32).to_le_bytes()); // no catch
+    code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
+
+    // Throw exception from innermost level (byte 27)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&777i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
     // These END_TRY opcodes won't be reached (unwinding bypasses them)
-    code.push(Opcode::EndTry as u8);  // inner
-    code.push(Opcode::EndTry as u8);  // middle
-    code.push(Opcode::EndTry as u8);  // outer
+    code.push(Opcode::EndTry as u8);  // inner (byte 33)
+    code.push(Opcode::EndTry as u8);  // middle (byte 34)
+    code.push(Opcode::EndTry as u8);  // outer (byte 35)
 
-    // Outer catch block (offset 39)
+    // Outer catch block (byte 36)
     // This should catch the exception after unwinding 3 levels
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
@@ -547,29 +547,29 @@ fn test_exception_in_finally() {
 
     let mut code = vec![];
 
-    // Outer TRY to catch the exception from finally
+    // Outer TRY to catch the exception from finally (starts at byte 0)
     code.push(Opcode::Try as u8);
-    code.extend_from_slice(&31i32.to_le_bytes());   // outer catch_offset
+    code.extend_from_slice(&26i32.to_le_bytes());   // outer catch relative (target 31 - ip 5 = 26)
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no finally
 
-    // Inner TRY with finally offset for exception path
+    // Inner TRY with finally offset for exception path (starts at byte 9)
     code.push(Opcode::Try as u8);
     code.extend_from_slice(&(-1i32).to_le_bytes()); // no catch
-    code.extend_from_slice(&24i32.to_le_bytes());   // finally_offset for exception path
+    code.extend_from_slice(&6i32.to_le_bytes());    // finally relative (target 24 - ip 18 = 6)
 
-    // Throw original exception
+    // Throw original exception (byte 18)
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&111i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
-    // Finally block (offset 24) - throws new exception
+    // Finally block (byte 24) - throws new exception
     code.push(Opcode::ConstI32 as u8);
     code.extend_from_slice(&999i32.to_le_bytes());
     code.push(Opcode::Throw as u8);
 
     code.push(Opcode::EndTry as u8); // outer END_TRY (won't be reached)
 
-    // Outer catch block (offset 31)
+    // Outer catch block (byte 31)
     code.push(Opcode::StoreLocal as u8);
     code.extend_from_slice(&0u16.to_le_bytes());
     code.push(Opcode::LoadLocal as u8);

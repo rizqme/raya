@@ -97,6 +97,12 @@ pub enum IrInstr {
         value: Register,
     },
 
+    /// Pop from stack to local variable (for catch parameters)
+    /// The VM pushes the exception value before jumping to catch block
+    PopToLocal {
+        index: u16,
+    },
+
     /// Load from global variable (for static fields): dest = globals[index]
     LoadGlobal {
         dest: Register,
@@ -258,6 +264,46 @@ pub enum IrInstr {
         dest: Register,
         operand: Register,
     },
+
+    /// Spawn a new task: dest = spawn func(args)
+    /// Creates a new green thread (Task) that executes the function
+    Spawn {
+        dest: Register,
+        func: FunctionId,
+        args: Vec<Register>,
+    },
+
+    /// Spawn a closure as a new task: dest = spawn closure(args)
+    SpawnClosure {
+        dest: Register,
+        closure: Register,
+        args: Vec<Register>,
+    },
+
+    /// Await a task: dest = await task
+    /// Suspends current task until the awaited task completes
+    Await {
+        dest: Register,
+        task: Register,
+    },
+
+    /// Await multiple tasks: dest = await [tasks]
+    /// Suspends current task until all tasks complete, returns array of results
+    AwaitAll {
+        dest: Register,
+        tasks: Register,
+    },
+
+    /// Set up exception handler for try block
+    /// catch_block: BasicBlockId to jump to on exception (receives exception value)
+    /// finally_block: Optional BasicBlockId for finally clause
+    SetupTry {
+        catch_block: BasicBlockId,
+        finally_block: Option<BasicBlockId>,
+    },
+
+    /// End of try block - removes exception handler
+    EndTry,
 }
 
 impl IrInstr {
@@ -284,7 +330,11 @@ impl IrInstr {
             | IrInstr::NewRefCell { dest, .. }
             | IrInstr::LoadRefCell { dest, .. }
             | IrInstr::StringCompare { dest, .. }
-            | IrInstr::ToString { dest, .. } => Some(dest),
+            | IrInstr::ToString { dest, .. }
+            | IrInstr::Spawn { dest, .. }
+            | IrInstr::SpawnClosure { dest, .. }
+            | IrInstr::Await { dest, .. }
+            | IrInstr::AwaitAll { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
@@ -294,7 +344,10 @@ impl IrInstr {
             | IrInstr::StoreElement { .. }
             | IrInstr::StoreCaptured { .. }
             | IrInstr::SetClosureCapture { .. }
-            | IrInstr::StoreRefCell { .. } => None,
+            | IrInstr::StoreRefCell { .. }
+            | IrInstr::PopToLocal { .. }
+            | IrInstr::SetupTry { .. }
+            | IrInstr::EndTry => None,
         }
     }
 
@@ -306,6 +359,7 @@ impl IrInstr {
                 | IrInstr::CallMethod { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::StoreLocal { .. }
+                | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
                 | IrInstr::StoreField { .. }
                 | IrInstr::StoreElement { .. }
@@ -318,6 +372,12 @@ impl IrInstr {
                 | IrInstr::ArrayLiteral { .. }
                 | IrInstr::ObjectLiteral { .. }
                 | IrInstr::MakeClosure { .. }
+                | IrInstr::Spawn { .. }
+                | IrInstr::SpawnClosure { .. }
+                | IrInstr::Await { .. }
+                | IrInstr::AwaitAll { .. }
+                | IrInstr::SetupTry { .. }
+                | IrInstr::EndTry
         )
     }
 }

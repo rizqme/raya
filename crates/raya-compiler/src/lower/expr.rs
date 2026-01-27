@@ -93,6 +93,7 @@ impl<'a> Lowerer<'a> {
             Expression::TemplateLiteral(template) => self.lower_template_literal(template),
             Expression::This(_) => self.lower_this(),
             Expression::Super(_) => self.lower_super(),
+            Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
             _ => {
                 // For unhandled expressions, emit a null placeholder
                 self.lower_null_literal()
@@ -362,11 +363,20 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*call.callee {
             // Check if it's a direct function call
             if let Some(&func_id) = self.function_map.get(&ident.name) {
-                self.emit(IrInstr::Call {
-                    dest: Some(dest.clone()),
-                    func: func_id,
-                    args,
-                });
+                // Check if this is an async function - emit Spawn instead of Call
+                if self.async_functions.contains(&func_id) {
+                    self.emit(IrInstr::Spawn {
+                        dest: dest.clone(),
+                        func: func_id,
+                        args,
+                    });
+                } else {
+                    self.emit(IrInstr::Call {
+                        dest: Some(dest.clone()),
+                        func: func_id,
+                        args,
+                    });
+                }
                 return dest;
             }
 
@@ -384,7 +394,20 @@ impl<'a> Lowerer<'a> {
                     index: local_idx,
                 });
 
-                // Call the closure
+                // Check if this is an async closure (spawns a Task)
+                if let Some(&func_id) = self.closure_locals.get(&local_idx) {
+                    if self.async_closures.contains(&func_id) {
+                        // Emit SpawnClosure instead of CallClosure for async closures
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure,
+                            args,
+                        });
+                        return dest;
+                    }
+                }
+
+                // Regular closure call
                 self.emit(IrInstr::CallClosure {
                     dest: Some(dest.clone()),
                     closure,
@@ -405,11 +428,20 @@ impl<'a> Lowerer<'a> {
                     // This is a class identifier, check for static methods
                     if let Some(&func_id) = self.static_method_map.get(&(class_id, method_name_symbol)) {
                         // Static method call - no 'this' parameter
-                        self.emit(IrInstr::Call {
-                            dest: Some(dest.clone()),
-                            func: func_id,
-                            args,
-                        });
+                        // Check if async method - emit Spawn instead of Call
+                        if self.async_functions.contains(&func_id) {
+                            self.emit(IrInstr::Spawn {
+                                dest: dest.clone(),
+                                func: func_id,
+                                args,
+                            });
+                        } else {
+                            self.emit(IrInstr::Call {
+                                dest: Some(dest.clone()),
+                                func: func_id,
+                                args,
+                            });
+                        }
                         return dest;
                     }
                 }
@@ -428,12 +460,21 @@ impl<'a> Lowerer<'a> {
                     let mut method_args = vec![object];
                     method_args.extend(args);
 
-                    // Call the method function
-                    self.emit(IrInstr::Call {
-                        dest: Some(dest.clone()),
-                        func: func_id,
-                        args: method_args,
-                    });
+                    // Check if async method - emit Spawn instead of Call
+                    if self.async_functions.contains(&func_id) {
+                        self.emit(IrInstr::Spawn {
+                            dest: dest.clone(),
+                            func: func_id,
+                            args: method_args,
+                        });
+                    } else {
+                        // Call the method function
+                        self.emit(IrInstr::Call {
+                            dest: Some(dest.clone()),
+                            func: func_id,
+                            args: method_args,
+                        });
+                    }
                     return dest;
                 }
             }
@@ -862,6 +903,11 @@ impl<'a> Lowerer<'a> {
         let func_id = crate::ir::FunctionId::new(self.next_function_id);
         self.next_function_id += 1;
 
+        // Track async closures for SpawnClosure emission
+        if arrow.is_async {
+            self.async_closures.insert(func_id);
+        }
+
         // Save current lowerer state
         let saved_register = self.next_register;
         let saved_block = self.next_block;
@@ -873,6 +919,9 @@ impl<'a> Lowerer<'a> {
         let saved_current_block = self.current_block;
         let saved_ancestor_variables = self.ancestor_variables.take();
         let saved_captures = std::mem::take(&mut self.captures);
+        let saved_this_register = self.this_register.take();
+        let saved_this_ancestor_info = self.this_ancestor_info.take();
+        let saved_this_captured_idx = self.this_captured_idx.take();
 
         // Build ancestor_variables for the child arrow:
         // 1. Current local_map becomes ImmediateParentLocal for the child
@@ -915,6 +964,24 @@ impl<'a> Lowerer<'a> {
 
         self.ancestor_variables = Some(new_ancestor_vars);
         self.captures.clear();
+
+        // Set up this_ancestor_info for the arrow function
+        // If parent has this_register, `this` is at local slot 0 (implicit first param in methods)
+        // If parent was also in an arrow with this_ancestor_info, propagate as Ancestor
+        self.this_ancestor_info = if saved_this_register.is_some() {
+            // Parent is a method - `this` is effectively at local 0
+            Some(super::AncestorThisInfo {
+                source: super::AncestorSource::ImmediateParentLocal(0),
+            })
+        } else if saved_this_ancestor_info.is_some() {
+            // Parent is an arrow that had access to `this` - becomes Ancestor for us
+            Some(super::AncestorThisInfo {
+                source: super::AncestorSource::Ancestor,
+            })
+        } else {
+            None
+        };
+        self.this_captured_idx = None;
 
         // Reset per-function state
         self.next_register = 0;
@@ -978,6 +1045,9 @@ impl<'a> Lowerer<'a> {
         let captured_vars: Vec<_> = self.captures.clone();
         // Save the child's ancestor_variables for capture propagation
         let child_ancestor_variables = self.ancestor_variables.take();
+        // Save child's this capture info
+        let child_this_captured_idx = self.this_captured_idx;
+        let child_this_ancestor_info = self.this_ancestor_info;
 
         // Take the completed arrow function and add to pending with its func_id
         let arrow_func = self.current_function.take().unwrap();
@@ -994,6 +1064,9 @@ impl<'a> Lowerer<'a> {
         self.current_block = saved_current_block;
         self.ancestor_variables = saved_ancestor_variables;
         self.captures = saved_captures;
+        self.this_register = saved_this_register;
+        self.this_ancestor_info = saved_this_ancestor_info;
+        self.this_captured_idx = saved_this_captured_idx;
 
         // Load captured variables and build captures list for MakeClosure
         let mut capture_regs = Vec::new();
@@ -1075,6 +1148,52 @@ impl<'a> Lowerer<'a> {
                 }
             }
             capture_regs.push(cap_reg);
+        }
+
+        // Handle `this` capture if the arrow function used `this`
+        if child_this_captured_idx.is_some() {
+            let this_reg = self.alloc_register(TypeId::new(0)); // Object type
+
+            // Check where `this` comes from
+            if let Some(ref parent_this) = self.this_register {
+                // Parent is a method - load `this` from parent's register
+                // In methods, `this` is passed as local slot 0
+                self.emit(IrInstr::LoadLocal {
+                    dest: this_reg.clone(),
+                    index: 0,
+                });
+            } else if let Some(ref ancestor_info) = child_this_ancestor_info {
+                // Parent was also an arrow that had access to `this`
+                match ancestor_info.source {
+                    super::AncestorSource::ImmediateParentLocal(local_idx) => {
+                        // `this` was in immediate parent's locals
+                        self.emit(IrInstr::LoadLocal {
+                            dest: this_reg.clone(),
+                            index: local_idx,
+                        });
+                    }
+                    super::AncestorSource::Ancestor => {
+                        // `this` is from further ancestor - we need to capture it too
+                        // Check if parent already captured `this`
+                        if let Some(parent_this_capture) = self.this_captured_idx {
+                            self.emit(IrInstr::LoadCaptured {
+                                dest: this_reg.clone(),
+                                index: parent_this_capture,
+                            });
+                        } else {
+                            // Parent needs to capture `this` now
+                            // (This case shouldn't normally happen if we're tracking correctly)
+                            // Fall back to loading from local 0
+                            self.emit(IrInstr::LoadLocal {
+                                dest: this_reg.clone(),
+                                index: 0,
+                            });
+                        }
+                    }
+                }
+            }
+
+            capture_regs.push(this_reg);
         }
 
         // Create closure: emit MakeClosure instruction with captures
@@ -1188,19 +1307,157 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_await(&mut self, await_expr: &ast::AwaitExpression) -> Register {
-        // Lower the awaited expression
-        // In a real implementation, this would generate task suspension code
-        self.lower_expr(&await_expr.argument)
+        // Check if the argument is an array literal (await [task1, task2, ...])
+        if let Expression::Array(arr) = &*await_expr.argument {
+            // Lower all elements (each should be a Task)
+            // We only handle simple expressions (no spread, no holes)
+            let elements: Vec<Register> = arr.elements.iter().filter_map(|e| {
+                match e {
+                    Some(ast::ArrayElement::Expression(expr)) => Some(self.lower_expr(expr)),
+                    _ => None, // Skip spread elements and holes for now
+                }
+            }).collect();
+
+            // Create the array of tasks
+            let tasks_array = self.alloc_register(TypeId::new(0)); // Task[] type
+            self.emit(IrInstr::ArrayLiteral {
+                dest: tasks_array.clone(),
+                elements,
+                elem_ty: TypeId::new(0), // Task type
+            });
+
+            // Emit await_all instruction
+            let dest = self.alloc_register(TypeId::new(0)); // Result array type
+            self.emit(IrInstr::AwaitAll {
+                dest: dest.clone(),
+                tasks: tasks_array,
+            });
+            return dest;
+        }
+
+        // Lower the awaited expression (should be a Task)
+        let task = self.lower_expr(&await_expr.argument);
+
+        // Emit await instruction
+        let dest = self.alloc_register(TypeId::new(0)); // Result type
+        self.emit(IrInstr::Await {
+            dest: dest.clone(),
+            task,
+        });
+        dest
+    }
+
+    fn lower_async_call(&mut self, async_call: &ast::AsyncCallExpression) -> Register {
+        // Lower arguments first
+        let args: Vec<Register> = async_call.arguments.iter().map(|a| self.lower_expr(a)).collect();
+
+        // Destination for the Task handle
+        let dest = self.alloc_register(TypeId::new(0)); // Task type
+
+        // Handle different callee types
+        if let Expression::Identifier(ident) = &*async_call.callee {
+            // Direct function call: async myFn()
+            if let Some(&func_id) = self.function_map.get(&ident.name) {
+                self.emit(IrInstr::Spawn {
+                    dest: dest.clone(),
+                    func: func_id,
+                    args,
+                });
+                return dest;
+            }
+
+            // Closure call: async closureVar()
+            if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                let closure_ty = self
+                    .local_registers
+                    .get(&local_idx)
+                    .map(|r| r.ty)
+                    .unwrap_or(TypeId::new(0));
+                let closure = self.alloc_register(closure_ty);
+                self.emit(IrInstr::LoadLocal {
+                    dest: closure.clone(),
+                    index: local_idx,
+                });
+
+                self.emit(IrInstr::SpawnClosure {
+                    dest: dest.clone(),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+        }
+
+        // Handle member access: async obj.method()
+        if let Expression::Member(member) = &*async_call.callee {
+            let method_name_symbol = member.property.name;
+
+            // Lower the object
+            let object = self.lower_expr(&member.object);
+
+            // Check if it's a static method call
+            if let Expression::Identifier(ident) = &*member.object {
+                if let Some(&class_id) = self.class_map.get(&ident.name) {
+                    if let Some(&func_id) = self.static_method_map.get(&(class_id, method_name_symbol)) {
+                        // Spawn static method
+                        self.emit(IrInstr::Spawn {
+                            dest: dest.clone(),
+                            func: func_id,
+                            args,
+                        });
+                        return dest;
+                    }
+                }
+            }
+
+            // Instance method - need to find the method and spawn with 'this'
+            // For now, we'll look up the method in the class hierarchy
+            // This is a simplified version - in practice we'd need proper method resolution
+            let mut method_args = vec![object];
+            method_args.extend(args);
+
+            // Try to find the method - for now emit a placeholder
+            // In a full implementation, we'd resolve the method like in lower_call
+            // and emit Spawn with the method's function ID
+        }
+
+        // Fallback: return null for unhandled cases
+        self.lower_null_literal()
     }
 
     fn lower_this(&mut self) -> Register {
-        // Return the 'this' register if we're inside a method
+        // Return the 'this' register if we're directly inside a method
         if let Some(ref this_reg) = self.this_register {
-            this_reg.clone()
-        } else {
-            // If not in a method context, return null
-            self.lower_null_literal()
+            return this_reg.clone();
         }
+
+        // Check if we've already captured `this`
+        if let Some(capture_idx) = self.this_captured_idx {
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::LoadCaptured {
+                dest: dest.clone(),
+                index: capture_idx,
+            });
+            return dest;
+        }
+
+        // Check if `this` is available from ancestor scope (we're inside an arrow in a method)
+        if let Some(ref _ancestor_info) = self.this_ancestor_info {
+            // Record that we need to capture `this`
+            // The capture index will be after all regular captures
+            let capture_idx = self.captures.len() as u16;
+            self.this_captured_idx = Some(capture_idx);
+
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::LoadCaptured {
+                dest: dest.clone(),
+                index: capture_idx,
+            });
+            return dest;
+        }
+
+        // If not in a method context and no ancestor has `this`, return null
+        self.lower_null_literal()
     }
 
     fn lower_super(&mut self) -> Register {

@@ -263,7 +263,15 @@ impl<'a> TypeChecker<'a> {
         let func_name = self.resolve(func.name.name);
         if let Some(symbol) = self.symbols.resolve_from_scope(&func_name, self.current_scope) {
             if let Some(crate::types::Type::Function(func_ty)) = self.type_ctx.get(symbol.ty) {
-                let return_ty = func_ty.return_type;
+                let mut return_ty = func_ty.return_type;
+
+                // For async functions, the declared return type is Task<T>,
+                // but return statements should check against T (the inner type)
+                if func.is_async {
+                    if let Some(crate::types::Type::Task(task_ty)) = self.type_ctx.get(return_ty) {
+                        return_ty = task_ty.result;
+                    }
+                }
 
                 // Set current function return type
                 let prev_return_ty = self.current_function_return_type;
@@ -520,9 +528,16 @@ impl<'a> TypeChecker<'a> {
 
         // Check catch block
         if let Some(ref catch) = try_stmt.catch_clause {
+            // Enter catch scope (mirrors binder's push_scope for catch block)
+            self.enter_scope();
+
+            // Check catch body statements
             for stmt in &catch.body.statements {
                 self.check_stmt(stmt);
             }
+
+            // Exit catch scope
+            self.exit_scope();
         }
 
         // Check finally block
@@ -562,6 +577,8 @@ impl<'a> TypeChecker<'a> {
             Expression::Index(index) => self.check_index(index),
             Expression::New(new_expr) => self.check_new(new_expr),
             Expression::This(_) => self.check_this(),
+            Expression::Await(await_expr) => self.check_await(await_expr),
+            Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             _ => self.type_ctx.unknown_type(),
         };
 
@@ -1198,6 +1215,48 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.unknown_type()
     }
 
+    /// Check await expression
+    fn check_await(&mut self, await_expr: &crate::ast::AwaitExpression) -> TypeId {
+        // Check the argument expression
+        let arg_ty = self.check_expr(&await_expr.argument);
+
+        // If the argument is a Task<T>, return T
+        if let Some(crate::types::Type::Task(task_ty)) = self.type_ctx.get(arg_ty) {
+            return task_ty.result;
+        }
+
+        // If the argument is Task<T>[], return T[] (parallel await)
+        if let Some(crate::types::Type::Array(arr_ty)) = self.type_ctx.get(arg_ty) {
+            if let Some(crate::types::Type::Task(task_ty)) = self.type_ctx.get(arr_ty.element) {
+                return self.type_ctx.array_type(task_ty.result);
+            }
+        }
+
+        // Otherwise return the argument type (for compatibility)
+        arg_ty
+    }
+
+    /// Check async call expression (async funcCall() syntax)
+    fn check_async_call(&mut self, async_call: &crate::ast::AsyncCallExpression) -> TypeId {
+        // Check all arguments
+        for arg in &async_call.arguments {
+            self.check_expr(arg);
+        }
+
+        // Get the callee's return type
+        let callee_ty = self.check_expr(&async_call.callee);
+
+        // If the callee is a function, get its return type and wrap in Task
+        if let Some(crate::types::Type::Function(func_ty)) = self.type_ctx.get(callee_ty) {
+            let return_ty = func_ty.return_type;
+            return self.type_ctx.task_type(return_ty);
+        }
+
+        // Otherwise just return Task<unknown>
+        let unknown = self.type_ctx.unknown_type();
+        self.type_ctx.task_type(unknown)
+    }
+
     /// Check member access
     fn check_member(&mut self, member: &MemberExpression) -> TypeId {
         let object_ty = self.check_expr(&member.object);
@@ -1442,6 +1501,31 @@ impl<'a> TypeChecker<'a> {
             AstType::Reference(type_ref) => {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
+
+                // Handle built-in generic types
+                if name == "Array" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let elem_ty = self.resolve_type_annotation(&type_args[0]);
+                            return self.type_ctx.array_type(elem_ty);
+                        }
+                    }
+                    // Invalid Array usage - return unknown
+                    return self.type_ctx.unknown_type();
+                }
+
+                // Handle Task<T> for async functions
+                if name == "Task" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let result_ty = self.resolve_type_annotation(&type_args[0]);
+                            return self.type_ctx.task_type(result_ty);
+                        }
+                    }
+                    // Invalid Task usage - return unknown
+                    return self.type_ctx.unknown_type();
+                }
+
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                     symbol.ty
                 } else {

@@ -185,6 +185,18 @@ impl Parser {
         }
     }
 
+    /// Save the current parser position for potential backtracking.
+    #[inline(always)]
+    pub fn checkpoint(&self) -> usize {
+        self.pos
+    }
+
+    /// Restore the parser to a previously saved position.
+    #[inline(always)]
+    pub fn restore(&mut self, checkpoint: usize) {
+        self.pos = checkpoint;
+    }
+
     /// Check if the current token matches the given kind.
     #[inline(always)]
     pub fn check(&self, expected: &Token) -> bool {
@@ -388,5 +400,72 @@ mod tests {
 
         assert!(matches!(parser.current(), Token::Let));
         assert!(matches!(parser.peek(), Some(Token::Identifier(_))));
+    }
+
+    #[test]
+    fn test_type_args_in_call() {
+        use crate::ast::{Expression, Statement};
+
+        let source = "foo<number>()";
+        let parser = Parser::new(source).unwrap();
+        let (module, _) = parser.parse().unwrap();
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => {
+                match &expr_stmt.expression {
+                    Expression::Call(call) => {
+                        assert!(call.type_args.is_some(), "Should have type arguments");
+                        let type_args = call.type_args.as_ref().unwrap();
+                        assert_eq!(type_args.len(), 1, "Should have 1 type argument");
+                    }
+                    other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+                }
+            }
+            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+        }
+    }
+
+    #[test]
+    fn test_less_than_still_works() {
+        use crate::ast::{Expression, Statement, BinaryOperator};
+
+        let source = "a < b";
+        let parser = Parser::new(source).unwrap();
+        let (module, _) = parser.parse().unwrap();
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => {
+                match &expr_stmt.expression {
+                    Expression::Binary(bin) => {
+                        assert!(matches!(bin.operator, BinaryOperator::LessThan));
+                    }
+                    other => panic!("Expected Binary, got {:?}", std::mem::discriminant(other)),
+                }
+            }
+            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+        }
+    }
+
+    #[test]
+    fn test_type_args_multiple() {
+        use crate::ast::{Expression, Statement};
+
+        let source = "map<string, number>()";
+        let parser = Parser::new(source).unwrap();
+        let (module, _) = parser.parse().unwrap();
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => {
+                match &expr_stmt.expression {
+                    Expression::Call(call) => {
+                        assert!(call.type_args.is_some(), "Should have type arguments");
+                        let type_args = call.type_args.as_ref().unwrap();
+                        assert_eq!(type_args.len(), 2, "Should have 2 type arguments");
+                    }
+                    other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+                }
+            }
+            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+        }
     }
 }

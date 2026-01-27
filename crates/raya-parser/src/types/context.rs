@@ -162,6 +162,11 @@ impl TypeContext {
         self.intern(Type::Array(super::ty::ArrayType { element }))
     }
 
+    /// Create a task type (for async functions)
+    pub fn task_type(&mut self, result: TypeId) -> TypeId {
+        self.intern(Type::Task(super::ty::TaskType { result }))
+    }
+
     /// Create a tuple type
     pub fn tuple_type(&mut self, elements: Vec<TypeId>) -> TypeId {
         self.intern(Type::Tuple(super::ty::TupleType { elements }))

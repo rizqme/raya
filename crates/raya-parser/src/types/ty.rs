@@ -122,6 +122,13 @@ pub struct ArrayType {
     pub element: TypeId,
 }
 
+/// Task type: Task<T> - represents an async computation that yields T
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TaskType {
+    /// Result type of the task
+    pub result: TypeId,
+}
+
 /// Tuple type: [T1, T2, ..., Tn]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TupleType {
@@ -230,6 +237,9 @@ pub enum Type {
     /// Array type: T[]
     Array(ArrayType),
 
+    /// Task type: Task<T>
+    Task(TaskType),
+
     /// Tuple type: [T1, T2, ..., Tn]
     Tuple(TupleType),
 
@@ -307,6 +317,7 @@ impl fmt::Display for Type {
                 }
             }
             Type::Array(a) => write!(f, "{}[]", a.element),
+            Type::Task(t) => write!(f, "Task<{}>", t.result),
             Type::Tuple(t) => {
                 write!(f, "[")?;
                 for (i, elem) in t.elements.iter().enumerate() {
@@ -447,6 +458,7 @@ impl PartialEq for Type {
             (Type::Union(a), Type::Union(b)) => a == b,
             (Type::Function(a), Type::Function(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => a == b,
+            (Type::Task(a), Type::Task(b)) => a == b,
             (Type::Tuple(a), Type::Tuple(b)) => a == b,
             (Type::Object(a), Type::Object(b)) => a == b,
             (Type::Class(a), Type::Class(b)) => a == b,
@@ -479,6 +491,7 @@ impl std::hash::Hash for Type {
             Type::Union(u) => u.hash(state),
             Type::Function(f) => f.hash(state),
             Type::Array(a) => a.hash(state),
+            Type::Task(t) => t.hash(state),
             Type::Tuple(t) => t.hash(state),
             Type::Object(o) => o.hash(state),
             Type::Class(c) => c.hash(state),

@@ -3,7 +3,7 @@
 use crate::scheduler::{
     PreemptMonitor, Task, TaskId, TaskState, Worker, DEFAULT_PREEMPT_THRESHOLD,
 };
-use crate::vm::SafepointCoordinator;
+use crate::vm::{SafepointCoordinator, SharedVmState};
 use crossbeam_deque::{Injector, Worker as CWorker};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;
@@ -55,14 +55,8 @@ pub struct Scheduler {
     /// Worker threads
     workers: Vec<Worker>,
 
-    /// All active tasks (by ID)
-    tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
-
-    /// Global task injector
-    injector: Arc<Injector<Arc<Task>>>,
-
-    /// Safepoint coordinator
-    safepoint: Arc<SafepointCoordinator>,
+    /// Shared VM state (contains tasks, injector, safepoint, GC, classes, globals)
+    shared_state: Arc<SharedVmState>,
 
     /// Preemption monitor (like Go's sysmon)
     preempt_monitor: PreemptMonitor,
@@ -101,6 +95,13 @@ impl Scheduler {
         let injector = Arc::new(Injector::new());
         let tasks = Arc::new(RwLock::new(FxHashMap::default()));
 
+        // Create shared VM state
+        let shared_state = Arc::new(SharedVmState::new(
+            safepoint.clone(),
+            tasks.clone(),
+            injector.clone(),
+        ));
+
         // Create worker deques to get stealers
         let mut worker_deques = Vec::new();
         let mut stealers = Vec::new();
@@ -115,7 +116,7 @@ impl Scheduler {
         // Each worker will create its own deque on its own thread
         drop(worker_deques);
 
-        // Create workers
+        // Create workers with shared state
         let mut workers = Vec::new();
         for id in 0..actual_worker_count {
             // Get stealers from other workers (exclude self)
@@ -126,24 +127,16 @@ impl Scheduler {
                 .map(|(_, s)| s.clone())
                 .collect();
 
-            let worker = Worker::new(
-                id,
-                other_stealers,
-                injector.clone(),
-                tasks.clone(),
-                safepoint.clone(),
-            );
+            let worker = Worker::new(id, other_stealers, shared_state.clone());
             workers.push(worker);
         }
 
         // Create preemption monitor (like Go's sysmon)
-        let preempt_monitor = PreemptMonitor::new(tasks.clone(), DEFAULT_PREEMPT_THRESHOLD);
+        let preempt_monitor = PreemptMonitor::new(tasks, DEFAULT_PREEMPT_THRESHOLD);
 
         Self {
             workers,
-            tasks,
-            injector,
-            safepoint,
+            shared_state,
             preempt_monitor,
             worker_count: actual_worker_count,
             started: false,
@@ -181,7 +174,7 @@ impl Scheduler {
     pub fn spawn(&self, task: Arc<Task>) -> Option<TaskId> {
         // Check concurrent task limit
         if let Some(max_concurrent) = self.limits.max_concurrent_tasks {
-            let tasks = self.tasks.read();
+            let tasks = self.shared_state.tasks.read();
             let running_count = tasks
                 .values()
                 .filter(|t| {
@@ -199,27 +192,27 @@ impl Scheduler {
         let task_id = task.id();
 
         // Register task
-        self.tasks.write().insert(task_id, task.clone());
+        self.shared_state.tasks.write().insert(task_id, task.clone());
 
         // Push to global injector
-        self.injector.push(task);
+        self.shared_state.injector.push(task);
 
         Some(task_id)
     }
 
     /// Get a task by ID
     pub fn get_task(&self, task_id: TaskId) -> Option<Arc<Task>> {
-        self.tasks.read().get(&task_id).cloned()
+        self.shared_state.tasks.read().get(&task_id).cloned()
     }
 
     /// Remove a completed task from the registry
     pub fn remove_task(&self, task_id: TaskId) -> Option<Arc<Task>> {
-        self.tasks.write().remove(&task_id)
+        self.shared_state.tasks.write().remove(&task_id)
     }
 
     /// Number of active tasks
     pub fn task_count(&self) -> usize {
-        self.tasks.read().len()
+        self.shared_state.tasks.read().len()
     }
 
     /// Number of workers
@@ -229,7 +222,12 @@ impl Scheduler {
 
     /// Get the safepoint coordinator
     pub fn safepoint(&self) -> &Arc<SafepointCoordinator> {
-        &self.safepoint
+        &self.shared_state.safepoint
+    }
+
+    /// Get the shared VM state
+    pub fn shared_state(&self) -> &Arc<SharedVmState> {
+        &self.shared_state
     }
 
     /// Check if the scheduler has been started
@@ -254,7 +252,7 @@ impl Scheduler {
         self.started = false;
 
         // Clear task registry
-        self.tasks.write().clear();
+        self.shared_state.tasks.write().clear();
     }
 
     /// Wait for all tasks to complete (with timeout)
@@ -264,7 +262,7 @@ impl Scheduler {
         loop {
             // Check if all tasks are completed or failed
             let all_done = {
-                let tasks = self.tasks.read();
+                let tasks = self.shared_state.tasks.read();
                 tasks.values().all(|task| {
                     let state = task.state();
                     state == crate::scheduler::TaskState::Completed
@@ -302,13 +300,13 @@ impl Scheduler {
         if let Some(task) = self.get_task(task_id) {
             task.set_state(TaskState::Resumed);
             // Push task back to global injector so it can be picked up by a worker
-            self.injector.push(task);
+            self.shared_state.injector.push(task);
         }
     }
 
     /// Get scheduler statistics
     pub fn stats(&self) -> SchedulerStats {
-        let tasks = self.tasks.read();
+        let tasks = self.shared_state.tasks.read();
 
         // Count active tasks by state
         let active_tasks = tasks

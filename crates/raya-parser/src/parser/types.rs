@@ -353,7 +353,8 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
 }
 
 /// Parse type arguments: <T, U, V>
-fn parse_type_arguments(parser: &mut Parser) -> Result<Vec<TypeAnnotation>, ParseError> {
+/// Expects the opening `<` to already have been consumed.
+pub fn parse_type_arguments(parser: &mut Parser) -> Result<Vec<TypeAnnotation>, ParseError> {
     let mut type_args = Vec::new();
     let mut guard = super::guards::LoopGuard::new("type_arguments");
 

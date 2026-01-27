@@ -25,6 +25,10 @@ pub fn normalize_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
             let elem = normalize_type(ctx, arr.element);
             ctx.array_type(elem)
         }
+        Type::Task(task) => {
+            let result = normalize_type(ctx, task.result);
+            ctx.task_type(result)
+        }
         Type::Tuple(tuple) => {
             let elements: Vec<_> = tuple
                 .elements
@@ -133,6 +137,7 @@ pub fn contains_type_variables(ctx: &TypeContext, ty: TypeId) -> bool {
     match ty_data {
         Type::TypeVar(_) => true,
         Type::Array(arr) => contains_type_variables(ctx, arr.element),
+        Type::Task(task) => contains_type_variables(ctx, task.result),
         Type::Tuple(tuple) => tuple.elements.iter().any(|&e| contains_type_variables(ctx, e)),
         Type::Function(func) => {
             func.params.iter().any(|&p| contains_type_variables(ctx, p))

@@ -34,7 +34,9 @@ fn create_module_with_task(task_result: i32) -> Module {
             // Spawn task (function 0)
             Opcode::Spawn as u8,
             0,
-            0, // func_index = 0
+            0, // func_index = 0 (u16)
+            0,
+            0, // arg_count = 0 (u16)
             // Now TaskId (u64) is on stack
             // Await the task
             Opcode::Await as u8,
@@ -83,21 +85,27 @@ fn create_module_with_multiple_tasks() -> Module {
             // Spawn task1 and store TaskId in local 0
             Opcode::Spawn as u8,
             0,
+            0, // func_index = 0 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::StoreLocal as u8,
             0,
             0,
             // Spawn task2 and store TaskId in local 1
             Opcode::Spawn as u8,
             1,
+            0, // func_index = 1 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::StoreLocal as u8,
             1,
             0,
             // Spawn task3 and store TaskId in local 2
             Opcode::Spawn as u8,
             2,
+            0, // func_index = 2 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::StoreLocal as u8,
             2,
             0,
@@ -221,7 +229,9 @@ fn create_module_with_compute_task(iterations: u32) -> Module {
         code: vec![
             Opcode::Spawn as u8,
             0,
+            0, // func_index = 0 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::Await as u8,
             Opcode::Return as u8,
         ],
@@ -330,7 +340,9 @@ fn test_spawn_await_with_scheduler_stress() {
         main_code.extend_from_slice(&[
             Opcode::Spawn as u8,
             0,
+            0, // func_index = 0 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::StoreLocal as u8,
             i as u8,
             0,
@@ -388,7 +400,9 @@ fn test_nested_task_spawning() {
             // Spawn leaf task
             Opcode::Spawn as u8,
             0,
+            0, // func_index = 0 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::Await as u8,
             // Double the result
             Opcode::ConstI32 as u8,
@@ -409,7 +423,9 @@ fn test_nested_task_spawning() {
         code: vec![
             Opcode::Spawn as u8,
             1,
+            0, // func_index = 1 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::Await as u8,
             Opcode::Return as u8,
         ],
@@ -442,7 +458,9 @@ fn test_spawn_await_returns_null() {
         code: vec![
             Opcode::Spawn as u8,
             0,
+            0, // func_index = 0 (u16)
             0,
+            0, // arg_count = 0 (u16)
             Opcode::Await as u8,
             Opcode::Return as u8,
         ],

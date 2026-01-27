@@ -44,10 +44,11 @@ fn parse_expression_with_precedence(
         // Standard precedence climbing: continue while current_prec >= min_prec
         // Special case: allow postfix operators through even if precedence is None
         // (they will be handled in parse_infix -> parse_postfix)
+        // Note: Token::Less is included for type arguments in calls (foo<T>())
         let is_postfix = matches!(
             parser.current(),
             Token::LeftParen | Token::Dot | Token::QuestionDot | Token::LeftBracket
-                | Token::PlusPlus | Token::MinusMinus
+                | Token::PlusPlus | Token::MinusMinus | Token::Less
         );
 
         if !is_postfix && (current_precedence == Precedence::None || current_precedence < min_precedence) {
@@ -123,38 +124,187 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
             }))
         }
 
-        // async call expression: async foo()
-        // This wraps any function call in a Task, converting non-async calls to async
+        // async - can be:
+        // 1. async call expression: async foo()
+        // 2. async arrow function: async () => expr or async x => expr
         Token::Async => {
             parser.advance();
 
-            // Parse the function call expression
-            let callee = parse_expression_with_precedence(parser, Precedence::Member)?;
+            // Check if this is an async arrow function
+            // Pattern: async () => ... or async (params) => ... or async x => ...
+            if parser.check(&Token::LeftParen) {
+                // Could be async () => ... or async (params) => ...
+                // Need to look ahead to see if there's a => after the parentheses
+                // Save position and try to parse as arrow
+                let paren_start = parser.current_span();
+                parser.advance(); // consume (
 
-            // Expect a call (function call, member call, etc)
-            // The postfix parsing will handle the actual call syntax
-            // But we need to ensure it's a call expression
-            match &callee {
-                Expression::Call(call_expr) => {
-                    // Extract the parts from the CallExpression
-                    let span = parser.combine_spans(&start_span, &call_expr.span);
-                    Ok(Expression::AsyncCall(AsyncCallExpression {
-                        callee: call_expr.callee.clone(),
-                        type_args: call_expr.type_args.clone(),
-                        arguments: call_expr.arguments.clone(),
+                // Parse parameters
+                let params = try_parse_arrow_params(parser)?;
+
+                // Check for closing paren
+                parser.expect(Token::RightParen)?;
+
+                // Check for optional return type annotation
+                let return_type = if parser.check(&Token::Colon) {
+                    parser.advance();
+                    Some(super::types::parse_type_annotation(parser)?)
+                } else {
+                    None
+                };
+
+                // Check for arrow
+                if parser.check(&Token::Arrow) {
+                    parser.advance(); // consume =>
+
+                    // Parse body - could be expression or block
+                    let (body, body_span) = if parser.check(&Token::LeftBrace) {
+                        let block = parse_block_statement(parser)?;
+                        let span = block.span;
+                        (crate::ast::ArrowBody::Block(block), span)
+                    } else {
+                        let expr = parse_expression(parser)?;
+                        let span = *expr.span();
+                        (crate::ast::ArrowBody::Expression(Box::new(expr)), span)
+                    };
+
+                    let span = parser.combine_spans(&start_span, &body_span);
+                    return Ok(Expression::Arrow(ArrowFunction {
+                        params,
+                        return_type,
+                        body,
+                        is_async: true,
                         span,
-                    }))
-                }
-                _ => {
-                    // Error: async must be followed by a function call
-                    Err(ParseError {
+                    }));
+                } else {
+                    // Not an arrow function - this is a parse error since we consumed the parens
+                    return Err(ParseError {
                         kind: ParseErrorKind::InvalidSyntax {
-                            reason: "async keyword must be followed by a function call".to_string(),
+                            reason: "Expected => after async function parameters".to_string(),
                         },
-                        span: start_span,
-                        message: "Expected function call after async".to_string(),
-                        suggestion: Some("Use: async foo()".to_string()),
-                    })
+                        span: parser.current_span(),
+                        message: "Expected arrow (=>) for async arrow function".to_string(),
+                        suggestion: Some("Use: async () => expression".to_string()),
+                    });
+                }
+            } else if matches!(parser.current(), Token::Identifier(_)) {
+                // Could be: async x => ... or async foo()
+                // Look ahead to see if there's a => after the identifier
+                let ident_token = parser.current().clone();
+                let ident_span = parser.current_span();
+
+                // Peek ahead: if next token is =>, it's an arrow function
+                // Otherwise, it's an async call
+                parser.advance(); // consume identifier
+
+                if parser.check(&Token::Arrow) {
+                    // It's an async arrow function with single parameter
+                    parser.advance(); // consume =>
+
+                    // Create parameter from identifier
+                    let param_name = if let Token::Identifier(name) = ident_token {
+                        name
+                    } else {
+                        unreachable!()
+                    };
+
+                    let param = crate::ast::Parameter {
+                        decorators: vec![],
+                        pattern: crate::ast::Pattern::Identifier(crate::ast::Identifier {
+                            name: param_name,
+                            span: ident_span,
+                        }),
+                        type_annotation: None,
+                        default_value: None,
+                        span: ident_span,
+                    };
+
+                    // Parse body
+                    let (body, body_span) = if parser.check(&Token::LeftBrace) {
+                        let block = parse_block_statement(parser)?;
+                        let span = block.span;
+                        (crate::ast::ArrowBody::Block(block), span)
+                    } else {
+                        let expr = parse_expression(parser)?;
+                        let span = *expr.span();
+                        (crate::ast::ArrowBody::Expression(Box::new(expr)), span)
+                    };
+
+                    let span = parser.combine_spans(&start_span, &body_span);
+                    return Ok(Expression::Arrow(ArrowFunction {
+                        params: vec![param],
+                        return_type: None,
+                        body,
+                        is_async: true,
+                        span,
+                    }));
+                } else {
+                    // Not an arrow - need to "put back" the identifier and parse as call
+                    // Since we already advanced, we need to construct the identifier expr
+                    // and continue parsing it as a call
+                    let ident_name = if let Token::Identifier(name) = ident_token {
+                        name
+                    } else {
+                        unreachable!()
+                    };
+
+                    let ident_expr = Expression::Identifier(crate::ast::Identifier {
+                        name: ident_name,
+                        span: ident_span,
+                    });
+
+                    // Continue parsing postfix (call, member access, etc)
+                    let callee = parse_postfix(parser, ident_expr)?;
+
+                    // Expect a call
+                    match &callee {
+                        Expression::Call(call_expr) => {
+                            let span = parser.combine_spans(&start_span, &call_expr.span);
+                            return Ok(Expression::AsyncCall(AsyncCallExpression {
+                                callee: call_expr.callee.clone(),
+                                type_args: call_expr.type_args.clone(),
+                                arguments: call_expr.arguments.clone(),
+                                span,
+                            }));
+                        }
+                        _ => {
+                            return Err(ParseError {
+                                kind: ParseErrorKind::InvalidSyntax {
+                                    reason: "async keyword must be followed by a function call or arrow function".to_string(),
+                                },
+                                span: start_span,
+                                message: "Expected function call or arrow function after async".to_string(),
+                                suggestion: Some("Use: async foo() or async () => expr".to_string()),
+                            });
+                        }
+                    }
+                }
+            } else {
+                // Parse the function call expression
+                // Use Precedence::Call to stop at binary operators while allowing postfix parsing
+                let callee = parse_expression_with_precedence(parser, Precedence::Call)?;
+
+                // Expect a call (function call, member call, etc)
+                match &callee {
+                    Expression::Call(call_expr) => {
+                        let span = parser.combine_spans(&start_span, &call_expr.span);
+                        Ok(Expression::AsyncCall(AsyncCallExpression {
+                            callee: call_expr.callee.clone(),
+                            type_args: call_expr.type_args.clone(),
+                            arguments: call_expr.arguments.clone(),
+                            span,
+                        }))
+                    }
+                    _ => {
+                        Err(ParseError {
+                            kind: ParseErrorKind::InvalidSyntax {
+                                reason: "async keyword must be followed by a function call or arrow function".to_string(),
+                            },
+                            span: start_span,
+                            message: "Expected function call or arrow function after async".to_string(),
+                            suggestion: Some("Use: async foo() or async () => expr".to_string()),
+                        })
+                    }
                 }
             }
         }
@@ -311,6 +461,35 @@ fn parse_infix(
 
     // Binary operators
     let op_token = parser.current().clone();
+
+    // Special case: `<` might be type arguments for a call, not less-than operator
+    // Try to parse type arguments speculatively
+    if matches!(op_token, Token::Less) {
+        let checkpoint = parser.checkpoint();
+        parser.advance(); // consume '<'
+
+        // Try to parse type arguments
+        if let Ok(type_args) = super::types::parse_type_arguments(parser) {
+            // Type arguments parsed successfully
+            // Now check if followed by '(' for a call
+            if parser.check(&Token::LeftParen) {
+                parser.advance(); // consume '('
+                let arguments = parse_arguments(parser)?;
+                let span = parser.combine_spans(&start_span, &parser.current_span());
+
+                let call = Expression::Call(CallExpression {
+                    callee: Box::new(left),
+                    type_args: Some(type_args),
+                    arguments,
+                    span,
+                });
+                return parse_postfix(parser, call);
+            }
+        }
+        // Not a generic call, backtrack and treat as less-than
+        parser.restore(checkpoint);
+    }
+
     let operator = match op_token {
         Token::Plus => BinaryOperator::Add,
         Token::Minus => BinaryOperator::Subtract,
@@ -474,6 +653,42 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                     operand: Box::new(expr),
                     span,
                 });
+            }
+
+            // Type arguments before call: foo<T>() or foo<T, U>()
+            Token::Less => {
+                // Speculatively try to parse type arguments
+                let checkpoint = parser.checkpoint();
+                parser.advance(); // consume '<'
+
+                // Try to parse type arguments
+                match super::types::parse_type_arguments(parser) {
+                    Ok(type_args) => {
+                        // Type arguments parsed successfully
+                        // Now check if followed by '(' for a call
+                        if parser.check(&Token::LeftParen) {
+                            parser.advance(); // consume '('
+                            let arguments = parse_arguments(parser)?;
+                            let span = parser.combine_spans(&start_span, &parser.current_span());
+
+                            expr = Expression::Call(CallExpression {
+                                callee: Box::new(expr),
+                                type_args: Some(type_args),
+                                arguments,
+                                span,
+                            });
+                        } else {
+                            // Not a call, backtrack - this is a comparison operator
+                            parser.restore(checkpoint);
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        // Failed to parse type arguments, backtrack
+                        parser.restore(checkpoint);
+                        break;
+                    }
+                }
             }
 
             _ => break,

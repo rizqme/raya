@@ -102,6 +102,7 @@ fn test_function_decl_simple() {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(16, 22, 1, 17),
                 }),
+                default_value: None,
                 span: Span::new(13, 22, 1, 14),
             },
             Parameter {
@@ -111,6 +112,7 @@ fn test_function_decl_simple() {
                     ty: Type::Primitive(PrimitiveType::Number),
                     span: Span::new(27, 33, 1, 28),
                 }),
+                default_value: None,
                 span: Span::new(24, 33, 1, 25),
             },
         ],

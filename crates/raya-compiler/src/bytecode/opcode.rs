@@ -266,8 +266,8 @@ pub enum Opcode {
     /// Get tuple element: pop index, pop tuple, push element
     TupleGet = 0xC8,
 
-    // ===== Concurrency & Tasks (0xD0-0xDF) =====
-    /// Spawn new task (operands: u32 funcIndex, u16 argCount)
+    // ===== Concurrency & Tasks (0xD0-0xDB) =====
+    /// Spawn new task (operands: u16 funcIndex, u16 argCount)
     Spawn = 0xD0,
     /// Await task completion: pop TaskHandle, push result
     Await = 0xD1,
@@ -288,8 +288,22 @@ pub enum Opcode {
     /// Release semaphore permits: pop permit count, pop semaphore
     SemRelease = 0xD9,
     /// Wait for all tasks to complete: pop task array, push result array
-    /// Use for: Task.wait([task1, task2]) or Promise.all([task1, task2])
+    /// Use for: await [task1, task2, ...] syntax
     WaitAll = 0xDA,
+    /// Spawn new task from closure (operand: u16 argCount)
+    /// Stack: [args..., closure] -> TaskHandle
+    SpawnClosure = 0xDB,
+
+    // ===== RefCell Operations (0xDC-0xDE) =====
+    /// Allocate a new RefCell with initial value from stack
+    /// Stack: [value] -> [refcell_ptr]
+    NewRefCell = 0xDC,
+    /// Load value from RefCell
+    /// Stack: [refcell_ptr] -> [value]
+    LoadRefCell = 0xDD,
+    /// Store value to RefCell
+    /// Stack: [refcell_ptr, value] -> []
+    StoreRefCell = 0xDE,
 
     // ===== JSON Operations (0xE0-0xEF) - Complete Set =====
     /// Parse JSON string: pop string, push json value
@@ -338,17 +352,6 @@ pub enum Opcode {
     /// Stack: [closure, value] -> [closure]
     /// Used for recursive closures to patch the capture after creation
     SetClosureCapture = 0xF7,
-
-    // ===== RefCell Operations (for capture-by-reference) =====
-    /// Allocate a new RefCell with initial value from stack
-    /// Stack: [value] -> [refcell_ptr]
-    NewRefCell = 0xDB,
-    /// Load value from RefCell
-    /// Stack: [refcell_ptr] -> [value]
-    LoadRefCell = 0xDC,
-    /// Store value to RefCell
-    /// Stack: [refcell_ptr, value] -> []
-    StoreRefCell = 0xDD,
 
     // ===== Exception Handling & Special (0xF8-0xFF) =====
     /// Throw exception: pop error value
@@ -517,6 +520,12 @@ impl Opcode {
             0xD8 => Some(Self::SemAcquire),
             0xD9 => Some(Self::SemRelease),
             0xDA => Some(Self::WaitAll),
+            0xDB => Some(Self::SpawnClosure),
+
+            // RefCell operations
+            0xDC => Some(Self::NewRefCell),
+            0xDD => Some(Self::LoadRefCell),
+            0xDE => Some(Self::StoreRefCell),
 
             // JSON operations (complete set)
             0xE0 => Some(Self::JsonParse),
@@ -532,11 +541,6 @@ impl Opcode {
             0xEA => Some(Self::JsonNewArray),
             0xEB => Some(Self::JsonKeys),
             0xEC => Some(Self::JsonLength),
-
-            // RefCell operations (for capture-by-reference)
-            0xDB => Some(Self::NewRefCell),
-            0xDC => Some(Self::LoadRefCell),
-            0xDD => Some(Self::StoreRefCell),
 
             // Closures & modules
             0xF0 => Some(Self::MakeClosure),
@@ -684,6 +688,7 @@ impl Opcode {
             Self::SemAcquire => "SEM_ACQUIRE",
             Self::SemRelease => "SEM_RELEASE",
             Self::WaitAll => "WAIT_ALL",
+            Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::JsonParse => "JSON_PARSE",
             Self::JsonStringify => "JSON_STRINGIFY",
             Self::JsonGet => "JSON_GET",
@@ -807,14 +812,15 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Test invalid opcodes in truly unassigned ranges
-        assert_eq!(Opcode::from_u8(0xDE), None); // Unassigned (0xDE-0xDF range)
+        assert_eq!(Opcode::from_u8(0xDF), None); // Unassigned
         assert_eq!(Opcode::from_u8(0xED), None); // Unassigned (0xED-0xEF range)
         assert_eq!(Opcode::from_u8(0xF7), Some(Opcode::SetClosureCapture));
         assert_eq!(Opcode::from_u8(0xFD), None); // Unassigned (0xFD-0xFE range)
-        // RefCell opcodes should be valid
-        assert_eq!(Opcode::from_u8(0xDB), Some(Opcode::NewRefCell));
-        assert_eq!(Opcode::from_u8(0xDC), Some(Opcode::LoadRefCell));
-        assert_eq!(Opcode::from_u8(0xDD), Some(Opcode::StoreRefCell));
+        // SpawnClosure and RefCell opcodes should be valid
+        assert_eq!(Opcode::from_u8(0xDB), Some(Opcode::SpawnClosure));
+        assert_eq!(Opcode::from_u8(0xDC), Some(Opcode::NewRefCell));
+        assert_eq!(Opcode::from_u8(0xDD), Some(Opcode::LoadRefCell));
+        assert_eq!(Opcode::from_u8(0xDE), Some(Opcode::StoreRefCell));
     }
 
     #[test]

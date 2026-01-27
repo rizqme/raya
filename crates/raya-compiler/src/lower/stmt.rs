@@ -311,7 +311,27 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            // Track if this is an arrow function for async closure detection
+            let is_async_arrow = if let ast::Expression::Arrow(arrow) = init {
+                arrow.is_async
+            } else {
+                false
+            };
+
             let value = self.lower_expr(init);
+
+            // Track closure locals for async closure detection
+            // After lowering an arrow, last_closure_info has the function ID
+            if is_async_arrow {
+                if let Some((_, _)) = &self.last_closure_info {
+                    // Find the function ID from async_closures that was just created
+                    // The most recently added function ID is the one we just created
+                    let last_func_id = crate::ir::FunctionId::new(self.next_function_id.saturating_sub(1));
+                    if self.async_closures.contains(&last_func_id) {
+                        self.closure_locals.insert(local_idx, last_func_id);
+                    }
+                }
+            }
 
             if needs_refcell {
                 // Wrap the value in a RefCell
@@ -677,19 +697,102 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_try(&mut self, try_stmt: &ast::TryStatement) {
-        // Lower try block (simplified - no exception handling in IR yet)
+        // Allocate blocks for catch, finally, and exit
+        let has_catch = try_stmt.catch_clause.is_some();
+        let has_finally = try_stmt.finally_clause.is_some();
+
+        let catch_block = if has_catch {
+            self.alloc_block()
+        } else {
+            // If no catch, we still need a block for the exception handler to jump to
+            // This will just rethrow or jump to finally
+            self.alloc_block()
+        };
+
+        let finally_block = if has_finally {
+            Some(self.alloc_block())
+        } else {
+            None
+        };
+
+        let exit_block = self.alloc_block();
+
+        // Emit SetupTry instruction
+        self.emit(IrInstr::SetupTry {
+            catch_block,
+            finally_block,
+        });
+
+        // Lower try body
         self.lower_block(&try_stmt.body);
 
-        // In a real implementation, we'd emit exception handling instructions
-        // For now, just lower the catch block if the try completes normally
-        if let Some(_catch) = &try_stmt.catch_clause {
-            // Catch block would be jumped to on exception
+        // If try body completes normally (not terminated by return/throw)
+        if !self.current_block_is_terminated() {
+            // Remove exception handler
+            self.emit(IrInstr::EndTry);
+            // Jump to finally or exit
+            if let Some(finally) = finally_block {
+                self.set_terminator(Terminator::Jump(finally));
+            } else {
+                self.set_terminator(Terminator::Jump(exit_block));
+            }
         }
 
-        // Lower finally block
-        if let Some(finally) = &try_stmt.finally_clause {
-            self.lower_block(finally);
+        // Create catch block
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(catch_block, "catch"));
+        self.current_block = catch_block;
+
+        if let Some(catch_clause) = &try_stmt.catch_clause {
+            // Bind the exception parameter if present
+            // The VM pushes the exception value onto the stack when jumping to catch
+            if let Some(param) = &catch_clause.param {
+                if let ast::Pattern::Identifier(ident) = param {
+                    // Allocate local for exception parameter
+                    let local_idx = self.allocate_local(ident.name);
+                    // Pop exception from stack directly into local
+                    // The VM pushes the exception before jumping to catch block
+                    self.emit(IrInstr::PopToLocal { index: local_idx });
+                    // Create a register for subsequent uses of the catch parameter
+                    let exc_ty = TypeId::new(0); // Exception type (unknown)
+                    let exc_reg = self.alloc_register(exc_ty);
+                    self.local_registers.insert(local_idx, exc_reg);
+                }
+            }
+
+            // Lower catch body
+            self.lower_block(&catch_clause.body);
         }
+
+        // After catch, jump to finally or exit
+        if !self.current_block_is_terminated() {
+            if let Some(finally) = finally_block {
+                self.set_terminator(Terminator::Jump(finally));
+            } else {
+                self.set_terminator(Terminator::Jump(exit_block));
+            }
+        }
+
+        // Create finally block if present
+        if let Some(finally) = finally_block {
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(finally, "finally"));
+            self.current_block = finally;
+
+            if let Some(finally_clause) = &try_stmt.finally_clause {
+                self.lower_block(finally_clause);
+            }
+
+            // Jump to exit after finally
+            if !self.current_block_is_terminated() {
+                self.set_terminator(Terminator::Jump(exit_block));
+            }
+        }
+
+        // Continue at exit block
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "try.exit"));
+        self.current_block = exit_block;
     }
 
     fn lower_switch(&mut self, switch: &ast::SwitchStatement) {

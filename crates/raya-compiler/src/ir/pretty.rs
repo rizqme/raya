@@ -149,6 +149,9 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreLocal { index, value } => {
             format!("store_local {} = {}", index, value)
         }
+        IrInstr::PopToLocal { index } => {
+            format!("pop_to_local {}", index)
+        }
         IrInstr::LoadGlobal { dest, index } => {
             format!("{} = load_global {}", dest, index)
         }
@@ -258,6 +261,30 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::ToString { dest, operand } => {
             format!("{} = to_string {}", dest, operand)
+        }
+        IrInstr::Spawn { dest, func, args } => {
+            let args_str = args.iter().map(|a| format!("{}", a)).collect::<Vec<_>>().join(", ");
+            format!("{} = spawn {}({})", dest, func, args_str)
+        }
+        IrInstr::SpawnClosure { dest, closure, args } => {
+            let args_str = args.iter().map(|a| format!("{}", a)).collect::<Vec<_>>().join(", ");
+            format!("{} = spawn_closure {}({})", dest, closure, args_str)
+        }
+        IrInstr::Await { dest, task } => {
+            format!("{} = await {}", dest, task)
+        }
+        IrInstr::AwaitAll { dest, tasks } => {
+            format!("{} = await_all {}", dest, tasks)
+        }
+        IrInstr::SetupTry { catch_block, finally_block } => {
+            if let Some(finally) = finally_block {
+                format!("setup_try catch={}, finally={}", catch_block, finally)
+            } else {
+                format!("setup_try catch={}", catch_block)
+            }
+        }
+        IrInstr::EndTry => {
+            "end_try".to_string()
         }
     }
 }

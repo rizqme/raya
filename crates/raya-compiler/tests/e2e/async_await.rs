@@ -10,7 +10,6 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_async_function_simple() {
     expect_i32(
         "async function getValue(): Task<number> {
@@ -22,7 +21,6 @@ fn test_async_function_simple() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_async_function_with_computation() {
     expect_i32(
         "async function compute(x: number): Task<number> {
@@ -34,7 +32,6 @@ fn test_async_function_with_computation() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_async_function_multiple_params() {
     expect_i32(
         "async function add(a: number, b: number): Task<number> {
@@ -50,7 +47,6 @@ fn test_async_function_multiple_params() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_await_in_expression() {
     expect_i32(
         "async function double(x: number): Task<number> {
@@ -66,7 +62,6 @@ fn test_await_in_expression() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_await_chained() {
     expect_i32(
         "async function step1(): Task<number> {
@@ -90,7 +85,6 @@ fn test_await_chained() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_await_conditional() {
     expect_i32(
         "async function getValue(flag: boolean): Task<number> {
@@ -110,7 +104,6 @@ fn test_await_conditional() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_task_starts_immediately() {
     // In Raya, calling an async function starts the Task immediately
     expect_i32(
@@ -127,7 +120,6 @@ fn test_task_starts_immediately() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_task_multiple() {
     // Multiple tasks can run concurrently
     expect_i32(
@@ -146,7 +138,6 @@ fn test_task_multiple() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_async_with_loop() {
     expect_i32(
         "async function sumAsync(n: number): Task<number> {
@@ -164,7 +155,6 @@ fn test_async_with_loop() {
 }
 
 #[test]
-#[ignore = "Async functions not yet implemented"]
 fn test_async_recursive() {
     expect_i32(
         "async function factorialAsync(n: number): Task<number> {
@@ -184,7 +174,6 @@ fn test_async_recursive() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async arrow functions not yet implemented"]
 fn test_async_arrow_simple() {
     expect_i32(
         "let getValue = async (): Task<number> => 42;
@@ -194,7 +183,6 @@ fn test_async_arrow_simple() {
 }
 
 #[test]
-#[ignore = "Async arrow functions not yet implemented"]
 fn test_async_arrow_with_param() {
     expect_i32(
         "let double = async (x: number): Task<number> => x * 2;
@@ -208,7 +196,6 @@ fn test_async_arrow_with_param() {
 // ============================================================================
 
 #[test]
-#[ignore = "Async methods not yet implemented"]
 fn test_async_method() {
     expect_i32(
         "class Service {
@@ -223,7 +210,6 @@ fn test_async_method() {
 }
 
 #[test]
-#[ignore = "Async methods not yet implemented"]
 fn test_async_method_using_this() {
     expect_i32(
         "class Counter {
@@ -270,7 +256,6 @@ fn test_async_try_catch() {
 // ============================================================================
 
 #[test]
-#[ignore = "async call syntax not yet implemented"]
 fn test_async_call_wrapper() {
     // The 'async' keyword before a call wraps it in a Task
     expect_i32(
@@ -280,6 +265,51 @@ fn test_async_call_wrapper() {
          // 'async syncWork()' wraps the synchronous call in a Task
          let task = async syncWork();
          return await task;",
+        42,
+    );
+}
+
+// ============================================================================
+// Parallel Await (await [...])
+// ============================================================================
+
+#[test]
+fn test_await_array_simple() {
+    // await [task1, task2] waits for all tasks and returns array of results
+    expect_i32(
+        "async function compute(x: number): Task<number> {
+             return x * 2;
+         }
+         let task1 = compute(10);
+         let task2 = compute(11);
+         let results = await [task1, task2];
+         return results[0] + results[1];",
+        42,
+    );
+}
+
+#[test]
+fn test_await_array_ordering() {
+    // Results should match task order, not completion order
+    expect_i32(
+        "async function getValue(x: number): Task<number> {
+             return x;
+         }
+         let results = await [getValue(1), getValue(2), getValue(3)];
+         return results[0] * 100 + results[1] * 10 + results[2];",
+        123,
+    );
+}
+
+#[test]
+fn test_await_array_inline() {
+    // Can create tasks inline in the array
+    expect_i32(
+        "async function triple(x: number): Task<number> {
+             return x * 3;
+         }
+         let results = await [triple(10), triple(4)];
+         return results[0] + results[1];",
         42,
     );
 }

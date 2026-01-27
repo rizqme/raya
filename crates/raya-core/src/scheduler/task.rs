@@ -115,6 +115,9 @@ pub struct Task {
 
     /// Mutexes currently held by this Task (for auto-unlock on exception)
     held_mutexes: Mutex<Vec<MutexId>>,
+
+    /// Initial arguments passed to this task when spawned
+    initial_args: Mutex<Vec<Value>>,
 }
 
 impl Task {
@@ -123,6 +126,16 @@ impl Task {
         function_id: usize,
         module: Arc<raya_compiler::Module>,
         parent: Option<TaskId>,
+    ) -> Self {
+        Self::with_args(function_id, module, parent, Vec::new())
+    }
+
+    /// Create a new Task with initial arguments
+    pub fn with_args(
+        function_id: usize,
+        module: Arc<raya_compiler::Module>,
+        parent: Option<TaskId>,
+        args: Vec<Value>,
     ) -> Self {
         Self {
             id: TaskId::new(),
@@ -139,7 +152,13 @@ impl Task {
             exception_handlers: Mutex::new(Vec::new()),
             current_exception: Mutex::new(None),
             held_mutexes: Mutex::new(Vec::new()),
+            initial_args: Mutex::new(args),
         }
+    }
+
+    /// Take the initial arguments (consumes them)
+    pub fn take_initial_args(&self) -> Vec<Value> {
+        std::mem::take(&mut *self.initial_args.lock().unwrap())
     }
 
     /// Get the Task's unique ID

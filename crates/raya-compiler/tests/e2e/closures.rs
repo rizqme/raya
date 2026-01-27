@@ -297,7 +297,6 @@ fn test_closure_in_loop_let() {
 }
 
 #[test]
-#[ignore = "Closures in loops not yet implemented"]
 fn test_closure_capture_loop_variable() {
     expect_i32(
         "let sum = 0;
@@ -320,7 +319,6 @@ fn test_closure_capture_loop_variable() {
 // ============================================================================
 
 #[test]
-#[ignore = "Arrow this binding not yet implemented"]
 fn test_arrow_preserves_this() {
     // Arrow functions capture 'this' from enclosing scope
     expect_i32(

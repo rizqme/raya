@@ -875,23 +875,6 @@ fn test_unicode_fixed_in_template() {
 // Error Recovery Tests (Phase 5)
 // ============================================================================
 
-// NOTE: Test disabled - @ is now a valid token for decorators
-#[test]
-#[ignore]
-fn test_error_recovery_continues_after_error() {
-    let source = r#"
-        const x = @; // Invalid character
-        const y = 42; // Should still tokenize this
-    "#;
-
-    let lexer = Lexer::new(source);
-    let result = lexer.tokenize();
-
-    // Should have errors but also some valid tokens
-    assert!(result.is_err());
-    // The lexer should have tried to continue tokenizing
-}
-
 #[test]
 fn test_rich_error_message_for_unterminated_string() {
     let source = r#"const x = "unterminated"#;
@@ -905,34 +888,6 @@ fn test_rich_error_message_for_unterminated_string() {
         // Note: logos recognizes the string, so we might not get an unterminated string error
         // Just verify we get an error message
         assert!(formatted.contains("Error at"));
-    } else {
-        panic!("Expected error");
-    }
-}
-
-// NOTE: Test disabled - @ is now a valid token for decorators
-#[test]
-#[ignore]
-fn test_rich_error_message_for_unexpected_char() {
-    let source = "const x = @;";
-
-    let lexer = Lexer::new(source);
-    let result = lexer.tokenize();
-
-    if let Err(errors) = result {
-        assert!(!errors.is_empty());
-        let error = &errors[0];
-
-        // Test individual error methods
-        assert_eq!(error.description(), "Unexpected character '@'");
-        assert_eq!(error.span().line, 1);
-
-        // Test formatted output
-        let formatted = error.format_with_source(source);
-        assert!(formatted.contains("Error at 1:"));
-        assert!(formatted.contains("Unexpected character '@'"));
-        assert!(formatted.contains("const x = @;"));
-        assert!(formatted.contains("^"));
     } else {
         panic!("Expected error");
     }
@@ -955,30 +910,12 @@ fn test_unterminated_template_hint() {
     }
 }
 
-// NOTE: Test disabled - @ is now a valid token for decorators
-#[test]
-#[ignore]
-fn test_error_span_accuracy() {
-    let source = "let x = @;";
-
-    let lexer = Lexer::new(source);
-    let result = lexer.tokenize();
-
-    if let Err(errors) = result {
-        let span = errors[0].span();
-        // The @ character should be detected
-        assert!(span.start == 8); // position of @
-        assert!(span.column > 0); // should have a valid column
-    } else {
-        panic!("Expected error");
-    }
-}
-
 #[test]
 fn test_multiple_errors_formatted() {
+    // Use invalid characters (# is not a valid token)
     let source = r#"
-const x = @;
-const y = #;
+const x = #;
+const y = $;
 "#;
 
     let lexer = Lexer::new(source);

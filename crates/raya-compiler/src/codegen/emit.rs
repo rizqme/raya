@@ -123,6 +123,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::InitObject
         | Opcode::InitArray
         | Opcode::InitTuple
+        | Opcode::SpawnClosure
         | Opcode::Trap => 1 + 2,
 
         // i32 operand (jumps)
