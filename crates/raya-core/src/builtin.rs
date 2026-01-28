@@ -40,6 +40,18 @@ pub mod array {
     pub const EVERY: u16 = 0x010E;
     /// `arr.some(predicate)` - Check if any element matches predicate
     pub const SOME: u16 = 0x010F;
+    /// `arr.lastIndexOf(value)` - Find last index of value, returns -1 if not found
+    pub const LAST_INDEX_OF: u16 = 0x0110;
+    /// `arr.sort(compareFn)` - Sort array with comparison function
+    pub const SORT: u16 = 0x0111;
+    /// `arr.map(fn)` - Map elements to new array
+    pub const MAP: u16 = 0x0112;
+    /// `arr.reduce(fn, initial)` - Reduce array to single value
+    pub const REDUCE: u16 = 0x0113;
+    /// `arr.fill(value, start, end)` - Fill array with value
+    pub const FILL: u16 = 0x0114;
+    /// `arr.flat()` - Flatten nested array by one level
+    pub const FLAT: u16 = 0x0115;
 }
 
 /// Built-in method IDs for strings
@@ -80,6 +92,26 @@ pub mod string {
     pub const TRIM_START: u16 = 0x0210;
     /// `str.trimEnd()` - Remove whitespace from end
     pub const TRIM_END: u16 = 0x0211;
+    /// `str.match(regexp)` - Match string against RegExp
+    pub const MATCH: u16 = 0x0212;
+    /// `str.matchAll(regexp)` - Match all occurrences against RegExp
+    pub const MATCH_ALL: u16 = 0x0213;
+    /// `str.search(regexp)` - Search for RegExp match, return index
+    pub const SEARCH: u16 = 0x0214;
+    /// `str.replace(regexp, replacement)` - Replace RegExp matches
+    pub const REPLACE_REGEXP: u16 = 0x0215;
+    /// `str.split(regexp, limit)` - Split by RegExp
+    pub const SPLIT_REGEXP: u16 = 0x0216;
+    /// `str.replaceWith(regexp, replacer)` - Replace RegExp matches with callback
+    pub const REPLACE_WITH_REGEXP: u16 = 0x0217;
+}
+
+/// Built-in method IDs for Mutex
+pub mod mutex {
+    /// `mutex.tryLock()` - Try to acquire lock without blocking, returns boolean
+    pub const TRY_LOCK: u16 = 0x0300;
+    /// `mutex.isLocked()` - Check if mutex is currently locked
+    pub const IS_LOCKED: u16 = 0x0301;
 }
 
 /// Built-in method IDs for Channel<T>
@@ -184,6 +216,24 @@ pub mod set {
     pub const DIFFERENCE: u16 = 0x090A;
 }
 
+/// Built-in method IDs for RegExp
+pub mod regexp {
+    /// `new RegExp(pattern, flags)` - Create new RegExp
+    pub const NEW: u16 = 0x0A00;
+    /// `regex.test(str)` - Test if pattern matches
+    pub const TEST: u16 = 0x0A01;
+    /// `regex.exec(str)` - Execute pattern and return match
+    pub const EXEC: u16 = 0x0A02;
+    /// `regex.execAll(str)` - Execute pattern and return all matches
+    pub const EXEC_ALL: u16 = 0x0A03;
+    /// `regex.replace(str, replacement)` - Replace matches with string
+    pub const REPLACE: u16 = 0x0A04;
+    /// `regex.replaceWith(str, replacer)` - Replace matches with callback result
+    pub const REPLACE_WITH: u16 = 0x0A05;
+    /// `regex.split(str, limit?)` - Split string by pattern
+    pub const SPLIT: u16 = 0x0A06;
+}
+
 /// Built-in method IDs for Date
 pub mod date {
     /// `Date.now()` - Get current timestamp
@@ -285,6 +335,11 @@ pub fn is_string_method(method_id: u16) -> bool {
     (0x0200..=0x02FF).contains(&method_id)
 }
 
+/// Check if a method ID is a built-in mutex method
+pub fn is_mutex_method(method_id: u16) -> bool {
+    (0x0300..=0x03FF).contains(&method_id)
+}
+
 /// Check if a method ID is a built-in channel method
 pub fn is_channel_method(method_id: u16) -> bool {
     (0x0400..=0x04FF).contains(&method_id)
@@ -303,6 +358,11 @@ pub fn is_map_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in set method
 pub fn is_set_method(method_id: u16) -> bool {
     (0x0900..=0x09FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in regexp method
+pub fn is_regexp_method(method_id: u16) -> bool {
+    (0x0A00..=0x0AFF).contains(&method_id)
 }
 
 /// Check if a method ID is a built-in date method

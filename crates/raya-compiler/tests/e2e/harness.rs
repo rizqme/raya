@@ -9,9 +9,15 @@ use raya_parser::checker::{Binder, TypeChecker};
 
 /// Get the builtin source files content
 ///
-/// Returns the source code for Map, Set, Buffer, Date, Channel classes.
+/// Returns the source code for all builtin classes.
 fn get_builtin_sources() -> &'static str {
     concat!(
+        // Object class (base class)
+        include_str!("../../../raya-builtins/builtins/Object.raya"),
+        "\n",
+        // Error classes (must come before other classes that might throw)
+        include_str!("../../../raya-builtins/builtins/Error.raya"),
+        "\n",
         // Map class
         include_str!("../../../raya-builtins/builtins/Map.raya"),
         "\n",
@@ -27,23 +33,8 @@ fn get_builtin_sources() -> &'static str {
         // Channel class
         include_str!("../../../raya-builtins/builtins/Channel.raya"),
         "\n",
-        // Mutex class (simplified - lock/unlock only)
-        "class Mutex {
-            private handle: number;
-
-            constructor() {
-                this.handle = __OPCODE_MUTEX_NEW();
-            }
-
-            lock(): void {
-                __OPCODE_MUTEX_LOCK(this.handle);
-            }
-
-            unlock(): void {
-                __OPCODE_MUTEX_UNLOCK(this.handle);
-            }
-        }
-        ",
+        // Mutex class
+        include_str!("../../../raya-builtins/builtins/Mutex.raya"),
         "\n",
         // Task class (simplified - for runtime Task objects)
         "class Task<T> {
@@ -304,6 +295,38 @@ pub fn expect_string(source: &str, expected: &str) {
             if value.is_ptr() {
                 // Extract string from pointer
                 // SAFETY: We trust that string values from the VM are RayaString pointers
+                let str_ptr = unsafe { value.as_ptr::<RayaString>() };
+                if let Some(ptr) = str_ptr {
+                    let raya_str = unsafe { &*ptr.as_ptr() };
+                    assert_eq!(
+                        raya_str.data, expected,
+                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                        expected, raya_str.data, source
+                    );
+                } else {
+                    panic!(
+                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
+                        value, source
+                    );
+                }
+            } else {
+                panic!(
+                    "Expected string (pointer), got {:?}\nSource:\n{}",
+                    value, source
+                );
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with builtins, expecting a specific string result
+pub fn expect_string_with_builtins(source: &str, expected: &str) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            if value.is_ptr() {
                 let str_ptr = unsafe { value.as_ptr::<RayaString>() };
                 if let Some(ptr) = str_ptr {
                     let raya_str = unsafe { &*ptr.as_ptr() };

@@ -751,6 +751,133 @@ impl Buffer {
     }
 }
 
+/// RegExp builtin - regular expression pattern
+/// Native IDs: 0x0A01-0x0A06
+#[derive(Debug, Clone)]
+pub struct RegExpObject {
+    /// The pattern string
+    pub pattern: String,
+    /// Regex flags (g=global, i=ignoreCase, m=multiline)
+    pub flags: String,
+    /// Compiled regex (using Rust regex crate)
+    pub compiled: regex::Regex,
+}
+
+impl RegExpObject {
+    /// Create a new RegExp from pattern and flags
+    pub fn new(pattern: &str, flags: &str) -> Result<Self, String> {
+        // Build regex pattern with flags
+        let mut regex_pattern = String::new();
+
+        // Handle flags
+        let case_insensitive = flags.contains('i');
+        let multiline = flags.contains('m');
+
+        if case_insensitive || multiline {
+            regex_pattern.push_str("(?");
+            if case_insensitive {
+                regex_pattern.push('i');
+            }
+            if multiline {
+                regex_pattern.push('m');
+            }
+            regex_pattern.push(')');
+        }
+
+        regex_pattern.push_str(pattern);
+
+        let compiled = regex::Regex::new(&regex_pattern)
+            .map_err(|e| format!("Invalid regular expression: {}", e))?;
+
+        Ok(Self {
+            pattern: pattern.to_string(),
+            flags: flags.to_string(),
+            compiled,
+        })
+    }
+
+    /// Get the source pattern
+    pub fn source(&self) -> &str {
+        &self.pattern
+    }
+
+    /// Get the flags string
+    pub fn flags(&self) -> &str {
+        &self.flags
+    }
+
+    /// Check if global flag is set
+    pub fn global(&self) -> bool {
+        self.flags.contains('g')
+    }
+
+    /// Check if case-insensitive flag is set
+    pub fn ignore_case(&self) -> bool {
+        self.flags.contains('i')
+    }
+
+    /// Check if multiline flag is set
+    pub fn multiline(&self) -> bool {
+        self.flags.contains('m')
+    }
+
+    /// Test if pattern matches string
+    pub fn test(&self, text: &str) -> bool {
+        self.compiled.is_match(text)
+    }
+
+    /// Execute pattern on string, return first match
+    /// Returns (matched_text, index, groups) or None
+    pub fn exec(&self, text: &str) -> Option<(String, usize, Vec<String>)> {
+        self.compiled.captures(text).map(|caps| {
+            let full_match = caps.get(0).unwrap();
+            let matched_text = full_match.as_str().to_string();
+            let index = full_match.start();
+
+            // Collect captured groups (skip group 0 which is the full match)
+            let groups: Vec<String> = caps.iter()
+                .skip(1)
+                .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
+                .collect();
+
+            (matched_text, index, groups)
+        })
+    }
+
+    /// Execute pattern on string, return all matches
+    pub fn exec_all(&self, text: &str) -> Vec<(String, usize, Vec<String>)> {
+        self.compiled.captures_iter(text).map(|caps| {
+            let full_match = caps.get(0).unwrap();
+            let matched_text = full_match.as_str().to_string();
+            let index = full_match.start();
+
+            let groups: Vec<String> = caps.iter()
+                .skip(1)
+                .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
+                .collect();
+
+            (matched_text, index, groups)
+        }).collect()
+    }
+
+    /// Replace first match (or all if global)
+    pub fn replace(&self, text: &str, replacement: &str) -> String {
+        if self.global() {
+            self.compiled.replace_all(text, replacement).to_string()
+        } else {
+            self.compiled.replace(text, replacement).to_string()
+        }
+    }
+
+    /// Split string by pattern
+    pub fn split(&self, text: &str, limit: Option<usize>) -> Vec<String> {
+        match limit {
+            Some(n) => self.compiled.splitn(text, n).map(|s| s.to_string()).collect(),
+            None => self.compiled.split(text).map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
 /// Date builtin - date and time handling
 /// Native IDs: 0x0B00-0x0B23
 #[derive(Debug, Clone, Copy)]

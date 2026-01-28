@@ -361,6 +361,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 type_params: &[],
                 properties: &[
                     PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
                 ],
                 methods: &[
                     MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
@@ -372,6 +373,7 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 type_params: &[],
                 properties: &[
                     PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
                 ],
                 methods: &[
                     MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
@@ -383,6 +385,55 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 type_params: &[],
                 properties: &[
                     PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
+                ],
+                methods: &[
+                    MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
+                ],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "ReferenceError",
+                type_params: &[],
+                properties: &[
+                    PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
+                ],
+                methods: &[
+                    MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
+                ],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "SyntaxError",
+                type_params: &[],
+                properties: &[
+                    PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
+                ],
+                methods: &[
+                    MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
+                ],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "ChannelClosedError",
+                type_params: &[],
+                properties: &[
+                    PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
+                ],
+                methods: &[
+                    MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },
+                ],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "AssertionError",
+                type_params: &[],
+                properties: &[
+                    PropertySig { name: "message", ty: "string", is_static: false },
+                    PropertySig { name: "name", ty: "string", is_static: false },
                 ],
                 methods: &[
                     MethodSig { name: "toString", params: &[], return_type: "string", is_static: false },

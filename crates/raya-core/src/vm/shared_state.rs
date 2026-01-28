@@ -682,7 +682,9 @@ impl<'a> TaskExecutor<'a> {
                             // Jump to catch block if present
                             if handler.catch_offset != -1 {
                                 exception_handlers.pop();
-                                let exc = current_exception.as_ref().unwrap().clone();
+                                // IMPORTANT: Use take() to clear current_exception, otherwise
+                                // the exception will be detected again after any function call
+                                let exc = current_exception.take().unwrap();
                                 stack_guard.push(exc)?;
                                 ip = handler.catch_offset as usize;
                                 break;

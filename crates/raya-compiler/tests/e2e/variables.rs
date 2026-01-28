@@ -186,3 +186,52 @@ fn test_variable_accumulator() {
         6,
     );
 }
+
+// ============================================================================
+// Const Declarations (Compile-Time Constant Folding)
+// ============================================================================
+
+#[test]
+fn test_const_integer() {
+    // Const with integer literal should be folded at compile time
+    expect_i32("const X = 42; return X;", 42);
+}
+
+#[test]
+fn test_const_float() {
+    expect_f64("const PI = 3.14159; return PI;", 3.14159);
+}
+
+#[test]
+fn test_const_boolean() {
+    expect_bool("const FLAG = true; return FLAG;", true);
+}
+
+#[test]
+fn test_const_string() {
+    expect_string("const MSG = \"hello\"; return MSG;", "hello");
+}
+
+#[test]
+fn test_const_in_expression() {
+    // Const should be inlined directly in expressions
+    expect_i32("const BASE = 100; let result = BASE + 23; return result;", 123);
+}
+
+#[test]
+fn test_const_multiple() {
+    // Multiple constants
+    expect_i32("const A = 10; const B = 20; return A + B;", 30);
+}
+
+#[test]
+fn test_const_hex_literal() {
+    // Hex literals should work with const folding
+    expect_i32("const ID = 0x0300; return ID;", 0x0300);
+}
+
+#[test]
+fn test_const_reference_other_const() {
+    // Const referencing another const should be folded
+    expect_i32("const A = 5; const B = A; return B;", 5);
+}

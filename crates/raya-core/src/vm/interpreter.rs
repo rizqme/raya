@@ -954,7 +954,9 @@ impl Vm {
                             if handler.catch_offset != -1 {
                                 self.exception_handlers.pop();
                                 // Push exception value for catch block
-                                let exc = self.current_exception.as_ref().unwrap().clone();
+                                // IMPORTANT: Use take() to clear current_exception, otherwise
+                                // the exception will be detected again after any function call
+                                let exc = self.current_exception.take().unwrap();
                                 self.stack.push(exc)?;
                                 ip = handler.catch_offset as usize;
                                 break;
@@ -2988,7 +2990,12 @@ impl Vm {
 
         // Check for built-in string methods (0x02xx range)
         if (0x0200..=0x02FF).contains(&native_id) {
-            return self.call_string_method(native_id, method_arg_count);
+            return self.call_string_method(native_id, method_arg_count, module);
+        }
+
+        // Check for built-in mutex methods (0x03xx range)
+        if (0x0300..=0x03FF).contains(&native_id) {
+            return self.call_mutex_method(native_id, method_arg_count);
         }
 
         // Check for built-in channel methods (0x04xx range)
@@ -3009,6 +3016,18 @@ impl Vm {
         // Check for built-in set methods (0x09xx range)
         if (0x0900..=0x09FF).contains(&native_id) {
             return self.call_set_method(native_id, arg_count);
+        }
+
+        // Check for built-in regexp methods (0x0Axx range)
+        if (0x0A00..=0x0AFF).contains(&native_id) {
+            // NEW (0x0A00) is a constructor, no receiver, use full arg_count
+            // Other methods have a receiver, use method_arg_count
+            let regexp_arg_count = if native_id == builtin::regexp::NEW {
+                arg_count
+            } else {
+                method_arg_count
+            };
+            return self.call_regexp_method(native_id, regexp_arg_count);
         }
 
         // Check for built-in date methods (0x0Bxx range)
@@ -3040,7 +3059,12 @@ impl Vm {
 
         // Check for built-in string methods
         if builtin::is_string_method(method_id) {
-            return self.call_string_method(method_id, arg_count);
+            return self.call_string_method(method_id, arg_count, module);
+        }
+
+        // Check for built-in regexp methods
+        if builtin::is_regexp_method(method_id) {
+            return self.call_regexp_method(method_id, arg_count);
         }
 
         // Fall through to vtable dispatch for user-defined methods
@@ -3728,6 +3752,246 @@ impl Vm {
                 Ok(())
             }
 
+            builtin::array::LAST_INDEX_OF => {
+                // lastIndexOf(value) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.lastIndexOf expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for lastIndexOf method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Find last index of value (search from end)
+                let index = arr.elements.iter().rposition(|e| *e == value).map(|i| i as i32).unwrap_or(-1);
+                self.stack.push(Value::i32(index))?;
+
+                Ok(())
+            }
+
+            builtin::array::SORT => {
+                // sort(compareFn) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.sort expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let compare_fn = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for sort method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to sort
+                let mut elements: Vec<Value> = arr.elements.clone();
+
+                // Sort using compare function (bubble sort for simplicity - can be optimized)
+                let len = elements.len();
+                for i in 0..len {
+                    for j in 0..len - 1 - i {
+                        let a = elements[j];
+                        let b = elements[j + 1];
+
+                        // Call compare function with two arguments
+                        let cmp_result = self.call_closure_with_two_args(compare_fn, a, b, module)?;
+                        let cmp = cmp_result.as_i32().unwrap_or(0);
+
+                        if cmp > 0 {
+                            elements.swap(j, j + 1);
+                        }
+                    }
+                }
+
+                // Update array in place
+                arr.elements = elements;
+
+                // Return the array itself
+                self.stack.push(array_val)?;
+                Ok(())
+            }
+
+            builtin::array::MAP => {
+                // map(fn) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.map expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let map_fn = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for map method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Map each element
+                let mut result_elements = Vec::with_capacity(elements.len());
+                for elem in elements {
+                    let result = self.call_closure_with_arg(map_fn, elem, module)?;
+                    result_elements.push(result);
+                }
+
+                // Create new array with mapped elements
+                let mut result_array = Array::new(0, 0);
+                result_array.elements = result_elements;
+                let gc_ptr = self.gc.allocate(result_array);
+                let result_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(result_val)?;
+
+                Ok(())
+            }
+
+            builtin::array::REDUCE => {
+                // reduce(fn, initial) - arg_count should be 2
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.reduce expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let initial = self.stack.pop()?;
+                let reduce_fn = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for reduce method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Reduce with accumulator
+                let mut acc = initial;
+                for elem in elements {
+                    acc = self.call_closure_with_two_args(reduce_fn, acc, elem, module)?;
+                }
+
+                self.stack.push(acc)?;
+                Ok(())
+            }
+
+            builtin::array::FILL => {
+                // fill(value, start, end) - arg_count should be 3
+                if arg_count != 3 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.fill expects 3 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let end_val = self.stack.pop()?;
+                let start_val = self.stack.pop()?;
+                let fill_value = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                let start = start_val.as_i32().unwrap_or(0) as usize;
+                let end = end_val.as_i32().unwrap_or(0) as usize;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for fill method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                // Clamp indices
+                let len = arr.elements.len();
+                let start = start.min(len);
+                let end = end.min(len).max(start);
+
+                // Fill array in place
+                for i in start..end {
+                    arr.elements[i] = fill_value;
+                }
+
+                // Return the array itself
+                self.stack.push(array_val)?;
+                Ok(())
+            }
+
+            builtin::array::FLAT => {
+                // flat() - arg_count should be 0 (flatten by 1 level)
+                if arg_count != 0 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.flat expects 0 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for flat method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Flatten by one level
+                let mut result_elements = Vec::new();
+                for elem in &arr.elements {
+                    if elem.is_ptr() {
+                        // Try to interpret as array
+                        let inner_ptr = unsafe { elem.as_ptr::<Array>() };
+                        if let Some(inner_ptr) = inner_ptr {
+                            let inner_arr = unsafe { &*inner_ptr.as_ptr() };
+                            result_elements.extend(inner_arr.elements.clone());
+                            continue;
+                        }
+                    }
+                    // Not an array, add element directly
+                    result_elements.push(*elem);
+                }
+
+                // Create new array with flattened elements
+                let mut result_array = Array::new(0, 0);
+                result_array.elements = result_elements;
+                let gc_ptr = self.gc.allocate(result_array);
+                let result_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(result_val)?;
+
+                Ok(())
+            }
+
             _ => Err(VmError::RuntimeError(format!(
                 "Unimplemented array method: 0x{:04X}",
                 method_id
@@ -3791,8 +4055,48 @@ impl Vm {
         result
     }
 
+    /// Helper to call a closure with two arguments and get the result
+    /// Used by callback-based array methods (sort, reduce, etc.)
+    fn call_closure_with_two_args(&mut self, closure_val: Value, arg1: Value, arg2: Value, module: &Module) -> VmResult<Value> {
+        // Check it's a pointer (closure object)
+        if !closure_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected closure for callback".to_string(),
+            ));
+        }
+
+        // Get closure from GC heap
+        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+        let closure = unsafe { &*closure_ptr.ok_or(VmError::TypeError("Invalid closure".to_string()))?.as_ptr() };
+
+        // Get the function
+        let func_index = closure.func_id();
+        if func_index >= module.functions.len() {
+            return Err(VmError::RuntimeError(format!(
+                "Invalid function index in closure: {}",
+                func_index
+            )));
+        }
+
+        // Push arguments onto stack for the function call (in order)
+        self.stack.push(arg1)?;
+        self.stack.push(arg2)?;
+
+        // Push closure onto closure stack for LoadCaptured access
+        self.closure_stack.push(closure_val);
+
+        // Execute the closure's function
+        let callee = &module.functions[func_index];
+        let result = self.execute_function(callee, module);
+
+        // Pop closure from closure stack
+        self.closure_stack.pop();
+
+        result
+    }
+
     /// Execute built-in string method
-    fn call_string_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+    fn call_string_method(&mut self, method_id: u16, arg_count: usize, module: &Module) -> VmResult<()> {
         match method_id {
             builtin::string::CHAR_AT => {
                 // str.charAt(index) -> string
@@ -3914,23 +4218,33 @@ impl Vm {
             }
 
             builtin::string::SPLIT => {
-                // str.split(separator) -> Array<string>
-                if arg_count != 1 {
+                // str.split(separator, limit) -> Array<string>
+                if arg_count != 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "split expects 1 argument, got {}",
+                        "split expects 2 arguments, got {}",
                         arg_count
                     )));
                 }
+                let limit_val = self.stack.pop()?;
                 let sep_val = self.stack.pop()?;
                 let str_val = self.stack.pop()?;
 
                 let s = self.get_string_data(&str_val)?;
                 let separator = self.get_string_data(&sep_val)?;
+                let limit = limit_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("split limit must be a number".to_string())
+                })? as usize;
 
-                let parts: Vec<Value> = s
-                    .split(&separator)
-                    .map(|part| self.create_string_value(part.to_string()))
-                    .collect();
+                // limit 0 means no limit
+                let parts: Vec<Value> = if limit == 0 {
+                    s.split(&separator)
+                        .map(|part| self.create_string_value(part.to_string()))
+                        .collect()
+                } else {
+                    s.splitn(limit, &separator)
+                        .map(|part| self.create_string_value(part.to_string()))
+                        .collect()
+                };
 
                 let mut arr = Array::new(0, 0);
                 arr.elements = parts;
@@ -4147,6 +4461,276 @@ impl Vm {
                 let str_val = self.stack.pop()?;
                 let s = self.get_string_data(&str_val)?;
                 let result = s.trim_end().to_string();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::MATCH => {
+                // str.match(regexp) -> Array<string> | null
+                use crate::object::RegExpObject;
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "match expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                // If global flag, return all matches; otherwise return first match or null
+                if regex.flags.contains('g') {
+                    let matches: Vec<Value> = regex.exec_all(&text)
+                        .into_iter()
+                        .map(|(matched, _, _)| self.create_string_value(matched))
+                        .collect();
+                    if matches.is_empty() {
+                        self.stack.push(Value::null())?;
+                    } else {
+                        let mut arr = Array::new(0, 0);
+                        arr.elements = matches;
+                        let gc_ptr = self.gc.allocate(arr);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        self.stack.push(value)?;
+                    }
+                } else {
+                    match regex.exec(&text) {
+                        Some((matched, _, groups)) => {
+                            // Return array [match, ...groups]
+                            let mut elements = vec![self.create_string_value(matched)];
+                            for group in groups {
+                                elements.push(self.create_string_value(group));
+                            }
+                            let mut arr = Array::new(0, 0);
+                            arr.elements = elements;
+                            let gc_ptr = self.gc.allocate(arr);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            self.stack.push(value)?;
+                        }
+                        None => {
+                            self.stack.push(Value::null())?;
+                        }
+                    }
+                }
+                Ok(())
+            }
+
+            builtin::string::MATCH_ALL => {
+                // str.matchAll(regexp) -> Array<Array<string | number>>
+                use crate::object::RegExpObject;
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "matchAll expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                // Return array of match result arrays
+                let all_matches = regex.exec_all(&text);
+                let mut outer_elements = Vec::new();
+                for (matched, index, groups) in all_matches {
+                    let mut inner_elements = vec![
+                        self.create_string_value(matched),
+                        Value::i32(index as i32),
+                    ];
+                    for group in groups {
+                        inner_elements.push(self.create_string_value(group));
+                    }
+                    let mut inner_arr = Array::new(0, 0);
+                    inner_arr.elements = inner_elements;
+                    let gc_ptr = self.gc.allocate(inner_arr);
+                    let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    outer_elements.push(value);
+                }
+                let mut arr = Array::new(0, 0);
+                arr.elements = outer_elements;
+                let gc_ptr = self.gc.allocate(arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::SEARCH => {
+                // str.search(regexp) -> number
+                use crate::object::RegExpObject;
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "search expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let result = match regex.exec(&text) {
+                    Some((_, index, _)) => index as i32,
+                    None => -1,
+                };
+                self.stack.push(Value::i32(result))?;
+                Ok(())
+            }
+
+            builtin::string::REPLACE_REGEXP => {
+                // str.replace(regexp, replacement) -> string
+                use crate::object::RegExpObject;
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "replace expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let replacement_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                let replacement = self.get_string_data(&replacement_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let result = regex.replace(&text, &replacement);
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::SPLIT_REGEXP => {
+                // str.split(regexp, limit) -> Array<string>
+                use crate::object::RegExpObject;
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "split expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let limit_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                let limit = limit_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("split limit must be a number".to_string())
+                })? as usize;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                // limit 0 means no limit (None), otherwise Some(limit)
+                let limit_opt = if limit == 0 { None } else { Some(limit) };
+                let parts = regex.split(&text, limit_opt);
+                let elements: Vec<Value> = parts
+                    .into_iter()
+                    .map(|part| self.create_string_value(part))
+                    .collect();
+                let mut arr = Array::new(0, 0);
+                arr.elements = elements;
+                let gc_ptr = self.gc.allocate(arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::REPLACE_WITH_REGEXP => {
+                // str.replaceWith(regexp, replacer) -> string
+                // replacer: (match: Array<string | number>) => string
+                // match array: [matchedText, index, ...groups]
+                use crate::object::RegExpObject;
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "replaceWith expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let callback_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                // Get all matches with their positions
+                let all_matches = regex.exec_all(&text);
+
+                if all_matches.is_empty() {
+                    // No matches, return original string
+                    self.stack.push(str_val)?;
+                    return Ok(());
+                }
+
+                // Build result by replacing each match
+                let mut result = String::new();
+                let mut last_end = 0;
+
+                for (matched_text, index, groups) in all_matches {
+                    // Append text before this match
+                    if index > last_end {
+                        result.push_str(&text[last_end..index]);
+                    }
+
+                    // Create match array: [matchedText, index, ...groups]
+                    let mut match_elements = vec![
+                        self.create_string_value(matched_text.clone()),
+                        Value::i32(index as i32),
+                    ];
+                    for group in &groups {
+                        match_elements.push(self.create_string_value(group.clone()));
+                    }
+
+                    let mut match_arr = Array::new(0, 0);
+                    match_arr.elements = match_elements;
+                    let match_gc_ptr = self.gc.allocate(match_arr);
+                    let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(match_gc_ptr.as_ptr()).unwrap()) };
+
+                    // Call the replacer callback with the match array
+                    let replacement_val = self.call_closure_with_arg(callback_val, match_val, module)?;
+                    let replacement = self.get_string_data(&replacement_val)?;
+
+                    result.push_str(&replacement);
+                    last_end = index + matched_text.len();
+
+                    // If not global, only replace first match
+                    if !regex.flags.contains('g') {
+                        break;
+                    }
+                }
+
+                // Append remaining text after last match
+                if last_end < text.len() {
+                    result.push_str(&text[last_end..]);
+                }
+
                 let value = self.create_string_value(result);
                 self.stack.push(value)?;
                 Ok(())
@@ -4510,6 +5094,235 @@ impl Vm {
         }
     }
 
+    /// Execute built-in RegExp method
+    fn call_regexp_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::RegExpObject;
+
+        match method_id {
+            builtin::regexp::NEW => {
+                // new RegExp(pattern, flags) -> RegExp
+                if arg_count < 1 || arg_count > 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "RegExp constructor expects 1-2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let flags = if arg_count == 2 {
+                    let flags_val = self.stack.pop()?;
+                    self.get_string_data(&flags_val)?
+                } else {
+                    String::new()
+                };
+
+                let pattern_val = self.stack.pop()?;
+                let pattern = self.get_string_data(&pattern_val)?;
+
+                let regex = RegExpObject::new(&pattern, &flags)
+                    .map_err(VmError::RuntimeError)?;
+                let gc_ptr = self.gc.allocate(regex);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::regexp::TEST => {
+                // regex.test(str) -> boolean
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "test expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let str_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let result = regex.test(&text);
+                self.stack.push(Value::bool(result))?;
+                Ok(())
+            }
+
+            builtin::regexp::EXEC => {
+                // regex.exec(str) -> Array (match result) | null
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "exec expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let str_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                match regex.exec(&text) {
+                    Some((matched_text, index, groups)) => {
+                        // Return array: [matched_text, ...groups, index: number]
+                        // For simplicity, return [matched_text, index, ...groups]
+                        let mut elements = vec![
+                            self.create_string_value(matched_text),
+                            Value::i32(index as i32),
+                        ];
+                        for group in groups {
+                            elements.push(self.create_string_value(group));
+                        }
+                        let mut arr = Array::new(0, 0);
+                        arr.elements = elements;
+                        let gc_ptr = self.gc.allocate(arr);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        self.stack.push(value)?;
+                    }
+                    None => {
+                        self.stack.push(Value::null())?;
+                    }
+                }
+                Ok(())
+            }
+
+            builtin::regexp::EXEC_ALL => {
+                // regex.execAll(str) -> Array<Array>
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "execAll expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let str_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let matches = regex.exec_all(&text);
+                let mut result_elements = Vec::new();
+
+                for (matched_text, index, groups) in matches {
+                    let mut match_elements = vec![
+                        self.create_string_value(matched_text),
+                        Value::i32(index as i32),
+                    ];
+                    for group in groups {
+                        match_elements.push(self.create_string_value(group));
+                    }
+                    let mut match_arr = Array::new(0, 0);
+                    match_arr.elements = match_elements;
+                    let gc_ptr = self.gc.allocate(match_arr);
+                    let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    result_elements.push(match_val);
+                }
+
+                let mut result_arr = Array::new(0, 0);
+                result_arr.elements = result_elements;
+                let gc_ptr = self.gc.allocate(result_arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::regexp::REPLACE => {
+                // regex.replace(str, replacement) -> string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "replace expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let replacement_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                let replacement = self.get_string_data(&replacement_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let result = regex.replace(&text, &replacement);
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::regexp::REPLACE_WITH => {
+                // regex.replaceWith(str, replacer) -> string
+                // replacer is a callback (match: string) => string
+                // This is complex to implement without full closure support
+                // For now, return an error indicating it's not yet implemented
+                Err(VmError::RuntimeError(
+                    "replaceWith with callback not yet implemented".to_string()
+                ))
+            }
+
+            builtin::regexp::SPLIT => {
+                // regex.split(str, limit) -> Array<string>
+                // limit = 0 means no limit
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "split expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let limit_val = self.stack.pop()?;
+                let limit_num = limit_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("split limit must be a number".to_string())
+                })? as usize;
+                // Treat 0 as "no limit"
+                let limit = if limit_num == 0 {
+                    None
+                } else {
+                    Some(limit_num)
+                };
+
+                let str_val = self.stack.pop()?;
+                let regex_val = self.stack.pop()?;
+
+                let text = self.get_string_data(&str_val)?;
+                if !regex_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected RegExp object".to_string()));
+                }
+                let regex_ptr = unsafe { regex_val.as_ptr::<RegExpObject>() };
+                let regex = unsafe { &*regex_ptr.unwrap().as_ptr() };
+
+                let parts = regex.split(&text, limit);
+                let elements: Vec<Value> = parts
+                    .into_iter()
+                    .map(|s| self.create_string_value(s))
+                    .collect();
+
+                let mut arr = Array::new(0, 0);
+                arr.elements = elements;
+                let gc_ptr = self.gc.allocate(arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unknown RegExp method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
     /// Execute built-in Date method
     fn call_date_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
         use crate::object::DateObject;
@@ -4626,6 +5439,56 @@ impl Vm {
 
             _ => Err(VmError::RuntimeError(format!(
                 "Unimplemented Date method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Mutex method
+    fn call_mutex_method(&mut self, method_id: u16, _arg_count: usize) -> VmResult<()> {
+        match method_id {
+            builtin::mutex::TRY_LOCK => {
+                // mutex.tryLock() -> boolean
+                // Pop mutex handle (i64)
+                let mutex_id_val = self.stack.pop()?;
+                let mutex_id = crate::sync::MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+
+                // Get the mutex from registry and try to lock
+                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                    // Use a dummy TaskId (similar to MutexLock opcode)
+                    let task_id = crate::scheduler::TaskId::new();
+                    let result = mutex.try_lock(task_id).is_ok();
+                    if result {
+                        // Lock acquired - track it for exception unwinding
+                        self.held_mutexes.push(mutex_id);
+                    }
+                    self.stack.push(Value::bool(result))?;
+                } else {
+                    // Mutex not found - return false
+                    self.stack.push(Value::bool(false))?;
+                }
+                Ok(())
+            }
+
+            builtin::mutex::IS_LOCKED => {
+                // mutex.isLocked() -> boolean
+                // Pop mutex handle (i64)
+                let mutex_id_val = self.stack.pop()?;
+                let mutex_id = crate::sync::MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+
+                // Get the mutex from registry and check if locked
+                if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                    let result = mutex.is_locked();
+                    self.stack.push(Value::bool(result))?;
+                } else {
+                    // Mutex not found - return false
+                    self.stack.push(Value::bool(false))?;
+                }
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unknown mutex method: 0x{:04X}",
                 method_id
             ))),
         }

@@ -1,6 +1,10 @@
 // Mutex - Mutual exclusion lock for thread-safe access
 // This is a built-in type using compiler intrinsics
 
+// Native call IDs (must match raya-core/src/builtin.rs)
+const MUTEX_TRY_LOCK: number = 0x0300;
+const MUTEX_IS_LOCKED: number = 0x0301;
+
 class Mutex {
     private handle: number;
 
@@ -8,7 +12,7 @@ class Mutex {
         this.handle = __OPCODE_MUTEX_NEW();
     }
 
-    // Acquire the lock
+    // Acquire the lock (blocks until acquired)
     lock(): void {
         __OPCODE_MUTEX_LOCK(this.handle);
     }
@@ -16,5 +20,16 @@ class Mutex {
     // Release the lock
     unlock(): void {
         __OPCODE_MUTEX_UNLOCK(this.handle);
+    }
+
+    // Try to acquire the lock without blocking
+    // Returns true if lock was acquired, false otherwise
+    tryLock(): boolean {
+        return __NATIVE_CALL(MUTEX_TRY_LOCK, this.handle);
+    }
+
+    // Check if the mutex is currently locked
+    isLocked(): boolean {
+        return __NATIVE_CALL(MUTEX_IS_LOCKED, this.handle);
     }
 }

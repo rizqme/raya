@@ -206,38 +206,38 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] Implement `__NATIVE_STRING_*` functions in VM (0x0200-0x0211)
 
 #### 4.3 Array Methods (Hardcoded)
-- [ ] Register array methods in type checker with generic signatures
-- [ ] Opcode-backed:
+- [x] Register array methods in type checker with generic signatures
+- [x] Opcode-backed:
   - `length` (property) → ARRAY_LEN opcode
   - `push(element: T): void` → ARRAY_PUSH opcode
   - `pop(): T | null` → ARRAY_POP opcode
-- [ ] Native-backed methods:
-  - `unshift(element: T): void` → NATIVE_CALL(0x0100)
-  - `shift(): T | null` → NATIVE_CALL(0x0101)
-  - `slice(start?: number, end?: number): Array<T>` → NATIVE_CALL(0x0102)
-  - `concat(other: Array<T>): Array<T>` → NATIVE_CALL(0x0103)
+- [x] Native-backed methods:
+  - `unshift(element: T): void` → NATIVE_CALL(0x0103)
+  - `shift(): T | null` → NATIVE_CALL(0x0102)
+  - `slice(start?: number, end?: number): Array<T>` → NATIVE_CALL(0x0106)
+  - `concat(other: Array<T>): Array<T>` → NATIVE_CALL(0x0107)
   - `indexOf(element: T): number` → NATIVE_CALL(0x0104)
-  - `lastIndexOf(element: T): number` → NATIVE_CALL(0x0105)
-  - `includes(element: T): boolean` → NATIVE_CALL(0x0106)
-  - `reverse(): Array<T>` → NATIVE_CALL(0x0107)
-  - `sort(compareFn?: (a: T, b: T) => number): Array<T>` → NATIVE_CALL(0x0108)
+  - `lastIndexOf(element: T): number` → NATIVE_CALL(0x0110)
+  - `includes(element: T): boolean` → NATIVE_CALL(0x0105)
+  - `reverse(): Array<T>` → NATIVE_CALL(0x0108)
+  - `sort(compareFn?: (a: T, b: T) => number): Array<T>` → NATIVE_CALL(0x0111)
   - `join(separator?: string): string` → NATIVE_CALL(0x0109)
-  - `map<U>(fn: (element: T, index: number) => U): Array<U>` → NATIVE_CALL(0x0110)
-  - `filter(predicate: (element: T, index: number) => boolean): Array<T>` → NATIVE_CALL(0x0111)
-  - `reduce<U>(fn: (acc: U, element: T, index: number) => U, initial: U): U` → NATIVE_CALL(0x0112)
-  - `forEach(fn: (element: T, index: number) => void): void` → NATIVE_CALL(0x0113)
-  - `find(predicate: (element: T, index: number) => boolean): T | null` → NATIVE_CALL(0x0114)
-  - `findIndex(predicate: (element: T, index: number) => boolean): number` → NATIVE_CALL(0x0115)
-  - `every(predicate: (element: T, index: number) => boolean): boolean` → NATIVE_CALL(0x0116)
-  - `some(predicate: (element: T, index: number) => boolean): boolean` → NATIVE_CALL(0x0117)
-  - `fill(value: T, start?: number, end?: number): Array<T>` → NATIVE_CALL(0x0118)
-  - `flat<U>(depth?: number): Array<U>` → NATIVE_CALL(0x0119)
-- [ ] Implement all `__NATIVE_ARRAY_*` functions in VM (0x0100-0x011x)
-- [ ] Handle callbacks (map, filter, etc.) via VM callback mechanism
+  - `map<U>(fn: (element: T, index: number) => U): Array<U>` → NATIVE_CALL(0x0112)
+  - `filter(predicate: (element: T, index: number) => boolean): Array<T>` → NATIVE_CALL(0x010B)
+  - `reduce<U>(fn: (acc: U, element: T, index: number) => U, initial: U): U` → NATIVE_CALL(0x0113)
+  - `forEach(fn: (element: T, index: number) => void): void` → NATIVE_CALL(0x010A)
+  - `find(predicate: (element: T, index: number) => boolean): T | null` → NATIVE_CALL(0x010C)
+  - `findIndex(predicate: (element: T, index: number) => boolean): number` → NATIVE_CALL(0x010D)
+  - `every(predicate: (element: T, index: number) => boolean): boolean` → NATIVE_CALL(0x010E)
+  - `some(predicate: (element: T, index: number) => boolean): boolean` → NATIVE_CALL(0x010F)
+  - `fill(value: T, start?: number, end?: number): Array<T>` → NATIVE_CALL(0x0114)
+  - `flat<U>(depth?: number): Array<U>` → NATIVE_CALL(0x0115)
+- [x] Implement all `__NATIVE_ARRAY_*` functions in VM (0x0100-0x0115)
+- [x] Handle callbacks (map, filter, etc.) via VM callback mechanism
 
 #### 4.4 RegExp Methods (Hardcoded)
-- [ ] Register RegExp methods in type checker with signatures
-- [ ] Properties:
+- [x] Register RegExp methods in type checker with signatures
+- [x] Properties:
   - `source: string` - The pattern string
   - `flags: string` - The flags string
   - `global: boolean` - Whether 'g' flag is set
@@ -245,32 +245,33 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
   - `multiline: boolean` - Whether 'm' flag is set
   - `dotAll: boolean` - Whether 's' flag is set
   - `unicode: boolean` - Whether 'u' flag is set
-- [ ] Native-backed methods:
+- [x] Native-backed methods:
   - `test(str: string): boolean` → NATIVE_CALL(0x0A01)
   - `exec(str: string): RegExpMatch | null` → NATIVE_CALL(0x0A02)
   - `execAll(str: string): Array<RegExpMatch>` → NATIVE_CALL(0x0A03)
   - `replace(str: string, replacement: string): string` → NATIVE_CALL(0x0A04)
-  - `replaceWith(str: string, replacer: (RegExpMatch) => string): string` → NATIVE_CALL(0x0A05)
-  - `split(str: string, limit?: number): Array<string>` → NATIVE_CALL(0x0A06)
-- [ ] Implement all `__NATIVE_REGEXP_*` functions in VM (0x0A00-0x0A06)
-- [ ] Use Rust regex crate for pattern matching
-- [ ] **Stateless design**: No `lastIndex`, each call starts from beginning
+  - `replaceWith(str: string, replacer: (RegExpMatch) => string): string` → NATIVE_CALL(0x0A05) (not yet implemented - requires callback)
+  - `split(str: string, limit: number): Array<string>` → NATIVE_CALL(0x0A06)
+- [x] Implement all `__NATIVE_REGEXP_*` functions in VM (0x0A00-0x0A06)
+- [x] Use Rust regex crate for pattern matching
+- [x] **Stateless design**: No `lastIndex`, each call starts from beginning
 
 #### 4.5 String Methods with RegExp Overloads
-- [ ] Add overloaded string methods that accept RegExp:
-  - `match(pattern: RegExp): RegExpMatch | null`
-  - `matchAll(pattern: RegExp): Array<RegExpMatch>`
-  - `replace(pattern: RegExp, replacement: string): string`
-  - `replaceWith(pattern: RegExp, replacer: (RegExpMatch) => string): string`
-  - `split(pattern: RegExp, limit?: number): Array<string>`
-  - `search(pattern: RegExp): number`
-- [ ] Compiler selects RegExp overload when argument is of type `RegExp`
+- [x] Add overloaded string methods that accept RegExp:
+  - [x] `match(pattern: RegExp): Array<string> | null` → NATIVE_CALL(0x0212)
+  - [x] `matchAll(pattern: RegExp): Array<Array<string | number>>` → NATIVE_CALL(0x0213)
+  - [x] `replace(pattern: RegExp, replacement: string): string` → NATIVE_CALL(0x0215)
+  - [x] `replaceWith(pattern: RegExp, replacer: (match: Array) => string): string` → NATIVE_CALL(0x0217)
+  - [x] `split(pattern: RegExp, limit: number): Array<string>` → NATIVE_CALL(0x0216)
+  - [x] `search(pattern: RegExp): number` → NATIVE_CALL(0x0214)
+- [x] Compiler selects RegExp overload when argument is of type `RegExp`
+- [x] Type checker accepts `string | RegExp` union for replace/split first param
 
 #### 4.6 IR Lowering for Primitive Methods
-- [ ] In `lower_call()`, detect method calls on primitive types
-- [ ] For opcode-backed methods, emit appropriate IR instruction
-- [ ] For native-backed methods, emit `NativeCall` IR instruction
-- [ ] Handle generic type parameters (Array<T>.map<U>)
+- [x] In `lower_call()`, detect method calls on primitive types
+- [x] For opcode-backed methods, emit appropriate IR instruction
+- [x] For native-backed methods, emit `NativeCall` IR instruction
+- [x] Handle generic type parameters (Array<T>.map<U>)
 
 ---
 
@@ -510,24 +511,24 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [ ] `test_string_split`
 - [ ] `test_string_trim`
 - [ ] `test_string_starts_ends_with`
-- [ ] `test_array_length`
-- [ ] `test_array_push_pop`
-- [ ] `test_array_slice`
-- [ ] `test_array_concat`
-- [ ] `test_array_index_of_includes`
-- [ ] `test_array_map`
-- [ ] `test_array_filter`
-- [ ] `test_array_reduce`
-- [ ] `test_array_find`
-- [ ] `test_array_every_some`
-- [ ] `test_regexp_test_basic`
-- [ ] `test_regexp_exec_match`
-- [ ] `test_regexp_exec_all`
-- [ ] `test_regexp_replace`
-- [ ] `test_regexp_split`
-- [ ] `test_regexp_stateless` (multiple calls return same result)
-- [ ] `test_regexp_flags`
-- [ ] `test_string_match_with_regexp`
+- [x] `test_array_length`
+- [x] `test_array_push_pop`
+- [x] `test_array_slice`
+- [x] `test_array_concat`
+- [x] `test_array_index_of_includes`
+- [x] `test_array_map`
+- [x] `test_array_filter`
+- [x] `test_array_reduce`
+- [x] `test_array_find`
+- [x] `test_array_every_some`
+- [x] `test_regexp_test_basic`
+- [x] `test_regexp_exec_match`
+- [x] `test_regexp_exec_all`
+- [x] `test_regexp_replace`
+- [x] `test_regexp_split`
+- [x] `test_regexp_stateless` (multiple calls return same result)
+- [x] `test_regexp_flags`
+- [x] `test_string_match_with_regexp` (match, matchAll, search, replace, split, replaceWith)
 
 ### Phase 5-10 Tests
 - [ ] Tests for each built-in class

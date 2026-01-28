@@ -293,7 +293,19 @@ impl<'a> Lowerer<'a> {
             }
         };
 
-        // Allocate local slot
+        // Check for compile-time constant: const with literal initializer
+        // These are folded at compile time and emit no runtime code
+        if decl.kind == raya_parser::ast::VariableKind::Const {
+            if let Some(init) = &decl.initializer {
+                if let Some(const_val) = self.try_eval_constant(init) {
+                    // Store constant value for later inlining - no runtime code emitted
+                    self.constant_map.insert(name, const_val);
+                    return;
+                }
+            }
+        }
+
+        // Allocate local slot (only for non-constant or non-literal variables)
         let local_idx = self.allocate_local(name);
 
         // Check if this variable needs RefCell wrapping (captured by closure)
@@ -757,6 +769,16 @@ impl<'a> Lowerer<'a> {
                     let exc_ty = TypeId::new(0); // Exception type (unknown)
                     let exc_reg = self.alloc_register(exc_ty);
                     self.local_registers.insert(local_idx, exc_reg);
+
+                    // Add catch parameter to variable_class_map for method resolution
+                    // Look up Error class so e.toString() etc. can be resolved
+                    // Find the Error class by iterating through class_map
+                    for (&symbol, &class_id) in &self.class_map {
+                        if self.interner.resolve(symbol) == "Error" {
+                            self.variable_class_map.insert(ident.name, class_id);
+                            break;
+                        }
+                    }
                 }
             }
 

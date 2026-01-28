@@ -7,12 +7,26 @@ mod expr;
 mod stmt;
 
 use crate::ir::{
-    BasicBlock, BasicBlockId, ClassId, FunctionId, IrClass, IrField, IrFunction,
-    IrInstr, IrModule, Register, RegisterId, Terminator,
+    BasicBlock, BasicBlockId, ClassId, FunctionId, IrClass, IrConstant, IrField, IrFunction,
+    IrInstr, IrModule, IrValue, Register, RegisterId, Terminator,
 };
-use raya_parser::ast::{self, Expression, Pattern, Statement};
+use raya_parser::ast::{self, Expression, Pattern, Statement, VariableKind};
 use raya_parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Compile-time constant value (for constant folding)
+/// Only literal values that can be evaluated at compile time
+#[derive(Debug, Clone)]
+pub enum ConstantValue {
+    /// Integer constant
+    I64(i64),
+    /// Float constant
+    F64(f64),
+    /// String constant
+    String(String),
+    /// Boolean constant
+    Bool(bool),
+}
 
 /// Information about a class field
 #[derive(Clone)]
@@ -205,6 +219,9 @@ pub struct Lowerer<'a> {
     closure_locals: FxHashMap<u16, FunctionId>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// Compile-time constant values (for constant folding)
+    /// Maps symbol to its constant value (only for literals)
+    constant_map: FxHashMap<Symbol, ConstantValue>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -255,7 +272,34 @@ impl<'a> Lowerer<'a> {
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
             expr_types,
+            constant_map: FxHashMap::default(),
         }
+    }
+
+    /// Try to evaluate an expression as a compile-time constant
+    /// Returns Some(ConstantValue) if the expression is a literal, None otherwise
+    fn try_eval_constant(&self, expr: &Expression) -> Option<ConstantValue> {
+        match expr {
+            Expression::IntLiteral(lit) => Some(ConstantValue::I64(lit.value)),
+            Expression::FloatLiteral(lit) => Some(ConstantValue::F64(lit.value)),
+            Expression::StringLiteral(lit) => {
+                let s = self.interner.resolve(lit.value);
+                Some(ConstantValue::String(s.to_string()))
+            }
+            Expression::BooleanLiteral(lit) => Some(ConstantValue::Bool(lit.value)),
+            // For identifiers, check if they reference another constant
+            Expression::Identifier(ident) => {
+                self.constant_map.get(&ident.name).cloned()
+            }
+            // Could extend to support simple constant expressions like 0x0300
+            // but for now only support direct literals
+            _ => None,
+        }
+    }
+
+    /// Look up a compile-time constant by symbol
+    pub fn lookup_constant(&self, name: Symbol) -> Option<&ConstantValue> {
+        self.constant_map.get(&name)
     }
 
     /// Get the TypeId for an expression from the type checker's expr_types map
@@ -268,6 +312,22 @@ impl<'a> Lowerer<'a> {
     /// Lower an AST module to IR
     pub fn lower_module(&mut self, module: &ast::Module) -> IrModule {
         let mut ir_module = IrModule::new("main");
+
+        // Pre-pass: collect module-level const declarations (for constant folding)
+        // These need to be processed before classes/functions so they're available
+        for stmt in &module.statements {
+            if let Statement::VariableDecl(decl) = stmt {
+                if decl.kind == VariableKind::Const {
+                    if let Pattern::Identifier(ident) = &decl.pattern {
+                        if let Some(init) = &decl.initializer {
+                            if let Some(const_val) = self.try_eval_constant(init) {
+                                self.constant_map.insert(ident.name, const_val);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // First pass: collect function and class declarations
         for stmt in &module.statements {
@@ -413,16 +473,17 @@ impl<'a> Lowerer<'a> {
         }
 
         // Second pass: lower all declarations
+        // IMPORTANT: All functions must be added to pending_arrow_functions with their pre-assigned IDs
+        // so they can be sorted and added to the module in the correct order.
+        // This ensures function indices match the pre-assigned IDs used in Call instructions.
         for stmt in &module.statements {
             match stmt {
                 Statement::FunctionDecl(func) => {
+                    // Get the pre-assigned function ID
+                    let func_id = self.function_map.get(&func.name.name).copied().unwrap();
                     let ir_func = self.lower_function(func);
-                    ir_module.add_function(ir_func);
-                    // Add any arrow functions created during this function's lowering (sorted by func_id)
-                    self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
-                    for (_, arrow_func) in self.pending_arrow_functions.drain(..) {
-                        ir_module.add_function(arrow_func);
-                    }
+                    // Add to pending with pre-assigned ID (will be sorted later)
+                    self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
                 }
                 Statement::ClassDecl(class) => {
                     let ir_class = self.lower_class(class);
@@ -1239,10 +1300,36 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Resolve a type annotation to a TypeId
-    fn resolve_type_annotation(&self, _ty: &ast::TypeAnnotation) -> TypeId {
-        // For now, return a placeholder TypeId
-        // In a real implementation, this would look up the type in the type context
-        TypeId::new(0)
+    fn resolve_type_annotation(&self, ty: &ast::TypeAnnotation) -> TypeId {
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        match &ty.ty {
+            ast::Type::Primitive(prim) => {
+                // PrimitiveType is an enum, match on it directly
+                match prim {
+                    ast::PrimitiveType::Number => TypeId::new(0),
+                    ast::PrimitiveType::String => TypeId::new(1),
+                    ast::PrimitiveType::Boolean => TypeId::new(2),
+                    ast::PrimitiveType::Null => TypeId::new(3),
+                    ast::PrimitiveType::Void => TypeId::new(4),
+                }
+            }
+            ast::Type::Reference(type_ref) => {
+                let name = self.interner.resolve(type_ref.name.name);
+                match name {
+                    "number" => TypeId::new(0),
+                    "string" => TypeId::new(1),
+                    "boolean" => TypeId::new(2),
+                    "null" => TypeId::new(3),
+                    "void" => TypeId::new(4),
+                    "never" => TypeId::new(5),
+                    "unknown" => TypeId::new(6),
+                    // For class types, we return a high TypeId (could be improved)
+                    _ => TypeId::new(7),
+                }
+            }
+            // For other type forms (function, union, etc.), default to 0
+            _ => TypeId::new(0),
+        }
     }
 
 }

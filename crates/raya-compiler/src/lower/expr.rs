@@ -2,7 +2,7 @@
 //!
 //! Converts AST expressions to IR instructions.
 
-use super::{ClassFieldInfo, Lowerer};
+use super::{ClassFieldInfo, ConstantValue, Lowerer};
 use crate::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, UnaryOp};
 use raya_parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use raya_parser::interner::Symbol;
@@ -30,6 +30,12 @@ mod builtin_array {
     pub const FIND_INDEX: u16 = 0x010D;
     pub const EVERY: u16 = 0x010E;
     pub const SOME: u16 = 0x010F;
+    pub const LAST_INDEX_OF: u16 = 0x0110;
+    pub const SORT: u16 = 0x0111;
+    pub const MAP: u16 = 0x0112;
+    pub const REDUCE: u16 = 0x0113;
+    pub const FILL: u16 = 0x0114;
+    pub const FLAT: u16 = 0x0115;
 }
 
 /// Built-in string method IDs (must match raya-core/src/builtin.rs)
@@ -52,13 +58,46 @@ mod builtin_string {
     pub const LAST_INDEX_OF: u16 = 0x020F;
     pub const TRIM_START: u16 = 0x0210;
     pub const TRIM_END: u16 = 0x0211;
+    // String methods that take RegExp
+    pub const MATCH: u16 = 0x0212;
+    pub const MATCH_ALL: u16 = 0x0213;
+    pub const SEARCH: u16 = 0x0214;
+    pub const REPLACE_REGEXP: u16 = 0x0215;
+    pub const SPLIT_REGEXP: u16 = 0x0216;
+    pub const REPLACE_WITH_REGEXP: u16 = 0x0217;
+}
+
+/// Built-in RegExp method IDs (must match raya-core/src/builtin.rs)
+mod builtin_regexp {
+    pub const NEW: u16 = 0x0A00;
+    pub const TEST: u16 = 0x0A01;
+    pub const EXEC: u16 = 0x0A02;
+    pub const EXEC_ALL: u16 = 0x0A03;
+    pub const REPLACE: u16 = 0x0A04;
+    pub const REPLACE_WITH: u16 = 0x0A05;
+    pub const SPLIT: u16 = 0x0A06;
 }
 
 /// Look up built-in method ID by method name and object type
-/// Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-/// Array types start at TypeId >= 7
+/// Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown,
+/// 7=Mutex, 8=RegExp, 9=Date, 10=Buffer, etc.
+/// Array types are interned dynamically (TypeId >= 15 typically)
 fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
-    // Array types (TypeId >= 7) or unknown (TypeId 6)
+    // RegExp type (TypeId 8)
+    if obj_type_id == 8 {
+        match method_name {
+            "test" => return Some(builtin_regexp::TEST),
+            "exec" => return Some(builtin_regexp::EXEC),
+            "execAll" => return Some(builtin_regexp::EXEC_ALL),
+            "replace" => return Some(builtin_regexp::REPLACE),
+            "replaceWith" => return Some(builtin_regexp::REPLACE_WITH),
+            "split" => return Some(builtin_regexp::SPLIT),
+            _ => {}
+        }
+    }
+
+    // Array types (TypeId >= 7, but skip known non-array types) or unknown (TypeId 6)
+    // Note: This is a heuristic - array types are interned dynamically
     if obj_type_id >= 7 || obj_type_id == 6 {
         match method_name {
             "push" => return Some(builtin_array::PUSH),
@@ -77,6 +116,12 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
             "findIndex" => return Some(builtin_array::FIND_INDEX),
             "every" => return Some(builtin_array::EVERY),
             "some" => return Some(builtin_array::SOME),
+            "lastIndexOf" => return Some(builtin_array::LAST_INDEX_OF),
+            "sort" => return Some(builtin_array::SORT),
+            "map" => return Some(builtin_array::MAP),
+            "reduce" => return Some(builtin_array::REDUCE),
+            "fill" => return Some(builtin_array::FILL),
+            "flat" => return Some(builtin_array::FLAT),
             _ => {}
         }
     }
@@ -102,6 +147,10 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
             "lastIndexOf" => return Some(builtin_string::LAST_INDEX_OF),
             "trimStart" => return Some(builtin_string::TRIM_START),
             "trimEnd" => return Some(builtin_string::TRIM_END),
+            "match" => return Some(builtin_string::MATCH),
+            "matchAll" => return Some(builtin_string::MATCH_ALL),
+            "search" => return Some(builtin_string::SEARCH),
+            "replaceWith" => return Some(builtin_string::REPLACE_WITH_REGEXP),
             _ => {}
         }
     }
@@ -203,7 +252,56 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
+    /// Emit a compile-time constant value as an IR instruction
+    /// Used for constant folding - inlines the constant directly
+    fn emit_constant_value(&mut self, const_val: &ConstantValue) -> Register {
+        match const_val {
+            ConstantValue::I64(v) => {
+                let ty = TypeId::new(0); // Number type
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::I32(*v as i32)),
+                });
+                dest
+            }
+            ConstantValue::F64(v) => {
+                let ty = TypeId::new(0); // Number type
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::F64(*v)),
+                });
+                dest
+            }
+            ConstantValue::String(s) => {
+                let ty = TypeId::new(1); // String type
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::String(s.clone())),
+                });
+                dest
+            }
+            ConstantValue::Bool(v) => {
+                let ty = TypeId::new(2); // Boolean type
+                let dest = self.alloc_register(ty);
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(*v)),
+                });
+                dest
+            }
+        }
+    }
+
     fn lower_identifier(&mut self, ident: &ast::Identifier) -> Register {
+        // First, check if this is a compile-time constant (constant folding)
+        // This takes precedence over local variables for const declarations
+        if let Some(const_val) = self.constant_map.get(&ident.name).cloned() {
+            return self.emit_constant_value(&const_val);
+        }
+
         // Look up the variable in the local map (current function's locals)
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
             // Check if this is a RefCell variable
@@ -417,19 +515,30 @@ impl<'a> Lowerer<'a> {
 
             // Handle __NATIVE_CALL intrinsic: __NATIVE_CALL(native_id, args...)
             if name == "__NATIVE_CALL" {
-                // First argument must be the native ID (integer literal)
+                // First argument must be the native ID (integer literal or constant)
                 if let Some(first_arg) = call.arguments.first() {
                     let native_id = match first_arg {
                         Expression::IntLiteral(lit) => lit.value as u16,
                         Expression::Identifier(id_expr) => {
-                            // Could be a const - for now, just use the lowered value
-                            // In practice, builtin files should use integer literals directly
-                            let name = self.interner.resolve(id_expr.name);
-                            eprintln!("Warning: __NATIVE_CALL expected integer literal, got identifier '{}'", name);
-                            0
+                            // Look up compile-time constant value
+                            if let Some(const_val) = self.constant_map.get(&id_expr.name) {
+                                match const_val {
+                                    ConstantValue::I64(v) => *v as u16,
+                                    ConstantValue::F64(v) => *v as u16,
+                                    _ => {
+                                        let name = self.interner.resolve(id_expr.name);
+                                        eprintln!("Warning: __NATIVE_CALL constant '{}' is not a number", name);
+                                        0
+                                    }
+                                }
+                            } else {
+                                let name = self.interner.resolve(id_expr.name);
+                                eprintln!("Warning: __NATIVE_CALL identifier '{}' is not a compile-time constant", name);
+                                0
+                            }
                         }
                         _ => {
-                            eprintln!("Warning: __NATIVE_CALL first argument must be an integer literal");
+                            eprintln!("Warning: __NATIVE_CALL first argument must be an integer literal or constant");
                             0
                         }
                     };
@@ -684,8 +793,17 @@ impl<'a> Lowerer<'a> {
             let object = self.lower_expr(&member.object);
             let obj_type_id = object.ty.as_u32();
 
-            // Look up builtin method ID
-            let method_id = lookup_builtin_method(obj_type_id, method_name).unwrap_or(0);
+            // Look up builtin method ID, with special handling for string RegExp overloads
+            let method_id = if obj_type_id == 1 && !args.is_empty() && args[0].ty.as_u32() == 8 {
+                // String method with RegExp first argument - use RegExp variant
+                match method_name {
+                    "replace" => builtin_string::REPLACE_REGEXP,
+                    "split" => builtin_string::SPLIT_REGEXP,
+                    _ => lookup_builtin_method(obj_type_id, method_name).unwrap_or(0),
+                }
+            } else {
+                lookup_builtin_method(obj_type_id, method_name).unwrap_or(0)
+            };
 
             self.emit(IrInstr::CallMethod {
                 dest: Some(dest.clone()),
@@ -775,21 +893,24 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Look up field index by name if we know the class type (including inherited fields)
-        let field_index = if let Some(class_id) = class_id {
+        // Look up field index and type by name if we know the class type (including inherited fields)
+        let (field_index, field_ty) = if let Some(class_id) = class_id {
             // Get all fields including parent fields
             let all_fields = self.get_all_fields(class_id);
-            all_fields
+            if let Some(field) = all_fields
                 .iter()
                 .find(|f| self.interner.resolve(f.name) == prop_name)
-                .map(|f| f.index)
-                .unwrap_or(0)
+            {
+                (field.index, field.ty)
+            } else {
+                (0, TypeId::new(0))
+            }
         } else {
-            0
+            (0, TypeId::new(0))
         };
 
         // Fall back to field access for objects
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(field_ty);
         self.emit(IrInstr::LoadField {
             dest: dest.clone(),
             object,
@@ -1014,17 +1135,13 @@ impl<'a> Lowerer<'a> {
                 };
 
                 // Look up field index by name if we know the class type
+                // Use get_all_fields to include inherited fields from parent classes
                 let field_index = if let Some(class_id) = class_id {
-                    if let Some(class_info) = self.class_info_map.get(&class_id) {
-                        class_info
-                            .fields
-                            .iter()
-                            .find(|f| self.interner.resolve(f.name) == prop_name)
-                            .map(|f| f.index)
-                            .unwrap_or(0)
-                    } else {
-                        0
-                    }
+                    self.get_all_fields(class_id)
+                        .iter()
+                        .find(|f| self.interner.resolve(f.name) == prop_name)
+                        .map(|f| f.index)
+                        .unwrap_or(0)
                 } else {
                     0
                 };
@@ -1436,6 +1553,33 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(TypeId::new(0));
 
         if let Expression::Identifier(ident) = &*new_expr.callee {
+            // Handle built-in primitive constructors
+            let name = self.interner.resolve(ident.name);
+            if name == "RegExp" {
+                // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
+                // Use TypeId 8 for RegExp
+                let regexp_dest = self.alloc_register(TypeId::new(8));
+                let mut args = Vec::new();
+                for arg in &new_expr.arguments {
+                    args.push(self.lower_expr(arg));
+                }
+                // If flags not provided, pass empty string
+                if args.len() == 1 {
+                    let empty_flags = self.alloc_register(TypeId::new(1)); // String type
+                    self.emit(IrInstr::Assign {
+                        dest: empty_flags.clone(),
+                        value: IrValue::Constant(IrConstant::String(String::new())),
+                    });
+                    args.push(empty_flags);
+                }
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(regexp_dest.clone()),
+                    native_id: builtin_regexp::NEW,
+                    args,
+                });
+                return regexp_dest;
+            }
+
             // Look up class ID from class_map
             if let Some(&class_id) = self.class_map.get(&ident.name) {
                 // Create the object

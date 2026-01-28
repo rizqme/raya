@@ -9,7 +9,7 @@
 //! NOTE: These tests will fail at runtime until native function implementations
 //! are added to the VM. The tests verify compilation succeeds.
 
-use super::harness::{expect_i32_with_builtins, expect_bool_with_builtins};
+use super::harness::{expect_i32_with_builtins, expect_bool_with_builtins, expect_i32, expect_bool, expect_string};
 
 // ============================================================================
 // Map tests
@@ -330,4 +330,441 @@ fn test_set_operations() {
         // Count remaining (1, 3)
         return set.size();
     "#, 2);
+}
+
+// ============================================================================
+// RegExp tests (primitive type - uses regular expect_* functions)
+// ============================================================================
+
+#[test]
+fn test_regexp_test_basic_match() {
+    expect_bool(r#"
+        let re = new RegExp("hello", "");
+        return re.test("hello world");
+    "#, true);
+}
+
+#[test]
+fn test_regexp_test_no_match() {
+    expect_bool(r#"
+        let re = new RegExp("xyz", "");
+        return re.test("hello world");
+    "#, false);
+}
+
+#[test]
+fn test_regexp_test_case_sensitive() {
+    expect_bool(r#"
+        let re = new RegExp("HELLO", "");
+        return re.test("hello world");
+    "#, false);
+}
+
+#[test]
+fn test_regexp_test_case_insensitive() {
+    expect_bool(r#"
+        let re = new RegExp("HELLO", "i");
+        return re.test("hello world");
+    "#, true);
+}
+
+#[test]
+fn test_regexp_exec_match() {
+    // exec returns [matched_text, index, ...groups] or null
+    expect_i32(r#"
+        let re = new RegExp("world", "");
+        let result = re.exec("hello world");
+        if (result == null) {
+            return -1;
+        }
+        return result[1];
+    "#, 6);
+}
+
+#[test]
+fn test_regexp_exec_no_match() {
+    expect_bool(r#"
+        let re = new RegExp("xyz", "");
+        let result = re.exec("hello world");
+        return result == null;
+    "#, true);
+}
+
+#[test]
+fn test_regexp_exec_matched_text() {
+    expect_string(r#"
+        let re = new RegExp("wor..", "");
+        let result = re.exec("hello world");
+        if (result == null) {
+            return "";
+        }
+        return result[0];
+    "#, "world");
+}
+
+#[test]
+fn test_regexp_exec_all_basic() {
+    expect_i32(r#"
+        let re = new RegExp("l", "g");
+        let results = re.execAll("hello");
+        return results.length;
+    "#, 2);
+}
+
+#[test]
+fn test_regexp_replace_simple() {
+    expect_string(r#"
+        let re = new RegExp("world", "");
+        return re.replace("hello world", "universe");
+    "#, "hello universe");
+}
+
+#[test]
+fn test_regexp_replace_global() {
+    expect_string(r#"
+        let re = new RegExp("l", "g");
+        return re.replace("hello", "L");
+    "#, "heLLo");
+}
+
+#[test]
+fn test_regexp_replace_no_match() {
+    expect_string(r#"
+        let re = new RegExp("xyz", "");
+        return re.replace("hello", "world");
+    "#, "hello");
+}
+
+#[test]
+fn test_regexp_split_basic() {
+    expect_i32(r#"
+        let re = new RegExp(",", "");
+        let parts = re.split("a,b,c", 0);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_regexp_split_content() {
+    expect_string(r#"
+        let re = new RegExp(",", "");
+        let parts = re.split("a,b,c", 0);
+        return parts[1];
+    "#, "b");
+}
+
+#[test]
+fn test_regexp_split_with_limit() {
+    expect_i32(r#"
+        let re = new RegExp(",", "");
+        let parts = re.split("a,b,c,d,e", 3);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_regexp_stateless() {
+    // RegExp is stateless - same result on repeated calls
+    expect_bool(r#"
+        let re = new RegExp("test", "");
+        let r1 = re.test("test string");
+        let r2 = re.test("test string");
+        let r3 = re.test("test string");
+        return r1 && r2 && r3;
+    "#, true);
+}
+
+#[test]
+fn test_regexp_with_special_chars() {
+    // Test regex special characters
+    expect_bool(r#"
+        let re = new RegExp("a.b", "");
+        return re.test("a*b");
+    "#, true);
+}
+
+#[test]
+fn test_regexp_digit_pattern() {
+    expect_bool(r#"
+        let re = new RegExp("[0-9]+", "");
+        return re.test("abc123def");
+    "#, true);
+}
+
+#[test]
+fn test_regexp_multiline_flag() {
+    expect_bool(r#"
+        let re = new RegExp("^test", "m");
+        return re.test("first line\ntest line");
+    "#, true);
+}
+
+// ============================================================================
+// String + RegExp method tests
+// ============================================================================
+
+#[test]
+fn test_string_match_returns_array() {
+    // match without global flag returns first match
+    expect_bool(r#"
+        let re = new RegExp("l+", "");
+        let result = "hello".match(re);
+        return result != null;
+    "#, true);
+}
+
+#[test]
+fn test_string_match_matched_text() {
+    expect_string(r#"
+        let re = new RegExp("l+", "");
+        let result = "hello".match(re);
+        if (result == null) {
+            return "";
+        }
+        return result[0];
+    "#, "ll");
+}
+
+#[test]
+fn test_string_match_no_match() {
+    expect_bool(r#"
+        let re = new RegExp("xyz", "");
+        let result = "hello".match(re);
+        return result == null;
+    "#, true);
+}
+
+#[test]
+fn test_string_match_global_returns_all() {
+    expect_i32(r#"
+        let re = new RegExp("l", "g");
+        let result = "hello world".match(re);
+        if (result == null) {
+            return 0;
+        }
+        return result.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_match_global_content() {
+    expect_string(r#"
+        let re = new RegExp("o", "g");
+        let result = "hello world".match(re);
+        if (result == null) {
+            return "";
+        }
+        return result[0];
+    "#, "o");
+}
+
+#[test]
+fn test_string_match_all_basic() {
+    expect_i32(r#"
+        let re = new RegExp("l", "g");
+        let results = "hello".matchAll(re);
+        return results.length;
+    "#, 2);
+}
+
+#[test]
+fn test_string_match_all_with_index() {
+    // matchAll returns array of [match, index, ...groups]
+    expect_i32(r#"
+        let re = new RegExp("o", "g");
+        let results = "hello world".matchAll(re);
+        // First match at index 4
+        return results[0][1];
+    "#, 4);
+}
+
+#[test]
+fn test_string_search_found() {
+    expect_i32(r#"
+        let re = new RegExp("world", "");
+        return "hello world".search(re);
+    "#, 6);
+}
+
+#[test]
+fn test_string_search_not_found() {
+    expect_i32(r#"
+        let re = new RegExp("xyz", "");
+        return "hello world".search(re);
+    "#, -1);
+}
+
+#[test]
+fn test_string_search_pattern() {
+    expect_i32(r#"
+        let re = new RegExp("[0-9]+", "");
+        return "abc123def".search(re);
+    "#, 3);
+}
+
+#[test]
+fn test_string_replace_regexp() {
+    expect_string(r#"
+        let re = new RegExp("world", "");
+        return "hello world".replace(re, "universe");
+    "#, "hello universe");
+}
+
+#[test]
+fn test_string_replace_regexp_global() {
+    expect_string(r#"
+        let re = new RegExp("l", "g");
+        return "hello".replace(re, "L");
+    "#, "heLLo");
+}
+
+#[test]
+fn test_string_replace_regexp_no_match() {
+    expect_string(r#"
+        let re = new RegExp("xyz", "");
+        return "hello".replace(re, "world");
+    "#, "hello");
+}
+
+#[test]
+fn test_string_replace_regexp_pattern() {
+    expect_string(r#"
+        let re = new RegExp("[0-9]+", "");
+        return "abc123def".replace(re, "X");
+    "#, "abcXdef");
+}
+
+// Test string split with string separator (now requires 2 args: separator, limit)
+#[test]
+fn test_string_split_string() {
+    expect_i32(r#"
+        let parts = "a,b,c".split(",", 0);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_split_string_content() {
+    expect_string(r#"
+        let parts = "a,b,c".split(",", 0);
+        return parts[1];
+    "#, "b");
+}
+
+#[test]
+fn test_string_split_string_with_limit() {
+    expect_i32(r#"
+        let parts = "a,b,c,d,e".split(",", 3);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_split_regexp() {
+    expect_i32(r#"
+        let re = new RegExp(",", "");
+        let parts = "a,b,c".split(re, 0);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_split_regexp_content() {
+    expect_string(r#"
+        let re = new RegExp(",", "");
+        let parts = "a,b,c".split(re, 0);
+        return parts[1];
+    "#, "b");
+}
+
+#[test]
+fn test_string_split_regexp_with_limit() {
+    expect_i32(r#"
+        let re = new RegExp(",", "");
+        let parts = "a,b,c,d,e".split(re, 3);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_split_regexp_pattern() {
+    // Split on whitespace pattern
+    expect_i32(r#"
+        let re = new RegExp("\\s+", "");
+        let parts = "hello   world   test".split(re, 0);
+        return parts.length;
+    "#, 3);
+}
+
+#[test]
+fn test_string_split_regexp_pattern_content() {
+    expect_string(r#"
+        let re = new RegExp("\\s+", "");
+        let parts = "hello   world   test".split(re, 0);
+        return parts[1];
+    "#, "world");
+}
+
+// ============================================================================
+// String replaceWith (callback-based replacement)
+// ============================================================================
+
+#[test]
+fn test_string_replace_with_simple() {
+    // Replace match with constant string
+    expect_string(r#"
+        let re = new RegExp("world", "");
+        let result = "hello world".replaceWith(re, (match: (string | number)[]): string => {
+            return "UNIVERSE";
+        });
+        return result;
+    "#, "hello UNIVERSE");
+}
+
+#[test]
+fn test_string_replace_with_global() {
+    // Replace all matches globally
+    expect_string(r#"
+        let re = new RegExp("l", "g");
+        let result = "hello".replaceWith(re, (match: (string | number)[]): string => {
+            return "L";
+        });
+        return result;
+    "#, "heLLo");
+}
+
+#[test]
+fn test_string_replace_with_no_match() {
+    // No match - return original string
+    expect_string(r#"
+        let re = new RegExp("xyz", "");
+        let result = "hello".replaceWith(re, (match: (string | number)[]): string => {
+            return "REPLACED";
+        });
+        return result;
+    "#, "hello");
+}
+
+#[test]
+fn test_string_replace_with_pattern() {
+    // Replace digits with X
+    expect_string(r#"
+        let re = new RegExp("[0-9]+", "g");
+        let result = "a1b22c333".replaceWith(re, (match: (string | number)[]): string => {
+            return "X";
+        });
+        return result;
+    "#, "aXbXcX");
+}
+
+#[test]
+fn test_string_replace_with_non_global() {
+    // Without global flag, replace only first match
+    expect_string(r#"
+        let re = new RegExp("o", "");
+        let result = "foo bar boo".replaceWith(re, (match: (string | number)[]): string => {
+            return "O";
+        });
+        return result;
+    "#, "fOo bar boo");
 }

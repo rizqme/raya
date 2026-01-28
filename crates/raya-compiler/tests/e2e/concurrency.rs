@@ -80,6 +80,61 @@ fn test_mutex_basic_lock_unlock() {
     );
 }
 
+#[test]
+fn test_mutex_try_lock_unlocked() {
+    // tryLock on unlocked mutex should succeed
+    expect_bool_with_builtins(
+        "let mutex = new Mutex();
+         return mutex.tryLock();",
+        true,
+    );
+}
+
+#[test]
+fn test_mutex_try_lock_after_unlock() {
+    // tryLock should succeed after unlock
+    expect_bool_with_builtins(
+        "let mutex = new Mutex();
+         mutex.lock();
+         mutex.unlock();
+         return mutex.tryLock();",
+        true,
+    );
+}
+
+#[test]
+fn test_mutex_is_locked_false() {
+    // isLocked on fresh mutex should be false
+    expect_bool_with_builtins(
+        "let mutex = new Mutex();
+         return mutex.isLocked();",
+        false,
+    );
+}
+
+#[test]
+fn test_mutex_is_locked_true() {
+    // isLocked after lock should be true
+    expect_bool_with_builtins(
+        "let mutex = new Mutex();
+         mutex.lock();
+         return mutex.isLocked();",
+        true,
+    );
+}
+
+#[test]
+fn test_mutex_is_locked_after_unlock() {
+    // isLocked after unlock should be false
+    expect_bool_with_builtins(
+        "let mutex = new Mutex();
+         mutex.lock();
+         mutex.unlock();
+         return mutex.isLocked();",
+        false,
+    );
+}
+
 // ============================================================================
 // Sleep and Timing
 // ============================================================================

@@ -289,3 +289,149 @@ fn test_async_exception_in_nested_await() {
         42,
     );
 }
+
+// ============================================================================
+// Error Classes
+// ============================================================================
+
+#[test]
+fn test_throw_error_class() {
+    // Test throwing Error class instances
+    // Note: Uses with_builtins because Error class is defined in builtin Error.raya
+    expect_i32_with_builtins(
+        "let result = 0;
+         try {
+             throw new Error('test error');
+         } catch (e) {
+             result = 42;
+         }
+         return result;",
+        42,
+    );
+}
+
+#[test]
+fn test_throw_type_error() {
+    // Test throwing TypeError
+    expect_i32_with_builtins(
+        "let result = 0;
+         try {
+             throw new TypeError('type mismatch');
+         } catch (e) {
+             result = 42;
+         }
+         return result;",
+        42,
+    );
+}
+
+#[test]
+fn test_throw_range_error() {
+    // Test throwing RangeError
+    expect_i32_with_builtins(
+        "let result = 0;
+         try {
+             throw new RangeError('out of bounds');
+         } catch (e) {
+             result = 42;
+         }
+         return result;",
+        42,
+    );
+}
+
+#[test]
+fn test_error_message_property() {
+    // Test accessing error message property
+    expect_string_with_builtins(
+        "let msg = '';
+         try {
+             throw new Error('hello');
+         } catch (e) {
+             msg = e.message;
+         }
+         return msg;",
+        "hello",
+    );
+}
+
+#[test]
+fn test_error_name_property() {
+    // Test accessing error name property
+    expect_string_with_builtins(
+        "let name = '';
+         try {
+             throw new TypeError('oops');
+         } catch (e) {
+             name = e.name;
+         }
+         return name;",
+        "TypeError",
+    );
+}
+
+#[test]
+fn test_error_to_string_direct() {
+    // Test Error.toString() directly (not via catch)
+    expect_string_with_builtins(
+        "let err = new Error('test');
+         return err.toString();",
+        "Error: test",
+    );
+}
+
+
+#[test]
+fn test_error_to_string() {
+    // Test Error.toString()
+    expect_string_with_builtins(
+        "let str = '';
+         try {
+             throw new Error('test');
+         } catch (e) {
+             str = e.toString();
+         }
+         return str;",
+        "Error: test",
+    );
+}
+
+#[test]
+fn test_error_from_function_simple() {
+    // Simplified test: throw Error from function (no if statement)
+    expect_i32_with_builtins(
+        "function fail(): number {
+             throw new Error('test');
+             return 0;
+         }
+         let result = 0;
+         try {
+             result = fail();
+         } catch (e) {
+             result = 42;
+         }
+         return result;",
+        42,
+    );
+}
+
+#[test]
+fn test_custom_error_function() {
+    // Test function that throws errors
+    expect_i32_with_builtins(
+        "function validate(x: number): number {
+             if (x < 0) {
+                 throw new RangeError('value must be non-negative');
+             }
+             return x;
+         }
+         let result = 0;
+         try {
+             result = validate(-1);
+         } catch (e) {
+             result = 42;
+         }
+         return result;",
+        42,
+    );
+}

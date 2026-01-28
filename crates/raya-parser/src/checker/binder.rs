@@ -995,10 +995,16 @@ impl<'a> Binder<'a> {
                     }
                 };
 
+                // Look up Error class type for catch parameter
+                // If Error class isn't registered, fall back to unknown
+                let error_ty = self.symbols.resolve("Error")
+                    .map(|s| s.ty)
+                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+
                 let param_symbol = Symbol {
                     name: param_name,
                     kind: SymbolKind::Variable,
-                    ty: self.type_ctx.unknown_type(),
+                    ty: error_ty,
                     flags: SymbolFlags {
                         is_exported: false,
                         is_const: true,
@@ -1082,10 +1088,7 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Handle Mutex as a built-in type
-                if name == "Mutex" {
-                    return Ok(self.type_ctx.mutex_type());
-                }
+                // Mutex is now a normal class from Mutex.raya, no special handling needed
 
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias

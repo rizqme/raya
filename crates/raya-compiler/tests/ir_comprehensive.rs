@@ -93,9 +93,13 @@ mod variables {
 
     #[test]
     fn test_const_declaration() {
+        // Const declarations with literal initializers are folded at compile time
+        // and don't emit store instructions
         let ir = lower("const x = 1;");
         let output = ir.pretty_print();
-        assert!(output.contains("store_local 0"));
+        // With constant folding, const x = 1 doesn't emit store_local
+        // Verify IR is generated but no store for the const
+        assert!(!output.contains("store_local 0"), "const literals should be folded, not stored");
     }
 
     #[test]

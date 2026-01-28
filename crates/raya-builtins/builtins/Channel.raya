@@ -1,16 +1,16 @@
 // Channel - Inter-task communication primitive
 // This is a built-in type using compiler intrinsics
 
-// Native IDs:
-// CHANNEL_NEW         = 0x0400
-// CHANNEL_SEND        = 0x0401
-// CHANNEL_RECEIVE     = 0x0402
-// CHANNEL_TRY_SEND    = 0x0403
-// CHANNEL_TRY_RECEIVE = 0x0404
-// CHANNEL_CLOSE       = 0x0405
-// CHANNEL_IS_CLOSED   = 0x0406
-// CHANNEL_LENGTH      = 0x0407
-// CHANNEL_CAPACITY    = 0x0408
+// Native call IDs (must match raya-core/src/builtin.rs)
+const CHANNEL_NEW: number = 0x0400;
+const CHANNEL_SEND: number = 0x0401;
+const CHANNEL_RECEIVE: number = 0x0402;
+const CHANNEL_TRY_SEND: number = 0x0403;
+const CHANNEL_TRY_RECEIVE: number = 0x0404;
+const CHANNEL_CLOSE: number = 0x0405;
+const CHANNEL_IS_CLOSED: number = 0x0406;
+const CHANNEL_LENGTH: number = 0x0407;
+const CHANNEL_CAPACITY: number = 0x0408;
 
 class Channel<T> {
     private channelId: number;
@@ -18,46 +18,46 @@ class Channel<T> {
     // Create a new channel with optional buffer capacity
     // capacity = 0 means unbuffered (synchronous send/receive)
     constructor(capacity: number) {
-        this.channelId = __NATIVE_CALL(0x0400, capacity);
+        this.channelId = __NATIVE_CALL(CHANNEL_NEW, capacity);
     }
 
     // Send a value to the channel (blocks if buffer full)
     send(value: T): void {
-        __NATIVE_CALL(0x0401, this.channelId, value);
+        __NATIVE_CALL(CHANNEL_SEND, this.channelId, value);
     }
 
     // Receive a value from the channel (blocks if empty)
     receive(): T {
-        return __NATIVE_CALL(0x0402, this.channelId);
+        return __NATIVE_CALL(CHANNEL_TRY_RECEIVE, this.channelId);
     }
 
     // Try to send without blocking (returns true if sent)
     trySend(value: T): boolean {
-        return __NATIVE_CALL(0x0403, this.channelId, value);
+        return __NATIVE_CALL(CHANNEL_TRY_SEND, this.channelId, value);
     }
 
     // Try to receive without blocking (returns null if empty)
     tryReceive(): T | null {
-        return __NATIVE_CALL(0x0404, this.channelId);
+        return __NATIVE_CALL(CHANNEL_TRY_RECEIVE, this.channelId);
     }
 
     // Close the channel (no more sends allowed)
     close(): void {
-        __NATIVE_CALL(0x0405, this.channelId);
+        __NATIVE_CALL(CHANNEL_CLOSE, this.channelId);
     }
 
     // Check if channel is closed
     isClosed(): boolean {
-        return __NATIVE_CALL(0x0406, this.channelId);
+        return __NATIVE_CALL(CHANNEL_IS_CLOSED, this.channelId);
     }
 
     // Get number of elements in buffer
     length(): number {
-        return __NATIVE_CALL(0x0407, this.channelId);
+        return __NATIVE_CALL(CHANNEL_LENGTH, this.channelId);
     }
 
     // Get buffer capacity
     capacity(): number {
-        return __NATIVE_CALL(0x0408, this.channelId);
+        return __NATIVE_CALL(CHANNEL_CAPACITY, this.channelId);
     }
 }

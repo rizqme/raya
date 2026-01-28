@@ -130,11 +130,15 @@ impl Inliner {
                 // Check if this is a call to an inlinable function
                 if let IrInstr::Call { dest, func, args } = instr {
                     if let Some(body) = inlinable.get(func) {
-                        // Inline this call
-                        let inlined = self.inline_call(dest.clone(), args, body, &mut max_reg_id);
-                        new_instructions.extend(inlined);
-                        i += 1;
-                        continue;
+                        // Only inline if argument count matches parameter count
+                        // This avoids issues with mismatched this/self parameters
+                        if args.len() == body.param_count {
+                            // Inline this call
+                            let inlined = self.inline_call(dest.clone(), args, body, &mut max_reg_id);
+                            new_instructions.extend(inlined);
+                            i += 1;
+                            continue;
+                        }
                     }
                 }
 

@@ -368,3 +368,159 @@ fn test_array_foreach() {
         6,
     );
 }
+
+// ============================================================================
+// New Array Methods: lastIndexOf, sort, map, reduce, fill, flat
+// ============================================================================
+
+#[test]
+fn test_array_last_index_of_found() {
+    expect_i32("let arr = [1, 2, 3, 2, 1]; return arr.lastIndexOf(2);", 3);
+}
+
+#[test]
+fn test_array_last_index_of_not_found() {
+    expect_i32("let arr = [1, 2, 3]; return arr.lastIndexOf(99);", -1);
+}
+
+#[test]
+fn test_array_last_index_of_single() {
+    expect_i32("let arr = [10, 20, 30]; return arr.lastIndexOf(20);", 1);
+}
+
+#[test]
+fn test_array_sort_ascending() {
+    expect_i32(
+        "let arr = [3, 1, 4, 1, 5];
+         arr.sort((a: number, b: number): number => a - b);
+         return arr[0];",
+        1,
+    );
+}
+
+#[test]
+fn test_array_sort_descending() {
+    expect_i32(
+        "let arr = [3, 1, 4, 1, 5];
+         arr.sort((a: number, b: number): number => b - a);
+         return arr[0];",
+        5,
+    );
+}
+
+#[test]
+fn test_array_sort_returns_array() {
+    expect_i32(
+        "let arr = [3, 1, 2];
+         let sorted = arr.sort((a: number, b: number): number => a - b);
+         return sorted[2];",
+        3,
+    );
+}
+
+#[test]
+fn test_array_map_double() {
+    expect_i32(
+        "let arr = [1, 2, 3];
+         let doubled = arr.map((x: number): number => x * 2);
+         return doubled[1];",
+        4,
+    );
+}
+
+#[test]
+fn test_array_map_length() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5];
+         let squared = arr.map((x: number): number => x * x);
+         return squared.length;",
+        5,
+    );
+}
+
+#[test]
+fn test_array_map_sum_result() {
+    expect_i32(
+        "let arr = [1, 2, 3];
+         let squared = arr.map((x: number): number => x * x);
+         return squared[0] + squared[1] + squared[2];",
+        14, // 1 + 4 + 9
+    );
+}
+
+#[test]
+fn test_array_reduce_sum() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5];
+         return arr.reduce((acc: number, x: number): number => acc + x, 0);",
+        15,
+    );
+}
+
+#[test]
+fn test_array_reduce_product() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4];
+         return arr.reduce((acc: number, x: number): number => acc * x, 1);",
+        24,
+    );
+}
+
+#[test]
+fn test_array_reduce_with_initial() {
+    expect_i32(
+        "let arr = [1, 2, 3];
+         return arr.reduce((acc: number, x: number): number => acc + x, 100);",
+        106,
+    );
+}
+
+#[test]
+fn test_array_fill_basic() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5];
+         arr.fill(0, 1, 4);
+         return arr[2];",
+        0,
+    );
+}
+
+#[test]
+fn test_array_fill_preserves_outside() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5];
+         arr.fill(0, 1, 4);
+         return arr[0];",
+        1,
+    );
+}
+
+#[test]
+fn test_array_fill_end_preserved() {
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5];
+         arr.fill(0, 1, 4);
+         return arr[4];",
+        5,
+    );
+}
+
+#[test]
+fn test_array_flat_simple() {
+    expect_i32(
+        "let arr: number[][] = [[1, 2], [3, 4]];
+         let flat = arr.flat();
+         return flat.length;",
+        4,
+    );
+}
+
+#[test]
+fn test_array_flat_content() {
+    expect_i32(
+        "let arr: number[][] = [[10, 20], [30, 40]];
+         let flat = arr.flat();
+         return flat[2];",
+        30,
+    );
+}
