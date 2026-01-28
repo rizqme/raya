@@ -191,3 +191,53 @@ fn test_string_ends_with() {
 fn test_string_ends_with_false() {
     expect_bool("return \"hello world\".endsWith(\"hello\");", false);
 }
+
+#[test]
+fn test_string_char_code_at() {
+    expect_i32("return \"ABC\".charCodeAt(0);", 65); // 'A' = 65
+}
+
+#[test]
+fn test_string_char_code_at_middle() {
+    expect_i32("return \"hello\".charCodeAt(1);", 101); // 'e' = 101
+}
+
+#[test]
+fn test_string_last_index_of() {
+    expect_i32("return \"hello hello\".lastIndexOf(\"hello\");", 6);
+}
+
+#[test]
+fn test_string_last_index_of_not_found() {
+    expect_i32("return \"hello\".lastIndexOf(\"xyz\");", -1);
+}
+
+#[test]
+fn test_string_trim_start() {
+    expect_string("return \"  hello  \".trimStart();", "hello  ");
+}
+
+#[test]
+fn test_string_trim_end() {
+    expect_string("return \"  hello  \".trimEnd();", "  hello");
+}
+
+#[test]
+fn test_string_pad_start() {
+    expect_string("return \"5\".padStart(3, \"0\");", "005");
+}
+
+#[test]
+fn test_string_pad_start_no_padding_needed() {
+    expect_string("return \"hello\".padStart(3, \"0\");", "hello");
+}
+
+#[test]
+fn test_string_pad_end() {
+    expect_string("return \"5\".padEnd(3, \"0\");", "500");
+}
+
+#[test]
+fn test_string_pad_end_no_padding_needed() {
+    expect_string("return \"hello\".padEnd(3, \"0\");", "hello");
+}

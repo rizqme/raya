@@ -46,6 +46,12 @@ mod builtin_string {
     pub const ENDS_WITH: u16 = 0x0209;
     pub const REPLACE: u16 = 0x020A;
     pub const REPEAT: u16 = 0x020B;
+    pub const PAD_START: u16 = 0x020C;
+    pub const PAD_END: u16 = 0x020D;
+    pub const CHAR_CODE_AT: u16 = 0x020E;
+    pub const LAST_INDEX_OF: u16 = 0x020F;
+    pub const TRIM_START: u16 = 0x0210;
+    pub const TRIM_END: u16 = 0x0211;
 }
 
 /// Look up built-in method ID by method name and object type
@@ -90,6 +96,12 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
             "split" => return Some(builtin_string::SPLIT),
             "replace" => return Some(builtin_string::REPLACE),
             "repeat" => return Some(builtin_string::REPEAT),
+            "padStart" => return Some(builtin_string::PAD_START),
+            "padEnd" => return Some(builtin_string::PAD_END),
+            "charCodeAt" => return Some(builtin_string::CHAR_CODE_AT),
+            "lastIndexOf" => return Some(builtin_string::LAST_INDEX_OF),
+            "trimStart" => return Some(builtin_string::TRIM_START),
+            "trimEnd" => return Some(builtin_string::TRIM_END),
             _ => {}
         }
     }

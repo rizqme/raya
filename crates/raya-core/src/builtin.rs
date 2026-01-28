@@ -72,6 +72,14 @@ pub mod string {
     pub const PAD_START: u16 = 0x020C;
     /// `str.padEnd(length, padString)` - Pad end of string
     pub const PAD_END: u16 = 0x020D;
+    /// `str.charCodeAt(index)` - Get character code at index
+    pub const CHAR_CODE_AT: u16 = 0x020E;
+    /// `str.lastIndexOf(searchStr)` - Find last index of substring
+    pub const LAST_INDEX_OF: u16 = 0x020F;
+    /// `str.trimStart()` - Remove whitespace from start
+    pub const TRIM_START: u16 = 0x0210;
+    /// `str.trimEnd()` - Remove whitespace from end
+    pub const TRIM_END: u16 = 0x0211;
 }
 
 /// Built-in method IDs for Channel<T>
@@ -257,6 +265,10 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "repeat" => Some(string::REPEAT),
             "padStart" => Some(string::PAD_START),
             "padEnd" => Some(string::PAD_END),
+            "charCodeAt" => Some(string::CHAR_CODE_AT),
+            "lastIndexOf" => Some(string::LAST_INDEX_OF),
+            "trimStart" => Some(string::TRIM_START),
+            "trimEnd" => Some(string::TRIM_END),
             _ => None,
         },
         _ => None,

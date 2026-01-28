@@ -174,36 +174,36 @@ MUTEX_LOCK                   // Direct opcode, no CALL overhead
 The compiler has built-in knowledge of primitive type methods. No new syntax is needed - the type checker and lowering phases recognize method calls on primitives and emit the appropriate opcodes or native calls.
 
 #### 4.1 Type Checker Support
-- [ ] Recognize method calls on `string` type
-- [ ] Recognize method calls on `Array<T>` type
-- [ ] Recognize method calls on `RegExp` type
-- [ ] Recognize method calls on `number` type (if any)
-- [ ] Return correct type signatures for built-in methods
-- [ ] Report errors for unknown methods on primitives
+- [x] Recognize method calls on `string` type
+- [x] Recognize method calls on `Array<T>` type
+- [x] Recognize method calls on `RegExp` type
+- [x] Recognize method calls on `number` type (toFixed, toPrecision, toString)
+- [x] Return correct type signatures for built-in methods
+- [x] Report errors for unknown methods on primitives (returns unknown type)
 
 #### 4.2 String Methods (Hardcoded)
-- [ ] Register string methods in type checker with signatures
-- [ ] Opcode-backed: `length` (property via SLEN)
-- [ ] Native-backed methods:
-  - `charAt(index: number): string` → NATIVE_CALL(0x0201)
-  - `charCodeAt(index: number): number` → NATIVE_CALL(0x0202)
-  - `substring(start: number, end?: number): string` → NATIVE_CALL(0x0203)
-  - `indexOf(search: string, position?: number): number` → NATIVE_CALL(0x0204)
-  - `lastIndexOf(search: string, position?: number): number` → NATIVE_CALL(0x0205)
-  - `toUpperCase(): string` → NATIVE_CALL(0x0210)
-  - `toLowerCase(): string` → NATIVE_CALL(0x0211)
-  - `trim(): string` → NATIVE_CALL(0x0220)
-  - `trimStart(): string` → NATIVE_CALL(0x0221)
-  - `trimEnd(): string` → NATIVE_CALL(0x0222)
-  - `split(separator: string): Array<string>` → NATIVE_CALL(0x0230)
-  - `repeat(count: number): string` → NATIVE_CALL(0x0240)
-  - `startsWith(prefix: string): boolean` → NATIVE_CALL(0x0250)
-  - `endsWith(suffix: string): boolean` → NATIVE_CALL(0x0251)
-  - `includes(search: string): boolean` → NATIVE_CALL(0x0252)
-  - `replace(search: string, replacement: string): string` → NATIVE_CALL(0x0260)
-  - `padStart(length: number, pad?: string): string` → NATIVE_CALL(0x0270)
-  - `padEnd(length: number, pad?: string): string` → NATIVE_CALL(0x0271)
-- [ ] Implement `__NATIVE_STRING_*` functions in VM (0x0200-0x027x)
+- [x] Register string methods in type checker with signatures
+- [x] Opcode-backed: `length` (property via SLEN)
+- [x] Native-backed methods:
+  - `charAt(index: number): string` → 0x0200
+  - `charCodeAt(index: number): number` → 0x020E
+  - `substring(start: number, end?: number): string` → 0x0201
+  - `indexOf(search: string, position?: number): number` → 0x0205
+  - `lastIndexOf(search: string, position?: number): number` → 0x020F
+  - `toUpperCase(): string` → 0x0202
+  - `toLowerCase(): string` → 0x0203
+  - `trim(): string` → 0x0204
+  - `trimStart(): string` → 0x0210
+  - `trimEnd(): string` → 0x0211
+  - `split(separator: string): Array<string>` → 0x0207
+  - `repeat(count: number): string` → 0x020B
+  - `startsWith(prefix: string): boolean` → 0x0208
+  - `endsWith(suffix: string): boolean` → 0x0209
+  - `includes(search: string): boolean` → 0x0206
+  - `replace(search: string, replacement: string): string` → 0x020A
+  - `padStart(length: number, pad?: string): string` → 0x020C
+  - `padEnd(length: number, pad?: string): string` → 0x020D
+- [x] Implement `__NATIVE_STRING_*` functions in VM (0x0200-0x0211)
 
 #### 4.3 Array Methods (Hardcoded)
 - [ ] Register array methods in type checker with generic signatures

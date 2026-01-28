@@ -4092,6 +4092,66 @@ impl Vm {
                 Ok(())
             }
 
+            builtin::string::CHAR_CODE_AT => {
+                // str.charCodeAt(index) -> number
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "charCodeAt expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let index_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let index = index_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("charCodeAt index must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let result = s.chars().nth(index).map(|c| c as i32).unwrap_or(-1);
+                self.stack.push(Value::i32(result))?;
+                Ok(())
+            }
+
+            builtin::string::LAST_INDEX_OF => {
+                // str.lastIndexOf(searchStr) -> number
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "lastIndexOf expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let search_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let search = self.get_string_data(&search_val)?;
+
+                let result = s.rfind(&search).map(|i| i as i32).unwrap_or(-1);
+                self.stack.push(Value::i32(result))?;
+                Ok(())
+            }
+
+            builtin::string::TRIM_START => {
+                // str.trimStart() -> string
+                let str_val = self.stack.pop()?;
+                let s = self.get_string_data(&str_val)?;
+                let result = s.trim_start().to_string();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::TRIM_END => {
+                // str.trimEnd() -> string
+                let str_val = self.stack.pop()?;
+                let s = self.get_string_data(&str_val)?;
+                let result = s.trim_end().to_string();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
             _ => Err(VmError::RuntimeError(format!(
                 "Unknown string method: 0x{:04X}",
                 method_id

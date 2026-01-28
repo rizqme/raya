@@ -1621,6 +1621,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check for built-in number methods
+        if let Some(crate::types::Type::Primitive(crate::types::PrimitiveType::Number)) = &obj_type {
+            if let Some(method_type) = self.get_number_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
         // Check for built-in Mutex methods
         if let Some(crate::types::Type::Mutex) = &obj_type {
             if let Some(method_type) = self.get_mutex_method_type(&property_name) {
@@ -1785,6 +1792,27 @@ impl<'a> TypeChecker<'a> {
             }
             // length property (not a method, but handled here for convenience)
             "length" => Some(number_ty),
+            // lastIndexOf(value: T) -> number
+            "lastIndexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // sort(compareFn?: (a: T, b: T) => number) -> Array<T>
+            "sort" => {
+                let compare_fn_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], number_ty, false);
+                Some(self.type_ctx.function_type(vec![compare_fn_ty], array_ty, false))
+            }
+            // map(fn: (elem: T) => T) -> Array<T> (simplified - without generic U)
+            "map" => {
+                let callback_ty = self.type_ctx.function_type(vec![elem_ty], elem_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty], array_ty, false))
+            }
+            // reduce(fn: (acc: T, elem: T) => T, initial: T) -> T (simplified)
+            "reduce" => {
+                let callback_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], elem_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty, elem_ty], elem_ty, false))
+            }
+            // fill(value: T, start?: number, end?: number) -> Array<T>
+            "fill" => Some(self.type_ctx.function_type(vec![elem_ty, number_ty, number_ty], array_ty, false)),
+            // flat() -> Array<T> (simplified - single level flatten)
+            "flat" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
             _ => None,
         }
     }
@@ -1825,6 +1853,34 @@ impl<'a> TypeChecker<'a> {
             "replace" => Some(self.type_ctx.function_type(vec![string_ty, string_ty], string_ty, false)),
             // repeat(count: number) -> string
             "repeat" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // charCodeAt(index: number) -> number
+            "charCodeAt" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // lastIndexOf(searchStr: string) -> number
+            "lastIndexOf" => Some(self.type_ctx.function_type(vec![string_ty], number_ty, false)),
+            // trimStart() -> string
+            "trimStart" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // trimEnd() -> string
+            "trimEnd" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // padStart(length: number, pad: string) -> string
+            "padStart" => Some(self.type_ctx.function_type(vec![number_ty, string_ty], string_ty, false)),
+            // padEnd(length: number, pad: string) -> string
+            "padEnd" => Some(self.type_ctx.function_type(vec![number_ty, string_ty], string_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in number method
+    fn get_number_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+
+        match method_name {
+            // toFixed(digits: number) -> string
+            "toFixed" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // toPrecision(precision: number) -> string
+            "toPrecision" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // toString() -> string
+            "toString" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             _ => None,
         }
     }
@@ -1890,8 +1946,17 @@ impl<'a> TypeChecker<'a> {
             "ignoreCase" => Some(boolean_ty),
             // multiline property -> boolean
             "multiline" => Some(boolean_ty),
-            // lastIndex property -> number
+            // lastIndex property -> number (legacy, Raya RegExp is stateless)
             "lastIndex" => Some(number_ty),
+            // replaceWith(str: string, replacer: (match: string) => string) -> string
+            "replaceWith" => {
+                let replacer_ty = self.type_ctx.function_type(vec![string_ty], string_ty, false);
+                Some(self.type_ctx.function_type(vec![string_ty, replacer_ty], string_ty, false))
+            }
+            // dotAll property -> boolean
+            "dotAll" => Some(boolean_ty),
+            // unicode property -> boolean
+            "unicode" => Some(boolean_ty),
             _ => None,
         }
     }
