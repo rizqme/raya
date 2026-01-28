@@ -13,42 +13,31 @@ use raya_engine::parser::checker::{Binder, TypeChecker};
 fn get_builtin_sources() -> &'static str {
     concat!(
         // Object class (base class)
-        include_str!("../../../raya-builtins/builtins/Object.raya"),
+        include_str!("../../builtins/Object.raya"),
         "\n",
         // Error classes (must come before other classes that might throw)
-        include_str!("../../../raya-builtins/builtins/Error.raya"),
+        include_str!("../../builtins/Error.raya"),
         "\n",
         // Map class
-        include_str!("../../../raya-builtins/builtins/Map.raya"),
+        include_str!("../../builtins/Map.raya"),
         "\n",
         // Set class
-        include_str!("../../../raya-builtins/builtins/Set.raya"),
+        include_str!("../../builtins/Set.raya"),
         "\n",
         // Buffer class
-        include_str!("../../../raya-builtins/builtins/Buffer.raya"),
+        include_str!("../../builtins/Buffer.raya"),
         "\n",
         // Date class
-        include_str!("../../../raya-builtins/builtins/Date.raya"),
+        include_str!("../../builtins/Date.raya"),
         "\n",
         // Channel class
-        include_str!("../../../raya-builtins/builtins/Channel.raya"),
+        include_str!("../../builtins/Channel.raya"),
         "\n",
         // Mutex class
-        include_str!("../../../raya-builtins/builtins/Mutex.raya"),
+        include_str!("../../builtins/Mutex.raya"),
         "\n",
-        // Task class (simplified - for runtime Task objects)
-        "class Task<T> {
-            private handle: number;
-
-            private constructor(handle: number) {
-                this.handle = handle;
-            }
-
-            cancel(): void {
-                __OPCODE_TASK_CANCEL(this.handle);
-            }
-        }
-        ",
+        // Task class
+        include_str!("../../builtins/Task.raya"),
         "\n",
     )
 }

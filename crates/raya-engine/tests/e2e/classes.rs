@@ -475,3 +475,87 @@ fn test_cast_basic() {
         5,
     );
 }
+
+// ============================================================================
+// instanceof with Generics
+// ============================================================================
+
+#[test]
+fn test_instanceof_with_generics() {
+    expect_i32(
+        "class Container<T> {
+             value: T;
+             constructor(v: T) {
+                 this.value = v;
+             }
+         }
+         let c = new Container<number>(42);
+         if (c instanceof Container) {
+             return 1;
+         }
+         return 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_instanceof_with_generics_inheritance() {
+    expect_i32(
+        "class Base<T> {
+             value: T;
+             constructor(v: T) {
+                 this.value = v;
+             }
+         }
+         class Derived<T> extends Base<T> {
+             constructor(v: T) {
+                 super(v);
+             }
+         }
+         let d = new Derived<number>(42);
+         if (d instanceof Base) {
+             return 1;
+         }
+         return 0;",
+        1,
+    );
+}
+
+// ============================================================================
+// Cast Error Handling
+// ============================================================================
+
+#[test]
+fn test_cast_invalid_throws() {
+    // Casting to an unrelated class should throw Type error
+    super::harness::expect_runtime_error(
+        "class Cat {
+             meow(): number { return 1; }
+         }
+         class Dog {
+             bark(): number { return 2; }
+         }
+         let c = new Cat();
+         let d = c as Dog;
+         return d.bark();",
+        "Cannot cast",
+    );
+}
+
+#[test]
+fn test_cast_upcast_always_succeeds() {
+    // Upcasting (child to parent) should always succeed
+    expect_i32(
+        "class Animal {
+             legs: number = 4;
+         }
+         class Dog extends Animal {
+             name: string = \"Rex\";
+         }
+         let d = new Dog();
+         let a = d as Animal;
+         return a.legs;",
+        4,
+    );
+}
+

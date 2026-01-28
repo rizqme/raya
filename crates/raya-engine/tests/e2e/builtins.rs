@@ -768,3 +768,79 @@ fn test_string_replace_with_non_global() {
         return result;
     "#, "fOo bar boo");
 }
+
+// ============================================================================
+// Native Call Basic Test
+// ============================================================================
+
+#[test]
+fn test_native_call_basic() {
+    // Test that native calls work correctly through string methods
+    // String.charAt calls NATIVE_CALL(0x0200) internally
+    expect_string(r#"
+        let s = "hello";
+        return s.charAt(1);
+    "#, "e");
+}
+
+// ============================================================================
+// RegExpMatch Class Tests
+// ============================================================================
+
+#[test]
+fn test_regexp_match_properties() {
+    // Test that exec returns an array with [matched_text, index, ...groups]
+    // The match text should be at index 0
+    expect_string(r#"
+        let re = new RegExp("world", "");
+        let result = re.exec("hello world");
+        if (result == null) {
+            return "";
+        }
+        return result[0];
+    "#, "world");
+}
+
+#[test]
+fn test_regexp_match_index() {
+    // Test that the match index is correct (index 1 of result array)
+    expect_i32(r#"
+        let re = new RegExp("world", "");
+        let result = re.exec("hello world");
+        if (result == null) {
+            return -1;
+        }
+        return result[1];
+    "#, 6);
+}
+
+#[test]
+fn test_regexp_match_groups() {
+    // Test capture groups - pattern with groups returns captured content
+    expect_string(r#"
+        let re = new RegExp("(\\w+)@(\\w+)", "");
+        let result = re.exec("email: user@domain");
+        if (result == null) {
+            return "";
+        }
+        // result[0] = full match "user@domain"
+        // result[1] = index
+        // result[2] = first group "user"
+        // result[3] = second group "domain"
+        return result[2];
+    "#, "user");
+}
+
+#[test]
+fn test_regexp_match_groups_second() {
+    // Test second capture group
+    expect_string(r#"
+        let re = new RegExp("(\\w+)@(\\w+)", "");
+        let result = re.exec("email: user@domain");
+        if (result == null) {
+            return "";
+        }
+        // result[3] = second group "domain"
+        return result[3];
+    "#, "domain");
+}

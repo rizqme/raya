@@ -490,16 +490,16 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [x] `test_mutex_basic_lock_unlock` (e2e/concurrency.rs)
 - [x] `test_sleep_basic` (e2e/concurrency.rs)
 - [x] `test_sleep_with_value` (e2e/concurrency.rs)
-- [ ] `test_native_call_basic`
+- [x] `test_native_call_basic` (e2e/builtins.rs)
 
 ### Phase 2 Tests
 - [x] `test_instanceof_same_class` (e2e/classes.rs)
 - [x] `test_instanceof_inheritance` (e2e/classes.rs)
 - [x] `test_instanceof_returns_false` (e2e/classes.rs)
-- [ ] `test_instanceof_with_generics`
+- [x] `test_instanceof_with_generics` (e2e/classes.rs)
 - [x] `test_cast_basic` (e2e/classes.rs)
-- [ ] `test_cast_invalid_throws`
-- [ ] `test_cast_upcast_always_succeeds`
+- [x] `test_cast_invalid_throws` (e2e/classes.rs)
+- [x] `test_cast_upcast_always_succeeds` (e2e/classes.rs)
 
 ### Phase 4 Tests (Primitive Methods)
 - [x] `test_string_length` (e2e/strings.rs)
@@ -536,8 +536,8 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [ ] Tests for native method calls
 
 ### Phase 11 Tests (RegExpMatch)
-- [ ] `test_regexp_match_properties`
-- [ ] `test_regexp_match_groups`
+- [x] `test_regexp_match_properties` (e2e/builtins.rs)
+- [x] `test_regexp_match_groups` (e2e/builtins.rs)
 
 ---
 
