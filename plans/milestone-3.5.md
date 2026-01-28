@@ -384,7 +384,7 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 ### New Files
 
 ```
-crates/raya-builtins/builtins/   # ✅ All created
+crates/raya-engine/builtins/    # ✅ All created (consolidated from raya-builtins)
 ├── Object.raya           # Base class for all classes
 ├── Mutex.raya            # Simplified: lock/unlock only
 ├── Task.raya
@@ -396,13 +396,11 @@ crates/raya-builtins/builtins/   # ✅ All created
 ├── Date.raya
 └── RegExpMatch.raya      # Result type for RegExp.exec()
 
-crates/raya-bytecode/src/
-├── native_id.rs          # Native function ID enum (TODO)
+crates/raya-engine/src/compiler/
+├── native_id.rs          # ✅ Native function ID constants
 
-crates/raya-core/src/vm/
-├── native_dispatch.rs    # Native call dispatch table (TODO)
-├── native_string.rs      # String native functions (TODO)
-├── native_array.rs       # Array native functions (TODO)
+crates/raya-engine/src/vm/
+├── builtin.rs            # ✅ Native call dispatch (NATIVE_CALL handler)
 ```
 
 Note: No stdlib files for `string`, `array`, or `RegExp` - these are hardcoded primitives in the compiler. Only `RegExpMatch` (result class) needs a stdlib file.
@@ -411,16 +409,18 @@ Note: No stdlib files for `string`, `array`, or `RegExp` - these are hardcoded p
 
 ### Modified Files
 
+Note: Crates have been consolidated into `raya-engine`.
+
 | File | Changes |
 |------|---------|
-| `crates/raya-bytecode/src/opcode.rs` | Add `INSTANCEOF`, `CAST`, `NATIVE_CALL` opcodes (already done) |
-| `crates/raya-parser/src/parser/expr.rs` | Parse `instanceof`, `as`, intrinsics |
-| `crates/raya-parser/src/checker/checker.rs` | Type check `instanceof`, `as`, intrinsics, **hardcoded primitive methods** |
-| `crates/raya-parser/src/checker/builtins.rs` | **NEW:** Define signatures for string/array built-in methods |
-| `crates/raya-compiler/src/ir/instr.rs` | Add `InstanceOf`, `Cast`, `NativeCall` instructions |
-| `crates/raya-compiler/src/lower/expr.rs` | Lower intrinsics, type operators, **primitive method calls** |
-| `crates/raya-compiler/src/codegen/context.rs` | Emit new opcodes |
-| `crates/raya-core/src/vm/interpreter.rs` | Handle `INSTANCEOF`, `CAST`, `NATIVE_CALL` |
+| `crates/raya-engine/src/compiler/bytecode/opcode.rs` | Add `INSTANCEOF`, `CAST`, `NATIVE_CALL` opcodes (✅ done) |
+| `crates/raya-engine/src/parser/parser/expr.rs` | Parse `instanceof`, `as`, intrinsics (✅ done) |
+| `crates/raya-engine/src/parser/checker/checker.rs` | Type check `instanceof`, `as`, intrinsics, **hardcoded primitive methods** (✅ done) |
+| `crates/raya-engine/src/parser/checker/builtins.rs` | Define signatures for string/array built-in methods (✅ done) |
+| `crates/raya-engine/src/compiler/ir/instr.rs` | Add `InstanceOf`, `Cast`, `NativeCall` instructions (✅ done) |
+| `crates/raya-engine/src/compiler/lower/expr.rs` | Lower intrinsics, type operators, **primitive method calls** (✅ done) |
+| `crates/raya-engine/src/compiler/codegen/context.rs` | Emit new opcodes (✅ done) |
+| `crates/raya-engine/src/vm/vm/interpreter.rs` | Handle `INSTANCEOF`, `CAST`, `NATIVE_CALL` (✅ done) |
 
 ---
 
@@ -502,15 +502,15 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [ ] `test_cast_upcast_always_succeeds`
 
 ### Phase 4 Tests (Primitive Methods)
-- [ ] `test_string_length`
-- [ ] `test_string_char_at`
-- [ ] `test_string_substring`
-- [ ] `test_string_to_upper_case`
-- [ ] `test_string_to_lower_case`
-- [ ] `test_string_index_of`
-- [ ] `test_string_split`
-- [ ] `test_string_trim`
-- [ ] `test_string_starts_ends_with`
+- [x] `test_string_length` (e2e/strings.rs)
+- [x] `test_string_char_at` (e2e/strings.rs)
+- [x] `test_string_substring` (e2e/strings.rs)
+- [x] `test_string_to_upper_case` (e2e/strings.rs)
+- [x] `test_string_to_lower_case` (e2e/strings.rs)
+- [x] `test_string_index_of` (e2e/strings.rs)
+- [x] `test_string_split` (e2e/builtins.rs)
+- [x] `test_string_trim` (e2e/strings.rs)
+- [x] `test_string_starts_ends_with` (e2e/strings.rs)
 - [x] `test_array_length`
 - [x] `test_array_push_pop`
 - [x] `test_array_slice`
@@ -531,8 +531,8 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [x] `test_string_match_with_regexp` (match, matchAll, search, replace, split, replaceWith)
 
 ### Phase 5-10 Tests
-- [ ] Tests for each built-in class
-- [ ] Tests for class extension
+- [ ] Tests for each built-in class (Map, Set, Buffer, Date - native functions not implemented)
+- [x] Tests for class extension (e2e/classes.rs::test_class_extends)
 - [ ] Tests for native method calls
 
 ### Phase 11 Tests (RegExpMatch)
