@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for Raya Project
 
-**Last Updated:** 2026-01-04
+**Last Updated:** 2026-01-28
 **Project:** Raya Programming Language & Virtual Machine
 **Implementation Language:** Rust (stable)
 
@@ -25,30 +25,28 @@
 ## 🏗️ Project Structure
 
 ```
-rayavm/
-├── crates/                  # Rust workspace crates
-│   ├── raya-core/        # VM runtime (interpreter, GC, scheduler)
-│   ├── raya-bytecode/    # Bytecode definitions and encoding
-│   ├── raya-parser/      # Lexer & Parser (logos/hand-written)
-│   ├── raya-types/       # Type system & type checker
-│   ├── raya-compiler/    # Code generation (AST → bytecode)
-│   ├── raya-stdlib/      # Standard library (native implementations)
-│   ├── raya-cli/         # CLI tool (rayac)
-│   └── raya-pm/             # Package manager
-├── stdlib/                 # Raya standard library source (.raya files)
-├── design/                 # Complete specification documents
-│   ├── README.md          # Design overview
-│   ├── LANG.md            # Language specification (~2500 lines)
-│   ├── ARCHITECTURE.md    # VM architecture
-│   ├── OPCODE.md          # Bytecode instruction set
-│   ├── MAPPING.md         # Language → bytecode mappings
-│   ├── SNAPSHOTTING.md    # VM snapshotting design
-│   ├── INNER_VM.md        # Inner VM & controllability
-│   └── STDLIB.md          # Standard library design
-├── plans/                 # Implementation roadmap
-│   └── PLAN.md           # Detailed implementation plan
-├── tests/                 # Integration tests
-└── examples/              # Example Raya programs
+raya/
+├── crates/                    # Rust workspace crates
+│   ├── raya-core/            # VM runtime (interpreter, GC, scheduler)
+│   ├── raya-compiler/        # Code generation (AST → IR → bytecode)
+│   ├── raya-parser/          # Lexer, parser, type checker
+│   ├── raya-builtins/        # Built-in class definitions (.raya files)
+│   └── raya-cli/             # CLI tool (rayac) [planned]
+├── design/                    # Complete specification documents
+│   ├── README.md             # Design overview
+│   ├── LANG.md               # Language specification (~2500 lines)
+│   ├── ARCHITECTURE.md       # VM architecture
+│   ├── OPCODE.md             # Bytecode instruction set
+│   ├── MAPPING.md            # Language → bytecode mappings
+│   ├── SNAPSHOTTING.md       # VM snapshotting design
+│   ├── INNER_VM.md           # Inner VM & controllability
+│   ├── BUILTIN_CLASSES.md    # Built-in type definitions
+│   └── CHANNELS.md           # Channel semantics
+├── plans/                     # Implementation roadmap
+│   ├── milestone-3.4.md      # Classes & Concurrency (complete)
+│   └── milestone-3.5.md      # Built-in Types (in progress)
+├── tests/                     # Integration tests
+└── examples/                  # Example Raya programs
 ```
 
 ### Key Rust Dependencies
@@ -176,11 +174,16 @@ When working on this project, **always reference these documents**:
 - Capability-based security model
 - Data marshalling and fair scheduling
 
-### 7. [plans/PLAN.md](plans/PLAN.md) - Implementation Roadmap
-- Rust crate structure
-- Phase-by-phase implementation plan
-- File organization
-- Testing strategy
+### 7. [design/BUILTIN_CLASSES.md](design/BUILTIN_CLASSES.md) - Built-in Types
+- Object base class
+- Collection types (Map, Set, Buffer)
+- Concurrency primitives (Mutex, Channel, Task)
+- Error class hierarchy
+
+### 8. [plans/milestone-3.5.md](plans/milestone-3.5.md) - Current Milestone
+- Built-in types implementation
+- Native call system
+- Primitive method dispatch
 
 ---
 
@@ -237,23 +240,20 @@ When working on this project, **always reference these documents**:
 ## 🎯 Current Implementation Status
 
 ### ✅ Complete:
-- Language specification (LANG.md)
-- VM architecture design (ARCHITECTURE.md)
-- Opcode set definition (OPCODE.md)
-- Language-to-bytecode mappings (MAPPING.md)
-- VM snapshotting design (SNAPSHOTTING.md)
-- Inner VM design (INNER_VM.md)
-- Implementation plan (PLAN.md)
-- Milestone 1.2: Bytecode definitions and encoding
+- **Design Documents:** LANG.md, ARCHITECTURE.md, OPCODE.md, MAPPING.md, SNAPSHOTTING.md, INNER_VM.md
+- **Milestone 3.4:** Full class support with inheritance, async/await, exception handling
+- **Milestone 3.5 Phase 1-3:** Compiler intrinsics, type operators, Object base class
 
-### ⏳ In Progress:
-- Rust workspace setup
-- VM core implementation
-- Parser and type checker
-- Compiler (bytecode generation)
-- Standard library
+### ⏳ In Progress (Milestone 3.5):
+- **Phase 4:** Hardcoded primitive methods (string/array methods largely complete)
+- **Phase 5-11:** Remaining built-in classes (Mutex, Channel, Map, Set, etc.)
 
-See [plans/PLAN.md](plans/PLAN.md) for detailed milestones.
+### 📊 Test Coverage:
+- **358 e2e tests passing** (arrays, strings, classes, concurrency, exceptions)
+- String methods: charAt, substring, toUpperCase, toLowerCase, trim, indexOf, includes, startsWith, endsWith, split, replace
+- Array methods: push, pop, shift, unshift, indexOf, includes, slice, concat, reverse, join, forEach, filter, find, findIndex, every, some
+
+See [plans/milestone-3.5.md](plans/milestone-3.5.md) for current progress.
 
 ---
 
@@ -355,6 +355,29 @@ let a = identity(42);
 // fn identity_string(x: string) -> string { x }
 ```
 
+### Built-in Types System
+
+**Primitives** (hardcoded in compiler):
+- `number`, `boolean`, `null`, `string`, `Array<T>`
+- Methods emit opcodes or native calls directly
+- Cannot be extended by users
+
+**Classes** (defined in raya-builtins/*.raya):
+- `Object`, `Mutex`, `Task<T>`, `Channel<T>`, `Error`, `Buffer`, `Map<K,V>`, `Set<T>`, `Date`
+- Use `__OPCODE_*` and `__NATIVE_CALL` intrinsics
+- Can be extended by users
+
+**Native Call IDs** (in `crates/raya-compiler/src/native_id.rs`):
+- Object: 0x00xx
+- Array: 0x01xx
+- String: 0x02xx
+- Mutex: 0x03xx
+- Channel: 0x05xx
+- Buffer: 0x07xx
+- Map: 0x08xx
+- Set: 0x09xx
+- Date: 0x0Bxx
+
 ---
 
 ## 🧪 Testing Strategy
@@ -374,14 +397,17 @@ let a = identity(42);
 # Build all crates
 cargo build
 
-# Run tests
+# Run all tests
 cargo test
 
-# Build CLI
-cargo build --release -p raya-cli
+# Run e2e tests only (fastest feedback)
+cargo test -p raya-compiler --test e2e_tests
 
-# Run Raya program (once implemented)
-cargo run -p raya-cli -- run program.raya
+# Run specific test
+cargo test -p raya-compiler --test e2e_tests test_array_filter
+
+# Build with release optimizations
+cargo build --release
 ```
 
 ---
