@@ -9,6 +9,6 @@ rust-version.workspace = true
 description = "Language Server Protocol implementation for Raya"
 
 [dependencies]
-raya-parser = { workspace = true }
+raya-engine = { workspace = true }
 tower-lsp = { workspace = true }
 tokio = { workspace = true }

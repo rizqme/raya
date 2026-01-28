@@ -1,15 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/raya-core",
-    "crates/raya-parser",
-    "crates/raya-compiler",
-    "crates/raya-builtins",
+    "crates/raya-engine",
+    "crates/raya-sdk",
     "crates/raya-stdlib",
     "crates/raya-cli",
     "crates/raya-lsp",
     "crates/raya-pm",
-    "crates/raya-ffi",
     "crates/raya-native",
 ]
 
@@ -65,12 +62,9 @@ tower-lsp = "0.20"
 tokio = { version = "1.35", features = ["full"] }
 
 # Common internal dependencies
-raya-core = { path = "crates/raya-core" }
-raya-parser = { path = "crates/raya-parser" }
-raya-compiler = { path = "crates/raya-compiler" }
-raya-builtins = { path = "crates/raya-builtins" }
+raya-engine = { path = "crates/raya-engine" }
+raya-sdk = { path = "crates/raya-sdk" }
 raya-stdlib = { path = "crates/raya-stdlib" }
-raya-ffi = { path = "crates/raya-ffi" }
 raya-native = { path = "crates/raya-native" }
 
 [profile.release]

@@ -11,7 +11,7 @@ use quote::quote;
 /// FromRaya converts RayaValue -> Rust type with type checking and unpinning.
 pub fn generate_from_raya_impl(ty: &syn::Type) -> TokenStream {
     quote! {
-        <#ty as raya_native::FromRaya>::from_raya(arg)?
+        <#ty as raya_engine::vm::ffi::FromRaya>::from_raya(arg)?
     }
 }
 
@@ -20,7 +20,7 @@ pub fn generate_from_raya_impl(ty: &syn::Type) -> TokenStream {
 /// ToRaya converts Rust type -> RayaValue with automatic pinning.
 pub fn generate_to_raya_impl(expr: &syn::Expr) -> TokenStream {
     quote! {
-        raya_native::ToRaya::to_raya(#expr)
+        raya_engine::vm::ffi::ToRaya::to_raya(#expr)
     }
 }
 
@@ -38,7 +38,7 @@ pub fn generate_arg_extraction(
     quote! {
         let #arg_name = {
             let raw_arg = args[#index];
-            <#arg_type as raya_native::FromRaya>::from_raya(raw_arg)?
+            <#arg_type as raya_engine::vm::ffi::FromRaya>::from_raya(raw_arg)?
         };
     }
 }
@@ -62,7 +62,7 @@ pub fn generate_panic_wrapper(func_call: TokenStream) -> TokenStream {
             } else {
                 "Unknown panic".to_string()
             };
-            raya_native::NativeError::Panic(msg)
+            raya_engine::vm::ffi::NativeError::Panic(msg)
         })?
     }
 }
@@ -76,13 +76,13 @@ pub fn generate_panic_wrapper(func_call: TokenStream) -> TokenStream {
 pub fn generate_pin_code(args: &[syn::Ident]) -> TokenStream {
     let pin_calls = args.iter().map(|arg| {
         quote! {
-            raya_native::pin_value(#arg);
+            raya_engine::vm::ffi::pin_value(#arg);
         }
     });
 
     let unpin_calls = args.iter().map(|arg| {
         quote! {
-            raya_native::unpin_value(#arg);
+            raya_engine::vm::ffi::unpin_value(#arg);
         }
     });
 

@@ -2,8 +2,8 @@
 //!
 //! This module exposes Raya's custom JSON implementation through the FFI interface.
 
-use raya_core::ffi::NativeModule;
-use raya_ffi::{function, module};
+use raya_sdk::NativeModule;
+use raya_native::{function, module};
 
 // TODO: Once String marshalling is implemented, we can expose the real JSON functions
 // For now, these are placeholders that demonstrate the module structure
@@ -11,12 +11,12 @@ use raya_ffi::{function, module};
 /// Placeholder for JSON.parse() - will use crate::json::parse() once String marshalling exists
 ///
 /// # Arguments
-/// * `dummy` - Placeholder until String support is ready
+/// * `_dummy` - Placeholder until String support is ready
 ///
 /// # Returns
 /// * Always returns true for now
 #[function]
-fn parse(dummy: i32) -> bool {
+fn parse(_dummy: i32) -> bool {
     // TODO: Call crate::json::parse() once we have String marshalling
     // let input = RayaString { data: json_string };
     // let result = crate::json::parse(&input, gc)?;
@@ -26,12 +26,12 @@ fn parse(dummy: i32) -> bool {
 /// Placeholder for JSON.stringify() - will use crate::json::stringify() once String marshalling exists
 ///
 /// # Arguments
-/// * `dummy` - Placeholder until String support is ready
+/// * `_dummy` - Placeholder until String support is ready
 ///
 /// # Returns
 /// * Always returns true for now
 #[function]
-fn stringify(dummy: i32) -> bool {
+fn stringify(_dummy: i32) -> bool {
     // TODO: Call crate::json::stringify() once we have String marshalling
     // let result = crate::json::stringify(&json_value, gc)?;
     true
@@ -40,12 +40,12 @@ fn stringify(dummy: i32) -> bool {
 /// Check if a string is valid JSON (placeholder)
 ///
 /// # Arguments
-/// * `dummy` - Placeholder until String support is ready
+/// * `_dummy` - Placeholder until String support is ready
 ///
 /// # Returns
 /// * true if valid JSON, false otherwise
 #[function]
-fn is_valid(dummy: i32) -> bool {
+fn is_valid(_dummy: i32) -> bool {
     // TODO: Try to parse and return true/false
     true
 }

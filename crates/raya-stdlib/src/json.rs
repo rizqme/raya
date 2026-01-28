@@ -3,10 +3,10 @@
 //! This module provides native implementations of JSON.parse() and JSON.stringify()
 //! using Raya's custom high-performance JSON parser.
 
-use raya_core::gc::GarbageCollector;
-use raya_core::json::JsonValue;
-use raya_core::object::RayaString;
-use raya_core::VmResult;
+use raya_engine::gc::GarbageCollector;
+use raya_engine::JsonValue;
+use raya_engine::RayaString;
+use raya_engine::VmResult;
 
 /// Parse a JSON string into a JsonValue
 ///
@@ -29,7 +29,7 @@ use raya_core::VmResult;
 /// console.log(data.name);  // "Alice"
 /// ```
 pub fn parse(json_str: &RayaString, gc: &mut GarbageCollector) -> VmResult<JsonValue> {
-    raya_core::json::parser::parse(&json_str.data, gc)
+    raya_engine::vm::json::parser::parse(&json_str.data, gc)
 }
 
 /// Convert a JsonValue to a JSON string
@@ -53,14 +53,14 @@ pub fn parse(json_str: &RayaString, gc: &mut GarbageCollector) -> VmResult<JsonV
 /// let str = JSON.stringify(obj);  // '{"name":"Alice","age":30}'
 /// ```
 pub fn stringify(json_value: &JsonValue, _gc: &mut GarbageCollector) -> VmResult<RayaString> {
-    let json_str = raya_core::json::stringify::stringify(json_value)?;
+    let json_str = raya_engine::vm::json::stringify::stringify(json_value)?;
     Ok(RayaString::new(json_str))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use raya_core::gc::GarbageCollector;
+    use raya_engine::gc::GarbageCollector;
 
     #[test]
     fn test_parse_primitives() {

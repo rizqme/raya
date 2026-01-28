@@ -12,5 +12,6 @@ description = "Standard library native implementations for Raya"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-raya-core = { workspace = true }
-raya-ffi = { workspace = true }
+raya-sdk = { workspace = true }
+raya-native = { workspace = true }
+raya-engine = { workspace = true }

@@ -1,0 +1,1081 @@
+//! Code Generator Context
+//!
+//! Manages state during bytecode generation from IR.
+
+use crate::compiler::bytecode::{Function, Module, Opcode};
+use crate::compiler::error::{CompileError, CompileResult};
+use crate::compiler::ir::{
+    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrConstant, IrFunction, IrInstr,
+    IrModule, IrValue, Register, StringCompareMode, Terminator, UnaryOp,
+};
+use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
+use rustc_hash::FxHashMap;
+
+/// Code generator that transforms IR to bytecode
+pub struct IrCodeGenerator {
+    /// Module builder for constructing the output
+    module_builder: ModuleBuilder,
+    /// Current function being compiled
+    current_func: Option<FunctionContext>,
+}
+
+/// Context for compiling a single function
+struct FunctionContext {
+    /// Function builder
+    builder: FunctionBuilder,
+    /// Register to local slot mapping
+    register_slots: FxHashMap<u32, u16>,
+    /// Next available local slot
+    next_slot: u16,
+    /// Block start positions for jump patching
+    block_positions: FxHashMap<BasicBlockId, usize>,
+    /// Pending jumps that need patching (source position, target block)
+    pending_jumps: Vec<(usize, BasicBlockId)>,
+    /// Pending i32 jumps for try blocks (source position, target block)
+    pending_try_jumps: Vec<(usize, BasicBlockId)>,
+}
+
+impl FunctionContext {
+    fn new(name: String, param_count: u8) -> Self {
+        Self {
+            builder: FunctionBuilder::new(name, param_count),
+            register_slots: FxHashMap::default(),
+            next_slot: param_count as u16,
+            block_positions: FxHashMap::default(),
+            pending_jumps: Vec::new(),
+            pending_try_jumps: Vec::new(),
+        }
+    }
+
+    /// Get or allocate a local slot for a register
+    fn get_or_alloc_slot(&mut self, reg: &Register) -> u16 {
+        let id = reg.id.as_u32();
+        if let Some(&slot) = self.register_slots.get(&id) {
+            slot
+        } else {
+            let slot = self.next_slot;
+            self.next_slot += 1;
+            self.register_slots.insert(id, slot);
+            slot
+        }
+    }
+
+    /// Emit an opcode
+    fn emit(&mut self, opcode: Opcode) {
+        self.builder.emit(opcode);
+    }
+
+    /// Emit a u8 operand
+    fn emit_u8(&mut self, value: u8) {
+        self.builder.emit_u8(value);
+    }
+
+    /// Emit a u16 operand
+    fn emit_u16(&mut self, value: u16) {
+        self.builder.emit_u16(value);
+    }
+
+    /// Emit an i16 operand
+    fn emit_i16(&mut self, value: i16) {
+        self.builder.emit_i16(value);
+    }
+
+    /// Emit an i32 operand
+    fn emit_i32(&mut self, value: i32) {
+        self.builder.emit_i32(value);
+    }
+
+    /// Emit an f64 operand
+    fn emit_f64(&mut self, value: f64) {
+        self.builder.emit_f64(value);
+    }
+
+    /// Emit a u32 operand
+    fn emit_u32(&mut self, value: u32) {
+        self.builder.code_mut().extend_from_slice(&value.to_le_bytes());
+    }
+
+    /// Get current code position
+    fn current_position(&self) -> usize {
+        self.builder.current_position()
+    }
+
+    /// Record block start position
+    fn record_block_position(&mut self, block_id: BasicBlockId) {
+        self.block_positions.insert(block_id, self.current_position());
+    }
+
+    /// Record a pending jump to be patched
+    fn record_pending_jump(&mut self, target: BasicBlockId) {
+        let pos = self.current_position();
+        self.pending_jumps.push((pos, target));
+        // Emit placeholder (i16 to match VM's read_i16)
+        self.emit_i16(0);
+    }
+
+    /// Record a pending i32 try jump to be patched (for try/catch/finally offsets)
+    fn record_pending_try_jump(&mut self, target: BasicBlockId) {
+        let pos = self.current_position();
+        self.pending_try_jumps.push((pos, target));
+        // Emit placeholder (i32 for try block offsets)
+        self.emit_i32(0);
+    }
+
+    /// Patch all pending jumps
+    fn patch_jumps(&mut self) {
+        // Patch i16 jumps (regular jumps)
+        for (source_pos, target_block) in &self.pending_jumps {
+            if let Some(&target_pos) = self.block_positions.get(target_block) {
+                // Calculate relative offset
+                // Jump is relative to the instruction AFTER the offset (2 bytes for i16)
+                let offset = target_pos as i32 - (*source_pos as i32 + 2);
+                let offset_i16 = offset as i16;
+                let bytes = offset_i16.to_le_bytes();
+                let code = self.builder.code_mut();
+                code[*source_pos] = bytes[0];
+                code[*source_pos + 1] = bytes[1];
+            }
+        }
+
+        // Patch i32 try jumps (for exception handling)
+        for (source_pos, target_block) in &self.pending_try_jumps {
+            if let Some(&target_pos) = self.block_positions.get(target_block) {
+                // Calculate relative offset
+                // Jump is relative to the instruction AFTER the offset (4 bytes for i32)
+                let offset = target_pos as i32 - (*source_pos as i32 + 4);
+                let bytes = offset.to_le_bytes();
+                let code = self.builder.code_mut();
+                code[*source_pos] = bytes[0];
+                code[*source_pos + 1] = bytes[1];
+                code[*source_pos + 2] = bytes[2];
+                code[*source_pos + 3] = bytes[3];
+            }
+        }
+    }
+
+    /// Build the final function
+    fn build(mut self) -> Function {
+        self.patch_jumps();
+        // Update local count
+        self.builder.set_local_count(self.next_slot);
+        self.builder.build()
+    }
+}
+
+impl IrCodeGenerator {
+    /// Create a new code generator
+    pub fn new(module_name: &str) -> Self {
+        Self {
+            module_builder: ModuleBuilder::new(module_name.to_string()),
+            current_func: None,
+        }
+    }
+
+    /// Generate bytecode from an IR module
+    pub fn generate(&mut self, module: &IrModule) -> CompileResult<Module> {
+        // Generate bytecode for each function
+        for func in module.functions() {
+            let bytecode_func = self.generate_function(func)?;
+            self.module_builder.add_function(bytecode_func);
+        }
+
+        // Generate class definitions
+        for class in module.classes() {
+            let class_def = crate::compiler::bytecode::ClassDef {
+                name: class.name.clone(),
+                field_count: class.field_count(),
+                parent_id: class.parent.map(|id| id.as_u32()),
+                methods: Vec::new(), // TODO: Add method mapping when methods are fully implemented
+            };
+            self.module_builder.add_class(class_def);
+        }
+
+        // Build and return the module
+        let builder = std::mem::replace(
+            &mut self.module_builder,
+            ModuleBuilder::new(String::new()),
+        );
+        Ok(builder.build())
+    }
+
+    /// Generate bytecode for a single function
+    fn generate_function(&mut self, func: &IrFunction) -> CompileResult<Function> {
+        let param_count = func.param_count() as u8;
+        let mut ctx = FunctionContext::new(func.name.clone(), param_count);
+
+        // Pre-allocate slots for parameters
+        for (i, param) in func.params.iter().enumerate() {
+            ctx.register_slots.insert(param.id.as_u32(), i as u16);
+        }
+
+        // First pass: record block positions (for forward jumps)
+        // We do a quick estimate based on block ordering
+        // Actual positions will be recorded during emission
+
+        // Second pass: emit bytecode for each block
+        for block in func.blocks() {
+            ctx.record_block_position(block.id);
+            self.generate_block(&mut ctx, block)?;
+        }
+
+        Ok(ctx.build())
+    }
+
+    /// Generate bytecode for a basic block
+    fn generate_block(&mut self, ctx: &mut FunctionContext, block: &BasicBlock) -> CompileResult<()> {
+        // Emit instructions
+        for instr in &block.instructions {
+            self.generate_instr(ctx, instr)?;
+        }
+
+        // Emit terminator
+        self.generate_terminator(ctx, &block.terminator)?;
+
+        Ok(())
+    }
+
+    /// Generate bytecode for an instruction
+    fn generate_instr(&mut self, ctx: &mut FunctionContext, instr: &IrInstr) -> CompileResult<()> {
+        match instr {
+            IrInstr::Assign { dest, value } => {
+                self.emit_value(ctx, value)?;
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::BinaryOp { dest, op, left, right } => {
+                // Load left operand
+                self.emit_load_register(ctx, left);
+                // Load right operand
+                self.emit_load_register(ctx, right);
+                // Emit operation - check operand types
+                // Pre-interned TypeIds:
+                // 0 = Number (f64)
+                // 1 = String
+                // 2 = Boolean
+                // 3 = Null
+                // 4 = Void
+                // 5 = Never
+                // 6 = Unknown
+                let left_ty = left.ty.as_u32();
+                let right_ty = right.ty.as_u32();
+                let is_string_op = left_ty == 1 || right_ty == 1;
+                let is_number_op = left_ty == 0 || right_ty == 0;
+                // Use generic comparison for null (3), unknown (6), or non-primitive types (>6)
+                let use_generic = left_ty == 3 || right_ty == 3 || left_ty == 6 || right_ty == 6 || left_ty > 6 || right_ty > 6;
+                self.emit_binary_op_typed_v2(ctx, *op, is_string_op, is_number_op, use_generic);
+                // Store result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::UnaryOp { dest, op, operand } => {
+                self.emit_load_register(ctx, operand);
+                self.emit_unary_op(ctx, *op);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Call { dest, func, args } => {
+                // Push arguments onto stack
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit call (u32 funcIndex + u16 argCount per spec)
+                ctx.emit(Opcode::Call);
+                ctx.emit_u32(func.as_u32());
+                ctx.emit_u16(args.len() as u16);
+                // Store result if needed
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                }
+            }
+
+            IrInstr::CallMethod { dest, object, method, args } => {
+                // Push object
+                self.emit_load_register(ctx, object);
+                // Push arguments
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit call
+                ctx.emit(Opcode::CallMethod);
+                ctx.emit_u32(*method as u32);
+                ctx.emit_u16(args.len() as u16);
+                // Store result if needed
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                }
+            }
+
+            IrInstr::NativeCall { dest, native_id, args } => {
+                // Push arguments onto stack
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit NativeCall opcode: u16 nativeId + u8 argCount
+                ctx.emit(Opcode::NativeCall);
+                ctx.emit_u16(*native_id);
+                ctx.emit_u8(args.len() as u8);
+                // Store result if needed
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                }
+            }
+
+            IrInstr::InstanceOf { dest, object, class_id } => {
+                // Push object onto stack
+                self.emit_load_register(ctx, object);
+                // Emit InstanceOf opcode with class ID
+                ctx.emit(Opcode::InstanceOf);
+                ctx.emit_u16(class_id.as_u32() as u16);
+                // Store boolean result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Cast { dest, object, class_id } => {
+                // Push object onto stack
+                self.emit_load_register(ctx, object);
+                // Emit Cast opcode with class ID
+                ctx.emit(Opcode::Cast);
+                ctx.emit_u16(class_id.as_u32() as u16);
+                // Store casted object
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::LoadLocal { dest, index } => {
+                self.emit_load_local_index(ctx, *index);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreLocal { index, value } => {
+                self.emit_load_register(ctx, value);
+                self.emit_store_local_index(ctx, *index);
+            }
+
+            IrInstr::LoadGlobal { dest, index } => {
+                ctx.emit(Opcode::LoadGlobal);
+                ctx.emit_u32(*index as u32);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreGlobal { index, value } => {
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreGlobal);
+                ctx.emit_u32(*index as u32);
+            }
+
+            IrInstr::LoadField { dest, object, field } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::LoadField);
+                ctx.emit_u16(*field);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreField { object, field, value } => {
+                // VM expects: [object, value] with value on top
+                // VM pops: value first, then object
+                self.emit_load_register(ctx, object);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreField);
+                ctx.emit_u16(*field);
+            }
+
+            IrInstr::LoadElement { dest, array, index } => {
+                self.emit_load_register(ctx, array);
+                self.emit_load_register(ctx, index);
+                ctx.emit(Opcode::LoadElem);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreElement { array, index, value } => {
+                // Stack order: array, index, value (top)
+                // VM pops: value, index, array
+                self.emit_load_register(ctx, array);
+                self.emit_load_register(ctx, index);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreElem);
+            }
+
+            IrInstr::NewObject { dest, class } => {
+                ctx.emit(Opcode::New);
+                ctx.emit_u16(class.as_u32() as u16);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::NewArray { dest, len, elem_ty: _ } => {
+                self.emit_load_register(ctx, len);
+                ctx.emit(Opcode::NewArray);
+                ctx.emit_u32(0); // Type index (TODO: proper type handling)
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ArrayLiteral { dest, elements, elem_ty: _ } => {
+                // Push all elements
+                for elem in elements {
+                    self.emit_load_register(ctx, elem);
+                }
+                ctx.emit(Opcode::ArrayLiteral);
+                ctx.emit_u32(0); // Type index
+                ctx.emit_u32(elements.len() as u32);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ObjectLiteral { dest, class, fields } => {
+                // Push all field values
+                for (_, value) in fields {
+                    self.emit_load_register(ctx, value);
+                }
+                ctx.emit(Opcode::ObjectLiteral);
+                ctx.emit_u32(class.as_u32());
+                ctx.emit_u16(fields.len() as u16);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ArrayLen { dest, array } => {
+                self.emit_load_register(ctx, array);
+                ctx.emit(Opcode::ArrayLen);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ArrayPush { array, element } => {
+                self.emit_load_register(ctx, array);
+                self.emit_load_register(ctx, element);
+                ctx.emit(Opcode::ArrayPush);
+            }
+
+            IrInstr::ArrayPop { dest, array } => {
+                self.emit_load_register(ctx, array);
+                ctx.emit(Opcode::ArrayPop);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StringLen { dest, string } => {
+                self.emit_load_register(ctx, string);
+                ctx.emit(Opcode::Slen);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Typeof { dest, operand } => {
+                self.emit_load_register(ctx, operand);
+                ctx.emit(Opcode::Typeof);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Phi { .. } => {
+                // PHI nodes are handled during SSA deconstruction
+                // For now, they should not appear in the IR we receive
+                return Err(CompileError::UnsupportedFeature {
+                    feature: "PHI nodes in code generation".to_string(),
+                });
+            }
+
+            IrInstr::MakeClosure { dest, func, captures } => {
+                // Push captured variables onto the stack
+                for capture in captures {
+                    self.emit_load_register(ctx, capture);
+                }
+                // Emit closure creation
+                ctx.emit(Opcode::MakeClosure);
+                ctx.emit_u32(func.as_u32());
+                ctx.emit_u16(captures.len() as u16);
+                // Store result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::LoadCaptured { dest, index } => {
+                ctx.emit(Opcode::LoadCaptured);
+                ctx.emit_u16(*index);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreCaptured { index, value } => {
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreCaptured);
+                ctx.emit_u16(*index);
+            }
+
+            IrInstr::SetClosureCapture { closure, index, value } => {
+                // Push closure and value onto stack
+                self.emit_load_register(ctx, closure);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::SetClosureCapture);
+                ctx.emit_u16(*index);
+                // Result (closure) is left on stack - store back to closure's slot
+                let slot = ctx.get_or_alloc_slot(closure);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::NewRefCell { dest, initial_value } => {
+                // Push initial value and create RefCell
+                self.emit_load_register(ctx, initial_value);
+                ctx.emit(Opcode::NewRefCell);
+                // Store result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::LoadRefCell { dest, refcell } => {
+                // Load RefCell pointer and get its value
+                self.emit_load_register(ctx, refcell);
+                ctx.emit(Opcode::LoadRefCell);
+                // Store result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::StoreRefCell { refcell, value } => {
+                // Push RefCell pointer and new value
+                self.emit_load_register(ctx, refcell);
+                self.emit_load_register(ctx, value);
+                ctx.emit(Opcode::StoreRefCell);
+            }
+
+            IrInstr::CallClosure { dest, closure, args } => {
+                // Push closure first (will be below args on stack)
+                self.emit_load_register(ctx, closure);
+                // Push arguments
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit call with 0xFFFFFFFF to signal closure call
+                ctx.emit(Opcode::Call);
+                ctx.emit_u32(0xFFFFFFFF); // Special value signals closure call
+                ctx.emit_u16(args.len() as u16);
+                // Store result if needed
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                }
+            }
+
+            IrInstr::StringCompare { dest, left, right, mode, negate } => {
+                // Load operands
+                self.emit_load_register(ctx, left);
+                self.emit_load_register(ctx, right);
+
+                // Emit comparison based on mode
+                match mode {
+                    StringCompareMode::Index => {
+                        // O(1) index comparison for string literals
+                        if *negate {
+                            ctx.emit(Opcode::Ine);
+                        } else {
+                            ctx.emit(Opcode::Ieq);
+                        }
+                    }
+                    StringCompareMode::Full => {
+                        // O(n) full string comparison
+                        if *negate {
+                            ctx.emit(Opcode::Sne);
+                        } else {
+                            ctx.emit(Opcode::Seq);
+                        }
+                    }
+                }
+
+                // Store result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ToString { dest, operand } => {
+                self.emit_load_register(ctx, operand);
+                ctx.emit(Opcode::ToString);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Spawn { dest, func, args } => {
+                // Push arguments onto stack in reverse order
+                for arg in args.iter().rev() {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit spawn opcode with function index and arg count
+                ctx.emit(Opcode::Spawn);
+                ctx.emit_u16(func.as_u32() as u16);
+                ctx.emit_u16(args.len() as u16);
+                // Store the Task handle result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::SpawnClosure { dest, closure, args } => {
+                // Push arguments onto stack in reverse order
+                for arg in args.iter().rev() {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Push the closure onto stack
+                self.emit_load_register(ctx, closure);
+                // Emit SpawnClosure: pops closure and args, pushes TaskHandle
+                ctx.emit(Opcode::SpawnClosure);
+                ctx.emit_u16(args.len() as u16);
+                // Store the Task handle result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Await { dest, task } => {
+                // Push the task handle onto stack
+                self.emit_load_register(ctx, task);
+                // Emit await opcode - suspends until task completes
+                ctx.emit(Opcode::Await);
+                // Store the result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::AwaitAll { dest, tasks } => {
+                // Push the tasks array onto stack
+                self.emit_load_register(ctx, tasks);
+                // Emit wait_all opcode - suspends until all tasks complete
+                ctx.emit(Opcode::WaitAll);
+                // Store the results array
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Sleep { duration_ms } => {
+                // Push duration onto stack
+                self.emit_load_register(ctx, duration_ms);
+                // Emit sleep opcode
+                ctx.emit(Opcode::Sleep);
+            }
+
+            IrInstr::Yield => {
+                // Emit yield opcode
+                ctx.emit(Opcode::Yield);
+            }
+
+            IrInstr::NewMutex { dest } => {
+                // Emit NewMutex opcode - pushes mutex reference onto stack
+                ctx.emit(Opcode::NewMutex);
+                // Store the mutex reference
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::NewChannel { dest, capacity } => {
+                // Push capacity onto stack
+                self.emit_load_register(ctx, capacity);
+                // Emit NewChannel opcode - pops capacity, pushes channel reference
+                ctx.emit(Opcode::NewChannel);
+                // Store the channel reference
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::MutexLock { mutex } => {
+                // Push mutex reference onto stack
+                self.emit_load_register(ctx, mutex);
+                // Emit MutexLock opcode - may block current task
+                ctx.emit(Opcode::MutexLock);
+            }
+
+            IrInstr::MutexUnlock { mutex } => {
+                // Push mutex reference onto stack
+                self.emit_load_register(ctx, mutex);
+                // Emit MutexUnlock opcode
+                ctx.emit(Opcode::MutexUnlock);
+            }
+
+            IrInstr::TaskCancel { task } => {
+                // Push task handle onto stack
+                self.emit_load_register(ctx, task);
+                // Emit TaskCancel opcode
+                ctx.emit(Opcode::TaskCancel);
+            }
+
+            IrInstr::SetupTry { catch_block, finally_block } => {
+                // Emit Try opcode with catch and finally offsets
+                ctx.emit(Opcode::Try);
+                // Record pending jump for catch block (i32 offset)
+                ctx.record_pending_try_jump(*catch_block);
+                // Record pending jump for finally block (i32 offset, 0 if no finally)
+                if let Some(finally) = finally_block {
+                    ctx.record_pending_try_jump(*finally);
+                } else {
+                    // No finally block - emit 0 offset
+                    ctx.emit_i32(0);
+                }
+            }
+
+            IrInstr::EndTry => {
+                // Emit EndTry opcode to remove exception handler
+                ctx.emit(Opcode::EndTry);
+            }
+
+            IrInstr::PopToLocal { index } => {
+                // Pop exception from stack directly to local (no register load)
+                // The VM pushes the exception value before jumping to catch block
+                ctx.emit(Opcode::StoreLocal);
+                ctx.emit_u16(*index);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate bytecode for a terminator
+    fn generate_terminator(&mut self, ctx: &mut FunctionContext, term: &Terminator) -> CompileResult<()> {
+        match term {
+            Terminator::Return(None) => {
+                ctx.emit(Opcode::ConstNull);
+                ctx.emit(Opcode::Return);
+            }
+
+            Terminator::Return(Some(reg)) => {
+                self.emit_load_register(ctx, reg);
+                ctx.emit(Opcode::Return);
+            }
+
+            Terminator::Jump(target) => {
+                ctx.emit(Opcode::Jmp);
+                ctx.record_pending_jump(*target);
+            }
+
+            Terminator::Branch { cond, then_block, else_block } => {
+                self.emit_load_register(ctx, cond);
+                // Jump to else block if condition is false
+                ctx.emit(Opcode::JmpIfFalse);
+                ctx.record_pending_jump(*else_block);
+                // Fall through or jump to then block
+                ctx.emit(Opcode::Jmp);
+                ctx.record_pending_jump(*then_block);
+            }
+
+            Terminator::BranchIfNull {
+                value,
+                null_block,
+                not_null_block,
+            } => {
+                self.emit_load_register(ctx, value);
+                // Jump to null block if value is null
+                ctx.emit(Opcode::JmpIfNull);
+                ctx.record_pending_jump(*null_block);
+                // Jump to not-null block otherwise
+                ctx.emit(Opcode::Jmp);
+                ctx.record_pending_jump(*not_null_block);
+            }
+
+            Terminator::Switch { value, cases, default } => {
+                // For now, emit as a series of comparisons
+                // TODO: Optimize with jump table for dense cases
+                for (case_value, target) in cases {
+                    self.emit_load_register(ctx, value);
+                    ctx.emit(Opcode::ConstI32);
+                    ctx.emit_i32(*case_value);
+                    ctx.emit(Opcode::Ieq);
+                    ctx.emit(Opcode::JmpIfTrue);
+                    ctx.record_pending_jump(*target);
+                }
+                // Default case
+                ctx.emit(Opcode::Jmp);
+                ctx.record_pending_jump(*default);
+            }
+
+            Terminator::Throw(reg) => {
+                self.emit_load_register(ctx, reg);
+                ctx.emit(Opcode::Throw);
+            }
+
+            Terminator::Unreachable => {
+                ctx.emit(Opcode::Trap);
+                ctx.emit_u16(1); // Error code for unreachable
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Emit bytecode to load a value
+    fn emit_value(&mut self, ctx: &mut FunctionContext, value: &IrValue) -> CompileResult<()> {
+        match value {
+            IrValue::Register(reg) => {
+                self.emit_load_register(ctx, reg);
+            }
+            IrValue::Constant(constant) => {
+                self.emit_constant(ctx, constant)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit bytecode to load a constant
+    fn emit_constant(&mut self, ctx: &mut FunctionContext, constant: &IrConstant) -> CompileResult<()> {
+        match constant {
+            IrConstant::I32(value) => {
+                ctx.emit(Opcode::ConstI32);
+                ctx.emit_i32(*value);
+            }
+            IrConstant::F64(value) => {
+                ctx.emit(Opcode::ConstF64);
+                ctx.emit_f64(*value);
+            }
+            IrConstant::String(s) => {
+                let index = self.module_builder.add_string(s.clone())?;
+                ctx.emit(Opcode::ConstStr);
+                ctx.emit_u16(index);
+            }
+            IrConstant::Boolean(true) => {
+                ctx.emit(Opcode::ConstTrue);
+            }
+            IrConstant::Boolean(false) => {
+                ctx.emit(Opcode::ConstFalse);
+            }
+            IrConstant::Null => {
+                ctx.emit(Opcode::ConstNull);
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit bytecode to load a register
+    fn emit_load_register(&self, ctx: &mut FunctionContext, reg: &Register) {
+        let id = reg.id.as_u32();
+        if let Some(&slot) = ctx.register_slots.get(&id) {
+            self.emit_load_local(ctx, slot);
+        } else {
+            // Register not yet assigned - allocate a slot
+            let slot = ctx.get_or_alloc_slot(reg);
+            self.emit_load_local(ctx, slot);
+        }
+    }
+
+    /// Emit load local instruction
+    fn emit_load_local(&self, ctx: &mut FunctionContext, slot: u16) {
+        match slot {
+            0 => ctx.emit(Opcode::LoadLocal0),
+            1 => ctx.emit(Opcode::LoadLocal1),
+            _ => {
+                ctx.emit(Opcode::LoadLocal);
+                ctx.emit_u16(slot);
+            }
+        }
+    }
+
+    /// Emit load local by index
+    fn emit_load_local_index(&self, ctx: &mut FunctionContext, index: u16) {
+        match index {
+            0 => ctx.emit(Opcode::LoadLocal0),
+            1 => ctx.emit(Opcode::LoadLocal1),
+            _ => {
+                ctx.emit(Opcode::LoadLocal);
+                ctx.emit_u16(index);
+            }
+        }
+    }
+
+    /// Emit store local instruction
+    fn emit_store_local(&self, ctx: &mut FunctionContext, slot: u16) {
+        match slot {
+            0 => ctx.emit(Opcode::StoreLocal0),
+            1 => ctx.emit(Opcode::StoreLocal1),
+            _ => {
+                ctx.emit(Opcode::StoreLocal);
+                ctx.emit_u16(slot);
+            }
+        }
+    }
+
+    /// Emit store local by index
+    fn emit_store_local_index(&self, ctx: &mut FunctionContext, index: u16) {
+        match index {
+            0 => ctx.emit(Opcode::StoreLocal0),
+            1 => ctx.emit(Opcode::StoreLocal1),
+            _ => {
+                ctx.emit(Opcode::StoreLocal);
+                ctx.emit_u16(index);
+            }
+        }
+    }
+
+    /// Emit binary operation (type-aware version) - v2 with proper null/union support
+    fn emit_binary_op_typed_v2(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, is_number: bool, use_generic: bool) {
+        // Check if this is a comparison operation
+        let is_comparison = matches!(op,
+            BinaryOp::Equal | BinaryOp::NotEqual |
+            BinaryOp::Less | BinaryOp::LessEqual |
+            BinaryOp::Greater | BinaryOp::GreaterEqual
+        );
+
+        let opcode = if is_string {
+            // String operations
+            match op {
+                BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
+                BinaryOp::Equal => Opcode::Seq,
+                BinaryOp::NotEqual => Opcode::Sne,
+                BinaryOp::Less => Opcode::Slt,
+                BinaryOp::LessEqual => Opcode::Sle,
+                BinaryOp::Greater => Opcode::Sgt,
+                BinaryOp::GreaterEqual => Opcode::Sge,
+                // Other ops fall back to integer (shouldn't happen for strings)
+                _ => self.get_integer_opcode(op),
+            }
+        } else if use_generic && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            // Use generic comparison opcodes ONLY for equality with null/unknown types
+            match op {
+                BinaryOp::Equal => Opcode::Eq,
+                BinaryOp::NotEqual => Opcode::Ne,
+                _ => unreachable!(),
+            }
+        } else if use_generic {
+            // For non-equality operations with union/generic types, use number opcodes
+            // (handles both i32 and f64 values that may come from union types)
+            self.get_number_opcode(op)
+        } else if is_number && is_comparison {
+            // For comparisons on number types, use number opcodes
+            // (these handle both i32 and f64 correctly)
+            self.get_number_opcode(op)
+        } else {
+            // Default to integer for arithmetic on numbers, booleans, and other types
+            // This gives integer division semantics (n/10 truncates)
+            self.get_integer_opcode(op)
+        };
+        ctx.emit(opcode);
+    }
+
+    /// Emit binary operation (type-aware version) - legacy
+    #[allow(dead_code)]
+    fn emit_binary_op_typed(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, use_generic: bool) {
+        let opcode = if is_string {
+            // String operations
+            match op {
+                BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
+                BinaryOp::Equal => Opcode::Seq,
+                BinaryOp::NotEqual => Opcode::Sne,
+                BinaryOp::Less => Opcode::Slt,
+                BinaryOp::LessEqual => Opcode::Sle,
+                BinaryOp::Greater => Opcode::Sgt,
+                BinaryOp::GreaterEqual => Opcode::Sge,
+                // Other ops fall back to integer (shouldn't happen for strings)
+                _ => self.get_integer_opcode(op),
+            }
+        } else if use_generic {
+            // Use generic comparison opcodes for null/unknown types
+            match op {
+                BinaryOp::Equal => Opcode::Eq,
+                BinaryOp::NotEqual => Opcode::Ne,
+                // For other comparison ops with generic types, fall back to integer
+                // (this may need to be extended for full generic comparison support)
+                _ => self.get_integer_opcode(op),
+            }
+        } else {
+            self.get_integer_opcode(op)
+        };
+        ctx.emit(opcode);
+    }
+
+    /// Get float (f64) opcode for a binary operation
+    fn get_float_opcode(&self, op: BinaryOp) -> Opcode {
+        match op {
+            BinaryOp::Add => Opcode::Fadd,
+            BinaryOp::Sub => Opcode::Fsub,
+            BinaryOp::Mul => Opcode::Fmul,
+            BinaryOp::Div => Opcode::Fdiv,
+            BinaryOp::Mod => Opcode::Fmod,
+            BinaryOp::Pow => Opcode::Fpow,
+            BinaryOp::Equal => Opcode::Feq,
+            BinaryOp::NotEqual => Opcode::Fne,
+            BinaryOp::Less => Opcode::Flt,
+            BinaryOp::LessEqual => Opcode::Fle,
+            BinaryOp::Greater => Opcode::Fgt,
+            BinaryOp::GreaterEqual => Opcode::Fge,
+            // Logical/bitwise operations use integer opcodes
+            BinaryOp::And => Opcode::And,
+            BinaryOp::Or => Opcode::Or,
+            BinaryOp::BitAnd => Opcode::Iand,
+            BinaryOp::BitOr => Opcode::Ior,
+            BinaryOp::BitXor => Opcode::Ixor,
+            BinaryOp::ShiftLeft => Opcode::Ishl,
+            BinaryOp::ShiftRight => Opcode::Ishr,
+            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
+            BinaryOp::Concat => Opcode::Sconcat,
+        }
+    }
+
+    /// Get integer opcode for a binary operation
+    fn get_integer_opcode(&self, op: BinaryOp) -> Opcode {
+        match op {
+            BinaryOp::Add => Opcode::Iadd,
+            BinaryOp::Sub => Opcode::Isub,
+            BinaryOp::Mul => Opcode::Imul,
+            BinaryOp::Div => Opcode::Idiv,
+            BinaryOp::Mod => Opcode::Imod,
+            BinaryOp::Pow => Opcode::Ipow,
+            BinaryOp::Equal => Opcode::Ieq,
+            BinaryOp::NotEqual => Opcode::Ine,
+            BinaryOp::Less => Opcode::Ilt,
+            BinaryOp::LessEqual => Opcode::Ile,
+            BinaryOp::Greater => Opcode::Igt,
+            BinaryOp::GreaterEqual => Opcode::Ige,
+            BinaryOp::And => Opcode::And,
+            BinaryOp::Or => Opcode::Or,
+            BinaryOp::BitAnd => Opcode::Iand,
+            BinaryOp::BitOr => Opcode::Ior,
+            BinaryOp::BitXor => Opcode::Ixor,
+            BinaryOp::ShiftLeft => Opcode::Ishl,
+            BinaryOp::ShiftRight => Opcode::Ishr,
+            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
+            BinaryOp::Concat => Opcode::Sconcat,
+        }
+    }
+
+    /// Get number opcode for a binary operation (preserves integer type when both operands are i32)
+    fn get_number_opcode(&self, op: BinaryOp) -> Opcode {
+        match op {
+            BinaryOp::Add => Opcode::Nadd,
+            BinaryOp::Sub => Opcode::Nsub,
+            BinaryOp::Mul => Opcode::Nmul,
+            BinaryOp::Div => Opcode::Ndiv,
+            BinaryOp::Mod => Opcode::Nmod,
+            BinaryOp::Pow => Opcode::Npow,
+            // For comparisons, use float opcodes (they handle both i32 and f64)
+            BinaryOp::Equal => Opcode::Feq,
+            BinaryOp::NotEqual => Opcode::Fne,
+            BinaryOp::Less => Opcode::Flt,
+            BinaryOp::LessEqual => Opcode::Fle,
+            BinaryOp::Greater => Opcode::Fgt,
+            BinaryOp::GreaterEqual => Opcode::Fge,
+            // Logical/bitwise operations use integer opcodes
+            BinaryOp::And => Opcode::And,
+            BinaryOp::Or => Opcode::Or,
+            BinaryOp::BitAnd => Opcode::Iand,
+            BinaryOp::BitOr => Opcode::Ior,
+            BinaryOp::BitXor => Opcode::Ixor,
+            BinaryOp::ShiftLeft => Opcode::Ishl,
+            BinaryOp::ShiftRight => Opcode::Ishr,
+            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
+            BinaryOp::Concat => Opcode::Sconcat,
+        }
+    }
+
+    /// Emit unary operation
+    fn emit_unary_op(&self, ctx: &mut FunctionContext, op: UnaryOp) {
+        let opcode = match op {
+            UnaryOp::Neg => Opcode::Ineg,
+            UnaryOp::Not => Opcode::Not,
+            UnaryOp::BitNot => Opcode::Inot,
+        };
+        ctx.emit(opcode);
+    }
+}

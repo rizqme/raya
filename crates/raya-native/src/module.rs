@@ -29,7 +29,7 @@ use syn::{ItemFn, Result};
 /// }
 ///
 /// #[no_mangle]
-/// pub extern "C" fn raya_module_init() -> *mut raya_core::ffi::NativeModule {
+/// pub extern "C" fn raya_module_init() -> *mut raya_sdk::NativeModule {
 ///     let module = init();
 ///     Box::into_raw(Box::new(module))
 /// }
@@ -84,7 +84,7 @@ pub fn expand_module(func: ItemFn) -> Result<TokenStream> {
         /// This function is called by the VM when loading the native module.
         /// It creates and returns a boxed NativeModule.
         #[no_mangle]
-        pub extern "C" fn raya_module_init() -> *mut raya_core::ffi::NativeModule {
+        pub extern "C" fn raya_module_init() -> *mut raya_sdk::NativeModule {
             let module = init();
             Box::into_raw(Box::new(module))
         }
@@ -93,7 +93,7 @@ pub fn expand_module(func: ItemFn) -> Result<TokenStream> {
         ///
         /// This function is called by the VM to free the module's resources.
         #[no_mangle]
-        pub extern "C" fn raya_module_cleanup(module_ptr: *mut raya_core::ffi::NativeModule) {
+        pub extern "C" fn raya_module_cleanup(module_ptr: *mut raya_sdk::NativeModule) {
             if !module_ptr.is_null() {
                 unsafe {
                     // Take ownership and drop

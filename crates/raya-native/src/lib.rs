@@ -66,7 +66,7 @@ pub fn function(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # Example
 ///
 /// ```ignore
-/// use raya_core::ffi::NativeModule;
+/// use raya_sdk::NativeModule;
 /// use raya_native::{function, module};
 ///
 /// #[function]

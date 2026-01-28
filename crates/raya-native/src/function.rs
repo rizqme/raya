@@ -31,9 +31,9 @@ use crate::traits::{
 ///
 /// #[no_mangle]
 /// pub extern "C" fn add_ffi(
-///     args: *const raya_core::ffi::NativeValue,
+///     args: *const raya_sdk::NativeValue,
 ///     arg_count: usize,
-/// ) -> raya_core::ffi::NativeValue {
+/// ) -> raya_sdk::NativeValue {
 ///     // Validation
 ///     // Argument extraction
 ///     // Panic catching
@@ -81,11 +81,11 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         quote! {
             let #name = match unsafe {
                 let raw_arg = *args.add(#i);
-                <#ty as raya_core::ffi::FromRaya>::from_raya(raw_arg)
+                <#ty as raya_sdk::FromRaya>::from_raya(raw_arg)
             } {
                 Ok(val) => val,
                 Err(e) => {
-                    return raya_core::ffi::NativeValue::error(
+                    return raya_sdk::NativeValue::error(
                         format!("Argument {} ({}): {}", #i, stringify!(#name), e)
                     );
                 }
@@ -98,7 +98,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         quote! {
             // TODO: Async support requires VM Task spawning integration
             // For now, async functions are not supported
-            return raya_core::ffi::NativeValue::error(
+            return raya_sdk::NativeValue::error(
                 format!("Async functions not yet supported: {}", stringify!(#func_name))
             );
         }
@@ -126,12 +126,12 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         match output {
             syn::ReturnType::Default => {
                 quote! {
-                    raya_core::ffi::NativeValue::null()
+                    raya_sdk::NativeValue::null()
                 }
             }
             syn::ReturnType::Type(_, ty) => {
                 quote! {
-                    <#ty as raya_core::ffi::ToRaya>::to_raya(result)
+                    <#ty as raya_sdk::ToRaya>::to_raya(result)
                 }
             }
         }
@@ -142,7 +142,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         quote! {
             // Validate argument count
             if arg_count != #arg_count {
-                return raya_core::ffi::NativeValue::error(
+                return raya_sdk::NativeValue::error(
                     format!(
                         "Function '{}' expects {} arguments, got {}",
                         stringify!(#func_name),
@@ -158,7 +158,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         quote! {
             // Validate argument count
             if arg_count != #arg_count {
-                return raya_core::ffi::NativeValue::error(
+                return raya_sdk::NativeValue::error(
                     format!(
                         "Function '{}' expects {} arguments, got {}",
                         stringify!(#func_name),
@@ -182,7 +182,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
                     } else {
                         "Unknown panic".to_string()
                     };
-                    return raya_core::ffi::NativeValue::error(
+                    return raya_sdk::NativeValue::error(
                         format!("Function '{}' panicked: {}", stringify!(#func_name), panic_msg)
                     );
                 }
@@ -200,9 +200,9 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
         // Generate FFI wrapper
         #[no_mangle]
         pub extern "C" fn #ffi_name(
-            args: *const raya_core::ffi::NativeValue,
+            args: *const raya_sdk::NativeValue,
             arg_count: usize,
-        ) -> raya_core::ffi::NativeValue {
+        ) -> raya_sdk::NativeValue {
             #wrapper_body
         }
     };

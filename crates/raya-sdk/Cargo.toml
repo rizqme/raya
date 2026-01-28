@@ -1,0 +1,13 @@
+[package]
+name = "raya-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Lightweight SDK for writing Raya native modules"
+
+[dependencies]
+# Error handling
+thiserror = { workspace = true }

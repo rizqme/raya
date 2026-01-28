@@ -13,7 +13,6 @@ name = "raya"
 path = "src/main.rs"
 
 [dependencies]
-raya-core = { workspace = true }
-raya-compiler = { workspace = true }
+raya-engine = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }

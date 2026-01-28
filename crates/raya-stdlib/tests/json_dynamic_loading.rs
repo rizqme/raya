@@ -34,7 +34,7 @@ fn test_json_module_dynamic_loading() {
     }
 
     // Load the library
-    let library = raya_ffi::Library::open(&lib_path)
+    let library = raya_engine::Library::open(&lib_path)
         .expect("Failed to load raya-stdlib dynamic library");
 
     // Load the module
@@ -74,20 +74,17 @@ fn test_module_initialization_export() {
     lib_path.push("raya_stdlib.dll");
 
     if !lib_path.exists() {
-        eprintln!(
-            "Skipping test: Library not found at {:?}",
-            lib_path
-        );
+        eprintln!("Skipping test: Library not found at {:?}", lib_path);
         return;
     }
 
     // Try to load the library
-    let library = raya_ffi::Library::open(&lib_path)
-        .expect("Failed to load library");
+    let library =
+        raya_engine::Library::open(&lib_path).expect("Failed to load library");
 
     // Try to get the init symbol directly
     unsafe {
-        type InitFn = extern "C" fn() -> *mut raya_core::ffi::NativeModule;
+        type InitFn = extern "C" fn() -> *mut raya_engine::NativeModule;
         let _init_fn: InitFn = library
             .get("raya_module_init")
             .expect("raya_module_init symbol should be exported");

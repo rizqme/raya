@@ -17,12 +17,9 @@ proc-macro2 = "1.0"
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 
-# Internal dependencies
-raya-core = { workspace = true }
-
 # Error handling
 thiserror = { workspace = true }
 
 [dev-dependencies]
 # For testing the generated code
-raya-compiler = { workspace = true }
+raya-sdk = { workspace = true }
