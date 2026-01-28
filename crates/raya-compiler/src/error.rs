@@ -6,6 +6,9 @@ pub type CompileResult<T> = Result<T, CompileError>;
 
 #[derive(Debug, Error)]
 pub enum CompileError {
+    #[error("Parse error: {message}")]
+    Parse { message: String },
+
     #[error("Undefined variable: {name}")]
     UndefinedVariable { name: String },
 

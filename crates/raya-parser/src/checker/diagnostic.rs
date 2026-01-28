@@ -228,6 +228,12 @@ impl Diagnostic {
                 .with_note("Bare unions use typeof for type narrowing")
                 .with_help(format!("Use typeof instead: typeof x === \"string\""))
             }
+
+            UndefinedMember { member, span } => {
+                Diagnostic::error(format!("Property '{}' does not exist", member))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "undefined member")
+            }
         }
     }
 
@@ -390,6 +396,7 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         ReturnOutsideFunction { .. } => ErrorCode("E2013"),
         GenericInstantiationError { .. } => ErrorCode("E2014"),
         ConstraintViolation { .. } => ErrorCode("E2015"),
+        UndefinedMember { .. } => ErrorCode("E2016"),
     }
 }
 

@@ -143,6 +143,34 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
+        IrInstr::NativeCall {
+            dest,
+            native_id,
+            args,
+        } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            let native_name = crate::native_id::native_name(*native_id);
+            if let Some(d) = dest {
+                format!(
+                    "{} = native_call {}({})",
+                    d,
+                    native_name,
+                    args_str.join(", ")
+                )
+            } else {
+                format!(
+                    "native_call {}({})",
+                    native_name,
+                    args_str.join(", ")
+                )
+            }
+        }
+        IrInstr::InstanceOf { dest, object, class_id } => {
+            format!("{} = {} instanceof class{}", dest, object, class_id.as_u32())
+        }
+        IrInstr::Cast { dest, object, class_id } => {
+            format!("{} = {} as class{}", dest, object, class_id.as_u32())
+        }
         IrInstr::LoadLocal { dest, index } => {
             format!("{} = load_local {}", dest, index)
         }
@@ -211,6 +239,12 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::ArrayLen { dest, array } => {
             format!("{} = array_len {}", dest, array)
+        }
+        IrInstr::ArrayPush { array, element } => {
+            format!("array_push {}, {}", array, element)
+        }
+        IrInstr::ArrayPop { dest, array } => {
+            format!("{} = array_pop {}", dest, array)
         }
         IrInstr::StringLen { dest, string } => {
             format!("{} = string_len {}", dest, string)
@@ -281,6 +315,21 @@ fn format_instr(instr: &IrInstr) -> String {
         }
         IrInstr::Yield => {
             "yield".to_string()
+        }
+        IrInstr::NewMutex { dest } => {
+            format!("{} = new_mutex", dest)
+        }
+        IrInstr::NewChannel { dest, capacity } => {
+            format!("{} = new_channel({})", dest, capacity)
+        }
+        IrInstr::MutexLock { mutex } => {
+            format!("mutex_lock {}", mutex)
+        }
+        IrInstr::MutexUnlock { mutex } => {
+            format!("mutex_unlock {}", mutex)
+        }
+        IrInstr::TaskCancel { task } => {
+            format!("task_cancel {}", task)
         }
         IrInstr::SetupTry { catch_block, finally_block } => {
             if let Some(finally) = finally_block {

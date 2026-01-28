@@ -1,0 +1,20 @@
+// Mutex - Mutual exclusion lock for thread-safe access
+// This is a built-in type using compiler intrinsics
+
+class Mutex {
+    private handle: number;
+
+    constructor() {
+        this.handle = __OPCODE_MUTEX_NEW();
+    }
+
+    // Acquire the lock
+    lock(): void {
+        __OPCODE_MUTEX_LOCK(this.handle);
+    }
+
+    // Release the lock
+    unlock(): void {
+        __OPCODE_MUTEX_UNLOCK(this.handle);
+    }
+}

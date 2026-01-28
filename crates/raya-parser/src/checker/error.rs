@@ -208,6 +208,15 @@ pub enum CheckError {
         /// Location of field access
         span: Span,
     },
+
+    /// Undefined member on a type (static or instance)
+    #[error("'{member}' does not exist")]
+    UndefinedMember {
+        /// Member name
+        member: String,
+        /// Location of member access
+        span: Span,
+    },
 }
 
 impl CheckError {
@@ -229,6 +238,7 @@ impl CheckError {
             CheckError::GenericInstantiationError { span, .. } => *span,
             CheckError::ConstraintViolation { span, .. } => *span,
             CheckError::ForbiddenFieldAccess { span, .. } => *span,
+            CheckError::UndefinedMember { span, .. } => *span,
         }
     }
 }

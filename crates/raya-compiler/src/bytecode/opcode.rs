@@ -111,6 +111,8 @@ pub enum Opcode {
     Fneg = 0x34,
     /// Float power: pop b, pop a, push a ** b
     Fpow = 0x35,
+    /// Float modulo: pop b, pop a, push a % b
+    Fmod = 0x36,
 
     // ===== Number Arithmetic - Generic (0x40-0x4F) =====
     /// Number addition: pop b, pop a, push a + b (dynamic)
@@ -265,6 +267,13 @@ pub enum Opcode {
     InitTuple = 0xC7,
     /// Get tuple element: pop index, pop tuple, push element
     TupleGet = 0xC8,
+    /// Push element to array: pop value, pop array
+    ArrayPush = 0xC9,
+    /// Pop element from array: pop array, push popped element
+    ArrayPop = 0xCA,
+    /// Create new channel with capacity: pop capacity, push Channel reference
+    /// Stack: [capacity] -> [channel]
+    NewChannel = 0xCB,
 
     // ===== Concurrency & Tasks (0xD0-0xDB) =====
     /// Spawn new task (operands: u16 funcIndex, u16 argCount)
@@ -336,6 +345,14 @@ pub enum Opcode {
     /// Get object/array length: pop json, push length
     JsonLength = 0xEC,
 
+    // ===== Task Control & Type Operations (0xED-0xEF) =====
+    /// Cancel a task: pop TaskHandle, task is marked for cancellation
+    TaskCancel = 0xED,
+    /// Check if object is instance of class: pop class_id, pop obj, push bool
+    InstanceOf = 0xEE,
+    /// Cast object to type: pop class_id, pop obj, push obj (throws TypeError if invalid)
+    Cast = 0xEF,
+
     // ===== Closures & Modules (0xF0-0xF7) =====
     /// Create closure object (operands: u32 funcIndex, u16 captureCount)
     MakeClosure = 0xF0,
@@ -371,6 +388,9 @@ pub enum Opcode {
     Rethrow = 0xFB,
     /// Trap with error code (operand: u16 errorCode)
     Trap = 0xFC,
+    /// Call native function by ID (operand: u16 nativeId, u8 argCount)
+    /// Stack: [args...] -> [result]
+    NativeCall = 0xFD,
 }
 
 impl Opcode {
@@ -423,6 +443,7 @@ impl Opcode {
             0x33 => Some(Self::Fdiv),
             0x34 => Some(Self::Fneg),
             0x35 => Some(Self::Fpow),
+            0x36 => Some(Self::Fmod),
 
             // Number arithmetic
             0x40 => Some(Self::Nadd),
@@ -510,6 +531,9 @@ impl Opcode {
             0xC6 => Some(Self::TupleLiteral),
             0xC7 => Some(Self::InitTuple),
             0xC8 => Some(Self::TupleGet),
+            0xC9 => Some(Self::ArrayPush),
+            0xCA => Some(Self::ArrayPop),
+            0xCB => Some(Self::NewChannel),
 
             // Concurrency & tasks
             0xD0 => Some(Self::Spawn),
@@ -546,6 +570,11 @@ impl Opcode {
             0xEB => Some(Self::JsonKeys),
             0xEC => Some(Self::JsonLength),
 
+            // Task control & type operations
+            0xED => Some(Self::TaskCancel),
+            0xEE => Some(Self::InstanceOf),
+            0xEF => Some(Self::Cast),
+
             // Closures & modules
             0xF0 => Some(Self::MakeClosure),
             0xF1 => Some(Self::CloseVar),
@@ -562,6 +591,7 @@ impl Opcode {
             0xFA => Some(Self::EndTry),
             0xFB => Some(Self::Rethrow),
             0xFC => Some(Self::Trap),
+            0xFD => Some(Self::NativeCall),
 
             // Invalid opcodes
             _ => None,
@@ -614,6 +644,7 @@ impl Opcode {
             Self::Fdiv => "FDIV",
             Self::Fneg => "FNEG",
             Self::Fpow => "FPOW",
+            Self::Fmod => "FMOD",
             Self::Nadd => "NADD",
             Self::Nsub => "NSUB",
             Self::Nmul => "NMUL",
@@ -681,6 +712,9 @@ impl Opcode {
             Self::TupleLiteral => "TUPLE_LITERAL",
             Self::InitTuple => "INIT_TUPLE",
             Self::TupleGet => "TUPLE_GET",
+            Self::ArrayPush => "ARRAY_PUSH",
+            Self::ArrayPop => "ARRAY_POP",
+            Self::NewChannel => "NEW_CHANNEL",
             Self::Spawn => "SPAWN",
             Self::Await => "AWAIT",
             Self::Yield => "YIELD",
@@ -707,6 +741,9 @@ impl Opcode {
             Self::JsonNewArray => "JSON_NEW_ARRAY",
             Self::JsonKeys => "JSON_KEYS",
             Self::JsonLength => "JSON_LENGTH",
+            Self::TaskCancel => "TASK_CANCEL",
+            Self::InstanceOf => "INSTANCE_OF",
+            Self::Cast => "CAST",
             Self::MakeClosure => "MAKE_CLOSURE",
             Self::CloseVar => "CLOSE_VAR",
             Self::LoadCaptured => "LOAD_CAPTURED",
@@ -723,6 +760,7 @@ impl Opcode {
             Self::EndTry => "END_TRY",
             Self::Rethrow => "RETHROW",
             Self::Trap => "TRAP",
+            Self::NativeCall => "NATIVE_CALL",
         }
     }
 
@@ -816,16 +854,23 @@ mod tests {
 
     #[test]
     fn test_invalid_opcode() {
-        // Test invalid opcodes in truly unassigned ranges
-        assert_eq!(Opcode::from_u8(0xDF), None); // Unassigned
-        assert_eq!(Opcode::from_u8(0xED), None); // Unassigned (0xED-0xEF range)
-        assert_eq!(Opcode::from_u8(0xF7), Some(Opcode::SetClosureCapture));
-        assert_eq!(Opcode::from_u8(0xFD), None); // Unassigned (0xFD-0xFE range)
-        // SpawnClosure and RefCell opcodes should be valid
-        assert_eq!(Opcode::from_u8(0xDB), Some(Opcode::SpawnClosure));
-        assert_eq!(Opcode::from_u8(0xDC), Some(Opcode::NewRefCell));
-        assert_eq!(Opcode::from_u8(0xDD), Some(Opcode::LoadRefCell));
-        assert_eq!(Opcode::from_u8(0xDE), Some(Opcode::StoreRefCell));
+        // Test that unassigned opcodes return None
+        assert_eq!(Opcode::from_u8(0xFE), None); // Unassigned
+        assert_eq!(Opcode::from_u8(0xFF), None); // Unassigned
+        // Test that assigned opcodes return correct values
+        assert_eq!(Opcode::from_u8(Opcode::NewChannel.to_u8()), Some(Opcode::NewChannel));
+        assert_eq!(Opcode::from_u8(Opcode::SetClosureCapture.to_u8()), Some(Opcode::SetClosureCapture));
+        assert_eq!(Opcode::from_u8(Opcode::SpawnClosure.to_u8()), Some(Opcode::SpawnClosure));
+        assert_eq!(Opcode::from_u8(Opcode::NewRefCell.to_u8()), Some(Opcode::NewRefCell));
+        assert_eq!(Opcode::from_u8(Opcode::LoadRefCell.to_u8()), Some(Opcode::LoadRefCell));
+        assert_eq!(Opcode::from_u8(Opcode::StoreRefCell.to_u8()), Some(Opcode::StoreRefCell));
+        assert_eq!(Opcode::from_u8(Opcode::Sleep.to_u8()), Some(Opcode::Sleep));
+        assert_eq!(Opcode::from_u8(Opcode::TaskCancel.to_u8()), Some(Opcode::TaskCancel));
+        assert_eq!(Opcode::from_u8(Opcode::InstanceOf.to_u8()), Some(Opcode::InstanceOf));
+        assert_eq!(Opcode::from_u8(Opcode::Cast.to_u8()), Some(Opcode::Cast));
+        assert_eq!(Opcode::from_u8(Opcode::NativeCall.to_u8()), Some(Opcode::NativeCall));
+        assert_eq!(Opcode::from_u8(Opcode::ArrayPush.to_u8()), Some(Opcode::ArrayPush));
+        assert_eq!(Opcode::from_u8(Opcode::ArrayPop.to_u8()), Some(Opcode::ArrayPop));
     }
 
     #[test]
@@ -881,15 +926,51 @@ mod tests {
 
 
     #[test]
-    fn test_opcode_values() {
-        // Verify key opcodes have expected values
-        assert_eq!(Opcode::Nop as u8, 0x00);
-        assert_eq!(Opcode::ConstI32 as u8, 0x07);
-        assert_eq!(Opcode::LoadLocal as u8, 0x10);
-        assert_eq!(Opcode::Iadd as u8, 0x20);
-        assert_eq!(Opcode::Fadd as u8, 0x30);
-        assert_eq!(Opcode::Nadd as u8, 0x40);
-        assert_eq!(Opcode::Spawn as u8, 0xD0);
-        assert_eq!(Opcode::MakeClosure as u8, 0xF0);
+    fn test_opcode_roundtrip_all() {
+        // Test that all opcodes can be converted to u8 and back
+        let all_opcodes = [
+            Opcode::Nop, Opcode::Pop, Opcode::Dup, Opcode::Swap,
+            Opcode::ConstNull, Opcode::ConstTrue, Opcode::ConstFalse,
+            Opcode::ConstI32, Opcode::ConstF64, Opcode::ConstStr, Opcode::LoadConst,
+            Opcode::LoadLocal, Opcode::StoreLocal, Opcode::LoadLocal0,
+            Opcode::LoadLocal1, Opcode::StoreLocal0, Opcode::StoreLocal1,
+            Opcode::Iadd, Opcode::Isub, Opcode::Imul, Opcode::Idiv, Opcode::Imod,
+            Opcode::Ineg, Opcode::Ipow, Opcode::Ishl, Opcode::Ishr, Opcode::Iushr,
+            Opcode::Iand, Opcode::Ior, Opcode::Ixor, Opcode::Inot,
+            Opcode::Fadd, Opcode::Fsub, Opcode::Fmul, Opcode::Fdiv, Opcode::Fneg, Opcode::Fpow,
+            Opcode::Nadd, Opcode::Nsub, Opcode::Nmul, Opcode::Ndiv, Opcode::Nmod, Opcode::Nneg, Opcode::Npow,
+            Opcode::Ieq, Opcode::Ine, Opcode::Ilt, Opcode::Ile, Opcode::Igt, Opcode::Ige,
+            Opcode::Feq, Opcode::Fne, Opcode::Flt, Opcode::Fle, Opcode::Fgt, Opcode::Fge,
+            Opcode::Eq, Opcode::Ne, Opcode::StrictEq, Opcode::StrictNe, Opcode::Not, Opcode::And, Opcode::Or, Opcode::Typeof,
+            Opcode::Sconcat, Opcode::Slen, Opcode::Seq, Opcode::Sne, Opcode::Slt, Opcode::Sle, Opcode::Sgt, Opcode::Sge, Opcode::ToString,
+            Opcode::Jmp, Opcode::JmpIfFalse, Opcode::JmpIfTrue, Opcode::JmpIfNull, Opcode::JmpIfNotNull,
+            Opcode::Call, Opcode::CallMethod, Opcode::Return, Opcode::ReturnVoid,
+            Opcode::CallConstructor, Opcode::CallSuper, Opcode::CallStatic,
+            Opcode::New, Opcode::LoadField, Opcode::StoreField, Opcode::LoadFieldFast,
+            Opcode::StoreFieldFast, Opcode::ObjectLiteral, Opcode::InitObject,
+            Opcode::OptionalField, Opcode::LoadStatic, Opcode::StoreStatic,
+            Opcode::NewArray, Opcode::LoadElem, Opcode::StoreElem, Opcode::ArrayLen,
+            Opcode::ArrayLiteral, Opcode::InitArray,
+            Opcode::TupleLiteral, Opcode::InitTuple, Opcode::TupleGet,
+            Opcode::ArrayPush, Opcode::ArrayPop,
+            Opcode::Spawn, Opcode::Await, Opcode::Yield, Opcode::TaskThen,
+            Opcode::NewMutex, Opcode::MutexLock, Opcode::MutexUnlock,
+            Opcode::NewSemaphore, Opcode::SemAcquire, Opcode::SemRelease,
+            Opcode::WaitAll, Opcode::SpawnClosure, Opcode::Sleep,
+            Opcode::NewRefCell, Opcode::LoadRefCell, Opcode::StoreRefCell,
+            Opcode::JsonParse, Opcode::JsonStringify, Opcode::JsonGet, Opcode::JsonSet,
+            Opcode::JsonDelete, Opcode::JsonIndex, Opcode::JsonIndexSet, Opcode::JsonPush,
+            Opcode::JsonPop, Opcode::JsonNewObject, Opcode::JsonNewArray, Opcode::JsonKeys, Opcode::JsonLength,
+            Opcode::TaskCancel, Opcode::InstanceOf, Opcode::Cast,
+            Opcode::MakeClosure, Opcode::CloseVar, Opcode::LoadCaptured, Opcode::StoreCaptured,
+            Opcode::LoadModule, Opcode::LoadGlobal, Opcode::StoreGlobal, Opcode::SetClosureCapture,
+            Opcode::Throw, Opcode::Try, Opcode::EndTry, Opcode::Rethrow, Opcode::Trap, Opcode::NativeCall,
+        ];
+
+        for opcode in &all_opcodes {
+            let byte = opcode.to_u8();
+            let decoded = Opcode::from_u8(byte);
+            assert_eq!(decoded, Some(*opcode), "Failed roundtrip for {:?} (byte: 0x{:02X})", opcode, byte);
+        }
     }
 }

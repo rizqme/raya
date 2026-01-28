@@ -85,6 +85,30 @@ pub enum IrInstr {
         args: Vec<Register>,
     },
 
+    /// Native function call: dest = native_call(native_id, args)
+    /// Used for primitive type methods (string, Array, RegExp)
+    NativeCall {
+        dest: Option<Register>,
+        native_id: u16,
+        args: Vec<Register>,
+    },
+
+    /// Instance of check: dest = object instanceof class_id
+    /// Returns boolean indicating if object is an instance of the class
+    InstanceOf {
+        dest: Register,
+        object: Register,
+        class_id: ClassId,
+    },
+
+    /// Type cast: dest = object as class_id
+    /// Casts object to the specified class type (runtime check)
+    Cast {
+        dest: Register,
+        object: Register,
+        class_id: ClassId,
+    },
+
     /// Load from local variable: dest = locals[index]
     LoadLocal {
         dest: Register,
@@ -172,6 +196,18 @@ pub enum IrInstr {
 
     /// Get array length: dest = array.length
     ArrayLen {
+        dest: Register,
+        array: Register,
+    },
+
+    /// Push element to array: array.push(element)
+    ArrayPush {
+        array: Register,
+        element: Register,
+    },
+
+    /// Pop element from array: dest = array.pop()
+    ArrayPop {
         dest: Register,
         array: Register,
     },
@@ -304,6 +340,35 @@ pub enum IrInstr {
     /// Allows other tasks to run
     Yield,
 
+    /// Create a new mutex
+    /// Returns a mutex reference
+    NewMutex {
+        dest: Register,
+    },
+
+    /// Acquire mutex lock (blocking)
+    /// Suspends current task until lock is acquired
+    MutexLock {
+        mutex: Register,
+    },
+
+    /// Release mutex lock
+    MutexUnlock {
+        mutex: Register,
+    },
+
+    /// Create a new channel with given capacity
+    /// capacity = 0 means unbuffered (synchronous)
+    NewChannel {
+        dest: Register,
+        capacity: Register,
+    },
+
+    /// Cancel a task
+    TaskCancel {
+        task: Register,
+    },
+
     /// Set up exception handler for try block
     /// catch_block: BasicBlockId to jump to on exception (receives exception value)
     /// finally_block: Optional BasicBlockId for finally clause
@@ -332,6 +397,7 @@ impl IrInstr {
             | IrInstr::ArrayLiteral { dest, .. }
             | IrInstr::ObjectLiteral { dest, .. }
             | IrInstr::ArrayLen { dest, .. }
+            | IrInstr::ArrayPop { dest, .. }
             | IrInstr::StringLen { dest, .. }
             | IrInstr::Typeof { dest, .. }
             | IrInstr::Phi { dest, .. }
@@ -344,14 +410,20 @@ impl IrInstr {
             | IrInstr::Spawn { dest, .. }
             | IrInstr::SpawnClosure { dest, .. }
             | IrInstr::Await { dest, .. }
-            | IrInstr::AwaitAll { dest, .. } => Some(dest),
+            | IrInstr::AwaitAll { dest, .. }
+            | IrInstr::NewMutex { dest, .. }
+            | IrInstr::NewChannel { dest, .. }
+            | IrInstr::InstanceOf { dest, .. }
+            | IrInstr::Cast { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
+            | IrInstr::NativeCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreField { .. }
             | IrInstr::StoreElement { .. }
+            | IrInstr::ArrayPush { .. }
             | IrInstr::StoreCaptured { .. }
             | IrInstr::SetClosureCapture { .. }
             | IrInstr::StoreRefCell { .. }
@@ -359,7 +431,10 @@ impl IrInstr {
             | IrInstr::SetupTry { .. }
             | IrInstr::EndTry
             | IrInstr::Sleep { .. }
-            | IrInstr::Yield => None,
+            | IrInstr::Yield
+            | IrInstr::MutexLock { .. }
+            | IrInstr::MutexUnlock { .. }
+            | IrInstr::TaskCancel { .. } => None,
         }
     }
 
@@ -369,12 +444,15 @@ impl IrInstr {
             self,
             IrInstr::Call { .. }
                 | IrInstr::CallMethod { .. }
+                | IrInstr::NativeCall { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::StoreLocal { .. }
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
                 | IrInstr::StoreField { .. }
                 | IrInstr::StoreElement { .. }
+                | IrInstr::ArrayPush { .. }
+                | IrInstr::ArrayPop { .. }
                 | IrInstr::StoreCaptured { .. }
                 | IrInstr::SetClosureCapture { .. }
                 | IrInstr::NewRefCell { .. }
@@ -392,6 +470,11 @@ impl IrInstr {
                 | IrInstr::EndTry
                 | IrInstr::Sleep { .. }
                 | IrInstr::Yield
+                | IrInstr::NewMutex { .. }
+                | IrInstr::NewChannel { .. }
+                | IrInstr::MutexLock { .. }
+                | IrInstr::MutexUnlock { .. }
+                | IrInstr::TaskCancel { .. }
         )
     }
 }

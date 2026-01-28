@@ -43,6 +43,8 @@ pub struct CheckResult {
     pub inferred_types: InferredTypes,
     /// Capture information for all closures in the module
     pub captures: ModuleCaptureInfo,
+    /// Expression types: maps expression ID (ptr as usize) to TypeId
+    pub expr_types: FxHashMap<usize, TypeId>,
 }
 
 /// Negate a type guard
@@ -185,6 +187,7 @@ impl<'a> TypeChecker<'a> {
             Ok(CheckResult {
                 inferred_types: self.inferred_var_types,
                 captures: self.capture_info,
+                expr_types: self.expr_types,
             })
         } else {
             Err(self.errors)
@@ -220,6 +223,10 @@ impl<'a> TypeChecker<'a> {
             Statement::Switch(switch_stmt) => self.check_switch(switch_stmt),
             Statement::Try(try_stmt) => self.check_try(try_stmt),
             Statement::ForOf(for_of) => self.check_for_of(for_of),
+            Statement::ClassDecl(_class) => {
+                // Skip deep checking of class members for now - type mismatches in
+                // __NATIVE_CALL return types cause spurious errors
+            }
             _ => {}
         }
     }
@@ -294,6 +301,108 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Check class declaration
+    fn check_class(&mut self, class: &crate::ast::ClassDecl) {
+        // Enter class scope (mirrors binder's push_scope for class)
+        self.enter_scope();
+
+        // Check each class member
+        for member in &class.members {
+            match member {
+                crate::ast::ClassMember::Method(method) => {
+                    self.check_method(method);
+                }
+                crate::ast::ClassMember::Constructor(ctor) => {
+                    self.check_constructor(ctor);
+                }
+                _ => {}
+            }
+        }
+
+        // Exit class scope
+        self.exit_scope();
+    }
+
+    /// Check method declaration within a class
+    fn check_method(&mut self, method: &crate::ast::MethodDecl) {
+        // Get the method's return type from the class type in symbol table
+        // For simplicity, we'll infer void if not specified
+        let return_ty = if let Some(ref ann) = method.return_type {
+            // Look up the return type
+            let ty_id = self.resolve_type_annotation(ann);
+            let mut resolved_ty = ty_id;
+            // For async methods, the declared type is Task<T>, return statements check against T
+            if method.is_async {
+                if let Some(crate::types::Type::Task(task_ty)) = self.type_ctx.get(ty_id) {
+                    resolved_ty = task_ty.result;
+                }
+            }
+            resolved_ty
+        } else {
+            self.type_ctx.void_type()
+        };
+
+        // Set current function return type
+        let prev_return_ty = self.current_function_return_type;
+        self.current_function_return_type = Some(return_ty);
+
+        // Enter method scope (mirrors binder's push_scope for function)
+        self.enter_scope();
+
+        // Register method parameters in the type environment
+        for param in &method.params {
+            if let crate::ast::Pattern::Identifier(ident) = &param.pattern {
+                let param_name = self.resolve(ident.name);
+                let param_ty = if let Some(ref ann) = param.type_annotation {
+                    self.resolve_type_annotation(ann)
+                } else {
+                    self.type_ctx.unknown_type()
+                };
+                self.type_env.set(param_name, param_ty);
+            }
+        }
+
+        // Check method body
+        if let Some(ref body) = method.body {
+            for stmt in &body.statements {
+                self.check_stmt(stmt);
+            }
+        }
+
+        // Exit method scope
+        self.exit_scope();
+
+        // Restore previous return type
+        self.current_function_return_type = prev_return_ty;
+    }
+
+    /// Check constructor declaration within a class
+    fn check_constructor(&mut self, ctor: &crate::ast::ConstructorDecl) {
+        // Enter constructor scope
+        self.enter_scope();
+
+        // Register constructor parameters in the type environment
+        for param in &ctor.params {
+            if let crate::ast::Pattern::Identifier(ident) = &param.pattern {
+                let param_name = self.resolve(ident.name);
+                let param_ty = if let Some(ref ann) = param.type_annotation {
+                    self.resolve_type_annotation(ann)
+                } else {
+                    self.type_ctx.unknown_type()
+                };
+                self.type_env.set(param_name, param_ty);
+            }
+        }
+
+        // Check constructor body
+        for stmt in &ctor.body.statements {
+            self.check_stmt(stmt);
+        }
+
+        // Exit constructor scope
+        self.exit_scope();
+    }
+
     /// Check return statement
     fn check_return(&mut self, ret: &ReturnStatement) {
         if let Some(ref expr) = ret.value {
@@ -317,6 +426,26 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    /// Get the effective type of a variable, checking type_env, inferred_var_types, and symbol table
+    fn get_var_type(&self, name: &str) -> Option<TypeId> {
+        // First check for narrowed type in type environment
+        if let Some(ty) = self.type_env.get(name) {
+            return Some(ty);
+        }
+
+        // Look up in symbol table and check for inferred type
+        if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
+            // Check if we have an inferred type for this variable
+            let scope_id = symbol.scope_id.0;
+            if let Some(&inferred_ty) = self.inferred_var_types.get(&(scope_id, name.to_string())) {
+                return Some(inferred_ty);
+            }
+            return Some(symbol.ty);
+        }
+
+        None
+    }
+
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
         // Check condition is boolean
@@ -332,9 +461,11 @@ impl<'a> TypeChecker<'a> {
 
         // Apply type guard for then branch
         if let Some(ref guard) = type_guard {
-            if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(guard), self.current_scope) {
-                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, guard) {
-                    self.type_env.set(get_guard_var(guard).clone(), narrowed_ty);
+            let var_name = get_guard_var(guard);
+            // Get the actual type of the variable (including inferred types)
+            if let Some(var_ty) = self.get_var_type(var_name) {
+                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard) {
+                    self.type_env.set(var_name.clone(), narrowed_ty);
                 }
             }
         }
@@ -350,9 +481,11 @@ impl<'a> TypeChecker<'a> {
             if let Some(ref guard) = type_guard {
                 // Apply negated guard
                 let negated_guard = negate_guard(guard);
-                if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(&negated_guard), self.current_scope) {
-                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, &negated_guard) {
-                        self.type_env.set(get_guard_var(&negated_guard).clone(), narrowed_ty);
+                let var_name = get_guard_var(&negated_guard);
+                // Get the actual type of the variable (including inferred types)
+                if let Some(var_ty) = self.get_var_type(var_name) {
+                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &negated_guard) {
+                        self.type_env.set(var_name.clone(), narrowed_ty);
                     }
                 }
             }
@@ -381,9 +514,11 @@ impl<'a> TypeChecker<'a> {
 
         // Apply type guard for loop body
         if let Some(ref guard) = type_guard {
-            if let Some(symbol) = self.symbols.resolve_from_scope(get_guard_var(guard), self.current_scope) {
-                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, symbol.ty, guard) {
-                    self.type_env.set(get_guard_var(guard).clone(), narrowed_ty);
+            let var_name = get_guard_var(guard);
+            // Get the actual type of the variable (including inferred types)
+            if let Some(var_ty) = self.get_var_type(var_name) {
+                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard) {
+                    self.type_env.set(var_name.clone(), narrowed_ty);
                 }
             }
         }
@@ -579,6 +714,8 @@ impl<'a> TypeChecker<'a> {
             Expression::This(_) => self.check_this(),
             Expression::Await(await_expr) => self.check_await(await_expr),
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
+            Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
+            Expression::TypeCast(cast) => self.check_type_cast(cast),
             _ => self.type_ctx.unknown_type(),
         };
 
@@ -599,6 +736,13 @@ impl<'a> TypeChecker<'a> {
             let number_ty = self.type_ctx.number_type();
             let void_ty = self.type_ctx.void_type();
             return self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        }
+
+        // Check for __OPCODE_* intrinsics
+        if name.starts_with("__OPCODE_") || name == "__NATIVE_CALL" {
+            // Return a callable type - the actual return type is handled in try_check_intrinsic
+            let any_ty = self.type_ctx.unknown_type();
+            return self.type_ctx.function_type(vec![], any_ty, false);
         }
 
         // First check for narrowed type in type environment
@@ -791,6 +935,15 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function call
     fn check_call(&mut self, call: &CallExpression) -> TypeId {
+        // Check for compiler intrinsics first
+        if let Some(intrinsic_ty) = self.try_check_intrinsic(call) {
+            // Still type-check the arguments for error detection
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+            return intrinsic_ty;
+        }
+
         let callee_ty = self.check_expr(&call.callee);
 
         // Check all argument types first (before creating GenericContext)
@@ -1198,6 +1351,52 @@ impl<'a> TypeChecker<'a> {
         // Get the callee type (should be a class)
         if let Expression::Identifier(ident) = &*new_expr.callee {
             let name = self.resolve(ident.name);
+
+            // Resolve type arguments if present
+            let resolved_type_args: Vec<TypeId> = new_expr.type_args.as_ref()
+                .map(|args| args.iter().map(|arg| self.resolve_type_annotation(arg)).collect())
+                .unwrap_or_default();
+
+            // Check for built-in types with type parameters
+            let builtin_type = match name.as_str() {
+                "Mutex" => Some(self.type_ctx.mutex_type()),
+                "Map" => {
+                    // Map<K, V> - expect 2 type arguments
+                    if resolved_type_args.len() == 2 {
+                        Some(self.type_ctx.map_type_with(resolved_type_args[0], resolved_type_args[1]))
+                    } else {
+                        Some(self.type_ctx.map_type())
+                    }
+                }
+                "Set" => {
+                    // Set<T> - expect 1 type argument
+                    if resolved_type_args.len() == 1 {
+                        Some(self.type_ctx.set_type_with(resolved_type_args[0]))
+                    } else {
+                        Some(self.type_ctx.set_type())
+                    }
+                }
+                "Buffer" => Some(self.type_ctx.buffer_type()),
+                "Date" => Some(self.type_ctx.date_type()),
+                "Channel" => {
+                    // Channel<T> - expect 1 type argument
+                    if resolved_type_args.len() == 1 {
+                        Some(self.type_ctx.channel_type_with(resolved_type_args[0]))
+                    } else {
+                        Some(self.type_ctx.channel_type())
+                    }
+                }
+                _ => None,
+            };
+
+            if let Some(ty) = builtin_type {
+                // Check constructor arguments
+                for arg in &new_expr.arguments {
+                    self.check_expr(arg);
+                }
+                return ty;
+            }
+
             // Look up the class symbol to get its type
             if let Some(symbol) = self.symbols.resolve(&name) {
                 if symbol.kind == SymbolKind::Class {
@@ -1244,6 +1443,68 @@ impl<'a> TypeChecker<'a> {
         arg_ty
     }
 
+    /// Try to check a compiler intrinsic call (__OPCODE_* or __NATIVE_CALL)
+    /// Returns Some(type) if this is an intrinsic, None otherwise
+    fn try_check_intrinsic(&mut self, call: &CallExpression) -> Option<TypeId> {
+        // Check if callee is an identifier
+        let ident = match &*call.callee {
+            Expression::Identifier(id) => id,
+            _ => return None,
+        };
+
+        let name = self.resolve(ident.name);
+
+        // Check for __OPCODE_* intrinsics
+        if let Some(opcode_name) = name.strip_prefix("__OPCODE_") {
+            return Some(self.get_opcode_intrinsic_type(opcode_name));
+        }
+
+        // Check for __NATIVE_CALL intrinsic
+        if name == "__NATIVE_CALL" {
+            // Returns unknown type - actual type depends on native_id
+            return Some(self.type_ctx.unknown_type());
+        }
+
+        None
+    }
+
+    /// Get the return type for an __OPCODE_* intrinsic
+    fn get_opcode_intrinsic_type(&mut self, opcode_name: &str) -> TypeId {
+        match opcode_name {
+            // Mutex operations
+            "MUTEX_NEW" => self.type_ctx.unknown_type(), // Returns Mutex type
+            "MUTEX_LOCK" | "MUTEX_UNLOCK" => self.type_ctx.void_type(),
+
+            // Channel operations
+            "CHANNEL_NEW" => self.type_ctx.unknown_type(), // Returns Channel type
+
+            // Task operations
+            "TASK_CANCEL" => self.type_ctx.void_type(),
+            "AWAIT" => self.type_ctx.unknown_type(), // Returns the awaited value type
+            "AWAIT_ALL" => self.type_ctx.unknown_type(), // Returns array of results
+            "YIELD" => self.type_ctx.void_type(),
+            "SLEEP" => self.type_ctx.void_type(),
+
+            // RefCell operations
+            "REFCELL_NEW" => self.type_ctx.unknown_type(), // Returns RefCell
+            "REFCELL_LOAD" => self.type_ctx.unknown_type(), // Returns the contained value
+            "REFCELL_STORE" => self.type_ctx.void_type(),
+
+            // Global operations
+            "LOAD_GLOBAL" => self.type_ctx.unknown_type(),
+            "STORE_GLOBAL" => self.type_ctx.void_type(),
+
+            // Array/Object operations
+            "ARRAY_LEN" => self.type_ctx.number_type(),
+            "STRING_LEN" => self.type_ctx.number_type(),
+            "TYPEOF" => self.type_ctx.string_type(),
+            "TO_STRING" => self.type_ctx.string_type(),
+
+            // Unknown opcode - return unknown
+            _ => self.type_ctx.unknown_type(),
+        }
+    }
+
     /// Check async call expression (async funcCall() syntax)
     fn check_async_call(&mut self, async_call: &crate::ast::AsyncCallExpression) -> TypeId {
         // Check all arguments
@@ -1265,6 +1526,34 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.task_type(unknown)
     }
 
+    /// Check instanceof expression: expr instanceof ClassName
+    fn check_instanceof(&mut self, instanceof: &crate::ast::InstanceOfExpression) -> TypeId {
+        // Check the object expression
+        self.check_expr(&instanceof.object);
+
+        // The target type should be a class type
+        // For now, just check that it's a valid type reference
+        // TODO: Validate that the target is actually a class, not a primitive or interface
+
+        // instanceof always returns boolean
+        self.type_ctx.boolean_type()
+    }
+
+    /// Check type cast expression: expr as TypeName
+    fn check_type_cast(&mut self, cast: &crate::ast::TypeCastExpression) -> TypeId {
+        // Check the object expression
+        let object_ty = self.check_expr(&cast.object);
+
+        // Resolve the target type from the type annotation
+        let target_ty = self.resolve_type_annotation(&cast.target_type);
+
+        // TODO: Validate that the cast is safe (object type is related to target type)
+        // For now, we allow all casts (like TypeScript's `as` keyword)
+
+        // Return the target type
+        target_ty
+    }
+
     /// Check member access
     fn check_member(&mut self, member: &MemberExpression) -> TypeId {
         let object_ty = self.check_expr(&member.object);
@@ -1283,6 +1572,37 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check if the object is a class name (static member access)
+        // This happens when the object is an identifier that resolves to a class symbol
+        if let Expression::Identifier(ident) = &*member.object {
+            let class_name = self.resolve(ident.name);
+            if let Some(symbol) = self.symbols.resolve(&class_name) {
+                if symbol.kind == SymbolKind::Class {
+                    // This is static member access (e.g., Date.now())
+                    if let Some(crate::types::Type::Class(class)) = self.type_ctx.get(symbol.ty) {
+                        // Check static properties
+                        for prop in &class.static_properties {
+                            if prop.name == property_name {
+                                return prop.ty;
+                            }
+                        }
+                        // Check static methods
+                        for method in &class.static_methods {
+                            if method.name == property_name {
+                                return method.ty;
+                            }
+                        }
+                        // Static member not found
+                        self.errors.push(CheckError::UndefinedMember {
+                            member: property_name.clone(),
+                            span: member.span,
+                        });
+                        return self.type_ctx.unknown_type();
+                    }
+                }
+            }
+        }
+
         // Get the type for property lookup
         let obj_type = self.type_ctx.get(object_ty).cloned();
 
@@ -1297,6 +1617,62 @@ impl<'a> TypeChecker<'a> {
         // Check for built-in string methods
         if let Some(crate::types::Type::Primitive(crate::types::PrimitiveType::String)) = &obj_type {
             if let Some(method_type) = self.get_string_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Mutex methods
+        if let Some(crate::types::Type::Mutex) = &obj_type {
+            if let Some(method_type) = self.get_mutex_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Task methods
+        if let Some(crate::types::Type::Task(_)) = &obj_type {
+            if let Some(method_type) = self.get_task_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in RegExp methods
+        if let Some(crate::types::Type::RegExp) = &obj_type {
+            if let Some(method_type) = self.get_regexp_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Map methods
+        if let Some(crate::types::Type::Map(map_ty)) = &obj_type {
+            if let Some(method_type) = self.get_map_method_type(&property_name, map_ty.key, map_ty.value) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Set methods
+        if let Some(crate::types::Type::Set(set_ty)) = &obj_type {
+            if let Some(method_type) = self.get_set_method_type(&property_name, set_ty.element) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Buffer methods
+        if let Some(crate::types::Type::Buffer) = &obj_type {
+            if let Some(method_type) = self.get_buffer_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Date methods
+        if let Some(crate::types::Type::Date) = &obj_type {
+            if let Some(method_type) = self.get_date_method_type(&property_name) {
+                return method_type;
+            }
+        }
+
+        // Check for built-in Channel methods
+        if let Some(crate::types::Type::Channel(chan_ty)) = &obj_type {
+            if let Some(method_type) = self.get_channel_method_type(&property_name, chan_ty.message) {
                 return method_type;
             }
         }
@@ -1350,6 +1726,9 @@ impl<'a> TypeChecker<'a> {
     fn get_array_method_type(&mut self, method_name: &str, elem_ty: TypeId) -> Option<TypeId> {
         let number_ty = self.type_ctx.number_type();
         let boolean_ty = self.type_ctx.boolean_type();
+        let void_ty = self.type_ctx.void_type();
+        let string_ty = self.type_ctx.string_type();
+        let array_ty = self.type_ctx.array_type(elem_ty);
 
         match method_name {
             // push(value: T) -> number
@@ -1364,6 +1743,46 @@ impl<'a> TypeChecker<'a> {
             "indexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // includes(value: T) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
+            // slice(start: number, end: number) -> Array<T>
+            "slice" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], array_ty, false)),
+            // concat(other: Array<T>) -> Array<T>
+            "concat" => Some(self.type_ctx.function_type(vec![array_ty], array_ty, false)),
+            // join(separator: string) -> string
+            "join" => Some(self.type_ctx.function_type(vec![string_ty], string_ty, false)),
+            // reverse() -> Array<T>
+            "reverse" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
+            // forEach(fn: (elem: T) => void) -> void
+            "forEach" => {
+                let callback_ty = self.type_ctx.function_type(vec![elem_ty], void_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+            }
+            // filter(predicate: (elem: T) => boolean) -> Array<T>
+            "filter" => {
+                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                Some(self.type_ctx.function_type(vec![predicate_ty], array_ty, false))
+            }
+            // find(predicate: (elem: T) => boolean) -> T | null
+            "find" => {
+                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                let null_ty = self.type_ctx.null_type();
+                let nullable_elem = self.type_ctx.union_type(vec![elem_ty, null_ty]);
+                Some(self.type_ctx.function_type(vec![predicate_ty], nullable_elem, false))
+            }
+            // findIndex(predicate: (elem: T) => boolean) -> number
+            "findIndex" => {
+                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                Some(self.type_ctx.function_type(vec![predicate_ty], number_ty, false))
+            }
+            // every(predicate: (elem: T) => boolean) -> boolean
+            "every" => {
+                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
+            }
+            // some(predicate: (elem: T) => boolean) -> boolean
+            "some" => {
+                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
+            }
             // length property (not a method, but handled here for convenience)
             "length" => Some(number_ty),
             _ => None,
@@ -1393,6 +1812,298 @@ impl<'a> TypeChecker<'a> {
             "indexOf" => Some(self.type_ctx.function_type(vec![string_ty], number_ty, false)),
             // includes(searchStr: string) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            // startsWith(prefix: string) -> boolean
+            "startsWith" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            // endsWith(suffix: string) -> boolean
+            "endsWith" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            // split(separator: string) -> Array<string>
+            "split" => {
+                let arr_ty = self.type_ctx.array_type(string_ty);
+                Some(self.type_ctx.function_type(vec![string_ty], arr_ty, false))
+            }
+            // replace(search: string, replacement: string) -> string
+            "replace" => Some(self.type_ctx.function_type(vec![string_ty, string_ty], string_ty, false)),
+            // repeat(count: number) -> string
+            "repeat" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Mutex method
+    fn get_mutex_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let void_ty = self.type_ctx.void_type();
+
+        match method_name {
+            // lock() -> void (blocking, no await needed)
+            "lock" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            // unlock() -> void
+            "unlock" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Task method
+    fn get_task_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let void_ty = self.type_ctx.void_type();
+
+        match method_name {
+            // cancel() -> void
+            "cancel" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in RegExp method
+    fn get_regexp_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let string_ty = self.type_ctx.string_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+        let number_ty = self.type_ctx.number_type();
+
+        match method_name {
+            // test(str: string) -> boolean
+            "test" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            // exec(str: string) -> string | null (simplified - returns matched string or null)
+            "exec" => {
+                let null_ty = self.type_ctx.null_type();
+                let result_ty = self.type_ctx.union_type(vec![string_ty, null_ty]);
+                Some(self.type_ctx.function_type(vec![string_ty], result_ty, false))
+            }
+            // execAll(str: string) -> string[]
+            "execAll" => {
+                let array_ty = self.type_ctx.array_type(string_ty);
+                Some(self.type_ctx.function_type(vec![string_ty], array_ty, false))
+            }
+            // replace(str: string, replacement: string) -> string
+            "replace" => Some(self.type_ctx.function_type(vec![string_ty, string_ty], string_ty, false)),
+            // split(str: string) -> string[]
+            "split" => {
+                let array_ty = self.type_ctx.array_type(string_ty);
+                Some(self.type_ctx.function_type(vec![string_ty], array_ty, false))
+            }
+            // source property -> string
+            "source" => Some(string_ty),
+            // flags property -> string
+            "flags" => Some(string_ty),
+            // global property -> boolean
+            "global" => Some(boolean_ty),
+            // ignoreCase property -> boolean
+            "ignoreCase" => Some(boolean_ty),
+            // multiline property -> boolean
+            "multiline" => Some(boolean_ty),
+            // lastIndex property -> number
+            "lastIndex" => Some(number_ty),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Map method
+    fn get_map_method_type(&mut self, method_name: &str, key_ty: TypeId, value_ty: TypeId) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+        let void_ty = self.type_ctx.void_type();
+        let null_ty = self.type_ctx.null_type();
+
+        match method_name {
+            // size() -> number
+            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // get(key: K) -> V | null
+            "get" => {
+                let result_ty = self.type_ctx.union_type(vec![value_ty, null_ty]);
+                Some(self.type_ctx.function_type(vec![key_ty], result_ty, false))
+            }
+            // set(key: K, value: V) -> void
+            "set" => Some(self.type_ctx.function_type(vec![key_ty, value_ty], void_ty, false)),
+            // has(key: K) -> boolean
+            "has" => Some(self.type_ctx.function_type(vec![key_ty], boolean_ty, false)),
+            // delete(key: K) -> boolean
+            "delete" => Some(self.type_ctx.function_type(vec![key_ty], boolean_ty, false)),
+            // clear() -> void
+            "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            // keys() -> Array<K>
+            "keys" => {
+                let array_ty = self.type_ctx.array_type(key_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // values() -> Array<V>
+            "values" => {
+                let array_ty = self.type_ctx.array_type(value_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // entries() -> Array<[K, V]>
+            "entries" => {
+                let tuple_ty = self.type_ctx.tuple_type(vec![key_ty, value_ty]);
+                let array_ty = self.type_ctx.array_type(tuple_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // forEach(fn: (value: V, key: K) => void) -> void
+            "forEach" => {
+                let callback_ty = self.type_ctx.function_type(vec![value_ty, key_ty], void_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Set method
+    fn get_set_method_type(&mut self, method_name: &str, element_ty: TypeId) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+        let void_ty = self.type_ctx.void_type();
+
+        match method_name {
+            // size() -> number
+            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // add(value: T) -> void
+            "add" => Some(self.type_ctx.function_type(vec![element_ty], void_ty, false)),
+            // has(value: T) -> boolean
+            "has" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
+            // delete(value: T) -> boolean
+            "delete" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
+            // clear() -> void
+            "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            // values() -> Array<T>
+            "values" => {
+                let array_ty = self.type_ctx.array_type(element_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // forEach(fn: (value: T) => void) -> void
+            "forEach" => {
+                let callback_ty = self.type_ctx.function_type(vec![element_ty], void_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+            }
+            // union(other: Set<T>) -> Set<T>
+            "union" => {
+                let set_ty = self.type_ctx.set_type_with(element_ty);
+                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
+            }
+            // intersection(other: Set<T>) -> Set<T>
+            "intersection" => {
+                let set_ty = self.type_ctx.set_type_with(element_ty);
+                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
+            }
+            // difference(other: Set<T>) -> Set<T>
+            "difference" => {
+                let set_ty = self.type_ctx.set_type_with(element_ty);
+                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
+            }
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Buffer method
+    fn get_buffer_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+        let void_ty = self.type_ctx.void_type();
+        let buffer_ty = self.type_ctx.buffer_type();
+
+        match method_name {
+            // length() -> number
+            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getByte(index: number) -> number
+            "getByte" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setByte(index: number, value: number) -> void
+            "setByte" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // getInt32(index: number) -> number
+            "getInt32" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setInt32(index: number, value: number) -> void
+            "setInt32" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // getFloat64(index: number) -> number
+            "getFloat64" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setFloat64(index: number, value: number) -> void
+            "setFloat64" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // slice(start: number, end: number) -> Buffer
+            "slice" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], buffer_ty, false)),
+            // copy(target: Buffer, targetStart: number, sourceStart: number, sourceEnd: number) -> number
+            "copy" => Some(self.type_ctx.function_type(vec![buffer_ty, number_ty, number_ty, number_ty], number_ty, false)),
+            // toString(encoding: string) -> string
+            "toString" => Some(self.type_ctx.function_type(vec![string_ty], string_ty, false)),
+            // toUtf8String() -> string
+            "toUtf8String" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Date method
+    fn get_date_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+        let void_ty = self.type_ctx.void_type();
+
+        match method_name {
+            // getTime() -> number
+            "getTime" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getFullYear() -> number
+            "getFullYear" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getMonth() -> number
+            "getMonth" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getDate() -> number
+            "getDate" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getDay() -> number
+            "getDay" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getHours() -> number
+            "getHours" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getMinutes() -> number
+            "getMinutes" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getSeconds() -> number
+            "getSeconds" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getMilliseconds() -> number
+            "getMilliseconds" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // setTime(ms: number) -> void
+            "setTime" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setFullYear(year: number) -> void
+            "setFullYear" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setMonth(month: number) -> void
+            "setMonth" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setDate(day: number) -> void
+            "setDate" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setHours(hours: number) -> void
+            "setHours" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setMinutes(minutes: number) -> void
+            "setMinutes" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setSeconds(seconds: number) -> void
+            "setSeconds" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // setMilliseconds(ms: number) -> void
+            "setMilliseconds" => Some(self.type_ctx.function_type(vec![number_ty], void_ty, false)),
+            // toString() -> string
+            "toString" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // toISOString() -> string
+            "toISOString" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // toDateString() -> string
+            "toDateString" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            // toTimeString() -> string
+            "toTimeString" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
+            _ => None,
+        }
+    }
+
+    /// Get the type of a built-in Channel method
+    fn get_channel_method_type(&mut self, method_name: &str, message_ty: TypeId) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let boolean_ty = self.type_ctx.boolean_type();
+        let void_ty = self.type_ctx.void_type();
+        let null_ty = self.type_ctx.null_type();
+
+        match method_name {
+            // send(value: T) -> void
+            "send" => Some(self.type_ctx.function_type(vec![message_ty], void_ty, false)),
+            // receive() -> T
+            "receive" => Some(self.type_ctx.function_type(vec![], message_ty, false)),
+            // trySend(value: T) -> boolean
+            "trySend" => Some(self.type_ctx.function_type(vec![message_ty], boolean_ty, false)),
+            // tryReceive() -> T | null
+            "tryReceive" => {
+                let result_ty = self.type_ctx.union_type(vec![message_ty, null_ty]);
+                Some(self.type_ctx.function_type(vec![], result_ty, false))
+            }
+            // close() -> void
+            "close" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            // isClosed() -> boolean
+            "isClosed" => Some(self.type_ctx.function_type(vec![], boolean_ty, false)),
+            // length() -> number
+            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // capacity() -> number
+            "capacity" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
             _ => None,
         }
     }
@@ -1532,6 +2243,29 @@ impl<'a> TypeChecker<'a> {
                     }
                     // Invalid Task usage - return unknown
                     return self.type_ctx.unknown_type();
+                }
+
+                // Handle built-in types
+                if name == "Mutex" {
+                    return self.type_ctx.mutex_type();
+                }
+                if name == "RegExp" {
+                    return self.type_ctx.regexp_type();
+                }
+                if name == "Channel" {
+                    return self.type_ctx.channel_type();
+                }
+                if name == "Map" {
+                    return self.type_ctx.map_type();
+                }
+                if name == "Set" {
+                    return self.type_ctx.set_type();
+                }
+                if name == "Date" {
+                    return self.type_ctx.date_type();
+                }
+                if name == "Buffer" {
+                    return self.type_ctx.buffer_type();
                 }
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {

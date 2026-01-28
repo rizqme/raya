@@ -203,11 +203,22 @@ pub struct Lowerer<'a> {
     /// Map from local variable index to function ID for closures stored in variables
     /// Used to track async closures for SpawnClosure emission
     closure_locals: FxHashMap<u16, FunctionId>,
+    /// Expression types from type checker (maps expr ptr to TypeId)
+    expr_types: FxHashMap<usize, TypeId>,
 }
 
 impl<'a> Lowerer<'a> {
     /// Create a new lowerer
     pub fn new(type_ctx: &'a TypeContext, interner: &'a Interner) -> Self {
+        Self::with_expr_types(type_ctx, interner, FxHashMap::default())
+    }
+
+    /// Create a new lowerer with expression types from the type checker
+    pub fn with_expr_types(
+        type_ctx: &'a TypeContext,
+        interner: &'a Interner,
+        expr_types: FxHashMap<usize, TypeId>,
+    ) -> Self {
         Self {
             type_ctx,
             interner,
@@ -243,7 +254,15 @@ impl<'a> Lowerer<'a> {
             next_global_index: 0,
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
+            expr_types,
         }
+    }
+
+    /// Get the TypeId for an expression from the type checker's expr_types map
+    /// Falls back to TypeId(0) (Number) if not found
+    fn get_expr_type(&self, expr: &Expression) -> TypeId {
+        let expr_id = expr as *const _ as usize;
+        self.expr_types.get(&expr_id).copied().unwrap_or(TypeId::new(0))
     }
 
     /// Lower an AST module to IR

@@ -129,6 +129,29 @@ pub struct TaskType {
     pub result: TypeId,
 }
 
+/// Map type: Map<K, V> - key-value dictionary
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MapType {
+    /// Key type
+    pub key: TypeId,
+    /// Value type
+    pub value: TypeId,
+}
+
+/// Set type: Set<T> - collection of unique values
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SetType {
+    /// Element type
+    pub element: TypeId,
+}
+
+/// Channel type: Channel<T> - inter-task communication
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChannelType {
+    /// Message type
+    pub message: TypeId,
+}
+
 /// Tuple type: [T1, T2, ..., Tn]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TupleType {
@@ -165,6 +188,8 @@ pub struct MethodSignature {
     pub name: String,
     /// Method type (should be a FunctionType)
     pub ty: TypeId,
+    /// Type parameters for generic methods (e.g., `withLock<R>`)
+    pub type_params: Vec<String>,
 }
 
 /// Class type (nominal typing)
@@ -174,10 +199,14 @@ pub struct ClassType {
     pub name: String,
     /// Type parameters for generic classes
     pub type_params: Vec<String>,
-    /// Properties
+    /// Instance properties
     pub properties: Vec<PropertySignature>,
-    /// Methods
+    /// Instance methods
     pub methods: Vec<MethodSignature>,
+    /// Static properties
+    pub static_properties: Vec<PropertySignature>,
+    /// Static methods
+    pub static_methods: Vec<MethodSignature>,
     /// Parent class (if any)
     pub extends: Option<TypeId>,
     /// Implemented interfaces
@@ -239,6 +268,27 @@ pub enum Type {
 
     /// Task type: Task<T>
     Task(TaskType),
+
+    /// Mutex type: Mutex
+    Mutex,
+
+    /// RegExp type: RegExp (regular expression primitive)
+    RegExp,
+
+    /// Channel type: Channel<T> for inter-task communication
+    Channel(ChannelType),
+
+    /// Map type: Map<K, V> key-value dictionary
+    Map(MapType),
+
+    /// Set type: Set<T> collection of unique values
+    Set(SetType),
+
+    /// Date type: Date for date/time handling
+    Date,
+
+    /// Buffer type: Buffer for raw binary data
+    Buffer,
 
     /// Tuple type: [T1, T2, ..., Tn]
     Tuple(TupleType),
@@ -318,6 +368,13 @@ impl fmt::Display for Type {
             }
             Type::Array(a) => write!(f, "{}[]", a.element),
             Type::Task(t) => write!(f, "Task<{}>", t.result),
+            Type::Mutex => write!(f, "Mutex"),
+            Type::RegExp => write!(f, "RegExp"),
+            Type::Channel(c) => write!(f, "Channel<{}>", c.message),
+            Type::Map(m) => write!(f, "Map<{}, {}>", m.key, m.value),
+            Type::Set(s) => write!(f, "Set<{}>", s.element),
+            Type::Date => write!(f, "Date"),
+            Type::Buffer => write!(f, "Buffer"),
             Type::Tuple(t) => {
                 write!(f, "[")?;
                 for (i, elem) in t.elements.iter().enumerate() {
@@ -459,6 +516,13 @@ impl PartialEq for Type {
             (Type::Function(a), Type::Function(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => a == b,
             (Type::Task(a), Type::Task(b)) => a == b,
+            (Type::Mutex, Type::Mutex) => true,
+            (Type::RegExp, Type::RegExp) => true,
+            (Type::Channel(a), Type::Channel(b)) => a == b,
+            (Type::Map(a), Type::Map(b)) => a == b,
+            (Type::Set(a), Type::Set(b)) => a == b,
+            (Type::Date, Type::Date) => true,
+            (Type::Buffer, Type::Buffer) => true,
             (Type::Tuple(a), Type::Tuple(b)) => a == b,
             (Type::Object(a), Type::Object(b)) => a == b,
             (Type::Class(a), Type::Class(b)) => a == b,
@@ -492,6 +556,13 @@ impl std::hash::Hash for Type {
             Type::Function(f) => f.hash(state),
             Type::Array(a) => a.hash(state),
             Type::Task(t) => t.hash(state),
+            Type::Mutex => {}
+            Type::RegExp => {}
+            Type::Channel(c) => c.hash(state),
+            Type::Map(m) => m.hash(state),
+            Type::Set(s) => s.hash(state),
+            Type::Date => {}
+            Type::Buffer => {}
             Type::Tuple(t) => t.hash(state),
             Type::Object(o) => o.hash(state),
             Type::Class(c) => c.hash(state),

@@ -122,3 +122,72 @@ fn test_template_string_expression() {
 fn test_template_string_multiline() {
     expect_string("return `line1\nline2`;", "line1\nline2");
 }
+
+// ============================================================================
+// String Methods
+// ============================================================================
+
+#[test]
+fn test_string_to_uppercase() {
+    expect_string("return \"hello\".toUpperCase();", "HELLO");
+}
+
+#[test]
+fn test_string_to_lowercase() {
+    expect_string("return \"HELLO\".toLowerCase();", "hello");
+}
+
+#[test]
+fn test_string_trim() {
+    expect_string("return \"  hello  \".trim();", "hello");
+}
+
+#[test]
+fn test_string_char_at() {
+    expect_string("return \"hello\".charAt(1);", "e");
+}
+
+#[test]
+fn test_string_substring() {
+    expect_string("return \"hello world\".substring(0, 5);", "hello");
+}
+
+#[test]
+fn test_string_index_of() {
+    expect_i32("return \"hello world\".indexOf(\"world\");", 6);
+}
+
+#[test]
+fn test_string_index_of_not_found() {
+    expect_i32("return \"hello\".indexOf(\"xyz\");", -1);
+}
+
+#[test]
+fn test_string_includes() {
+    expect_bool("return \"hello world\".includes(\"world\");", true);
+}
+
+#[test]
+fn test_string_includes_false() {
+    expect_bool("return \"hello\".includes(\"xyz\");", false);
+}
+
+#[test]
+fn test_string_starts_with() {
+    expect_bool("return \"hello world\".startsWith(\"hello\");", true);
+}
+
+#[test]
+fn test_string_starts_with_false() {
+    expect_bool("return \"hello world\".startsWith(\"world\");", false);
+}
+
+#[test]
+fn test_string_ends_with() {
+    expect_bool("return \"hello world\".endsWith(\"world\");", true);
+}
+
+#[test]
+fn test_string_ends_with_false() {
+    expect_bool("return \"hello world\".endsWith(\"hello\");", false);
+}

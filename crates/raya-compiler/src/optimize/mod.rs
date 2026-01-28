@@ -4,10 +4,12 @@
 
 mod constant_fold;
 mod dce;
+mod inline;
 mod phi_elim;
 
 pub use constant_fold::ConstantFolder;
 pub use dce::DeadCodeEliminator;
+pub use inline::Inliner;
 pub use phi_elim::PhiEliminator;
 
 use crate::ir::IrModule;
@@ -56,6 +58,10 @@ impl Optimizer {
             phi_elim.eliminate(module);
             return;
         }
+
+        // Run function inlining first (exposes more optimization opportunities)
+        let inliner = Inliner::new();
+        inliner.inline(module);
 
         // Run constant folding
         let folder = ConstantFolder::new();

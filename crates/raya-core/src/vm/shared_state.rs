@@ -17,6 +17,18 @@ use rustc_hash::FxHashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Helper to convert Value to f64, handling both f64 and i32 values
+#[inline]
+fn value_to_f64(v: Value) -> VmResult<f64> {
+    if let Some(f) = v.as_f64() {
+        Ok(f)
+    } else if let Some(i) = v.as_i32() {
+        Ok(i as f64)
+    } else {
+        Err(VmError::TypeError("Expected number".to_string()))
+    }
+}
+
 /// Shared VM state accessible by all worker threads
 ///
 /// This struct contains all the state that needs to be shared across
@@ -67,7 +79,16 @@ impl SharedVmState {
     pub fn register_classes(&self, module: &Module) {
         let mut classes = self.classes.write();
         for (i, class_def) in module.classes.iter().enumerate() {
-            let class = crate::object::Class::new(i, class_def.name.clone(), class_def.field_count);
+            let class = if let Some(parent_id) = class_def.parent_id {
+                crate::object::Class::with_parent(
+                    i,
+                    class_def.name.clone(),
+                    class_def.field_count,
+                    parent_id as usize,
+                )
+            } else {
+                crate::object::Class::new(i, class_def.name.clone(), class_def.field_count)
+            };
             classes.register_class(class);
         }
     }
@@ -448,110 +469,64 @@ impl<'a> TaskExecutor<'a> {
 
                 // ===== Float Arithmetic =====
                 Opcode::Fadd => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(a + b))?;
                 }
                 Opcode::Fsub => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(a - b))?;
                 }
                 Opcode::Fmul => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(a * b))?;
                 }
                 Opcode::Fdiv => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(a / b))?;
                 }
                 Opcode::Fneg => {
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(-a))?;
                 }
                 Opcode::Fpow => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::f64(a.powf(b)))?;
                 }
 
                 // ===== Float Comparisons =====
                 Opcode::Feq => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a == b))?;
                 }
                 Opcode::Fne => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a != b))?;
                 }
                 Opcode::Flt => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a < b))?;
                 }
                 Opcode::Fle => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a <= b))?;
                 }
                 Opcode::Fgt => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a > b))?;
                 }
                 Opcode::Fge => {
-                    let b = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
-                    let a = stack_guard.pop()?.as_f64().ok_or_else(|| {
-                        VmError::TypeError("Expected f64".to_string())
-                    })?;
+                    let b = value_to_f64(stack_guard.pop()?)?;
+                    let a = value_to_f64(stack_guard.pop()?)?;
                     stack_guard.push(Value::bool(a >= b))?;
                 }
 

@@ -6,6 +6,74 @@ use crate::interner::Symbol;
 use crate::token::{Span, Token};
 use super::precedence::{get_precedence, is_right_associative, Precedence};
 
+/// Check if a token is a keyword that can be used as a property/method name.
+/// Returns the keyword string for keywords.
+fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
+    match token {
+        // Keywords that can be used as property/method names
+        Token::Delete => Some("delete"),
+        Token::New => Some("new"),
+        Token::This => Some("this"),
+        Token::Super => Some("super"),
+        Token::Static => Some("static"),
+        Token::Abstract => Some("abstract"),
+        Token::Extends => Some("extends"),
+        Token::Implements => Some("implements"),
+        Token::Typeof => Some("typeof"),
+        Token::Instanceof => Some("instanceof"),
+        Token::As => Some("as"),
+        Token::Void => Some("void"),
+        Token::Namespace => Some("namespace"),
+        Token::Private => Some("private"),
+        Token::Protected => Some("protected"),
+        Token::Public => Some("public"),
+        Token::Yield => Some("yield"),
+        Token::In => Some("in"),
+        Token::Of => Some("of"),
+        Token::From => Some("from"),
+        Token::Import => Some("import"),
+        Token::Export => Some("export"),
+        Token::Default => Some("default"),
+        Token::Class => Some("class"),
+        Token::Function => Some("function"),
+        Token::Return => Some("return"),
+        Token::If => Some("if"),
+        Token::Else => Some("else"),
+        Token::While => Some("while"),
+        Token::For => Some("for"),
+        Token::Do => Some("do"),
+        Token::Break => Some("break"),
+        Token::Continue => Some("continue"),
+        Token::Switch => Some("switch"),
+        Token::Case => Some("case"),
+        Token::Try => Some("try"),
+        Token::Catch => Some("catch"),
+        Token::Finally => Some("finally"),
+        Token::Throw => Some("throw"),
+        Token::Const => Some("const"),
+        Token::Let => Some("let"),
+        Token::Type => Some("type"),
+        Token::Async => Some("async"),
+        Token::Await => Some("await"),
+        Token::True => Some("true"),
+        Token::False => Some("false"),
+        Token::Null => Some("null"),
+        Token::Debugger => Some("debugger"),
+        _ => None,
+    }
+}
+
+/// Try to get a symbol for a property/method name from the current token.
+/// Handles both identifiers and keywords used as property names.
+fn get_property_name_symbol(parser: &mut Parser) -> Option<Symbol> {
+    match parser.current() {
+        Token::Identifier(sym) => Some(*sym),
+        token => {
+            keyword_as_property_name(token).map(|name| parser.intern(name))
+        }
+    }
+}
+
 /// Parse an expression (entry point).
 pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
     // Check depth before entering (manual guard to avoid borrow issues)
@@ -328,6 +396,32 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
             // The parentheses belong to `new`, not a function call
             let callee = parse_new_callee(parser)?;
 
+            // Try to parse type arguments (e.g., new Map<string, number>())
+            let type_args = if parser.check(&Token::Less) {
+                // Save position to backtrack if this isn't type arguments
+                let checkpoint = parser.checkpoint();
+                parser.advance(); // consume '<'
+                match super::types::parse_type_arguments(parser) {
+                    Ok(args) => {
+                        // Type arguments must be followed by '(' for new expression
+                        if parser.check(&Token::LeftParen) {
+                            Some(args)
+                        } else {
+                            // Not type args (probably a comparison), backtrack
+                            parser.restore(checkpoint);
+                            None
+                        }
+                    }
+                    Err(_) => {
+                        // Failed to parse type args, backtrack
+                        parser.restore(checkpoint);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             let arguments = if parser.check(&Token::LeftParen) {
                 parser.advance();
                 parse_arguments(parser)?
@@ -343,7 +437,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
             Ok(Expression::New(NewExpression {
                 callee: Box::new(callee),
-                type_args: None,
+                type_args,
                 arguments,
                 span,
             }))
@@ -511,8 +605,31 @@ fn parse_infix(
         Token::LessLess => BinaryOperator::LeftShift,
         Token::GreaterGreater => BinaryOperator::RightShift,
         Token::GreaterGreaterGreater => BinaryOperator::UnsignedRightShift,
-        Token::Instanceof => return parse_postfix(parser, left), // instanceof not in AST
-        Token::In => return parse_postfix(parser, left),         // in not in AST
+        Token::Instanceof => {
+            // Parse: expr instanceof TypeName
+            parser.advance();
+            let type_name = super::types::parse_type_annotation(parser)?;
+            let span = parser.combine_spans(&start_span, &type_name.span);
+            let instanceof = Expression::InstanceOf(InstanceOfExpression {
+                object: Box::new(left),
+                type_name,
+                span,
+            });
+            return parse_postfix(parser, instanceof);
+        }
+        Token::As => {
+            // Parse: expr as TypeName
+            parser.advance();
+            let target_type = super::types::parse_type_annotation(parser)?;
+            let span = parser.combine_spans(&start_span, &target_type.span);
+            let cast = Expression::TypeCast(TypeCastExpression {
+                object: Box::new(left),
+                target_type,
+                span,
+            });
+            return parse_postfix(parser, cast);
+        }
+        Token::In => return parse_postfix(parser, left), // in not in AST
         _ => {
             return parse_postfix(parser, left);
         }
@@ -567,8 +684,7 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
             // Member access (dot notation)
             Token::Dot => {
                 parser.advance();
-                if let Token::Identifier(name) = parser.current() {
-                    let name = name.clone();
+                if let Some(name) = get_property_name_symbol(parser) {
                     let end_span = parser.current_span();
                     parser.advance();
                     let span = parser.combine_spans(&start_span, &end_span);
@@ -597,8 +713,7 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
             // Optional chaining (?.)
             Token::QuestionDot => {
                 parser.advance();
-                if let Token::Identifier(name) = parser.current() {
-                    let name = name.clone();
+                if let Some(name) = get_property_name_symbol(parser) {
                     let end_span = parser.current_span();
                     parser.advance();
                     let span = parser.combine_spans(&start_span, &end_span);
@@ -752,8 +867,7 @@ fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
         match parser.current() {
             Token::Dot => {
                 parser.advance();
-                if let Token::Identifier(name) = parser.current() {
-                    let name = name.clone();
+                if let Some(name) = get_property_name_symbol(parser) {
                     let end_span = parser.current_span();
                     parser.advance();
                     let span = parser.combine_spans(&start_span, &end_span);

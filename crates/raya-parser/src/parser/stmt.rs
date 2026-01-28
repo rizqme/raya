@@ -1145,17 +1145,30 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
-    // Parse member name
-    let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = name.clone();
-        let name_span = parser.current_span();
-        parser.advance();
-        Identifier {
-            name: name_str,
-            span: name_span,
+    // Parse member name - allow keywords that are valid as method names
+    let name = match parser.current() {
+        Token::Identifier(name) => {
+            let name_str = name.clone();
+            let name_span = parser.current_span();
+            parser.advance();
+            Identifier {
+                name: name_str,
+                span: name_span,
+            }
         }
-    } else {
-        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+        // Allow reserved keywords as method names (like JavaScript)
+        Token::Delete | Token::Await | Token::Typeof | Token::Void | Token::In | Token::Of => {
+            let name_str = parser.intern(parser.current().to_string().as_str());
+            let name_span = parser.current_span();
+            parser.advance();
+            Identifier {
+                name: name_str,
+                span: name_span,
+            }
+        }
+        _ => {
+            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+        }
     };
 
     // Check for constructor (identifier named "constructor")

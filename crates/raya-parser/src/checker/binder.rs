@@ -5,9 +5,12 @@
 
 use super::error::BindError;
 use super::symbols::{Symbol, SymbolFlags, SymbolKind, SymbolTable, ScopeKind};
+use super::builtins::BuiltinSignatures;
 use crate::ast::*;
 use crate::Interner;
 use crate::types::{TypeContext, TypeId};
+use crate::types::ty::{ClassType, PropertySignature, MethodSignature, Type};
+use crate::Span;
 
 /// Binder - builds symbol tables from AST
 ///
@@ -27,6 +30,415 @@ impl<'a> Binder<'a> {
             symbols: SymbolTable::new(),
             type_ctx,
             interner,
+        }
+    }
+
+    /// Register builtin type signatures
+    ///
+    /// This registers classes and functions from builtin signatures so they
+    /// are available during type checking.
+    pub fn register_builtins(&mut self, builtins: &[BuiltinSignatures]) {
+        // Register compiler intrinsics first
+        self.register_intrinsics();
+
+        for sig in builtins {
+            // Register each class from this builtin module
+            for class_sig in &sig.classes {
+                self.register_builtin_class(class_sig);
+            }
+
+            // Register each function from this builtin module
+            for func_sig in &sig.functions {
+                self.register_builtin_function(func_sig);
+            }
+        }
+    }
+
+    /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
+    ///
+    /// These are special functions used in builtin .raya files to call VM opcodes.
+    fn register_intrinsics(&mut self) {
+        // __NATIVE_CALL(native_id: number, ...args): any
+        // This is a variadic function that can return any type
+        let any_ty = self.type_ctx.unknown_type();
+        let number_ty = self.type_ctx.number_type();
+
+        // Create a function type: (number) -> any
+        // The type checker will allow additional arguments
+        let native_call_ty = self.type_ctx.function_type(vec![number_ty], any_ty, false);
+        let symbol = Symbol {
+            name: "__NATIVE_CALL".to_string(),
+            kind: SymbolKind::Function,
+            ty: native_call_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_CHANNEL_NEW(capacity: number): number
+        let channel_new_ty = self.type_ctx.function_type(vec![number_ty], number_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_CHANNEL_NEW".to_string(),
+            kind: SymbolKind::Function,
+            ty: channel_new_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        let void_ty = self.type_ctx.void_type();
+
+        // __OPCODE_MUTEX_NEW(): number
+        let mutex_new_ty = self.type_ctx.function_type(vec![], number_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_MUTEX_NEW".to_string(),
+            kind: SymbolKind::Function,
+            ty: mutex_new_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_MUTEX_LOCK(handle: number): void
+        let mutex_lock_ty = self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_MUTEX_LOCK".to_string(),
+            kind: SymbolKind::Function,
+            ty: mutex_lock_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_MUTEX_UNLOCK(handle: number): void
+        let mutex_unlock_ty = self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_MUTEX_UNLOCK".to_string(),
+            kind: SymbolKind::Function,
+            ty: mutex_unlock_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_TASK_CANCEL(handle: number): void
+        let task_cancel_ty = self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_TASK_CANCEL".to_string(),
+            kind: SymbolKind::Function,
+            ty: task_cancel_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_YIELD(): void
+        let yield_ty = self.type_ctx.function_type(vec![], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_YIELD".to_string(),
+            kind: SymbolKind::Function,
+            ty: yield_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_SLEEP(durationMs: number): void
+        let sleep_ty = self.type_ctx.function_type(vec![number_ty], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_SLEEP".to_string(),
+            kind: SymbolKind::Function,
+            ty: sleep_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_ARRAY_LEN(arr: any): number
+        let array_len_ty = self.type_ctx.function_type(vec![any_ty], number_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_ARRAY_LEN".to_string(),
+            kind: SymbolKind::Function,
+            ty: array_len_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_ARRAY_PUSH(arr: any, elem: any): void
+        let array_push_ty = self.type_ctx.function_type(vec![any_ty, any_ty], void_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_ARRAY_PUSH".to_string(),
+            kind: SymbolKind::Function,
+            ty: array_push_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // __OPCODE_ARRAY_POP(arr: any): any
+        let array_pop_ty = self.type_ctx.function_type(vec![any_ty], any_ty, false);
+        let symbol = Symbol {
+            name: "__OPCODE_ARRAY_POP".to_string(),
+            kind: SymbolKind::Function,
+            ty: array_pop_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+    }
+
+    /// Register a single builtin class
+    fn register_builtin_class(&mut self, class_sig: &super::builtins::BuiltinClass) {
+        // Create type parameters map for resolving generic types
+        let type_params: Vec<String> = class_sig.type_params.clone();
+
+        // Create property signatures
+        let properties: Vec<PropertySignature> = class_sig.properties.iter()
+            .filter(|p| !p.is_static)
+            .map(|p| PropertySignature {
+                name: p.name.clone(),
+                ty: self.parse_type_string(&p.ty, &type_params),
+                optional: false,
+                readonly: false,
+            })
+            .collect();
+
+        let static_properties: Vec<PropertySignature> = class_sig.properties.iter()
+            .filter(|p| p.is_static)
+            .map(|p| PropertySignature {
+                name: p.name.clone(),
+                ty: self.parse_type_string(&p.ty, &type_params),
+                optional: false,
+                readonly: false,
+            })
+            .collect();
+
+        // Create method signatures
+        let methods: Vec<MethodSignature> = class_sig.methods.iter()
+            .filter(|m| !m.is_static)
+            .map(|m| {
+                let param_types: Vec<TypeId> = m.params.iter()
+                    .map(|(_, ty)| self.parse_type_string(ty, &type_params))
+                    .collect();
+                let return_ty = self.parse_type_string(&m.return_type, &type_params);
+                let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
+                MethodSignature {
+                    name: m.name.clone(),
+                    ty: func_ty,
+                    type_params: vec![], // Builtin methods don't have method-level type params
+                }
+            })
+            .collect();
+
+        let static_methods: Vec<MethodSignature> = class_sig.methods.iter()
+            .filter(|m| m.is_static)
+            .map(|m| {
+                let param_types: Vec<TypeId> = m.params.iter()
+                    .map(|(_, ty)| self.parse_type_string(ty, &type_params))
+                    .collect();
+                let return_ty = self.parse_type_string(&m.return_type, &type_params);
+                let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
+                MethodSignature {
+                    name: m.name.clone(),
+                    ty: func_ty,
+                    type_params: vec![], // Builtin methods don't have method-level type params
+                }
+            })
+            .collect();
+
+        // Create the class type
+        let class_type = ClassType {
+            name: class_sig.name.clone(),
+            type_params: type_params.clone(),
+            properties,
+            methods,
+            static_properties,
+            static_methods,
+            extends: None,
+            implements: vec![],
+        };
+
+        let class_ty = self.type_ctx.intern(Type::Class(class_type));
+
+        // Register the class symbol
+        let symbol = Symbol {
+            name: class_sig.name.clone(),
+            kind: SymbolKind::Class,
+            ty: class_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+
+        // Ignore errors for duplicate symbols (builtins might override each other)
+        let _ = self.symbols.define(symbol);
+    }
+
+    /// Register a single builtin function
+    fn register_builtin_function(&mut self, func_sig: &super::builtins::BuiltinFunction) {
+        let param_types: Vec<TypeId> = func_sig.params.iter()
+            .map(|(_, ty)| self.parse_type_string(ty, &func_sig.type_params))
+            .collect();
+        let return_ty = self.parse_type_string(&func_sig.return_type, &func_sig.type_params);
+        let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
+
+        let symbol = Symbol {
+            name: func_sig.name.clone(),
+            kind: SymbolKind::Function,
+            ty: func_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+
+        let _ = self.symbols.define(symbol);
+    }
+
+    /// Parse a type string into a TypeId
+    ///
+    /// Handles common type patterns:
+    /// - Primitives: number, string, boolean, void, null
+    /// - Type parameters: K, V, T (from type_params)
+    /// - Arrays: Array<T>
+    /// - Unions: T | null
+    fn parse_type_string(&mut self, ty_str: &str, type_params: &[String]) -> TypeId {
+        let ty_str = ty_str.trim();
+
+        // Check for union types (e.g., "T | null")
+        if ty_str.contains(" | ") {
+            let parts: Vec<&str> = ty_str.split(" | ").collect();
+            let type_ids: Vec<TypeId> = parts.iter()
+                .map(|p| self.parse_type_string(p.trim(), type_params))
+                .collect();
+            return self.type_ctx.union_type(type_ids);
+        }
+
+        // Check for array types (e.g., "Array<T>")
+        if ty_str.starts_with("Array<") && ty_str.ends_with('>') {
+            let inner = &ty_str[6..ty_str.len()-1];
+            let elem_ty = self.parse_type_string(inner, type_params);
+            return self.type_ctx.array_type(elem_ty);
+        }
+
+        // Check for tuple types (e.g., "[K, V]")
+        if ty_str.starts_with('[') && ty_str.ends_with(']') {
+            let inner = &ty_str[1..ty_str.len()-1];
+            let elem_types: Vec<TypeId> = inner.split(',')
+                .map(|p| self.parse_type_string(p.trim(), type_params))
+                .collect();
+            return self.type_ctx.tuple_type(elem_types);
+        }
+
+        // Check for generic class types (e.g., "Set<T>", "Map<K, V>")
+        if let Some(idx) = ty_str.find('<') {
+            let class_name = &ty_str[..idx];
+            let args_str = &ty_str[idx+1..ty_str.len()-1];
+            let args: Vec<TypeId> = args_str.split(',')
+                .map(|p| self.parse_type_string(p.trim(), type_params))
+                .collect();
+            // For now, just return unknown for complex generic types
+            // The checker will handle instantiation
+            return self.type_ctx.unknown_type();
+        }
+
+        // Check for type parameters
+        if type_params.contains(&ty_str.to_string()) {
+            return self.type_ctx.type_variable(ty_str.to_string());
+        }
+
+        // Primitive types
+        match ty_str {
+            "number" => self.type_ctx.number_type(),
+            "string" => self.type_ctx.string_type(),
+            "boolean" => self.type_ctx.boolean_type(),
+            "void" => self.type_ctx.void_type(),
+            "null" => self.type_ctx.null_type(),
+            "any" => self.type_ctx.unknown_type(),
+            _ => {
+                // Could be a class name - look it up or return unknown
+                if let Some(sym) = self.symbols.resolve(ty_str) {
+                    sym.ty
+                } else {
+                    self.type_ctx.unknown_type()
+                }
+            }
         }
     }
 
@@ -228,13 +640,21 @@ impl<'a> Binder<'a> {
 
         let class_name = self.resolve(class.name.name);
 
+        // Collect type parameters (K, V, T, etc.)
+        let type_param_names: Vec<String> = class.type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| self.resolve(p.name.name)).collect())
+            .unwrap_or_default();
+
         // First, create a placeholder class type and define the symbol
         // This allows the class name to be used as a return type in methods
         let placeholder_type = ClassType {
             name: class_name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             properties: vec![],
             methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
             extends: None,
             implements: vec![],
         };
@@ -254,15 +674,38 @@ impl<'a> Binder<'a> {
             span: class.name.span,
         };
 
+        // Store the scope ID where the class is defined (for later update)
+        let class_definition_scope = self.symbols.current_scope_id();
+
         self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
             name: err.name,
             original: err.original,
             duplicate: err.duplicate,
         })?;
 
+        // Enter class scope for type parameters
+        self.symbols.push_scope(ScopeKind::Class);
+
+        // Register type parameters as type aliases in class scope
+        for type_param_name in &type_param_names {
+            let type_var = self.type_ctx.type_variable(type_param_name.clone());
+            let symbol = Symbol {
+                name: type_param_name.clone(),
+                kind: SymbolKind::TypeAlias,
+                ty: type_var,
+                flags: SymbolFlags::default(),
+                scope_id: self.symbols.current_scope_id(),
+                span: Span { start: 0, end: 0, line: 0, column: 0 },
+            };
+            let _ = self.symbols.define(symbol);
+        }
+
         // Now collect properties and methods (class name is now resolvable)
+        // Separate instance and static members
         let mut properties = Vec::new();
         let mut methods = Vec::new();
+        let mut static_properties = Vec::new();
+        let mut static_methods = Vec::new();
 
         for member in &class.members {
             match member {
@@ -273,15 +716,46 @@ impl<'a> Binder<'a> {
                     } else {
                         self.type_ctx.unknown_type()
                     };
-                    properties.push(PropertySignature {
+                    let prop = PropertySignature {
                         name: field_name,
                         ty: field_ty,
                         optional: false,
                         readonly: false,
-                    });
+                    };
+                    if field.is_static {
+                        static_properties.push(prop);
+                    } else {
+                        properties.push(prop);
+                    }
                 }
                 ClassMember::Method(method) => {
                     let method_name = self.resolve(method.name.name);
+
+                    // Extract method-level type parameters (e.g., withLock<R>)
+                    let method_type_params: Vec<String> = method
+                        .type_params
+                        .as_ref()
+                        .map(|tps| tps.iter().map(|tp| self.resolve(tp.name.name)).collect())
+                        .unwrap_or_default();
+
+                    // If method has type parameters, push a temporary scope and register them
+                    let has_method_type_params = !method_type_params.is_empty();
+                    if has_method_type_params {
+                        self.symbols.push_scope(ScopeKind::Function);
+                        for type_param_name in &method_type_params {
+                            let type_var = self.type_ctx.type_variable(type_param_name.clone());
+                            let symbol = Symbol {
+                                name: type_param_name.clone(),
+                                kind: SymbolKind::TypeAlias,
+                                ty: type_var,
+                                flags: SymbolFlags::default(),
+                                scope_id: self.symbols.current_scope_id(),
+                                span: Span { start: 0, end: 0, line: 0, column: 0 },
+                            };
+                            let _ = self.symbols.define(symbol);
+                        }
+                    }
+
                     // Create function type for the method
                     let mut params = Vec::new();
                     for p in &method.params {
@@ -298,7 +772,17 @@ impl<'a> Binder<'a> {
                     } else {
                         self.type_ctx.void_type()
                     };
-                    methods.push((method_name, params, return_ty, method.is_async));
+
+                    // Pop the temporary scope for method type parameters
+                    if has_method_type_params {
+                        self.symbols.pop_scope();
+                    }
+
+                    if method.is_static {
+                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone()));
+                    } else {
+                        methods.push((method_name, params, return_ty, method.is_async, method_type_params));
+                    }
                 }
                 _ => {}
             }
@@ -308,39 +792,67 @@ impl<'a> Binder<'a> {
         // If return type equals the placeholder class_ty, we need to create a self-referential type
         // We'll create the full class type first, then fix up method return types that reference it
 
-        // First pass: create method signatures (return types may reference placeholder)
+        // First pass: create instance method signatures
         let method_sigs: Vec<MethodSignature> = methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async)| {
-                // For now, use the return_ty as-is. Self-referential types will use placeholder.
+            .map(|(name, params, return_ty, is_async, method_type_params)| {
                 let func_ty = self.type_ctx.function_type(params, return_ty, is_async);
-                MethodSignature { name, ty: func_ty }
+                MethodSignature { name, ty: func_ty, type_params: method_type_params }
+            })
+            .collect();
+
+        // Create static method signatures
+        let static_method_sigs: Vec<MethodSignature> = static_methods
+            .into_iter()
+            .map(|(name, params, return_ty, is_async, method_type_params)| {
+                let func_ty = self.type_ctx.function_type(params, return_ty, is_async);
+                MethodSignature { name, ty: func_ty, type_params: method_type_params }
             })
             .collect();
 
         // Create the full class type with properties and methods
         let full_class_type = ClassType {
             name: class_name.clone(),
-            type_params: vec![],
+            type_params: type_param_names.clone(),
             properties,
             methods: method_sigs,
+            static_properties,
+            static_methods: static_method_sigs,
             extends: None,
             implements: vec![],
         };
         let full_class_ty = self.type_ctx.intern(Type::Class(full_class_type));
 
         // Update the symbol's type with the full class type
-        let scope_id = self.symbols.current_scope_id();
-        self.symbols.update_type(scope_id, &class_name, full_class_ty);
+        // Note: We need to update in the parent scope where the class was defined
+        self.symbols.update_type(class_definition_scope, &class_name, full_class_ty);
 
-        // Bind class members in class scope
-        self.symbols.push_scope(ScopeKind::Class);
+        // Bind class members in the already-entered class scope
+        // (scope was pushed earlier for type parameters)
 
         for member in &class.members {
             match member {
                 ClassMember::Method(method) => {
                     if let Some(ref body) = method.body {
                         self.symbols.push_scope(ScopeKind::Function);
+
+                        // Register method-level type parameters in the method scope
+                        if let Some(ref type_params) = method.type_params {
+                            for tp in type_params {
+                                let type_param_name = self.resolve(tp.name.name);
+                                let type_var = self.type_ctx.type_variable(type_param_name.clone());
+                                let symbol = Symbol {
+                                    name: type_param_name,
+                                    kind: SymbolKind::TypeAlias,
+                                    ty: type_var,
+                                    flags: SymbolFlags::default(),
+                                    scope_id: self.symbols.current_scope_id(),
+                                    span: tp.span,
+                                };
+                                let _ = self.symbols.define(symbol);
+                            }
+                        }
+
                         for stmt in &body.statements {
                             self.bind_stmt(stmt)?;
                         }
@@ -568,6 +1080,11 @@ impl<'a> Binder<'a> {
                         actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
                         span,
                     });
+                }
+
+                // Handle Mutex as a built-in type
+                if name == "Mutex" {
+                    return Ok(self.type_ctx.mutex_type());
                 }
 
                 if let Some(symbol) = self.symbols.resolve(&name) {

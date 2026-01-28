@@ -1,0 +1,31 @@
+// Task - Represents an asynchronous computation (green thread)
+// This is a built-in type using compiler intrinsics
+//
+// Usage:
+//   let task = async doWork();  // Start async task
+//   let result = await task;    // Wait for completion
+
+class Task<T> {
+    private handle: number;
+
+    // Note: Tasks are created by the runtime via `async` keyword
+    // This constructor is internal
+    private constructor(handle: number) {
+        this.handle = handle;
+    }
+
+    // Cancel the task
+    cancel(): void {
+        __OPCODE_TASK_CANCEL(this.handle);
+    }
+}
+
+// Yield control to other tasks
+function taskYield(): void {
+    __OPCODE_YIELD();
+}
+
+// Sleep for a specified number of milliseconds
+function taskSleep(durationMs: number): void {
+    __OPCODE_SLEEP(durationMs);
+}

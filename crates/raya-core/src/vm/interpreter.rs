@@ -7,6 +7,7 @@ use crate::{
     object::{Array, Closure, Object, RayaString},
     scheduler::{ExceptionHandler, Scheduler, Task, TaskState},
     stack::Stack,
+    sync::MutexRegistry,
     value::Value,
     VmError, VmResult,
 };
@@ -35,6 +36,8 @@ pub struct Vm {
     current_exception: Option<Value>,
     /// Held mutexes for exception unwinding
     held_mutexes: Vec<crate::sync::MutexId>,
+    /// Mutex registry for managing all mutexes
+    mutex_registry: MutexRegistry,
 }
 
 impl Vm {
@@ -60,6 +63,7 @@ impl Vm {
             exception_handlers: Vec::new(),
             current_exception: None,
             held_mutexes: Vec::new(),
+            mutex_registry: MutexRegistry::new(),
         }
     }
 
@@ -126,11 +130,20 @@ impl Vm {
 
         // Register classes from the module
         for (i, class_def) in module.classes.iter().enumerate() {
-            let class = crate::object::Class::new(
-                i,
-                class_def.name.clone(),
-                class_def.field_count,
-            );
+            let class = if let Some(parent_id) = class_def.parent_id {
+                crate::object::Class::with_parent(
+                    i,
+                    class_def.name.clone(),
+                    class_def.field_count,
+                    parent_id as usize,
+                )
+            } else {
+                crate::object::Class::new(
+                    i,
+                    class_def.name.clone(),
+                    class_def.field_count,
+                )
+            };
             self.classes.register_class(class);
         }
 
@@ -258,6 +271,7 @@ impl Vm {
                 Opcode::Fdiv => self.op_fdiv()?,
                 Opcode::Fneg => self.op_fneg()?,
                 Opcode::Fpow => self.op_fpow()?,
+                Opcode::Fmod => self.op_fmod()?,
 
                 // Arithmetic - Number (generic)
                 Opcode::Nadd => self.op_nadd()?,
@@ -511,6 +525,14 @@ impl Vm {
                     let arg_count = self.read_u16(code, &mut ip)? as usize;
                     self.op_call_method(method_index, arg_count, module)?;
                 }
+
+                // Native function call (for primitive methods)
+                Opcode::NativeCall => {
+                    let native_id = self.read_u16(code, &mut ip)?;
+                    let arg_count = self.read_u8(code, &mut ip)? as usize;
+                    self.op_native_call(native_id, arg_count, module)?;
+                }
+
                 Opcode::CallConstructor => {
                     // Safepoint poll before allocation
                     self.safepoint().poll();
@@ -737,6 +759,100 @@ impl Vm {
                     std::thread::yield_now();
                 }
 
+                // Mutex operations
+                Opcode::NewMutex => {
+                    // Create a new mutex and push its ID onto the stack
+                    let (mutex_id, _mutex) = self.mutex_registry.create_mutex();
+                    // Store the mutex ID as an i64 value
+                    self.stack.push(Value::i64(mutex_id.as_u64() as i64))?;
+                }
+
+                Opcode::MutexLock => {
+                    // Pop mutex ID from stack
+                    let mutex_id_val = self.stack.pop()?;
+                    let mutex_id = crate::sync::MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+
+                    // Get the mutex from registry
+                    if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                        // For now, use a simple spinlock approach
+                        // In a full implementation, this would suspend the Task
+                        loop {
+                            // Try to acquire the lock
+                            // We use a dummy TaskId since we don't have real task context here
+                            let task_id = crate::scheduler::TaskId::new();
+                            match mutex.try_lock(task_id) {
+                                Ok(()) => {
+                                    // Lock acquired - track it for exception unwinding
+                                    self.held_mutexes.push(mutex_id);
+                                    break;
+                                }
+                                Err(_) => {
+                                    // Lock is held by another task - yield and retry
+                                    self.safepoint().poll();
+                                    std::thread::yield_now();
+                                }
+                            }
+                        }
+                    } else {
+                        return Err(VmError::RuntimeError(format!(
+                            "Mutex {:?} not found",
+                            mutex_id
+                        )));
+                    }
+                }
+
+                Opcode::MutexUnlock => {
+                    // Pop mutex ID from stack
+                    let mutex_id_val = self.stack.pop()?;
+                    let mutex_id = crate::sync::MutexId::from_u64(mutex_id_val.as_i64().unwrap_or(0) as u64);
+
+                    // Get the mutex from registry
+                    if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                        // Get the owner task ID (the one we used when locking)
+                        if let Some(owner) = mutex.owner() {
+                            match mutex.unlock(owner) {
+                                Ok(_next_task) => {
+                                    // Remove from held mutexes
+                                    self.held_mutexes.retain(|&id| id != mutex_id);
+                                }
+                                Err(e) => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Mutex unlock failed: {}",
+                                        e
+                                    )));
+                                }
+                            }
+                        } else {
+                            return Err(VmError::RuntimeError(
+                                "Mutex is not locked".to_string(),
+                            ));
+                        }
+                    } else {
+                        return Err(VmError::RuntimeError(format!(
+                            "Mutex {:?} not found",
+                            mutex_id
+                        )));
+                    }
+                }
+
+                Opcode::TaskCancel => {
+                    // Pop task handle from stack
+                    let task_handle = self.stack.pop()?;
+
+                    // Get task ID from the handle (stored as i64)
+                    if let Some(task_id_raw) = task_handle.as_i64() {
+                        let task_id = crate::scheduler::TaskId::from_u64(task_id_raw as u64);
+                        // Mark the task for cancellation
+                        // For now, this is a no-op since we don't have full cancellation support
+                        // In a full implementation, this would:
+                        // 1. Set a cancellation flag on the task
+                        // 2. The task would check this flag at safepoints
+                        // 3. If set, the task would unwind with a cancellation exception
+                        let _ = task_id; // Suppress unused variable warning for now
+                    }
+                    // Task cancellation is a no-op if handle is invalid
+                }
+
                 // Closure operations
                 Opcode::MakeClosure => {
                     // Safepoint poll before allocation
@@ -915,6 +1031,16 @@ impl Vm {
                             "RETHROW with no active exception".to_string(),
                         ));
                     }
+                }
+
+                // Type operators
+                Opcode::InstanceOf => {
+                    let class_id = self.read_u16(code, &mut ip)? as usize;
+                    self.op_instanceof(class_id)?;
+                }
+                Opcode::Cast => {
+                    let class_id = self.read_u16(code, &mut ip)? as usize;
+                    self.op_cast(class_id)?;
                 }
 
                 _ => {
@@ -1345,97 +1471,73 @@ impl Vm {
         self.stack.push(Value::i32(!a))
     }
 
-    // ===== Float Arithmetic Operations (Placeholder) =====
+    // ===== Float Arithmetic Operations =====
 
-    /// FADD - Add two floats
+    /// Helper to convert any numeric value to f64
+    #[inline]
+    fn value_to_f64(v: Value) -> VmResult<f64> {
+        if let Some(f) = v.as_f64() {
+            Ok(f)
+        } else if let Some(i) = v.as_i32() {
+            Ok(i as f64)
+        } else {
+            Err(VmError::TypeError("Expected number".to_string()))
+        }
+    }
+
+    /// FADD - Add two floats (also handles i32 -> f64 conversion)
     #[inline]
     fn op_fadd(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(a + b))
     }
 
     /// FSUB - Subtract two floats
     #[inline]
     fn op_fsub(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(a - b))
     }
 
     /// FMUL - Multiply two floats
     #[inline]
     fn op_fmul(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(a * b))
     }
 
     /// FDIV - Divide two floats
     #[inline]
     fn op_fdiv(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(a / b))
     }
 
     /// FNEG - Negate a float
     #[inline]
     fn op_fneg(&mut self) -> VmResult<()> {
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(-a))
     }
 
     /// FPOW - Power of two floats
     #[inline]
     fn op_fpow(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::f64(a.powf(b)))
+    }
+
+    /// FMOD - Modulo of two floats
+    #[inline]
+    fn op_fmod(&mut self) -> VmResult<()> {
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
+        self.stack.push(Value::f64(a % b))
     }
 
     // ===== Number Arithmetic Operations (Generic) =====
@@ -1695,99 +1797,51 @@ impl Vm {
 
     // ===== Float Comparison Operations =====
 
-    /// FEQ - Float equality
+    /// FEQ - Float equality (also handles i32 -> f64 conversion)
     #[inline]
     fn op_feq(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a == b))
     }
 
     /// FNE - Float inequality
     #[inline]
     fn op_fne(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a != b))
     }
 
     /// FLT - Float less than
     #[inline]
     fn op_flt(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a < b))
     }
 
     /// FLE - Float less or equal
     #[inline]
     fn op_fle(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a <= b))
     }
 
     /// FGT - Float greater than
     #[inline]
     fn op_fgt(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a > b))
     }
 
     /// FGE - Float greater or equal
     #[inline]
     fn op_fge(&mut self) -> VmResult<()> {
-        let b = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
-        let a = self
-            .stack
-            .pop()?
-            .as_f64()
-            .ok_or_else(|| VmError::TypeError("Expected f64".to_string()))?;
+        let b = Self::value_to_f64(self.stack.pop()?)?;
+        let a = Self::value_to_f64(self.stack.pop()?)?;
         self.stack.push(Value::bool(a >= b))
     }
 
@@ -2805,7 +2859,169 @@ impl Vm {
         Ok(())
     }
 
+    // ===== Type Operators =====
+
+    /// INSTANCEOF - Check if object is an instance of a class (including inheritance)
+    fn op_instanceof(&mut self, target_class_id: usize) -> VmResult<()> {
+        let value = self.stack.pop()?;
+
+        // Null is not an instance of any class
+        if value.is_null() {
+            self.stack.push(Value::bool(false))?;
+            return Ok(());
+        }
+
+        // Must be an object pointer
+        if !value.is_ptr() {
+            // Primitives (numbers, booleans) are not instances of user-defined classes
+            self.stack.push(Value::bool(false))?;
+            return Ok(());
+        }
+
+        // Get object's class ID
+        let obj_ptr = unsafe { value.as_ptr::<Object>() };
+        let obj = match obj_ptr {
+            Some(ptr) => unsafe { &*ptr.as_ptr() },
+            None => {
+                self.stack.push(Value::bool(false))?;
+                return Ok(());
+            }
+        };
+
+        // Check if object's class is or inherits from target class
+        let result = self.is_instance_of_class(obj.class_id, target_class_id);
+        self.stack.push(Value::bool(result))?;
+        Ok(())
+    }
+
+    /// CAST - Cast object to a class type (validates at runtime)
+    fn op_cast(&mut self, target_class_id: usize) -> VmResult<()> {
+        let value = self.stack.pop()?;
+
+        // Null cast to any class type is null
+        if value.is_null() {
+            self.stack.push(value)?;
+            return Ok(());
+        }
+
+        // Must be an object pointer
+        if !value.is_ptr() {
+            return Err(VmError::TypeError(format!(
+                "Cannot cast primitive value to class type"
+            )));
+        }
+
+        // Get object's class ID
+        let obj_ptr = unsafe { value.as_ptr::<Object>() };
+        let obj = match obj_ptr {
+            Some(ptr) => unsafe { &*ptr.as_ptr() },
+            None => {
+                return Err(VmError::TypeError(
+                    "Cannot cast non-object value to class type".to_string(),
+                ));
+            }
+        };
+
+        // Check if object's class is or inherits from target class
+        if self.is_instance_of_class(obj.class_id, target_class_id) {
+            // Valid cast - push the same object (type is now narrowed)
+            self.stack.push(value)?;
+            Ok(())
+        } else {
+            // Invalid cast - throw TypeError
+            let obj_class_name = self
+                .classes
+                .get_class(obj.class_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("class#{}", obj.class_id));
+            let target_class_name = self
+                .classes
+                .get_class(target_class_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("class#{}", target_class_id));
+            Err(VmError::TypeError(format!(
+                "Cannot cast {} to {}",
+                obj_class_name, target_class_name
+            )))
+        }
+    }
+
+    /// Check if a class is or inherits from another class
+    fn is_instance_of_class(&self, object_class_id: usize, target_class_id: usize) -> bool {
+        let mut current_class_id = Some(object_class_id);
+
+        while let Some(class_id) = current_class_id {
+            // Check if this is the target class
+            if class_id == target_class_id {
+                return true;
+            }
+
+            // Check parent class
+            current_class_id = self
+                .classes
+                .get_class(class_id)
+                .and_then(|c| c.parent_id);
+        }
+
+        false
+    }
+
     // ===== Method Dispatch =====
+
+    /// NATIVE_CALL - Call native function for primitive methods
+    /// Used for built-in methods on arrays, strings, etc.
+    /// arg_count includes the object/receiver as first argument
+    fn op_native_call(&mut self, native_id: u16, arg_count: usize, module: &Module) -> VmResult<()> {
+        // For native calls, the object is included in arg_count as first argument
+        // Adjust for the existing method handlers which expect arg_count without object
+        let method_arg_count = arg_count.saturating_sub(1);
+
+        // Check for built-in Object methods (0x00xx range)
+        if (0x0001..=0x00FF).contains(&native_id) {
+            return self.call_object_method(native_id, arg_count);
+        }
+
+        // Check for built-in array methods (0x01xx range)
+        if (0x0100..=0x01FF).contains(&native_id) {
+            return self.call_array_method(native_id, method_arg_count, module);
+        }
+
+        // Check for built-in string methods (0x02xx range)
+        if (0x0200..=0x02FF).contains(&native_id) {
+            return self.call_string_method(native_id, method_arg_count);
+        }
+
+        // Check for built-in channel methods (0x04xx range)
+        if (0x0400..=0x04FF).contains(&native_id) {
+            return self.call_channel_method(native_id, arg_count);
+        }
+
+        // Check for built-in buffer methods (0x07xx range)
+        if (0x0700..=0x07FF).contains(&native_id) {
+            return self.call_buffer_method(native_id, arg_count);
+        }
+
+        // Check for built-in map methods (0x08xx range)
+        if (0x0800..=0x08FF).contains(&native_id) {
+            return self.call_map_method(native_id, arg_count);
+        }
+
+        // Check for built-in set methods (0x09xx range)
+        if (0x0900..=0x09FF).contains(&native_id) {
+            return self.call_set_method(native_id, arg_count);
+        }
+
+        // Check for built-in date methods (0x0Bxx range)
+        if (0x0B00..=0x0BFF).contains(&native_id) {
+            return self.call_date_method(native_id, arg_count);
+        }
+
+        // Unknown native function
+        Err(VmError::RuntimeError(format!(
+            "Unknown native function ID: {:#06x}",
+            native_id
+        )))
+    }
 
     /// CALL_METHOD - Call method via vtable dispatch or built-in method
     #[allow(dead_code)]
@@ -2819,7 +3035,7 @@ impl Vm {
 
         // Check for built-in array methods
         if builtin::is_array_method(method_id) {
-            return self.call_array_method(method_id, arg_count);
+            return self.call_array_method(method_id, arg_count, module);
         }
 
         // Check for built-in string methods
@@ -2873,8 +3089,83 @@ impl Vm {
         Ok(())
     }
 
+    /// Execute built-in Object method
+    fn call_object_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        // Object method IDs: 0x0001 = toString, 0x0002 = hashCode, 0x0003 = equals
+        const OBJECT_HASH_CODE: u16 = 0x0002;
+        const OBJECT_EQUAL: u16 = 0x0003;
+
+        match method_id {
+            OBJECT_HASH_CODE => {
+                // hashCode() - returns the object's unique ID as a number
+                // Stack: [this] -> [number]
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Object.hashCode expects 0 arguments, got {}",
+                        arg_count - 1
+                    )));
+                }
+
+                let this_val = self.stack.pop()?;
+
+                if !this_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected object for hashCode method".to_string(),
+                    ));
+                }
+
+                // Get object and return its object_id as hash
+                let obj_ptr = unsafe { this_val.as_ptr::<Object>() };
+                let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let hash = obj.object_id as i32;
+                self.stack.push(Value::i32(hash))?;
+                Ok(())
+            }
+            OBJECT_EQUAL => {
+                // equals(other) - compares two objects by identity
+                // Stack: [this, other] -> [boolean]
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Object.equals expects 1 argument, got {}",
+                        arg_count - 1
+                    )));
+                }
+
+                let other_val = self.stack.pop()?;
+                let this_val = self.stack.pop()?;
+
+                // Both must be objects
+                if !this_val.is_ptr() || !other_val.is_ptr() {
+                    // If either is not an object, they're not equal
+                    self.stack.push(Value::bool(false))?;
+                    return Ok(());
+                }
+
+                // Compare object IDs for identity equality
+                let this_ptr = unsafe { this_val.as_ptr::<Object>() };
+                let other_ptr = unsafe { other_val.as_ptr::<Object>() };
+
+                let equal = match (this_ptr, other_ptr) {
+                    (Some(t), Some(o)) => {
+                        let this_obj = unsafe { &*t.as_ptr() };
+                        let other_obj = unsafe { &*o.as_ptr() };
+                        this_obj.object_id == other_obj.object_id
+                    }
+                    _ => false,
+                };
+
+                self.stack.push(Value::bool(equal))?;
+                Ok(())
+            }
+            _ => Err(VmError::RuntimeError(format!(
+                "Unknown Object method ID: {:#06x}",
+                method_id
+            ))),
+        }
+    }
+
     /// Execute built-in array method
-    fn call_array_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+    fn call_array_method(&mut self, method_id: u16, arg_count: usize, module: &Module) -> VmResult<()> {
         // Stack layout: [array, arg1, arg2, ...] (arg_count arguments)
         // For push: [array, value] -> [new_length]
         // For pop: [array] -> [popped_value]
@@ -3044,6 +3335,399 @@ impl Vm {
                 Ok(())
             }
 
+            builtin::array::SLICE => {
+                // slice(start, end) - arg_count should be 2
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.slice expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let end_val = self.stack.pop()?;
+                let start_val = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                let start = start_val.as_i32().unwrap_or(0) as usize;
+                let end = end_val.as_i32().unwrap_or(0) as usize;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for slice method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clamp indices
+                let len = arr.elements.len();
+                let start = start.min(len);
+                let end = end.min(len).max(start);
+
+                // Create new array with sliced elements
+                let sliced: Vec<Value> = arr.elements[start..end].to_vec();
+                let mut new_arr = Array::new(0, 0);
+                new_arr.elements = sliced;
+                let gc_ptr = self.gc.allocate(new_arr);
+                let result = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::CONCAT => {
+                // concat(other) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.concat expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let other_val = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() || !other_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected arrays for concat method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                let other_ptr = unsafe { other_val.as_ptr::<Array>() };
+                let other = unsafe { &*other_ptr.unwrap().as_ptr() };
+
+                // Create new array with concatenated elements
+                let mut combined = arr.elements.clone();
+                combined.extend(other.elements.clone());
+                let mut new_arr = Array::new(0, 0);
+                new_arr.elements = combined;
+                let gc_ptr = self.gc.allocate(new_arr);
+                let result = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::REVERSE => {
+                // reverse() - arg_count should be 0
+                if arg_count != 0 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.reverse expects 0 arguments, got {}",
+                        arg_count
+                    )));
+                }
+
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for reverse method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                // Reverse in place
+                arr.elements.reverse();
+
+                // Return the same array (for method chaining)
+                self.stack.push(array_val)?;
+
+                Ok(())
+            }
+
+            builtin::array::JOIN => {
+                // join(separator) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.join expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let sep_val = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                let separator = self.get_string_data(&sep_val)?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for join method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Convert each element to string and join
+                let parts: Vec<String> = arr.elements.iter().map(|v| {
+                    if v.is_ptr() {
+                        if let Some(str_ptr) = unsafe { v.as_ptr::<RayaString>() } {
+                            let str_obj = unsafe { &*str_ptr.as_ptr() };
+                            str_obj.data.clone()
+                        } else {
+                            format!("{:?}", v)
+                        }
+                    } else if let Some(n) = v.as_i32() {
+                        n.to_string()
+                    } else if let Some(f) = v.as_f64() {
+                        f.to_string()
+                    } else if let Some(b) = v.as_bool() {
+                        if b { "true".to_string() } else { "false".to_string() }
+                    } else if v.is_null() {
+                        "null".to_string()
+                    } else {
+                        String::new()
+                    }
+                }).collect();
+
+                let joined = parts.join(&separator);
+                let result = self.create_string_value(joined);
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::FOR_EACH => {
+                // forEach(callback) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.forEach expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let callback = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for forEach method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues during callback execution
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Call callback for each element
+                for elem in elements {
+                    self.call_closure_with_arg(callback, elem, module)?;
+                }
+
+                // forEach returns void, push null
+                self.stack.push(Value::null())?;
+                Ok(())
+            }
+
+            builtin::array::FILTER => {
+                // filter(predicate) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.filter expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let predicate = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for filter method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Filter elements
+                let mut filtered = Vec::new();
+                for elem in elements {
+                    let result = self.call_closure_with_arg(predicate, elem, module)?;
+                    // Check if result is truthy
+                    let keep = result.as_bool().unwrap_or(false);
+                    if keep {
+                        filtered.push(elem);
+                    }
+                }
+
+                // Create new array with filtered elements
+                let mut new_arr = Array::new(0, 0);
+                new_arr.elements = filtered;
+                let gc_ptr = self.gc.allocate(new_arr);
+                let result = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(result)?;
+
+                Ok(())
+            }
+
+            builtin::array::FIND => {
+                // find(predicate) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.find expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let predicate = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for find method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Find first matching element
+                for elem in elements {
+                    let result = self.call_closure_with_arg(predicate, elem, module)?;
+                    let matches = result.as_bool().unwrap_or(false);
+                    if matches {
+                        self.stack.push(elem)?;
+                        return Ok(());
+                    }
+                }
+
+                // Not found, return null
+                self.stack.push(Value::null())?;
+                Ok(())
+            }
+
+            builtin::array::FIND_INDEX => {
+                // findIndex(predicate) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.findIndex expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let predicate = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for findIndex method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Find index of first matching element
+                for (i, elem) in elements.into_iter().enumerate() {
+                    let result = self.call_closure_with_arg(predicate, elem, module)?;
+                    let matches = result.as_bool().unwrap_or(false);
+                    if matches {
+                        self.stack.push(Value::i32(i as i32))?;
+                        return Ok(());
+                    }
+                }
+
+                // Not found, return -1
+                self.stack.push(Value::i32(-1))?;
+                Ok(())
+            }
+
+            builtin::array::EVERY => {
+                // every(predicate) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.every expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let predicate = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for every method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Check if all elements match predicate
+                for elem in elements {
+                    let result = self.call_closure_with_arg(predicate, elem, module)?;
+                    let matches = result.as_bool().unwrap_or(false);
+                    if !matches {
+                        self.stack.push(Value::bool(false))?;
+                        return Ok(());
+                    }
+                }
+
+                // All matched
+                self.stack.push(Value::bool(true))?;
+                Ok(())
+            }
+
+            builtin::array::SOME => {
+                // some(predicate) - arg_count should be 1
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.some expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+
+                let predicate = self.stack.pop()?;
+                let array_val = self.stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "Expected array for some method".to_string(),
+                    ));
+                }
+
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
+
+                // Clone elements to avoid borrowing issues
+                let elements: Vec<Value> = arr.elements.clone();
+
+                // Check if any element matches predicate
+                for elem in elements {
+                    let result = self.call_closure_with_arg(predicate, elem, module)?;
+                    let matches = result.as_bool().unwrap_or(false);
+                    if matches {
+                        self.stack.push(Value::bool(true))?;
+                        return Ok(());
+                    }
+                }
+
+                // None matched
+                self.stack.push(Value::bool(false))?;
+                Ok(())
+            }
+
             _ => Err(VmError::RuntimeError(format!(
                 "Unimplemented array method: 0x{:04X}",
                 method_id
@@ -3051,13 +3735,975 @@ impl Vm {
         }
     }
 
-    /// Execute built-in string method (placeholder)
-    fn call_string_method(&mut self, method_id: u16, _arg_count: usize) -> VmResult<()> {
-        // TODO: Implement string methods
-        Err(VmError::RuntimeError(format!(
-            "String method 0x{:04X} not yet implemented",
-            method_id
-        )))
+    /// Helper to extract string from a Value
+    fn get_string_data(&self, val: &Value) -> VmResult<String> {
+        if !val.is_ptr() {
+            return Err(VmError::TypeError("Expected string".to_string()));
+        }
+        let str_ptr = unsafe { val.as_ptr::<RayaString>() };
+        let str_obj = unsafe { &*str_ptr.ok_or(VmError::TypeError("Expected string".to_string()))?.as_ptr() };
+        Ok(str_obj.data.clone())
+    }
+
+    /// Helper to create a string Value from a String
+    fn create_string_value(&mut self, s: String) -> Value {
+        let result = RayaString::new(s);
+        let gc_ptr = self.gc.allocate(result);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+    }
+
+    /// Helper to call a closure with a single argument and get the result
+    /// Used by callback-based array methods (forEach, filter, find, etc.)
+    fn call_closure_with_arg(&mut self, closure_val: Value, arg: Value, module: &Module) -> VmResult<Value> {
+        // Check it's a pointer (closure object)
+        if !closure_val.is_ptr() {
+            return Err(VmError::TypeError(
+                "Expected closure for callback".to_string(),
+            ));
+        }
+
+        // Get closure from GC heap
+        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+        let closure = unsafe { &*closure_ptr.ok_or(VmError::TypeError("Invalid closure".to_string()))?.as_ptr() };
+
+        // Get the function
+        let func_index = closure.func_id();
+        if func_index >= module.functions.len() {
+            return Err(VmError::RuntimeError(format!(
+                "Invalid function index in closure: {}",
+                func_index
+            )));
+        }
+
+        // Push argument onto stack for the function call
+        self.stack.push(arg)?;
+
+        // Push closure onto closure stack for LoadCaptured access
+        self.closure_stack.push(closure_val);
+
+        // Execute the closure's function
+        let callee = &module.functions[func_index];
+        let result = self.execute_function(callee, module);
+
+        // Pop closure from closure stack
+        self.closure_stack.pop();
+
+        result
+    }
+
+    /// Execute built-in string method
+    fn call_string_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        match method_id {
+            builtin::string::CHAR_AT => {
+                // str.charAt(index) -> string
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "charAt expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let index_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let index = index_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("charAt index must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let result = s.chars().nth(index).map(|c| c.to_string()).unwrap_or_default();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::SUBSTRING => {
+                // str.substring(start, end) -> string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "substring expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let end_val = self.stack.pop()?;
+                let start_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let start = start_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("substring start must be a number".to_string())
+                })? as usize;
+                let end = end_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("substring end must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let chars: Vec<char> = s.chars().collect();
+                let start = start.min(chars.len());
+                let end = end.min(chars.len());
+                let result: String = chars[start..end].iter().collect();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::TO_UPPER_CASE => {
+                // str.toUpperCase() -> string
+                let str_val = self.stack.pop()?;
+                let s = self.get_string_data(&str_val)?;
+                let result = s.to_uppercase();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::TO_LOWER_CASE => {
+                // str.toLowerCase() -> string
+                let str_val = self.stack.pop()?;
+                let s = self.get_string_data(&str_val)?;
+                let result = s.to_lowercase();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::TRIM => {
+                // str.trim() -> string
+                let str_val = self.stack.pop()?;
+                let s = self.get_string_data(&str_val)?;
+                let result = s.trim().to_string();
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::INDEX_OF => {
+                // str.indexOf(searchStr) -> number
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "indexOf expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let search_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let search = self.get_string_data(&search_val)?;
+
+                let result = s.find(&search).map(|i| i as i32).unwrap_or(-1);
+                self.stack.push(Value::i32(result))?;
+                Ok(())
+            }
+
+            builtin::string::INCLUDES => {
+                // str.includes(searchStr) -> boolean
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "includes expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let search_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let search = self.get_string_data(&search_val)?;
+
+                let result = s.contains(&search);
+                self.stack.push(Value::bool(result))?;
+                Ok(())
+            }
+
+            builtin::string::SPLIT => {
+                // str.split(separator) -> Array<string>
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "split expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let sep_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let separator = self.get_string_data(&sep_val)?;
+
+                let parts: Vec<Value> = s
+                    .split(&separator)
+                    .map(|part| self.create_string_value(part.to_string()))
+                    .collect();
+
+                let mut arr = Array::new(0, 0);
+                arr.elements = parts;
+                let gc_ptr = self.gc.allocate(arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::STARTS_WITH => {
+                // str.startsWith(prefix) -> boolean
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "startsWith expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let prefix_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let prefix = self.get_string_data(&prefix_val)?;
+
+                let result = s.starts_with(&prefix);
+                self.stack.push(Value::bool(result))?;
+                Ok(())
+            }
+
+            builtin::string::ENDS_WITH => {
+                // str.endsWith(suffix) -> boolean
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "endsWith expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let suffix_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let suffix = self.get_string_data(&suffix_val)?;
+
+                let result = s.ends_with(&suffix);
+                self.stack.push(Value::bool(result))?;
+                Ok(())
+            }
+
+            builtin::string::REPLACE => {
+                // str.replace(search, replacement) -> string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "replace expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let replacement_val = self.stack.pop()?;
+                let search_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let s = self.get_string_data(&str_val)?;
+                let search = self.get_string_data(&search_val)?;
+                let replacement = self.get_string_data(&replacement_val)?;
+
+                let result = s.replacen(&search, &replacement, 1);
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::REPEAT => {
+                // str.repeat(count) -> string
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "repeat expects 1 argument, got {}",
+                        arg_count
+                    )));
+                }
+                let count_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let count = count_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("repeat count must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let result = s.repeat(count);
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::PAD_START => {
+                // str.padStart(length, padString) -> string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "padStart expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let pad_val = self.stack.pop()?;
+                let len_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let target_len = len_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("padStart length must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let pad_str = self.get_string_data(&pad_val)?;
+
+                let result = if s.len() >= target_len {
+                    s
+                } else {
+                    let padding_needed = target_len - s.len();
+                    let mut padding = String::new();
+                    while padding.len() < padding_needed {
+                        padding.push_str(&pad_str);
+                    }
+                    padding.truncate(padding_needed);
+                    format!("{}{}", padding, s)
+                };
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::string::PAD_END => {
+                // str.padEnd(length, padString) -> string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "padEnd expects 2 arguments, got {}",
+                        arg_count
+                    )));
+                }
+                let pad_val = self.stack.pop()?;
+                let len_val = self.stack.pop()?;
+                let str_val = self.stack.pop()?;
+
+                let target_len = len_val.as_i32().ok_or_else(|| {
+                    VmError::TypeError("padEnd length must be a number".to_string())
+                })? as usize;
+
+                let s = self.get_string_data(&str_val)?;
+                let pad_str = self.get_string_data(&pad_val)?;
+
+                let result = if s.len() >= target_len {
+                    s
+                } else {
+                    let padding_needed = target_len - s.len();
+                    let mut padding = String::new();
+                    while padding.len() < padding_needed {
+                        padding.push_str(&pad_str);
+                    }
+                    padding.truncate(padding_needed);
+                    format!("{}{}", s, padding)
+                };
+                let value = self.create_string_value(result);
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unknown string method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Map method
+    fn call_map_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::MapObject;
+
+        match method_id {
+            builtin::map::NEW => {
+                // new Map() - create new map, no args
+                let map = MapObject::new();
+                let gc_ptr = self.gc.allocate(map);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::map::SIZE => {
+                // map.size() - get size
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &*map_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::i32(map.size() as i32))?;
+                Ok(())
+            }
+
+            builtin::map::GET => {
+                // map.get(key) - get value, returns null if not found
+                let key = self.stack.pop()?;
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &*map_ptr.unwrap().as_ptr() };
+                let result = map.get(key).unwrap_or(Value::null());
+                self.stack.push(result)?;
+                Ok(())
+            }
+
+            builtin::map::SET => {
+                // map.set(key, value) - set value
+                let value = self.stack.pop()?;
+                let key = self.stack.pop()?;
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &mut *map_ptr.unwrap().as_ptr() };
+                map.set(key, value);
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::map::HAS => {
+                // map.has(key) - check if key exists
+                let key = self.stack.pop()?;
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &*map_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(map.has(key)))?;
+                Ok(())
+            }
+
+            builtin::map::DELETE => {
+                // map.delete(key) - delete key, returns true if existed
+                let key = self.stack.pop()?;
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &mut *map_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(map.delete(key)))?;
+                Ok(())
+            }
+
+            builtin::map::CLEAR => {
+                // map.clear() - clear all entries
+                let map_val = self.stack.pop()?;
+                if !map_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Map object".to_string()));
+                }
+                let map_ptr = unsafe { map_val.as_ptr::<MapObject>() };
+                let map = unsafe { &mut *map_ptr.unwrap().as_ptr() };
+                map.clear();
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented Map method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Set method
+    fn call_set_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::SetObject;
+
+        match method_id {
+            builtin::set::NEW => {
+                // new Set() - create new set
+                let set = SetObject::new();
+                let gc_ptr = self.gc.allocate(set);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::set::SIZE => {
+                // set.size() - get size
+                let set_val = self.stack.pop()?;
+                if !set_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Set object".to_string()));
+                }
+                let set_ptr = unsafe { set_val.as_ptr::<SetObject>() };
+                let set = unsafe { &*set_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::i32(set.size() as i32))?;
+                Ok(())
+            }
+
+            builtin::set::ADD => {
+                // set.add(value) - add value
+                let value = self.stack.pop()?;
+                let set_val = self.stack.pop()?;
+                if !set_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Set object".to_string()));
+                }
+                let set_ptr = unsafe { set_val.as_ptr::<SetObject>() };
+                let set = unsafe { &mut *set_ptr.unwrap().as_ptr() };
+                set.add(value);
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::set::HAS => {
+                // set.has(value) - check if value exists
+                let value = self.stack.pop()?;
+                let set_val = self.stack.pop()?;
+                if !set_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Set object".to_string()));
+                }
+                let set_ptr = unsafe { set_val.as_ptr::<SetObject>() };
+                let set = unsafe { &*set_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(set.has(value)))?;
+                Ok(())
+            }
+
+            builtin::set::DELETE => {
+                // set.delete(value) - delete value, returns true if existed
+                let value = self.stack.pop()?;
+                let set_val = self.stack.pop()?;
+                if !set_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Set object".to_string()));
+                }
+                let set_ptr = unsafe { set_val.as_ptr::<SetObject>() };
+                let set = unsafe { &mut *set_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(set.delete(value)))?;
+                Ok(())
+            }
+
+            builtin::set::CLEAR => {
+                // set.clear() - clear all values
+                let set_val = self.stack.pop()?;
+                if !set_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Set object".to_string()));
+                }
+                let set_ptr = unsafe { set_val.as_ptr::<SetObject>() };
+                let set = unsafe { &mut *set_ptr.unwrap().as_ptr() };
+                set.clear();
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented Set method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Buffer method
+    fn call_buffer_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::Buffer;
+
+        match method_id {
+            builtin::buffer::NEW => {
+                // new Buffer(size) - create new buffer
+                let size = self.stack.pop()?;
+                let size = size.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer size must be a number".to_string())
+                })? as usize;
+                let buf = Buffer::new(size);
+                let gc_ptr = self.gc.allocate(buf);
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::buffer::LENGTH => {
+                // buf.length() - get length
+                let buf_val = self.stack.pop()?;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &*buf_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::i32(buf.length() as i32))?;
+                Ok(())
+            }
+
+            builtin::buffer::GET_BYTE => {
+                // buf.getByte(index) - get byte at index
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &*buf_ptr.unwrap().as_ptr() };
+                let result = buf.get_byte(index).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Buffer index {} out of bounds", index))
+                })?;
+                self.stack.push(Value::i32(result as i32))?;
+                Ok(())
+            }
+
+            builtin::buffer::SET_BYTE => {
+                // buf.setByte(index, value) - set byte at index
+                let value = self.stack.pop()?;
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                let value = value.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer value must be a number".to_string())
+                })? as u8;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &mut *buf_ptr.unwrap().as_ptr() };
+                buf.set_byte(index, value).map_err(VmError::RuntimeError)?;
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::buffer::GET_INT32 => {
+                // buf.getInt32(index) - get int32 at index
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &*buf_ptr.unwrap().as_ptr() };
+                let result = buf.get_int32(index).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Buffer index {} out of bounds for int32", index))
+                })?;
+                self.stack.push(Value::i32(result))?;
+                Ok(())
+            }
+
+            builtin::buffer::SET_INT32 => {
+                // buf.setInt32(index, value) - set int32 at index
+                let value = self.stack.pop()?;
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                let value = value.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer value must be a number".to_string())
+                })?;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &mut *buf_ptr.unwrap().as_ptr() };
+                buf.set_int32(index, value).map_err(VmError::RuntimeError)?;
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::buffer::GET_FLOAT64 => {
+                // buf.getFloat64(index) - get float64 at index
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &*buf_ptr.unwrap().as_ptr() };
+                let result = buf.get_float64(index).ok_or_else(|| {
+                    VmError::RuntimeError(format!(
+                        "Buffer index {} out of bounds for float64",
+                        index
+                    ))
+                })?;
+                self.stack.push(Value::f64(result))?;
+                Ok(())
+            }
+
+            builtin::buffer::SET_FLOAT64 => {
+                // buf.setFloat64(index, value) - set float64 at index
+                let value = self.stack.pop()?;
+                let index = self.stack.pop()?;
+                let buf_val = self.stack.pop()?;
+                let index = index.as_i32().ok_or_else(|| {
+                    VmError::TypeError("Buffer index must be a number".to_string())
+                })? as usize;
+                let value = value.as_f64().ok_or_else(|| {
+                    VmError::TypeError("Buffer value must be a number".to_string())
+                })?;
+                if !buf_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Buffer object".to_string()));
+                }
+                let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
+                let buf = unsafe { &mut *buf_ptr.unwrap().as_ptr() };
+                buf.set_float64(index, value)
+                    .map_err(VmError::RuntimeError)?;
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented Buffer method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Date method
+    fn call_date_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::DateObject;
+
+        match method_id {
+            builtin::date::NOW => {
+                // Date.now() - return current timestamp as f64 (milliseconds since epoch)
+                use std::time::{SystemTime, UNIX_EPOCH};
+                let timestamp_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as f64)
+                    .unwrap_or(0.0);
+                self.stack.push(Value::f64(timestamp_ms))?;
+                Ok(())
+            }
+
+            builtin::date::GET_TIME => {
+                // getTime(timestamp) - just returns the timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                self.stack.push(Value::f64(timestamp_ms))?;
+                Ok(())
+            }
+
+            builtin::date::GET_FULL_YEAR => {
+                // getFullYear(timestamp) - get year from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_full_year()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_MONTH => {
+                // getMonth(timestamp) - get month (0-11) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_month()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_DATE => {
+                // getDate(timestamp) - get day of month (1-31) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_date()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_DAY => {
+                // getDay(timestamp) - get day of week (0-6) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_day()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_HOURS => {
+                // getHours(timestamp) - get hours (0-23) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_hours()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_MINUTES => {
+                // getMinutes(timestamp) - get minutes (0-59) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_minutes()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_SECONDS => {
+                // getSeconds(timestamp) - get seconds (0-59) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_seconds()))?;
+                Ok(())
+            }
+
+            builtin::date::GET_MILLISECONDS => {
+                // getMilliseconds(timestamp) - get milliseconds (0-999) from timestamp
+                let timestamp_val = self.stack.pop()?;
+                let timestamp_ms = timestamp_val.as_f64()
+                    .or_else(|| timestamp_val.as_i32().map(|i| i as f64))
+                    .ok_or_else(|| VmError::TypeError("Expected number".to_string()))?;
+                let date = DateObject::from_timestamp(timestamp_ms as i64);
+                self.stack.push(Value::i32(date.get_milliseconds()))?;
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented Date method: 0x{:04X}",
+                method_id
+            ))),
+        }
+    }
+
+    /// Execute built-in Channel method
+    fn call_channel_method(&mut self, method_id: u16, arg_count: usize) -> VmResult<()> {
+        use crate::object::ChannelObject;
+
+        match method_id {
+            builtin::channel::NEW => {
+                // new Channel(capacity) - create new channel
+                let capacity_val = self.stack.pop()?;
+                let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
+
+                // Allocate channel on the GC heap
+                let channel = ChannelObject::new(capacity);
+                let gc_ptr = self.gc.allocate(channel);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                self.stack.push(value)?;
+                Ok(())
+            }
+
+            builtin::channel::SEND => {
+                // ch.send(value) - send value
+                let value = self.stack.pop()?;
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &mut *ch_ptr.unwrap().as_ptr() };
+                // For now, use non-blocking send (proper blocking requires scheduler integration)
+                if !ch.try_send(value) {
+                    return Err(VmError::RuntimeError(
+                        "Channel full or closed".to_string(),
+                    ));
+                }
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::channel::RECEIVE => {
+                // ch.receive() - receive value
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &mut *ch_ptr.unwrap().as_ptr() };
+                // For now, use non-blocking receive (proper blocking requires scheduler integration)
+                let result = ch.try_receive().ok_or_else(|| {
+                    VmError::RuntimeError("Channel empty".to_string())
+                })?;
+                self.stack.push(result)?;
+                Ok(())
+            }
+
+            builtin::channel::TRY_SEND => {
+                // ch.trySend(value) - try send without blocking
+                let value = self.stack.pop()?;
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &mut *ch_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(ch.try_send(value)))?;
+                Ok(())
+            }
+
+            builtin::channel::TRY_RECEIVE => {
+                // ch.tryReceive() - try receive without blocking
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &mut *ch_ptr.unwrap().as_ptr() };
+                let result = ch.try_receive().unwrap_or(Value::null());
+                self.stack.push(result)?;
+                Ok(())
+            }
+
+            builtin::channel::CLOSE => {
+                // ch.close() - close channel
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &mut *ch_ptr.unwrap().as_ptr() };
+                ch.close();
+                self.stack.push(Value::null())?; // void return
+                Ok(())
+            }
+
+            builtin::channel::IS_CLOSED => {
+                // ch.isClosed() - check if closed
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &*ch_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::bool(ch.is_closed()))?;
+                Ok(())
+            }
+
+            builtin::channel::LENGTH => {
+                // ch.length() - get queue length
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &*ch_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::i32(ch.length() as i32))?;
+                Ok(())
+            }
+
+            builtin::channel::CAPACITY => {
+                // ch.capacity() - get buffer capacity
+                let ch_val = self.stack.pop()?;
+                if !ch_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected Channel object".to_string()));
+                }
+                let ch_ptr = unsafe { ch_val.as_ptr::<ChannelObject>() };
+                let ch = unsafe { &*ch_ptr.unwrap().as_ptr() };
+                self.stack.push(Value::i32(ch.capacity() as i32))?;
+                Ok(())
+            }
+
+            _ => Err(VmError::RuntimeError(format!(
+                "Unimplemented Channel method: 0x{:04X}",
+                method_id
+            ))),
+        }
     }
 
     /// CALL_CONSTRUCTOR - Call class constructor

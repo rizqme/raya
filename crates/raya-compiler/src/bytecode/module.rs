@@ -161,6 +161,8 @@ pub struct ClassDef {
     pub name: String,
     /// Number of fields
     pub field_count: usize,
+    /// Parent class ID (None for root classes)
+    pub parent_id: Option<u32>,
     /// Method definitions
     pub methods: Vec<Method>,
 }
@@ -174,6 +176,12 @@ impl ClassDef {
 
         // Write field count
         writer.emit_u32(self.field_count as u32);
+
+        // Write parent class ID (0xFFFFFFFF means no parent)
+        match self.parent_id {
+            Some(id) => writer.emit_u32(id),
+            None => writer.emit_u32(0xFFFFFFFF),
+        }
 
         // Write methods
         writer.emit_u32(self.methods.len() as u32);
@@ -190,6 +198,14 @@ impl ClassDef {
         // Read field count
         let field_count = reader.read_u32()? as usize;
 
+        // Read parent class ID (0xFFFFFFFF means no parent)
+        let parent_raw = reader.read_u32()?;
+        let parent_id = if parent_raw == 0xFFFFFFFF {
+            None
+        } else {
+            Some(parent_raw)
+        };
+
         // Read methods
         let method_count = reader.read_u32()? as usize;
         let mut methods = Vec::with_capacity(method_count);
@@ -200,6 +216,7 @@ impl ClassDef {
         Ok(Self {
             name,
             field_count,
+            parent_id,
             methods,
         })
     }
@@ -681,6 +698,7 @@ mod tests {
         module.classes.push(ClassDef {
             name: "MyClass".to_string(),
             field_count: 3,
+            parent_id: None,
             methods: vec![
                 Method {
                     name: "constructor".to_string(),
@@ -700,6 +718,7 @@ mod tests {
         assert_eq!(decoded.classes.len(), 1);
         assert_eq!(decoded.classes[0].name, "MyClass");
         assert_eq!(decoded.classes[0].field_count, 3);
+        assert_eq!(decoded.classes[0].parent_id, None);
         assert_eq!(decoded.classes[0].methods.len(), 2);
         assert_eq!(decoded.classes[0].methods[0].name, "constructor");
         assert_eq!(decoded.classes[0].methods[1].name, "doSomething");
@@ -789,6 +808,7 @@ mod tests {
         module.classes.push(ClassDef {
             name: "Calculator".to_string(),
             field_count: 2,
+            parent_id: None,
             methods: vec![Method {
                 name: "add42".to_string(),
                 function_id: 0,

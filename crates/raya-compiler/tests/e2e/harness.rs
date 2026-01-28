@@ -7,6 +7,61 @@ use raya_core::{Value, Vm, VmError, RayaString};
 use raya_parser::{Interner, Parser, TypeContext};
 use raya_parser::checker::{Binder, TypeChecker};
 
+/// Get the builtin source files content
+///
+/// Returns the source code for Map, Set, Buffer, Date, Channel classes.
+fn get_builtin_sources() -> &'static str {
+    concat!(
+        // Map class
+        include_str!("../../../raya-builtins/builtins/Map.raya"),
+        "\n",
+        // Set class
+        include_str!("../../../raya-builtins/builtins/Set.raya"),
+        "\n",
+        // Buffer class
+        include_str!("../../../raya-builtins/builtins/Buffer.raya"),
+        "\n",
+        // Date class
+        include_str!("../../../raya-builtins/builtins/Date.raya"),
+        "\n",
+        // Channel class
+        include_str!("../../../raya-builtins/builtins/Channel.raya"),
+        "\n",
+        // Mutex class (simplified - lock/unlock only)
+        "class Mutex {
+            private handle: number;
+
+            constructor() {
+                this.handle = __OPCODE_MUTEX_NEW();
+            }
+
+            lock(): void {
+                __OPCODE_MUTEX_LOCK(this.handle);
+            }
+
+            unlock(): void {
+                __OPCODE_MUTEX_UNLOCK(this.handle);
+            }
+        }
+        ",
+        "\n",
+        // Task class (simplified - for runtime Task objects)
+        "class Task<T> {
+            private handle: number;
+
+            private constructor(handle: number) {
+                this.handle = handle;
+            }
+
+            cancel(): void {
+                __OPCODE_TASK_CANCEL(this.handle);
+            }
+        }
+        ",
+        "\n",
+    )
+}
+
 /// Error type for e2e tests
 #[derive(Debug)]
 pub enum E2EError {
@@ -41,13 +96,46 @@ pub type E2EResult<T> = Result<T, E2EError>;
 
 /// Compile Raya source code to bytecode
 pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
+    compile_internal(source, false)
+}
+
+/// Compile Raya source code with builtin classes included
+///
+/// This prepends the builtin .raya source files (Map, Set, Buffer, Date, Channel)
+/// so they are compiled together with the user code.
+pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
+    compile_internal(source, true)
+}
+
+/// Internal compile function
+fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
+    // Optionally prepend builtin sources
+    let full_source = if include_builtins {
+        format!("{}\n{}", get_builtin_sources(), source)
+    } else {
+        source.to_string()
+    };
+
     // Parse
-    let parser = Parser::new(source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
+    let parser = Parser::new(&full_source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
     let (ast, interner) = parser.parse().map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder = Binder::new(&mut type_ctx, &interner);
+
+    // Register builtin type signatures only if NOT including builtin sources
+    // (to avoid duplicate symbol errors when source files define the same classes)
+    if include_builtins {
+        // When including builtin sources, just register intrinsics (__NATIVE_CALL, etc.)
+        let empty_sigs: Vec<raya_parser::checker::BuiltinSignatures> = vec![];
+        binder.register_builtins(&empty_sigs);
+    } else {
+        // Normal mode: register type signatures from precompiled builtins
+        let builtin_sigs = raya_builtins::to_checker_signatures();
+        binder.register_builtins(&builtin_sigs);
+    }
+
     let mut symbols = binder
         .bind_module(&ast)
         .map_err(|e| E2EError::TypeCheck(format!("Binding error: {:?}", e)))?;
@@ -65,8 +153,9 @@ pub fn compile(source: &str) -> E2EResult<(Module, Interner)> {
 
     // Note: check_result.captures contains closure capture info for future use
 
-    // Compile via IR pipeline
-    let compiler = Compiler::new(type_ctx, &interner);
+    // Compile via IR pipeline with expression types from type checker
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types);
     let bytecode = compiler
         .compile_via_ir(&ast)
         .map_err(E2EError::Compile)?;
@@ -85,15 +174,69 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     vm.execute(&module).map_err(E2EError::Vm)
 }
 
-/// Compile and execute, expecting a specific i32 result
-pub fn expect_i32(source: &str, expected: i32) {
-    match compile_and_run(source) {
+/// Compile and execute with builtins included
+///
+/// Use this for tests that use Map, Set, Buffer, Date, Channel, etc.
+pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
+    let (module, _interner) = compile_with_builtins(source)?;
+
+    let mut vm = Vm::new();
+    vm.execute(&module).map_err(E2EError::Vm)
+}
+
+/// Compile and execute with builtins, expecting a specific i32 result
+pub fn expect_i32_with_builtins(source: &str, expected: i32) {
+    match compile_and_run_with_builtins(source) {
         Ok(value) => {
             let actual = value.as_i32().expect(&format!(
                 "Expected i32 result, got {:?}\nSource:\n{}",
                 value, source
             ));
             assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with builtins, expecting a specific boolean result
+pub fn expect_bool_with_builtins(source: &str, expected: bool) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            let actual = value.as_bool().expect(&format!(
+                "Expected bool result, got {:?}\nSource:\n{}",
+                value, source
+            ));
+            assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute, expecting a specific i32 result
+/// Also accepts f64 values that represent whole numbers (since Number type is f64)
+pub fn expect_i32(source: &str, expected: i32) {
+    match compile_and_run(source) {
+        Ok(value) => {
+            // Try i32 first
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return;
+            }
+            // Also accept f64 that represents a whole number
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected, actual, source
+                );
+                return;
+            }
+            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -247,18 +390,25 @@ pub fn debug_compile(source: &str) -> String {
     };
 
     let mut type_ctx = TypeContext::new();
-    let binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder = Binder::new(&mut type_ctx, &interner);
+
+    // Register builtin signatures
+    let builtin_sigs = raya_builtins::to_checker_signatures();
+    binder.register_builtins(&builtin_sigs);
+
     let symbols = match binder.bind_module(&ast) {
         Ok(s) => s,
         Err(e) => return format!("Binding error: {:?}", e),
     };
 
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
-    if let Err(e) = checker.check_module(&ast) {
-        return format!("Type check error: {:?}", e);
-    }
+    let check_result = match checker.check_module(&ast) {
+        Ok(r) => r,
+        Err(e) => return format!("Type check error: {:?}", e),
+    };
 
-    let compiler = Compiler::new(type_ctx, &interner);
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types);
     match compiler.compile_with_debug(&ast) {
         Ok((_, debug_output)) => debug_output,
         Err(e) => format!("Compile error: {}", e),

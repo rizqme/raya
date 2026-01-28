@@ -184,6 +184,7 @@ impl IrCodeGenerator {
             let class_def = crate::bytecode::ClassDef {
                 name: class.name.clone(),
                 field_count: class.field_count(),
+                parent_id: class.parent.map(|id| id.as_u32()),
                 methods: Vec::new(), // TODO: Add method mapping when methods are fully implemented
             };
             self.module_builder.add_class(class_def);
@@ -247,10 +248,22 @@ impl IrCodeGenerator {
                 self.emit_load_register(ctx, left);
                 // Load right operand
                 self.emit_load_register(ctx, right);
-                // Emit operation - check if this is a string operation
-                // TypeId(3) is string type
-                let is_string_op = left.ty.as_u32() == 3 || right.ty.as_u32() == 3;
-                self.emit_binary_op_typed(ctx, *op, is_string_op);
+                // Emit operation - check operand types
+                // Pre-interned TypeIds:
+                // 0 = Number (f64)
+                // 1 = String
+                // 2 = Boolean
+                // 3 = Null
+                // 4 = Void
+                // 5 = Never
+                // 6 = Unknown
+                let left_ty = left.ty.as_u32();
+                let right_ty = right.ty.as_u32();
+                let is_string_op = left_ty == 1 || right_ty == 1;
+                let is_number_op = left_ty == 0 || right_ty == 0;
+                // Use generic comparison for null (3), unknown (6), or non-primitive types (>6)
+                let use_generic = left_ty == 3 || right_ty == 3 || left_ty == 6 || right_ty == 6 || left_ty > 6 || right_ty > 6;
+                self.emit_binary_op_typed_v2(ctx, *op, is_string_op, is_number_op, use_generic);
                 // Store result
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
@@ -295,6 +308,44 @@ impl IrCodeGenerator {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
                 }
+            }
+
+            IrInstr::NativeCall { dest, native_id, args } => {
+                // Push arguments onto stack
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit NativeCall opcode: u16 nativeId + u8 argCount
+                ctx.emit(Opcode::NativeCall);
+                ctx.emit_u16(*native_id);
+                ctx.emit_u8(args.len() as u8);
+                // Store result if needed
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                }
+            }
+
+            IrInstr::InstanceOf { dest, object, class_id } => {
+                // Push object onto stack
+                self.emit_load_register(ctx, object);
+                // Emit InstanceOf opcode with class ID
+                ctx.emit(Opcode::InstanceOf);
+                ctx.emit_u16(class_id.as_u32() as u16);
+                // Store boolean result
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::Cast { dest, object, class_id } => {
+                // Push object onto stack
+                self.emit_load_register(ctx, object);
+                // Emit Cast opcode with class ID
+                ctx.emit(Opcode::Cast);
+                ctx.emit_u16(class_id.as_u32() as u16);
+                // Store casted object
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
             }
 
             IrInstr::LoadLocal { dest, index } => {
@@ -397,6 +448,19 @@ impl IrCodeGenerator {
             IrInstr::ArrayLen { dest, array } => {
                 self.emit_load_register(ctx, array);
                 ctx.emit(Opcode::ArrayLen);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::ArrayPush { array, element } => {
+                self.emit_load_register(ctx, array);
+                self.emit_load_register(ctx, element);
+                ctx.emit(Opcode::ArrayPush);
+            }
+
+            IrInstr::ArrayPop { dest, array } => {
+                self.emit_load_register(ctx, array);
+                ctx.emit(Opcode::ArrayPop);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -600,6 +664,45 @@ impl IrCodeGenerator {
             IrInstr::Yield => {
                 // Emit yield opcode
                 ctx.emit(Opcode::Yield);
+            }
+
+            IrInstr::NewMutex { dest } => {
+                // Emit NewMutex opcode - pushes mutex reference onto stack
+                ctx.emit(Opcode::NewMutex);
+                // Store the mutex reference
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::NewChannel { dest, capacity } => {
+                // Push capacity onto stack
+                self.emit_load_register(ctx, capacity);
+                // Emit NewChannel opcode - pops capacity, pushes channel reference
+                ctx.emit(Opcode::NewChannel);
+                // Store the channel reference
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::MutexLock { mutex } => {
+                // Push mutex reference onto stack
+                self.emit_load_register(ctx, mutex);
+                // Emit MutexLock opcode - may block current task
+                ctx.emit(Opcode::MutexLock);
+            }
+
+            IrInstr::MutexUnlock { mutex } => {
+                // Push mutex reference onto stack
+                self.emit_load_register(ctx, mutex);
+                // Emit MutexUnlock opcode
+                ctx.emit(Opcode::MutexUnlock);
+            }
+
+            IrInstr::TaskCancel { task } => {
+                // Push task handle onto stack
+                self.emit_load_register(ctx, task);
+                // Emit TaskCancel opcode
+                ctx.emit(Opcode::TaskCancel);
             }
 
             IrInstr::SetupTry { catch_block, finally_block } => {
@@ -806,8 +909,15 @@ impl IrCodeGenerator {
         }
     }
 
-    /// Emit binary operation (type-aware version)
-    fn emit_binary_op_typed(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool) {
+    /// Emit binary operation (type-aware version) - v2 with proper null/union support
+    fn emit_binary_op_typed_v2(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, is_number: bool, use_generic: bool) {
+        // Check if this is a comparison operation
+        let is_comparison = matches!(op,
+            BinaryOp::Equal | BinaryOp::NotEqual |
+            BinaryOp::Less | BinaryOp::LessEqual |
+            BinaryOp::Greater | BinaryOp::GreaterEqual
+        );
+
         let opcode = if is_string {
             // String operations
             match op {
@@ -821,10 +931,86 @@ impl IrCodeGenerator {
                 // Other ops fall back to integer (shouldn't happen for strings)
                 _ => self.get_integer_opcode(op),
             }
+        } else if use_generic && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            // Use generic comparison opcodes ONLY for equality with null/unknown types
+            match op {
+                BinaryOp::Equal => Opcode::Eq,
+                BinaryOp::NotEqual => Opcode::Ne,
+                _ => unreachable!(),
+            }
+        } else if use_generic {
+            // For non-equality operations with union/generic types, use number opcodes
+            // (handles both i32 and f64 values that may come from union types)
+            self.get_number_opcode(op)
+        } else if is_number && is_comparison {
+            // For comparisons on number types, use number opcodes
+            // (these handle both i32 and f64 correctly)
+            self.get_number_opcode(op)
+        } else {
+            // Default to integer for arithmetic on numbers, booleans, and other types
+            // This gives integer division semantics (n/10 truncates)
+            self.get_integer_opcode(op)
+        };
+        ctx.emit(opcode);
+    }
+
+    /// Emit binary operation (type-aware version) - legacy
+    #[allow(dead_code)]
+    fn emit_binary_op_typed(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, use_generic: bool) {
+        let opcode = if is_string {
+            // String operations
+            match op {
+                BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
+                BinaryOp::Equal => Opcode::Seq,
+                BinaryOp::NotEqual => Opcode::Sne,
+                BinaryOp::Less => Opcode::Slt,
+                BinaryOp::LessEqual => Opcode::Sle,
+                BinaryOp::Greater => Opcode::Sgt,
+                BinaryOp::GreaterEqual => Opcode::Sge,
+                // Other ops fall back to integer (shouldn't happen for strings)
+                _ => self.get_integer_opcode(op),
+            }
+        } else if use_generic {
+            // Use generic comparison opcodes for null/unknown types
+            match op {
+                BinaryOp::Equal => Opcode::Eq,
+                BinaryOp::NotEqual => Opcode::Ne,
+                // For other comparison ops with generic types, fall back to integer
+                // (this may need to be extended for full generic comparison support)
+                _ => self.get_integer_opcode(op),
+            }
         } else {
             self.get_integer_opcode(op)
         };
         ctx.emit(opcode);
+    }
+
+    /// Get float (f64) opcode for a binary operation
+    fn get_float_opcode(&self, op: BinaryOp) -> Opcode {
+        match op {
+            BinaryOp::Add => Opcode::Fadd,
+            BinaryOp::Sub => Opcode::Fsub,
+            BinaryOp::Mul => Opcode::Fmul,
+            BinaryOp::Div => Opcode::Fdiv,
+            BinaryOp::Mod => Opcode::Fmod,
+            BinaryOp::Pow => Opcode::Fpow,
+            BinaryOp::Equal => Opcode::Feq,
+            BinaryOp::NotEqual => Opcode::Fne,
+            BinaryOp::Less => Opcode::Flt,
+            BinaryOp::LessEqual => Opcode::Fle,
+            BinaryOp::Greater => Opcode::Fgt,
+            BinaryOp::GreaterEqual => Opcode::Fge,
+            // Logical/bitwise operations use integer opcodes
+            BinaryOp::And => Opcode::And,
+            BinaryOp::Or => Opcode::Or,
+            BinaryOp::BitAnd => Opcode::Iand,
+            BinaryOp::BitOr => Opcode::Ior,
+            BinaryOp::BitXor => Opcode::Ixor,
+            BinaryOp::ShiftLeft => Opcode::Ishl,
+            BinaryOp::ShiftRight => Opcode::Ishr,
+            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
+            BinaryOp::Concat => Opcode::Sconcat,
+        }
     }
 
     /// Get integer opcode for a binary operation
@@ -842,6 +1028,35 @@ impl IrCodeGenerator {
             BinaryOp::LessEqual => Opcode::Ile,
             BinaryOp::Greater => Opcode::Igt,
             BinaryOp::GreaterEqual => Opcode::Ige,
+            BinaryOp::And => Opcode::And,
+            BinaryOp::Or => Opcode::Or,
+            BinaryOp::BitAnd => Opcode::Iand,
+            BinaryOp::BitOr => Opcode::Ior,
+            BinaryOp::BitXor => Opcode::Ixor,
+            BinaryOp::ShiftLeft => Opcode::Ishl,
+            BinaryOp::ShiftRight => Opcode::Ishr,
+            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
+            BinaryOp::Concat => Opcode::Sconcat,
+        }
+    }
+
+    /// Get number opcode for a binary operation (preserves integer type when both operands are i32)
+    fn get_number_opcode(&self, op: BinaryOp) -> Opcode {
+        match op {
+            BinaryOp::Add => Opcode::Nadd,
+            BinaryOp::Sub => Opcode::Nsub,
+            BinaryOp::Mul => Opcode::Nmul,
+            BinaryOp::Div => Opcode::Ndiv,
+            BinaryOp::Mod => Opcode::Nmod,
+            BinaryOp::Pow => Opcode::Npow,
+            // For comparisons, use float opcodes (they handle both i32 and f64)
+            BinaryOp::Equal => Opcode::Feq,
+            BinaryOp::NotEqual => Opcode::Fne,
+            BinaryOp::Less => Opcode::Flt,
+            BinaryOp::LessEqual => Opcode::Fle,
+            BinaryOp::Greater => Opcode::Fgt,
+            BinaryOp::GreaterEqual => Opcode::Fge,
+            // Logical/bitwise operations use integer opcodes
             BinaryOp::And => Opcode::And,
             BinaryOp::Or => Opcode::Or,
             BinaryOp::BitAnd => Opcode::Iand,

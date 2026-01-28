@@ -19,6 +19,7 @@ pub mod narrowing;
 pub mod exhaustiveness;
 pub mod diagnostic;
 pub mod captures;
+pub mod builtins;
 
 // Re-export main types
 pub use symbols::{Symbol, SymbolKind, SymbolTable, SymbolFlags, Scope, ScopeId, ScopeKind};
@@ -30,3 +31,4 @@ pub use narrowing::TypeEnv;
 pub use exhaustiveness::ExhaustivenessResult;
 pub use diagnostic::{Diagnostic, ErrorCode, create_files};
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
+pub use builtins::{BuiltinSignatures, BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty};

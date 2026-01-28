@@ -46,6 +46,19 @@ impl TypeContext {
         ctx.intern(Type::Primitive(PrimitiveType::Void));
         ctx.intern(Type::Never);
         ctx.intern(Type::Unknown);
+        ctx.intern(Type::Mutex); // Pre-intern Mutex type
+        ctx.intern(Type::RegExp); // Pre-intern RegExp type
+        ctx.intern(Type::Date); // Pre-intern Date type
+        ctx.intern(Type::Buffer); // Pre-intern Buffer type
+
+        // Pre-intern a Task<Unknown> type for generic Task detection
+        let unknown_id = TypeId(6); // Unknown type ID
+        ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
+
+        // Pre-intern Channel, Map, Set with unknown type parameters
+        ctx.intern(Type::Channel(super::ty::ChannelType { message: unknown_id }));
+        ctx.intern(Type::Map(super::ty::MapType { key: unknown_id, value: unknown_id }));
+        ctx.intern(Type::Set(super::ty::SetType { element: unknown_id }));
 
         ctx
     }
@@ -68,6 +81,23 @@ impl TypeContext {
     /// Get a type by its TypeId
     pub fn get(&self, id: TypeId) -> Option<&Type> {
         self.types.get(id.0 as usize).map(|arc| arc.as_ref())
+    }
+
+    /// Look up a type's ID without interning (returns None if type doesn't exist)
+    pub fn lookup(&self, ty: &Type) -> Option<TypeId> {
+        self.type_to_id.get(ty).copied()
+    }
+
+    /// Check if a TypeId refers to a Task type
+    pub fn is_task_type(&self, id: TypeId) -> bool {
+        matches!(self.get(id), Some(Type::Task(_)))
+    }
+
+    /// Get a generic Task<Unknown> type ID for use when the specific Task<T> is not known
+    pub fn generic_task_type(&self) -> Option<TypeId> {
+        // Task<Unknown> was pre-interned in TypeContext::new()
+        let unknown_id = TypeId(6); // Unknown type ID
+        self.lookup(&Type::Task(super::ty::TaskType { result: unknown_id }))
     }
 
     /// Get a type by its TypeId, panicking if it doesn't exist
@@ -131,6 +161,59 @@ impl TypeContext {
     /// Get the unknown type
     pub fn unknown_type(&mut self) -> TypeId {
         self.intern(Type::Unknown)
+    }
+
+    /// Get the mutex type
+    pub fn mutex_type(&mut self) -> TypeId {
+        self.intern(Type::Mutex)
+    }
+
+    /// Get the regexp type
+    pub fn regexp_type(&mut self) -> TypeId {
+        self.intern(Type::RegExp)
+    }
+
+    /// Get the channel type with a specific message type
+    pub fn channel_type_with(&mut self, message: TypeId) -> TypeId {
+        self.intern(Type::Channel(super::ty::ChannelType { message }))
+    }
+
+    /// Get the channel type with unknown message type (for backwards compatibility)
+    pub fn channel_type(&mut self) -> TypeId {
+        let unknown = self.unknown_type();
+        self.channel_type_with(unknown)
+    }
+
+    /// Get the map type with specific key and value types
+    pub fn map_type_with(&mut self, key: TypeId, value: TypeId) -> TypeId {
+        self.intern(Type::Map(super::ty::MapType { key, value }))
+    }
+
+    /// Get the map type with unknown key/value types (for backwards compatibility)
+    pub fn map_type(&mut self) -> TypeId {
+        let unknown = self.unknown_type();
+        self.map_type_with(unknown, unknown)
+    }
+
+    /// Get the set type with a specific element type
+    pub fn set_type_with(&mut self, element: TypeId) -> TypeId {
+        self.intern(Type::Set(super::ty::SetType { element }))
+    }
+
+    /// Get the set type with unknown element type (for backwards compatibility)
+    pub fn set_type(&mut self) -> TypeId {
+        let unknown = self.unknown_type();
+        self.set_type_with(unknown)
+    }
+
+    /// Get the date type
+    pub fn date_type(&mut self) -> TypeId {
+        self.intern(Type::Date)
+    }
+
+    /// Get the buffer type
+    pub fn buffer_type(&mut self) -> TypeId {
+        self.intern(Type::Buffer)
     }
 
     /// Create a string literal type

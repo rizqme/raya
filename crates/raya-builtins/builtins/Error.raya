@@ -1,0 +1,61 @@
+// Error - Base error class and standard error types
+// These are built-in types for exception handling
+
+class Error {
+    public message: string;
+    public name: string;
+
+    constructor(message: string = "") {
+        this.message = message;
+        this.name = "Error";
+    }
+
+    toString(): string {
+        if (this.message === "") {
+            return this.name;
+        }
+        return this.name + ": " + this.message;
+    }
+}
+
+class TypeError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "TypeError";
+    }
+}
+
+class RangeError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "RangeError";
+    }
+}
+
+class ReferenceError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "ReferenceError";
+    }
+}
+
+class SyntaxError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "SyntaxError";
+    }
+}
+
+class ChannelClosedError extends Error {
+    constructor(message: string = "cannot operate on closed channel") {
+        super(message);
+        this.name = "ChannelClosedError";
+    }
+}
+
+class AssertionError extends Error {
+    constructor(message: string = "assertion failed") {
+        super(message);
+        this.name = "AssertionError";
+    }
+}

@@ -11,9 +11,9 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "Task cancellation not yet implemented"]
+#[ignore = "Task.cancel() requires runtime Task object creation with handle"]
 fn test_task_cancel() {
-    expect_i32(
+    expect_i32_with_builtins(
         "async function longRunning(): Task<number> {
              // Would run for a long time
              return 0;
@@ -34,7 +34,7 @@ fn test_task_cancel() {
 // ============================================================================
 
 #[test]
-#[ignore = "Concurrent shared state not yet implemented"]
+#[ignore = "Mutex VM implementation not yet complete"]
 fn test_concurrent_counter_with_mutex() {
     expect_i32(
         "class Counter {
@@ -42,7 +42,7 @@ fn test_concurrent_counter_with_mutex() {
              mutex: Mutex = new Mutex();
 
              async increment(): Task<void> {
-                 await this.mutex.lock();
+                 this.mutex.lock();  // Blocking, no await needed
                  this.value = this.value + 1;
                  this.mutex.unlock();
              }
@@ -59,6 +59,24 @@ fn test_concurrent_counter_with_mutex() {
          }
          return await main();",
         10,
+    );
+}
+
+// ============================================================================
+// Mutex Operations (Basic)
+// ============================================================================
+
+#[test]
+fn test_mutex_basic_lock_unlock() {
+    // Test basic mutex lock/unlock without concurrency
+    // Mutex only has lock/unlock - no get/set methods
+    expect_i32_with_builtins(
+        "let mutex = new Mutex();
+         mutex.lock();
+         let value = 42;
+         mutex.unlock();
+         return value;",
+        42,
     );
 }
 

@@ -12,7 +12,7 @@ use raya_parser::TypeId;
 // Built-in Method IDs (must match raya-core/src/builtin.rs)
 // ============================================================================
 
-/// Built-in array method IDs
+/// Built-in array method IDs (must match raya-core/src/builtin.rs)
 mod builtin_array {
     pub const PUSH: u16 = 0x0100;
     pub const POP: u16 = 0x0101;
@@ -20,9 +20,19 @@ mod builtin_array {
     pub const UNSHIFT: u16 = 0x0103;
     pub const INDEX_OF: u16 = 0x0104;
     pub const INCLUDES: u16 = 0x0105;
+    pub const SLICE: u16 = 0x0106;
+    pub const CONCAT: u16 = 0x0107;
+    pub const REVERSE: u16 = 0x0108;
+    pub const JOIN: u16 = 0x0109;
+    pub const FOR_EACH: u16 = 0x010A;
+    pub const FILTER: u16 = 0x010B;
+    pub const FIND: u16 = 0x010C;
+    pub const FIND_INDEX: u16 = 0x010D;
+    pub const EVERY: u16 = 0x010E;
+    pub const SOME: u16 = 0x010F;
 }
 
-/// Built-in string method IDs
+/// Built-in string method IDs (must match raya-core/src/builtin.rs)
 mod builtin_string {
     pub const CHAR_AT: u16 = 0x0200;
     pub const SUBSTRING: u16 = 0x0201;
@@ -31,12 +41,19 @@ mod builtin_string {
     pub const TRIM: u16 = 0x0204;
     pub const INDEX_OF: u16 = 0x0205;
     pub const INCLUDES: u16 = 0x0206;
+    pub const SPLIT: u16 = 0x0207;
+    pub const STARTS_WITH: u16 = 0x0208;
+    pub const ENDS_WITH: u16 = 0x0209;
+    pub const REPLACE: u16 = 0x020A;
+    pub const REPEAT: u16 = 0x020B;
 }
 
 /// Look up built-in method ID by method name and object type
+/// Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+/// Array types start at TypeId >= 7
 fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
-    // Array types (TypeId >= 5) or unknown (TypeId 0)
-    if obj_type_id >= 5 || obj_type_id == 0 {
+    // Array types (TypeId >= 7) or unknown (TypeId 6)
+    if obj_type_id >= 7 || obj_type_id == 6 {
         match method_name {
             "push" => return Some(builtin_array::PUSH),
             "pop" => return Some(builtin_array::POP),
@@ -44,12 +61,22 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
             "unshift" => return Some(builtin_array::UNSHIFT),
             "indexOf" => return Some(builtin_array::INDEX_OF),
             "includes" => return Some(builtin_array::INCLUDES),
+            "slice" => return Some(builtin_array::SLICE),
+            "concat" => return Some(builtin_array::CONCAT),
+            "join" => return Some(builtin_array::JOIN),
+            "reverse" => return Some(builtin_array::REVERSE),
+            "forEach" => return Some(builtin_array::FOR_EACH),
+            "filter" => return Some(builtin_array::FILTER),
+            "find" => return Some(builtin_array::FIND),
+            "findIndex" => return Some(builtin_array::FIND_INDEX),
+            "every" => return Some(builtin_array::EVERY),
+            "some" => return Some(builtin_array::SOME),
             _ => {}
         }
     }
 
-    // String type (TypeId 3)
-    if obj_type_id == 3 {
+    // String type (TypeId 1)
+    if obj_type_id == 1 {
         match method_name {
             "charAt" => return Some(builtin_string::CHAR_AT),
             "substring" => return Some(builtin_string::SUBSTRING),
@@ -58,6 +85,11 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
             "trim" => return Some(builtin_string::TRIM),
             "indexOf" => return Some(builtin_string::INDEX_OF),
             "includes" => return Some(builtin_string::INCLUDES),
+            "startsWith" => return Some(builtin_string::STARTS_WITH),
+            "endsWith" => return Some(builtin_string::ENDS_WITH),
+            "split" => return Some(builtin_string::SPLIT),
+            "replace" => return Some(builtin_string::REPLACE),
+            "repeat" => return Some(builtin_string::REPEAT),
             _ => {}
         }
     }
@@ -80,7 +112,7 @@ impl<'a> Lowerer<'a> {
             Expression::Call(call) => self.lower_call(call),
             Expression::Member(member) => self.lower_member(member),
             Expression::Index(index) => self.lower_index(index),
-            Expression::Array(array) => self.lower_array(array),
+            Expression::Array(array) => self.lower_array(array, expr),
             Expression::Object(object) => self.lower_object(object),
             Expression::Assignment(assign) => self.lower_assignment(assign),
             Expression::Conditional(cond) => self.lower_conditional(cond),
@@ -94,6 +126,8 @@ impl<'a> Lowerer<'a> {
             Expression::This(_) => self.lower_this(),
             Expression::Super(_) => self.lower_super(),
             Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
+            Expression::InstanceOf(instanceof) => self.lower_instanceof(instanceof),
+            Expression::TypeCast(cast) => self.lower_type_cast(cast),
             _ => {
                 // For unhandled expressions, emit a null placeholder
                 self.lower_null_literal()
@@ -102,7 +136,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
-        let ty = TypeId::new(1); // i32 type
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        let ty = TypeId::new(0); // Number type (integers are numbers in Raya)
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -112,7 +147,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_float_literal(&mut self, lit: &ast::FloatLiteral) -> Register {
-        let ty = TypeId::new(2); // f64 type
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        let ty = TypeId::new(0); // Number type
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -122,7 +158,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_string_literal(&mut self, lit: &ast::StringLiteral) -> Register {
-        let ty = TypeId::new(3); // string type
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        let ty = TypeId::new(1); // String type
         let dest = self.alloc_register(ty);
         let string_value = self.interner.resolve(lit.value).to_string();
         self.emit(IrInstr::Assign {
@@ -133,7 +170,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_bool_literal(&mut self, lit: &ast::BooleanLiteral) -> Register {
-        let ty = TypeId::new(4); // boolean type
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        let ty = TypeId::new(2); // Boolean type
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -143,7 +181,8 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn lower_null_literal(&mut self) -> Register {
-        let ty = TypeId::new(0); // null type
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        let ty = TypeId::new(3); // Null type
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -361,8 +400,146 @@ impl<'a> Lowerer<'a> {
         }
 
         if let Expression::Identifier(ident) = &*call.callee {
-            // Check for builtin functions first
+            // Check for builtin functions/intrinsics first
             let name = self.interner.resolve(ident.name);
+
+            // Handle __NATIVE_CALL intrinsic: __NATIVE_CALL(native_id, args...)
+            if name == "__NATIVE_CALL" {
+                // First argument must be the native ID (integer literal)
+                if let Some(first_arg) = call.arguments.first() {
+                    let native_id = match first_arg {
+                        Expression::IntLiteral(lit) => lit.value as u16,
+                        Expression::Identifier(id_expr) => {
+                            // Could be a const - for now, just use the lowered value
+                            // In practice, builtin files should use integer literals directly
+                            let name = self.interner.resolve(id_expr.name);
+                            eprintln!("Warning: __NATIVE_CALL expected integer literal, got identifier '{}'", name);
+                            0
+                        }
+                        _ => {
+                            eprintln!("Warning: __NATIVE_CALL first argument must be an integer literal");
+                            0
+                        }
+                    };
+
+                    // Lower remaining arguments (skip the native_id)
+                    let native_args: Vec<Register> = call.arguments[1..]
+                        .iter()
+                        .map(|a| self.lower_expr(a))
+                        .collect();
+
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(dest.clone()),
+                        native_id,
+                        args: native_args,
+                    });
+                    return dest;
+                }
+            }
+
+            // Handle __OPCODE_CHANNEL_NEW intrinsic: __OPCODE_CHANNEL_NEW(capacity)
+            if name == "__OPCODE_CHANNEL_NEW" {
+                let capacity = if !call.arguments.is_empty() {
+                    self.lower_expr(&call.arguments[0])
+                } else {
+                    let zero_reg = self.alloc_register(TypeId::new(1));
+                    self.emit(IrInstr::Assign {
+                        dest: zero_reg.clone(),
+                        value: IrValue::Constant(IrConstant::I32(0)),
+                    });
+                    zero_reg
+                };
+                self.emit(IrInstr::NewChannel {
+                    dest: dest.clone(),
+                    capacity,
+                });
+                return dest;
+            }
+
+            // Handle __OPCODE_MUTEX_NEW intrinsic: creates a new mutex handle
+            if name == "__OPCODE_MUTEX_NEW" {
+                self.emit(IrInstr::NewMutex {
+                    dest: dest.clone(),
+                });
+                return dest;
+            }
+
+            // Handle __OPCODE_MUTEX_LOCK intrinsic: acquires mutex lock (blocking)
+            if name == "__OPCODE_MUTEX_LOCK" {
+                if !call.arguments.is_empty() {
+                    let mutex = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::MutexLock { mutex });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_MUTEX_UNLOCK intrinsic: releases mutex lock
+            if name == "__OPCODE_MUTEX_UNLOCK" {
+                if !call.arguments.is_empty() {
+                    let mutex = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::MutexUnlock { mutex });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_TASK_CANCEL intrinsic: cancels a running task
+            if name == "__OPCODE_TASK_CANCEL" {
+                if !call.arguments.is_empty() {
+                    let task = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::TaskCancel { task });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_YIELD intrinsic: yields execution to scheduler
+            if name == "__OPCODE_YIELD" {
+                self.emit(IrInstr::Yield);
+                return dest;
+            }
+
+            // Handle __OPCODE_SLEEP intrinsic: sleeps for specified milliseconds
+            if name == "__OPCODE_SLEEP" {
+                if !call.arguments.is_empty() {
+                    let duration_ms = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::Sleep { duration_ms });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_ARRAY_LEN intrinsic: gets array length
+            if name == "__OPCODE_ARRAY_LEN" {
+                if !call.arguments.is_empty() {
+                    let array = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::ArrayLen {
+                        dest: dest.clone(),
+                        array,
+                    });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_ARRAY_PUSH intrinsic: pushes element to array
+            if name == "__OPCODE_ARRAY_PUSH" {
+                if call.arguments.len() >= 2 {
+                    let array = self.lower_expr(&call.arguments[0]);
+                    let element = self.lower_expr(&call.arguments[1]);
+                    self.emit(IrInstr::ArrayPush { array, element });
+                }
+                return dest;
+            }
+
+            // Handle __OPCODE_ARRAY_POP intrinsic: pops element from array
+            if name == "__OPCODE_ARRAY_POP" {
+                if !call.arguments.is_empty() {
+                    let array = self.lower_expr(&call.arguments[0]);
+                    self.emit(IrInstr::ArrayPop {
+                        dest: dest.clone(),
+                        array,
+                    });
+                }
+                return dest;
+            }
+
             if name == "sleep" {
                 // sleep(ms) - emit Sleep instruction
                 if !args.is_empty() {
@@ -558,12 +735,13 @@ impl<'a> Lowerer<'a> {
         let object = self.lower_expr(&member.object);
 
         // Check for built-in properties on primitive types
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
         if prop_name == "length" {
             let obj_ty = object.ty.as_u32();
 
-            // String type (TypeId 3)
-            if obj_ty == 3 {
-                let dest = self.alloc_register(TypeId::new(1)); // i32 result
+            // String type (TypeId 1)
+            if obj_ty == 1 {
+                let dest = self.alloc_register(TypeId::new(0)); // Number result
                 self.emit(IrInstr::StringLen {
                     dest: dest.clone(),
                     string: object,
@@ -571,11 +749,12 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
-            // Array types start at TypeId 5 (array<T>)
-            // For now, check if it could be an array by checking type > 4
-            // or if we're accessing .length on something that looks like an array
-            if obj_ty >= 5 || obj_ty == 0 {
-                let dest = self.alloc_register(TypeId::new(1)); // i32 result
+            // Array types: TypeId > 6 (after pre-interned primitives)
+            // OR TypeId 0 (Number) because arrays are currently typed as Number in IR
+            // Numbers don't have .length, so if we're accessing .length on TypeId 0,
+            // it's most likely an array
+            if obj_ty > 6 || obj_ty == 0 {
+                let dest = self.alloc_register(TypeId::new(0)); // Number result
                 self.emit(IrInstr::ArrayLen {
                     dest: dest.clone(),
                     array: object,
@@ -620,7 +799,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_array(&mut self, array: &ast::ArrayExpression) -> Register {
+    fn lower_array(&mut self, array: &ast::ArrayExpression, full_expr: &Expression) -> Register {
         // ArrayExpression.elements is Vec<Option<ArrayElement>>
         // ArrayElement can be Expression or Spread
         let mut elements = Vec::new();
@@ -639,7 +818,9 @@ impl<'a> Lowerer<'a> {
             }
         }
         let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(0));
-        let dest = self.alloc_register(TypeId::new(0));
+        // Get the array type from the type checker, or use a default array TypeId
+        let array_ty = self.get_expr_type(full_expr);
+        let dest = self.alloc_register(array_ty);
 
         self.emit(IrInstr::ArrayLiteral {
             dest: dest.clone(),
@@ -1306,14 +1487,16 @@ impl<'a> Lowerer<'a> {
                         args,
                     });
                 }
-            } else {
-                // Unknown class - emit NewObject with class ID 0 as fallback
-                self.emit(IrInstr::NewObject {
-                    dest: dest.clone(),
-                    class: crate::ir::ClassId::new(0),
-                });
+
+                return dest;
             }
         }
+
+        // Unknown class or not an identifier - emit NewObject with class ID 0 as fallback
+        self.emit(IrInstr::NewObject {
+            dest: dest.clone(),
+            class: crate::ir::ClassId::new(0),
+        });
 
         dest
     }
@@ -1476,6 +1659,67 @@ impl<'a> Lowerer<'a> {
         // 'super' refers to the same object as 'this', just with parent class semantics
         // The actual parent method dispatch is handled in lower_call
         self.lower_this()
+    }
+
+    /// Lower instanceof expression: expr instanceof ClassName
+    fn lower_instanceof(&mut self, instanceof: &ast::InstanceOfExpression) -> Register {
+        // Lower the object expression
+        let object = self.lower_expr(&instanceof.object);
+
+        // Resolve the class ID from the type annotation
+        let class_id = self.resolve_class_from_type(&instanceof.type_name);
+
+        // Allocate register for boolean result
+        let dest = self.alloc_register(TypeId::new(2)); // Boolean type
+
+        self.emit(IrInstr::InstanceOf {
+            dest: dest.clone(),
+            object,
+            class_id,
+        });
+
+        dest
+    }
+
+    /// Lower type cast expression: expr as TypeName
+    fn lower_type_cast(&mut self, cast: &ast::TypeCastExpression) -> Register {
+        // Lower the object expression
+        let object = self.lower_expr(&cast.object);
+
+        // Resolve the class ID from the type annotation
+        let class_id = self.resolve_class_from_type(&cast.target_type);
+
+        // Allocate register for the casted object (same type as target)
+        let dest = self.alloc_register(TypeId::new(6)); // Unknown type - will be refined by type checker
+
+        self.emit(IrInstr::Cast {
+            dest: dest.clone(),
+            object,
+            class_id,
+        });
+
+        dest
+    }
+
+    /// Resolve a ClassId from a type annotation
+    fn resolve_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> ClassId {
+        use raya_parser::ast::types::Type;
+
+        match &type_ann.ty {
+            Type::Reference(type_ref) => {
+                // Look up the class by name
+                if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                    return class_id;
+                }
+                // Unknown class - return class ID 0 as fallback
+                ClassId::new(0)
+            }
+            _ => {
+                // Non-reference types (primitives, unions, etc.) - not valid for instanceof/as
+                // Return class ID 0 as fallback
+                ClassId::new(0)
+            }
+        }
     }
 
     /// Find a method in a class or its parent classes.
@@ -1729,8 +1973,9 @@ impl<'a> Lowerer<'a> {
 
     /// Infer result type for binary operation
     fn infer_binary_result_type(&self, op: &BinaryOp, left: &Register, _right: &Register) -> TypeId {
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
         if op.is_comparison() || op.is_logical() {
-            TypeId::new(4) // boolean
+            TypeId::new(2) // Boolean type
         } else {
             left.ty // Same as left operand for arithmetic
         }

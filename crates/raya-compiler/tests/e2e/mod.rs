@@ -18,5 +18,6 @@ mod async_await;
 mod closures;
 mod concurrency;
 mod exceptions;
+mod builtins;
 
 pub use harness::*;

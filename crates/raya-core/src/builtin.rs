@@ -28,6 +28,18 @@ pub mod array {
     pub const REVERSE: u16 = 0x0108;
     /// `arr.join(separator)` - Join elements into string
     pub const JOIN: u16 = 0x0109;
+    /// `arr.forEach(fn)` - Call function for each element
+    pub const FOR_EACH: u16 = 0x010A;
+    /// `arr.filter(predicate)` - Filter elements by predicate
+    pub const FILTER: u16 = 0x010B;
+    /// `arr.find(predicate)` - Find first element matching predicate
+    pub const FIND: u16 = 0x010C;
+    /// `arr.findIndex(predicate)` - Find index of first element matching predicate
+    pub const FIND_INDEX: u16 = 0x010D;
+    /// `arr.every(predicate)` - Check if all elements match predicate
+    pub const EVERY: u16 = 0x010E;
+    /// `arr.some(predicate)` - Check if any element matches predicate
+    pub const SOME: u16 = 0x010F;
 }
 
 /// Built-in method IDs for strings
@@ -60,6 +72,156 @@ pub mod string {
     pub const PAD_START: u16 = 0x020C;
     /// `str.padEnd(length, padString)` - Pad end of string
     pub const PAD_END: u16 = 0x020D;
+}
+
+/// Built-in method IDs for Channel<T>
+pub mod channel {
+    /// `new Channel(capacity)` - Create channel
+    pub const NEW: u16 = 0x0400;
+    /// `ch.send(value)` - Send value (blocks if full)
+    pub const SEND: u16 = 0x0401;
+    /// `ch.receive()` - Receive value (blocks if empty)
+    pub const RECEIVE: u16 = 0x0402;
+    /// `ch.trySend(value)` - Try send without blocking
+    pub const TRY_SEND: u16 = 0x0403;
+    /// `ch.tryReceive()` - Try receive without blocking
+    pub const TRY_RECEIVE: u16 = 0x0404;
+    /// `ch.close()` - Close the channel
+    pub const CLOSE: u16 = 0x0405;
+    /// `ch.isClosed()` - Check if closed
+    pub const IS_CLOSED: u16 = 0x0406;
+    /// `ch.length()` - Get queue length
+    pub const LENGTH: u16 = 0x0407;
+    /// `ch.capacity()` - Get buffer capacity
+    pub const CAPACITY: u16 = 0x0408;
+}
+
+/// Built-in method IDs for Buffer
+pub mod buffer {
+    /// `new Buffer(size)` - Create buffer
+    pub const NEW: u16 = 0x0700;
+    /// `buf.length()` - Get length
+    pub const LENGTH: u16 = 0x0701;
+    /// `buf.getByte(index)` - Get byte
+    pub const GET_BYTE: u16 = 0x0702;
+    /// `buf.setByte(index, value)` - Set byte
+    pub const SET_BYTE: u16 = 0x0703;
+    /// `buf.getInt32(index)` - Get int32
+    pub const GET_INT32: u16 = 0x0704;
+    /// `buf.setInt32(index, value)` - Set int32
+    pub const SET_INT32: u16 = 0x0705;
+    /// `buf.getFloat64(index)` - Get float64
+    pub const GET_FLOAT64: u16 = 0x0706;
+    /// `buf.setFloat64(index, value)` - Set float64
+    pub const SET_FLOAT64: u16 = 0x0707;
+    /// `buf.slice(start, end)` - Slice buffer
+    pub const SLICE: u16 = 0x0708;
+    /// `buf.copy(target, targetStart, sourceStart, sourceEnd)` - Copy bytes
+    pub const COPY: u16 = 0x0709;
+    /// `buf.toString(encoding)` - Convert to string
+    pub const TO_STRING: u16 = 0x070A;
+    /// `Buffer.fromString(str, encoding)` - Create from string
+    pub const FROM_STRING: u16 = 0x070B;
+}
+
+/// Built-in method IDs for Map<K, V>
+pub mod map {
+    /// `new Map()` - Create map
+    pub const NEW: u16 = 0x0800;
+    /// `map.size()` - Get size
+    pub const SIZE: u16 = 0x0801;
+    /// `map.get(key)` - Get value
+    pub const GET: u16 = 0x0802;
+    /// `map.set(key, value)` - Set value
+    pub const SET: u16 = 0x0803;
+    /// `map.has(key)` - Check if key exists
+    pub const HAS: u16 = 0x0804;
+    /// `map.delete(key)` - Delete key
+    pub const DELETE: u16 = 0x0805;
+    /// `map.clear()` - Clear all entries
+    pub const CLEAR: u16 = 0x0806;
+    /// `map.keys()` - Get all keys
+    pub const KEYS: u16 = 0x0807;
+    /// `map.values()` - Get all values
+    pub const VALUES: u16 = 0x0808;
+    /// `map.entries()` - Get all entries
+    pub const ENTRIES: u16 = 0x0809;
+    /// `map.forEach(fn)` - Iterate entries
+    pub const FOR_EACH: u16 = 0x080A;
+}
+
+/// Built-in method IDs for Set<T>
+pub mod set {
+    /// `new Set()` - Create set
+    pub const NEW: u16 = 0x0900;
+    /// `set.size()` - Get size
+    pub const SIZE: u16 = 0x0901;
+    /// `set.add(value)` - Add value
+    pub const ADD: u16 = 0x0902;
+    /// `set.has(value)` - Check if value exists
+    pub const HAS: u16 = 0x0903;
+    /// `set.delete(value)` - Delete value
+    pub const DELETE: u16 = 0x0904;
+    /// `set.clear()` - Clear all values
+    pub const CLEAR: u16 = 0x0905;
+    /// `set.values()` - Get all values
+    pub const VALUES: u16 = 0x0906;
+    /// `set.forEach(fn)` - Iterate values
+    pub const FOR_EACH: u16 = 0x0907;
+    /// `set.union(other)` - Union with other set
+    pub const UNION: u16 = 0x0908;
+    /// `set.intersection(other)` - Intersection with other set
+    pub const INTERSECTION: u16 = 0x0909;
+    /// `set.difference(other)` - Difference with other set
+    pub const DIFFERENCE: u16 = 0x090A;
+}
+
+/// Built-in method IDs for Date
+pub mod date {
+    /// `Date.now()` - Get current timestamp
+    pub const NOW: u16 = 0x0B00;
+    /// `Date.parse(str)` - Parse date string
+    pub const PARSE: u16 = 0x0B01;
+    /// `date.getTime()` - Get timestamp in milliseconds
+    pub const GET_TIME: u16 = 0x0B02;
+    /// `date.getFullYear()` - Get year
+    pub const GET_FULL_YEAR: u16 = 0x0B03;
+    /// `date.getMonth()` - Get month (0-11)
+    pub const GET_MONTH: u16 = 0x0B04;
+    /// `date.getDate()` - Get day of month (1-31)
+    pub const GET_DATE: u16 = 0x0B05;
+    /// `date.getDay()` - Get day of week (0-6)
+    pub const GET_DAY: u16 = 0x0B06;
+    /// `date.getHours()` - Get hours (0-23)
+    pub const GET_HOURS: u16 = 0x0B07;
+    /// `date.getMinutes()` - Get minutes (0-59)
+    pub const GET_MINUTES: u16 = 0x0B08;
+    /// `date.getSeconds()` - Get seconds (0-59)
+    pub const GET_SECONDS: u16 = 0x0B09;
+    /// `date.getMilliseconds()` - Get milliseconds (0-999)
+    pub const GET_MILLISECONDS: u16 = 0x0B0A;
+    /// `date.setFullYear(year)` - Set year
+    pub const SET_FULL_YEAR: u16 = 0x0B11;
+    /// `date.setMonth(month)` - Set month
+    pub const SET_MONTH: u16 = 0x0B12;
+    /// `date.setDate(day)` - Set day of month
+    pub const SET_DATE: u16 = 0x0B13;
+    /// `date.setHours(hours)` - Set hours
+    pub const SET_HOURS: u16 = 0x0B14;
+    /// `date.setMinutes(minutes)` - Set minutes
+    pub const SET_MINUTES: u16 = 0x0B15;
+    /// `date.setSeconds(seconds)` - Set seconds
+    pub const SET_SECONDS: u16 = 0x0B16;
+    /// `date.setMilliseconds(ms)` - Set milliseconds
+    pub const SET_MILLISECONDS: u16 = 0x0B17;
+    /// `date.toString()` - Convert to string
+    pub const TO_STRING: u16 = 0x0B20;
+    /// `date.toISOString()` - Convert to ISO string
+    pub const TO_ISO_STRING: u16 = 0x0B21;
+    /// `date.toDateString()` - Get date portion
+    pub const TO_DATE_STRING: u16 = 0x0B22;
+    /// `date.toTimeString()` - Get time portion
+    pub const TO_TIME_STRING: u16 = 0x0B23;
 }
 
 /// Look up built-in method ID by type and method name
@@ -109,6 +271,31 @@ pub fn is_array_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in string method
 pub fn is_string_method(method_id: u16) -> bool {
     (0x0200..=0x02FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in channel method
+pub fn is_channel_method(method_id: u16) -> bool {
+    (0x0400..=0x04FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in buffer method
+pub fn is_buffer_method(method_id: u16) -> bool {
+    (0x0700..=0x07FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in map method
+pub fn is_map_method(method_id: u16) -> bool {
+    (0x0800..=0x08FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in set method
+pub fn is_set_method(method_id: u16) -> bool {
+    (0x0900..=0x09FF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in date method
+pub fn is_date_method(method_id: u16) -> bool {
+    (0x0B00..=0x0BFF).contains(&method_id)
 }
 
 #[cfg(test)]

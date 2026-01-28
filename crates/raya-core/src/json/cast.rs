@@ -298,10 +298,8 @@ fn validate_interface(
     }
 
     // Create typed object
-    let obj = Object {
-        class_id,
-        fields: field_values,
-    };
+    let mut obj = Object::new(class_id, field_values.len());
+    obj.fields = field_values;
 
     let obj_ptr = gc.allocate(obj);
 

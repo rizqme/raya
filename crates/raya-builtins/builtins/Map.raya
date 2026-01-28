@@ -1,0 +1,73 @@
+// Map - Key-value dictionary with any key type
+// This is a built-in type using compiler intrinsics
+
+// Native IDs:
+// MAP_NEW      = 0x0800
+// MAP_SIZE     = 0x0801
+// MAP_GET      = 0x0802
+// MAP_SET      = 0x0803
+// MAP_HAS      = 0x0804
+// MAP_DELETE   = 0x0805
+// MAP_CLEAR    = 0x0806
+// MAP_KEYS     = 0x0807
+// MAP_VALUES   = 0x0808
+// MAP_ENTRIES  = 0x0809
+// MAP_FOR_EACH = 0x080A
+
+class Map<K, V> {
+    private mapPtr: number;
+
+    constructor() {
+        this.mapPtr = __NATIVE_CALL(0x0800);
+    }
+
+    // Get the number of entries
+    size(): number {
+        return __NATIVE_CALL(0x0801, this.mapPtr);
+    }
+
+    // Get value by key (returns null if not found)
+    get(key: K): V | null {
+        return __NATIVE_CALL(0x0802, this.mapPtr, key);
+    }
+
+    // Set a key-value pair
+    set(key: K, value: V): void {
+        __NATIVE_CALL(0x0803, this.mapPtr, key, value);
+    }
+
+    // Check if key exists
+    has(key: K): boolean {
+        return __NATIVE_CALL(0x0804, this.mapPtr, key);
+    }
+
+    // Delete a key (returns true if existed)
+    delete(key: K): boolean {
+        return __NATIVE_CALL(0x0805, this.mapPtr, key);
+    }
+
+    // Remove all entries
+    clear(): void {
+        __NATIVE_CALL(0x0806, this.mapPtr);
+    }
+
+    // Get all keys as an array
+    keys(): Array<K> {
+        return __NATIVE_CALL(0x0807, this.mapPtr);
+    }
+
+    // Get all values as an array
+    values(): Array<V> {
+        return __NATIVE_CALL(0x0808, this.mapPtr);
+    }
+
+    // Get all entries as array of [key, value] tuples
+    entries(): Array<[K, V]> {
+        return __NATIVE_CALL(0x0809, this.mapPtr);
+    }
+
+    // Iterate over all entries
+    forEach(fn: (value: V, key: K) => void): void {
+        __NATIVE_CALL(0x080A, this.mapPtr, fn);
+    }
+}

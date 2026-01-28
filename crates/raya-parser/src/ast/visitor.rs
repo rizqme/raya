@@ -447,6 +447,14 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         Expression::Parenthesized(paren) => visitor.visit_expression(&paren.expression),
         Expression::JsxElement(elem) => visitor.visit_jsx_element(elem),
         Expression::JsxFragment(frag) => visitor.visit_jsx_fragment(frag),
+        Expression::InstanceOf(instanceof) => {
+            visitor.visit_expression(&instanceof.object);
+            visitor.visit_type_annotation(&instanceof.type_name);
+        }
+        Expression::TypeCast(cast) => {
+            visitor.visit_expression(&cast.object);
+            visitor.visit_type_annotation(&cast.target_type);
+        }
     }
 }
 

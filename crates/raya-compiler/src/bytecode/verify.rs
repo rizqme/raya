@@ -199,6 +199,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::Fdiv
         | Opcode::Fneg
         | Opcode::Fpow
+        | Opcode::Fmod
         | Opcode::Nadd
         | Opcode::Nsub
         | Opcode::Nmul
@@ -244,6 +245,7 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::Yield
         | Opcode::Sleep
         | Opcode::NewMutex
+        | Opcode::NewChannel
         | Opcode::MutexLock
         | Opcode::MutexUnlock
         | Opcode::Throw
@@ -261,9 +263,14 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::SemAcquire
         | Opcode::SemRelease
         | Opcode::WaitAll
+        | Opcode::TaskCancel
         | Opcode::NewRefCell
         | Opcode::LoadRefCell
-        | Opcode::StoreRefCell => 0,
+        | Opcode::StoreRefCell
+        | Opcode::ArrayPush
+        | Opcode::ArrayPop
+        | Opcode::InstanceOf
+        | Opcode::Cast => 0,
 
         // 2-byte operands (u16)
         Opcode::LoadLocal
@@ -330,6 +337,9 @@ fn get_operand_size(opcode: Opcode) -> usize {
 
         // SpawnClosure has 2-byte operand (u16 argCount)
         Opcode::SpawnClosure => 2,
+
+        // NativeCall has 3-byte operand (u16 nativeId + u8 argCount)
+        Opcode::NativeCall => 3,
     }
 }
 
@@ -407,7 +417,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => (2, 1),
         Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => (2, 1),
         Opcode::Ineg | Opcode::Fneg | Opcode::Nneg | Opcode::Inot => (1, 1),
-        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow => (2, 1),
+        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow | Opcode::Fmod => (2, 1),
         Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod | Opcode::Npow => (2, 1),
         Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => (2, 1),
         Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => (2, 1),
@@ -450,6 +460,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Sleep => (1, 0),  // pops duration_ms
         Opcode::TaskThen => (1, 1),
         Opcode::NewMutex => (0, 1),
+        Opcode::NewChannel => (1, 1), // pops capacity, pushes channel reference
         Opcode::MutexLock | Opcode::MutexUnlock => (1, 0),
         Opcode::Throw => (1, 0),
         Opcode::Trap => (0, 0),
@@ -490,10 +501,24 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         // Task waiting
         Opcode::WaitAll => (1, 1),         // Pop task array, push result array
 
+        // Task cancellation
+        Opcode::TaskCancel => (1, 0),      // Pop task handle
+
         // Exception handling
         Opcode::Try => (0, 0),      // Installs handler, no stack effect
         Opcode::EndTry => (0, 0),   // Removes handler, no stack effect
         Opcode::Rethrow => (0, 0),  // Rethrows, unwinds stack
+
+        // Array primitive operations
+        Opcode::ArrayPush => (2, 0),  // Pop value + array, mutates array
+        Opcode::ArrayPop => (1, 1),   // Pop array, push popped element
+
+        // Type operations
+        Opcode::InstanceOf => (2, 1), // Pop class_id + object, push bool
+        Opcode::Cast => (2, 1),       // Pop class_id + object, push object (or throw)
+
+        // Native call
+        Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
     }
 }
 
@@ -612,7 +637,7 @@ mod tests {
             name: "test".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![0xDF], // Invalid opcode (unassigned)
+            code: vec![0xFE], // Invalid opcode (unassigned)
         });
 
         let result = verify_module(&module);

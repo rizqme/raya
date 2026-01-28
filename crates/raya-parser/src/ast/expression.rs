@@ -93,6 +93,12 @@ pub enum Expression {
 
     /// Super expression: super (for parent class access)
     Super(Span),
+
+    /// InstanceOf expression: expr instanceof ClassName
+    InstanceOf(InstanceOfExpression),
+
+    /// Type cast expression: expr as TypeName
+    TypeCast(TypeCastExpression),
 }
 
 impl Expression {
@@ -126,6 +132,8 @@ impl Expression {
             Expression::JsxFragment(e) => &e.span,
             Expression::This(span) => span,
             Expression::Super(span) => span,
+            Expression::InstanceOf(e) => &e.span,
+            Expression::TypeCast(e) => &e.span,
         }
     }
 
@@ -635,5 +643,25 @@ pub struct JsxOpeningFragment {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JsxClosingFragment {
+    pub span: Span,
+}
+
+/// InstanceOf expression: expr instanceof ClassName
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstanceOfExpression {
+    /// The expression to check
+    pub object: Box<Expression>,
+    /// The type to check against (class name)
+    pub type_name: TypeAnnotation,
+    pub span: Span,
+}
+
+/// Type cast expression: expr as TypeName
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeCastExpression {
+    /// The expression to cast
+    pub object: Box<Expression>,
+    /// The target type
+    pub target_type: TypeAnnotation,
     pub span: Span,
 }

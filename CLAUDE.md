@@ -72,11 +72,12 @@ rayavm/
 - Control flow-based type narrowing
 - Exhaustiveness checking
 
+**ALLOWED FOR CLASSES:**
+- `instanceof` operator for class type checking
+- Type assertions (`as`) for safe type casting
+
 **ABSOLUTELY BANNED:**
-- `instanceof` operator
 - `any` type
-- Type assertions (`as`)
-- Type casts
 - Runtime type tags/RTTI (except with `--emit-reflection` flag)
 
 **Two Patterns for Unions:**
@@ -196,9 +197,10 @@ When working on this project, **always reference these documents**:
    - No prototype chains, no dynamic property access (except via reflection)
    - Fixed object layouts determined at compile time
 
-3. **Suggest `typeof` or `instanceof`**
-   - These are explicitly banned
-   - Always use discriminated unions instead
+3. **Misuse type operators**
+   - `typeof` is for primitives only (not classes)
+   - `instanceof` is for classes only (not primitives)
+   - Use discriminated unions for complex object unions
 
 4. **Ignore the Rust implementation**
    - This is a **Rust project** - follow Rust idioms
@@ -439,6 +441,18 @@ if (typeof id === "number") { /* ... */ }
 ```typescript
 type Value = { kind: "str"; value: string } | { kind: "num"; value: number };
 if (value.kind === "str") { /* ... */ }
+```
+
+**Question:** "Can I use `instanceof` in Raya code?"
+**Answer:** ✅ YES, for class type checking:
+```typescript
+if (obj instanceof MyClass) { /* obj is narrowed to MyClass */ }
+```
+
+**Question:** "Can I use `as` for type casting?"
+**Answer:** ✅ YES, for safe type assertions:
+```typescript
+let specific = general as SpecificType;
 ```
 
 **Question:** "Should I add runtime type checking for complex types?"

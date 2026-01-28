@@ -20,6 +20,7 @@ pub mod ir;
 pub mod lower;
 pub mod module_builder;
 pub mod monomorphize;
+pub mod native_id;
 pub mod optimize;
 
 pub use codegen_ast::CodeGenerator;
@@ -36,16 +37,26 @@ pub use bytecode::{
 use raya_parser::ast;
 use raya_parser::Interner;
 use raya_parser::TypeContext;
+use raya_parser::TypeId;
+use rustc_hash::FxHashMap;
 
 /// Main compiler entry point
 pub struct Compiler<'a> {
     type_ctx: TypeContext,
     interner: &'a Interner,
+    /// Expression types from type checker (maps expr ptr to TypeId)
+    expr_types: FxHashMap<usize, TypeId>,
 }
 
 impl<'a> Compiler<'a> {
     pub fn new(type_ctx: TypeContext, interner: &'a Interner) -> Self {
-        Self { type_ctx, interner }
+        Self { type_ctx, interner, expr_types: FxHashMap::default() }
+    }
+
+    /// Set expression types from the type checker's CheckResult
+    pub fn with_expr_types(mut self, expr_types: FxHashMap<usize, TypeId>) -> Self {
+        self.expr_types = expr_types;
+        self
     }
 
     /// Compile a module into bytecode
@@ -56,7 +67,7 @@ impl<'a> Compiler<'a> {
 
     /// Compile a module to IR (for debugging/inspection)
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
-        let mut lowerer = lower::Lowerer::new(&self.type_ctx, self.interner);
+        let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
         lowerer.lower_module(module)
     }
 
@@ -68,7 +79,7 @@ impl<'a> Compiler<'a> {
     /// 3. Optimization passes
     pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> ir::IrModule {
         // Step 1: Lower AST to IR
-        let mut lowerer = lower::Lowerer::new(&self.type_ctx, self.interner);
+        let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
         let mut ir_module = lowerer.lower_module(module);
 
         // Step 2: Monomorphization
@@ -120,7 +131,7 @@ impl<'a> Compiler<'a> {
         let mut debug = String::new();
 
         // Step 1: Lower AST to IR
-        let mut lowerer = lower::Lowerer::new(&self.type_ctx, self.interner);
+        let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
         let mut ir_module = lowerer.lower_module(module);
 
         writeln!(debug, "=== IR Before Optimization ===").unwrap();

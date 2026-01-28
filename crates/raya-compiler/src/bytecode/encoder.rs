@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_reader_invalid_opcode() {
-        let bytes = vec![0xDF]; // Invalid opcode (unassigned)
+        let bytes = vec![0xFE]; // Invalid opcode (unassigned)
         let mut reader = BytecodeReader::new(&bytes);
 
         assert!(reader.read_opcode().is_err());

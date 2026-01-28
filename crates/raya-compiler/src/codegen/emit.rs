@@ -39,6 +39,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Fdiv
         | Opcode::Fneg
         | Opcode::Fpow
+        | Opcode::Fmod
         | Opcode::Nadd
         | Opcode::Nsub
         | Opcode::Nmul
@@ -83,6 +84,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Await
         | Opcode::Yield
         | Opcode::NewMutex
+        | Opcode::NewChannel
         | Opcode::MutexLock
         | Opcode::MutexUnlock
         | Opcode::NewSemaphore
@@ -90,6 +92,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::SemRelease
         | Opcode::WaitAll
         | Opcode::Sleep
+        | Opcode::TaskCancel
         | Opcode::JsonParse
         | Opcode::JsonStringify
         | Opcode::JsonIndex
@@ -106,7 +109,11 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::TupleGet
         | Opcode::NewRefCell
         | Opcode::LoadRefCell
-        | Opcode::StoreRefCell => 1,
+        | Opcode::StoreRefCell
+        | Opcode::ArrayPush
+        | Opcode::ArrayPop
+        | Opcode::InstanceOf
+        | Opcode::Cast => 1,
 
         // u16 operand
         Opcode::LoadLocal
@@ -170,6 +177,9 @@ pub fn opcode_size(opcode: Opcode) -> usize {
 
         // i32 + i32 operands (try block)
         Opcode::Try => 1 + 4 + 4,
+
+        // u16 + u8 operands (native call)
+        Opcode::NativeCall => 1 + 2 + 1,
     }
 }
 

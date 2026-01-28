@@ -1,0 +1,22 @@
+// Object - Base class for all objects
+// This is a built-in type
+
+class Object {
+    // Get string representation of the object
+    // Default: "[object Object]" - subclasses can override
+    toString(): string {
+        return "[object Object]";
+    }
+
+    // Get hash code for this object (based on object identity)
+    // Default implementation returns the internal object ID
+    hashCode(): number {
+        return __NATIVE_CALL(0x0002, this);
+    }
+
+    // Check equality with another object (identity comparison)
+    // Default implementation compares by object identity
+    equals(other: Object): boolean {
+        return __NATIVE_CALL(0x0003, this, other);
+    }
+}

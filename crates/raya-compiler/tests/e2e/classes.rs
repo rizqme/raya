@@ -414,3 +414,64 @@ fn test_class_this_assignment() {
         42,
     );
 }
+
+// ============================================================================
+// Type Operators: instanceof and as
+// ============================================================================
+
+#[test]
+fn test_instanceof_same_class() {
+    expect_i32(
+        "class Animal {}
+         let a = new Animal();
+         if (a instanceof Animal) {
+             return 1;
+         }
+         return 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_instanceof_inheritance() {
+    expect_i32(
+        "class Animal {}
+         class Dog extends Animal {}
+         let d = new Dog();
+         if (d instanceof Animal) {
+             return 1;
+         }
+         return 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_instanceof_returns_false() {
+    expect_i32(
+        "class Cat {}
+         class Dog {}
+         let c = new Cat();
+         if (c instanceof Dog) {
+             return 1;
+         }
+         return 0;",
+        0,
+    );
+}
+
+#[test]
+fn test_cast_basic() {
+    expect_i32(
+        "class Animal {
+             age: number = 5;
+         }
+         class Dog extends Animal {
+             name: string = \"Rex\";
+         }
+         let d = new Dog();
+         let a = d as Animal;
+         return a.age;",
+        5,
+    );
+}

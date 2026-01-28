@@ -1,0 +1,47 @@
+// RegExpMatch - Result of a regular expression match
+// This is an immutable result class returned by RegExp.exec() and related methods
+
+class RegExpMatch {
+    // The matched text
+    public match: string;
+
+    // Start position in the input string
+    public index: number;
+
+    // The original input string
+    public input: string;
+
+    // Captured groups (index 0 is the full match)
+    public groups: Array<string>;
+
+    // Note: RegExpMatch objects are created by the VM when executing
+    // RegExp.exec() or similar methods. Users don't construct these directly.
+    constructor(match: string, index: number, input: string, groups: Array<string>) {
+        this.match = match;
+        this.index = index;
+        this.input = input;
+        this.groups = groups;
+    }
+
+    // Get a captured group by index (0 = full match, 1+ = capture groups)
+    group(index: number): string | null {
+        if (index >= 0 && index < this.groups.length) {
+            return this.groups[index];
+        }
+        return null;
+    }
+
+    // Get the number of captured groups (including full match)
+    groupCount(): number {
+        return this.groups.length;
+    }
+
+    // Get the end position of the match in the input string
+    end(): number {
+        return this.index + this.match.length;
+    }
+
+    toString(): string {
+        return this.match;
+    }
+}

@@ -177,12 +177,13 @@ fn test_string_literal() {
 #[test]
 fn test_binary_add() {
     let mut module = IrModule::new("test");
-    let mut func = IrFunction::new("add", vec![], TypeId::new(1));
+    // Use TypeId(2) = Boolean which falls through to integer opcodes
+    let mut func = IrFunction::new("add", vec![], TypeId::new(2));
     let mut entry = BasicBlock::new(BasicBlockId(0));
 
-    let r0 = make_reg(0, 1);
-    let r1 = make_reg(1, 1);
-    let r2 = make_reg(2, 1);
+    let r0 = make_reg(0, 2);
+    let r1 = make_reg(1, 2);
+    let r2 = make_reg(2, 2);
 
     entry.add_instr(IrInstr::Assign {
         dest: r0.clone(),
@@ -228,12 +229,13 @@ fn test_binary_operations() {
 
     for (ir_op, expected_opcode) in ops {
         let mut module = IrModule::new("test");
-        let mut func = IrFunction::new("op", vec![], TypeId::new(1));
+        // Use TypeId(2) = Boolean which falls through to integer opcodes
+        let mut func = IrFunction::new("op", vec![], TypeId::new(2));
         let mut entry = BasicBlock::new(BasicBlockId(0));
 
-        let r0 = make_reg(0, 1);
-        let r1 = make_reg(1, 1);
-        let r2 = make_reg(2, 1);
+        let r0 = make_reg(0, 2);
+        let r1 = make_reg(1, 2);
+        let r2 = make_reg(2, 2);
 
         entry.add_instr(IrInstr::Assign {
             dest: r0.clone(),

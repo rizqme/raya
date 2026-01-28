@@ -115,6 +115,33 @@ impl TypeSubstitution {
                 method: *method,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
+            IrInstr::NativeCall {
+                dest,
+                native_id,
+                args,
+            } => IrInstr::NativeCall {
+                dest: dest.as_ref().map(|d| self.apply_register(d)),
+                native_id: *native_id,
+                args: args.iter().map(|a| self.apply_register(a)).collect(),
+            },
+            IrInstr::InstanceOf {
+                dest,
+                object,
+                class_id,
+            } => IrInstr::InstanceOf {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                class_id: *class_id,
+            },
+            IrInstr::Cast {
+                dest,
+                object,
+                class_id,
+            } => IrInstr::Cast {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                class_id: *class_id,
+            },
             IrInstr::LoadLocal { dest, index } => IrInstr::LoadLocal {
                 dest: self.apply_register(dest),
                 index: *index,
@@ -294,6 +321,30 @@ impl TypeSubstitution {
                 duration_ms: self.apply_register(duration_ms),
             },
             IrInstr::Yield => IrInstr::Yield,
+            IrInstr::NewMutex { dest } => IrInstr::NewMutex {
+                dest: self.apply_register(dest),
+            },
+            IrInstr::NewChannel { dest, capacity } => IrInstr::NewChannel {
+                dest: self.apply_register(dest),
+                capacity: self.apply_register(capacity),
+            },
+            IrInstr::MutexLock { mutex } => IrInstr::MutexLock {
+                mutex: self.apply_register(mutex),
+            },
+            IrInstr::MutexUnlock { mutex } => IrInstr::MutexUnlock {
+                mutex: self.apply_register(mutex),
+            },
+            IrInstr::TaskCancel { task } => IrInstr::TaskCancel {
+                task: self.apply_register(task),
+            },
+            IrInstr::ArrayPush { array, element } => IrInstr::ArrayPush {
+                array: self.apply_register(array),
+                element: self.apply_register(element),
+            },
+            IrInstr::ArrayPop { dest, array } => IrInstr::ArrayPop {
+                dest: self.apply_register(dest),
+                array: self.apply_register(array),
+            },
             IrInstr::SetupTry { catch_block, finally_block } => IrInstr::SetupTry {
                 catch_block: *catch_block,
                 finally_block: *finally_block,
