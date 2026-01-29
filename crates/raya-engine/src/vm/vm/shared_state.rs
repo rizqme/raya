@@ -5,8 +5,9 @@
 
 use crate::vm::gc::GarbageCollector;
 use crate::vm::object::{Array, Closure, Object, RayaString};
-use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState};
+use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState, TimerThread};
 use crate::vm::stack::Stack;
+use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
 use crate::vm::vm::{ClassRegistry, SafepointCoordinator};
 use crate::vm::{VmError, VmResult};
@@ -55,6 +56,12 @@ pub struct SharedVmState {
 
     /// Global task injector for scheduling
     pub injector: Arc<Injector<Arc<Task>>>,
+
+    /// Mutex registry for task synchronization
+    pub mutex_registry: MutexRegistry,
+
+    /// Timer thread for efficient sleep handling
+    pub timer: Arc<TimerThread>,
 }
 
 impl SharedVmState {
@@ -64,6 +71,10 @@ impl SharedVmState {
         tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: Arc<Injector<Arc<Task>>>,
     ) -> Self {
+        let timer = TimerThread::new();
+        // Start timer thread immediately
+        timer.start(injector.clone());
+
         Self {
             gc: Mutex::new(GarbageCollector::default()),
             classes: RwLock::new(ClassRegistry::new()),
@@ -72,6 +83,8 @@ impl SharedVmState {
             safepoint,
             tasks,
             injector,
+            mutex_registry: MutexRegistry::new(),
+            timer,
         }
     }
 

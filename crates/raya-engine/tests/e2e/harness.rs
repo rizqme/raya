@@ -343,6 +343,38 @@ pub fn expect_string_with_builtins(source: &str, expected: &str) {
     }
 }
 
+/// Compile and execute with builtins, expecting a string result containing a pattern
+pub fn expect_string_contains_with_builtins(source: &str, pattern: &str) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            if value.is_ptr() {
+                let str_ptr = unsafe { value.as_ptr::<RayaString>() };
+                if let Some(ptr) = str_ptr {
+                    let raya_str = unsafe { &*ptr.as_ptr() };
+                    assert!(
+                        raya_str.data.contains(pattern),
+                        "String does not contain pattern.\nExpected to contain: '{}'\nGot: '{}'\nSource:\n{}",
+                        pattern, raya_str.data, source
+                    );
+                } else {
+                    panic!(
+                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
+                        value, source
+                    );
+                }
+            } else {
+                panic!(
+                    "Expected string (pointer), got {:?}\nSource:\n{}",
+                    value, source
+                );
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
 /// Compile and execute, expecting a compilation or type check error
 pub fn expect_compile_error(source: &str, error_pattern: &str) {
     match compile(source) {

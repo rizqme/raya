@@ -435,3 +435,86 @@ fn test_custom_error_function() {
         42,
     );
 }
+
+// ============================================================================
+// Stack Trace Tests
+// ============================================================================
+
+#[test]
+fn test_error_stack_property_exists() {
+    // Test that Error has a stack property that is initially an empty string
+    expect_string_with_builtins(
+        "let err = new Error('test');
+         return err.stack;",
+        "",
+    );
+}
+
+#[test]
+fn test_error_stack_trace_simple() {
+    // Test that stack trace contains the error header
+    expect_string_contains_with_builtins(
+        "let stack = '';
+         try {
+             throw new Error('test error');
+         } catch (e) {
+             stack = e.stack;
+         }
+         return stack;",
+        "Error: test error",
+    );
+}
+
+#[test]
+fn test_error_stack_trace_from_function() {
+    // Test that stack trace contains function name
+    expect_string_contains_with_builtins(
+        "function fail(): void {
+             throw new Error('oops');
+         }
+         let stack = '';
+         try {
+             fail();
+         } catch (e) {
+             stack = e.stack;
+         }
+         return stack;",
+        "at fail",
+    );
+}
+
+#[test]
+fn test_error_stack_trace_nested_functions() {
+    // Test that stack trace contains nested function names
+    expect_string_contains_with_builtins(
+        "function inner(): void {
+             throw new Error('deep');
+         }
+         function outer(): void {
+             inner();
+         }
+         let stack = '';
+         try {
+             outer();
+         } catch (e) {
+             stack = e.stack;
+         }
+         return stack;",
+        "at inner",
+    );
+}
+
+#[test]
+fn test_type_error_stack_trace() {
+    // Test that TypeError also gets stack trace
+    expect_string_contains_with_builtins(
+        "let stack = '';
+         try {
+             throw new TypeError('bad type');
+         } catch (e) {
+             stack = e.stack;
+         }
+         return stack;",
+        "TypeError: bad type",
+    );
+}

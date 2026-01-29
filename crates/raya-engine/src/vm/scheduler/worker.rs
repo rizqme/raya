@@ -1,16 +1,15 @@
 //! Worker thread that executes Tasks
 //!
 //! Workers pick up tasks from the global injector or steal from other workers,
-//! then execute them using the shared TaskExecutor.
+//! then execute them using the TaskInterpreter for proper cooperative scheduling.
 
-use crate::vm::scheduler::{Task, TaskState};
-use crate::vm::vm::{SharedVmState, TaskExecutor};
-use crate::vm::VmError;
+use crate::vm::scheduler::{SuspendReason, Task, TaskState};
+use crate::vm::vm::{ExecutionResult, SharedVmState, TaskInterpreter};
 use crossbeam_deque::{Injector, Stealer, Worker as CWorker};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Worker thread that executes Tasks
 pub struct Worker {
@@ -89,6 +88,7 @@ impl Worker {
                 Some(task) => task,
                 None => {
                     // No work available, sleep briefly to avoid busy-waiting
+                    // Note: sleeping tasks are handled by the timer thread
                     thread::sleep(Duration::from_micros(100));
 
                     // Poll safepoint even when idle
@@ -101,89 +101,143 @@ impl Worker {
             task.set_state(TaskState::Running);
 
             // Record start time for preemption monitoring (like Go)
-            task.set_start_time(std::time::Instant::now());
+            task.set_start_time(Instant::now());
 
-            // Get module from task
-            let module = task.module();
+            // Create TaskInterpreter with shared state
+            let mut interpreter = TaskInterpreter::new(
+                &state.gc,
+                &state.classes,
+                &state.mutex_registry,
+                &state.safepoint,
+                &state.globals_by_index,
+                &state.tasks,
+                &state.injector,
+            );
 
-            // Execute using TaskExecutor
-            let mut executor = TaskExecutor::new(&state, &task, module);
-            match executor.execute() {
-                Ok(result) => {
-                    // Clear execution time tracking
-                    task.clear_start_time();
+            // Execute task using the suspendable interpreter
+            let result = interpreter.run(&task);
 
-                    task.complete(result);
+            // Clear execution time tracking
+            task.clear_start_time();
+
+            // Handle execution result
+            match result {
+                ExecutionResult::Completed(value) => {
+                    task.complete(value);
 
                     // Resume waiting tasks by re-queueing them
-                    let waiters = task.take_waiters();
-                    if !waiters.is_empty() {
-                        let tasks_map = state.tasks.read();
-                        for waiter_id in waiters {
-                            if let Some(waiter_task) = tasks_map.get(&waiter_id) {
-                                // Set waiter to Resumed state so it can be scheduled
-                                waiter_task.set_state(TaskState::Resumed);
-                                state.injector.push(waiter_task.clone());
-                            }
+                    Self::wake_waiters(&state, &task);
+                }
+                ExecutionResult::Suspended(reason) => {
+                    // Store the suspension reason
+                    task.suspend(reason.clone());
+
+                    // Handle specific suspension reasons
+                    match reason {
+                        SuspendReason::AwaitTask(awaited_id) => {
+                            // The awaited task will wake this task when it completes
+                            // This is already set up in the TaskInterpreter (add_waiter)
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Worker {}: Task {} suspended awaiting task {:?}",
+                                id,
+                                task.id().as_u64(),
+                                awaited_id
+                            );
+                        }
+                        SuspendReason::Sleep { wake_at } => {
+                            // Register with timer thread for efficient wake-up
+                            state.timer.register(task.clone(), wake_at);
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Worker {}: Task {} sleeping until {:?}",
+                                id,
+                                task.id().as_u64(),
+                                wake_at
+                            );
+                        }
+                        SuspendReason::MutexLock { mutex_id } => {
+                            // Task will be woken when mutex is released
+                            // The mutex unlock will call wake_waiters
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Worker {}: Task {} waiting for mutex {:?}",
+                                id,
+                                task.id().as_u64(),
+                                mutex_id
+                            );
+                        }
+                        SuspendReason::ChannelSend { channel_id, .. } => {
+                            // Task will be woken when channel has space
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Worker {}: Task {} waiting to send on channel {}",
+                                id,
+                                task.id().as_u64(),
+                                channel_id
+                            );
+                        }
+                        SuspendReason::ChannelReceive { channel_id } => {
+                            // Task will be woken when channel has data
+                            #[cfg(debug_assertions)]
+                            eprintln!(
+                                "Worker {}: Task {} waiting to receive from channel {}",
+                                id,
+                                task.id().as_u64(),
+                                channel_id
+                            );
                         }
                     }
                 }
-                Err(VmError::TaskPreempted) => {
-                    // Clear execution time tracking
-                    task.clear_start_time();
-
-                    #[cfg(debug_assertions)]
-                    eprintln!(
-                        "Worker {}: Task {} preempted, re-queueing",
-                        id,
-                        task.id().as_u64()
-                    );
-
-                    // Put it back in the Created state so it can be rescheduled
-                    task.set_state(TaskState::Created);
-                    state.injector.push(task.clone());
-                }
-                Err(VmError::Suspended) => {
-                    // Task is suspended waiting for another task
-                    // Don't fail or complete - just leave in Suspended state
-                    // The awaited task will re-queue this task when it completes
-                    task.clear_start_time();
-                }
-                Err(e) => {
-                    // Clear execution time tracking
-                    task.clear_start_time();
-
+                ExecutionResult::Failed(e) => {
                     eprintln!("Worker {}: Task {} failed: {:?}", id, task.id().as_u64(), e);
                     task.fail();
 
                     // Resume waiting tasks even on failure (they need to see the failure)
-                    let waiters = task.take_waiters();
-                    if !waiters.is_empty() {
-                        let tasks_map = state.tasks.read();
-                        for waiter_id in waiters {
-                            if let Some(waiter_task) = tasks_map.get(&waiter_id) {
-                                waiter_task.set_state(TaskState::Resumed);
-                                state.injector.push(waiter_task.clone());
-                            }
-                        }
-                    }
+                    Self::wake_waiters(&state, &task);
                 }
-            }
-
-            // Check if preemption was requested
-            if task.is_preempt_requested() {
-                task.clear_preempt();
-                #[cfg(debug_assertions)]
-                eprintln!(
-                    "Worker {}: Task {} yielded after preemption",
-                    id,
-                    task.id().as_u64()
-                );
             }
         }
 
         #[cfg(debug_assertions)]
         eprintln!("Worker {} shutting down", id);
+    }
+
+    /// Wake tasks waiting for the completed task
+    fn wake_waiters(state: &SharedVmState, task: &Arc<Task>) {
+        let waiters = task.take_waiters();
+        if !waiters.is_empty() {
+            let tasks_map = state.tasks.read();
+            let task_failed = task.state() == TaskState::Failed;
+            let exception = if task_failed {
+                task.current_exception()
+            } else {
+                None
+            };
+
+            for waiter_id in waiters {
+                if let Some(waiter_task) = tasks_map.get(&waiter_id) {
+                    if task_failed {
+                        // Propagate the exception to the waiter task
+                        if let Some(exc) = exception {
+                            waiter_task.set_exception(exc);
+                        } else {
+                            // Create a generic exception if none was set
+                            waiter_task.set_exception(crate::vm::value::Value::null());
+                        }
+                    } else {
+                        // Set the result as resume value for the waiter
+                        if let Some(result) = task.result() {
+                            waiter_task.set_resume_value(result);
+                        }
+                    }
+                    // Set waiter to Resumed state so it can be scheduled
+                    waiter_task.set_state(TaskState::Resumed);
+                    waiter_task.clear_suspend_reason();
+                    state.injector.push(waiter_task.clone());
+                }
+            }
+        }
     }
 
     /// Find work: local pop, then steal, then inject

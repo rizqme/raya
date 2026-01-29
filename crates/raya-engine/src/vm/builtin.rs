@@ -3,6 +3,94 @@
 //! This module defines constants for built-in methods on primitive types
 //! (arrays, strings, etc.) that are handled specially by the VM.
 
+use crate::vm::{Value, VmError};
+
+// ============================================================================
+// Native Call Result Types
+// ============================================================================
+
+/// Result of a native call that can signal yielding to the VM
+///
+/// Native calls can return one of three outcomes:
+/// - `Ok(Value)` - The call completed successfully with a return value
+/// - `Yield(WaitReason)` - The task should yield and wait for a condition
+/// - `Err(VmError)` - The call failed with an error
+#[derive(Debug)]
+pub enum NativeResult {
+    /// Call completed successfully with a value
+    Ok(Value),
+    /// Task should yield and wait for the specified condition
+    Yield(WaitReason),
+    /// Call failed with an error
+    Err(VmError),
+}
+
+impl NativeResult {
+    /// Create a successful result with null value
+    pub fn ok_null() -> Self {
+        NativeResult::Ok(Value::null())
+    }
+
+    /// Create a successful result with a boolean value
+    pub fn ok_bool(v: bool) -> Self {
+        NativeResult::Ok(Value::bool(v))
+    }
+
+    /// Create a successful result with an i32 value
+    pub fn ok_i32(v: i32) -> Self {
+        NativeResult::Ok(Value::i32(v))
+    }
+
+    /// Check if this is a yield result
+    pub fn is_yield(&self) -> bool {
+        matches!(self, NativeResult::Yield(_))
+    }
+}
+
+impl From<Value> for NativeResult {
+    fn from(v: Value) -> Self {
+        NativeResult::Ok(v)
+    }
+}
+
+impl From<VmError> for NativeResult {
+    fn from(e: VmError) -> Self {
+        NativeResult::Err(e)
+    }
+}
+
+/// Reason why a task is yielding
+///
+/// When a native call returns `NativeResult::Yield`, it includes a reason
+/// that tells the VM what condition the task is waiting for.
+#[derive(Debug, Clone)]
+pub enum WaitReason {
+    /// Waiting to send on a full channel
+    /// The VM should retry when the channel has space
+    ChannelSend {
+        /// Pointer to the channel object
+        channel: Value,
+        /// Value to send
+        value: Value,
+    },
+    /// Waiting to receive from an empty channel
+    /// The VM should retry when the channel has data
+    ChannelReceive {
+        /// Pointer to the channel object
+        channel: Value,
+    },
+    /// Waiting for a mutex to become available
+    MutexLock {
+        /// Mutex handle
+        mutex_id: u64,
+    },
+    /// Waiting for a duration (sleep)
+    Sleep {
+        /// Timestamp (in ms since epoch) when to wake up
+        wake_at_ms: u64,
+    },
+}
+
 /// Built-in method IDs for arrays
 ///
 /// These IDs are used in CallMethod instructions when calling methods on arrays.

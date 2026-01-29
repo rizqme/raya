@@ -3,9 +3,48 @@
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
+use parking_lot::Condvar as ParkingCondvar;
+use parking_lot::Mutex as ParkingMutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+/// Reason why a task is suspended
+///
+/// When a task cannot proceed (e.g., waiting for another task, sleeping,
+/// waiting for a mutex), it suspends with a reason that tells the scheduler
+/// what condition needs to be satisfied before resuming.
+#[derive(Debug, Clone)]
+pub enum SuspendReason {
+    /// Waiting for another task to complete
+    AwaitTask(TaskId),
+
+    /// Sleeping until a specific time
+    Sleep {
+        /// When to wake up
+        wake_at: Instant,
+    },
+
+    /// Waiting to acquire a mutex
+    MutexLock {
+        /// The mutex we're waiting for
+        mutex_id: MutexId,
+    },
+
+    /// Waiting to send on a full channel
+    ChannelSend {
+        /// Channel handle
+        channel_id: u64,
+        /// Value to send (stored here while waiting)
+        value: Value,
+    },
+
+    /// Waiting to receive from an empty channel
+    ChannelReceive {
+        /// Channel handle
+        channel_id: u64,
+    },
+}
 
 /// Unique identifier for a Task
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -113,8 +152,23 @@ pub struct Task {
     /// Currently thrown exception (if any)
     current_exception: Mutex<Option<Value>>,
 
+    /// Caught exception (for Rethrow - preserved even after catch entry clears current_exception)
+    caught_exception: Mutex<Option<Value>>,
+
     /// Mutexes currently held by this Task (for auto-unlock on exception)
     held_mutexes: Mutex<Vec<MutexId>>,
+
+    /// Stack of currently executing closures (for LoadCaptured access)
+    closure_stack: Mutex<Vec<Value>>,
+
+    /// Call stack for stack traces (function IDs)
+    call_stack: Mutex<Vec<usize>>,
+
+    /// Reason for suspension (when state is Suspended)
+    suspend_reason: Mutex<Option<SuspendReason>>,
+
+    /// Value to push on resume (e.g., received channel value)
+    resume_value: Mutex<Option<Value>>,
 
     /// Initial arguments passed to this task when spawned
     initial_args: Mutex<Vec<Value>>,
@@ -124,6 +178,13 @@ pub struct Task {
 
     /// Whether this task has been cancelled
     cancelled: AtomicBool,
+
+    /// Completion tracking for blocking wait (using parking_lot for efficiency)
+    /// The bool indicates whether the task has finished (completed or failed)
+    completion_lock: ParkingMutex<bool>,
+
+    /// Condvar for blocking until task completes
+    completion_condvar: ParkingCondvar,
 }
 
 impl Task {
@@ -157,10 +218,17 @@ impl Task {
             start_time: Mutex::new(None),
             exception_handlers: Mutex::new(Vec::new()),
             current_exception: Mutex::new(None),
+            caught_exception: Mutex::new(None),
             held_mutexes: Mutex::new(Vec::new()),
+            closure_stack: Mutex::new(Vec::new()),
+            call_stack: Mutex::new(Vec::new()),
+            suspend_reason: Mutex::new(None),
+            resume_value: Mutex::new(None),
             initial_args: Mutex::new(args),
             awaiting_task: Mutex::new(None),
             cancelled: AtomicBool::new(false),
+            completion_lock: ParkingMutex::new(false),
+            completion_condvar: ParkingCondvar::new(),
         }
     }
 
@@ -213,11 +281,42 @@ impl Task {
     pub fn complete(&self, result: Value) {
         *self.result.lock().unwrap() = Some(result);
         self.set_state(TaskState::Completed);
+        // Signal completion to any waiters
+        self.signal_completion();
     }
 
     /// Mark the task as failed
     pub fn fail(&self) {
         self.set_state(TaskState::Failed);
+        // Signal completion to any waiters (failure is also a completion)
+        self.signal_completion();
+    }
+
+    /// Signal that the task has completed (either success or failure)
+    fn signal_completion(&self) {
+        let mut done = self.completion_lock.lock();
+        *done = true;
+        self.completion_condvar.notify_all();
+    }
+
+    /// Block until this task completes (either successfully or with failure)
+    /// Returns the task state after completion
+    pub fn wait_completion(&self) -> TaskState {
+        let mut done = self.completion_lock.lock();
+        while !*done {
+            self.completion_condvar.wait(&mut done);
+        }
+        self.state()
+    }
+
+    /// Block until this task completes, with a timeout
+    /// Returns the task state (may still be Running if timeout occurred)
+    pub fn wait_completion_timeout(&self, timeout: std::time::Duration) -> TaskState {
+        let mut done = self.completion_lock.lock();
+        if !*done {
+            self.completion_condvar.wait_for(&mut done, timeout);
+        }
+        self.state()
     }
 
     /// Get the result (if completed)
@@ -325,9 +424,118 @@ impl Task {
         self.current_exception.lock().unwrap().is_some()
     }
 
+    /// Get the caught exception (for Rethrow)
+    pub fn caught_exception(&self) -> Option<Value> {
+        *self.caught_exception.lock().unwrap()
+    }
+
+    /// Set the caught exception (when entering catch block)
+    pub fn set_caught_exception(&self, exception: Value) {
+        *self.caught_exception.lock().unwrap() = Some(exception);
+    }
+
+    /// Clear the caught exception
+    pub fn clear_caught_exception(&self) {
+        *self.caught_exception.lock().unwrap() = None;
+    }
+
     /// Get the exception handler count (for debugging)
     pub fn exception_handler_count(&self) -> usize {
         self.exception_handlers.lock().unwrap().len()
+    }
+
+    // =========================================================================
+    // Closure Stack
+    // =========================================================================
+
+    /// Push a closure onto the closure stack
+    pub fn push_closure(&self, closure: Value) {
+        self.closure_stack.lock().unwrap().push(closure);
+    }
+
+    /// Pop a closure from the closure stack
+    pub fn pop_closure(&self) -> Option<Value> {
+        self.closure_stack.lock().unwrap().pop()
+    }
+
+    /// Get the current closure (top of stack)
+    pub fn current_closure(&self) -> Option<Value> {
+        self.closure_stack.lock().unwrap().last().copied()
+    }
+
+    /// Get the closure stack (for execution)
+    pub fn closure_stack(&self) -> &Mutex<Vec<Value>> {
+        &self.closure_stack
+    }
+
+    // =========================================================================
+    // Call Stack (for stack traces)
+    // =========================================================================
+
+    /// Push a function ID onto the call stack
+    pub fn push_call_frame(&self, function_id: usize) {
+        self.call_stack.lock().unwrap().push(function_id);
+    }
+
+    /// Pop a function ID from the call stack
+    pub fn pop_call_frame(&self) -> Option<usize> {
+        self.call_stack.lock().unwrap().pop()
+    }
+
+    /// Get the current call stack (for building stack traces)
+    pub fn get_call_stack(&self) -> Vec<usize> {
+        self.call_stack.lock().unwrap().clone()
+    }
+
+    /// Build a stack trace string from the current call stack
+    pub fn build_stack_trace(&self, error_name: &str, error_message: &str) -> String {
+        let call_stack = self.call_stack.lock().unwrap();
+        let module = &self.module;
+
+        let mut trace = if error_message.is_empty() {
+            error_name.to_string()
+        } else {
+            format!("{}: {}", error_name, error_message)
+        };
+
+        // Add each frame to the stack trace (most recent first)
+        for &func_id in call_stack.iter().rev() {
+            if let Some(func) = module.functions.get(func_id) {
+                trace.push_str(&format!("\n    at {}", func.name));
+            }
+        }
+
+        trace
+    }
+
+    // =========================================================================
+    // Suspension
+    // =========================================================================
+
+    /// Set the suspension reason
+    pub fn suspend(&self, reason: SuspendReason) {
+        self.set_state(TaskState::Suspended);
+        *self.suspend_reason.lock().unwrap() = Some(reason);
+    }
+
+    /// Get the suspension reason
+    pub fn suspend_reason(&self) -> Option<SuspendReason> {
+        self.suspend_reason.lock().unwrap().clone()
+    }
+
+    /// Clear the suspension reason (when resuming)
+    pub fn clear_suspend_reason(&self) {
+        *self.suspend_reason.lock().unwrap() = None;
+    }
+
+    /// Set the value to push when resuming (e.g., channel receive result)
+    pub fn set_resume_value(&self, value: Value) {
+        *self.resume_value.lock().unwrap() = Some(value);
+    }
+
+    /// Take the resume value (consumes it)
+    pub fn take_resume_value(&self) -> Option<Value> {
+        self.resume_value.lock().unwrap().take()
     }
 
     /// Record that this task has acquired a mutex

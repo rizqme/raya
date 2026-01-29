@@ -282,11 +282,11 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] Constructor calls `__OPCODE_MUTEX_NEW()` → stores `handle`
 - [x] `lock()` calls `__OPCODE_MUTEX_LOCK(this.handle)`
 - [x] `unlock()` calls `__OPCODE_MUTEX_UNLOCK(this.handle)`
-- [ ] Native: `tryLock()`, `isLocked()` (not implemented)
+- [x] `tryLock()`, `isLocked()` methods
 
 #### 5.2 VM Native Functions
-- [ ] Implement `__NATIVE_MUTEX_TRY_LOCK` (0x0200)
-- [ ] Implement `__NATIVE_MUTEX_IS_LOCKED` (0x0201)
+- [x] Implement `__NATIVE_MUTEX_TRY_LOCK` (0x0300)
+- [x] Implement `__NATIVE_MUTEX_IS_LOCKED` (0x0301)
 
 ---
 
@@ -298,11 +298,11 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] Internal `handle` field (set by SPAWN)
 - [x] `cancel()` calls `__OPCODE_TASK_CANCEL(this.handle)`
 - [x] Standalone functions: `taskYield()` → `__OPCODE_YIELD()`, `taskSleep(ms)` → `__OPCODE_SLEEP(ms)`
-- [ ] Native: `isDone()`, `isCancelled()` (not implemented)
+- [x] `isDone()`, `isCancelled()` methods
 
 #### 6.2 VM Native Functions
-- [ ] Implement `__NATIVE_TASK_IS_DONE` (0x0300)
-- [ ] Implement `__NATIVE_TASK_IS_CANCELLED` (0x0301)
+- [x] Implement `__NATIVE_TASK_IS_DONE` (0x0500)
+- [x] Implement `__NATIVE_TASK_IS_CANCELLED` (0x0501)
 
 ---
 
@@ -315,8 +315,8 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] All methods use `__NATIVE_CALL` (0x0401-0x0408)
 
 #### 7.2 VM Native Functions
-- [ ] Implement all `__NATIVE_CHANNEL_*` functions (0x0400-0x0408)
-- [ ] `send()` and `receive()` must integrate with task scheduler
+- [x] Implement all `__NATIVE_CHANNEL_*` functions (0x0400-0x0408)
+- [x] `send()` and `receive()` are blocking using condvar (no busy-wait)
 
 ---
 
@@ -328,8 +328,8 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] All error classes defined in single file with inheritance
 
 #### 8.2 Stack Trace Support
-- [ ] Implement `__NATIVE_ERROR_STACK` (0x0500)
-- [ ] Capture stack trace on throw
+- [x] Capture stack trace on throw (implemented directly in VM's Throw opcode)
+- [x] Stack trace includes function names in reverse call order
 
 ---
 
@@ -339,13 +339,13 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 - [x] Create `stdlib/Map.raya`
 - [x] Generic `Map<K, V>`
 - [x] All methods use `__NATIVE_CALL` (0x0800-0x080A)
-- [ ] Implement `__NATIVE_MAP_*` functions in VM
+- [x] Implement `__NATIVE_MAP_*` functions in VM
 
 #### 9.2 Set Class
 - [x] Create `stdlib/Set.raya`
 - [x] Generic `Set<T>` with set operations (`union`, `intersection`, `difference`)
 - [x] All methods use `__NATIVE_CALL` (0x0900-0x090A)
-- [ ] Implement `__NATIVE_SET_*` functions in VM
+- [x] Implement `__NATIVE_SET_*` functions in VM
 
 ---
 
@@ -354,12 +354,12 @@ The compiler has built-in knowledge of primitive type methods. No new syntax is 
 #### 10.1 Buffer Class
 - [x] Create `stdlib/Buffer.raya`
 - [x] All methods use `__NATIVE_CALL`
-- [ ] Implement `__NATIVE_BUFFER_*` functions in VM
+- [x] Implement `__NATIVE_BUFFER_*` functions in VM
 
 #### 10.2 Date Class
 - [x] Create `stdlib/Date.raya`
 - [x] All methods use `__NATIVE_CALL`
-- [ ] Implement `__NATIVE_DATE_*` functions in VM
+- [x] Implement `__NATIVE_DATE_*` functions in VM
 
 ---
 
@@ -531,9 +531,9 @@ pub fn dispatch_native(id: u16, args: &[Value]) -> Result<Value, VmError> {
 - [x] `test_string_match_with_regexp` (match, matchAll, search, replace, split, replaceWith)
 
 ### Phase 5-10 Tests
-- [ ] Tests for each built-in class (Map, Set, Buffer, Date - native functions not implemented)
+- [x] Tests for each built-in class (Map, Set, Buffer, Date - native functions implemented)
 - [x] Tests for class extension (e2e/classes.rs::test_class_extends)
-- [ ] Tests for native method calls
+- [x] Tests for native method calls
 
 ### Phase 11 Tests (RegExpMatch)
 - [x] `test_regexp_match_properties` (e2e/builtins.rs)

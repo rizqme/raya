@@ -3,6 +3,7 @@
 use crate::vm::scheduler::TaskId;
 use crate::vm::sync::MutexId;
 use crossbeam::atomic::AtomicCell;
+use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingLotMutex;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -46,6 +47,10 @@ pub struct Mutex {
 
     /// Lock count (for detecting reentrant locks - always 0 or 1)
     lock_count: AtomicUsize,
+
+    /// Condvar for blocking until mutex is available
+    /// Used by the blocking lock() method
+    available_condvar: ParkingCondvar,
 }
 
 impl Mutex {
@@ -56,6 +61,7 @@ impl Mutex {
             owner: AtomicCell::new(None),
             wait_queue: ParkingLotMutex::new(VecDeque::new()),
             lock_count: AtomicUsize::new(0),
+            available_condvar: ParkingCondvar::new(),
         }
     }
 
@@ -95,6 +101,60 @@ impl Mutex {
         }
     }
 
+    /// Blocking lock - waits until the mutex can be acquired
+    ///
+    /// This method blocks the current thread (using a condvar) until
+    /// the mutex is available. Unlike try_lock, this will not return
+    /// until the lock is held.
+    ///
+    /// Note: This uses the wait_queue internally to maintain proper
+    /// ordering of waiters.
+    pub fn lock(&self, task_id: TaskId) -> Result<(), MutexError> {
+        // First try to acquire immediately
+        if self.owner.compare_exchange(None, Some(task_id)).is_ok() {
+            self.lock_count.store(1, Ordering::Release);
+            return Ok(());
+        }
+
+        // Check for reentrant lock attempt
+        if let Some(current_owner) = self.owner.load() {
+            if current_owner == task_id {
+                return Err(MutexError::AlreadyLocked(task_id));
+            }
+        }
+
+        // Add ourselves to the wait queue and wait on condvar
+        {
+            let mut queue = self.wait_queue.lock();
+            queue.push_back(task_id);
+        }
+
+        // Wait until we acquire the lock
+        loop {
+            // Check if we now own the lock (unlock transferred ownership to us)
+            if let Some(owner) = self.owner.load() {
+                if owner == task_id {
+                    return Ok(());
+                }
+            }
+
+            // Try to acquire if unlocked
+            if self.owner.compare_exchange(None, Some(task_id)).is_ok() {
+                // Remove ourselves from wait queue if we're still there
+                let mut queue = self.wait_queue.lock();
+                if let Some(pos) = queue.iter().position(|&id| id == task_id) {
+                    queue.remove(pos);
+                }
+                self.lock_count.store(1, Ordering::Release);
+                return Ok(());
+            }
+
+            // Wait for unlock notification
+            let mut queue = self.wait_queue.lock();
+            self.available_condvar.wait(&mut queue);
+        }
+    }
+
     /// Unlock the mutex (called from UNLOCK opcode)
     ///
     /// Returns:
@@ -115,9 +175,12 @@ impl Mutex {
                     // Transfer ownership to the next waiting task
                     self.owner.store(Some(next_task));
                     self.lock_count.store(1, Ordering::Release);
+                    // Notify waiters that ownership may have changed
+                    self.available_condvar.notify_all();
                     Ok(Some(next_task))
                 } else {
-                    // No waiting tasks
+                    // No waiting tasks - notify any blocking threads
+                    self.available_condvar.notify_all();
                     Ok(None)
                 }
             }
@@ -163,6 +226,7 @@ impl Mutex {
     /// Deserialize and restore mutex state
     pub fn deserialize(data: crate::vm::sync::SerializedMutex) -> Self {
         use crossbeam::atomic::AtomicCell;
+        use parking_lot::Condvar as ParkingCondvar;
         use parking_lot::Mutex as ParkingLotMutex;
         use std::collections::VecDeque;
         use std::sync::atomic::AtomicUsize;
@@ -172,6 +236,7 @@ impl Mutex {
             owner: AtomicCell::new(data.owner),
             wait_queue: ParkingLotMutex::new(data.wait_queue.into_iter().collect::<VecDeque<_>>()),
             lock_count: AtomicUsize::new(if data.owner.is_some() { 1 } else { 0 }),
+            available_condvar: ParkingCondvar::new(),
         }
     }
 }

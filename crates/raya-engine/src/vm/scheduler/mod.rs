@@ -8,10 +8,12 @@ mod preempt;
 #[allow(clippy::module_inception)]
 mod scheduler;
 mod task;
+mod timer;
 mod worker;
 
 pub use deque::WorkerDeque;
 pub use preempt::{PreemptMonitor, DEFAULT_PREEMPT_THRESHOLD};
 pub use scheduler::{Scheduler, SchedulerLimits, SchedulerStats};
-pub use task::{ExceptionHandler, Task, TaskHandle, TaskId, TaskState};
+pub use task::{ExceptionHandler, SuspendReason, Task, TaskHandle, TaskId, TaskState};
+pub use timer::TimerThread;
 pub use worker::Worker;
