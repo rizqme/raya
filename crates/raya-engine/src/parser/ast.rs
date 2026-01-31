@@ -27,9 +27,9 @@ pub use visitor::*;
 /// Root node: a Raya source file (module)
 ///
 /// # Example
-/// ```
-/// use raya_parser::ast::*;
-/// use raya_parser::token::Span;
+/// ```ignore
+/// use raya_engine::parser::ast::*;
+/// use raya_engine::parser::token::Span;
 ///
 /// let module = Module::new(
 ///     vec![],

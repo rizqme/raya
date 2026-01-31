@@ -19,5 +19,6 @@ mod closures;
 mod concurrency;
 mod exceptions;
 mod builtins;
+mod json;
 
 pub use harness::*;

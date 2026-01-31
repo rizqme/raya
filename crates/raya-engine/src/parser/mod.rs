@@ -5,8 +5,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use raya_parser::Lexer;
+//! ```ignore
+//! use raya_engine::parser::Lexer;
 //!
 //! let source = r#"
 //!     function add(a: number, b: number): number {

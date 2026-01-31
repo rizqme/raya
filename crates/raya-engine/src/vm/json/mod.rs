@@ -19,14 +19,109 @@
 //! console.log(user.name.toUpperCase());  // Fully typed
 //! ```
 
-use crate::vm::gc::GcPtr;
-use crate::vm::object::RayaString;
+use crate::vm::gc::{GarbageCollector, GcPtr};
+use crate::vm::object::{Array, RayaString};
+use crate::vm::value::Value;
 use rustc_hash::FxHashMap;
 use std::fmt;
 
 pub mod cast;
 pub mod parser;
 pub mod stringify;
+
+/// Convert a VM Value to a JsonValue for stringify
+///
+/// This handles the common value types:
+/// - null/undefined -> JsonValue::Null
+/// - boolean -> JsonValue::Bool
+/// - number (i32/f64) -> JsonValue::Number
+/// - string -> JsonValue::String
+/// - array -> JsonValue::Array (recursive)
+pub fn value_to_json(value: Value, gc: &mut GarbageCollector) -> JsonValue {
+    // Check for null
+    if value.is_null() {
+        return JsonValue::Null;
+    }
+
+    // Check for boolean
+    if let Some(b) = value.as_bool() {
+        return JsonValue::Bool(b);
+    }
+
+    // Check for i32
+    if let Some(n) = value.as_i32() {
+        return JsonValue::Number(n as f64);
+    }
+
+    // Check for f64
+    if let Some(n) = value.as_f64() {
+        return JsonValue::Number(n);
+    }
+
+    // Check for pointer types (string, array)
+    if value.is_ptr() {
+        // Try string
+        if let Some(str_ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            // Create a new GcPtr from the NonNull
+            let gc_ptr = unsafe { GcPtr::new(str_ptr) };
+            return JsonValue::String(gc_ptr);
+        }
+
+        // Try array
+        if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*arr_ptr.as_ptr() };
+            let mut json_arr: Vec<JsonValue> = Vec::new();
+            for i in 0..arr.len() {
+                if let Some(elem) = arr.get(i) {
+                    json_arr.push(value_to_json(elem, gc));
+                }
+            }
+            let gc_ptr = gc.allocate(json_arr);
+            return JsonValue::Array(gc_ptr);
+        }
+
+        // Note: Object-to-JSON requires class metadata for field names.
+        // For now, objects are not supported in stringify.
+        // TODO: Add object support with class metadata in a future milestone.
+    }
+
+    // Fallback to null for unsupported types
+    JsonValue::Null
+}
+
+/// Convert a JsonValue to a VM Value for parse
+///
+/// This handles:
+/// - JsonValue::Null -> Value::null()
+/// - JsonValue::Bool -> Value::bool()
+/// - JsonValue::Number -> Value::f64()
+/// - JsonValue::String -> Value with string pointer
+/// - JsonValue::Array -> Value with array pointer (as JsonValue to support duck typing)
+/// - JsonValue::Object -> Value with JsonValue pointer (to support duck typing property access)
+///
+/// Note: Objects and arrays are stored as JsonValue pointers to enable duck typing.
+pub fn json_to_value(json: &JsonValue, gc: &mut GarbageCollector) -> Value {
+    match json {
+        JsonValue::Null | JsonValue::Undefined => Value::null(),
+        JsonValue::Bool(b) => Value::bool(*b),
+        JsonValue::Number(n) => Value::f64(*n),
+        JsonValue::String(s_ptr) => {
+            // Convert string pointer to Value
+            unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
+            }
+        }
+        JsonValue::Array(_) | JsonValue::Object(_) => {
+            // Store the JsonValue itself on the heap to enable duck typing
+            // This allows property access via JsonGet opcode
+            let json_clone = json.clone();
+            let gc_ptr = gc.allocate(json_clone);
+            unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+            }
+        }
+    }
+}
 
 // Re-export key types for easier access
 pub use cast::{validate_cast, TypeKind, TypeSchema, TypeSchemaRegistry};

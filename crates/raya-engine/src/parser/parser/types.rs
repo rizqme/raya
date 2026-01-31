@@ -417,12 +417,16 @@ fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypePar
 }
 
 /// Parse object type members: x: number; y: string;
+/// Supports annotations like `//@@json field_name` before properties.
 fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember>, ParseError> {
     let mut members = Vec::new();
     let mut guard = super::guards::LoopGuard::new("object_type_members");
 
     while !parser.check(&Token::RightBrace) && !parser.at_eof() {
         guard.check()?;
+
+        // Parse any annotations before the property
+        let annotations = parse_property_annotations(parser)?;
         let start_span = parser.current_span();
 
         // Parse property/method name
@@ -474,6 +478,7 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
                 name,
                 ty,
                 optional,
+                annotations,
                 span,
             }));
         }
@@ -485,4 +490,22 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
     }
 
     Ok(members)
+}
+
+/// Parse annotations for object type properties (e.g., //@@json field_name)
+fn parse_property_annotations(parser: &mut Parser) -> Result<Vec<Annotation>, ParseError> {
+    let mut annotations = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("property_annotations");
+
+    while matches!(parser.current(), Token::Annotation(_)) {
+        guard.check()?;
+        let span = parser.current_span();
+        if let Token::Annotation(sym) = parser.current() {
+            let content = parser.resolve(sym.clone()).to_string();
+            parser.advance();
+            annotations.push(Annotation::from_content(&content, span));
+        }
+    }
+
+    Ok(annotations)
 }

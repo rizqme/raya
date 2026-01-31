@@ -196,6 +196,16 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("store_field {}.field{} = {}", object, field, value)
         }
+        IrInstr::JsonLoadProperty { dest, object, property } => {
+            format!("{} = json_get {}.\"{}\"", dest, object, property)
+        }
+        IrInstr::JsonStoreProperty {
+            object,
+            property,
+            value,
+        } => {
+            format!("json_set {}.\"{}\" = {}", object, property, value)
+        }
         IrInstr::LoadElement { dest, array, index } => {
             format!("{} = load_elem {}[{}]", dest, array, index)
         }

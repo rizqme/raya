@@ -98,14 +98,14 @@
 
 ## Overview
 
-This milestone implements the **VM-side module system** for Raya, focusing on loading, linking, and caching compiled `.rbin` modules. Inspired by Bun and Go, the system uses a global cache with content-addressable storage to eliminate the node_modules bloat.
+This milestone implements the **VM-side module system** for Raya, focusing on loading, linking, and caching compiled `.ryb` modules. Inspired by Bun and Go, the system uses a global cache with content-addressable storage to eliminate the node_modules bloat.
 
 **Scope:** VM runtime only (module loading, linking, caching). Compilation (parsing `.raya`, code generation) is handled separately in compiler milestones.
 
 ### Key Features
 
 - **Global cache:** Single `~/.raya/cache/` for all projects (no node_modules!)
-- **Bytecode-first:** Store compiled `.rbin` files, not source
+- **Bytecode-first:** Store compiled `.ryb` files, not source
 - **Content-addressable:** Packages identified by SHA-256 hash
 - **Zero duplication:** Same package version shared across projects
 - **Semver resolution:** Caret (`^`), tilde (`~`), exact, and range constraints
@@ -117,7 +117,7 @@ This milestone implements the **VM-side module system** for Raya, focusing on lo
 ```
 ~/.raya/cache/          # Global package cache
     ├── <hash>/         # Content-addressable storage
-    │   ├── module.rbin # Compiled bytecode
+    │   ├── module.ryb # Compiled bytecode
     │   ├── module.rdef # Type definitions (optional)
     │   └── metadata.json
 
@@ -144,7 +144,7 @@ import { helper } from "./utils.raya";
 
 ## Phase 1: Module Loading & Bytecode Format
 
-**Goal:** Load and execute .rbin modules in the VM.
+**Goal:** Load and execute .ryb modules in the VM.
 
 **Crate:** `raya-bytecode`, `raya-core`
 
@@ -184,7 +184,7 @@ import { helper } from "./utils.raya";
 
 #### Module Loader (`raya-core/src/vm/lifecycle.rs`)
 
-- [x] Load .rbin file from disk
+- [x] Load .ryb file from disk
   ```rust
   pub fn load_rbin(path: &Path) -> Result<(), VmError>
   ```
@@ -299,7 +299,7 @@ import { helper } from "./utils.raya";
   ~/.raya/
   ├── cache/
   │   ├── <sha256-hash>/
-  │   │   ├── module.rbin
+  │   │   ├── module.ryb
   │   │   └── metadata.json
   │   ├── tmp/
   │   └── registry/
@@ -338,7 +338,7 @@ import { helper } from "./utils.raya";
   ```
 
 - [x] Verify cached module integrity (re-hash on retrieve)
-- [x] Return path to cached .rbin file
+- [x] Return path to cached .ryb file
   ```rust
   pub fn module_path(&self, hash: &[u8; 32]) -> PathBuf
   ```
@@ -746,7 +746,7 @@ import { helper } from "./utils.raya";
 
 ## Success Criteria
 
-- ✅ Load and execute .rbin modules from cache
+- ✅ Load and execute .ryb modules from cache
 - ✅ Resolve all three import types (local, package, URL)
 - ✅ Global cache working with content-addressable storage
 - ✅ Semver resolution working (^, ~, exact, range)

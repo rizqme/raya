@@ -8,7 +8,7 @@ Specification for all file formats used in the Raya ecosystem.
 
 1. [Overview](#overview)
 2. [Source Files (.raya)](#source-files-raya)
-3. [Binary Files (.rbin)](#binary-files-rbin)
+3. [Binary Files (.ryb)](#binary-files-rbin)
 4. [Executable Bundles](#executable-bundles)
 
 ---
@@ -21,12 +21,12 @@ Raya uses a simplified file format system:
 |-----------|------|---------|--------|
 | `.raya` | Source | Human-readable code | UTF-8 text |
 | `.ts` | Source | TypeScript compatibility | UTF-8 text |
-| `.rbin` | Binary | Compiled module/library | Binary (with reflection) |
+| `.ryb` | Binary | Compiled module/library | Binary (with reflection) |
 | `.exe`/etc | Executable | Standalone binary | Binary (native) |
 
 **Key Design Principles:**
 
-- **Unified binary format:** `.rbin` serves as both compiled module and library format
+- **Unified binary format:** `.ryb` serves as both compiled module and library format
 - **Mandatory reflection:** All type definitions are always included in binaries
 - **Dual-purpose binaries:**
   - Binary with `main()` function → can be executed directly
@@ -70,7 +70,7 @@ Files with `.ts` extension are also accepted for TypeScript compatibility, but:
 
 ---
 
-## Binary Files (.rbin)
+## Binary Files (.ryb)
 
 ### Format Specification
 
@@ -267,19 +267,19 @@ enum ExportKind {
 ```bash
 # Compile to binary
 $ raya build hello.raya
-# Creates: dist/hello.rbin
+# Creates: dist/hello.ryb
 
 # Binary with main() can be executed directly
-$ raya run dist/hello.rbin
+$ raya run dist/hello.ryb
 Hello, Raya!
 
 # Inspect binary structure
-$ xxd dist/hello.rbin | head
+$ xxd dist/hello.ryb | head
 00000000: 5241 5941 0100 0000 0000 0001 1234 5678  RAYA.........4Vx
 ...
 
 # View exported API (for library binaries)
-$ raya inspect dist/mylib.rbin
+$ raya inspect dist/mylib.ryb
 Exports:
   - function add(a: number, b: number): number
   - class Calculator { ... }
@@ -296,7 +296,7 @@ Binary files are verified on load:
 
 ### Dual-Purpose Binaries
 
-`.rbin` files serve two purposes depending on their contents:
+`.ryb` files serve two purposes depending on their contents:
 
 #### Executable Binaries (with main)
 
@@ -310,10 +310,10 @@ function main(): void {
 ```bash
 # Compile
 $ raya build hello.raya
-# Creates: hello.rbin with "Has main() entry point" flag set
+# Creates: hello.ryb with "Has main() entry point" flag set
 
 # Execute directly
-$ raya run hello.rbin
+$ raya run hello.ryb
 Hello, Raya!
 
 # Or bundle as standalone executable
@@ -340,14 +340,14 @@ export class Calculator {
 ```bash
 # Compile
 $ raya build math.raya
-# Creates: math.rbin with "Has public exports" flag set
+# Creates: math.ryb with "Has public exports" flag set
 
 # Import in other code
 ```
 
 ```typescript
-// app.raya - Imports from math.rbin
-import { add, Calculator } from "./math.rbin";
+// app.raya - Imports from math.ryb
+import { add, Calculator } from "./math.ryb";
 
 function main(): void {
   console.log(add(2, 3));  // 5
@@ -373,12 +373,12 @@ function main(): void {
 
 ```bash
 # Can be executed
-$ raya run utils.rbin
+$ raya run utils.ryb
 Running utils directly
 Useful!
 
 # Can also be imported by other modules
-import { helper } from "./utils.rbin";
+import { helper } from "./utils.ryb";
 ```
 
 ### Compilation Options
@@ -394,7 +394,7 @@ $ raya build module.raya --debug
 $ raya build module.raya --release
 
 # Specify output path
-$ raya build module.raya -o dist/module.rbin
+$ raya build module.raya -o dist/module.ryb
 ```
 
 ---
@@ -414,9 +414,9 @@ Platform-specific native executables with embedded Raya VM runtime and compiled 
 ├─────────────────────────────────────────┤
 │ Raya VM Runtime (embedded)              │
 ├─────────────────────────────────────────┤
-│ Application Binary (.rbin)              │
+│ Application Binary (.ryb)              │
 ├─────────────────────────────────────────┤
-│ Bundled Dependencies (.rbin)            │
+│ Bundled Dependencies (.ryb)            │
 ├─────────────────────────────────────────┤
 │ Bundle Metadata                         │
 └─────────────────────────────────────────┘
@@ -519,15 +519,15 @@ $ ls -lh app
 ```
 .raya  → Source code (TypeScript syntax)
 .ts    → Source code (TypeScript compatibility)
-.rbin  → Compiled binary (executable or library, with reflection)
+.ryb  → Compiled binary (executable or library, with reflection)
 .exe   → Windows executable bundle
 (none) → Linux/macOS executable bundle
 .wasm  → WebAssembly bundle
 ```
 
 **Key Points:**
-- `.rbin` replaces both `.rbc` and `.rlib` - single unified format
-- All `.rbin` files include complete reflection metadata (mandatory)
+- `.ryb` replaces both `.rbc` and `.rlib` - single unified format
+- All `.ryb` files include complete reflection metadata (mandatory)
 - Binary with `main()` → can be executed
 - Binary with exports → can be imported as library
 - Binary can have both `main()` and exports (dual-purpose)
@@ -541,7 +541,7 @@ $ ls -lh app
 ```
 ~/.cache/raya/
 ├── binaries/
-│   ├── <hash>.rbin      # Cached compiled binaries
+│   ├── <hash>.ryb      # Cached compiled binaries
 │   └── ...
 └── metadata/
     └── cache.db        # Cache metadata
@@ -599,7 +599,7 @@ Libraries follow semantic versioning:
 **Last Updated:** 2026-01-05
 
 **Key Changes in v0.2:**
-- Replaced `.rbc` and `.rlib` with unified `.rbin` format
+- Replaced `.rbc` and `.rlib` with unified `.ryb` format
 - Made reflection metadata mandatory (always included)
 - Added dual-purpose binary support (executable + library)
 - Simplified file format system

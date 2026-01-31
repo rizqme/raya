@@ -389,6 +389,27 @@ impl IrCodeGenerator {
                 ctx.emit_u16(*field);
             }
 
+            IrInstr::JsonLoadProperty { dest, object, property } => {
+                // Load JSON property by name (duck typing)
+                // Push object, then emit JsonGet with property name index
+                self.emit_load_register(ctx, object);
+                let str_index = self.module_builder.add_string(property.clone())?;
+                ctx.emit(Opcode::JsonGet);
+                ctx.emit_u32(str_index as u32);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::JsonStoreProperty { object, property, value } => {
+                // Store JSON property by name (duck typing)
+                // Push object, push value, then emit JsonSet with property name index
+                self.emit_load_register(ctx, object);
+                self.emit_load_register(ctx, value);
+                let str_index = self.module_builder.add_string(property.clone())?;
+                ctx.emit(Opcode::JsonSet);
+                ctx.emit_u32(str_index as u32);
+            }
+
             IrInstr::LoadElement { dest, array, index } => {
                 self.emit_load_register(ctx, array);
                 self.emit_load_register(ctx, index);

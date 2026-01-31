@@ -1151,7 +1151,7 @@ criterion_main!(benches);
 mod e2e_scenarios {
     #[test]
     fn scenario_compute_intensive_app() {
-        // Load .rbin with fibonacci computation
+        // Load .ryb with fibonacci computation
         // Execute main()
         // Verify correct result
         // Check GC ran during execution
@@ -1160,7 +1160,7 @@ mod e2e_scenarios {
 
     #[test]
     fn scenario_concurrent_tasks() {
-        // Load .rbin that spawns 100 tasks
+        // Load .ryb that spawns 100 tasks
         // Each task does computation
         // Await all tasks
         // Verify all results correct
@@ -1177,7 +1177,7 @@ mod e2e_scenarios {
 
     #[test]
     fn scenario_plugin_system() {
-        // Host VM loads plugin .rbin
+        // Host VM loads plugin .ryb
         // Plugin has limited capabilities
         // Plugin runs computation
         // Returns result to host

@@ -51,7 +51,7 @@ impl DependencyGraph {
     ///
     /// # Example
     /// ```
-    /// # use raya_core::module::DependencyGraph;
+    /// # use raya_engine::vm::module::DependencyGraph;
     /// let mut graph = DependencyGraph::new();
     /// graph.add_dependency("main".to_string(), "utils".to_string());
     /// graph.add_dependency("main".to_string(), "config".to_string());
@@ -75,7 +75,7 @@ impl DependencyGraph {
     ///
     /// # Example
     /// ```
-    /// # use raya_core::module::DependencyGraph;
+    /// # use raya_engine::vm::module::DependencyGraph;
     /// let mut graph = DependencyGraph::new();
     /// graph.add_dependency("a".to_string(), "b".to_string());
     /// graph.add_dependency("b".to_string(), "c".to_string());
@@ -144,7 +144,7 @@ impl DependencyGraph {
     ///
     /// # Example
     /// ```
-    /// # use raya_core::module::DependencyGraph;
+    /// # use raya_engine::vm::module::DependencyGraph;
     /// let mut graph = DependencyGraph::new();
     /// graph.add_dependency("main".to_string(), "utils".to_string());
     /// graph.add_dependency("utils".to_string(), "helpers".to_string());

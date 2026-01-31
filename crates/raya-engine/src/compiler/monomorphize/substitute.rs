@@ -176,6 +176,24 @@ impl TypeSubstitution {
                 field: *field,
                 value: self.apply_register(value),
             },
+            IrInstr::JsonLoadProperty {
+                dest,
+                object,
+                property,
+            } => IrInstr::JsonLoadProperty {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                property: property.clone(),
+            },
+            IrInstr::JsonStoreProperty {
+                object,
+                property,
+                value,
+            } => IrInstr::JsonStoreProperty {
+                object: self.apply_register(object),
+                property: property.clone(),
+                value: self.apply_register(value),
+            },
             IrInstr::LoadElement { dest, array, index } => IrInstr::LoadElement {
                 dest: self.apply_register(dest),
                 array: self.apply_register(array),

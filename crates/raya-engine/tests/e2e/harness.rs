@@ -150,7 +150,8 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
 pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     let (module, _interner) = compile(source)?;
 
-    let mut vm = Vm::new();
+    // Use single worker to avoid resource contention during parallel test execution
+    let mut vm = Vm::with_worker_count(1);
     vm.execute(&module).map_err(E2EError::Vm)
 }
 
@@ -160,7 +161,8 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
 pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     let (module, _interner) = compile_with_builtins(source)?;
 
-    let mut vm = Vm::new();
+    // Use single worker to avoid resource contention during parallel test execution
+    let mut vm = Vm::with_worker_count(1);
     vm.execute(&module).map_err(E2EError::Vm)
 }
 
@@ -417,6 +419,43 @@ pub fn expect_runtime_error(source: &str, error_pattern: &str) {
                 "Expected runtime error, got compile error: {}\nSource:\n{}",
                 e, source
             );
+        }
+    }
+}
+
+/// Compile and execute with multiple worker threads
+///
+/// Use this for tests that need to stress-test true parallel execution.
+/// Note: This should be used sparingly as it creates more threads.
+pub fn compile_and_run_multiworker(source: &str, worker_count: usize) -> E2EResult<Value> {
+    let (module, _interner) = compile(source)?;
+
+    let mut vm = Vm::with_worker_count(worker_count);
+    vm.execute(&module).map_err(E2EError::Vm)
+}
+
+/// Compile and execute with multiple workers, expecting a specific i32 result
+#[allow(dead_code)]
+pub fn expect_i32_multiworker(source: &str, expected: i32, worker_count: usize) {
+    match compile_and_run_multiworker(source, worker_count) {
+        Ok(value) => {
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return;
+            }
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected, actual, source
+                );
+                return;
+            }
+            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
         }
     }
 }

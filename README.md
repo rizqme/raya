@@ -24,7 +24,7 @@
 - [Bytecode Reference](design/OPCODE.md) - Instruction set documentation
 - [VM Snapshotting](design/SNAPSHOTTING.md) - Pause, snapshot, and resume design
 - [Inner VMs](design/INNER_VM.md) - Nested VMs with isolation and control
-- [File Formats](design/FORMATS.md) - .raya, .rbin specifications
+- [File Formats](design/FORMATS.md) - .raya, .ryb specifications
 - [CLI Design](design/CLI.md) - Unified command-line interface
 - [Implementation Plan](plans/PLAN.md) - Development roadmap
 - [AI Assistant Guide](CLAUDE.md) - Guide for AI-assisted development
@@ -51,10 +51,10 @@ rayavm/
 Raya uses specific extensions for different artifact types:
 
 - `.raya` - Source code (TypeScript syntax)
-- `.rbin` - Compiled binary (executable or library, with mandatory reflection)
+- `.ryb` - Compiled binary (executable or library, with mandatory reflection)
 - Executables - Standalone bundles with embedded runtime
 
-**Key Feature:** `.rbin` files serve dual purposes:
+**Key Feature:** `.ryb` files serve dual purposes:
 - Binary with `main()` → can be executed
 - Binary with exports → can be imported as a library
 - Reflection metadata is always included (not optional)
@@ -110,15 +110,15 @@ function main(): void {
 ```
 
 ```bash
-# Run directly (compiles to .rbin internally)
+# Run directly (compiles to .ryb internally)
 raya run main.raya
 
 # Build to binary
 raya build main.raya
-# Creates: dist/main.rbin (with mandatory reflection)
+# Creates: dist/main.ryb (with mandatory reflection)
 
 # Run compiled binary directly
-raya run dist/main.rbin
+raya run dist/main.ryb
 
 # Create standalone executable
 raya bundle main.raya -o myapp

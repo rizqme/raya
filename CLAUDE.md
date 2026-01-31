@@ -510,4 +510,59 @@ let specific = general as SpecificType;
 
 ---
 
+## 📋 Documentation Maintenance (IMPORTANT)
+
+**After EVERY significant change, you MUST update:**
+
+1. **Milestone Files** (`plans/milestone-*.md`)
+   - Mark completed tasks with `[x]`
+   - Update status (Not Started → In Progress → Complete)
+   - Add any new discovered tasks
+   - Update test counts and coverage
+
+2. **PLAN.md** (`plans/PLAN.md`)
+   - Update overall project progress
+   - Mark completed phases/milestones
+   - Update current focus and next steps
+
+3. **CLAUDE.md Files** (hierarchical documentation)
+   - Update relevant `crates/*/CLAUDE.md` for crate-level changes
+   - Update relevant `src/*/CLAUDE.md` for module-level changes
+   - **Keep concise:** Important info only (key types, usage patterns, gotchas)
+   - **Avoid verbose status:** Don't duplicate milestone tracking here
+   - Add new modules/files to structure diagrams
+
+4. **Design Documents** (`design/*.md`)
+   - Update if behavior or API changes
+   - Keep examples in sync with implementation
+   - Note any deviations from original design
+
+5. **Main CLAUDE.md** (this file)
+   - Update "Current Implementation Status" section
+   - Update test counts
+   - Update "Last Updated" date
+
+### What Constitutes a "Significant Change"?
+
+- Adding new opcodes or instructions
+- Adding new builtin types or methods
+- Changing module structure (new files/directories)
+- Completing milestone tasks
+- Adding new features or capabilities
+- Fixing bugs that affect documented behavior
+
+### Documentation Update Checklist
+
+```
+After completing a task:
+□ Update milestone file (mark task complete)
+□ Update PLAN.md (project progress)
+□ Update relevant CLAUDE.md files (concise, important info only)
+□ Update design docs if API changed
+□ Run tests to verify test count
+□ Update this file's status section if needed
+```
+
+---
+
 **Remember:** Raya is not JavaScript, not quite TypeScript, but a carefully designed strict subset with a predictable runtime. When in doubt, check the design docs!

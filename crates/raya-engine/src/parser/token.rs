@@ -159,6 +159,10 @@ pub enum Token {
     // Special
     Eof,
     Error(String),
+
+    // Compiler annotations (//@@tag:value)
+    // Example: //@@json:user_name,omitempty
+    Annotation(Symbol),
 }
 
 /// A part of a template literal.
@@ -321,6 +325,7 @@ impl fmt::Display for Token {
             Token::Comma => write!(f, ","),
             Token::Eof => write!(f, "EOF"),
             Token::Error(msg) => write!(f, "ERROR: {}", msg),
+            Token::Annotation(_) => write!(f, "//@@<annotation>"),
         }
     }
 }

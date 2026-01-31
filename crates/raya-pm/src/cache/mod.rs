@@ -42,13 +42,13 @@ pub enum CacheError {
 
 /// Content-addressable cache for Raya modules
 ///
-/// Stores compiled .rbin modules at ~/.raya/cache/ indexed by SHA-256 hash.
+/// Stores compiled .ryb modules at ~/.raya/cache/ indexed by SHA-256 hash.
 ///
 /// Directory structure:
 /// ```text
 /// ~/.raya/cache/
 /// ├── <sha256-hash>/
-/// │   ├── module.rbin
+/// │   ├── module.ryb
 /// │   └── metadata.json
 /// ├── tmp/
 /// └── registry/
@@ -111,7 +111,7 @@ impl Cache {
     /// Store a module in the cache
     ///
     /// # Arguments
-    /// * `module_bytes` - Raw .rbin module data
+    /// * `module_bytes` - Raw .ryb module data
     ///
     /// # Returns
     /// * `Ok([u8; 32])` - SHA-256 hash of the stored module
@@ -121,7 +121,7 @@ impl Cache {
     /// ```no_run
     /// # use rpkg::Cache;
     /// # let cache = Cache::init().unwrap();
-    /// let module_data = std::fs::read("my_module.rbin").unwrap();
+    /// let module_data = std::fs::read("my_module.ryb").unwrap();
     /// let hash = cache.store(&module_data).unwrap();
     /// println!("Stored with hash: {}", hex::encode(hash));
     /// ```
@@ -149,7 +149,7 @@ impl Cache {
         tmp_file.sync_all()?;
 
         // Move to final location
-        let final_path = module_dir.join("module.rbin");
+        let final_path = module_dir.join("module.ryb");
         fs::rename(&tmp_path, &final_path)?;
 
         Ok(checksum)
@@ -222,7 +222,7 @@ impl Cache {
     /// * `hash` - SHA-256 hash of the module
     ///
     /// # Returns
-    /// * `PathBuf` - Path to the module.rbin file
+    /// * `PathBuf` - Path to the module.ryb file
     ///
     /// # Example
     /// ```no_run
@@ -234,7 +234,7 @@ impl Cache {
     /// ```
     pub fn module_path(&self, hash: &[u8; 32]) -> PathBuf {
         let hash_str = hex::encode(hash);
-        self.root.join(&hash_str).join("module.rbin")
+        self.root.join(&hash_str).join("module.ryb")
     }
 
     /// Get the path to a module's metadata file

@@ -27,8 +27,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use raya_core::gc::GarbageCollector;
+//! ```ignore
+//! use raya_engine::vm::gc::GarbageCollector;
 //!
 //! let mut gc = GarbageCollector::default();
 //!

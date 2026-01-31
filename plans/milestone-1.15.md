@@ -33,7 +33,7 @@ Enable Raya programs to call native functions written in Rust. C/C++ libraries c
 Raya Program (.raya)
     ↓ imports std:json or custom:mylib (transparent - no "native:" prefix)
 Module Resolver
-    ↓ detects implementation type (bytecode .rbin vs native .so/.dylib/.dll)
+    ↓ detects implementation type (bytecode .ryb vs native .so/.dylib/.dll)
 Dynamic Library Loader (for native modules)
     ↓ loads native implementation
 Native Module (Rust)
@@ -44,7 +44,7 @@ VM Function Registry
 **Key Principle: Transparency**
 - From Raya code perspective, all modules look the same
 - `import { parse } from "std:json"` - user doesn't know it's native
-- Module resolver automatically detects `.rbin` (bytecode) vs `.so/.dylib/.dll` (native)
+- Module resolver automatically detects `.ryb` (bytecode) vs `.so/.dylib/.dll` (native)
 - No special syntax or imports for native modules
 
 ---

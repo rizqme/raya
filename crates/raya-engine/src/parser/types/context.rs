@@ -60,6 +60,9 @@ impl TypeContext {
         ctx.intern(Type::Map(super::ty::MapType { key: unknown_id, value: unknown_id }));
         ctx.intern(Type::Set(super::ty::SetType { element: unknown_id }));
 
+        // Pre-intern Json type for JSON.parse return values
+        ctx.intern(Type::Json);
+
         ctx
     }
 
@@ -161,6 +164,11 @@ impl TypeContext {
     /// Get the unknown type
     pub fn unknown_type(&mut self) -> TypeId {
         self.intern(Type::Unknown)
+    }
+
+    /// Get the json type (for JSON.parse return values)
+    pub fn json_type(&mut self) -> TypeId {
+        self.intern(Type::Json)
     }
 
     /// Get the mutex type

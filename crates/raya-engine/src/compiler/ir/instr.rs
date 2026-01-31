@@ -46,6 +46,26 @@ impl std::fmt::Display for ClassId {
     }
 }
 
+/// Type alias identifier in the IR
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeAliasId(pub u32);
+
+impl TypeAliasId {
+    pub fn new(id: u32) -> Self {
+        Self(id)
+    }
+
+    pub fn as_u32(&self) -> u32 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for TypeAliasId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "type{}", self.0)
+    }
+}
+
 /// IR instruction (Three-Address Code)
 #[derive(Debug, Clone)]
 pub enum IrInstr {
@@ -150,6 +170,23 @@ pub enum IrInstr {
     StoreField {
         object: Register,
         field: u16,
+        value: Register,
+    },
+
+    /// Load JSON property by name: dest = json_object[property_name]
+    /// Used for duck typing on JSON values - property lookup by string key
+    JsonLoadProperty {
+        dest: Register,
+        object: Register,
+        /// Property name (interned string)
+        property: String,
+    },
+
+    /// Store JSON property by name: json_object[property_name] = value
+    JsonStoreProperty {
+        object: Register,
+        /// Property name (interned string)
+        property: String,
         value: Register,
     },
 
@@ -391,6 +428,7 @@ impl IrInstr {
             | IrInstr::LoadLocal { dest, .. }
             | IrInstr::LoadGlobal { dest, .. }
             | IrInstr::LoadField { dest, .. }
+            | IrInstr::JsonLoadProperty { dest, .. }
             | IrInstr::LoadElement { dest, .. }
             | IrInstr::NewObject { dest, .. }
             | IrInstr::NewArray { dest, .. }
@@ -422,6 +460,7 @@ impl IrInstr {
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
             | IrInstr::StoreField { .. }
+            | IrInstr::JsonStoreProperty { .. }
             | IrInstr::StoreElement { .. }
             | IrInstr::ArrayPush { .. }
             | IrInstr::StoreCaptured { .. }
@@ -450,6 +489,7 @@ impl IrInstr {
                 | IrInstr::PopToLocal { .. }
                 | IrInstr::StoreGlobal { .. }
                 | IrInstr::StoreField { .. }
+                | IrInstr::JsonStoreProperty { .. }
                 | IrInstr::StoreElement { .. }
                 | IrInstr::ArrayPush { .. }
                 | IrInstr::ArrayPop { .. }

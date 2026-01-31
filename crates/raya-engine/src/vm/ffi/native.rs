@@ -80,7 +80,7 @@ pub fn unpin_value(_value: NativeValue) {
 /// ```
 ///
 /// The module resolver automatically detects whether to load:
-/// - `.rbin` files (bytecode modules)
+/// - `.ryb` files (bytecode modules)
 /// - `.so/.dylib/.dll` files (native modules)
 ///
 /// TODO: This should be a method on VmContext once we add native module storage.

@@ -56,7 +56,18 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         }
 
         Token::Class | Token::Abstract | Token::At => parse_class_declaration(parser),
-        Token::Type => parse_type_alias_declaration(parser),
+        Token::Type => parse_type_alias_declaration(parser, Vec::new()),
+        Token::Annotation(_) => {
+            // Annotations can appear before class or type declarations
+            let annotations = parse_annotations(parser)?;
+            match parser.current() {
+                Token::Class | Token::Abstract | Token::At => {
+                    parse_class_declaration_with_annotations(parser, annotations)
+                }
+                Token::Type => parse_type_alias_declaration(parser, annotations),
+                _ => Err(parser.unexpected_token(&[Token::Class, Token::Type])),
+            }
+        }
         Token::If => parse_if_statement(parser),
         Token::While => parse_while_statement(parser),
         Token::Do => parse_do_while_statement(parser),
@@ -791,7 +802,11 @@ fn parse_throw_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 // ============================================================================
 
 /// Parse type alias declaration: type Foo = SomeType; or type Bar<T> = GenericType<T>;
-fn parse_type_alias_declaration(parser: &mut Parser) -> Result<Statement, ParseError> {
+/// Accepts pre-parsed annotations for JSON field mapping support.
+fn parse_type_alias_declaration(
+    parser: &mut Parser,
+    annotations: Vec<Annotation>,
+) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Type)?;
 
@@ -833,6 +848,7 @@ fn parse_type_alias_declaration(parser: &mut Parser) -> Result<Statement, ParseE
         name,
         type_params,
         type_annotation,
+        annotations,
         span,
     }))
 }
@@ -1005,9 +1021,19 @@ fn parse_try_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
 
 /// Parse class declaration
 fn parse_class_declaration(parser: &mut Parser) -> Result<Statement, ParseError> {
+    // Parse annotations (//@@tag)
+    let annotations = parse_annotations(parser)?;
+    parse_class_declaration_with_annotations(parser, annotations)
+}
+
+/// Parse class declaration with pre-parsed annotations
+fn parse_class_declaration_with_annotations(
+    parser: &mut Parser,
+    annotations: Vec<Annotation>,
+) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
 
-    // Parse decorators
+    // Parse decorators (@decorator)
     let decorators = parse_decorators(parser)?;
 
     // Parse 'abstract' modifier
@@ -1076,6 +1102,7 @@ fn parse_class_declaration(parser: &mut Parser) -> Result<Statement, ParseError>
 
     Ok(Statement::ClassDecl(ClassDecl {
         decorators,
+        annotations,
         is_abstract,
         name,
         type_params,
@@ -1103,7 +1130,10 @@ fn parse_class_members(parser: &mut Parser) -> Result<Vec<ClassMember>, ParseErr
 fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let start_span = parser.current_span();
 
-    // Parse decorators
+    // Parse annotations (//@@tag)
+    let annotations = parse_annotations(parser)?;
+
+    // Parse decorators (@decorator)
     let decorators = parse_decorators(parser)?;
 
     // Parse visibility modifier (private/protected/public)
@@ -1263,6 +1293,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
         Ok(ClassMember::Field(FieldDecl {
             decorators,
+            annotations,
             visibility,
             name,
             type_annotation,
@@ -1386,6 +1417,36 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
 
     let span = parser.combine_spans(&start_span, expression.span());
     Ok(Decorator { expression, span })
+}
+
+// ============================================================================
+// Compiler Annotations
+// ============================================================================
+
+/// Parse compiler annotations (//@@tag or //@@tag value)
+fn parse_annotations(parser: &mut Parser) -> Result<Vec<Annotation>, ParseError> {
+    let mut annotations = Vec::new();
+    let mut guard = super::guards::LoopGuard::new("annotations");
+
+    while matches!(parser.current(), Token::Annotation(_)) {
+        guard.check()?;
+        annotations.push(parse_annotation(parser)?);
+    }
+
+    Ok(annotations)
+}
+
+/// Parse a single annotation: //@@tag or //@@tag value
+fn parse_annotation(parser: &mut Parser) -> Result<Annotation, ParseError> {
+    let span = parser.current_span();
+
+    if let Token::Annotation(sym) = parser.current() {
+        let content = parser.resolve(sym.clone()).to_string();
+        parser.advance();
+        Ok(Annotation::from_content(&content, span))
+    } else {
+        Err(parser.unexpected_token(&[Token::Annotation(Symbol::dummy())]))
+    }
 }
 
 // ============================================================================
@@ -1613,7 +1674,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
             Token::Let | Token::Const => parse_variable_declaration(parser)?,
             Token::Function | Token::Async => parse_function_declaration(parser)?,
             Token::Class | Token::Abstract => parse_class_declaration(parser)?,
-            Token::Type => parse_type_alias_declaration(parser)?,
+            Token::Type => parse_type_alias_declaration(parser, Vec::new())?,
             _ => {
                 return Err(parser.unexpected_token(&[
                     Token::Let,
@@ -1681,4 +1742,131 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
     }
 
     Ok(specifiers)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::parser::Parser;
+
+    fn parse(source: &str) -> crate::parser::ast::Module {
+        let parser = Parser::new(source).expect("should lex");
+        let (module, _interner) = parser.parse().expect("should parse");
+        module
+    }
+
+    #[test]
+    fn test_class_annotation() {
+        let source = r#"
+//@@json
+class User {
+    name: string;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            assert_eq!(class.annotations.len(), 1);
+            assert_eq!(class.annotations[0].tag, "json");
+            assert!(class.annotations[0].value.is_none());
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_field_annotation_with_value() {
+        let source = r#"
+class User {
+    //@@json user_name
+    name: string;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            if let crate::parser::ast::ClassMember::Field(field) = &class.members[0] {
+                assert_eq!(field.annotations.len(), 1);
+                assert_eq!(field.annotations[0].tag, "json");
+                assert_eq!(field.annotations[0].value.as_deref(), Some("user_name"));
+            } else {
+                panic!("Expected Field");
+            }
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_field_annotation_skip() {
+        let source = r#"
+class User {
+    //@@json -
+    password: string;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            if let crate::parser::ast::ClassMember::Field(field) = &class.members[0] {
+                assert_eq!(field.annotations.len(), 1);
+                assert_eq!(field.annotations[0].tag, "json");
+                assert!(field.annotations[0].is_skip());
+            } else {
+                panic!("Expected Field");
+            }
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_field_annotation_with_options() {
+        let source = r#"
+class User {
+    //@@json age,omitempty
+    age: number;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            if let crate::parser::ast::ClassMember::Field(field) = &class.members[0] {
+                assert_eq!(field.annotations.len(), 1);
+                assert_eq!(field.annotations[0].tag, "json");
+                assert_eq!(field.annotations[0].json_field_name(), Some("age"));
+                assert!(field.annotations[0].has_omitempty());
+            } else {
+                panic!("Expected Field");
+            }
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_multiple_annotations() {
+        let source = r#"
+//@@json
+//@@validate
+class User {
+    //@@json user_name
+    //@@validate required
+    name: string;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            assert_eq!(class.annotations.len(), 2);
+            assert_eq!(class.annotations[0].tag, "json");
+            assert_eq!(class.annotations[1].tag, "validate");
+
+            if let crate::parser::ast::ClassMember::Field(field) = &class.members[0] {
+                assert_eq!(field.annotations.len(), 2);
+                assert_eq!(field.annotations[0].tag, "json");
+                assert_eq!(field.annotations[0].value.as_deref(), Some("user_name"));
+                assert_eq!(field.annotations[1].tag, "validate");
+                assert_eq!(field.annotations[1].value.as_deref(), Some("required"));
+            } else {
+                panic!("Expected Field");
+            }
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
 }

@@ -71,7 +71,7 @@ function main(): void {
 - Can also use `.ts` extension for compatibility
 - Compiled to bytecode before execution
 
-### `.rbin` - Binary Files
+### `.ryb` - Binary Files
 
 Compiled Raya binary files. Unified format for both executables and libraries.
 
@@ -87,13 +87,13 @@ Compiled Raya binary files. Unified format for both executables and libraries.
 **Usage:**
 ```bash
 # Compile to binary
-raya build main.raya           # Creates dist/main.rbin
+raya build main.raya           # Creates dist/main.ryb
 
 # Run binary directly (if it has main())
-raya run dist/main.rbin
+raya run dist/main.ryb
 
 # Import as library (if it has exports)
-import { function } from "./dist/mylib.rbin";
+import { function } from "./dist/mylib.ryb";
 ```
 
 **Characteristics:**
@@ -206,7 +206,7 @@ raya build --release         # Optimized build
 ```
 
 **Output:**
-- `.rbin` binary files (with mandatory reflection metadata)
+- `.ryb` binary files (with mandatory reflection metadata)
 - Dependency graph
 - Debug source mapping (in debug builds)
 
@@ -502,8 +502,8 @@ raya bundle main.raya --release -o myapp
 ```
 Executable:
 ├── Raya VM Runtime (embedded)
-├── Compiled binary (.rbin with main())
-├── Dependencies (.rbin libraries)
+├── Compiled binary (.ryb with main())
+├── Dependencies (.ryb libraries)
 └── Metadata
 ```
 
@@ -886,8 +886,8 @@ Bun demonstrated that a unified CLI:
 **Last Updated:** 2026-01-05
 
 **Key Changes in v0.2:**
-- Updated all `.rbc` references to `.rbin`
-- Removed `.rlib` format (now uses `.rbin` for libraries)
+- Updated all `.rbc` references to `.ryb`
+- Removed `.rlib` format (now uses `.ryb` for libraries)
 - Removed `--emit-reflection` flag (reflection is always included)
 - Removed `--lib` flag (binary type determined by contents)
 - Updated size estimates to account for mandatory reflection

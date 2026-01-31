@@ -97,6 +97,13 @@ impl DeadCodeEliminator {
                 used.insert(object.id);
                 used.insert(value.id);
             }
+            IrInstr::JsonLoadProperty { object, .. } => {
+                used.insert(object.id);
+            }
+            IrInstr::JsonStoreProperty { object, value, .. } => {
+                used.insert(object.id);
+                used.insert(value.id);
+            }
             IrInstr::LoadElement { array, index, .. } => {
                 used.insert(array.id);
                 used.insert(index.id);

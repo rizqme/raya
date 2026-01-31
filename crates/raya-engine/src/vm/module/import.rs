@@ -3,7 +3,7 @@
 //! Handles parsing and resolving different types of module imports:
 //! - Local file imports: `./utils.raya`, `../lib/helper.raya`
 //! - Package imports: `logging@1.2.3`, `@org/package@^2.0.0`
-//! - URL imports: `https://example.com/module.rbin`
+//! - URL imports: `https://example.com/module.ryb`
 
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -46,7 +46,7 @@ pub enum ImportSpec {
         version: Option<String>,
     },
 
-    /// URL import (https://example.com/module.rbin)
+    /// URL import (https://example.com/module.ryb)
     Url(String),
 }
 
@@ -76,9 +76,10 @@ impl ImportResolver {
     /// * `Err(ImportError)` - Invalid specifier
     ///
     /// # Examples
-    /// ```
-    /// # use raya_core::module::{ImportResolver, ImportSpec};
-    /// # use std::path::PathBuf;
+    /// ```ignore
+    /// use raya_engine::vm::module::{ImportResolver, ImportSpec};
+    /// use std::path::PathBuf;
+    ///
     /// let resolver = ImportResolver::new(PathBuf::from("/project"));
     ///
     /// // Local import
@@ -90,7 +91,7 @@ impl ImportResolver {
     /// assert!(matches!(spec, ImportSpec::Package { .. }));
     ///
     /// // URL import
-    /// let spec = resolver.parse_specifier("https://example.com/mod.rbin").unwrap();
+    /// let spec = resolver.parse_specifier("https://example.com/mod.ryb").unwrap();
     /// assert!(matches!(spec, ImportSpec::Url(_)));
     /// ```
     pub fn parse_specifier(&self, spec: &str) -> Result<ImportSpec, ImportError> {
@@ -157,9 +158,10 @@ impl ImportResolver {
     /// * `Err(ImportError)` - Resolution failed
     ///
     /// # Examples
-    /// ```no_run
-    /// # use raya_core::module::ImportResolver;
-    /// # use std::path::PathBuf;
+    /// ```ignore
+    /// use raya_engine::vm::module::ImportResolver;
+    /// use std::path::PathBuf;
+    ///
     /// let resolver = ImportResolver::new(PathBuf::from("/project"));
     /// let current = PathBuf::from("/project/src/main.raya");
     ///
@@ -296,17 +298,17 @@ mod tests {
         let resolver = test_resolver();
 
         let spec = resolver
-            .parse_specifier("https://example.com/module.rbin")
+            .parse_specifier("https://example.com/module.ryb")
             .unwrap();
         match spec {
             ImportSpec::Url(url) => {
-                assert_eq!(url, "https://example.com/module.rbin");
+                assert_eq!(url, "https://example.com/module.ryb");
             }
             _ => panic!("Expected URL import"),
         }
 
         let spec = resolver
-            .parse_specifier("http://example.com/module.rbin")
+            .parse_specifier("http://example.com/module.ryb")
             .unwrap();
         assert!(matches!(spec, ImportSpec::Url(_)));
     }

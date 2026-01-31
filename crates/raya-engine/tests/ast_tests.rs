@@ -181,6 +181,7 @@ fn test_class_decl_simple() {
                 }),
                 initializer: None,
                 is_static: false,
+                annotations: vec![],
                 span: Span::new(18, 28, 2, 5),
             }),
             ClassMember::Field(FieldDecl {
@@ -193,9 +194,11 @@ fn test_class_decl_simple() {
                 }),
                 initializer: None,
                 is_static: false,
+                annotations: vec![],
                 span: Span::new(33, 43, 3, 5),
             }),
         ],
+        annotations: vec![],
         span: Span::new(0, 45, 1, 1),
     };
 
@@ -222,6 +225,7 @@ fn test_class_with_extends() {
         }),
         implements: vec![],
         members: vec![],
+        annotations: vec![],
         span: Span::new(0, 29, 1, 1),
     };
 

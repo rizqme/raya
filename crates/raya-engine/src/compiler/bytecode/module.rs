@@ -450,7 +450,7 @@ impl Module {
         Ok(())
     }
 
-    /// Encode the module to binary format (.rbin)
+    /// Encode the module to binary format (.ryb)
     ///
     /// Format:
     /// - Header: magic (4 bytes) + version (u32) + flags (u32) + crc32 (u32) + checksum (32 bytes SHA-256)

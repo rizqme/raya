@@ -189,6 +189,19 @@ pub const DATE_TO_ISO_STRING: u16 = 0x0B21;
 pub const DATE_TO_DATE_STRING: u16 = 0x0B22;
 pub const DATE_TO_TIME_STRING: u16 = 0x0B23;
 
+// ============================================================================
+// JSON (0x0Cxx)
+// ============================================================================
+
+/// JSON.stringify(value: any): string
+pub const JSON_STRINGIFY: u16 = 0x0C00;
+/// JSON.parse(json: string): any
+pub const JSON_PARSE: u16 = 0x0C01;
+/// JSON.decode<T>(json: string): T - typed decode with field metadata
+/// Args: [json_string, field_count, ...field_specs]
+/// Each field_spec is: [json_key_string, field_index, field_type]
+pub const JSON_DECODE_OBJECT: u16 = 0x0C02;
+
 /// Get the name of a native function for debugging purposes
 pub fn native_name(id: u16) -> &'static str {
     match id {
@@ -250,6 +263,11 @@ pub fn native_name(id: u16) -> &'static str {
         REGEXP_REPLACE => "RegExp.replace",
         REGEXP_REPLACE_WITH => "RegExp.replaceWith",
         REGEXP_SPLIT => "RegExp.split",
+
+        // JSON
+        JSON_STRINGIFY => "JSON.stringify",
+        JSON_PARSE => "JSON.parse",
+        JSON_DECODE_OBJECT => "JSON.decode",
 
         _ => "unknown",
     }

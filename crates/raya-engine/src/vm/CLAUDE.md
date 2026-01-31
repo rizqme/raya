@@ -1,0 +1,157 @@
+# vm module
+
+Raya Virtual Machine runtime: interpreter, scheduler, GC, and runtime support.
+
+## Module Structure
+
+```
+vm/
+├── mod.rs         # Entry point, VmError, re-exports
+├── vm/            # Core VM and interpreter
+├── scheduler/     # Task scheduler (work-stealing)
+├── gc/            # Garbage collector
+├── stack.rs       # Call frames, operand stack
+├── value.rs       # Value representation
+├── object.rs      # Object model (Class, Array, String)
+├── builtin.rs     # Builtin native IDs
+├── types/         # Runtime type registry
+├── sync/          # Synchronization primitives
+├── snapshot/      # VM snapshotting
+├── json/          # JSON runtime support
+├── module/        # Module loading and linking
+└── ffi/           # Foreign function interface
+```
+
+## Key Types
+
+### Vm
+```rust
+pub struct Vm {
+    contexts: Vec<VmContext>,
+    scheduler: Scheduler,
+    class_registry: ClassRegistry,
+    // ...
+}
+
+vm.execute(&module) -> VmResult<Value>
+vm.spawn_task(func_id, args) -> TaskId
+vm.step() -> VmResult<()>  // Single step
+```
+
+### VmContext
+```rust
+pub struct VmContext {
+    id: VmContextId,
+    stack: Stack,
+    module: Arc<Module>,
+    // ...
+}
+```
+
+### Value
+```rust
+pub enum Value {
+    Null,
+    Bool(bool),
+    I32(i32),
+    I64(i64),
+    F64(f64),
+    Object(ObjectRef),
+    Array(ArrayRef),
+    String(StringRef),
+    Closure(ClosureRef),
+    Task(TaskRef),
+}
+```
+
+## Submodules
+
+### `vm/` - Core Interpreter
+See [vm/CLAUDE.md](vm/CLAUDE.md).
+- Bytecode interpretation
+- Instruction dispatch
+- Native call handling
+
+### `scheduler/` - Task Scheduler
+See [scheduler/CLAUDE.md](scheduler/CLAUDE.md).
+- Work-stealing scheduler
+- Task preemption
+- Multi-threaded execution
+
+### `gc/` - Garbage Collector
+See [gc/CLAUDE.md](gc/CLAUDE.md).
+- Mark-sweep collection
+- Object roots tracking
+
+### `sync/` - Synchronization
+See [sync/CLAUDE.md](sync/CLAUDE.md).
+- Mutex implementation
+- Task-aware blocking
+
+### `snapshot/` - VM Snapshotting
+See [snapshot/CLAUDE.md](snapshot/CLAUDE.md).
+- State serialization
+- Resume from snapshot
+
+### `ffi/` - Foreign Functions
+See [ffi/CLAUDE.md](ffi/CLAUDE.md).
+- Native module loading
+- Value conversion
+
+## Execution Model
+
+### Stack-Based
+```
+// CONST_I32 42
+Stack: [..., 42]
+
+// LOAD_LOCAL 0
+Stack: [..., 42, local[0]]
+
+// IADD
+Stack: [..., result]  // result = 42 + local[0]
+```
+
+### Task-Based Concurrency
+```typescript
+async function work() { ... }
+const task = work();  // Spawns task immediately
+const result = await task;  // Suspends current task
+```
+
+### Object Model
+```
+Object Layout:
+┌─────────────────┐
+│  VTable pointer │
+├─────────────────┤
+│  Field 0        │
+│  Field 1        │
+│  ...            │
+└─────────────────┘
+```
+
+## Error Handling
+
+```rust
+pub enum VmError {
+    StackOverflow,
+    StackUnderflow,
+    InvalidOpcode(u8),
+    NullPointer,
+    TypeError(String),
+    RuntimeError(String),
+    TaskPreempted,
+    Suspended,
+}
+```
+
+## For AI Assistants
+
+- VM is stack-based with local variable slots
+- Tasks are green threads, not OS threads
+- Scheduler uses work-stealing for parallelism
+- Objects have vtables for method dispatch
+- Values are tagged (enum), not boxed
+- Native calls use `NATIVE_CALL` opcode + native ID
+- Exception handling uses try/catch blocks in bytecode

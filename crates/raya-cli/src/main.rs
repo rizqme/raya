@@ -33,7 +33,7 @@ enum Commands {
         inspect: bool,
     },
 
-    /// Build/compile Raya source to binary (.rbin)
+    /// Build/compile Raya source to binary (.ryb)
     Build {
         /// Files or directories to build
         #[arg(default_value = ".")]
@@ -245,7 +245,7 @@ fn main() -> anyhow::Result<()> {
         } => {
             println!("Building: {:?}", files);
             println!("Output directory: {}", out_dir);
-            println!("Build type: binary (.rbin with mandatory reflection)");
+            println!("Build type: binary (.ryb with mandatory reflection)");
             if release {
                 println!("Release mode: enabled");
             }

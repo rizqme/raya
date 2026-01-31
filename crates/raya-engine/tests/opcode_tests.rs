@@ -208,6 +208,9 @@ mod stack_ops {
     #[test]
     fn test_swap() {
         // Push two values, swap them, subtract
+        // Before swap: [10, 20] with 20 on top
+        // After swap: [20, 10] with 10 on top
+        // Isub: pops b=10, a=20, computes a-b = 20-10 = 10
         let result = execute_bytecode(vec![
             Opcode::ConstI32 as u8,
             10,
@@ -219,11 +222,11 @@ mod stack_ops {
             0,
             0,
             0,
-            Opcode::Swap as u8, // Stack: [20, 10] -> [10, 20]
-            Opcode::Isub as u8, // 10 - 20 = -10
+            Opcode::Swap as u8,
+            Opcode::Isub as u8,
             Opcode::Return as u8,
         ]);
-        assert_eq!(result, Value::i32(-10));
+        assert_eq!(result, Value::i32(10));
     }
 }
 

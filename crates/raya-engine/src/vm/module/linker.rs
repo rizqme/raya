@@ -94,16 +94,17 @@ impl ModuleLinker {
     /// * `Err(LinkError)` - Resolution failed
     ///
     /// # Example
-    /// ```no_run
-    /// # use raya_core::module::ModuleLinker;
-    /// # use crate::compiler::Import;
-    /// # let mut linker = ModuleLinker::new();
-    /// # let import = Import {
-    /// #     module_specifier: "logging".to_string(),
-    /// #     symbol: "info".to_string(),
-    /// #     alias: None,
-    /// #     version_constraint: None,
-    /// # };
+    /// ```ignore
+    /// use raya_engine::vm::module::ModuleLinker;
+    /// use raya_engine::compiler::Import;
+    ///
+    /// let mut linker = ModuleLinker::new();
+    /// let import = Import {
+    ///     module_specifier: "logging".to_string(),
+    ///     symbol: "info".to_string(),
+    ///     alias: None,
+    ///     version_constraint: None,
+    /// };
     /// let resolved = linker.resolve_import(&import, "main").unwrap();
     /// ```
     pub fn resolve_import(

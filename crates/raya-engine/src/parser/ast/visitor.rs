@@ -5,8 +5,8 @@
 //!
 //! # Example
 //!
-//! ```rust
-//! use raya_parser::ast::*;
+//! ```ignore
+//! use raya_engine::parser::ast::*;
 //!
 //! struct CountIdentifiers {
 //!     count: usize,

@@ -134,7 +134,10 @@ impl Vm {
         // Validate module
         module.validate().map_err(|e| VmError::RuntimeError(e))?;
 
-        // Register classes with the shared VM state
+        // Copy classes from VM's class registry to shared state (for tests that register classes directly)
+        self.scheduler.shared_state().copy_classes_from(&self.classes);
+
+        // Register classes with the shared VM state (from module)
         self.scheduler.shared_state().register_classes(module);
 
         // Find main function

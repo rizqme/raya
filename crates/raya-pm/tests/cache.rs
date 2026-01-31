@@ -209,7 +209,7 @@ fn test_cache_paths() {
 
     assert!(module_path.exists());
     assert!(module_path.to_string_lossy().contains(&hex::encode(hash)));
-    assert!(module_path.to_string_lossy().ends_with("module.rbin"));
+    assert!(module_path.to_string_lossy().ends_with("module.ryb"));
 
     // Metadata path should be in the same directory
     assert_eq!(

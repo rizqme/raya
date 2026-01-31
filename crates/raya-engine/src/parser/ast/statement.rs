@@ -221,6 +221,9 @@ pub struct ClassDecl {
     /// Decorators (@sealed, @logged, etc.)
     pub decorators: Vec<Decorator>,
 
+    /// Compiler annotations (//@@tag value)
+    pub annotations: Vec<Annotation>,
+
     /// Abstract modifier
     pub is_abstract: bool,
 
@@ -265,6 +268,9 @@ pub enum Visibility {
 pub struct FieldDecl {
     /// Decorators (@validate, @readonly, etc.)
     pub decorators: Vec<Decorator>,
+
+    /// Compiler annotations (//@@tag value)
+    pub annotations: Vec<Annotation>,
 
     /// Visibility modifier (private/protected/public)
     pub visibility: Visibility,
@@ -331,6 +337,85 @@ pub struct Decorator {
 }
 
 // ============================================================================
+// Compiler Annotations
+// ============================================================================
+
+/// Compiler annotation: //@@tag or //@@tag value
+///
+/// Unlike decorators (which are runtime constructs), annotations are
+/// compile-time directives that control code generation.
+///
+/// # Example
+/// ```text
+/// //@@json
+/// class User {
+///     //@@json user_name
+///     name: string;
+///
+///     //@@json -
+///     password: string;  // skip this field
+///
+///     //@@json age,omitempty
+///     age: number;
+/// }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct Annotation {
+    /// The annotation tag (e.g., "json", "validate", etc.)
+    pub tag: String,
+    /// Optional value after the tag (e.g., "user_name", "-", "age,omitempty")
+    pub value: Option<String>,
+    pub span: Span,
+}
+
+impl Annotation {
+    /// Parse an annotation from its raw content (e.g., "json user_name")
+    pub fn from_content(content: &str, span: Span) -> Self {
+        let content = content.trim();
+        if let Some(space_idx) = content.find(' ') {
+            let tag = content[..space_idx].to_string();
+            let value = content[space_idx + 1..].trim().to_string();
+            Self {
+                tag,
+                value: if value.is_empty() { None } else { Some(value) },
+                span,
+            }
+        } else {
+            Self {
+                tag: content.to_string(),
+                value: None,
+                span,
+            }
+        }
+    }
+
+    /// Check if this is a "skip" annotation (value is "-")
+    pub fn is_skip(&self) -> bool {
+        self.value.as_deref() == Some("-")
+    }
+
+    /// Get the JSON field name if this is a json annotation
+    pub fn json_field_name(&self) -> Option<&str> {
+        if self.tag != "json" {
+            return None;
+        }
+        match &self.value {
+            None => None,  // Use struct field name
+            Some(v) if v == "-" => None,  // Skip
+            Some(v) => {
+                // Split on comma to get just the field name (without options)
+                Some(v.split(',').next().unwrap_or(v))
+            }
+        }
+    }
+
+    /// Check if this json annotation has the "omitempty" option
+    pub fn has_omitempty(&self) -> bool {
+        self.value.as_ref().map_or(false, |v| v.contains("omitempty"))
+    }
+}
+
+// ============================================================================
 // Type Alias (Interfaces BANNED)
 // ============================================================================
 
@@ -338,11 +423,14 @@ pub struct Decorator {
 ///
 /// NOTE: Raya does NOT support `interface` declarations (LANG.md §10).
 /// Use type aliases for all type definitions.
+///
+/// Supports annotations like `//@@json` for JSON serialization.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypeAliasDecl {
     pub name: Identifier,
     pub type_params: Option<Vec<TypeParameter>>,
     pub type_annotation: TypeAnnotation,
+    pub annotations: Vec<Annotation>,
     pub span: Span,
 }
 

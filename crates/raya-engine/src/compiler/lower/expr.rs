@@ -675,11 +675,15 @@ impl<'a> Lowerer<'a> {
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 // Check if this is an async function - emit Spawn instead of Call
                 if self.async_functions.contains(&func_id) {
+                    // Use proper Task type for the destination register
+                    let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                    let task_dest = self.alloc_register(task_ty);
                     self.emit(IrInstr::Spawn {
-                        dest: dest.clone(),
+                        dest: task_dest.clone(),
                         func: func_id,
                         args,
                     });
+                    return task_dest;
                 } else {
                     self.emit(IrInstr::Call {
                         dest: Some(dest.clone()),
@@ -732,6 +736,124 @@ impl<'a> Lowerer<'a> {
             let method_name_symbol = member.property.name;
             let method_name = self.interner.resolve(method_name_symbol);
 
+            // Check for JSON global object methods
+            if let Expression::Identifier(ident) = &*member.object {
+                let obj_name = self.interner.resolve(ident.name);
+                if obj_name == "JSON" {
+                    use crate::compiler::intrinsic::JsonIntrinsic;
+                    use crate::compiler::native_id::{JSON_STRINGIFY, JSON_PARSE};
+
+                    if let Some(intrinsic) = JsonIntrinsic::detect_intrinsic("JSON", method_name) {
+                        match intrinsic {
+                            "stringify" => {
+                                // JSON.stringify(value) -> native call
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(dest.clone()),
+                                    native_id: JSON_STRINGIFY,
+                                    args,
+                                });
+                                return dest;
+                            }
+                            "parse" => {
+                                // JSON.parse(json) -> native call returning json type
+                                // JSON type is TypeId 15 (pre-interned in context.rs)
+                                const JSON_TYPE_ID: u32 = 15;
+                                let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(json_dest.clone()),
+                                    native_id: JSON_PARSE,
+                                    args,
+                                });
+                                return json_dest;
+                            }
+                            "encode" => {
+                                // JSON.encode<T>(value) -> for now, same as stringify
+                                // TODO: Generate specialized encoder based on type T
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(dest.clone()),
+                                    native_id: JSON_STRINGIFY,
+                                    args,
+                                });
+                                return dest;
+                            }
+                            "decode" => {
+                                // JSON.decode<T>(json) -> typed decoder
+                                // If type argument is provided, use specialized decoder
+                                use crate::compiler::native_id::JSON_DECODE_OBJECT;
+
+                                if let Some(type_args) = &call.type_args {
+                                    if let Some(first_type) = type_args.first() {
+                                        // Try to get field info from the type
+                                        if let Some(field_info) =
+                                            self.get_json_field_info(&first_type.ty)
+                                        {
+                                            // Generate specialized decode with field info
+                                            return self.emit_json_decode_with_fields(
+                                                dest.clone(),
+                                                args,
+                                                field_info,
+                                            );
+                                        }
+                                    }
+                                }
+
+                                // Fallback to generic parse if no type info available
+                                // Returns json type (TypeId 15) for duck typing support
+                                const JSON_TYPE_ID: u32 = 15;
+                                let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(json_dest.clone()),
+                                    native_id: JSON_PARSE,
+                                    args,
+                                });
+                                return json_dest;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // Check if this is a Task method call (e.g., task.cancel())
+            // Task<T> is a special type that holds a raw task_id (u64), not an object
+            if let Expression::Identifier(ident) = &*member.object {
+                if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                    if let Some(reg) = self.local_registers.get(&local_idx) {
+                        if self.type_ctx.is_task_type(reg.ty) {
+                            // Load the task handle (raw task_id u64)
+                            let task_reg = self.alloc_register(reg.ty);
+                            self.emit(IrInstr::LoadLocal {
+                                dest: task_reg.clone(),
+                                index: local_idx,
+                            });
+
+                            match method_name {
+                                "cancel" => {
+                                    // Emit TaskCancel opcode
+                                    self.emit(IrInstr::TaskCancel { task: task_reg });
+                                    return dest; // void return
+                                }
+                                "isDone" | "isCancelled" => {
+                                    // These are native calls that take the task handle
+                                    let native_id = match method_name {
+                                        "isDone" => 0x0500,      // TASK_IS_DONE
+                                        "isCancelled" => 0x0501, // TASK_IS_CANCELLED
+                                        _ => unreachable!(),
+                                    };
+                                    self.emit(IrInstr::NativeCall {
+                                        dest: Some(dest.clone()),
+                                        native_id,
+                                        args: vec![task_reg],
+                                    });
+                                    return dest;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+
             // Check if this is a static method call (e.g., Utils.double(21))
             if let Expression::Identifier(ident) = &*member.object {
                 if let Some(&class_id) = self.class_map.get(&ident.name) {
@@ -740,11 +862,14 @@ impl<'a> Lowerer<'a> {
                         // Static method call - no 'this' parameter
                         // Check if async method - emit Spawn instead of Call
                         if self.async_functions.contains(&func_id) {
+                            let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                            let task_dest = self.alloc_register(task_ty);
                             self.emit(IrInstr::Spawn {
-                                dest: dest.clone(),
+                                dest: task_dest.clone(),
                                 func: func_id,
                                 args,
                             });
+                            return task_dest;
                         } else {
                             self.emit(IrInstr::Call {
                                 dest: Some(dest.clone()),
@@ -758,7 +883,28 @@ impl<'a> Lowerer<'a> {
             }
 
             // Try to determine the class type of the object for method resolution
-            let class_id = self.infer_class_id(&member.object);
+            let mut class_id = self.infer_class_id(&member.object);
+
+            // If class_id is not found, check if this is a Channel type parameter
+            // Parameters with Channel<T> type annotation get TypeId(100) but aren't in variable_class_map
+            if class_id.is_none() {
+                if let Expression::Identifier(ident) = &*member.object {
+                    // Check if this identifier is a local variable with Channel type (TypeId 100)
+                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                        if let Some(reg) = self.local_registers.get(&local_idx) {
+                            if reg.ty.as_u32() == 100 {
+                                // This is a Channel type - look up Channel class by finding it in class_map
+                                for (&sym, &cid) in &self.class_map {
+                                    if self.interner.resolve(sym) == "Channel" {
+                                        class_id = Some(cid);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             // Check if this is a user-defined class method (including inherited methods)
             if let Some(class_id) = class_id {
@@ -772,11 +918,14 @@ impl<'a> Lowerer<'a> {
 
                     // Check if async method - emit Spawn instead of Call
                     if self.async_functions.contains(&func_id) {
+                        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                        let task_dest = self.alloc_register(task_ty);
                         self.emit(IrInstr::Spawn {
-                            dest: dest.clone(),
+                            dest: task_dest.clone(),
                             func: func_id,
                             args: method_args,
                         });
+                        return task_dest;
                     } else {
                         // Call the method function
                         self.emit(IrInstr::Call {
@@ -792,6 +941,10 @@ impl<'a> Lowerer<'a> {
             // Fall back to builtin method handling
             let object = self.lower_expr(&member.object);
             let obj_type_id = object.ty.as_u32();
+
+            // Note: Channel methods are NOT handled here via NativeCall.
+            // Channel methods go through normal vtable dispatch to Channel class methods,
+            // which internally use __NATIVE_CALL with the channel ID stored in the object.
 
             // Look up builtin method ID, with special handling for string RegExp overloads
             let method_id = if obj_type_id == 1 && !args.is_empty() && args[0].ty.as_u32() == 8 {
@@ -863,6 +1016,23 @@ impl<'a> Lowerer<'a> {
         };
 
         let object = self.lower_expr(&member.object);
+
+        // Check for JSON type - use duck typing with dynamic property access
+        // JSON type is pre-interned at TypeId 15
+        // (0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown,
+        //  7=Mutex, 8=RegExp, 9=Date, 10=Buffer, 11=Task, 12=Channel, 13=Map, 14=Set, 15=Json)
+        const JSON_TYPE_ID: u32 = 15;
+        if object.ty.as_u32() == JSON_TYPE_ID {
+            // JSON duck typing - emit JsonLoadProperty which does runtime string lookup
+            let json_type = TypeId::new(JSON_TYPE_ID);
+            let dest = self.alloc_register(json_type); // Result is also json
+            self.emit(IrInstr::JsonLoadProperty {
+                dest: dest.clone(),
+                object,
+                property: prop_name.to_string(),
+            });
+            return dest;
+        }
 
         // Check for built-in properties on primitive types
         // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
@@ -1702,8 +1872,9 @@ impl<'a> Lowerer<'a> {
         // Lower arguments first
         let args: Vec<Register> = async_call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
-        // Destination for the Task handle
-        let dest = self.alloc_register(TypeId::new(0)); // Task type
+        // Destination for the Task handle - use proper Task type
+        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+        let dest = self.alloc_register(task_ty);
 
         // Handle different callee types
         if let Expression::Identifier(ident) = &*async_call.callee {
@@ -1922,6 +2093,34 @@ impl<'a> Lowerer<'a> {
             Expression::This(_) => self.current_class,
             // Variable lookup
             Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+            // Field access: look up the field's type in the class definition
+            Expression::Member(member) => {
+                // Get the class of the object
+                let obj_class_id = self.infer_class_id(&member.object)?;
+                // Look up the field type
+                let field_name = self.interner.resolve(member.property.name);
+                let all_fields = self.get_all_fields(obj_class_id);
+                for field in all_fields {
+                    let fname = self.interner.resolve(field.name);
+                    if fname == field_name {
+                        // Check if the field has a known class type
+                        if let Some(field_class_id) = field.class_type {
+                            return Some(field_class_id);
+                        }
+                        // Otherwise, check if we have a type name we can look up
+                        if let Some(ref type_name) = field.type_name {
+                            // Look up the class by name
+                            for (&sym, &cid) in &self.class_map {
+                                if self.interner.resolve(sym) == type_name {
+                                    return Some(cid);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                None
+            }
             // Method call: if we know the class and method, check if it returns the same class
             Expression::Call(call) => {
                 if let Expression::Member(member) = &*call.callee {

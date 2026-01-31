@@ -16,8 +16,10 @@ pub mod bytecode;
 pub mod codegen;
 pub mod codegen_ast;
 pub mod error;
+pub mod intrinsic;
 pub mod ir;
 pub mod lower;
+pub mod module;
 pub mod module_builder;
 pub mod monomorphize;
 pub mod native_id;
@@ -26,6 +28,7 @@ pub mod optimize;
 pub use codegen_ast::CodeGenerator;
 pub use codegen::IrCodeGenerator;
 pub use error::{CompileError, CompileResult};
+pub use module::{ModuleCache, ModuleCompiler, ModuleGraph, ModuleResolver};
 pub use module_builder::ModuleBuilder;
 
 // Re-export bytecode types for convenience

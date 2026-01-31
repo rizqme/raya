@@ -8,7 +8,8 @@ mod stmt;
 
 use crate::compiler::ir::{
     BasicBlock, BasicBlockId, ClassId, FunctionId, IrClass, IrConstant, IrField, IrFunction,
-    IrInstr, IrModule, IrValue, Register, RegisterId, Terminator,
+    IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
+    TypeAliasId,
 };
 use crate::parser::ast::{self, Expression, Pattern, Statement, VariableKind};
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
@@ -39,6 +40,10 @@ struct ClassFieldInfo {
     ty: TypeId,
     /// Default initializer expression (if any)
     initializer: Option<Expression>,
+    /// Class type if the field is a class instance (for method resolution)
+    class_type: Option<ClassId>,
+    /// Type name string (for looking up class by name)
+    type_name: Option<String>,
 }
 
 /// Information about a class method
@@ -176,6 +181,10 @@ pub struct Lowerer<'a> {
     next_function_id: u32,
     /// Next class ID
     next_class_id: u32,
+    /// Type alias name to ID mapping
+    type_alias_map: FxHashMap<Symbol, TypeAliasId>,
+    /// Next type alias ID
+    next_type_alias_id: u32,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext>,
     /// Pending arrow functions to be added to module (with their assigned func_id)
@@ -252,6 +261,8 @@ impl<'a> Lowerer<'a> {
             class_info_map: FxHashMap::default(),
             next_function_id: 0,
             next_class_id: 0,
+            type_alias_map: FxHashMap::default(),
+            next_type_alias_id: 0,
             loop_stack: Vec::new(),
             pending_arrow_functions: Vec::new(),
             arrow_counter: 0,
@@ -380,6 +391,25 @@ impl<'a> Lowerer<'a> {
                                 .map(|t| self.resolve_type_annotation(t))
                                 .unwrap_or(TypeId::new(0));
 
+                            // Extract type name for class lookup (e.g., "Mutex" from "mutex: Mutex")
+                            let type_name = field.type_annotation.as_ref().and_then(|t| {
+                                if let ast::Type::Reference(type_ref) = &t.ty {
+                                    Some(self.interner.resolve(type_ref.name.name).to_string())
+                                } else {
+                                    None
+                                }
+                            });
+
+                            // Look up class type by name if available
+                            let class_type = type_name.as_ref().and_then(|name| {
+                                for (&sym, &cid) in &self.class_map {
+                                    if self.interner.resolve(sym) == name {
+                                        return Some(cid);
+                                    }
+                                }
+                                None
+                            });
+
                             if field.is_static {
                                 // Static field: allocate a global index
                                 let global_index = self.next_global_index;
@@ -396,6 +426,8 @@ impl<'a> Lowerer<'a> {
                                     index: field_index,
                                     ty,
                                     initializer: field.initializer.clone(),
+                                    class_type,
+                                    type_name,
                                 });
                                 field_index += 1;
                             }
@@ -468,6 +500,12 @@ impl<'a> Lowerer<'a> {
                         },
                     );
                 }
+                Statement::TypeAliasDecl(type_alias) => {
+                    // Register type alias for JSON decode support
+                    let type_alias_id = TypeAliasId::new(self.next_type_alias_id);
+                    self.next_type_alias_id += 1;
+                    self.type_alias_map.insert(type_alias.name.name, type_alias_id);
+                }
                 _ => {}
             }
         }
@@ -489,6 +527,12 @@ impl<'a> Lowerer<'a> {
                     let ir_class = self.lower_class(class);
                     ir_module.add_class(ir_class);
                 }
+                Statement::TypeAliasDecl(type_alias) => {
+                    // Only process object types (struct-like type aliases)
+                    if let Some(ir_type_alias) = self.lower_type_alias(type_alias) {
+                        ir_module.add_type_alias(ir_type_alias);
+                    }
+                }
                 _ => {
                     // Top-level statements go into an implicit main function
                 }
@@ -499,7 +543,14 @@ impl<'a> Lowerer<'a> {
         let top_level_stmts: Vec<_> = module
             .statements
             .iter()
-            .filter(|s| !matches!(s, Statement::FunctionDecl(_) | Statement::ClassDecl(_)))
+            .filter(|s| {
+                !matches!(
+                    s,
+                    Statement::FunctionDecl(_)
+                        | Statement::ClassDecl(_)
+                        | Statement::TypeAliasDecl(_)
+                )
+            })
             .collect();
 
         // Reserve main function's ID BEFORE lowering, so arrow functions
@@ -970,6 +1021,13 @@ impl<'a> Lowerer<'a> {
         let name = self.interner.resolve(class.name.name);
         let mut ir_class = IrClass::new(name);
 
+        // Check if class has //@@json annotation
+        for annotation in &class.annotations {
+            if annotation.tag == "json" {
+                ir_class.json_serializable = true;
+            }
+        }
+
         // Get class ID and class info
         let class_id = *self.class_map.get(&class.name.name).unwrap();
         let class_info = self.class_info_map.get(&class_id).cloned();
@@ -1024,7 +1082,24 @@ impl<'a> Lowerer<'a> {
                                 .map(|f| f.index)
                         })
                         .unwrap_or(0);
-                    ir_class.add_field(IrField::new(field_name, ty, index));
+
+                    // Process JSON annotations for this field
+                    let mut ir_field = IrField::new(field_name, ty, index);
+                    for annotation in &field.annotations {
+                        if annotation.tag == "json" {
+                            if annotation.is_skip() {
+                                ir_field.json_skip = true;
+                            } else {
+                                // Get the JSON field name (if different from struct field)
+                                if let Some(json_name) = annotation.json_field_name() {
+                                    ir_field.json_name = Some(json_name.to_string());
+                                }
+                                ir_field.json_omitempty = annotation.has_omitempty();
+                            }
+                        }
+                    }
+
+                    ir_class.add_field(ir_field);
                 }
             }
         }
@@ -1206,6 +1281,49 @@ impl<'a> Lowerer<'a> {
         ir_class
     }
 
+    /// Lower a type alias declaration
+    ///
+    /// Only processes object types (struct-like type aliases).
+    /// Type aliases are automatically JSON decodable when they represent object types.
+    fn lower_type_alias(&mut self, type_alias: &ast::TypeAliasDecl) -> Option<IrTypeAlias> {
+        // Only process object types
+        if let ast::Type::Object(obj_type) = &type_alias.type_annotation.ty {
+            let name = self.interner.resolve(type_alias.name.name);
+            let mut ir_type_alias = IrTypeAlias::new(name);
+
+            // Process fields from the object type
+            for member in &obj_type.members {
+                if let ast::ObjectTypeMember::Property(prop) = member {
+                    let field_name = self.interner.resolve(prop.name.name);
+                    let ty = self.resolve_type_annotation(&prop.ty);
+
+                    let mut field = IrTypeAliasField::new(field_name, ty, prop.optional);
+
+                    // Process JSON annotations for this field
+                    for annotation in &prop.annotations {
+                        if annotation.tag == "json" {
+                            if annotation.is_skip() {
+                                field.json_skip = true;
+                            } else {
+                                if let Some(json_name) = annotation.json_field_name() {
+                                    field.json_name = Some(json_name.to_string());
+                                }
+                                field.json_omitempty = annotation.has_omitempty();
+                            }
+                        }
+                    }
+
+                    ir_type_alias.add_field(field);
+                }
+            }
+
+            Some(ir_type_alias)
+        } else {
+            // Not an object type, skip
+            None
+        }
+    }
+
     /// Allocate a new register
     fn alloc_register(&mut self, ty: TypeId) -> Register {
         let id = RegisterId::new(self.next_register);
@@ -1323,6 +1441,9 @@ impl<'a> Lowerer<'a> {
                     "void" => TypeId::new(4),
                     "never" => TypeId::new(5),
                     "unknown" => TypeId::new(6),
+                    // Use a special TypeId for Channel types so they can be detected during lowering
+                    // TypeId(100) is used as a marker for Channel types
+                    "Channel" => TypeId::new(100),
                     // For class types, we return a high TypeId (could be improved)
                     _ => TypeId::new(7),
                 }
@@ -1332,4 +1453,118 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Get JSON field information from a type for specialized decode
+    ///
+    /// Returns a list of (json_key, field_name, type_id) tuples if the type
+    /// is an object type (inline or via type alias).
+    ///
+    /// For the MVP, this returns None for type references (type aliases)
+    /// since we don't yet have the type alias AST stored for lookup.
+    /// Only inline object types are supported for now.
+    fn get_json_field_info(&self, ty: &ast::Type) -> Option<Vec<JsonFieldInfo>> {
+        match ty {
+            ast::Type::Object(obj_type) => {
+                // Inline object type: { name: string; age: number; }
+                let mut fields = Vec::new();
+                for member in &obj_type.members {
+                    if let ast::ObjectTypeMember::Property(prop) = member {
+                        let field_name = self.interner.resolve(prop.name.name).to_string();
+
+                        // Check for //@@json annotation to get custom JSON key
+                        let mut json_key = field_name.clone();
+                        let mut skip = false;
+
+                        for annotation in &prop.annotations {
+                            if annotation.tag == "json" {
+                                if annotation.is_skip() {
+                                    skip = true;
+                                } else if let Some(name) = annotation.json_field_name() {
+                                    json_key = name.to_string();
+                                }
+                            }
+                        }
+
+                        if !skip {
+                            let type_id = self.resolve_type_annotation(&prop.ty);
+                            fields.push(JsonFieldInfo {
+                                json_key,
+                                field_name,
+                                type_id,
+                                optional: prop.optional,
+                            });
+                        }
+                    }
+                }
+                Some(fields)
+            }
+            ast::Type::Reference(_type_ref) => {
+                // Type reference: look up type alias
+                // For the MVP, we fall back to None and use JSON.parse
+                // TODO: Store type alias AST for lookup during lowering
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Emit specialized JSON decode for an object type with known fields
+    ///
+    /// This generates a native call with field metadata that the VM
+    /// uses to decode JSON directly into a typed object.
+    fn emit_json_decode_with_fields(
+        &mut self,
+        dest: Register,
+        args: Vec<Register>,
+        fields: Vec<JsonFieldInfo>,
+    ) -> Register {
+        use crate::compiler::native_id::JSON_DECODE_OBJECT;
+
+        // For the specialized decode, we pass:
+        // - arg[0]: JSON string
+        // - arg[1]: field count as i32
+        // - arg[2..]: json_key strings for each field
+        //
+        // The NativeCall uses Register args, so we load constants into registers.
+
+        let mut decode_args = args.clone();
+
+        // Add field count as i32
+        let count_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::Assign {
+            dest: count_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(fields.len() as i32)),
+        });
+        decode_args.push(count_reg);
+
+        // Add field info (json_key as string for each field)
+        for field in &fields {
+            let key_reg = self.alloc_register(TypeId::new(1));
+            self.emit(IrInstr::Assign {
+                dest: key_reg.clone(),
+                value: IrValue::Constant(IrConstant::String(field.json_key.clone())),
+            });
+            decode_args.push(key_reg);
+        }
+
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: JSON_DECODE_OBJECT,
+            args: decode_args,
+        });
+
+        dest
+    }
+}
+
+/// Information about a JSON field for specialized decode
+#[derive(Debug, Clone)]
+pub struct JsonFieldInfo {
+    /// The key name in JSON (may differ from field name due to //@@json annotation)
+    pub json_key: String,
+    /// The field name in the target type
+    pub field_name: String,
+    /// The type of the field
+    pub type_id: TypeId,
+    /// Whether the field is optional
+    pub optional: bool,
 }

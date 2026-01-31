@@ -1,8 +1,8 @@
 # Module System and Package Management
 
 **Status:** Draft
-**Version:** 0.1
-**Last Updated:** 2026-01-06
+**Version:** 0.2
+**Last Updated:** 2026-01-31
 
 ---
 
@@ -16,7 +16,7 @@ Raya's module system is designed for **simplicity, speed, and efficiency**, taki
 ### Key Principles
 
 1. **Global Cache:** Single source of truth for all packages (~/.raya/cache)
-2. **Bytecode-First:** Store compiled `.rbin` files, not source (optional source for debugging)
+2. **Bytecode-First:** Store compiled `.ryb` files, not source (optional source for debugging)
 3. **Content-Addressable:** Packages identified by cryptographic hash
 4. **Lockfile-Based:** Reproducible builds with `raya.lock`
 5. **Zero Duplication:** Same package version used across all projects
@@ -42,7 +42,7 @@ import { fetch } from "http@^2.0.0";          // Semver range
 **Resolution:**
 1. Check `raya.lock` for exact version
 2. If not locked, resolve from registry (raya.dev)
-3. Download `.rbin` to global cache
+3. Download `.ryb` to global cache
 4. Link to project
 
 #### 2. URL Imports (Decentralized)
@@ -60,8 +60,8 @@ import { lib } from "https://pkg.raya.dev/lib@1.0.0";
 #### 3. Local Imports (Relative Paths)
 
 ```typescript
-import { helper } from "./utils.raya";
-import { config } from "../config.raya";
+import { helper } from "./utils";
+import { config } from "../config";
 ```
 
 **Resolution:**
@@ -79,11 +79,11 @@ import { config } from "../config.raya";
 ~/.raya/
 ├── cache/                    # Global package cache
 │   ├── <sha256-hash>/       # Content-addressable packages
-│   │   ├── module.rbin      # Compiled bytecode (required)
+│   │   ├── module.ryb      # Compiled bytecode (required)
 │   │   ├── module.rdef      # Type definitions (optional, like .d.ts)
 │   │   └── metadata.json    # Package metadata
 │   └── <sha256-hash>/
-│       └── module.rbin
+│       └── module.ryb
 ├── registry/                 # Registry index cache
 │   └── index.json           # Package name → versions mapping
 ├── tmp/                      # Temporary downloads
@@ -94,7 +94,7 @@ import { config } from "../config.raya";
 
 ```
 ~/.raya/cache/a3f2b1.../
-├── module.rbin              # Compiled logging@1.2.3 (required)
+├── module.ryb              # Compiled logging@1.2.3 (required)
 ├── module.rdef              # Type definitions (optional)
 └── metadata.json            # { name, version, dependencies, checksum }
 ```
@@ -140,6 +140,7 @@ crypto = "native:crypto"  # Requires native:crypto to be installed
 [build]
 target = "bytecode"       # Output format
 optimize = true           # Enable optimizations
+emit-reflection = false   # Include reflection metadata (for frameworks)
 ```
 
 ### Lockfile (raya.lock)
@@ -174,7 +175,7 @@ Published packages contain **compiled bytecode only** (not source code). This en
 - **Smaller downloads:** Bytecode is more compact than source
 - **IP protection:** Source code not exposed (optional)
 
-#### `.rbin` - Compiled Bytecode (Required)
+#### `.ryb` - Compiled Bytecode (Required)
 
 **Format:** Raya bytecode format (see [OPCODE.md](OPCODE.md))
 
@@ -182,19 +183,31 @@ Published packages contain **compiled bytecode only** (not source code). This en
 - Compiled functions and classes
 - Constant pool (strings, numbers)
 - Module metadata (exports, dependencies)
+- Decorator applications (decorator function + arguments for each target)
 - Optimized for VM execution
+
+**Optional Sections (with `--emit-reflection`):**
+- Reflection metadata (class info, field info, method info)
+- Parameter type information
+- Decorator metadata for runtime introspection
+- See [REFLECTION.md](REFLECTION.md) for details
 
 **Generation:**
 ```bash
 # During package build
 raya build --release
-# Produces: dist/module.rbin
+# Produces: dist/module.ryb
+
+# With reflection metadata (for frameworks)
+raya build --release --emit-reflection
+# Produces: dist/module.ryb (with embedded reflection data)
 ```
 
 **Properties:**
 - Platform-independent (runs on any architecture with Raya VM)
 - Includes all necessary runtime information
 - No separate compilation step needed by consumers
+- Reflection metadata is optional and opt-in per package
 
 #### `.rdef` - Type Definitions (Optional)
 
@@ -204,6 +217,7 @@ raya build --release
 - Provide type information for IDE autocomplete
 - Enable static type checking for package users
 - Document public API
+- Export decorator type signatures
 
 **Example:**
 
@@ -232,6 +246,36 @@ export class Logger {
  */
 export function createLogger(name: string): Logger;
 ```
+
+**Decorator Type Definitions:**
+
+```typescript
+// module.rdef (for "web-framework" package)
+
+import { Request, Response } from "http";
+
+// Type constraint for HTTP handlers
+type HttpHandler = (req: Request) => Response;
+
+/**
+ * Register GET route handler
+ * @param path - URL path pattern
+ */
+export function GET(path: string): MethodDecorator<HttpHandler>;
+
+/**
+ * Register POST route handler
+ * @param path - URL path pattern
+ */
+export function POST(path: string): MethodDecorator<HttpHandler>;
+
+/**
+ * Mark class as injectable service
+ */
+export function Injectable(): ClassDecorator<Object>;
+```
+
+See [DECORATORS.md](DECORATORS.md) for decorator type system details.
 
 **Generation:**
 ```bash
@@ -283,7 +327,7 @@ Example: `logging` package
 | Format | Size | Included |
 |--------|------|----------|
 | `.raya` source | 15 KB | ❌ No (by default) |
-| `.rbin` bytecode | 8 KB | ✅ Always |
+| `.ryb` bytecode | 8 KB | ✅ Always |
 | `.rdef` types | 2 KB | ✅ Recommended |
 | **Total download** | **10 KB** | |
 
@@ -300,9 +344,42 @@ GET /packages/logging/1.2.3/download
 
 # Archive contents:
 logging-1.2.3.tar.zst
-├── module.rbin      # Required
-├── module.rdef      # Optional
-└── metadata.json    # Required
+├── module.ryb      # Required - compiled bytecode
+├── module.rdef      # Optional - type definitions
+├── metadata.json    # Required - package info
+└── decorators.json  # Optional - exported decorator signatures
+```
+
+**For packages with `emit-reflection = true`:**
+
+```bash
+# Archive with reflection metadata:
+web-framework-2.0.0.tar.zst
+├── module.ryb      # Includes embedded reflection data
+├── module.rdef      # Type definitions + decorator types
+├── metadata.json    # Package info
+└── decorators.json  # Decorator signatures for IDE support
+```
+
+**decorators.json format:**
+
+```json
+{
+  "decorators": [
+    {
+      "name": "GET",
+      "kind": "method",
+      "constraint": "HttpHandler",
+      "factory": true
+    },
+    {
+      "name": "Injectable",
+      "kind": "class",
+      "constraint": "Object",
+      "factory": true
+    }
+  ]
+}
 ```
 
 **Compression:** Zstandard (`.zst`) for fast decompression and high compression ratio.
@@ -335,7 +412,7 @@ raya add https://github.com/user/repo/v1.0.0
 2. Resolve dependency tree
 3. Check `~/.raya/cache/` for existing packages
 4. Download missing packages (parallel)
-5. Compile `.raya` → `.rbin` (if not cached)
+5. Compile `.raya` → `.ryb` (if not cached)
 6. Update `raya.lock`
 
 ### Project Structure
@@ -375,8 +452,8 @@ my-project/
      - Verify checksum
 
 4. **Compile:**
-   - If `.rbin` not in cache:
-     - Compile `.raya` source → `.rbin`
+   - If `.ryb` not in cache:
+     - Compile `.raya` source → `.ryb`
      - Store in cache with hash
 
 5. **Generate lockfile:**
@@ -573,19 +650,34 @@ conflict-strategy = "strict"  # Fail on any conflict
 ```
 user-code.raya
     ↓
-[Parser] → AST
+[Parser] → AST (with decorator syntax)
     ↓
 [Type Checker] → Typed AST
     ↓
-[Compiler] → Bytecode
+[Decorator Resolver] → Validate decorator signatures & constraints
     ↓
-module.rbin (stored in cache)
+[Compiler] → Bytecode (with decorator applications)
+    ↓
+[Reflection Emitter] → Add reflection metadata (if --emit-reflection)
+    ↓
+module.ryb (stored in cache)
 ```
+
+### Decorator Processing
+
+During compilation, decorators are processed as follows:
+
+1. **Parse:** Decorator syntax `@name(args)` is parsed into AST nodes
+2. **Resolve:** Decorator functions are resolved from imports
+3. **Type Check:** Method constraints (e.g., `MethodDecorator<HttpHandler>`) are validated
+4. **Emit:** Decorator application code is generated as function calls at module load time
+
+See [DECORATORS.md](DECORATORS.md) for decorator compilation details.
 
 ### Incremental Compilation
 
 - **Cache key:** SHA-256 of source + compiler version
-- **Cache hit:** Reuse existing `.rbin`
+- **Cache hit:** Reuse existing `.ryb`
 - **Cache miss:** Recompile and store
 
 ### Ahead-of-Time (AOT) Compilation
@@ -595,8 +687,8 @@ module.rbin (stored in cache)
 raya build
 
 # Produces:
-# - Single .rbin bundle (all dependencies)
-# - Or separate .rbin per module (lazy loading)
+# - Single .ryb bundle (all dependencies)
+# - Or separate .ryb per module (lazy loading)
 ```
 
 ---
@@ -615,7 +707,7 @@ GET /packages/{name}/{version}
 → Returns: Specific version metadata + download URL
 
 GET /packages/{name}/{version}/download
-→ Returns: .rbin file (compiled bytecode)
+→ Returns: .ryb file (compiled bytecode)
 
 POST /publish
 → Publishes a new package version
@@ -632,17 +724,17 @@ curl https://raya.dev/packages/logging/1.2.3
   "name": "logging",
   "version": "1.2.3",
   "checksum": "sha256:a3f2b1...",
-  "download_url": "https://cdn.raya.dev/logging-1.2.3.rbin",
+  "download_url": "https://cdn.raya.dev/logging-1.2.3.ryb",
   "dependencies": {
     "time": "^2.0.0"
   }
 }
 
-# 2. Download .rbin
-curl https://cdn.raya.dev/logging-1.2.3.rbin -o ~/.raya/cache/a3f2b1.../module.rbin
+# 2. Download .ryb
+curl https://cdn.raya.dev/logging-1.2.3.ryb -o ~/.raya/cache/a3f2b1.../module.ryb
 
 # 3. Verify checksum
-sha256sum ~/.raya/cache/a3f2b1.../module.rbin
+sha256sum ~/.raya/cache/a3f2b1.../module.ryb
 ```
 
 ---
@@ -652,7 +744,7 @@ sha256sum ~/.raya/cache/a3f2b1.../module.rbin
 | Feature | Raya | Bun | Go | Node.js |
 |---------|------|-----|----|----|
 | **Global Cache** | ✅ ~/.raya/cache | ✅ ~/.bun/cache | ✅ GOPATH/pkg | ❌ Per-project |
-| **Storage Format** | .rbin (bytecode) | Source + cache | Source | Source |
+| **Storage Format** | .ryb (bytecode) | Source + cache | Source | Source |
 | **Deduplication** | ✅ Content-hash | ✅ Content-hash | ✅ Version-based | ❌ Duplicates |
 | **Lockfile** | ✅ raya.lock | ✅ bun.lockb | ✅ go.sum | ✅ package-lock.json |
 | **URL Imports** | ✅ Yes | ✅ Yes | ✅ Yes | ❌ No |
@@ -798,9 +890,9 @@ raya login
 raya publish
 
 # Process:
-# 1. Compile .raya → .rbin
+# 1. Compile .raya → .ryb
 # 2. Generate checksum (SHA-256)
-# 3. Upload .rbin to CDN
+# 3. Upload .ryb to CDN
 # 4. Register package in index
 ```
 
@@ -875,47 +967,6 @@ retry = 3
 
 ---
 
-## Implementation Plan (Milestone 1.14)
-
-### Phase 1: Core Module System
-- [ ] Import resolution (local, package, URL)
-- [ ] Module loading from bytecode
-- [ ] Dependency graph construction
-- [ ] Circular dependency detection
-
-### Phase 2: Package Format
-- [ ] raya.toml parser
-- [ ] Package metadata structure
-- [ ] Lockfile (raya.lock) generation
-- [ ] Checksum computation (SHA-256)
-
-### Phase 3: Global Cache
-- [ ] Cache directory structure
-- [ ] Content-addressable storage
-- [ ] Cache lookup and retrieval
-- [ ] Cache cleanup (LRU eviction)
-
-### Phase 4: Package Manager CLI
-- [ ] `raya install` - Install dependencies
-- [ ] `raya add <package>` - Add dependency
-- [ ] `raya remove <package>` - Remove dependency
-- [ ] `raya update` - Update dependencies
-- [ ] `raya publish` - Publish package
-
-### Phase 5: Registry Client
-- [ ] HTTP client for registry API
-- [ ] Package search and resolution
-- [ ] Parallel downloads
-- [ ] Retry logic and error handling
-
-### Phase 6: Compilation Integration
-- [ ] Compile .raya to .rbin
-- [ ] Incremental compilation
-- [ ] Cache compiled artifacts
-- [ ] Bundle generation
-
----
-
 ## Examples
 
 ### Simple Package
@@ -965,11 +1016,80 @@ web-framework/
 
 ```typescript
 // src/index.raya
-export { Router } from "./router.raya";
-export { Middleware } from "./middleware.raya";
+export { Router } from "./router";
+export { Middleware } from "./middleware";
 
 // user-code.raya
 import { Router, Middleware } from "web-framework";
+```
+
+### Package with Decorators
+
+```
+web-framework/
+├── raya.toml
+└── src/
+    ├── index.raya       # Exports decorators
+    ├── decorators.raya  # Decorator definitions
+    └── types.raya       # Type constraints
+```
+
+```toml
+# raya.toml
+[package]
+name = "web-framework"
+version = "2.0.0"
+main = "src/index.raya"
+
+[build]
+emit-reflection = true   # Required for runtime decorator metadata
+```
+
+```typescript
+// src/types.raya
+export type HttpHandler = (req: Request) => Response;
+
+// src/decorators.raya
+import { HttpHandler } from "./types";
+
+export function GET(path: string): MethodDecorator<HttpHandler> {
+    return (handler: HttpHandler): HttpHandler => {
+        Router.register("GET", path, handler);
+        return handler;
+    };
+}
+
+export function POST(path: string): MethodDecorator<HttpHandler> {
+    return (handler: HttpHandler): HttpHandler => {
+        Router.register("POST", path, handler);
+        return handler;
+    };
+}
+
+// src/index.raya
+export { GET, POST } from "./decorators";
+export { HttpHandler } from "./types";
+```
+
+**Using the framework:**
+
+```typescript
+// user-code.raya
+import { GET, POST, HttpHandler } from "web-framework";
+
+class UserController {
+    @GET("/users")
+    listUsers(req: Request): Response {
+        return Response.json(users);
+    }
+
+    @POST("/users")
+    createUser(req: Request): Response {
+        let user = req.json<User>();
+        users.push(user);
+        return Response.json(user, 201);
+    }
+}
 ```
 
 ---

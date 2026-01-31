@@ -105,6 +105,16 @@ impl SharedVmState {
             classes.register_class(class);
         }
     }
+
+    /// Copy classes from a ClassRegistry (for VM-level class registration)
+    pub fn copy_classes_from(&self, source: &ClassRegistry) {
+        let mut classes = self.classes.write();
+        for (id, class) in source.iter() {
+            if classes.get(id).is_none() {
+                classes.register_class(class.clone());
+            }
+        }
+    }
 }
 
 /// Task executor - executes bytecode for a task using shared VM state

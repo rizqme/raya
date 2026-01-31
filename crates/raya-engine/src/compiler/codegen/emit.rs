@@ -93,8 +93,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::WaitAll
         | Opcode::Sleep
         | Opcode::TaskCancel
-        | Opcode::JsonParse
-        | Opcode::JsonStringify
         | Opcode::JsonIndex
         | Opcode::JsonIndexSet
         | Opcode::JsonPush

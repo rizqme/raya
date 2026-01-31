@@ -317,11 +317,8 @@ pub enum Opcode {
     /// Stack: [refcell_ptr, value] -> []
     StoreRefCell = 0xDE,
 
-    // ===== JSON Operations (0xE0-0xEF) - Complete Set =====
-    /// Parse JSON string: pop string, push json value
-    JsonParse = 0xE0,
-    /// Convert json to JSON string: pop json, push string
-    JsonStringify = 0xE1,
+    // ===== JSON Operations (0xE0-0xEF) =====
+    // Note: JsonParse and JsonStringify use NativeCall (0x0C00, 0x0C01) instead of opcodes
     /// JSON property access: pop json object, push property value (operand: u32 propertyIndex)
     JsonGet = 0xE2,
     /// Set JSON object property: pop value, pop object (operand: u32 propertyIndex)
@@ -555,9 +552,7 @@ impl Opcode {
             0xDD => Some(Self::LoadRefCell),
             0xDE => Some(Self::StoreRefCell),
 
-            // JSON operations (complete set)
-            0xE0 => Some(Self::JsonParse),
-            0xE1 => Some(Self::JsonStringify),
+            // JSON operations (0xE0, 0xE1 reserved for NativeCall parse/stringify)
             0xE2 => Some(Self::JsonGet),
             0xE3 => Some(Self::JsonSet),
             0xE4 => Some(Self::JsonDelete),
@@ -728,8 +723,6 @@ impl Opcode {
             Self::WaitAll => "WAIT_ALL",
             Self::SpawnClosure => "SPAWN_CLOSURE",
             Self::Sleep => "SLEEP",
-            Self::JsonParse => "JSON_PARSE",
-            Self::JsonStringify => "JSON_STRINGIFY",
             Self::JsonGet => "JSON_GET",
             Self::JsonSet => "JSON_SET",
             Self::JsonDelete => "JSON_DELETE",
@@ -958,8 +951,7 @@ mod tests {
             Opcode::NewSemaphore, Opcode::SemAcquire, Opcode::SemRelease,
             Opcode::WaitAll, Opcode::SpawnClosure, Opcode::Sleep,
             Opcode::NewRefCell, Opcode::LoadRefCell, Opcode::StoreRefCell,
-            Opcode::JsonParse, Opcode::JsonStringify, Opcode::JsonGet, Opcode::JsonSet,
-            Opcode::JsonDelete, Opcode::JsonIndex, Opcode::JsonIndexSet, Opcode::JsonPush,
+            Opcode::JsonGet, Opcode::JsonSet, Opcode::JsonDelete, Opcode::JsonIndex, Opcode::JsonIndexSet, Opcode::JsonPush,
             Opcode::JsonPop, Opcode::JsonNewObject, Opcode::JsonNewArray, Opcode::JsonKeys, Opcode::JsonLength,
             Opcode::TaskCancel, Opcode::InstanceOf, Opcode::Cast,
             Opcode::MakeClosure, Opcode::CloseVar, Opcode::LoadCaptured, Opcode::StoreCaptured,

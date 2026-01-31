@@ -105,22 +105,22 @@ fn test_parse_url_import() {
 
     // HTTPS URL
     let spec = resolver
-        .parse_specifier("https://example.com/module.rbin")
+        .parse_specifier("https://example.com/module.ryb")
         .unwrap();
     match spec {
         ImportSpec::Url(url) => {
-            assert_eq!(url, "https://example.com/module.rbin");
+            assert_eq!(url, "https://example.com/module.ryb");
         }
         _ => panic!("Expected URL import"),
     }
 
     // HTTP URL
     let spec = resolver
-        .parse_specifier("http://localhost:8080/test.rbin")
+        .parse_specifier("http://localhost:8080/test.ryb")
         .unwrap();
     match spec {
         ImportSpec::Url(url) => {
-            assert_eq!(url, "http://localhost:8080/test.rbin");
+            assert_eq!(url, "http://localhost:8080/test.ryb");
         }
         _ => panic!("Expected URL import"),
     }

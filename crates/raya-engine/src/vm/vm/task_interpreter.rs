@@ -1057,53 +1057,156 @@ impl<'a> TaskInterpreter<'a> {
             // Generic Number Operations (N = handles both i32 and f64)
             // =========================================================
             Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod | Opcode::Nneg | Opcode::Npow => {
-                // For simplicity, treat as i32
+                // Helper to convert value to f64
+                fn value_to_number(v: Value) -> f64 {
+                    if let Some(f) = v.as_f64() {
+                        f
+                    } else if let Some(i) = v.as_i32() {
+                        i as f64
+                    } else if let Some(i) = v.as_i64() {
+                        i as f64
+                    } else {
+                        0.0
+                    }
+                }
+
+                // Helper to check if value is f64
+                fn is_float(v: &Value) -> bool {
+                    v.is_f64()
+                }
+
                 match opcode {
                     Opcode::Nadd => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(a.wrapping_add(b))) {
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        // If either is float, use float arithmetic
+                        let result = if is_float(&a_val) || is_float(&b_val) {
+                            Value::f64(value_to_number(a_val) + value_to_number(b_val))
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            Value::i32(a.wrapping_add(b))
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Nsub => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(a.wrapping_sub(b))) {
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let result = if is_float(&a_val) || is_float(&b_val) {
+                            Value::f64(value_to_number(a_val) - value_to_number(b_val))
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            Value::i32(a.wrapping_sub(b))
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Nmul => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(a.wrapping_mul(b))) {
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let result = if is_float(&a_val) || is_float(&b_val) {
+                            Value::f64(value_to_number(a_val) * value_to_number(b_val))
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            Value::i32(a.wrapping_mul(b))
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Ndiv => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(1)).unwrap_or(1);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(if b != 0 { a / b } else { 0 })) {
+                        // Division always returns f64
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a = value_to_number(a_val);
+                        let b = value_to_number(b_val);
+                        let result = if b != 0.0 { a / b } else { f64::NAN };
+                        if let Err(e) = stack.push(Value::f64(result)) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Nmod => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(1)).unwrap_or(1);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(if b != 0 { a % b } else { 0 })) {
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let result = if is_float(&a_val) || is_float(&b_val) {
+                            let a = value_to_number(a_val);
+                            let b = value_to_number(b_val);
+                            Value::f64(if b != 0.0 { a % b } else { f64::NAN })
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(1);
+                            Value::i32(if b != 0 { a % b } else { 0 })
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Nneg => {
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(-a)) {
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let result = if is_float(&a_val) {
+                            Value::f64(-value_to_number(a_val))
+                        } else {
+                            Value::i32(-a_val.as_i32().unwrap_or(0))
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
                     Opcode::Npow => {
-                        let b = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        let a = stack.pop().map(|v| v.as_i32().unwrap_or(0)).unwrap_or(0);
-                        if let Err(e) = stack.push(Value::i32(a.pow(b as u32))) {
+                        let b_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let a_val = match stack.pop() {
+                            Ok(v) => v,
+                            Err(e) => return OpcodeResult::Error(e),
+                        };
+                        let result = if is_float(&a_val) || is_float(&b_val) {
+                            Value::f64(value_to_number(a_val).powf(value_to_number(b_val)))
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            Value::i32(a.pow(b as u32))
+                        };
+                        if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
                         }
                     }
@@ -1409,7 +1512,6 @@ impl<'a> TaskInterpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                eprintln!("[DEBUG] Call opcode: func_index={}, arg_count={}", func_index, arg_count);
 
                 if func_index == 0xFFFFFFFF {
                     // Closure call
@@ -1532,6 +1634,47 @@ impl<'a> TaskInterpreter<'a> {
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::OptionalField => {
+                let field_offset = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // If null, return null (optional chaining semantics)
+                if obj_val.is_null() {
+                    if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
+
+                if !obj_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected object or null for optional field access".to_string(),
+                    ));
+                }
+
+                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                let value = match obj.get_field(field_offset) {
+                    Some(v) => v,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Field offset {} out of bounds",
+                            field_offset
+                        )));
+                    }
+                };
+                if let Err(e) = stack.push(value) {
+                    return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }
@@ -2545,6 +2688,33 @@ impl<'a> TaskInterpreter<'a> {
                 })
             }
 
+            Opcode::TaskCancel => {
+                // Pop task ID from stack
+                let task_id_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                let task_id_u64 = match task_id_val.as_u64() {
+                    Some(id) => id,
+                    None => {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "TaskCancel: expected task handle (u64)".to_string(),
+                        ));
+                    }
+                };
+
+                let target_id = TaskId::from_u64(task_id_u64);
+
+                // Look up the task and cancel it
+                if let Some(target_task) = self.tasks.read().get(&target_id).cloned() {
+                    target_task.cancel();
+                }
+                // Silently ignore if task not found (may have already completed)
+
+                OpcodeResult::Continue
+            }
+
             // =========================================================
             // Native Calls and Builtins
             // =========================================================
@@ -2559,6 +2729,7 @@ impl<'a> TaskInterpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
+
 
                 // Pop arguments
                 let mut args = Vec::with_capacity(arg_count);
@@ -2616,8 +2787,6 @@ impl<'a> TaskInterpreter<'a> {
                             }
                             Ok(Some(_)) => {
                                 // Channel is full, need to suspend
-                                // Save the channel ID for wake-up
-                                // Note: we use the pointer address as a channel ID
                                 let channel_id = channel_ptr.unwrap().as_ptr() as u64;
                                 return OpcodeResult::Suspend(SuspendReason::ChannelSend {
                                     channel_id,
@@ -3359,6 +3528,163 @@ impl<'a> TaskInterpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    // JSON.stringify
+                    0x0C00 => {
+                        use crate::vm::json;
+
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "JSON.stringify requires 1 argument".to_string()
+                            ));
+                        }
+                        let value = args[0];
+
+                        // Convert Value to JsonValue
+                        let json_value = json::value_to_json(value, &mut self.gc.lock());
+
+                        // Stringify the JsonValue
+                        match json::stringify::stringify(&json_value) {
+                            Ok(json_str) => {
+                                let result_str = RayaString::new(json_str);
+                                let gc_ptr = self.gc.lock().allocate(result_str);
+                                let result_val = unsafe {
+                                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                                };
+                                if let Err(e) = stack.push(result_val) {
+                                    return OpcodeResult::Error(e);
+                                }
+                            }
+                            Err(e) => {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    // JSON.parse
+                    0x0C01 => {
+                        use crate::vm::json;
+
+                        if args.is_empty() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "JSON.parse requires 1 argument".to_string()
+                            ));
+                        }
+                        let json_str = if args[0].is_ptr() {
+                            if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                                unsafe { &*s.as_ptr() }.data.clone()
+                            } else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "JSON.parse requires a string argument".to_string()
+                                ));
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "JSON.parse requires a string argument".to_string()
+                            ));
+                        };
+
+                        // Parse the JSON string (lock scope ends before json_to_value)
+                        let json_value = {
+                            let mut gc = self.gc.lock();
+                            match json::parser::parse(&json_str, &mut gc) {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        };
+
+                        // Convert JsonValue to Value (separate lock scope)
+                        let result = json::json_to_value(&json_value, &mut self.gc.lock());
+                        if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    // JSON.decode<T> - typed decode with field metadata
+                    // Args: [json_string, field_count, ...field_keys]
+                    0x0C02 => {
+                        use crate::vm::json;
+                        use crate::vm::object::Object;
+
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "JSON.decode requires at least 2 arguments".to_string()
+                            ));
+                        }
+
+                        // Get JSON string
+                        let json_str = if args[0].is_ptr() {
+                            if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                                unsafe { &*s.as_ptr() }.data.clone()
+                            } else {
+                                return OpcodeResult::Error(VmError::TypeError(
+                                    "JSON.decode requires a string argument".to_string()
+                                ));
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "JSON.decode requires a string argument".to_string()
+                            ));
+                        };
+
+                        // Get field count
+                        let field_count = if let Some(n) = args[1].as_i32() {
+                            n as usize
+                        } else if let Some(n) = args[1].as_f64() {
+                            n as usize
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "JSON.decode field count must be a number".to_string()
+                            ));
+                        };
+
+                        // Collect field keys
+                        let mut field_keys: Vec<String> = Vec::with_capacity(field_count);
+                        for i in 0..field_count {
+                            if args.len() <= 2 + i {
+                                break;
+                            }
+                            if args[2 + i].is_ptr() {
+                                if let Some(s) = unsafe { args[2 + i].as_ptr::<RayaString>() } {
+                                    field_keys.push(unsafe { &*s.as_ptr() }.data.clone());
+                                }
+                            }
+                        }
+
+                        // Parse the JSON string
+                        let json_value = {
+                            let mut gc = self.gc.lock();
+                            match json::parser::parse(&json_str, &mut gc) {
+                                Ok(v) => v,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        };
+
+                        // Create a new object with the specified fields
+                        let mut gc = self.gc.lock();
+                        let mut obj = Object::new(0, field_keys.len()); // class_id 0 for anonymous
+
+                        // Extract each field from the JSON and store in object
+                        for (index, key) in field_keys.iter().enumerate() {
+                            let field_value = json_value.get_property(key);
+                            let vm_value = json::json_to_value(&field_value, &mut gc);
+                            obj.set_field(index, vm_value);
+                        }
+
+                        // Allocate and return the object
+                        let obj_ptr = gc.allocate(obj);
+                        let result = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+                        };
+                        drop(gc); // Release lock before push
+
+                        if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     _ => {
                         // Other native calls not yet implemented
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -3467,6 +3793,124 @@ impl<'a> TaskInterpreter<'a> {
                         class_index
                     )))
                 }
+            }
+
+            // =========================================================
+            // JSON Operations (Duck Typing)
+            // =========================================================
+            Opcode::JsonGet => {
+                use crate::vm::json::{self, JsonValue};
+
+                // Read property name index from constant pool
+                let prop_index = match Self::read_u32(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Get property name from constant pool
+                let prop_name = match module.constants.get_string(prop_index) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid constant index {} for JSON property",
+                            prop_index
+                        )));
+                    }
+                };
+
+                // Pop the JSON object from stack
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Handle different value types
+                let result = if obj_val.is_null() {
+                    // Accessing property on null returns null
+                    Value::null()
+                } else if obj_val.is_ptr() {
+                    // Try to access as JsonValue (stored on heap by json_to_value)
+                    let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
+                    if let Some(json_ptr) = ptr {
+                        let json_val = unsafe { &*json_ptr.as_ptr() };
+                        // Use JsonValue's get_property method for duck typing
+                        let prop_val = json_val.get_property(&prop_name);
+                        // Convert the result to a Value
+                        json::json_to_value(&prop_val, &mut self.gc.lock())
+                    } else {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Expected JSON object for property access".to_string(),
+                        ));
+                    }
+                } else {
+                    // Primitive types don't support property access
+                    Value::null()
+                };
+
+                if let Err(e) = stack.push(result) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::JsonSet => {
+                use crate::vm::json::{self, JsonValue};
+
+                // Read property name index from constant pool
+                let prop_index = match Self::read_u32(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Get property name from constant pool
+                let prop_name = match module.constants.get_string(prop_index) {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid constant index {} for JSON property",
+                            prop_index
+                        )));
+                    }
+                };
+
+                // Pop value and object from stack
+                let value = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                if !obj_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected JSON object for property assignment".to_string(),
+                    ));
+                }
+
+                // Try to access as JsonValue and set property
+                let ptr = unsafe { obj_val.as_ptr::<JsonValue>() };
+                if let Some(json_ptr) = ptr {
+                    let json_val = unsafe { &*json_ptr.as_ptr() };
+                    // Get the inner HashMap from the JsonValue::Object
+                    if let Some(obj_ptr) = json_val.as_object() {
+                        let map = unsafe { &mut *obj_ptr.as_ptr() };
+                        // Convert Value to JsonValue
+                        let new_json_val = json::value_to_json(value, &mut self.gc.lock());
+                        map.insert(prop_name, new_json_val);
+                    } else {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Expected JSON object for property assignment".to_string(),
+                        ));
+                    }
+                } else {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected JSON object for property assignment".to_string(),
+                    ));
+                }
+
+                OpcodeResult::Continue
             }
 
             // =========================================================
@@ -3584,13 +4028,7 @@ impl<'a> TaskInterpreter<'a> {
                 }
                 args.reverse();
 
-                // Pop the object (receiver)
-                let obj_val = match stack.pop() {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
-                // Find constructor
+                // Look up class and create object
                 let classes = self.classes.read();
                 let class = match classes.get_class(class_index) {
                     Some(c) => c,
@@ -3601,21 +4039,29 @@ impl<'a> TaskInterpreter<'a> {
                         )));
                     }
                 };
+                let field_count = class.field_count;
+                let constructor_id = class.get_constructor();
+                drop(classes);
 
-                let constructor_id = match class.get_constructor() {
+                // Create the object
+                let obj = Object::new(class_index, field_count);
+                let gc_ptr = self.gc.lock().allocate(obj);
+                let obj_val = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                };
+
+                // If no constructor, just return the object
+                let constructor_id = match constructor_id {
                     Some(id) => id,
                     None => {
-                        drop(classes);
-                        // No constructor - just push the object back
                         if let Err(e) = stack.push(obj_val) {
                             return OpcodeResult::Error(e);
                         }
                         return OpcodeResult::Continue;
                     }
                 };
-                drop(classes);
 
-                // Push object and args for constructor call
+                // Push object (as receiver) and args for constructor call
                 if let Err(e) = stack.push(obj_val) {
                     return OpcodeResult::Error(e);
                 }
@@ -3737,12 +4183,19 @@ impl<'a> TaskInterpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // Static fields are stored in globals_by_index
-                // Index = class_index * MAX_STATIC_FIELDS + field_offset
-                let static_index = class_index * 256 + field_offset;
-                let globals = self.globals_by_index.read();
-                let value = globals.get(static_index).cloned().unwrap_or(Value::null());
-                drop(globals);
+                // Get static field from the class registry
+                let classes = self.classes.read();
+                let class = match classes.get_class(class_index) {
+                    Some(c) => c,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid class index: {}",
+                            class_index
+                        )));
+                    }
+                };
+                let value = class.get_static_field(field_offset).unwrap_or(Value::null());
+                drop(classes);
 
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
@@ -3765,12 +4218,20 @@ impl<'a> TaskInterpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let static_index = class_index * 256 + field_offset;
-                let mut globals = self.globals_by_index.write();
-                while globals.len() <= static_index {
-                    globals.push(Value::null());
+                // Set static field in the class registry
+                let mut classes = self.classes.write();
+                let class = match classes.get_class_mut(class_index) {
+                    Some(c) => c,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid class index: {}",
+                            class_index
+                        )));
+                    }
+                };
+                if let Err(e) = class.set_static_field(field_offset, value) {
+                    return OpcodeResult::Error(VmError::RuntimeError(e));
                 }
-                globals[static_index] = value;
                 OpcodeResult::Continue
             }
 
@@ -5159,15 +5620,21 @@ impl<'a> TaskInterpreter<'a> {
                     }
                     args.reverse();
 
-                    // Pop the object
-                    let obj_val = call_stack.pop()?;
-
-                    // Get the constructor
+                    // Look up class and create object
                     let classes = self.classes.read();
-                    let constructor_id = classes
-                        .get_class(class_index)
-                        .and_then(|c| c.constructor_id);
+                    let class = classes.get_class(class_index).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+                    })?;
+                    let field_count = class.field_count;
+                    let constructor_id = class.constructor_id;
                     drop(classes);
+
+                    // Create the object
+                    let obj = Object::new(class_index, field_count);
+                    let gc_ptr = self.gc.lock().allocate(obj);
+                    let obj_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
 
                     if let Some(ctor_id) = constructor_id {
                         // Add self as first argument
@@ -5180,6 +5647,36 @@ impl<'a> TaskInterpreter<'a> {
 
                     // Push object back
                     call_stack.push(obj_val)?;
+                }
+                Opcode::CallSuper => {
+                    let class_index = Self::read_u16(code, &mut ip)? as usize;
+                    let arg_count = Self::read_u8(code, &mut ip)? as usize;
+
+                    // Pop arguments (plus 'this' receiver)
+                    let mut args = Vec::with_capacity(arg_count + 1);
+                    for _ in 0..(arg_count + 1) {
+                        args.push(call_stack.pop()?);
+                    }
+                    args.reverse();
+
+                    // Get the parent class's constructor
+                    let classes = self.classes.read();
+                    let class = classes.get_class(class_index).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Invalid class index: {}", class_index))
+                    })?;
+                    let parent_id = class.parent_id.ok_or_else(|| {
+                        VmError::RuntimeError("Class has no parent".to_string())
+                    })?;
+                    let parent_class = classes.get_class(parent_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("Invalid parent class ID: {}", parent_id))
+                    })?;
+                    let constructor_id = parent_class.get_constructor();
+                    drop(classes);
+
+                    // Call parent constructor if it exists
+                    if let Some(ctor_id) = constructor_id {
+                        let _ = self.execute_nested_function(task, ctor_id, args, module)?;
+                    }
                 }
                 Opcode::Throw => {
                     eprintln!("[DEBUG] Throw opcode in execute_nested_function");

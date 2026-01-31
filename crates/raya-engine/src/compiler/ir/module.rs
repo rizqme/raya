@@ -3,7 +3,7 @@
 //! Top-level container for a compiled module.
 
 use super::function::IrFunction;
-use super::instr::{ClassId, FunctionId};
+use super::instr::{ClassId, FunctionId, TypeAliasId};
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
@@ -16,10 +16,14 @@ pub struct IrModule {
     pub functions: Vec<IrFunction>,
     /// Classes in this module
     pub classes: Vec<IrClass>,
+    /// Type aliases in this module (struct-like types)
+    pub type_aliases: Vec<IrTypeAlias>,
     /// Function lookup by name
     function_map: FxHashMap<String, FunctionId>,
     /// Class lookup by name
     class_map: FxHashMap<String, ClassId>,
+    /// Type alias lookup by name
+    type_alias_map: FxHashMap<String, TypeAliasId>,
 }
 
 impl IrModule {
@@ -29,8 +33,10 @@ impl IrModule {
             name: name.into(),
             functions: Vec::new(),
             classes: Vec::new(),
+            type_aliases: Vec::new(),
             function_map: FxHashMap::default(),
             class_map: FxHashMap::default(),
+            type_alias_map: FxHashMap::default(),
         }
     }
 
@@ -94,6 +100,31 @@ impl IrModule {
         self.class_map.get(name).copied()
     }
 
+    /// Add a type alias to the module
+    pub fn add_type_alias(&mut self, type_alias: IrTypeAlias) -> TypeAliasId {
+        let id = TypeAliasId(self.type_aliases.len() as u32);
+        self.type_alias_map.insert(type_alias.name.clone(), id);
+        self.type_aliases.push(type_alias);
+        id
+    }
+
+    /// Get a type alias by ID
+    pub fn get_type_alias(&self, id: TypeAliasId) -> Option<&IrTypeAlias> {
+        self.type_aliases.get(id.0 as usize)
+    }
+
+    /// Get a type alias by name
+    pub fn get_type_alias_by_name(&self, name: &str) -> Option<&IrTypeAlias> {
+        self.type_alias_map
+            .get(name)
+            .and_then(|&id| self.get_type_alias(id))
+    }
+
+    /// Get a type alias ID by name
+    pub fn get_type_alias_id(&self, name: &str) -> Option<TypeAliasId> {
+        self.type_alias_map.get(name).copied()
+    }
+
     /// Get the number of functions
     pub fn function_count(&self) -> usize {
         self.functions.len()
@@ -102,6 +133,11 @@ impl IrModule {
     /// Get the number of classes
     pub fn class_count(&self) -> usize {
         self.classes.len()
+    }
+
+    /// Get the number of type aliases
+    pub fn type_alias_count(&self) -> usize {
+        self.type_aliases.len()
     }
 
     /// Iterate over all functions
@@ -150,6 +186,8 @@ pub struct IrClass {
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
     pub parent: Option<ClassId>,
+    /// Whether this class has //@@json annotation (enables JSON.decode<T>)
+    pub json_serializable: bool,
 }
 
 impl IrClass {
@@ -161,6 +199,7 @@ impl IrClass {
             methods: Vec::new(),
             constructor: None,
             parent: None,
+            json_serializable: false,
         }
     }
 
@@ -202,6 +241,12 @@ pub struct IrField {
     pub index: u16,
     /// Whether this field is readonly
     pub readonly: bool,
+    /// JSON key name for this field (None = use field name, Some("-") would be skip but we use json_skip)
+    pub json_name: Option<String>,
+    /// Whether to skip this field in JSON serialization (//@@json -)
+    pub json_skip: bool,
+    /// Whether to omit this field if empty/zero (//@@json field,omitempty)
+    pub json_omitempty: bool,
 }
 
 impl IrField {
@@ -212,6 +257,9 @@ impl IrField {
             ty,
             index,
             readonly: false,
+            json_name: None,
+            json_skip: false,
+            json_omitempty: false,
         }
     }
 
@@ -222,6 +270,119 @@ impl IrField {
             ty,
             index,
             readonly: true,
+            json_name: None,
+            json_skip: false,
+            json_omitempty: false,
+        }
+    }
+
+    /// Set JSON mapping for this field
+    pub fn with_json(mut self, json_name: Option<String>, skip: bool, omitempty: bool) -> Self {
+        self.json_name = json_name;
+        self.json_skip = skip;
+        self.json_omitempty = omitempty;
+        self
+    }
+
+    /// Get the JSON key name for this field
+    /// Returns the json_name if set, otherwise uses the field name
+    pub fn json_key(&self) -> Option<&str> {
+        if self.json_skip {
+            None
+        } else {
+            Some(self.json_name.as_deref().unwrap_or(&self.name))
+        }
+    }
+}
+
+/// An IR type alias definition (struct-like type)
+///
+/// Type aliases are automatically JSON decodable when they represent
+/// object types (e.g., `type User = { name: string; age: number; }`).
+/// Annotations on fields are optional and used for JSON key mapping.
+#[derive(Debug, Clone)]
+pub struct IrTypeAlias {
+    /// Type alias name
+    pub name: String,
+    /// Fields in this type alias (for object types)
+    pub fields: Vec<IrTypeAliasField>,
+}
+
+impl IrTypeAlias {
+    /// Create a new type alias
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            fields: Vec::new(),
+        }
+    }
+
+    /// Add a field to this type alias
+    pub fn add_field(&mut self, field: IrTypeAliasField) {
+        self.fields.push(field);
+    }
+
+    /// Get a field by name
+    pub fn get_field(&self, name: &str) -> Option<&IrTypeAliasField> {
+        self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// Get the number of fields
+    pub fn field_count(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Check if this type alias is an object type (has fields)
+    pub fn is_object_type(&self) -> bool {
+        !self.fields.is_empty()
+    }
+}
+
+/// A field in an IR type alias
+#[derive(Debug, Clone)]
+pub struct IrTypeAliasField {
+    /// Field name
+    pub name: String,
+    /// Field type
+    pub ty: TypeId,
+    /// Whether this field is optional
+    pub optional: bool,
+    /// JSON key name for this field (None = use field name)
+    pub json_name: Option<String>,
+    /// Whether to skip this field in JSON serialization (//@@json -)
+    pub json_skip: bool,
+    /// Whether to omit this field if empty/zero (//@@json field,omitempty)
+    pub json_omitempty: bool,
+}
+
+impl IrTypeAliasField {
+    /// Create a new field
+    pub fn new(name: impl Into<String>, ty: TypeId, optional: bool) -> Self {
+        Self {
+            name: name.into(),
+            ty,
+            optional,
+            json_name: None,
+            json_skip: false,
+            json_omitempty: false,
+        }
+    }
+
+    /// Set JSON mapping for this field
+    pub fn with_json(mut self, json_name: Option<String>, skip: bool, omitempty: bool) -> Self {
+        self.json_name = json_name;
+        self.json_skip = skip;
+        self.json_omitempty = omitempty;
+        self
+    }
+
+    /// Get the JSON key name for this field
+    /// Returns the json_name if set, otherwise uses the field name
+    pub fn json_key(&self) -> Option<&str> {
+        if self.json_skip {
+            None
+        } else {
+            Some(self.json_name.as_deref().unwrap_or(&self.name))
         }
     }
 }

@@ -17,12 +17,20 @@ enum LogosToken {
     #[regex(r"[ \t\r\n]+", logos::skip)]
     Whitespace,
 
-    // Comments (skip)
-    #[regex(r"//[^\n]*", logos::skip)]
+    // Line comments are handled in the manual whitespace loop (which checks for //@@)
+    // This regex is kept for any edge cases but should rarely be hit
+    #[regex(r"//[^@\n][^\n]*", logos::skip)]  // Skip // followed by non-@
+    #[regex(r"//@[^@\n][^\n]*", logos::skip)]  // Skip //@ followed by non-@
+    #[regex(r"//\n", logos::skip)]  // Skip empty line comment
     LineComment,
 
     #[regex(r"/\*", lex_block_comment)]
     BlockComment,
+
+    // Compiler annotations: //@@tag or //@@tag value
+    // Examples: //@@json, //@@json user_name, //@@json age,omitempty, //@@json -
+    #[regex(r"//@@[a-zA-Z_][a-zA-Z0-9_]*( [^\n]*)?", parse_annotation)]
+    Annotation(String),
 
     // Keywords (must come before identifiers)
     #[token("function")]
@@ -406,6 +414,14 @@ fn parse_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
     Some(unescape_string(inner))
 }
 
+fn parse_annotation(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
+    let s = lex.slice();
+    // Skip "//@@" prefix to get the annotation content (tag + optional value)
+    // e.g., "//@@json user_name" -> "json user_name"
+    // e.g., "//@@json" -> "json"
+    Some(s[4..].trim_end().to_string())
+}
+
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -604,6 +620,13 @@ impl<'a> Lexer<'a> {
                         // Check for comments
                         match bytes[pos + 1] {
                             b'/' => {
+                                // Check for //@@annotation - don't skip, let logos handle it
+                                if pos + 3 < bytes.len()
+                                    && bytes[pos + 2] == b'@'
+                                    && bytes[pos + 3] == b'@'
+                                {
+                                    break; // Not a comment, let logos tokenize
+                                }
                                 // Line comment - skip to end of line
                                 pos += 2;
                                 column += 2;
@@ -842,6 +865,7 @@ impl<'a> Lexer<'a> {
             LogosToken::RightBracket => Token::RightBracket,
             LogosToken::Semicolon => Token::Semicolon,
             LogosToken::Comma => Token::Comma,
+            LogosToken::Annotation(s) => Token::Annotation(self.interner.intern(&s)),
             LogosToken::Whitespace | LogosToken::LineComment | LogosToken::BlockComment => {
                 unreachable!("Whitespace and comments should be skipped")
             }
@@ -1137,3 +1161,113 @@ impl std::fmt::Display for LexError {
 }
 
 impl std::error::Error for LexError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_annotation_simple() {
+        let source = "//@@json";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        assert_eq!(tokens.len(), 2); // Annotation + EOF
+        if let Token::Annotation(sym) = &tokens[0].0 {
+            assert_eq!(interner.resolve(*sym), "json");
+        } else {
+            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+        }
+    }
+
+    #[test]
+    fn test_annotation_with_value() {
+        let source = "//@@json user_name";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        assert_eq!(tokens.len(), 2); // Annotation + EOF
+        if let Token::Annotation(sym) = &tokens[0].0 {
+            assert_eq!(interner.resolve(*sym), "json user_name");
+        } else {
+            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+        }
+    }
+
+    #[test]
+    fn test_annotation_with_options() {
+        let source = "//@@json age,omitempty";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        assert_eq!(tokens.len(), 2); // Annotation + EOF
+        if let Token::Annotation(sym) = &tokens[0].0 {
+            assert_eq!(interner.resolve(*sym), "json age,omitempty");
+        } else {
+            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+        }
+    }
+
+    #[test]
+    fn test_annotation_skip() {
+        let source = "//@@json -";
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+        assert_eq!(tokens.len(), 2); // Annotation + EOF
+        if let Token::Annotation(sym) = &tokens[0].0 {
+            assert_eq!(interner.resolve(*sym), "json -");
+        } else {
+            panic!("Expected Annotation token, got {:?}", tokens[0].0);
+        }
+    }
+
+    #[test]
+    fn test_annotation_in_class() {
+        let source = r#"
+//@@json
+class User {
+    //@@json user_name
+    name: string;
+}
+"#;
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("should lex");
+
+        // Find annotation tokens
+        let annotations: Vec<_> = tokens.iter()
+            .filter_map(|(t, _)| {
+                if let Token::Annotation(sym) = t {
+                    Some(interner.resolve(*sym).to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(annotations.len(), 2);
+        assert_eq!(annotations[0], "json");
+        assert_eq!(annotations[1], "json user_name");
+    }
+
+    #[test]
+    fn test_regular_comment_skipped() {
+        let source = "// this is a comment\nlet x = 1;";
+        let lexer = Lexer::new(source);
+        let (tokens, _) = lexer.tokenize().expect("should lex");
+
+        // Should not have any Annotation tokens
+        let has_annotation = tokens.iter().any(|(t, _)| matches!(t, Token::Annotation(_)));
+        assert!(!has_annotation, "Regular comments should not produce Annotation tokens");
+
+        // Should have the let statement tokens
+        assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Let)));
+    }
+
+    #[test]
+    fn test_single_at_comment_skipped() {
+        let source = "//@not an annotation\nlet x = 1;";
+        let lexer = Lexer::new(source);
+        let (tokens, _) = lexer.tokenize().expect("should lex");
+
+        // Should not have any Annotation tokens (single @ is not an annotation)
+        let has_annotation = tokens.iter().any(|(t, _)| matches!(t, Token::Annotation(_)));
+        assert!(!has_annotation, "//@... should not produce Annotation tokens");
+    }
+}

@@ -22,7 +22,7 @@ Raya Program (.raya)
     ↓ import { parse } from "std:json"
 Module Resolver (checks native first, then bytecode)
     ↓ Native? Load .so/.dylib/.dll
-    ↓ Bytecode? Load .rbin
+    ↓ Bytecode? Load .ryb
 Native Module (Rust)
     ↓ implements raya-ffi API
 VM Function Registry
@@ -145,9 +145,9 @@ mylib = "1.2.3"  # Regular bytecode dependency
    │           └─→ Return NativeModule
    │
    └─→ Not native?
-       └─→ Resolve as bytecode (.rbin)
+       └─→ Resolve as bytecode (.ryb)
            ├─→ Check cache (~/.raya/cache/)
-           └─→ Or compile .raya → .rbin
+           └─→ Or compile .raya → .ryb
 
 4. Function Call
    Native? → Direct call via NativeFn pointer

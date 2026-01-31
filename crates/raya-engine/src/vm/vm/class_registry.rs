@@ -53,6 +53,16 @@ impl ClassRegistry {
     pub fn next_class_id(&self) -> usize {
         self.classes.len()
     }
+
+    /// Get class by ID (alias for get_class)
+    pub fn get(&self, id: usize) -> Option<&Class> {
+        self.classes.get(id)
+    }
+
+    /// Iterate over all classes with their IDs
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Class)> {
+        self.classes.iter().enumerate()
+    }
 }
 
 impl Default for ClassRegistry {

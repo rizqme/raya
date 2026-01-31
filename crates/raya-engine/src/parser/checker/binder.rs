@@ -54,6 +54,13 @@ impl<'a> Binder<'a> {
         }
     }
 
+    /// Define an imported symbol
+    ///
+    /// Used to inject symbols from imported modules before binding.
+    pub fn define_imported(&mut self, symbol: Symbol) -> Result<(), super::symbols::DuplicateSymbolError> {
+        self.symbols.define_imported(symbol)
+    }
+
     /// Register compiler intrinsics like __NATIVE_CALL and __OPCODE_CHANNEL_NEW
     ///
     /// These are special functions used in builtin .raya files to call VM opcodes.
@@ -247,6 +254,83 @@ impl<'a> Binder<'a> {
                 is_const: true,
                 is_async: false,
                 is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(symbol);
+
+        // Register JSON global object with static methods
+        self.register_json_global();
+    }
+
+    /// Register the JSON global object with static methods
+    ///
+    /// JSON is a built-in global object (like JavaScript's JSON) with:
+    /// - JSON.stringify(value: any): string - Runtime serialization
+    /// - JSON.parse(json: string): any - Runtime parsing
+    /// - JSON.encode<T>(value: T): string - Compile-time codegen (simplified return type for now)
+    /// - JSON.decode<T>(json: string): T - Compile-time codegen (returns typed value)
+    ///
+    /// JSON.parse and JSON.decode (without type args) return the `json` type.
+    /// The `json` type supports duck typing - property access returns json values.
+    fn register_json_global(&mut self) {
+        let string_ty = self.type_ctx.string_type();
+        let any_ty = self.type_ctx.unknown_type();
+        let json_ty = self.type_ctx.json_type();
+
+        // Build static methods for JSON object
+        // JSON.stringify takes any value and returns string
+        // JSON.parse returns json type (supports duck typing)
+        // JSON.encode<T> returns string
+        // JSON.decode<T> returns T (or json if no type arg)
+        let static_methods = vec![
+            MethodSignature {
+                name: "stringify".to_string(),
+                ty: self.type_ctx.function_type(vec![any_ty], string_ty, false),
+                type_params: vec![],
+            },
+            MethodSignature {
+                name: "parse".to_string(),
+                ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
+                type_params: vec![],
+            },
+            MethodSignature {
+                name: "encode".to_string(),
+                ty: self.type_ctx.function_type(vec![any_ty], string_ty, false),
+                type_params: vec!["T".to_string()],
+            },
+            MethodSignature {
+                name: "decode".to_string(),
+                ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
+                type_params: vec!["T".to_string()],
+            },
+        ];
+
+        // Create JSON as a class type with only static methods
+        let json_class = ClassType {
+            name: "JSON".to_string(),
+            type_params: vec![],
+            properties: vec![],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods,
+            extends: None,
+            implements: vec![],
+        };
+
+        let json_ty = self.type_ctx.intern(Type::Class(json_class));
+
+        // Register JSON as a global symbol
+        let symbol = Symbol {
+            name: "JSON".to_string(),
+            kind: SymbolKind::Class,
+            ty: json_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
@@ -481,8 +565,64 @@ impl<'a> Binder<'a> {
             Statement::For(for_stmt) => self.bind_for(for_stmt),
             Statement::ForOf(for_of) => self.bind_for_of(for_of),
             Statement::Try(try_stmt) => self.bind_try(try_stmt),
+            Statement::ExportDecl(export) => self.bind_export(export),
+            // ImportDecl is handled during pre-binding phase
+            Statement::ImportDecl(_) => Ok(()),
             // Other statements don't introduce bindings
             _ => Ok(()),
+        }
+    }
+
+    /// Bind an export declaration
+    fn bind_export(&mut self, export: &ExportDecl) -> Result<(), BindError> {
+        match export {
+            ExportDecl::Declaration(stmt) => {
+                // First bind the inner statement
+                self.bind_stmt(stmt)?;
+
+                // Then mark the declared symbol as exported
+                // Extract the name from the statement
+                if let Some(name) = self.get_declaration_name(stmt) {
+                    self.symbols.mark_exported(&name);
+                }
+                Ok(())
+            }
+            ExportDecl::Named { specifiers, .. } => {
+                // Mark each named export as exported
+                for spec in specifiers {
+                    let name = self.resolve(spec.name.name);
+                    // The symbol should already be defined; just mark it as exported
+                    self.symbols.mark_exported(&name);
+                }
+                Ok(())
+            }
+            ExportDecl::All { .. } => {
+                // Re-exports are handled at module linking time, not binding time
+                Ok(())
+            }
+        }
+    }
+
+    /// Get the name of a declaration statement (for export marking)
+    fn get_declaration_name(&self, stmt: &Statement) -> Option<String> {
+        match stmt {
+            Statement::VariableDecl(decl) => {
+                if let Pattern::Identifier(ident) = &decl.pattern {
+                    Some(self.interner.resolve(ident.name).to_string())
+                } else {
+                    None
+                }
+            }
+            Statement::FunctionDecl(func) => {
+                Some(self.interner.resolve(func.name.name).to_string())
+            }
+            Statement::ClassDecl(class) => {
+                Some(self.interner.resolve(class.name.name).to_string())
+            }
+            Statement::TypeAliasDecl(alias) => {
+                Some(self.interner.resolve(alias.name.name).to_string())
+            }
+            _ => None,
         }
     }
 
@@ -1088,7 +1228,23 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Mutex is now a normal class from Mutex.raya, no special handling needed
+                // Handle Channel<T> for channel communication
+                if name == "Channel" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let message_ty = self.resolve_type_annotation(&type_args[0])?;
+                            return Ok(self.type_ctx.channel_type_with(message_ty));
+                        }
+                    }
+                    return Err(BindError::InvalidTypeArguments {
+                        name,
+                        expected: 1,
+                        actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
+                        span,
+                    });
+                }
+
+                // Mutex is a normal class from Mutex.raya, no special handling needed
 
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias

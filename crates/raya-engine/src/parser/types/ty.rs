@@ -290,6 +290,10 @@ pub enum Type {
     /// Buffer type: Buffer for raw binary data
     Buffer,
 
+    /// JSON type: dynamic JSON value from JSON.parse()
+    /// Supports duck typing - property access returns json, not a fixed type
+    Json,
+
     /// Tuple type: [T1, T2, ..., Tn]
     Tuple(TupleType),
 
@@ -375,6 +379,7 @@ impl fmt::Display for Type {
             Type::Set(s) => write!(f, "Set<{}>", s.element),
             Type::Date => write!(f, "Date"),
             Type::Buffer => write!(f, "Buffer"),
+            Type::Json => write!(f, "json"),
             Type::Tuple(t) => {
                 write!(f, "[")?;
                 for (i, elem) in t.elements.iter().enumerate() {
@@ -482,6 +487,11 @@ impl Type {
         matches!(self, Type::Unknown)
     }
 
+    /// Check if this type is the json type (dynamic JSON value)
+    pub fn is_json(&self) -> bool {
+        matches!(self, Type::Json)
+    }
+
     /// Get the primitive type if this is a primitive
     pub fn as_primitive(&self) -> Option<PrimitiveType> {
         match self {
@@ -523,6 +533,7 @@ impl PartialEq for Type {
             (Type::Set(a), Type::Set(b)) => a == b,
             (Type::Date, Type::Date) => true,
             (Type::Buffer, Type::Buffer) => true,
+            (Type::Json, Type::Json) => true,
             (Type::Tuple(a), Type::Tuple(b)) => a == b,
             (Type::Object(a), Type::Object(b)) => a == b,
             (Type::Class(a), Type::Class(b)) => a == b,
@@ -563,6 +574,7 @@ impl std::hash::Hash for Type {
             Type::Set(s) => s.hash(state),
             Type::Date => {}
             Type::Buffer => {}
+            Type::Json => {}
             Type::Tuple(t) => t.hash(state),
             Type::Object(o) => o.hash(state),
             Type::Class(c) => c.hash(state),

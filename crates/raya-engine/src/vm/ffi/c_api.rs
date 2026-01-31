@@ -139,7 +139,7 @@ pub unsafe extern "C" fn raya_vm_destroy(vm: *mut RayaVM) {
 /// Load a compiled module from a file
 ///
 /// # Arguments
-/// * `path` - Null-terminated path to .rbin file
+/// * `path` - Null-terminated path to .ryb file
 /// * `error` - Optional pointer to receive error information
 ///
 /// # Returns

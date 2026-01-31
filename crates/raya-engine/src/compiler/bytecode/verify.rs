@@ -249,8 +249,6 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::MutexLock
         | Opcode::MutexUnlock
         | Opcode::Throw
-        | Opcode::JsonParse
-        | Opcode::JsonStringify
         | Opcode::JsonIndex
         | Opcode::JsonIndexSet
         | Opcode::JsonPush
@@ -478,9 +476,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadRefCell => (1, 1),   // Pop refcell ptr, push value
         Opcode::StoreRefCell => (2, 0),  // Pop refcell ptr + value
 
-        // JSON operations (complete set)
-        Opcode::JsonParse => (1, 1),       // Pop string, push json
-        Opcode::JsonStringify => (1, 1),   // Pop json, push string
+        // JSON operations (parse/stringify use NativeCall)
         Opcode::JsonGet => (1, 1),         // Pop json object, push value
         Opcode::JsonSet => (2, 0),         // Pop value + object (mutates)
         Opcode::JsonDelete => (1, 0),      // Pop object (mutates)

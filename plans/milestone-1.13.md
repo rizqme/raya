@@ -627,14 +627,14 @@ impl Scheduler {
 
 **Objectives:**
 - [x] Implement VM creation API
-- [x] Support .rbin file loading (compiled binaries only)
+- [x] Support .ryb file loading (compiled binaries only)
 - [x] Support creation from snapshot
 - [x] Enable entry point execution
 - [x] Support VM termination
 - [x] Implement stats observation
 - [x] Support VM snapshot/restore
 
-**Note:** Inner VMs do NOT support loading .raya source files. Only pre-compiled .rbin binaries can be loaded. Compilation is a separate build-time phase.
+**Note:** Inner VMs do NOT support loading .raya source files. Only pre-compiled .ryb binaries can be loaded. Compilation is a separate build-time phase.
 
 **Implementation:**
 ```rust
@@ -660,24 +660,24 @@ impl Vm {
         Ok(Self { context_id })
     }
 
-    /// Load .rbin file into context
+    /// Load .ryb file into context
     pub fn load_rbin(&self, path: &Path) -> Result<(), VmError> {
         let bytes = std::fs::read(path)
             .map_err(|e| VmError::IoError(e))?;
         self.load_rbin_bytes(&bytes)
     }
 
-    /// Load .rbin from bytes
+    /// Load .ryb from bytes
     pub fn load_rbin_bytes(&self, bytes: &[u8]) -> Result<(), VmError> {
         let context = CONTEXT_REGISTRY.get(self.context_id)?;
         let mut ctx = context.write();
 
-        // Parse .rbin format (includes header, constant pool, functions, etc.)
+        // Parse .ryb format (includes header, constant pool, functions, etc.)
         let module = Module::decode(bytes)?;
 
-        // Verify it's a valid .rbin file
+        // Verify it's a valid .ryb file
         if !module.has_rbin_magic() {
-            return Err(VmError::InvalidBinaryFormat("Not a valid .rbin file".to_string()));
+            return Err(VmError::InvalidBinaryFormat("Not a valid .ryb file".to_string()));
         }
 
         ctx.load_module(module)?;
@@ -777,8 +777,8 @@ pub struct VmSnapshot {
 **Tests:**
 - [x] Create VM with options
 - [x] Create VM from snapshot
-- [x] Load .rbin file
-- [x] Load .rbin from bytes
+- [x] Load .ryb file
+- [x] Load .ryb from bytes
 - [x] Load raw bytecode module
 - [x] Run entry point function
 - [x] Terminate VM and verify cleanup
@@ -864,9 +864,9 @@ impl VmContext {
 **File:** `crates/raya-core/tests/inner_vm_integration.rs`
 
 - [x] Create nested VMs (3 levels deep)
-- [x] Load .rbin files into inner VMs
-- [x] Load .rbin with main() and execute
-- [x] Load .rbin with exports and import functions
+- [x] Load .ryb files into inner VMs
+- [x] Load .ryb with main() and execute
+- [x] Load .ryb with exports and import functions
 - [x] Create VM from snapshot
 - [x] Snapshot VM and restore in new VM
 - [x] Run tasks in multiple contexts concurrently
@@ -878,8 +878,8 @@ impl VmContext {
 - [x] Test context termination and cleanup
 - [x] Test snapshot/restore of multiple contexts
 - [x] Test error containment (errors in inner VM don't affect outer)
-- [x] Test .rbin reflection metadata access
-- [x] Test .rbin export table parsing
+- [x] Test .ryb reflection metadata access
+- [x] Test .ryb export table parsing
 
 ### Performance Tests
 
@@ -898,9 +898,9 @@ impl VmContext {
 
 - ✅ VmContext can be created with resource limits
 - ✅ VmContext can be created from snapshot
-- ✅ .rbin files can be loaded into contexts
-- ✅ .rbin reflection metadata is accessible
-- ✅ .rbin export tables are parsed correctly
+- ✅ .ryb files can be loaded into contexts
+- ✅ .ryb reflection metadata is accessible
+- ✅ .ryb export tables are parsed correctly
 - ✅ Heaps are fully isolated between contexts
 - ✅ Resource limits are enforced correctly
 - ✅ Capabilities can be injected and invoked
@@ -940,7 +940,7 @@ parking_lot = "0.12"         # RwLock for contexts
 
 ### Internal Dependencies
 
-- Milestone 1.2: Bytecode Definitions (for .rbin format parsing)
+- Milestone 1.2: Bytecode Definitions (for .ryb format parsing)
 - Milestone 1.10: Task Scheduler (for context-aware scheduling)
 - Milestone 1.11: VM Snapshotting (for context snapshots)
 - Milestone 1.12: Synchronization Primitives (for thread-safe operations)
@@ -958,7 +958,7 @@ parking_lot = "0.12"         # RwLock for contexts
 ### Example Usage
 
 ```typescript
-// Example 1: Load .rbin file
+// Example 1: Load .ryb file
 import { Vm } from "raya:vm";
 
 const vm = new Vm({
@@ -966,8 +966,8 @@ const vm = new Vm({
   maxTasks: 10,
 });
 
-// Load compiled .rbin file
-vm.loadRbin("./mymodule.rbin");
+// Load compiled .ryb file
+vm.loadRbin("./mymodule.ryb");
 
 const task = vm.runEntry("main");
 const result = await task;  // → 42
@@ -978,7 +978,7 @@ vm.terminate();
 ```typescript
 // Example 2: Snapshot and restore
 const vm = new Vm({ maxHeapBytes: 32 * 1024 * 1024 });
-vm.loadRbin("./app.rbin");
+vm.loadRbin("./app.ryb");
 
 const task = vm.runEntry("compute");
 await task;
@@ -997,9 +997,9 @@ await task2;
 ```
 
 ```typescript
-// Example 3: Load .rbin with exports (library usage)
+// Example 3: Load .ryb with exports (library usage)
 const vm = new Vm({ maxHeapBytes: 16 * 1024 * 1024 });
-vm.loadRbin("./math.rbin");  // Contains export function add(a, b)
+vm.loadRbin("./math.ryb");  // Contains export function add(a, b)
 
 // Access exported function
 const task = vm.runEntry("add", [2, 3]);
@@ -1009,7 +1009,7 @@ const result = await task;  // → 5
 ```typescript
 // Example 4: Nested VMs with isolation
 const outerVm = new Vm({ maxHeapBytes: 128 * 1024 * 1024 });
-outerVm.loadRbin("./host.rbin");
+outerVm.loadRbin("./host.ryb");
 
 // Host code can create inner VMs
 const innerVm = new Vm({
@@ -1020,7 +1020,7 @@ const innerVm = new Vm({
   ],
 });
 
-innerVm.loadRbin("./plugin.rbin");
+innerVm.loadRbin("./plugin.ryb");
 const pluginTask = innerVm.runEntry("main");
 const result = await pluginTask;
 ```
@@ -1039,7 +1039,7 @@ impl Vm {
     pub fn new(options: VmOptions) -> Result<Self, VmError>
     pub fn from_snapshot(snapshot: VmSnapshot, options: Option<VmOptions>) -> Result<Self, VmError>
 
-    // .rbin loading
+    // .ryb loading
     pub fn load_rbin(&self, path: &Path) -> Result<(), VmError>
     pub fn load_rbin_bytes(&self, bytes: &[u8]) -> Result<(), VmError>
     pub fn load_bytecode(&self, bytecode: &[u8]) -> Result<(), VmError>

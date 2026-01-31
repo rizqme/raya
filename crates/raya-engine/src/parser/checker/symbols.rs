@@ -263,6 +263,45 @@ impl SymbolTable {
         }
         false
     }
+
+    /// Mark a symbol as exported
+    ///
+    /// Searches from the current scope up to global scope and marks the first match as exported.
+    /// Returns true if the symbol was found and marked.
+    pub fn mark_exported(&mut self, name: &str) -> bool {
+        let mut scope_id = self.current_scope;
+        loop {
+            let scope = &mut self.scopes[scope_id.0 as usize];
+
+            if let Some(symbol) = scope.symbols.get_mut(name) {
+                symbol.flags.is_exported = true;
+                return true;
+            }
+
+            match scope.parent {
+                Some(parent) => scope_id = parent,
+                None => return false,
+            }
+        }
+    }
+
+    /// Get all exported symbols from the global scope
+    ///
+    /// Returns symbols that have `is_exported = true`.
+    pub fn get_exported_symbols(&self) -> Vec<&Symbol> {
+        self.scopes[0]
+            .symbols
+            .values()
+            .filter(|s| s.flags.is_exported)
+            .collect()
+    }
+
+    /// Define a symbol as imported (in the global scope)
+    ///
+    /// This is used to inject symbols from imported modules.
+    pub fn define_imported(&mut self, symbol: Symbol) -> Result<(), DuplicateSymbolError> {
+        self.define_in_scope(ScopeId(0), symbol)
+    }
 }
 
 impl Default for SymbolTable {

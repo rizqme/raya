@@ -1,6 +1,6 @@
 //! Integration tests for module loading
 //!
-//! Tests the complete module loading pipeline from .rbin bytes to registered modules.
+//! Tests the complete module loading pipeline from .ryb bytes to registered modules.
 
 use raya_engine::compiler::{Function, Module};
 use raya_engine::compiler::Opcode;

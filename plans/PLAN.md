@@ -873,7 +873,7 @@ pub fn unmarshal(marshalled: MarshalledValue, to_ctx: &mut VmContext) -> Result<
 ```
 ~/.raya/cache/          # Global package cache
     ├── <hash>/         # Content-addressable storage (SHA-256)
-    │   ├── module.rbin # Compiled bytecode
+    │   ├── module.ryb # Compiled bytecode
     │   └── metadata.json # Module metadata
 
 my-project/
@@ -921,7 +921,7 @@ import { helper } from "./utils.raya";
 Raya Program (.raya)
     ↓ imports std:json or custom:mylib (transparent)
 Module Resolver
-    ↓ detects implementation type (.rbin vs .so/.dylib/.dll)
+    ↓ detects implementation type (.ryb vs .so/.dylib/.dll)
 Dynamic Library Loader (for native modules)
     ↓ loads native implementation
 Native Module (Rust)
@@ -1370,9 +1370,9 @@ pub struct DiscriminantInfo {
 
 **Reference:** `design/LANG.md` Section 4
 
-### 2.5 Type Checker & Control Flow Analysis
+### 2.5 Type Checker & Control Flow Analysis ✅
 
-**Status:** See [milestone-2.5.md](milestone-2.5.md) for detailed plan
+**Status:** Complete (implemented in `crates/raya-engine/src/parser/checker/`)
 
 **Key Features:**
 - **Implicit primitive coercions**: `number → string` (automatic)
@@ -1382,23 +1382,23 @@ pub struct DiscriminantInfo {
 - **Control flow type narrowing**: TypeScript-style narrowing with type guards
 
 **Tasks:**
-- [ ] Build symbol table and resolve names
-- [ ] Implement type inference for expressions
-- [ ] **Type assignability with implicit coercions**
-  - [ ] Primitive coercions (number → string)
-  - [ ] Structural subtyping (RaceCar → Car)
-  - [ ] Union type coercion (string | number → string)
-  - [ ] Subtype widening (Dog → Animal)
-- [ ] **Control flow-based type narrowing** (TypeScript-style)
-  - [ ] `typeof` guards for bare unions (string | number)
-  - [ ] Discriminant guards for discriminated unions
-  - [ ] Null checks (x !== null)
-  - [ ] Nested narrowing
-- [ ] Check function signatures
-- [ ] Validate class definitions
-- [ ] Enforce discriminated unions
-- [ ] Check exhaustiveness
-- [ ] Enforce context-dependent operators (typeof, delete, as)
+- [x] Build symbol table and resolve names (`symbols.rs`, `binder.rs`)
+- [x] Implement type inference for expressions (`checker.rs` - 2508 lines)
+- [x] **Type assignability with implicit coercions** (`assignability.rs`, `subtyping.rs`)
+  - [x] Primitive coercions (number → string)
+  - [x] Structural subtyping (RaceCar → Car)
+  - [x] Union type coercion (string | number → string)
+  - [x] Subtype widening (Dog → Animal)
+- [x] **Control flow-based type narrowing** (`narrowing.rs` - 688 lines)
+  - [x] `typeof` guards for bare unions (string | number)
+  - [x] Discriminant guards for discriminated unions
+  - [x] Null checks (x !== null)
+  - [x] Nested narrowing
+- [x] Check function signatures
+- [x] Validate class definitions
+- [x] Enforce discriminated unions
+- [x] Check exhaustiveness (`exhaustiveness.rs`)
+- [x] Enforce context-dependent operators (typeof, delete, as)
 
 **Files:**
 ```rust
@@ -1456,13 +1456,15 @@ impl TypeNarrower {
 - `design/LANG.md` Sections 4, 4.7, 6.13
 - `plans/milestone-2.5.md` - Detailed implementation plan
 
-### 2.6 Discriminant Inference
+### 2.6 Discriminant Inference ✅
+
+**Status:** Complete (`crates/raya-engine/src/parser/types/discriminant.rs` - 773 lines)
 
 **Tasks:**
-- [ ] Implement discriminant field detection
-- [ ] Use priority order (kind > type > tag > variant > alphabetical)
-- [ ] Validate all variants have common discriminant
-- [ ] Generate compile errors for ambiguous unions
+- [x] Implement discriminant field detection
+- [x] Use priority order (kind > type > tag > variant > alphabetical)
+- [x] Validate all variants have common discriminant
+- [x] Generate compile errors for ambiguous unions
 
 **Files:**
 ```rust
@@ -1489,13 +1491,15 @@ impl DiscriminantInference {
 
 **Reference:** `design/LANG.md` Section 17.6
 
-### 2.7 Bare Union Transformation
+### 2.7 Bare Union Transformation ✅
+
+**Status:** Complete (`crates/raya-engine/src/parser/types/bare_union.rs` - 319 lines)
 
 **Tasks:**
-- [ ] Detect bare primitive unions (`string | number`)
-- [ ] Transform to `{ $type, $value }` representation
-- [ ] Insert boxing/unboxing code automatically
-- [ ] Prevent user access to `$type` and `$value`
+- [x] Detect bare primitive unions (`string | number`)
+- [x] Transform to `{ $type, $value }` representation
+- [x] Insert boxing/unboxing code automatically
+- [x] Prevent user access to `$type` and `$value`
 
 **Files:**
 ```rust
@@ -1764,15 +1768,17 @@ pub struct RestPattern {
 
 **Goal:** Translate typed AST to bytecode.
 
-### 3.1 IR (Intermediate Representation)
+### 3.1 IR (Intermediate Representation) ✅
 
-**Crate:** `raya-compiler`
+**Status:** Complete (`crates/raya-engine/src/compiler/ir/`, `lower/`)
+
+**Crate:** `raya-engine` (consolidated)
 
 **Tasks:**
-- [ ] Design IR structure (SSA form or three-address code)
-- [ ] Lower AST to IR
-- [ ] Implement basic optimizations (constant folding, DCE)
-- [ ] Add type information to IR
+- [x] Design IR structure (three-address code with basic blocks)
+- [x] Lower AST to IR (`lower/*.rs` - 4400+ lines)
+- [x] Implement basic optimizations (constant folding, DCE, inlining)
+- [x] Add type information to IR
 
 **Files:**
 ```rust
@@ -1829,17 +1835,19 @@ crates/raya-compiler/tests/monomorphize_tests.rs  # 25 comprehensive tests
 
 **Reference:** `design/LANG.md` Section 13.7, `plans/milestone-3.2.md`
 
-### 3.3 Code Generation
+### 3.3 Code Generation ✅
+
+**Status:** Complete (`crates/raya-engine/src/compiler/codegen/`, `codegen_ast.rs`)
 
 **Tasks:**
-- [ ] Implement bytecode emitter
-- [ ] Generate code for all expression types
-- [ ] Handle control flow (if, while, switch)
-- [ ] Emit function prologues/epilogues
-- [ ] Generate vtables for classes
-- [ ] Emit closures with captured variables
-- [ ] String comparison optimization (constant pool index comparison for literals)
-- [ ] Track value origins (Constant vs Computed) for optimization
+- [x] Implement bytecode emitter
+- [x] Generate code for all expression types
+- [x] Handle control flow (if, while, switch)
+- [x] Emit function prologues/epilogues
+- [x] Generate vtables for classes
+- [x] Emit closures with captured variables
+- [x] String comparison optimization (constant pool index comparison for literals)
+- [x] Track value origins (Constant vs Computed) for optimization
 
 **Files:**
 ```rust
@@ -1867,27 +1875,9 @@ impl CodeGenerator {
 
 ### 3.4 Match Inlining
 
-**Tasks:**
-- [ ] Detect `match()` calls
-- [ ] Inline match logic directly
-- [ ] Generate switch-based bytecode for discriminants
-- [ ] Optimize for exhaustiveness (no unreachable trap)
+**Status:** Removed from language
 
-**Files:**
-```rust
-// crates/raya-compiler/src/match_inline.rs
-pub struct MatchInliner;
-
-impl MatchInliner {
-    pub fn inline_match(&self, call: &CallExpr) -> Option<InlinedMatch> {
-        // Check if this is a match() call
-        // Generate inline bytecode for switch on discriminant
-        // See MAPPING.md Section 15.5, 15.6
-    }
-}
-```
-
-**Reference:** `design/MAPPING.md` Sections 15.5, 15.6
+The `match()` function has been removed from the language. Use switch statements with discriminant field access instead.
 
 ### 3.5 JSON Codegen
 
@@ -1933,14 +1923,17 @@ impl ModuleResolver {
 
 **Reference:** `design/LANG.md` Section 16.8
 
-### 3.7 Optimization
+### 3.7 Optimization ✅
+
+**Status:** Complete (`crates/raya-engine/src/compiler/optimize/`)
 
 **Tasks:**
-- [ ] Constant folding
-- [ ] Dead code elimination
-- [ ] Inline small functions
-- [ ] Optimize typed arithmetic (IADD vs FADD vs NADD)
-- [ ] Remove redundant type checks
+- [x] Constant folding (`constant_fold.rs`)
+- [x] Dead code elimination (`dce.rs`)
+- [x] Inline small functions (`inline.rs`)
+- [x] PHI elimination for bytecode generation (`phi_elim.rs`)
+- [x] Optimize typed arithmetic (IADD vs FADD vs NADD)
+- [x] Remove redundant type checks
 
 **Files:**
 ```rust
@@ -2015,7 +2008,6 @@ export interface Task<T> extends PromiseLike<T> {
 **Location:** `stdlib/std.raya`
 
 **Tasks:**
-- [ ] Implement `match()` function (compile-time magic)
 - [ ] Implement `sleep()` (native)
 - [ ] Implement `all()` for task aggregation
 - [ ] Implement `race()` for task racing
@@ -2023,15 +2015,6 @@ export interface Task<T> extends PromiseLike<T> {
 **Files:**
 ```typescript
 // stdlib/std.raya
-export function match<T, R>(
-  value: T,
-  handlers: MatchHandlers<T, R>
-): R {
-  // Compiler intrinsic - replaced during compilation
-  throw new Error("match() should be inlined by compiler");
-}
-
-// Native implementations
 declare function sleep(ms: number): Task<void>;
 declare function all<T>(tasks: Task<T>[]): Task<T[]>;
 declare function race<T>(tasks: Task<T>[]): Task<T>;

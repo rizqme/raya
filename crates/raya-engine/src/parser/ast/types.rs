@@ -273,6 +273,7 @@ pub struct ObjectTypeProperty {
     pub name: Identifier,
     pub ty: TypeAnnotation,
     pub optional: bool,
+    pub annotations: Vec<super::statement::Annotation>,
     pub span: Span,
 }
 
