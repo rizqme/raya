@@ -79,11 +79,12 @@ import { config } from "../config";
 ~/.raya/
 ├── cache/                    # Global package cache
 │   ├── <sha256-hash>/       # Content-addressable packages
-│   │   ├── module.ryb      # Compiled bytecode (required)
-│   │   ├── module.rdef      # Type definitions (optional, like .d.ts)
-│   │   └── metadata.json    # Package metadata
+│   │   ├── module.ryb       # Compiled bytecode (required)
+│   │   ├── module.d.raya    # Type definitions with doc comments (required)
+│   │   ├── raya.toml        # Package manifest (required)
+│   │   └── README.md        # Package documentation (optional)
 │   └── <sha256-hash>/
-│       └── module.ryb
+│       └── ...
 ├── registry/                 # Registry index cache
 │   └── index.json           # Package name → versions mapping
 ├── tmp/                      # Temporary downloads
@@ -94,9 +95,10 @@ import { config } from "../config";
 
 ```
 ~/.raya/cache/a3f2b1.../
-├── module.ryb              # Compiled logging@1.2.3 (required)
-├── module.rdef              # Type definitions (optional)
-└── metadata.json            # { name, version, dependencies, checksum }
+├── module.ryb              # Compiled logging@1.2.3 bytecode
+├── module.d.raya           # Type definitions with doc comments
+├── raya.toml               # Package manifest (name, version, deps)
+└── README.md               # Package documentation
 ```
 
 **Why content-addressable?**
@@ -209,20 +211,20 @@ raya build --release --emit-reflection
 - No separate compilation step needed by consumers
 - Reflection metadata is optional and opt-in per package
 
-#### `.rdef` - Type Definitions (Optional)
+#### `.d.raya` - Type Definitions (Required for Published Packages)
 
 **Format:** TypeScript-like declaration file (similar to `.d.ts`)
 
 **Purpose:**
 - Provide type information for IDE autocomplete
 - Enable static type checking for package users
-- Document public API
+- Document public API with TSDoc comments
 - Export decorator type signatures
 
 **Example:**
 
 ```typescript
-// module.rdef (for "logging" package)
+// module.d.raya (for "logging" package)
 
 /**
  * Structured logger with multiple output levels
@@ -250,7 +252,7 @@ export function createLogger(name: string): Logger;
 **Decorator Type Definitions:**
 
 ```typescript
-// module.rdef (for "web-framework" package)
+// module.d.raya (for "web-framework" package)
 
 import { Request, Response } from "http";
 
@@ -280,17 +282,19 @@ See [DECORATORS.md](DECORATORS.md) for decorator type system details.
 **Generation:**
 ```bash
 # Auto-generate from source
-raya build --emit-rdef
+raya build --emit-defs
 
 # Or write manually
-# dist/module.rdef
+# dist/module.d.raya
 ```
 
-**When to include `.rdef`:**
-- ✅ Public libraries (improve developer experience)
-- ✅ Complex APIs (documentation + type safety)
-- ❌ Private internal packages (not necessary)
-- ❌ Simple utilities (types inferable from usage)
+**When `.d.raya` is required:**
+- ✅ All published packages (required for registry)
+- ✅ Cached packages in `~/.raya/cache/`
+
+**When `.d.raya` is optional:**
+- ❌ Local development (source files provide types)
+- ❌ Path dependencies (compiled from source)
 
 #### `.raya` Source Files (NOT in Published Packages)
 
@@ -326,10 +330,12 @@ Example: `logging` package
 
 | Format | Size | Included |
 |--------|------|----------|
-| `.raya` source | 15 KB | ❌ No (by default) |
-| `.ryb` bytecode | 8 KB | ✅ Always |
-| `.rdef` types | 2 KB | ✅ Recommended |
-| **Total download** | **10 KB** | |
+| `.raya` source | 15 KB | ❌ No (not in published) |
+| `.ryb` bytecode | 8 KB | ✅ Required |
+| `.d.raya` types | 2 KB | ✅ Required |
+| `raya.toml` | 0.5 KB | ✅ Required |
+| `README.md` | 1 KB | ✅ Optional |
+| **Total download** | **~11.5 KB** | |
 
 Compare to Node.js (source + dependencies): typically 50-500 KB per package.
 
@@ -344,10 +350,10 @@ GET /packages/logging/1.2.3/download
 
 # Archive contents:
 logging-1.2.3.tar.zst
-├── module.ryb      # Required - compiled bytecode
-├── module.rdef      # Optional - type definitions
-├── metadata.json    # Required - package info
-└── decorators.json  # Optional - exported decorator signatures
+├── module.ryb       # Required - compiled bytecode
+├── module.d.raya    # Required - type definitions with doc comments
+├── raya.toml        # Required - package manifest
+└── README.md        # Optional - package documentation
 ```
 
 **For packages with `emit-reflection = true`:**
@@ -355,10 +361,10 @@ logging-1.2.3.tar.zst
 ```bash
 # Archive with reflection metadata:
 web-framework-2.0.0.tar.zst
-├── module.ryb      # Includes embedded reflection data
-├── module.rdef      # Type definitions + decorator types
-├── metadata.json    # Package info
-└── decorators.json  # Decorator signatures for IDE support
+├── module.ryb       # Includes embedded reflection data
+├── module.d.raya    # Type definitions + decorator types + doc comments
+├── raya.toml        # Package manifest
+└── README.md        # Package documentation
 ```
 
 **decorators.json format:**

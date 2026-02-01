@@ -39,9 +39,9 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 | `raya-engine` | Full language engine: parser, compiler, VM | Active development |
 | `raya-cli` | `raya` CLI tool (run, build, test, etc.) | Scaffolded |
 | `raya-lsp` | Language server for IDE support | Placeholder |
-| `raya-pm` | Package manager (cache, resolution, manifests) | Partial |
-| `raya-sdk` | Minimal types for native module FFI | Complete |
-| `raya-native` | Proc-macros: `#[function]`, `#[module]` | Complete |
+| `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
+| `raya-sdk` | Minimal types for native module FFI | ✅ Complete |
+| `raya-native` | Proc-macros: `#[function]`, `#[module]` | ✅ Complete |
 | `raya-stdlib` | Native implementations (console, JSON) | Partial |
 
 ## Key Design Decisions

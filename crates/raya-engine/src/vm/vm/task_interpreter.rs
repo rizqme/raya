@@ -59,6 +59,12 @@ pub struct TaskInterpreter<'a> {
 
     /// Global task injector for scheduling spawned tasks
     injector: &'a Arc<Injector<Arc<Task>>>,
+
+    /// Metadata store for Reflect API
+    metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
+
+    /// Class metadata registry for reflection (field/method names)
+    class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
 }
 
 impl<'a> TaskInterpreter<'a> {
@@ -71,6 +77,8 @@ impl<'a> TaskInterpreter<'a> {
         globals_by_index: &'a RwLock<Vec<Value>>,
         tasks: &'a Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: &'a Arc<Injector<Arc<Task>>>,
+        metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
+        class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
     ) -> Self {
         Self {
             gc,
@@ -80,6 +88,8 @@ impl<'a> TaskInterpreter<'a> {
             globals_by_index,
             tasks,
             injector,
+            metadata,
+            class_metadata,
         }
     }
 
@@ -3953,6 +3963,14 @@ impl<'a> TaskInterpreter<'a> {
                     }
                 }
 
+                // Check for built-in reflect methods
+                if crate::vm::builtin::is_reflect_method(method_id) {
+                    match self.call_reflect_method(stack, method_id, arg_count) {
+                        Ok(()) => return OpcodeResult::Continue,
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+
                 // Fall through to vtable dispatch for user-defined methods
                 let receiver_pos = match stack.depth().checked_sub(arg_count + 1) {
                     Some(pos) => pos,
@@ -7363,6 +7381,651 @@ impl<'a> TaskInterpreter<'a> {
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Handle built-in Reflect methods
+    fn call_reflect_method(
+        &mut self,
+        stack: &mut std::sync::MutexGuard<'_, Stack>,
+        method_id: u16,
+        arg_count: usize,
+    ) -> Result<(), VmError> {
+        use crate::vm::builtin::reflect;
+
+        // Pop arguments
+        let mut args = Vec::with_capacity(arg_count);
+        for _ in 0..arg_count {
+            args.push(stack.pop()?);
+        }
+        args.reverse();
+
+        // Helper to get string from Value
+        let get_string = |v: Value| -> Result<String, VmError> {
+            if !v.is_ptr() {
+                return Err(VmError::TypeError("Expected string".to_string()));
+            }
+            let s_ptr = unsafe { v.as_ptr::<RayaString>() };
+            let s = unsafe { &*s_ptr.unwrap().as_ptr() };
+            Ok(s.data.clone())
+        };
+
+        let result = match method_id {
+            reflect::DEFINE_METADATA => {
+                // defineMetadata(key, value, target)
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "defineMetadata requires 3 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let value = args[1];
+                let target = args[2];
+
+                let mut metadata = self.metadata.lock();
+                metadata.define_metadata(key, value, target);
+                Value::null()
+            }
+
+            reflect::DEFINE_METADATA_PROP => {
+                // defineMetadata(key, value, target, propertyKey)
+                if args.len() < 4 {
+                    return Err(VmError::RuntimeError(
+                        "defineMetadata with property requires 4 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let value = args[1];
+                let target = args[2];
+                let property_key = get_string(args[3].clone())?;
+
+                let mut metadata = self.metadata.lock();
+                metadata.define_metadata_property(key, value, target, property_key);
+                Value::null()
+            }
+
+            reflect::GET_METADATA => {
+                // getMetadata(key, target)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "getMetadata requires 2 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+
+                let metadata = self.metadata.lock();
+                metadata.get_metadata(&key, target).unwrap_or(Value::null())
+            }
+
+            reflect::GET_METADATA_PROP => {
+                // getMetadata(key, target, propertyKey)
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "getMetadata with property requires 3 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+                let property_key = get_string(args[2].clone())?;
+
+                let metadata = self.metadata.lock();
+                metadata.get_metadata_property(&key, target, &property_key).unwrap_or(Value::null())
+            }
+
+            reflect::HAS_METADATA => {
+                // hasMetadata(key, target)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "hasMetadata requires 2 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+
+                let metadata = self.metadata.lock();
+                Value::bool(metadata.has_metadata(&key, target))
+            }
+
+            reflect::HAS_METADATA_PROP => {
+                // hasMetadata(key, target, propertyKey)
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "hasMetadata with property requires 3 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+                let property_key = get_string(args[2].clone())?;
+
+                let metadata = self.metadata.lock();
+                Value::bool(metadata.has_metadata_property(&key, target, &property_key))
+            }
+
+            reflect::GET_METADATA_KEYS => {
+                // getMetadataKeys(target)
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getMetadataKeys requires 1 argument".to_string()
+                    ));
+                }
+                let target = args[0];
+
+                let metadata = self.metadata.lock();
+                let keys = metadata.get_metadata_keys(target);
+
+                // Create an array of string keys
+                let mut arr = Array::new(0, keys.len());
+                for (i, key) in keys.into_iter().enumerate() {
+                    let s = RayaString::new(key);
+                    let gc_ptr = self.gc.lock().allocate(s);
+                    let val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    arr.set(i, val).ok();
+                }
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_METADATA_KEYS_PROP => {
+                // getMetadataKeys(target, propertyKey)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "getMetadataKeys with property requires 2 arguments".to_string()
+                    ));
+                }
+                let target = args[0];
+                let property_key = get_string(args[1].clone())?;
+
+                let metadata = self.metadata.lock();
+                let keys = metadata.get_metadata_keys_property(target, &property_key);
+
+                // Create an array of string keys
+                let mut arr = Array::new(0, keys.len());
+                for (i, key) in keys.into_iter().enumerate() {
+                    let s = RayaString::new(key);
+                    let gc_ptr = self.gc.lock().allocate(s);
+                    let val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    arr.set(i, val).ok();
+                }
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::DELETE_METADATA => {
+                // deleteMetadata(key, target)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "deleteMetadata requires 2 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+
+                let mut metadata = self.metadata.lock();
+                Value::bool(metadata.delete_metadata(&key, target))
+            }
+
+            reflect::DELETE_METADATA_PROP => {
+                // deleteMetadata(key, target, propertyKey)
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "deleteMetadata with property requires 3 arguments".to_string()
+                    ));
+                }
+                let key = get_string(args[0].clone())?;
+                let target = args[1];
+                let property_key = get_string(args[2].clone())?;
+
+                let mut metadata = self.metadata.lock();
+                Value::bool(metadata.delete_metadata_property(&key, target, &property_key))
+            }
+
+            // ===== Phase 2: Class Introspection =====
+
+            reflect::GET_CLASS => {
+                // getClass(obj) -> returns class ID as i32, or null if not an object
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getClass requires 1 argument".to_string()
+                    ));
+                }
+                let obj = args[0];
+                if let Some(class_id) = crate::vm::reflect::get_class_id(obj) {
+                    Value::i32(class_id as i32)
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_CLASS_BY_NAME => {
+                // getClassByName(name) -> returns class ID as i32, or null if not found
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getClassByName requires 1 argument".to_string()
+                    ));
+                }
+                let name = get_string(args[0].clone())?;
+                let classes = self.classes.read();
+                if let Some(class) = classes.get_class_by_name(&name) {
+                    Value::i32(class.id as i32)
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_ALL_CLASSES => {
+                // getAllClasses() -> returns array of class IDs
+                let classes = self.classes.read();
+                let class_ids: Vec<Value> = classes
+                    .iter()
+                    .map(|(id, _)| Value::i32(id as i32))
+                    .collect();
+
+                let mut arr = Array::new(0, class_ids.len());
+                for (i, val) in class_ids.into_iter().enumerate() {
+                    arr.set(i, val).ok();
+                }
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_CLASSES_WITH_DECORATOR => {
+                // getClassesWithDecorator(decorator) -> returns array of class IDs
+                // NOTE: This requires --emit-reflection to work fully
+                // For now, returns empty array (decorator metadata not yet stored)
+                let arr = Array::new(0, 0);
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::IS_SUBCLASS_OF => {
+                // isSubclassOf(subClassId, superClassId) -> boolean
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "isSubclassOf requires 2 arguments".to_string()
+                    ));
+                }
+                let sub_id = args[0].as_i32().unwrap_or(-1);
+                let super_id = args[1].as_i32().unwrap_or(-1);
+
+                if sub_id < 0 || super_id < 0 {
+                    Value::bool(false)
+                } else {
+                    let classes = self.classes.read();
+                    Value::bool(crate::vm::reflect::is_subclass_of(
+                        &classes,
+                        sub_id as usize,
+                        super_id as usize,
+                    ))
+                }
+            }
+
+            reflect::IS_INSTANCE_OF => {
+                // isInstanceOf(obj, classId) -> boolean
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "isInstanceOf requires 2 arguments".to_string()
+                    ));
+                }
+                let obj = args[0];
+                let class_id = args[1].as_i32().unwrap_or(-1);
+
+                if class_id < 0 {
+                    Value::bool(false)
+                } else {
+                    let classes = self.classes.read();
+                    Value::bool(crate::vm::reflect::is_instance_of(
+                        &classes,
+                        obj,
+                        class_id as usize,
+                    ))
+                }
+            }
+
+            reflect::GET_TYPE_INFO => {
+                // getTypeInfo(target) -> returns type kind as string
+                // NOTE: Full TypeInfo requires --emit-reflection
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getTypeInfo requires 1 argument".to_string()
+                    ));
+                }
+                let target = args[0];
+                let type_info = crate::vm::reflect::get_type_info_for_value(target);
+
+                // Return the type name as a string for now
+                let s = RayaString::new(type_info.name);
+                let gc_ptr = self.gc.lock().allocate(s);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_CLASS_HIERARCHY => {
+                // getClassHierarchy(obj) -> returns array of class IDs from obj's class to root
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getClassHierarchy requires 1 argument".to_string()
+                    ));
+                }
+                let obj = args[0];
+
+                if let Some(class_id) = crate::vm::reflect::get_class_id(obj) {
+                    let classes = self.classes.read();
+                    let hierarchy = crate::vm::reflect::get_class_hierarchy(&classes, class_id);
+
+                    let class_ids: Vec<Value> = hierarchy
+                        .iter()
+                        .map(|c| Value::i32(c.id as i32))
+                        .collect();
+
+                    drop(classes);
+
+                    let mut arr = Array::new(0, class_ids.len());
+                    for (i, val) in class_ids.into_iter().enumerate() {
+                        arr.set(i, val).ok();
+                    }
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                } else {
+                    // Not an object, return empty array
+                    let arr = Array::new(0, 0);
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+            }
+
+            // ===== Phase 3: Field Access =====
+
+            reflect::GET => {
+                // get(target, propertyKey) -> get field value by name
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "get requires 2 arguments (target, propertyKey)".to_string()
+                    ));
+                }
+                let target = args[0];
+                let property_key = get_string(args[1].clone())?;
+
+                if !target.is_ptr() {
+                    return Err(VmError::TypeError("get: target must be an object".to_string()));
+                }
+
+                // Get class ID from object
+                let class_id = crate::vm::reflect::get_class_id(target)
+                    .ok_or_else(|| VmError::TypeError("get: target is not a class instance".to_string()))?;
+
+                // Look up field index from class metadata
+                let class_metadata = self.class_metadata.read();
+                let field_index = class_metadata.get(class_id)
+                    .and_then(|meta| meta.get_field_index(&property_key));
+                drop(class_metadata);
+
+                if let Some(index) = field_index {
+                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
+                    let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                    obj.get_field(index).unwrap_or(Value::null())
+                } else {
+                    // Field not found in metadata - return null
+                    Value::null()
+                }
+            }
+
+            reflect::SET => {
+                // set(target, propertyKey, value) -> set field value by name
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "set requires 3 arguments (target, propertyKey, value)".to_string()
+                    ));
+                }
+                let target = args[0];
+                let property_key = get_string(args[1].clone())?;
+                let value = args[2];
+
+                if !target.is_ptr() {
+                    return Err(VmError::TypeError("set: target must be an object".to_string()));
+                }
+
+                // Get class ID from object
+                let class_id = crate::vm::reflect::get_class_id(target)
+                    .ok_or_else(|| VmError::TypeError("set: target is not a class instance".to_string()))?;
+
+                // Look up field index from class metadata
+                let class_metadata = self.class_metadata.read();
+                let field_index = class_metadata.get(class_id)
+                    .and_then(|meta| meta.get_field_index(&property_key));
+                drop(class_metadata);
+
+                if let Some(index) = field_index {
+                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
+                    let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
+                    match obj.set_field(index, value) {
+                        Ok(()) => Value::bool(true),
+                        Err(_) => Value::bool(false),
+                    }
+                } else {
+                    // Field not found in metadata
+                    Value::bool(false)
+                }
+            }
+
+            reflect::HAS => {
+                // has(target, propertyKey) -> check if field exists
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "has requires 2 arguments (target, propertyKey)".to_string()
+                    ));
+                }
+                let target = args[0];
+                let property_key = get_string(args[1].clone())?;
+
+                if !target.is_ptr() {
+                    Value::bool(false)
+                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    let has_field = class_metadata.get(class_id)
+                        .map(|meta| meta.has_field(&property_key))
+                        .unwrap_or(false);
+                    Value::bool(has_field)
+                } else {
+                    Value::bool(false)
+                }
+            }
+
+            reflect::GET_FIELD_NAMES => {
+                // getFieldNames(target) -> list all field names
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getFieldNames requires 1 argument".to_string()
+                    ));
+                }
+                let target = args[0];
+
+                let field_names = if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    class_metadata.get(class_id)
+                        .map(|meta| meta.field_names.clone())
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+
+                // Create array of strings
+                let mut arr = Array::new(0, field_names.len());
+                for (i, name) in field_names.into_iter().enumerate() {
+                    if !name.is_empty() {
+                        let s = RayaString::new(name);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        arr.set(i, val).ok();
+                    }
+                }
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_FIELD_INFO | reflect::GET_FIELDS |
+            reflect::GET_STATIC_FIELD_NAMES | reflect::GET_STATIC_FIELDS => {
+                // These require full --emit-reflection metadata
+                // Return null/empty for now
+                match method_id {
+                    reflect::GET_FIELD_INFO => Value::null(),
+                    _ => {
+                        let arr = Array::new(0, 0);
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                    }
+                }
+            }
+
+            // ===== Phase 4: Method Invocation =====
+
+            reflect::HAS_METHOD => {
+                // hasMethod(target, methodName) -> check if method exists
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "hasMethod requires 2 arguments (target, methodName)".to_string()
+                    ));
+                }
+                let target = args[0];
+                let method_name = get_string(args[1].clone())?;
+
+                if !target.is_ptr() {
+                    Value::bool(false)
+                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    let has_method = class_metadata.get(class_id)
+                        .map(|meta| meta.has_method(&method_name))
+                        .unwrap_or(false);
+                    Value::bool(has_method)
+                } else {
+                    Value::bool(false)
+                }
+            }
+
+            reflect::GET_METHODS | reflect::GET_METHOD | reflect::GET_METHOD_INFO |
+            reflect::INVOKE | reflect::INVOKE_ASYNC | reflect::INVOKE_STATIC |
+            reflect::GET_STATIC_METHODS => {
+                // These require full --emit-reflection metadata and dynamic dispatch
+                // Return null/empty for now
+                match method_id {
+                    reflect::INVOKE | reflect::INVOKE_ASYNC | reflect::INVOKE_STATIC => {
+                        return Err(VmError::RuntimeError(
+                            "Dynamic method invocation requires --emit-reflection".to_string()
+                        ));
+                    }
+                    reflect::GET_METHOD | reflect::GET_METHOD_INFO => Value::null(),
+                    _ => {
+                        let arr = Array::new(0, 0);
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                    }
+                }
+            }
+
+            // ===== Phase 5: Object Creation =====
+
+            reflect::CONSTRUCT => {
+                // construct(classId, ...args) -> create instance
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "construct requires at least 1 argument (classId)".to_string()
+                    ));
+                }
+                let class_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("construct: classId must be a number".to_string()))?
+                    as usize;
+
+                let classes = self.classes.read();
+                let class = classes.get_class(class_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+                let field_count = class.field_count;
+                drop(classes);
+
+                // Allocate new object
+                let obj = Object::new(class_id, field_count);
+                let gc_ptr = self.gc.lock().allocate(obj);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+
+                // Note: Constructor call with args requires more work (call constructor function)
+            }
+
+            reflect::ALLOCATE => {
+                // allocate(classId) -> allocate uninitialized instance
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "allocate requires 1 argument (classId)".to_string()
+                    ));
+                }
+                let class_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("allocate: classId must be a number".to_string()))?
+                    as usize;
+
+                let classes = self.classes.read();
+                let class = classes.get_class(class_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+                let field_count = class.field_count;
+                drop(classes);
+
+                // Allocate new object (uninitialized - fields are null)
+                let obj = Object::new(class_id, field_count);
+                let gc_ptr = self.gc.lock().allocate(obj);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::CLONE => {
+                // clone(obj) -> shallow clone
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "clone requires 1 argument".to_string()
+                    ));
+                }
+                let target = args[0];
+
+                if !target.is_ptr() {
+                    // Primitives are copied by value
+                    target
+                } else if let Some(_class_id) = crate::vm::reflect::get_class_id(target) {
+                    // Clone object
+                    let obj_ptr = unsafe { target.as_ptr::<Object>() };
+                    let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                    let cloned = obj.clone();
+                    let gc_ptr = self.gc.lock().allocate(cloned);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                } else {
+                    // Unknown pointer type, return as-is
+                    target
+                }
+            }
+
+            reflect::CONSTRUCT_WITH | reflect::DEEP_CLONE | reflect::GET_CONSTRUCTOR_INFO => {
+                // These require more complex implementation
+                match method_id {
+                    reflect::CONSTRUCT_WITH => {
+                        return Err(VmError::RuntimeError(
+                            "constructWith requires --emit-reflection".to_string()
+                        ));
+                    }
+                    reflect::DEEP_CLONE => {
+                        return Err(VmError::RuntimeError(
+                            "deepClone not yet implemented".to_string()
+                        ));
+                    }
+                    _ => Value::null()
+                }
+            }
+
+            _ => {
+                return Err(VmError::RuntimeError(format!(
+                    "Reflect method {:#06x} not yet implemented",
+                    method_id
+                )));
+            }
+        };
+
+        stack.push(result)?;
         Ok(())
     }
 }

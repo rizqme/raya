@@ -6,11 +6,11 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Package manager for Raya"
+description = "Package manager library for Raya"
 
-[[bin]]
+[lib]
 name = "rpkg"
-path = "src/main.rs"
+path = "src/lib.rs"
 
 [dependencies]
 clap = { workspace = true }
@@ -22,6 +22,10 @@ thiserror = { workspace = true }
 toml = "0.8"
 dirs = "5.0"
 hex = "0.4"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+url = "2.5"
+tar = "0.4"
+flate2 = "1.0"
 
 [dev-dependencies]
 tempfile = "3.8"

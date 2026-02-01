@@ -6,6 +6,8 @@
 //! See design/CLI.md for complete specification.
 
 use clap::{Parser, Subcommand};
+use rpkg::commands::{add, init, install};
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "raya")]
@@ -74,33 +76,37 @@ enum Commands {
         bail: bool,
     },
 
-    /// Install dependencies
+    /// Install dependencies from raya.toml
     Install {
-        /// Package to install (if not specified, installs all from raya.toml)
-        package: Option<String>,
-        /// Save to dependencies
-        #[arg(short = 'S', long)]
-        save: bool,
-        /// Save to devDependencies
-        #[arg(short = 'D', long)]
-        save_dev: bool,
-        /// Install globally
+        /// Only install production dependencies
+        #[arg(long)]
+        production: bool,
+        /// Force re-download even if cached
         #[arg(short, long)]
-        global: bool,
+        force: bool,
+        /// Update to latest compatible versions
+        #[arg(short, long)]
+        update: bool,
     },
 
-    /// Add a dependency (alias for install <package>)
+    /// Add a dependency
     Add {
-        /// Package to add
+        /// Package specifier (e.g., "logging", "logging@1.2.0", "logging@^1.0.0")
         package: String,
-        /// Save to devDependencies
+        /// Add as dev dependency
         #[arg(short = 'D', long)]
         dev: bool,
+        /// Use exact version (no caret prefix)
+        #[arg(short, long)]
+        exact: bool,
+        /// Don't install after adding
+        #[arg(long)]
+        no_install: bool,
     },
 
     /// Remove a dependency
     Remove {
-        /// Package to remove
+        /// Package name to remove
         package: String,
     },
 
@@ -186,25 +192,20 @@ enum Commands {
         no_runtime: bool,
     },
 
-    /// Initialize a new project
+    /// Initialize a new Raya project
     Init {
-        /// Project name
+        /// Directory to initialize (defaults to current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Project name (defaults to directory name)
+        #[arg(short, long)]
         name: Option<String>,
-        /// Project template
-        #[arg(short, long)]
-        template: Option<String>,
-        /// Skip prompts
-        #[arg(short, long)]
-        yes: bool,
     },
 
-    /// Create from template (alias for init)
-    Create {
+    /// Create a new project (alias for init)
+    New {
         /// Project name
         name: String,
-        /// Project template
-        #[arg(short, long)]
-        template: Option<String>,
     },
 
     /// Upgrade Raya installation
@@ -287,48 +288,85 @@ fn main() -> anyhow::Result<()> {
         }
 
         Commands::Install {
-            package,
-            save,
-            save_dev,
-            global,
+            production,
+            force,
+            update,
         } => {
-            if let Some(pkg) = package {
-                println!("Installing package: {}", pkg);
-                if save {
-                    println!("Saving to dependencies");
+            let options = install::InstallOptions {
+                production,
+                force,
+                update,
+            };
+            match install::install_dependencies(None, options) {
+                Ok(result) => {
+                    println!(
+                        "\nDone! {} installed, {} from cache, {} updated.",
+                        result.installed, result.cached, result.updated
+                    );
                 }
-                if save_dev {
-                    println!("Saving to devDependencies");
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
                 }
-            } else {
-                println!("Installing all dependencies...");
             }
-            if global {
-                println!("Global installation");
-            }
-            println!("(Not yet implemented)");
         }
 
-        Commands::Add { package, dev } => {
-            println!("Adding package: {}", package);
-            if dev {
-                println!("Adding to devDependencies");
+        Commands::Add {
+            package,
+            dev,
+            exact,
+            no_install,
+        } => {
+            let options = add::AddOptions {
+                dev,
+                exact,
+                no_install,
+            };
+            match add::add_package(&package, None, options) {
+                Ok(()) => {
+                    println!("\nPackage added successfully.");
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            println!("(Not yet implemented)");
         }
 
         Commands::Remove { package } => {
-            println!("Removing package: {}", package);
-            println!("(Not yet implemented)");
+            match add::remove_package(&package, None) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            }
         }
 
         Commands::Update { package } => {
+            // Update is essentially install with --update flag
+            let options = install::InstallOptions {
+                production: false,
+                force: false,
+                update: true,
+            };
             if let Some(pkg) = package {
                 println!("Updating package: {}", pkg);
+                println!("(Single package update not yet implemented)");
             } else {
-                println!("Updating all dependencies...");
+                match install::install_dependencies(None, options) {
+                    Ok(result) => {
+                        println!(
+                            "\nDone! {} installed, {} from cache, {} updated.",
+                            result.installed, result.cached, result.updated
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
             }
-            println!("(Not yet implemented)");
         }
 
         Commands::Publish { tag, dry_run } => {
@@ -415,31 +453,25 @@ fn main() -> anyhow::Result<()> {
             println!("(Not yet implemented)");
         }
 
-        Commands::Init {
-            name,
-            template,
-            yes,
-        } => {
-            if let Some(n) = name {
-                println!("Initializing project: {}", n);
-            } else {
-                println!("Initializing project in current directory...");
+        Commands::Init { path, name } => {
+            match init::init_project(&path, name.as_deref()) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            if let Some(t) = template {
-                println!("Using template: {}", t);
-            }
-            if yes {
-                println!("Skipping prompts");
-            }
-            println!("(Not yet implemented)");
         }
 
-        Commands::Create { name, template } => {
-            println!("Creating project: {}", name);
-            if let Some(t) = template {
-                println!("Using template: {}", t);
+        Commands::New { name } => {
+            let path = PathBuf::from(&name);
+            match init::init_project(&path, Some(&name)) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
             }
-            println!("(Not yet implemented)");
         }
 
         Commands::Upgrade { version } => {

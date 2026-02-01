@@ -1949,13 +1949,68 @@ impl Optimizer {
 }
 ```
 
-### 3.8 Testing
+### 3.8 Reflection API (std:reflect)
+
+**Status:** Not Started
+
+**Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, and devtools support.
+
+The Reflection API enables runtime introspection and manipulation of classes, methods, and fields. Requires `--emit-reflection` compiler flag for full type metadata.
+
+**Key Capabilities:**
+- Metadata storage on any target (works without `--emit-reflection`)
+- Type introspection (query class structure)
+- Dynamic invocation (call methods, get/set fields)
+- Object creation (instantiate classes dynamically)
+- Object inspection for debugging and devtools
+- Proxy objects for interception
+
+**Phases (12 total, ~116 tasks):**
+- Phase 1: Core Types and Metadata Storage
+- Phase 2: Class Introspection
+- Phase 3: Field Access
+- Phase 4: Method Invocation
+- Phase 5: Object Creation
+- Phase 6: Type Utilities
+- Phase 7: Interface and Hierarchy Query
+- Phase 8: Object Inspection & DevTools (inspection, memory, stack, serialization)
+- Phase 9: Proxy Objects
+- Phase 10: Dynamic Subclass Creation
+- Phase 11: Compiler Integration
+- Phase 12: Framework Integration Tests
+
+**Reference:** `design/REFLECTION.md`, `plans/milestone-3.8.md`
+
+### 3.9 Decorators
+
+**Status:** In Progress (Phase 2)
+
+**Goal:** Implement type-safe decorators for classes, methods, fields, and parameters.
+
+Parser support is complete (Milestone 2.11). This milestone adds:
+- Type checking for decorator applications
+- Method decorator signature constraints (`MethodDecorator<F>`)
+- Code generation for decorator calls
+- Built-in decorator type aliases
+
+**Phases:**
+- Phase 1: Built-in Types ✅
+- Phase 2: Type Checking (In Progress)
+- Phase 3: Code Generation
+- Phase 4: Runtime Support
+
+**Dependencies:** Milestone 3.8 (Reflection API) for `Reflect` metadata
+
+**Reference:** `design/DECORATORS.md`, `plans/milestone-3.9.md`
+
+### 3.10 Testing
 
 **Tasks:**
 - [ ] Write tests for each language construct
 - [ ] Test monomorphization
-- [ ] Test match inlining
 - [ ] Test JSON codegen
+- [ ] Test decorators
+- [ ] Test reflection API
 - [ ] Compare output with expected bytecode
 
 **Files:**

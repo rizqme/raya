@@ -130,3 +130,73 @@ impl BuiltinFunction {
         }
     }
 }
+
+// ============================================================================
+// Decorator Type Support
+// ============================================================================
+
+/// Built-in type alias
+#[derive(Debug, Clone)]
+pub struct BuiltinTypeAlias {
+    pub name: String,
+    pub type_params: Vec<String>,
+    /// The underlying type as a string representation
+    pub underlying_type: String,
+}
+
+impl BuiltinTypeAlias {
+    pub fn new(name: &str, type_params: Vec<&str>, underlying_type: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            type_params: type_params.into_iter().map(String::from).collect(),
+            underlying_type: underlying_type.to_string(),
+        }
+    }
+}
+
+/// Built-in decorator type aliases
+///
+/// These are the standard decorator types defined by the language.
+/// Users can use these to create type-safe decorators.
+pub fn decorator_type_aliases() -> Vec<BuiltinTypeAlias> {
+    vec![
+        // ClassDecorator<T> = (target: Class<T>) => Class<T> | void
+        BuiltinTypeAlias::new(
+            "ClassDecorator",
+            vec!["T"],
+            "(target: Class<T>) => Class<T> | void",
+        ),
+        // MethodDecorator<F> = (method: F) => F
+        // F must be a function type; the decorator can wrap/replace the method
+        BuiltinTypeAlias::new(
+            "MethodDecorator",
+            vec!["F"],
+            "(method: F) => F",
+        ),
+        // FieldDecorator<T> = (target: T, fieldName: string) => void
+        BuiltinTypeAlias::new(
+            "FieldDecorator",
+            vec!["T"],
+            "(target: T, fieldName: string) => void",
+        ),
+        // ParameterDecorator<T> = (target: T, methodName: string, parameterIndex: number) => void
+        BuiltinTypeAlias::new(
+            "ParameterDecorator",
+            vec!["T"],
+            "(target: T, methodName: string, parameterIndex: number) => void",
+        ),
+    ]
+}
+
+/// Built-in Class<T> interface
+///
+/// Represents the constructor and prototype of a class at runtime.
+/// Used by class decorators to receive and potentially replace the class.
+pub fn class_interface() -> BuiltinClass {
+    BuiltinClass::new("Class")
+        .with_type_params(vec!["T"])
+        .with_property("name", "string")
+        .with_property("prototype", "T")
+        // Constructor signature: new(...args: unknown[]): T
+        // This is implicit - Class<T> is callable as a constructor
+}

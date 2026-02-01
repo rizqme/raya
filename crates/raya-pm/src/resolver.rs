@@ -78,6 +78,9 @@ pub enum PackageSource {
 
     /// Local path
     Path { path: String },
+
+    /// URL import (direct HTTP/HTTPS)
+    Url { url: String },
 }
 
 /// Dependency resolver
@@ -383,6 +386,7 @@ impl DependencyResolver {
             Source::Path { path } => PackageSource::Path {
                 path: path.clone(),
             },
+            Source::Url { url } => PackageSource::Url { url: url.clone() },
         }
     }
 }
@@ -402,6 +406,7 @@ impl ResolvedDependencies {
                 PackageSource::Path { path } => Source::Path {
                     path: path.clone(),
                 },
+                PackageSource::Url { url } => Source::Url { url: url.clone() },
             };
 
             let mut locked = LockedPackage::new(

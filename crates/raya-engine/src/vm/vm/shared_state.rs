@@ -5,6 +5,7 @@
 
 use crate::vm::gc::GarbageCollector;
 use crate::vm::object::{Array, Closure, Object, RayaString};
+use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState, TimerThread};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
@@ -62,6 +63,13 @@ pub struct SharedVmState {
 
     /// Timer thread for efficient sleep handling
     pub timer: Arc<TimerThread>,
+
+    /// Metadata store for Reflect API (WeakMap-style storage)
+    pub metadata: Mutex<MetadataStore>,
+
+    /// Class metadata registry for reflection (field names, method names)
+    /// Populated when --emit-reflection is used
+    pub class_metadata: RwLock<ClassMetadataRegistry>,
 }
 
 impl SharedVmState {
@@ -85,6 +93,8 @@ impl SharedVmState {
             injector,
             mutex_registry: MutexRegistry::new(),
             timer,
+            metadata: Mutex::new(MetadataStore::new()),
+            class_metadata: RwLock::new(ClassMetadataRegistry::new()),
         }
     }
 

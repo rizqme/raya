@@ -6,10 +6,12 @@ Module compilation system for multi-file Raya projects.
 
 Provides infrastructure for compiling multiple Raya source files with import resolution:
 - Local import resolution (`./path`, `../path`)
+- Package import resolution (`"logging"`, `"logging@1.2.0"`)
 - Module dependency graph construction
 - Circular dependency detection
 - Topological ordering for compilation
 - In-memory module caching
+- Global cache lookup (`~/.raya/cache/`)
 
 ## Module Structure
 
@@ -20,7 +22,8 @@ module/
 ├── graph.rs        # Dependency graph
 ├── cache.rs        # Module cache
 ├── exports.rs      # Export tracking for cross-module resolution
-└── compiler.rs     # ModuleCompiler orchestrator
+├── compiler.rs     # ModuleCompiler orchestrator
+└── typedef.rs      # Type definition (.d.raya) parsing
 ```
 
 ## Key Types
@@ -29,15 +32,41 @@ module/
 ```rust
 pub struct ModuleResolver {
     project_root: PathBuf,
+    package_resolver: Option<PackageResolverConfig>,
 }
 
 // Resolve import specifiers to absolute paths
 resolver.resolve("./utils", &from_file) -> Result<ResolvedModule, ResolveError>
+resolver.resolve("logging", &from_file) -> Result<ResolvedModule, ResolveError>
 ```
 
-Resolution order for `import { x } from "./utils"`:
+**Local resolution** for `import { x } from "./utils"`:
 1. Try `./utils.raya`
 2. Try `./utils/index.raya`
+
+**Package resolution** for `import { x } from "logging"`:
+1. Check `raya.toml` for dependency
+2. If path dependency, compile from source
+3. Otherwise, check `raya.lock` for version
+4. Look up in `~/.raya/cache/<checksum>/`
+
+**Cached package structure:**
+```
+~/.raya/cache/<checksum>/
+├── module.ryb       # Required - compiled bytecode
+├── module.d.raya    # Required - type definitions with doc comments
+├── raya.toml        # Required - package manifest
+└── README.md        # Optional - package documentation
+```
+
+### PackageSpecifier
+```rust
+// Parse package specifiers
+PackageSpecifier::parse("logging")           // name only
+PackageSpecifier::parse("logging@1.2.0")     // exact version
+PackageSpecifier::parse("logging@^1.0.0")    // semver constraint
+PackageSpecifier::parse("@org/pkg@1.0.0")    // scoped package
+```
 
 ### ModuleGraph
 ```rust
@@ -114,8 +143,13 @@ for module in compiled {
 | Export tracking | ✅ Complete |
 | Aliased imports (`as`) | ✅ Complete |
 | Cross-module function/class calls | ⚠️ Partial |
-| Package imports | ❌ Phase 4 |
-| URL imports | ❌ Phase 6 |
+| Package specifier parsing | ✅ Complete |
+| Path dependency resolution | ✅ Complete |
+| raya.toml/raya.lock lookup | ✅ Complete |
+| Global cache lookup | ✅ Complete |
+| .d.raya type definitions | ✅ Complete |
+| URL imports (via lockfile) | ✅ Complete |
+| Path dependency mapping | ✅ Complete |
 | Bytecode linking | ❌ Future |
 
 ## Phase 3: Cross-Module Symbol Resolution
@@ -148,10 +182,13 @@ This limitation exists because TypeIDs are local to each module's TypeContext. A
 ## For AI Assistants
 
 - Phase 3 adds cross-module symbol resolution for variables
+- Phase 4 adds package import resolution via `raya.toml`/`raya.lock`
 - Exported symbols are tracked in `ExportRegistry`
 - Imports are injected into the binder before binding
 - TypeIDs don't transfer between TypeContexts (function/class call limitation)
-- Package imports (`"logging"`) return `PackageNotSupported` error
-- URL imports (`"https://..."`) return `UrlNotSupported` error
+- Package imports require `raya.toml` in project root
+- Path dependencies (`{ path = "./lib" }`) compile from source
+- Registry dependencies require `raya.lock` and cached `.ryb` files
+- URL imports (`"https://..."`) require entry in `raya.lock` with cached checksum
 - Cache uses mtime for invalidation (detects source file changes)
 - Graph uses topological sort (Kahn's algorithm) for compilation order

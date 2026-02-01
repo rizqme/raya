@@ -118,7 +118,7 @@ This milestone implements the **VM-side module system** for Raya, focusing on lo
 ~/.raya/cache/          # Global package cache
     ├── <hash>/         # Content-addressable storage
     │   ├── module.ryb # Compiled bytecode
-    │   ├── module.rdef # Type definitions (optional)
+    │   ├── module.d.raya # Type definitions (optional)
     │   └── metadata.json
 
 my-project/
@@ -765,7 +765,7 @@ The following are **NOT** part of this milestone (separate milestones):
 - ❌ Compilation (parsing .raya, AST, code generation)
 - ❌ Package manager CLI (`raya install`, `raya add`, etc.)
 - ❌ Registry client (HTTP downloads, publish)
-- ❌ Type checking and type definitions (.rdef generation)
+- ❌ Type checking and type definitions (.d.raya generation)
 - ❌ Hot module replacement (HMR)
 - ❌ Workspaces (multi-package management)
 

@@ -217,6 +217,43 @@ pub enum CheckError {
         /// Location of member access
         span: Span,
     },
+
+    // ========================================================================
+    // Decorator Errors
+    // ========================================================================
+
+    /// Decorator is not a valid decorator type
+    #[error("Expression is not a valid decorator")]
+    InvalidDecorator {
+        /// Type of the decorator expression
+        ty: String,
+        /// Expected decorator type (e.g., "ClassDecorator<T>")
+        expected: String,
+        /// Location of decorator
+        span: Span,
+    },
+
+    /// Decorator signature mismatch for method decorator
+    #[error("Method signature does not match decorator constraint")]
+    DecoratorSignatureMismatch {
+        /// Expected method signature from MethodDecorator<F>
+        expected_signature: String,
+        /// Actual method signature
+        actual_signature: String,
+        /// Location of decorator
+        span: Span,
+    },
+
+    /// Decorator return type mismatch
+    #[error("Decorator return type mismatch")]
+    DecoratorReturnMismatch {
+        /// Expected return type
+        expected: String,
+        /// Actual return type
+        actual: String,
+        /// Location of decorator
+        span: Span,
+    },
 }
 
 impl CheckError {
@@ -239,6 +276,9 @@ impl CheckError {
             CheckError::ConstraintViolation { span, .. } => *span,
             CheckError::ForbiddenFieldAccess { span, .. } => *span,
             CheckError::UndefinedMember { span, .. } => *span,
+            CheckError::InvalidDecorator { span, .. } => *span,
+            CheckError::DecoratorSignatureMismatch { span, .. } => *span,
+            CheckError::DecoratorReturnMismatch { span, .. } => *span,
         }
     }
 }

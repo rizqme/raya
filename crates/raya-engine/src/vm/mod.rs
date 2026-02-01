@@ -32,6 +32,7 @@ pub mod gc;
 pub mod json;
 pub mod module;
 pub mod object;
+pub mod reflect;
 pub mod scheduler;
 pub mod snapshot;
 pub mod stack;

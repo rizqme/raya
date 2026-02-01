@@ -1,6 +1,6 @@
 # Milestone 3.7: JSON Intrinsics & Module System
 
-**Status:** In Progress (Phases 2-3 Complete)
+**Status:** In Progress (Phases 2-6 Complete)
 **Goal:** Complete JSON intrinsics with type-safe encode/decode and implement the module system
 
 ---
@@ -236,25 +236,29 @@ crates/raya-engine/src/compiler/
 
 ---
 
-### Phase 4: Package Imports
+### Phase 4: Package Imports ✅
 
 Implement named package imports from registry/cache.
 
 **Tasks:**
-- [ ] Parse package specifiers
+- [x] Parse package specifiers
   - `"logging"` - latest version
   - `"logging@1.2.0"` - exact version
   - `"logging@^1.0.0"` - semver range
-- [ ] Implement `raya.toml` parser
+  - `"@org/pkg@1.0.0"` - scoped packages
+- [x] Integrate `raya.toml` parser (from raya-pm)
   - Read `[dependencies]` section
   - Support version constraints
-- [ ] Implement `raya.lock` reader
+- [x] Integrate `raya.lock` reader (from raya-pm)
   - Read locked versions
   - Verify checksums
-- [ ] Implement global cache lookup
+- [x] Implement global cache lookup
   - Check `~/.raya/cache/<hash>/`
   - Load pre-compiled `.ryb` files
-- [ ] Load `.rdef` type definitions
+- [x] Implement path dependency resolution
+  - Compile from source for `{ path = "./lib" }`
+  - Find entry points via `raya.toml` or defaults
+- [x] Load `.d.raya` type definitions
   - Parse type definition files
   - Use for type checking without source
 
@@ -262,87 +266,110 @@ Implement named package imports from registry/cache.
 ```
 import { Logger } from "logging"
     ↓
-1. Check raya.lock for exact version
-2. Look up in ~/.raya/cache/<hash>/
-3. Load module.ryb (bytecode)
-4. Load module.rdef (types, if needed)
-5. Link into current module
+1. Check raya.toml for dependency
+2. If path dependency: compile from source
+3. Otherwise check raya.lock for exact version
+4. Look up in ~/.raya/cache/<hash>/
+5. Load module.ryb (bytecode)
+6. Load module.d.raya (types)
+7. Verify raya.toml exists
 ```
 
-**Files to Create:**
+**Files Created/Modified:**
 ```
-crates/raya-pm/src/
-├── toml.rs              # raya.toml parser
-├── lock.rs              # raya.lock parser
-├── cache/
-│   ├── mod.rs           # Cache operations
-│   └── lookup.rs        # Package lookup
+crates/raya-engine/src/compiler/module/
+├── resolver.rs          # PackageSpecifier, PackageResolverConfig
+crates/raya-pm/src/      # (already existed)
+├── manifest.rs          # raya.toml parser
+├── lockfile.rs          # raya.lock parser
+├── semver.rs            # Version constraint matching
+├── cache/mod.rs         # Global cache operations
 ```
+
+**Tests:** 18 resolver tests passing
 
 ---
 
-### Phase 5: Package Installation
+### Phase 5: Package Installation ✅
 
 Implement package download and installation.
 
 **Tasks:**
-- [ ] Implement registry client
+- [x] Implement registry client
   - HTTP client for raya.dev API
   - Query package metadata
-  - Download `.ryb` archives
-- [ ] Implement `raya install` command
+  - Download `.tar.gz` archives
+- [x] Implement `raya install` command
   - Parse raya.toml dependencies
   - Resolve dependency tree
   - Download missing packages
   - Update raya.lock
-- [ ] Implement `raya add <package>` command
+- [x] Implement `raya add <package>` command
   - Add to raya.toml
   - Install immediately
-- [ ] Implement version resolution
+- [x] Implement version resolution
   - Semver constraint solving
   - Conflict detection
   - Generate lockfile
+- [x] Integrate into main `raya` CLI
+  - Commands: init, install, add, remove, update, new
+
+**CLI Commands:**
+```bash
+raya init [path] [--name NAME]          # Initialize project
+raya new <name>                          # Create new project
+raya install [--production] [--force]    # Install dependencies
+raya add <pkg>[@ver] [--dev] [--exact]   # Add dependency
+raya remove <pkg>                        # Remove dependency
+raya update [pkg]                        # Update dependencies
+```
 
 **Registry API:**
 ```
 GET /packages/{name}           → Package metadata
 GET /packages/{name}/{version} → Version info + download URL
-GET /packages/{name}/{version}/download → .ryb archive
+GET /packages/{name}/{version}/download → .tar.gz archive
 ```
 
-**Files to Create:**
+**Files Created/Modified:**
 ```
-crates/raya-pm/src/
+crates/raya-pm/src/           # Library (rpkg)
 ├── registry/
-│   ├── client.rs        # HTTP client
-│   └── api.rs           # Registry API types
-├── resolver/
-│   ├── mod.rs           # Version resolution
-│   └── semver.rs        # Semver parsing
+│   ├── mod.rs                # Module entry point
+│   ├── client.rs             # HTTP client with tar.gz extraction
+│   └── api.rs                # Registry API types
 ├── commands/
-│   ├── install.rs       # raya install
-│   └── add.rs           # raya add
+│   ├── mod.rs                # Command implementations
+│   ├── init.rs               # init/new
+│   ├── install.rs            # install/update
+│   └── add.rs                # add/remove
+
+crates/raya-cli/              # Main CLI binary
+├── Cargo.toml                # Added rpkg dependency
+└── src/main.rs               # Wired up package commands
 ```
+
+**Tests:** 180 tests passing
 
 ---
 
-### Phase 6: URL Imports
+### Phase 6: URL Imports ✅
 
-Implement direct URL imports.
+Implement direct URL imports (HTTP/HTTPS).
 
 **Tasks:**
-- [ ] Parse URL import specifiers
+- [x] Parse URL import specifiers
   - `https://github.com/user/repo/v1.0.0`
   - `https://pkg.raya.dev/lib@1.0.0`
-- [ ] Fetch and cache URL imports
+- [x] Fetch and cache HTTP/HTTPS URL imports
   - Download on first use
   - Cache by content hash
   - Verify checksums
-- [ ] Update lockfile for URL imports
+- [x] Update lockfile for URL imports
   - Store URL → hash mapping
   - Reproducible builds
 
-**URL Import Flow:**
+**HTTP/HTTPS URL Import Flow:**
 ```
 import { utils } from "https://github.com/user/repo/v1.0.0"
     ↓
@@ -355,15 +382,36 @@ import { utils } from "https://github.com/user/repo/v1.0.0"
 3. Load from cache
 ```
 
-**Files to Modify:**
+**Local Folder Mapping (via raya.toml):**
+
+For mapping local folders to package names, use path dependencies in `raya.toml`:
+
+```toml
+[dependencies]
+my-lib = { path = "./local/my-lib" }
+utils = { path = "../shared/utils" }
+```
+
+Then import using the package name:
+```typescript
+import { helper } from "my-lib";
+import { format } from "utils";
+```
+
+**Files Created/Modified:**
 ```
 crates/raya-engine/src/compiler/module/
-├── resolver.rs          # Add URL resolution
+├── resolver.rs          # URL resolution (http/https)
 crates/raya-pm/src/
 ├── url/
-│   ├── fetch.rs         # URL fetching
-│   └── cache.rs         # URL → cache mapping
+│   ├── mod.rs           # URL module entry point
+│   ├── fetch.rs         # HTTP fetching with checksum computation
+│   └── cache.rs         # URL caching with tar.gz extraction
+├── lockfile.rs          # Added Source::Url variant
+├── resolver.rs          # Added PackageSource::Url variant
 ```
+
+**Tests:** 24 URL tests passing (fetch, cache, path dependencies)
 
 ---
 
@@ -448,11 +496,11 @@ fn test_export_import_matching() {
 ## Success Criteria
 
 1. **JSON Intrinsics:** `JSON.encode/decode` generate specialized code per type
-2. **Local Imports:** `./path` imports work with auto-compilation
-3. **Multi-Module:** Multiple files compile and link correctly
-4. **Package Imports:** Named packages load from global cache
-5. **URL Imports:** Direct URL imports work with caching
-6. **All existing tests pass:** 573+ unit tests, 516 e2e tests
+2. ✅ **Local Imports:** `./path` imports work with auto-compilation
+3. ✅ **Multi-Module:** Multiple files compile and link correctly
+4. ✅ **Package Imports:** Named packages load from global cache
+5. ✅ **URL Imports:** Direct URL imports work with caching
+6. ✅ **All existing tests pass:** 728+ unit tests (644 raya-engine + 84 rpkg)
 
 ---
 
@@ -476,4 +524,4 @@ fn test_export_import_matching() {
 
 ---
 
-**Last Updated:** 2026-01-31
+**Last Updated:** 2026-02-01

@@ -234,6 +234,28 @@ impl Diagnostic {
                     .with_code(error_code(error))
                     .with_primary_label(file_id, *span, "undefined member")
             }
+
+            // Decorator errors
+            InvalidDecorator { ty, expected, span } => {
+                Diagnostic::error(format!("Invalid decorator: type '{}' is not a valid decorator", ty))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "invalid decorator")
+                    .with_note(format!("Expected: {}", expected))
+            }
+
+            DecoratorSignatureMismatch { expected_signature, actual_signature, span } => {
+                Diagnostic::error("Decorated method signature does not match decorator constraint")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "signature mismatch")
+                    .with_note(format!("Decorator expects: {}", expected_signature))
+                    .with_note(format!("Method has: {}", actual_signature))
+            }
+
+            DecoratorReturnMismatch { expected, actual, span } => {
+                Diagnostic::error(format!("Decorator return type mismatch: expected '{}', got '{}'", expected, actual))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "invalid return type")
+            }
         }
     }
 
@@ -397,6 +419,10 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         GenericInstantiationError { .. } => ErrorCode("E2014"),
         ConstraintViolation { .. } => ErrorCode("E2015"),
         UndefinedMember { .. } => ErrorCode("E2016"),
+        // Decorator errors
+        InvalidDecorator { .. } => ErrorCode("E2100"),
+        DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),
+        DecoratorReturnMismatch { .. } => ErrorCode("E2102"),
     }
 }
 

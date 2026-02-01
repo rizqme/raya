@@ -330,6 +330,104 @@ pub mod regexp {
     pub const SPLIT: u16 = 0x0A06;
 }
 
+/// Built-in method IDs for Reflect operations
+pub mod reflect {
+    // ===== Phase 1: Metadata Operations (0x0D00-0x0D0F) =====
+
+    /// `Reflect.defineMetadata(key, value, target)` - Define metadata on target
+    pub const DEFINE_METADATA: u16 = 0x0D00;
+    /// `Reflect.defineMetadata(key, value, target, propertyKey)` - Define metadata on property
+    pub const DEFINE_METADATA_PROP: u16 = 0x0D01;
+    /// `Reflect.getMetadata(key, target)` - Get metadata from target
+    pub const GET_METADATA: u16 = 0x0D02;
+    /// `Reflect.getMetadata(key, target, propertyKey)` - Get metadata from property
+    pub const GET_METADATA_PROP: u16 = 0x0D03;
+    /// `Reflect.hasMetadata(key, target)` - Check if target has metadata
+    pub const HAS_METADATA: u16 = 0x0D04;
+    /// `Reflect.hasMetadata(key, target, propertyKey)` - Check if property has metadata
+    pub const HAS_METADATA_PROP: u16 = 0x0D05;
+    /// `Reflect.getMetadataKeys(target)` - Get all metadata keys on target
+    pub const GET_METADATA_KEYS: u16 = 0x0D06;
+    /// `Reflect.getMetadataKeys(target, propertyKey)` - Get all metadata keys on property
+    pub const GET_METADATA_KEYS_PROP: u16 = 0x0D07;
+    /// `Reflect.deleteMetadata(key, target)` - Delete metadata from target
+    pub const DELETE_METADATA: u16 = 0x0D08;
+    /// `Reflect.deleteMetadata(key, target, propertyKey)` - Delete metadata from property
+    pub const DELETE_METADATA_PROP: u16 = 0x0D09;
+
+    // ===== Phase 2: Class Introspection (0x0D10-0x0D1F) =====
+
+    /// `Reflect.getClass(obj)` - Get class of an object
+    pub const GET_CLASS: u16 = 0x0D10;
+    /// `Reflect.getClassByName(name)` - Lookup class by name
+    pub const GET_CLASS_BY_NAME: u16 = 0x0D11;
+    /// `Reflect.getAllClasses()` - Get all registered classes
+    pub const GET_ALL_CLASSES: u16 = 0x0D12;
+    /// `Reflect.getClassesWithDecorator(decorator)` - Filter classes by decorator
+    pub const GET_CLASSES_WITH_DECORATOR: u16 = 0x0D13;
+    /// `Reflect.isSubclassOf(sub, super)` - Check inheritance relationship
+    pub const IS_SUBCLASS_OF: u16 = 0x0D14;
+    /// `Reflect.isInstanceOf(obj, cls)` - Type guard for class membership
+    pub const IS_INSTANCE_OF: u16 = 0x0D15;
+    /// `Reflect.getTypeInfo(target)` - Get type info for target
+    pub const GET_TYPE_INFO: u16 = 0x0D16;
+    /// `Reflect.getClassHierarchy(obj)` - Get inheritance chain
+    pub const GET_CLASS_HIERARCHY: u16 = 0x0D17;
+
+    // ===== Phase 3: Field Access (0x0D20-0x0D2F) =====
+
+    /// `Reflect.get(target, propertyKey)` - Get field value by name
+    pub const GET: u16 = 0x0D20;
+    /// `Reflect.set(target, propertyKey, value)` - Set field value by name
+    pub const SET: u16 = 0x0D21;
+    /// `Reflect.has(target, propertyKey)` - Check if field exists
+    pub const HAS: u16 = 0x0D22;
+    /// `Reflect.getFieldNames(target)` - List all field names
+    pub const GET_FIELD_NAMES: u16 = 0x0D23;
+    /// `Reflect.getFieldInfo(target, propertyKey)` - Get field metadata
+    pub const GET_FIELD_INFO: u16 = 0x0D24;
+    /// `Reflect.getFields(target)` - Get all field infos
+    pub const GET_FIELDS: u16 = 0x0D25;
+    /// `Reflect.getStaticFieldNames(cls)` - List static field names
+    pub const GET_STATIC_FIELD_NAMES: u16 = 0x0D26;
+    /// `Reflect.getStaticFields(cls)` - Get all static field infos
+    pub const GET_STATIC_FIELDS: u16 = 0x0D27;
+
+    // ===== Phase 4: Method Invocation (0x0D30-0x0D3F) =====
+
+    /// `Reflect.invoke(target, methodName, ...args)` - Call method dynamically
+    pub const INVOKE: u16 = 0x0D30;
+    /// `Reflect.invokeAsync(target, methodName, ...args)` - Call async method
+    pub const INVOKE_ASYNC: u16 = 0x0D31;
+    /// `Reflect.getMethod(target, methodName)` - Get method reference
+    pub const GET_METHOD: u16 = 0x0D32;
+    /// `Reflect.getMethodInfo(target, methodName)` - Get method metadata
+    pub const GET_METHOD_INFO: u16 = 0x0D33;
+    /// `Reflect.getMethods(target)` - List all methods
+    pub const GET_METHODS: u16 = 0x0D34;
+    /// `Reflect.hasMethod(target, methodName)` - Check if method exists
+    pub const HAS_METHOD: u16 = 0x0D35;
+    /// `Reflect.invokeStatic(cls, methodName, ...args)` - Call static method
+    pub const INVOKE_STATIC: u16 = 0x0D36;
+    /// `Reflect.getStaticMethods(cls)` - Get all static method infos
+    pub const GET_STATIC_METHODS: u16 = 0x0D37;
+
+    // ===== Phase 5: Object Creation (0x0D40-0x0D4F) =====
+
+    /// `Reflect.construct(cls, ...args)` - Create instance
+    pub const CONSTRUCT: u16 = 0x0D40;
+    /// `Reflect.constructWith(cls, params)` - Create with named params
+    pub const CONSTRUCT_WITH: u16 = 0x0D41;
+    /// `Reflect.allocate(cls)` - Allocate uninitialized instance
+    pub const ALLOCATE: u16 = 0x0D42;
+    /// `Reflect.clone(obj)` - Shallow clone
+    pub const CLONE: u16 = 0x0D43;
+    /// `Reflect.deepClone(obj)` - Deep clone
+    pub const DEEP_CLONE: u16 = 0x0D44;
+    /// `Reflect.getConstructorInfo(cls)` - Get constructor metadata
+    pub const GET_CONSTRUCTOR_INFO: u16 = 0x0D45;
+}
+
 /// Built-in method IDs for Date
 pub mod date {
     /// `Date.now()` - Get current timestamp
@@ -464,6 +562,11 @@ pub fn is_regexp_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in date method
 pub fn is_date_method(method_id: u16) -> bool {
     (0x0B00..=0x0BFF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in reflect method
+pub fn is_reflect_method(method_id: u16) -> bool {
+    (0x0D00..=0x0DFF).contains(&method_id)
 }
 
 #[cfg(test)]

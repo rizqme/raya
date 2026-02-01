@@ -112,6 +112,8 @@ impl Worker {
                 &state.globals_by_index,
                 &state.tasks,
                 &state.injector,
+                &state.metadata,
+                &state.class_metadata,
             );
 
             // Execute task using the suspendable interpreter

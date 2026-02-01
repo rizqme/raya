@@ -202,6 +202,31 @@ pub const JSON_PARSE: u16 = 0x0C01;
 /// Each field_spec is: [json_key_string, field_index, field_type]
 pub const JSON_DECODE_OBJECT: u16 = 0x0C02;
 
+// ============================================================================
+// Reflect (0x0Dxx) - Metadata operations
+// ============================================================================
+
+/// Reflect.defineMetadata(key, value, target) - define metadata on target
+pub const REFLECT_DEFINE_METADATA: u16 = 0x0D00;
+/// Reflect.defineMetadata(key, value, target, propertyKey) - define metadata on property
+pub const REFLECT_DEFINE_METADATA_PROP: u16 = 0x0D01;
+/// Reflect.getMetadata(key, target) - get metadata from target
+pub const REFLECT_GET_METADATA: u16 = 0x0D02;
+/// Reflect.getMetadata(key, target, propertyKey) - get metadata from property
+pub const REFLECT_GET_METADATA_PROP: u16 = 0x0D03;
+/// Reflect.hasMetadata(key, target) - check if target has metadata
+pub const REFLECT_HAS_METADATA: u16 = 0x0D04;
+/// Reflect.hasMetadata(key, target, propertyKey) - check if property has metadata
+pub const REFLECT_HAS_METADATA_PROP: u16 = 0x0D05;
+/// Reflect.getMetadataKeys(target) - get all metadata keys on target
+pub const REFLECT_GET_METADATA_KEYS: u16 = 0x0D06;
+/// Reflect.getMetadataKeys(target, propertyKey) - get all metadata keys on property
+pub const REFLECT_GET_METADATA_KEYS_PROP: u16 = 0x0D07;
+/// Reflect.deleteMetadata(key, target) - delete metadata from target
+pub const REFLECT_DELETE_METADATA: u16 = 0x0D08;
+/// Reflect.deleteMetadata(key, target, propertyKey) - delete metadata from property
+pub const REFLECT_DELETE_METADATA_PROP: u16 = 0x0D09;
+
 /// Get the name of a native function for debugging purposes
 pub fn native_name(id: u16) -> &'static str {
     match id {
@@ -268,6 +293,18 @@ pub fn native_name(id: u16) -> &'static str {
         JSON_STRINGIFY => "JSON.stringify",
         JSON_PARSE => "JSON.parse",
         JSON_DECODE_OBJECT => "JSON.decode",
+
+        // Reflect
+        REFLECT_DEFINE_METADATA => "Reflect.defineMetadata",
+        REFLECT_DEFINE_METADATA_PROP => "Reflect.defineMetadata (property)",
+        REFLECT_GET_METADATA => "Reflect.getMetadata",
+        REFLECT_GET_METADATA_PROP => "Reflect.getMetadata (property)",
+        REFLECT_HAS_METADATA => "Reflect.hasMetadata",
+        REFLECT_HAS_METADATA_PROP => "Reflect.hasMetadata (property)",
+        REFLECT_GET_METADATA_KEYS => "Reflect.getMetadataKeys",
+        REFLECT_GET_METADATA_KEYS_PROP => "Reflect.getMetadataKeys (property)",
+        REFLECT_DELETE_METADATA => "Reflect.deleteMetadata",
+        REFLECT_DELETE_METADATA_PROP => "Reflect.deleteMetadata (property)",
 
         _ => "unknown",
     }

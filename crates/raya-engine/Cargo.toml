@@ -22,6 +22,12 @@ thiserror = "2.0"
 # SDK types for FFI
 raya-sdk = { workspace = true }
 
+# Package management (for module resolution)
+raya-pm = { package = "rpkg", path = "../raya-pm" }
+
+# Home directory (for cache path)
+dirs = "5.0"
+
 # Diagnostics
 codespan-reporting = "0.11"
 termcolor = "1.4"

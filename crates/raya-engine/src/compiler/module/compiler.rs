@@ -202,9 +202,9 @@ impl ModuleCompiler {
                         // Package imports are not yet supported, skip for now
                         // In Phase 4, we'll handle these
                     }
-                    Err(ResolveError::UrlNotSupported(_)) => {
-                        // URL imports are not yet supported, skip for now
-                        // In Phase 6, we'll handle these
+                    Err(ResolveError::UrlNotLocked(_)) => {
+                        // URL not locked yet - skip during dependency graph building
+                        // The import will be handled when the lockfile has the URL entry
                     }
                     Err(e) => return Err(e.into()),
                 }
@@ -323,7 +323,7 @@ impl ModuleCompiler {
                 let resolved = match self.resolver.resolve(&specifier, current_path) {
                     Ok(r) => r,
                     Err(ResolveError::PackageNotSupported(_)) |
-                    Err(ResolveError::UrlNotSupported(_)) => continue,
+                    Err(ResolveError::UrlNotLocked(_)) => continue,
                     Err(e) => return Err(e.into()),
                 };
 

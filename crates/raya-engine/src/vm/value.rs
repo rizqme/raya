@@ -168,6 +168,17 @@ impl Value {
         Value(Self::NAN_BOX_BASE | Self::TAG_PTR | (addr & Self::PAYLOAD_MASK))
     }
 
+    /// Create a value from raw bits
+    ///
+    /// # Safety
+    ///
+    /// The raw bits must represent a valid Value encoding.
+    /// This is primarily useful for testing and deserialization.
+    #[inline]
+    pub const unsafe fn from_raw(raw: u64) -> Self {
+        Value(raw)
+    }
+
     /// Check if this value is null
     #[inline]
     pub const fn is_null(&self) -> bool {

@@ -1,6 +1,6 @@
-# raya-pm
+# raya-pm (rpkg)
 
-Package manager library for Raya.
+Package manager library for Raya. This is a library crate used by the main `raya` CLI.
 
 ## Overview
 
@@ -11,6 +11,31 @@ This crate provides package management functionality:
 - Semver version parsing and constraint matching
 - Dependency resolution
 - Local path dependency resolution
+- Registry client (HTTP API for raya.dev)
+- URL imports (direct HTTP/HTTPS fetching and caching)
+- Command implementations (init, install, add, remove)
+
+## Usage
+
+The rpkg library is integrated into the main `raya` CLI:
+
+```bash
+# Initialize a new project
+raya init [path] [--name NAME]
+raya new <name>
+
+# Install dependencies from raya.toml
+raya install [--production] [--force] [--update]
+
+# Add a dependency
+raya add <package>[@version] [--dev] [--exact] [--no-install]
+
+# Remove a dependency
+raya remove <package>
+
+# Update dependencies
+raya update [package]
+```
 
 ## Module Structure
 
@@ -18,6 +43,21 @@ This crate provides package management functionality:
 src/
 ├── lib.rs       # Crate entry point, re-exports
 ├── cache/       # Content-addressable module cache
+│   ├── mod.rs
+│   └── metadata.rs
+├── commands/    # Command implementations (used by raya-cli)
+│   ├── mod.rs
+│   ├── init.rs     # init/new
+│   ├── install.rs  # install/update
+│   └── add.rs      # add/remove
+├── registry/    # Registry client
+│   ├── mod.rs
+│   ├── api.rs      # API response types
+│   └── client.rs   # HTTP client
+├── url/         # URL import handling
+│   ├── mod.rs      # Module entry point
+│   ├── fetch.rs    # HTTP fetching with checksum
+│   └── cache.rs    # URL caching and extraction
 ├── manifest.rs  # raya.toml parsing
 ├── lockfile.rs  # raya.lock parsing
 ├── semver.rs    # Version parsing and constraints
@@ -45,18 +85,27 @@ Constraint::parse("^1.2.0") -> Constraint
 
 // Dependency resolver
 DependencyResolver::resolve(&manifest) -> ResolvedDependencies
+
+// Registry client
+RegistryClient::new()?.get_package("logging") -> PackageMetadata
+RegistryClient::download_to_cache("pkg", "1.0.0", cache_root) -> PathBuf
+
+// URL imports
+UrlFetcher::new().fetch("https://...") -> FetchResult
+UrlCache::new(cache_root).fetch_and_cache("https://...") -> (CachedUrl, LockedPackage)
 ```
 
 ## Cache Structure
 
 ```
 ~/.raya/cache/
-├── packages/
-│   ├── <sha256>/           # Content-addressed storage
-│   │   ├── module.ryb      # Compiled bytecode
-│   │   └── module.rdef     # Type definitions
-│   └── ...
-└── metadata.db             # SQLite cache index
+├── <sha256>/               # Content-addressed storage
+│   ├── module.ryb          # Compiled bytecode (required)
+│   ├── module.d.raya       # Type definitions with doc comments (required)
+│   ├── raya.toml           # Package manifest (required)
+│   └── README.md           # Package documentation (optional)
+├── tmp/                    # Temporary download directory
+└── registry/               # Registry metadata cache
 ```
 
 ## Manifest Format (raya.toml)
@@ -78,34 +127,65 @@ testing = "^2.0.0"
 ## Lockfile Format (raya.lock)
 
 ```toml
-[[package]]
+version = 1
+root = "my-app"
+
+[[packages]]
 name = "logging"
 version = "1.2.3"
-source = "registry"
-checksum = "sha256:abc123..."
+checksum = "abc123...64hex..."
+source = { type = "registry" }
 
-[[package]]
+[[packages]]
 name = "utils"
 version = "0.0.0"
-source = "path:../utils"
+checksum = "def456...64hex..."
+source = { type = "path", path = "../utils" }
+
+[[packages]]
+name = "remote-lib"
+version = "1.0.0"
+checksum = "789abc...64hex..."
+source = { type = "url", url = "https://example.com/lib.tar.gz" }
 ```
+
+## Registry API
+
+```
+GET /packages/{name}           → PackageMetadata
+GET /packages/{name}/{version} → VersionInfo + download URL
+```
+
+**Response Types:**
+- `PackageMetadata`: name, description, versions[], keywords[], maintainers[]
+- `VersionInfo`: name, version, checksum, download.url, dependencies{}
 
 ## Implementation Status
 
 | Feature | Status |
 |---------|--------|
-| Manifest parsing | Complete |
-| Lockfile parsing | Complete |
-| Semver parsing | Complete |
-| Local path resolution | Complete |
-| Module cache | Partial |
-| Registry client | Not started |
-| Dependency resolution | Partial |
+| Manifest parsing | ✅ Complete |
+| Lockfile parsing | ✅ Complete |
+| Semver parsing | ✅ Complete |
+| Local path resolution | ✅ Complete |
+| Module cache | ✅ Complete |
+| Registry client | ✅ Complete |
+| Dependency resolution | ✅ Complete |
+| init command | ✅ Complete |
+| install command | ✅ Complete |
+| add command | ✅ Complete |
+| remove command | ✅ Complete |
 
 ## For AI Assistants
 
+- This is a **library** crate, not a binary
+- Commands are exposed via `rpkg::commands::{init, install, add}`
+- The main `raya` CLI (raya-cli) uses this library
 - Version constraint matching uses standard semver rules
 - Cache uses SHA-256 for content addressing
-- Local path dependencies bypass the cache
-- Registry API is not yet implemented
+- Local path dependencies bypass the registry (compiled from source)
+- Registry client uses `reqwest` with blocking API
+- Package archives are `.tar.gz` format
 - Resolver handles diamond dependencies with conflict detection
+- Lockfile checksums must be 64 hex characters (SHA-256)
+- Scoped packages (@org/name) are supported

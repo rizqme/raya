@@ -100,6 +100,12 @@ pub enum Source {
         /// Relative or absolute path
         path: String,
     },
+
+    /// URL import (direct HTTP/HTTPS)
+    Url {
+        /// Original URL
+        url: String,
+    },
 }
 
 impl Lockfile {
@@ -265,6 +271,11 @@ impl LockedPackage {
     pub fn is_path(&self) -> bool {
         matches!(self.source, Source::Path { .. })
     }
+
+    /// Check if this is a URL package
+    pub fn is_url(&self) -> bool {
+        matches!(self.source, Source::Url { .. })
+    }
 }
 
 impl Source {
@@ -281,6 +292,11 @@ impl Source {
     /// Create a path source
     pub fn path(path: impl Into<String>) -> Self {
         Source::Path { path: path.into() }
+    }
+
+    /// Create a URL source
+    pub fn url(url: impl Into<String>) -> Self {
+        Source::Url { url: url.into() }
     }
 }
 
@@ -436,6 +452,7 @@ source = { type = "registry" }
         assert!(registry_pkg.is_registry());
         assert!(!registry_pkg.is_git());
         assert!(!registry_pkg.is_path());
+        assert!(!registry_pkg.is_url());
 
         let git_pkg = LockedPackage::new(
             "git".to_string(),
@@ -446,6 +463,7 @@ source = { type = "registry" }
         assert!(!git_pkg.is_registry());
         assert!(git_pkg.is_git());
         assert!(!git_pkg.is_path());
+        assert!(!git_pkg.is_url());
 
         let path_pkg = LockedPackage::new(
             "path".to_string(),
@@ -456,5 +474,42 @@ source = { type = "registry" }
         assert!(!path_pkg.is_registry());
         assert!(!path_pkg.is_git());
         assert!(path_pkg.is_path());
+        assert!(!path_pkg.is_url());
+
+        let url_pkg = LockedPackage::new(
+            "url".to_string(),
+            "1.0.0".to_string(),
+            "d".repeat(64),
+            Source::url("https://example.com/mod.tar.gz"),
+        );
+        assert!(!url_pkg.is_registry());
+        assert!(!url_pkg.is_git());
+        assert!(!url_pkg.is_path());
+        assert!(url_pkg.is_url());
+    }
+
+    #[test]
+    fn test_parse_url_source() {
+        let toml = r#"
+version = 1
+root = "my-package"
+
+[[packages]]
+name = "remote-lib"
+version = "1.0.0"
+checksum = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+source = { type = "url", url = "https://github.com/user/repo/archive/v1.0.0.tar.gz" }
+"#;
+
+        let lockfile = Lockfile::from_str(toml).unwrap();
+        assert_eq!(lockfile.packages.len(), 1);
+        assert_eq!(lockfile.packages[0].name, "remote-lib");
+        assert!(lockfile.packages[0].is_url());
+
+        if let Source::Url { url } = &lockfile.packages[0].source {
+            assert_eq!(url, "https://github.com/user/repo/archive/v1.0.0.tar.gz");
+        } else {
+            panic!("Expected URL source");
+        }
     }
 }

@@ -881,9 +881,14 @@ Bun demonstrated that a unified CLI:
 
 ---
 
-**Status:** Design Document
-**Version:** v0.2
-**Last Updated:** 2026-01-05
+**Status:** Partially Implemented
+**Version:** v0.3
+**Last Updated:** 2026-02-01
+
+**Key Changes in v0.3:**
+- Package management commands now implemented (init, install, add, remove, update, new)
+- Uses rpkg library integrated into raya-cli
+- Registry client with HTTP API support
 
 **Key Changes in v0.2:**
 - Updated all `.rbc` references to `.ryb`

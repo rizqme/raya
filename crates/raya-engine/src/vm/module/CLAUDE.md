@@ -89,8 +89,13 @@ import { Logger } from "logging@1.2.3"
     ▼
 1. Check raya.lock for exact version
 2. Look up in ~/.raya/cache/<hash>/
+   ~/.raya/cache/<hash>/
+   ├── module.ryb       # Required
+   ├── module.d.raya    # Required
+   ├── raya.toml        # Required
+   └── README.md        # Optional
 3. Load module.ryb (bytecode)
-4. Load module.rdef (types, if needed)
+4. Load module.d.raya (types)
 5. Return module
 ```
 
@@ -139,14 +144,15 @@ graph.topological_sort() -> Vec<PathBuf>
 
 | Feature | Status |
 |---------|--------|
-| Local import parsing | Complete |
-| Package import parsing | Complete |
-| URL import parsing | Complete |
-| Local file resolution | Complete |
-| Package cache lookup | TODO |
-| URL fetching | TODO |
-| Module linking | Partial |
-| Cycle detection | TODO |
+| Local import parsing | ✅ Complete |
+| Package import parsing | ✅ Complete |
+| URL import parsing | ✅ Complete |
+| Local file resolution | ✅ Complete |
+| Package cache lookup | ✅ Complete |
+| URL caching (via lockfile) | ✅ Complete |
+| Path dependency mapping | ✅ Complete |
+| Module linking | ⚠️ Partial |
+| Cycle detection | ✅ Complete (in compiler/module) |
 
 ## For AI Assistants
 
