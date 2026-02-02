@@ -512,6 +512,17 @@ pub mod reflect {
     pub const GET_ENUMERABLE_KEYS: u16 = 0x0DA1;
     /// `Reflect.isCircular(obj)` - Check for circular references
     pub const IS_CIRCULAR: u16 = 0x0DA2;
+
+    // ===== Phase 9: Proxy Objects (0x0DB0-0x0DBF) =====
+
+    /// `Reflect.createProxy(target, handler)` - Create a proxy object
+    pub const CREATE_PROXY: u16 = 0x0DB0;
+    /// `Reflect.isProxy(obj)` - Check if object is a proxy
+    pub const IS_PROXY: u16 = 0x0DB1;
+    /// `Reflect.getProxyTarget(proxy)` - Get the underlying target of a proxy
+    pub const GET_PROXY_TARGET: u16 = 0x0DB2;
+    /// `Reflect.getProxyHandler(proxy)` - Get the handler of a proxy
+    pub const GET_PROXY_HANDLER: u16 = 0x0DB3;
 }
 
 /// Built-in method IDs for Date
@@ -653,6 +664,11 @@ pub fn is_date_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in reflect method
 pub fn is_reflect_method(method_id: u16) -> bool {
     (0x0D00..=0x0DFF).contains(&method_id)
+}
+
+/// Check if a method ID is a proxy-related reflect method
+pub fn is_proxy_method(method_id: u16) -> bool {
+    (0x0DB0..=0x0DBF).contains(&method_id)
 }
 
 #[cfg(test)]

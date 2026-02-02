@@ -697,3 +697,76 @@ export function getEnumerableKeys(obj: any): string[];
  * @returns true if object has circular references
  */
 export function isCircular(obj: any): boolean;
+
+// ============================================================================
+// Proxy Objects (Phase 9)
+// ============================================================================
+
+/**
+ * Handler interface for proxy traps
+ * Each trap is optional - if not provided, the operation passes through to target
+ */
+export interface ProxyHandler<T> {
+    /**
+     * Intercept property read
+     * @param target - The target object
+     * @param property - Property name being accessed
+     * @returns The property value
+     */
+    get?(target: T, property: string): any;
+
+    /**
+     * Intercept property write
+     * @param target - The target object
+     * @param property - Property name being set
+     * @param value - Value being assigned
+     * @returns true if the assignment should proceed
+     */
+    set?(target: T, property: string, value: any): boolean;
+
+    /**
+     * Intercept property existence check (in operator)
+     * @param target - The target object
+     * @param property - Property name being checked
+     * @returns true if property exists
+     */
+    has?(target: T, property: string): boolean;
+
+    /**
+     * Intercept method calls
+     * @param target - The target object
+     * @param method - Method name being called
+     * @param args - Arguments passed to method
+     * @returns The method return value
+     */
+    invoke?(target: T, method: string, args: any[]): any;
+}
+
+/**
+ * Create a proxy object that intercepts property access and method calls
+ * @param target - The target object to wrap
+ * @param handler - Handler object with trap functions
+ * @returns A proxy object that delegates operations through the handler
+ */
+export function createProxy<T extends object>(target: T, handler: ProxyHandler<T>): T;
+
+/**
+ * Check if an object is a proxy
+ * @param obj - Object to check
+ * @returns true if obj is a proxy created with createProxy
+ */
+export function isProxy(obj: any): boolean;
+
+/**
+ * Get the underlying target of a proxy
+ * @param proxy - Proxy object
+ * @returns The original target object, or null if not a proxy
+ */
+export function getProxyTarget<T extends object>(proxy: T): T | null;
+
+/**
+ * Get the handler of a proxy
+ * @param proxy - Proxy object
+ * @returns The handler object, or null if not a proxy
+ */
+export function getProxyHandler<T extends object>(proxy: T): ProxyHandler<T> | null;

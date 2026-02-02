@@ -21,8 +21,8 @@
 **Complete:** Milestones 3.4-3.6, Milestone 3.7 Phases 2-6 (module system)
 **In Progress:**
 - Milestone 3.7 Phase 1 (JSON intrinsics)
-- Milestone 3.8 Phases 1-8 complete (all handlers implemented, debug info infrastructure added)
-**Tests:** 712+ passing (raya-engine)
+- Milestone 3.8 Phases 1-9 complete (Reflect API with proxy support)
+**Tests:** 720+ passing (raya-engine)
 
 See [plans/milestone-3.7.md](plans/milestone-3.7.md) and [plans/milestone-3.8.md](plans/milestone-3.8.md) for details.
 

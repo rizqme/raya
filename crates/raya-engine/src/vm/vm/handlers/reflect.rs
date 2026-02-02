@@ -7,7 +7,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::vm::builtin::reflect;
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::object::{Array, Closure, MapObject, Object, RayaString};
+use crate::vm::object::{Array, Closure, MapObject, Object, Proxy, RayaString};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -1795,6 +1795,100 @@ pub fn call_reflect_method(
             let target = args[0];
             let is_circular = check_circular(ctx, target, &mut Vec::new());
             Value::bool(is_circular)
+        }
+
+        // ===== Phase 9: Proxy Objects =====
+
+        reflect::CREATE_PROXY => {
+            // createProxy(target, handler) -> create a proxy object
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "createProxy requires 2 arguments (target, handler)".to_string()
+                ));
+            }
+            let target = args[0];
+            let handler = args[1];
+
+            // Verify target is an object
+            if !target.is_ptr() || target.is_null() {
+                return Err(VmError::TypeError(
+                    "createProxy target must be an object".to_string()
+                ));
+            }
+
+            // Verify handler is an object
+            if !handler.is_ptr() || handler.is_null() {
+                return Err(VmError::TypeError(
+                    "createProxy handler must be an object".to_string()
+                ));
+            }
+
+            // Create the proxy
+            let proxy = Proxy::new(target, handler);
+            let proxy_gc = ctx.gc.lock().allocate(proxy);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(proxy_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::IS_PROXY => {
+            // isProxy(obj) -> check if object is a proxy
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("isProxy requires 1 argument".to_string()));
+            }
+            let target = args[0];
+
+            // Check if target is a Proxy
+            let is_proxy = if target.is_ptr() && !target.is_null() {
+                unsafe { target.as_ptr::<Proxy>() }.is_some()
+            } else {
+                false
+            };
+            Value::bool(is_proxy)
+        }
+
+        reflect::GET_PROXY_TARGET => {
+            // getProxyTarget(proxy) -> get the underlying target
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("getProxyTarget requires 1 argument".to_string()));
+            }
+            let proxy_val = args[0];
+
+            // Check if it's a proxy
+            if !proxy_val.is_ptr() || proxy_val.is_null() {
+                return Err(VmError::TypeError(
+                    "getProxyTarget expects a proxy object".to_string()
+                ));
+            }
+
+            if let Some(proxy_ptr) = unsafe { proxy_val.as_ptr::<Proxy>() } {
+                let proxy = unsafe { &*proxy_ptr.as_ptr() };
+                proxy.get_target()
+            } else {
+                // Not a proxy, return null
+                Value::null()
+            }
+        }
+
+        reflect::GET_PROXY_HANDLER => {
+            // getProxyHandler(proxy) -> get the handler object
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("getProxyHandler requires 1 argument".to_string()));
+            }
+            let proxy_val = args[0];
+
+            // Check if it's a proxy
+            if !proxy_val.is_ptr() || proxy_val.is_null() {
+                return Err(VmError::TypeError(
+                    "getProxyHandler expects a proxy object".to_string()
+                ));
+            }
+
+            if let Some(proxy_ptr) = unsafe { proxy_val.as_ptr::<Proxy>() } {
+                let proxy = unsafe { &*proxy_ptr.as_ptr() };
+                proxy.get_handler()
+            } else {
+                // Not a proxy, return null
+                Value::null()
+            }
         }
 
         _ => {

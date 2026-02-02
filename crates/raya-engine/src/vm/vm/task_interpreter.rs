@@ -1609,7 +1609,11 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
 
-                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                // Check if the object is a proxy - if so, unwrap to target
+                // TODO: Full trap support would call handler.get(target, fieldName)
+                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let value = match obj.get_field(field_offset) {
                     Some(v) => v,
@@ -1646,7 +1650,11 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
 
-                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                // Check if the object is a proxy - if so, unwrap to target
+                // TODO: Full trap support would call handler.set(target, fieldName, value)
+                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
@@ -1678,7 +1686,10 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
 
-                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                // Check if the object is a proxy - if so, unwrap to target
+                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let value = match obj.get_field(field_offset) {
                     Some(v) => v,
@@ -1711,7 +1722,10 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
 
-                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                // Check if the object is a proxy - if so, unwrap to target
+                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                 let value = match obj.get_field(field_offset) {
                     Some(v) => v,
@@ -1748,7 +1762,10 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
 
-                let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                // Check if the object is a proxy - if so, unwrap to target
+                let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
@@ -4650,10 +4667,15 @@ impl<'a> TaskInterpreter<'a> {
                 Opcode::LoadField => {
                     let field_offset = Self::read_u16(code, &mut ip)? as usize;
                     let obj_val = call_stack.pop()?;
-                    if !obj_val.is_ptr() {
+
+                    // Check if the object is a proxy - if so, unwrap to target
+                    // TODO: Full trap support would call handler.get(target, fieldName)
+                    let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                    if !actual_obj.is_ptr() {
                         return Err(VmError::TypeError("Expected object".to_string()));
                     }
-                    let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                    let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                     let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
                     let field_val = obj.get_field(field_offset).unwrap_or(Value::null());
                     call_stack.push(field_val)?;
@@ -4662,10 +4684,15 @@ impl<'a> TaskInterpreter<'a> {
                     let field_offset = Self::read_u16(code, &mut ip)? as usize;
                     let value = call_stack.pop()?;
                     let obj_val = call_stack.pop()?;
-                    if !obj_val.is_ptr() {
+
+                    // Check if the object is a proxy - if so, unwrap to target
+                    // TODO: Full trap support would call handler.set(target, fieldName, value)
+                    let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
+
+                    if !actual_obj.is_ptr() {
                         return Err(VmError::TypeError("Expected object".to_string()));
                     }
-                    let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
+                    let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                     let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                     obj.set_field(field_offset, value);
                 }

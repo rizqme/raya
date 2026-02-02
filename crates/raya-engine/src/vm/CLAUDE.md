@@ -23,7 +23,8 @@ vm/
 │   ├── class_metadata.rs  # ClassMetadataRegistry
 │   ├── introspection.rs   # Type info, class hierarchy
 │   ├── metadata.rs        # MetadataStore for user metadata
-│   └── snapshot.rs        # ObjectSnapshot, ObjectDiff
+│   ├── snapshot.rs        # ObjectSnapshot, ObjectDiff
+│   └── proxy.rs           # Proxy detection and trap dispatch
 └── ffi/           # Foreign function interface
 ```
 
@@ -108,7 +109,8 @@ See [ffi/CLAUDE.md](ffi/CLAUDE.md).
 - `MetadataStore` - user-defined metadata via `Reflect.defineMetadata`
 - `introspection.rs` - `get_class_id`, `is_instance_of`, `TypeInfo`
 - `snapshot.rs` - `ObjectSnapshot`, `ObjectDiff` for state tracking
-- Native call handlers use IDs 0x0D00-0x0DAF (see `builtin.rs`)
+- `proxy.rs` - Proxy detection and trap helpers (`try_unwrap_proxy`, `unwrap_proxy_target`)
+- Native call handlers use IDs 0x0D00-0x0DBF (see `builtin.rs`)
 
 ## Execution Model
 

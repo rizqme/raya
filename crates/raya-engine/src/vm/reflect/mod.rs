@@ -34,6 +34,7 @@
 mod class_metadata;
 mod introspection;
 mod metadata;
+mod proxy;
 mod snapshot;
 
 pub use class_metadata::{ClassMetadata, ClassMetadataRegistry};
@@ -43,4 +44,9 @@ pub use introspection::{
     FieldInfo, MethodInfo, Modifiers, ParameterInfo, TypeInfo, TypeKind,
 };
 pub use metadata::{MetadataKey, MetadataStore, PropertyKey};
+pub use proxy::{
+    get_trap_method, is_proxy, prepare_get_trap, prepare_has_trap, prepare_invoke_trap,
+    prepare_set_trap, try_unwrap_proxy, unwrap_proxy_deep, unwrap_proxy_target, TrapMethod,
+    TrapResult, UnwrappedProxy,
+};
 pub use snapshot::{FieldSnapshot, ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue, ValueChange};

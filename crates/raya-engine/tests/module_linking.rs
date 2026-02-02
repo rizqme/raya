@@ -22,6 +22,7 @@ fn create_module(name: &str) -> Module {
         imports: vec![],
         checksum: [0; 32],
         reflection: None,
+        debug_info: None,
     }
 }
 

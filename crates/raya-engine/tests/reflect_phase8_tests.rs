@@ -382,3 +382,137 @@ mod object_identity {
         assert_eq!(class_id, Some(42));
     }
 }
+
+// ============================================================================
+// Phase 9: Proxy Object Tests
+// ============================================================================
+
+mod proxy_tests {
+    use raya_engine::vm::gc::GarbageCollector;
+    use raya_engine::vm::object::{Object, Proxy};
+    use raya_engine::vm::value::Value;
+
+    #[test]
+    fn test_proxy_creation() {
+        let mut gc = GarbageCollector::default();
+
+        // Create target and handler objects
+        let target_obj = gc.allocate(Object::new(1, 2));
+        let handler_obj = gc.allocate(Object::new(2, 4));
+
+        let target_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
+        let handler_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+
+        // Create proxy
+        let proxy = Proxy::new(target_val, handler_val);
+        assert_ne!(proxy.proxy_id, 0);
+    }
+
+    #[test]
+    fn test_proxy_get_target() {
+        let mut gc = GarbageCollector::default();
+
+        let target_obj = gc.allocate(Object::new(42, 3));
+        let handler_obj = gc.allocate(Object::new(0, 0));
+
+        let target_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
+        let handler_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+
+        let proxy = Proxy::new(target_val, handler_val);
+
+        // get_target should return the original target
+        let retrieved_target = proxy.get_target();
+        assert_eq!(retrieved_target.raw(), target_val.raw());
+    }
+
+    #[test]
+    fn test_proxy_get_handler() {
+        let mut gc = GarbageCollector::default();
+
+        let target_obj = gc.allocate(Object::new(1, 1));
+        let handler_obj = gc.allocate(Object::new(99, 4));
+
+        let target_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
+        let handler_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+
+        let proxy = Proxy::new(target_val, handler_val);
+
+        // get_handler should return the original handler
+        let retrieved_handler = proxy.get_handler();
+        assert_eq!(retrieved_handler.raw(), handler_val.raw());
+    }
+
+    #[test]
+    fn test_proxy_allocation_via_gc() {
+        let mut gc = GarbageCollector::default();
+
+        let target_obj = gc.allocate(Object::new(1, 2));
+        let handler_obj = gc.allocate(Object::new(2, 4));
+
+        let target_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
+        let handler_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+
+        // Allocate proxy through GC (like the handler does)
+        let proxy = Proxy::new(target_val, handler_val);
+        let proxy_gc = gc.allocate(proxy);
+
+        // Can dereference and access fields
+        let proxy_ref = unsafe { &*proxy_gc.as_ptr() };
+        assert_eq!(proxy_ref.get_target().raw(), target_val.raw());
+        assert_eq!(proxy_ref.get_handler().raw(), handler_val.raw());
+    }
+
+    #[test]
+    fn test_proxy_is_distinct_from_target() {
+        let mut gc = GarbageCollector::default();
+
+        let target_obj = gc.allocate(Object::new(1, 2));
+        let handler_obj = gc.allocate(Object::new(2, 4));
+
+        let target_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
+        let handler_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+
+        let proxy = Proxy::new(target_val, handler_val);
+        let proxy_gc = gc.allocate(proxy);
+        let proxy_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(proxy_gc.as_ptr() as *mut Proxy).unwrap()) };
+
+        // Proxy value should be different from target value
+        assert_ne!(proxy_val.raw(), target_val.raw());
+    }
+
+    #[test]
+    fn test_proxy_unique_ids() {
+        let mut gc = GarbageCollector::default();
+
+        let target1 = gc.allocate(Object::new(1, 1));
+        let handler1 = gc.allocate(Object::new(0, 0));
+        let target2 = gc.allocate(Object::new(2, 1));
+        let handler2 = gc.allocate(Object::new(0, 0));
+
+        let target1_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target1.as_ptr() as *mut Object).unwrap()) };
+        let handler1_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler1.as_ptr() as *mut Object).unwrap()) };
+        let target2_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(target2.as_ptr() as *mut Object).unwrap()) };
+        let handler2_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler2.as_ptr() as *mut Object).unwrap()) };
+
+        let proxy1 = Proxy::new(target1_val, handler1_val);
+        let proxy2 = Proxy::new(target2_val, handler2_val);
+
+        // Each proxy should have unique ID
+        assert_ne!(proxy1.proxy_id, proxy2.proxy_id);
+    }
+}

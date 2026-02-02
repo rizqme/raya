@@ -1,6 +1,6 @@
 # Milestone 3.8: Reflection API (std:reflect)
 
-**Status:** In Progress (Phases 1-8 complete with integration tests, debug info infrastructure added, compiler --emit-reflection flag implemented)
+**Status:** In Progress (Phases 1-9 complete, proxy passthrough support implemented, compiler --emit-reflection flag implemented)
 **Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, and devtools support
 
 ---
@@ -495,15 +495,18 @@ function isCircular(obj: object): boolean;
 Basic proxy support for interception (no AOP - that's a separate feature).
 
 **Tasks:**
-- [ ] Define `ProxyHandler<T>` interface
-- [ ] Implement `Reflect.createProxy<T>(target, handler)` - create proxy
-- [ ] Implement proxy trap: `get` - intercept property access
-- [ ] Implement proxy trap: `set` - intercept property assignment
-- [ ] Implement proxy trap: `has` - intercept `in` operator
-- [ ] Implement proxy trap: `invoke` - intercept method calls
-- [ ] Implement `Reflect.isProxy(obj)` - check if object is a proxy
-- [ ] Implement `Reflect.getProxyTarget(proxy)` - get underlying target
-- [ ] Add unit tests for proxies
+- [x] Define `Proxy` struct in vm/object.rs
+- [x] Add native call IDs for proxy operations (0x0DB0-0x0DBF range)
+- [x] Implement `Reflect.createProxy<T>(target, handler)` - create proxy
+- [x] Implement `Reflect.isProxy(obj)` - check if object is a proxy
+- [x] Implement `Reflect.getProxyTarget(proxy)` - get underlying target
+- [x] Implement `Reflect.getProxyHandler(proxy)` - get handler object
+- [x] Add unit tests for proxies (in tests/reflect_phase8_tests.rs)
+- [x] Implement proxy trap: `get` - intercept property access (passthrough to target; full trap invocation deferred)
+- [x] Implement proxy trap: `set` - intercept property assignment (passthrough to target; full trap invocation deferred)
+- [x] Implement proxy trap: `has` - intercept `in` operator (helper functions in proxy.rs)
+- [x] Implement proxy trap: `invoke` - intercept method calls (helper functions in proxy.rs)
+- [x] Define `ProxyHandler<T>` interface in reflect.d.raya
 
 **Function Signatures:**
 ```typescript

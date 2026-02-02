@@ -1219,6 +1219,57 @@ pub enum ChannelError {
     Closed,
 }
 
+// ============================================================================
+// Proxy Objects (Phase 9 Reflect API)
+// ============================================================================
+
+/// Proxy object for intercepting property access and method calls
+///
+/// A Proxy wraps a target object and delegates operations through
+/// trap handlers. When a property is accessed or a method is called
+/// on the proxy, the corresponding trap handler is invoked if present.
+///
+/// Traps:
+/// - `get(target, property)` - intercept property read
+/// - `set(target, property, value)` - intercept property write
+/// - `has(target, property)` - intercept property existence check
+/// - `invoke(target, method, args)` - intercept method call
+#[derive(Debug, Clone)]
+pub struct Proxy {
+    /// Unique proxy ID for identity checking
+    pub proxy_id: u64,
+    /// The underlying target object (as a Value pointing to Object)
+    pub target: Value,
+    /// The handler object containing trap functions (as a Value pointing to Object)
+    /// Handler fields by name:
+    /// - "get": (target, property) -> value
+    /// - "set": (target, property, value) -> boolean
+    /// - "has": (target, property) -> boolean
+    /// - "invoke": (target, method, args) -> value
+    pub handler: Value,
+}
+
+impl Proxy {
+    /// Create a new proxy wrapping the target with the given handler
+    pub fn new(target: Value, handler: Value) -> Self {
+        Self {
+            proxy_id: generate_object_id(),
+            target,
+            handler,
+        }
+    }
+
+    /// Get the target object
+    pub fn get_target(&self) -> Value {
+        self.target
+    }
+
+    /// Get the handler object
+    pub fn get_handler(&self) -> Value {
+        self.handler
+    }
+}
+
 impl Clone for ChannelObject {
     fn clone(&self) -> Self {
         let inner = self.inner.lock();
