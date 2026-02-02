@@ -1,6 +1,6 @@
 # Milestone 3.8: Reflection API (std:reflect)
 
-**Status:** In Progress (Phases 1-8 complete, debug info infrastructure added, compiler --emit-reflection flag implemented)
+**Status:** In Progress (Phases 1-8 complete with integration tests, debug info infrastructure added, compiler --emit-reflection flag implemented)
 **Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, and devtools support
 
 ---
@@ -455,8 +455,8 @@ Comprehensive object inspection for debugging and development tools.
 
 - [x] Add unit tests for inspection (basic tests via existing test infrastructure)
 - [x] Add unit tests for snapshot/diff (in reflect/snapshot.rs)
-- [ ] Add integration tests for memory analysis (needs VM runtime)
-- [ ] Add integration tests for stack introspection (needs VM runtime)
+- [x] Add integration tests for memory analysis (in tests/reflect_phase8_tests.rs)
+- [x] Add integration tests for stack introspection (in tests/reflect_phase8_tests.rs)
 - [x] Add Phase 8 function declarations to reflect.d.raya
 
 **Function Signatures:**

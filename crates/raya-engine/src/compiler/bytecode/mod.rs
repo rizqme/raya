@@ -12,8 +12,9 @@ pub mod verify;
 pub use constants::ConstantPool;
 pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
 pub use module::{
-    flags, ClassDef, ClassReflectionData, Export, FieldReflectionData, Function, Import, Metadata,
-    Method, Module, ModuleError, ReflectionData, SymbolType,
+    flags, ClassDebugInfo, ClassDef, ClassReflectionData, DebugInfo, Export, FieldReflectionData,
+    Function, FunctionDebugInfo, Import, LineEntry, Metadata, Method, Module, ModuleError,
+    ReflectionData, SymbolType,
 };
 pub use opcode::Opcode;
 pub use verify::{verify_module, VerifyError};
