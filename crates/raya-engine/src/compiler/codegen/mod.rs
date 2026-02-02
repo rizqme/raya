@@ -32,14 +32,11 @@ use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
 use rustc_hash::FxHashMap;
 
 /// Generate bytecode from an IR module
+///
+/// Reflection metadata (class/field/method names) is always included
+/// to support runtime introspection via the Reflect API.
 pub fn generate(ir_module: &IrModule) -> CompileResult<Module> {
     let mut generator = IrCodeGenerator::new(&ir_module.name);
-    generator.generate(ir_module)
-}
-
-/// Generate bytecode from an IR module with reflection data
-pub fn generate_with_reflection(ir_module: &IrModule) -> CompileResult<Module> {
-    let mut generator = IrCodeGenerator::with_reflection(&ir_module.name);
     generator.generate(ir_module)
 }
 

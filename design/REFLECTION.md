@@ -15,7 +15,7 @@ Raya provides a comprehensive `Reflect` API for runtime introspection and manipu
 - **Object creation** - instantiate classes, create proxies
 - **AOP (Aspect-Oriented Programming)** - wrap/replace methods dynamically
 
-> **Note:** Reflection requires the `--emit-reflection` compiler flag. Without it, reflection metadata is stripped for smaller binaries.
+> **Note:** Reflection metadata is always included in compiled modules to support runtime introspection.
 
 ---
 
@@ -26,7 +26,7 @@ Raya provides a comprehensive `Reflect` API for runtime introspection and manipu
 3. **Dynamic Capabilities** - Create objects, invoke methods, modify behavior
 4. **AOP Support** - Enable cross-cutting concerns (logging, caching, security)
 5. **Framework Enablement** - Support DI containers, ORMs, serialization
-6. **Opt-in** - Reflection metadata only included when requested
+6. **Always Available** - Reflection metadata always included for full runtime support
 
 ---
 
@@ -221,7 +221,7 @@ class Reflect {
     // Get class of an object
     static getClass<T>(obj: T): Class<T>;
 
-    // Get all registered classes (requires --emit-reflection)
+    // Get all registered classes
     static getAllClasses(): Class<Object>[];
 
     // Get classes by decorator
@@ -970,14 +970,11 @@ let result = Validator.validate(dto);
 Reflection metadata is opt-in:
 
 ```bash
-# Without reflection - smaller binary, no runtime type info
+# Compile program (reflection metadata always included)
 rayac program.raya
-
-# With reflection - includes type metadata
-rayac --emit-reflection program.raya
 ```
 
-**What `--emit-reflection` enables:**
+**What reflection metadata includes:**
 - Class structure metadata (fields, methods, parameters)
 - Decorator information
 - Type information for all declarations

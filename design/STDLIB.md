@@ -370,9 +370,9 @@ if (result.status === "ok") {
 
 ---
 
-## 5. raya:reflect - Reflection API (Optional)
+## 5. raya:reflect - Reflection API
 
-**Note:** Only available when compiled with `--emit-reflection` flag.
+**Note:** Reflection metadata is always included in compiled modules.
 
 ```ts
 module "raya:reflect" {

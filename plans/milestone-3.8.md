@@ -1,6 +1,6 @@
 # Milestone 3.8: Reflection API (std:reflect)
 
-**Status:** In Progress (Phases 1-9 complete, proxy passthrough support implemented, compiler --emit-reflection flag implemented)
+**Status:** In Progress (Phases 1-9 complete, proxy passthrough support implemented, reflection always enabled)
 **Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, and devtools support
 
 ---
@@ -15,7 +15,7 @@ The Reflect API enables runtime introspection and manipulation of classes, metho
 - Object inspection for debugging and devtools
 - Proxy objects for interception
 
-**Compiler flag:** `--emit-reflection` includes full type metadata. Without it, only basic features work.
+**Note:** Reflection metadata is always emitted. All Reflect API features are available at runtime.
 
 See [design/REFLECTION.md](../design/REFLECTION.md) for full specification.
 
@@ -192,7 +192,7 @@ interface HeapStats {
 
 ### Phase 1: Core Types and Metadata Storage
 
-Implement basic metadata storage (works without `--emit-reflection`).
+Implement basic metadata storage.
 
 **Tasks:**
 - [x] Define `Class<T>` interface in std:reflect module types
@@ -215,7 +215,7 @@ Implement basic metadata storage (works without `--emit-reflection`).
 
 **Function Signatures:**
 ```typescript
-// Metadata operations (work without --emit-reflection)
+// Metadata operations
 function defineMetadata<T>(key: string, value: T, target: object): void;
 function defineMetadata<T>(key: string, value: T, target: object, propertyKey: string): void;
 function getMetadata<T>(key: string, target: object): T | null;
@@ -234,7 +234,7 @@ function deleteMetadata(key: string, target: object, propertyKey: string): boole
 
 ### Phase 2: Class Introspection
 
-Query class structure at runtime (requires `--emit-reflection` for full metadata).
+Query class structure at runtime.
 
 **Tasks:**
 - [x] Implement `getClass<T>(obj)` - get class of object (returns class ID)
@@ -247,12 +247,12 @@ Query class structure at runtime (requires `--emit-reflection` for full metadata
 - [x] Implement `getClassHierarchy(obj)` - get inheritance chain
 - [x] Add class registry to VM (populated at class definition)
 - [x] Add native call IDs and handlers for Phase 2
-- [x] Compiler: emit class metadata when `--emit-reflection`
+- [x] Compiler: always emit class metadata
 - [x] Add unit tests for introspection
 
 **Function Signatures:**
 ```typescript
-// Class introspection (requires --emit-reflection for full metadata)
+// Class introspection
 function getClass<T>(obj: T): number;  // Returns class ID
 function getClassByName(name: string): number | null;  // Returns class ID
 function getAllClasses(): number[];  // Returns array of class IDs
@@ -264,7 +264,7 @@ function getClassHierarchy(obj: object): number[];  // Returns array of class ID
 ```
 
 **Compiler Changes:**
-- Add `--emit-reflection` flag handling
+- Reflection is always enabled (no flag needed)
 - Generate `ClassInfo` structures for each class
 - Include field types, method signatures, parameter names
 - Store decorator applications with arguments
@@ -276,10 +276,10 @@ function getClassHierarchy(obj: object): number[];  // Returns array of class ID
 Dynamic field get/set operations.
 
 **Tasks:**
-- [x] Implement `get<T>(target, propertyKey)` - get field value (needs --emit-reflection for name lookup)
-- [x] Implement `set<T>(target, propertyKey, value)` - set field value (needs --emit-reflection for name lookup)
-- [x] Implement `has(target, propertyKey)` - check field exists (needs --emit-reflection)
-- [x] Implement `getFieldNames(target)` - list all fields (needs --emit-reflection)
+- [x] Implement `get<T>(target, propertyKey)` - get field value
+- [x] Implement `set<T>(target, propertyKey, value)` - set field value
+- [x] Implement `has(target, propertyKey)` - check field exists
+- [x] Implement `getFieldNames(target)` - list all fields
 - [x] Implement `getFieldInfo(target, propertyKey)` - get field metadata (returns Map)
 - [x] Implement `getFields(target)` - get all field infos (returns array of Maps)
 - [x] Handle private field access (allowed by default - no distinction at runtime)
@@ -583,7 +583,7 @@ interface MethodDefinition {
 Emit reflection metadata.
 
 **Tasks:**
-- [x] Add `--emit-reflection` compiler flag (CLI flag added)
+- [x] Reflection always enabled (no flag needed)
 - [x] Generate class structure metadata (ReflectionData in bytecode module)
 - [x] Generate field type information (FieldReflectionData with name, type_name, is_readonly, is_static)
 - [x] Generate method signature metadata (method_names in ClassReflectionData)
@@ -638,7 +638,7 @@ crates/raya-engine/src/
 ├── compiler/
 │   ├── reflection.rs            # NEW: Reflection metadata generation
 │   ├── codegen/                 # Emit metadata tables
-│   └── flags.rs                 # --emit-reflection flag
+│   └── flags.rs                 # Module flags (reflection always on)
 ├── vm/
 │   ├── reflect/                 # Reflection runtime (used by stdlib)
 │   │   ├── mod.rs               # DONE: Module exports
@@ -710,7 +710,7 @@ crates/raya-engine/src/
 ## Success Criteria
 
 1. Metadata can be stored/retrieved on any object
-2. Class structure queryable at runtime (with `--emit-reflection`)
+2. Class structure queryable at runtime
 3. Fields can be read/written dynamically
 4. Methods can be invoked dynamically
 5. Objects can be created from Class<T> references

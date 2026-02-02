@@ -20,8 +20,6 @@ pub struct IrCodeGenerator {
     module_builder: ModuleBuilder,
     /// Current function being compiled
     current_func: Option<FunctionContext>,
-    /// Whether to emit reflection data
-    emit_reflection: bool,
 }
 
 /// Context for compiling a single function
@@ -169,29 +167,18 @@ impl FunctionContext {
 
 impl IrCodeGenerator {
     /// Create a new code generator
+    ///
+    /// Reflection metadata is always emitted to support runtime introspection.
     pub fn new(module_name: &str) -> Self {
         Self {
             module_builder: ModuleBuilder::new(module_name.to_string()),
             current_func: None,
-            emit_reflection: false,
         }
-    }
-
-    /// Create a new code generator with reflection enabled
-    pub fn with_reflection(module_name: &str) -> Self {
-        Self {
-            module_builder: ModuleBuilder::new(module_name.to_string()),
-            current_func: None,
-            emit_reflection: true,
-        }
-    }
-
-    /// Enable reflection data emission
-    pub fn set_emit_reflection(&mut self, emit: bool) {
-        self.emit_reflection = emit;
     }
 
     /// Generate bytecode from an IR module
+    ///
+    /// Reflection data (class/field/method names) is always included.
     pub fn generate(&mut self, module: &IrModule) -> CompileResult<Module> {
         // Generate bytecode for each function
         for func in module.functions() {
@@ -199,12 +186,8 @@ impl IrCodeGenerator {
             self.module_builder.add_function(bytecode_func);
         }
 
-        // Collect reflection data if enabled
-        let reflection_data = if self.emit_reflection {
-            Some(self.generate_reflection_data(module))
-        } else {
-            None
-        };
+        // Always generate reflection data for runtime introspection
+        let reflection_data = Some(self.generate_reflection_data(module));
 
         // Generate class definitions
         for class in module.classes() {

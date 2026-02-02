@@ -142,7 +142,7 @@ crypto = "native:crypto"  # Requires native:crypto to be installed
 [build]
 target = "bytecode"       # Output format
 optimize = true           # Enable optimizations
-emit-reflection = false   # Include reflection metadata (for frameworks)
+# Note: Reflection metadata is always included
 ```
 
 ### Lockfile (raya.lock)
@@ -188,7 +188,7 @@ Published packages contain **compiled bytecode only** (not source code). This en
 - Decorator applications (decorator function + arguments for each target)
 - Optimized for VM execution
 
-**Optional Sections (with `--emit-reflection`):**
+**Reflection Data (always included):**
 - Reflection metadata (class info, field info, method info)
 - Parameter type information
 - Decorator metadata for runtime introspection
@@ -198,11 +198,7 @@ Published packages contain **compiled bytecode only** (not source code). This en
 ```bash
 # During package build
 raya build --release
-# Produces: dist/module.ryb
-
-# With reflection metadata (for frameworks)
-raya build --release --emit-reflection
-# Produces: dist/module.ryb (with embedded reflection data)
+# Produces: dist/module.ryb (with reflection metadata always included)
 ```
 
 **Properties:**
@@ -356,7 +352,7 @@ logging-1.2.3.tar.zst
 └── README.md        # Optional - package documentation
 ```
 
-**For packages with `emit-reflection = true`:**
+**Packages always include reflection metadata:**
 
 ```bash
 # Archive with reflection metadata:
@@ -664,7 +660,7 @@ user-code.raya
     ↓
 [Compiler] → Bytecode (with decorator applications)
     ↓
-[Reflection Emitter] → Add reflection metadata (if --emit-reflection)
+[Reflection Emitter] → Add reflection metadata (always)
     ↓
 module.ryb (stored in cache)
 ```
@@ -1048,7 +1044,7 @@ version = "2.0.0"
 main = "src/index.raya"
 
 [build]
-emit-reflection = true   # Required for runtime decorator metadata
+# Reflection metadata always included for runtime decorator support
 ```
 
 ```typescript

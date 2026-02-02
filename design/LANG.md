@@ -2857,7 +2857,7 @@ Raya uses a well-defined module resolution algorithm:
 import { match } from "raya:std";              // Built-in standard library
 import { JSON } from "raya:json";              // Built-in JSON support
 import { JsonValue } from "raya:json/internal"; // Internal JSON utilities
-import * as Reflect from "raya:reflect";       // Reflection API (if --emit-reflection)
+import * as Reflect from "raya:reflect";       // Reflection API
 ```
 
 Standard library modules are always resolved first, before any user code.
@@ -3753,28 +3753,18 @@ function decodeApiData(json: JsonValue): Result<ApiData, Error> {
 
 Raya provides an **optional reflection capability** that can be enabled at compile time. By default, Raya compiles with **zero runtime type information**. However, when reflection is enabled, the compiler emits type metadata that allows runtime type introspection.
 
-### 18.1 Enabling Reflection
+### 18.1 Reflection Overview
 
-**Compiler Flag:**
-```bash
-rayac --emit-reflection myfile.raya
-```
+Reflection metadata is always included in compiled modules:
 
-**When reflection is disabled (default):**
-- No type metadata in bytecode
-- Smallest binary size
-- Maximum performance
-- Zero runtime overhead
-
-**When reflection is enabled:**
 - Type metadata embedded in bytecode
-- Larger binary size (~10-30% increase)
-- Reflection API available
+- Reflection API always available
 - Enables TypeScript compatibility shims
+- Supports frameworks (DI, ORM, serialization)
 
 ### 18.2 Reflection API
 
-When reflection is enabled, the `Reflect` module is available:
+The `Reflect` module is always available:
 
 ```ts
 // Import reflection module

@@ -443,9 +443,9 @@ Raya is a **fully statically typed language**. All type information is:
 
 ---
 
-### 3.25 Reflection Operations (Optional)
+### 3.25 Reflection Operations
 
-**Note:** These opcodes are only available when code is compiled with `--emit-reflection` flag.
+**Note:** Reflection metadata is always included in compiled modules.
 
 | Opcode | Operands | Description |
 |--------|----------|-------------|
@@ -467,7 +467,7 @@ Reflection opcodes enable **optional runtime type introspection** for:
 - **Interoperability** — Bridge to dynamic languages
 
 **Performance:**
-- Reflection metadata embedded when `--emit-reflection` is used
+- Reflection metadata always embedded in bytecode modules
 - ~10-30% binary size increase (metadata only)
 - No overhead for code that doesn't use Reflect API
 - Reflection API calls have runtime cost (property lookups, etc.)

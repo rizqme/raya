@@ -879,11 +879,13 @@ impl Import {
 
 impl Module {
     /// Create a new empty module
+    ///
+    /// Reflection metadata is always enabled to support runtime introspection.
     pub fn new(name: String) -> Self {
         Self {
             magic: MAGIC,
             version: VERSION,
-            flags: 0,
+            flags: flags::HAS_REFLECTION,
             constants: ConstantPool::new(),
             functions: Vec::new(),
             classes: Vec::new(),
@@ -894,7 +896,7 @@ impl Module {
             exports: Vec::new(),
             imports: Vec::new(),
             checksum: [0; 32], // Will be computed during encode()
-            reflection: None,
+            reflection: Some(ReflectionData::new()),
             debug_info: None,
         }
     }
@@ -1154,7 +1156,9 @@ mod tests {
         let module = Module::new("test".to_string());
         assert_eq!(module.magic, MAGIC);
         assert_eq!(module.version, VERSION);
-        assert_eq!(module.flags, 0);
+        // Reflection is always enabled by default
+        assert_eq!(module.flags, flags::HAS_REFLECTION);
+        assert!(module.has_reflection());
         assert!(module.validate().is_ok());
     }
 
@@ -1361,7 +1365,7 @@ mod tests {
     #[test]
     fn test_module_with_reflection() {
         let mut module = Module::new("test_reflection".to_string());
-        module.enable_reflection();
+        // Reflection is now always enabled by default
 
         // Add class reflection data
         let mut class_reflection = ClassReflectionData::new();
@@ -1418,16 +1422,17 @@ mod tests {
     }
 
     #[test]
-    fn test_module_without_reflection() {
-        let module = Module::new("test_no_reflection".to_string());
+    fn test_module_always_has_reflection() {
+        // Reflection is always enabled - there's no "without reflection" mode
+        let module = Module::new("test_reflection".to_string());
 
         // Encode and decode
         let bytes = module.encode();
         let decoded = Module::decode(&bytes).unwrap();
 
-        // Verify no reflection
-        assert!(!decoded.has_reflection());
-        assert!(decoded.reflection.is_none());
+        // Verify reflection is always present
+        assert!(decoded.has_reflection());
+        assert!(decoded.reflection.is_some());
     }
 
     #[test]

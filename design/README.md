@@ -317,11 +317,11 @@ class Box<T> {
 
 ---
 
-## Optional Reflection System
+## Reflection System
 
-Raya provides an **optional reflection capability** for advanced use cases:
+Raya includes a **comprehensive reflection capability** for advanced use cases:
 
-**When Enabled (`--emit-reflection`):**
+**Always Available:**
 - Type metadata embedded in bytecode
 - `Reflect` API available for runtime type introspection
 - Enables TypeScript compatibility shims
