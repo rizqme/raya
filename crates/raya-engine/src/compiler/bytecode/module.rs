@@ -93,6 +93,10 @@ pub struct Module {
     pub imports: Vec<Import>,
     /// SHA-256 checksum for content-addressable storage
     pub checksum: [u8; 32],
+    /// Reflection data (present when HAS_REFLECTION flag is set)
+    pub reflection: Option<ReflectionData>,
+    /// Debug information (present when HAS_DEBUG_INFO flag is set)
+    pub debug_info: Option<DebugInfo>,
 }
 
 /// Module flags
@@ -101,6 +105,460 @@ pub mod flags {
     pub const HAS_DEBUG_INFO: u32 = 1 << 0;
     /// Module has reflection data
     pub const HAS_REFLECTION: u32 = 1 << 1;
+}
+
+/// Reflection data for the entire module
+#[derive(Debug, Clone, Default)]
+pub struct ReflectionData {
+    /// Per-class reflection data indexed by class ID
+    pub classes: Vec<ClassReflectionData>,
+}
+
+/// Reflection data for a single class
+#[derive(Debug, Clone, Default)]
+pub struct ClassReflectionData {
+    /// Field reflection data
+    pub fields: Vec<FieldReflectionData>,
+    /// Method names in vtable order
+    pub method_names: Vec<String>,
+    /// Static field names
+    pub static_field_names: Vec<String>,
+}
+
+/// Reflection data for a single field
+#[derive(Debug, Clone)]
+pub struct FieldReflectionData {
+    /// Field name
+    pub name: String,
+    /// Type name (for display/debugging)
+    pub type_name: String,
+    /// Whether this field is readonly
+    pub is_readonly: bool,
+    /// Whether this field is static
+    pub is_static: bool,
+}
+
+// ============================================================================
+// Debug Information
+// ============================================================================
+
+/// Debug information for the entire module
+///
+/// Contains source location mappings for functions, methods, and classes.
+/// This data is only present when the module is compiled with --emit-debug.
+#[derive(Debug, Clone, Default)]
+pub struct DebugInfo {
+    /// Source file paths referenced by line entries
+    pub source_files: Vec<String>,
+    /// Per-function debug information indexed by function ID
+    pub functions: Vec<FunctionDebugInfo>,
+    /// Per-class debug information indexed by class ID
+    pub classes: Vec<ClassDebugInfo>,
+}
+
+/// Debug information for a single function
+#[derive(Debug, Clone, Default)]
+pub struct FunctionDebugInfo {
+    /// Index into source_files array
+    pub source_file_index: u32,
+    /// Starting line number of the function (1-indexed)
+    pub start_line: u32,
+    /// Starting column number (1-indexed)
+    pub start_column: u32,
+    /// Ending line number
+    pub end_line: u32,
+    /// Ending column
+    pub end_column: u32,
+    /// Line number table mapping bytecode offsets to source locations
+    pub line_table: Vec<LineEntry>,
+}
+
+/// A single entry in the line number table
+///
+/// Maps a bytecode offset to a source location.
+#[derive(Debug, Clone, Copy)]
+pub struct LineEntry {
+    /// Bytecode offset within the function's code
+    pub bytecode_offset: u32,
+    /// Line number (1-indexed)
+    pub line: u32,
+    /// Column number (1-indexed)
+    pub column: u32,
+}
+
+/// Debug information for a class
+#[derive(Debug, Clone, Default)]
+pub struct ClassDebugInfo {
+    /// Index into source_files array
+    pub source_file_index: u32,
+    /// Starting line number of the class declaration
+    pub start_line: u32,
+    /// Starting column
+    pub start_column: u32,
+    /// Ending line number
+    pub end_line: u32,
+    /// Ending column
+    pub end_column: u32,
+}
+
+impl ReflectionData {
+    /// Create new empty reflection data
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Encode reflection data to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write number of classes
+        writer.emit_u32(self.classes.len() as u32);
+        for class in &self.classes {
+            class.encode(writer);
+        }
+    }
+
+    /// Decode reflection data from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let class_count = reader.read_u32()? as usize;
+        let mut classes = Vec::with_capacity(class_count);
+        for _ in 0..class_count {
+            classes.push(ClassReflectionData::decode(reader)?);
+        }
+        Ok(Self { classes })
+    }
+}
+
+impl ClassReflectionData {
+    /// Create new empty class reflection data
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Encode class reflection data to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write fields
+        writer.emit_u32(self.fields.len() as u32);
+        for field in &self.fields {
+            field.encode(writer);
+        }
+
+        // Write method names
+        writer.emit_u32(self.method_names.len() as u32);
+        for name in &self.method_names {
+            writer.emit_u32(name.len() as u32);
+            writer.buffer.extend_from_slice(name.as_bytes());
+        }
+
+        // Write static field names
+        writer.emit_u32(self.static_field_names.len() as u32);
+        for name in &self.static_field_names {
+            writer.emit_u32(name.len() as u32);
+            writer.buffer.extend_from_slice(name.as_bytes());
+        }
+    }
+
+    /// Decode class reflection data from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        // Read fields
+        let field_count = reader.read_u32()? as usize;
+        let mut fields = Vec::with_capacity(field_count);
+        for _ in 0..field_count {
+            fields.push(FieldReflectionData::decode(reader)?);
+        }
+
+        // Read method names
+        let method_count = reader.read_u32()? as usize;
+        let mut method_names = Vec::with_capacity(method_count);
+        for _ in 0..method_count {
+            method_names.push(reader.read_string()?);
+        }
+
+        // Read static field names
+        let static_count = reader.read_u32()? as usize;
+        let mut static_field_names = Vec::with_capacity(static_count);
+        for _ in 0..static_count {
+            static_field_names.push(reader.read_string()?);
+        }
+
+        Ok(Self {
+            fields,
+            method_names,
+            static_field_names,
+        })
+    }
+}
+
+impl FieldReflectionData {
+    /// Create new field reflection data
+    pub fn new(name: String, type_name: String, is_readonly: bool, is_static: bool) -> Self {
+        Self {
+            name,
+            type_name,
+            is_readonly,
+            is_static,
+        }
+    }
+
+    /// Encode field reflection data to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write name
+        writer.emit_u32(self.name.len() as u32);
+        writer.buffer.extend_from_slice(self.name.as_bytes());
+
+        // Write type name
+        writer.emit_u32(self.type_name.len() as u32);
+        writer.buffer.extend_from_slice(self.type_name.as_bytes());
+
+        // Write flags (packed into single byte)
+        let mut flags: u8 = 0;
+        if self.is_readonly {
+            flags |= 1;
+        }
+        if self.is_static {
+            flags |= 2;
+        }
+        writer.emit_u8(flags);
+    }
+
+    /// Decode field reflection data from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let name = reader.read_string()?;
+        let type_name = reader.read_string()?;
+        let flags = reader.read_u8()?;
+
+        Ok(Self {
+            name,
+            type_name,
+            is_readonly: (flags & 1) != 0,
+            is_static: (flags & 2) != 0,
+        })
+    }
+}
+
+// ============================================================================
+// Debug Info Implementations
+// ============================================================================
+
+impl DebugInfo {
+    /// Create new empty debug info
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add or get index for a source file
+    pub fn add_source_file(&mut self, path: String) -> u32 {
+        if let Some(idx) = self.source_files.iter().position(|p| p == &path) {
+            idx as u32
+        } else {
+            let idx = self.source_files.len() as u32;
+            self.source_files.push(path);
+            idx
+        }
+    }
+
+    /// Get source file by index
+    pub fn get_source_file(&self, index: u32) -> Option<&str> {
+        self.source_files.get(index as usize).map(|s| s.as_str())
+    }
+
+    /// Encode debug info to binary
+    pub(crate) fn encode(&self, writer: &mut BytecodeWriter) {
+        // Write source files
+        writer.emit_u32(self.source_files.len() as u32);
+        for path in &self.source_files {
+            writer.emit_u32(path.len() as u32);
+            writer.buffer.extend_from_slice(path.as_bytes());
+        }
+
+        // Write function debug info
+        writer.emit_u32(self.functions.len() as u32);
+        for func in &self.functions {
+            func.encode(writer);
+        }
+
+        // Write class debug info
+        writer.emit_u32(self.classes.len() as u32);
+        for class in &self.classes {
+            class.encode(writer);
+        }
+    }
+
+    /// Decode debug info from binary
+    pub(crate) fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        // Read source files
+        let file_count = reader.read_u32()? as usize;
+        let mut source_files = Vec::with_capacity(file_count);
+        for _ in 0..file_count {
+            source_files.push(reader.read_string()?);
+        }
+
+        // Read function debug info
+        let func_count = reader.read_u32()? as usize;
+        let mut functions = Vec::with_capacity(func_count);
+        for _ in 0..func_count {
+            functions.push(FunctionDebugInfo::decode(reader)?);
+        }
+
+        // Read class debug info
+        let class_count = reader.read_u32()? as usize;
+        let mut classes = Vec::with_capacity(class_count);
+        for _ in 0..class_count {
+            classes.push(ClassDebugInfo::decode(reader)?);
+        }
+
+        Ok(Self {
+            source_files,
+            functions,
+            classes,
+        })
+    }
+}
+
+impl FunctionDebugInfo {
+    /// Create new function debug info
+    pub fn new(
+        source_file_index: u32,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+    ) -> Self {
+        Self {
+            source_file_index,
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            line_table: Vec::new(),
+        }
+    }
+
+    /// Add a line entry to the table
+    pub fn add_line_entry(&mut self, bytecode_offset: u32, line: u32, column: u32) {
+        self.line_table.push(LineEntry {
+            bytecode_offset,
+            line,
+            column,
+        });
+    }
+
+    /// Look up source location for a bytecode offset
+    ///
+    /// Returns the line entry that covers the given offset, or None if not found.
+    /// Uses binary search for efficiency.
+    pub fn lookup_location(&self, bytecode_offset: u32) -> Option<&LineEntry> {
+        if self.line_table.is_empty() {
+            return None;
+        }
+
+        // Binary search for the largest offset <= bytecode_offset
+        let idx = self.line_table
+            .partition_point(|e| e.bytecode_offset <= bytecode_offset);
+
+        if idx == 0 {
+            // bytecode_offset is before first entry
+            Some(&self.line_table[0])
+        } else {
+            Some(&self.line_table[idx - 1])
+        }
+    }
+
+    /// Encode to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.source_file_index);
+        writer.emit_u32(self.start_line);
+        writer.emit_u32(self.start_column);
+        writer.emit_u32(self.end_line);
+        writer.emit_u32(self.end_column);
+
+        // Write line table with delta encoding for compactness
+        writer.emit_u32(self.line_table.len() as u32);
+        for entry in &self.line_table {
+            writer.emit_u32(entry.bytecode_offset);
+            writer.emit_u32(entry.line);
+            writer.emit_u32(entry.column);
+        }
+    }
+
+    /// Decode from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        let source_file_index = reader.read_u32()?;
+        let start_line = reader.read_u32()?;
+        let start_column = reader.read_u32()?;
+        let end_line = reader.read_u32()?;
+        let end_column = reader.read_u32()?;
+
+        let entry_count = reader.read_u32()? as usize;
+        let mut line_table = Vec::with_capacity(entry_count);
+        for _ in 0..entry_count {
+            let bytecode_offset = reader.read_u32()?;
+            let line = reader.read_u32()?;
+            let column = reader.read_u32()?;
+            line_table.push(LineEntry {
+                bytecode_offset,
+                line,
+                column,
+            });
+        }
+
+        Ok(Self {
+            source_file_index,
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            line_table,
+        })
+    }
+}
+
+impl ClassDebugInfo {
+    /// Create new class debug info
+    pub fn new(
+        source_file_index: u32,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+    ) -> Self {
+        Self {
+            source_file_index,
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+        }
+    }
+
+    /// Encode to binary
+    fn encode(&self, writer: &mut BytecodeWriter) {
+        writer.emit_u32(self.source_file_index);
+        writer.emit_u32(self.start_line);
+        writer.emit_u32(self.start_column);
+        writer.emit_u32(self.end_line);
+        writer.emit_u32(self.end_column);
+    }
+
+    /// Decode from binary
+    fn decode(reader: &mut BytecodeReader<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            source_file_index: reader.read_u32()?,
+            start_line: reader.read_u32()?,
+            start_column: reader.read_u32()?,
+            end_line: reader.read_u32()?,
+            end_column: reader.read_u32()?,
+        })
+    }
+}
+
+impl LineEntry {
+    /// Create a new line entry
+    pub fn new(bytecode_offset: u32, line: u32, column: u32) -> Self {
+        Self {
+            bytecode_offset,
+            line,
+            column,
+        }
+    }
 }
 
 /// Function definition
@@ -436,7 +894,41 @@ impl Module {
             exports: Vec::new(),
             imports: Vec::new(),
             checksum: [0; 32], // Will be computed during encode()
+            reflection: None,
+            debug_info: None,
         }
+    }
+
+    /// Check if this module has reflection data
+    pub fn has_reflection(&self) -> bool {
+        (self.flags & flags::HAS_REFLECTION) != 0
+    }
+
+    /// Check if this module has debug information
+    pub fn has_debug_info(&self) -> bool {
+        (self.flags & flags::HAS_DEBUG_INFO) != 0
+    }
+
+    /// Enable reflection for this module
+    pub fn enable_reflection(&mut self) {
+        self.flags |= flags::HAS_REFLECTION;
+        if self.reflection.is_none() {
+            self.reflection = Some(ReflectionData::new());
+        }
+    }
+
+    /// Enable debug info for this module
+    pub fn enable_debug_info(&mut self) {
+        self.flags |= flags::HAS_DEBUG_INFO;
+        if self.debug_info.is_none() {
+            self.debug_info = Some(DebugInfo::new());
+        }
+    }
+
+    /// Get mutable reference to debug info, creating if needed
+    pub fn debug_info_mut(&mut self) -> &mut DebugInfo {
+        self.enable_debug_info();
+        self.debug_info.as_mut().unwrap()
     }
 
     /// Validate module structure
@@ -504,6 +996,26 @@ impl Module {
 
         // Encode metadata
         self.metadata.encode(&mut writer);
+
+        // Encode reflection data if present
+        if (self.flags & flags::HAS_REFLECTION) != 0 {
+            if let Some(ref reflection) = self.reflection {
+                reflection.encode(&mut writer);
+            } else {
+                // Write empty reflection data if flag is set but no data
+                ReflectionData::new().encode(&mut writer);
+            }
+        }
+
+        // Encode debug info if present
+        if (self.flags & flags::HAS_DEBUG_INFO) != 0 {
+            if let Some(ref debug_info) = self.debug_info {
+                debug_info.encode(&mut writer);
+            } else {
+                // Write empty debug info if flag is set but no data
+                DebugInfo::new().encode(&mut writer);
+            }
+        }
 
         // Calculate checksums (of everything after header)
         let payload_start = header_start + 48; // Skip magic + version + flags + crc32 + sha256
@@ -601,6 +1113,20 @@ impl Module {
         // Decode metadata
         let metadata = Metadata::decode(&mut reader)?;
 
+        // Decode reflection data if present
+        let reflection = if (flags & flags::HAS_REFLECTION) != 0 {
+            Some(ReflectionData::decode(&mut reader)?)
+        } else {
+            None
+        };
+
+        // Decode debug info if present
+        let debug_info = if (flags & flags::HAS_DEBUG_INFO) != 0 {
+            Some(DebugInfo::decode(&mut reader)?)
+        } else {
+            None
+        };
+
         Ok(Self {
             magic,
             version,
@@ -612,6 +1138,8 @@ impl Module {
             exports,
             imports,
             checksum,
+            reflection,
+            debug_info,
         })
     }
 }
@@ -828,5 +1356,164 @@ mod tests {
         assert_eq!(decoded.constants.floats.len(), 1);
         assert_eq!(decoded.functions.len(), 1);
         assert_eq!(decoded.classes.len(), 1);
+    }
+
+    #[test]
+    fn test_module_with_reflection() {
+        let mut module = Module::new("test_reflection".to_string());
+        module.enable_reflection();
+
+        // Add class reflection data
+        let mut class_reflection = ClassReflectionData::new();
+        class_reflection.fields.push(FieldReflectionData::new(
+            "name".to_string(),
+            "string".to_string(),
+            false,
+            false,
+        ));
+        class_reflection.fields.push(FieldReflectionData::new(
+            "age".to_string(),
+            "number".to_string(),
+            true, // readonly
+            false,
+        ));
+        class_reflection.method_names.push("greet".to_string());
+        class_reflection.method_names.push("compute".to_string());
+        class_reflection.static_field_names.push("CONSTANT".to_string());
+
+        module.reflection.as_mut().unwrap().classes.push(class_reflection);
+
+        // Also add a corresponding class definition
+        module.classes.push(ClassDef {
+            name: "Person".to_string(),
+            field_count: 2,
+            parent_id: None,
+            methods: vec![],
+        });
+
+        // Encode and decode
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+
+        // Verify flags
+        assert!(decoded.has_reflection());
+        assert_eq!(decoded.flags & flags::HAS_REFLECTION, flags::HAS_REFLECTION);
+
+        // Verify reflection data
+        let reflection = decoded.reflection.as_ref().unwrap();
+        assert_eq!(reflection.classes.len(), 1);
+
+        let class_ref = &reflection.classes[0];
+        assert_eq!(class_ref.fields.len(), 2);
+        assert_eq!(class_ref.fields[0].name, "name");
+        assert_eq!(class_ref.fields[0].type_name, "string");
+        assert!(!class_ref.fields[0].is_readonly);
+
+        assert_eq!(class_ref.fields[1].name, "age");
+        assert_eq!(class_ref.fields[1].type_name, "number");
+        assert!(class_ref.fields[1].is_readonly);
+
+        assert_eq!(class_ref.method_names, vec!["greet", "compute"]);
+        assert_eq!(class_ref.static_field_names, vec!["CONSTANT"]);
+    }
+
+    #[test]
+    fn test_module_without_reflection() {
+        let module = Module::new("test_no_reflection".to_string());
+
+        // Encode and decode
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+
+        // Verify no reflection
+        assert!(!decoded.has_reflection());
+        assert!(decoded.reflection.is_none());
+    }
+
+    #[test]
+    fn test_module_with_debug_info() {
+        let mut module = Module::new("test_debug".to_string());
+        module.enable_debug_info();
+
+        // Add source file
+        let file_idx = module.debug_info_mut().add_source_file("src/main.raya".to_string());
+        assert_eq!(file_idx, 0);
+
+        // Add function debug info
+        let mut func_debug = FunctionDebugInfo::new(0, 10, 1, 25, 1);
+        func_debug.add_line_entry(0, 11, 5);  // first instruction at line 11
+        func_debug.add_line_entry(5, 12, 5);  // next instruction at line 12
+        func_debug.add_line_entry(10, 15, 5); // jump at line 15
+        module.debug_info_mut().functions.push(func_debug);
+
+        // Add class debug info
+        let class_debug = ClassDebugInfo::new(0, 1, 1, 50, 1);
+        module.debug_info_mut().classes.push(class_debug);
+
+        // Encode and decode
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+
+        // Verify debug info
+        assert!(decoded.has_debug_info());
+        let debug_info = decoded.debug_info.as_ref().unwrap();
+
+        assert_eq!(debug_info.source_files.len(), 1);
+        assert_eq!(debug_info.source_files[0], "src/main.raya");
+
+        assert_eq!(debug_info.functions.len(), 1);
+        let func = &debug_info.functions[0];
+        assert_eq!(func.source_file_index, 0);
+        assert_eq!(func.start_line, 10);
+        assert_eq!(func.end_line, 25);
+        assert_eq!(func.line_table.len(), 3);
+        assert_eq!(func.line_table[0].bytecode_offset, 0);
+        assert_eq!(func.line_table[0].line, 11);
+        assert_eq!(func.line_table[1].bytecode_offset, 5);
+        assert_eq!(func.line_table[1].line, 12);
+
+        assert_eq!(debug_info.classes.len(), 1);
+        let class = &debug_info.classes[0];
+        assert_eq!(class.start_line, 1);
+        assert_eq!(class.end_line, 50);
+    }
+
+    #[test]
+    fn test_function_debug_info_lookup() {
+        let mut func_debug = FunctionDebugInfo::new(0, 10, 1, 25, 1);
+        func_debug.add_line_entry(0, 11, 5);
+        func_debug.add_line_entry(5, 12, 10);
+        func_debug.add_line_entry(10, 15, 3);
+        func_debug.add_line_entry(20, 18, 7);
+
+        // Lookup at exact offset
+        let entry = func_debug.lookup_location(5).unwrap();
+        assert_eq!(entry.line, 12);
+        assert_eq!(entry.column, 10);
+
+        // Lookup between entries (should get previous entry)
+        let entry = func_debug.lookup_location(7).unwrap();
+        assert_eq!(entry.line, 12);
+
+        // Lookup at end
+        let entry = func_debug.lookup_location(25).unwrap();
+        assert_eq!(entry.line, 18);
+
+        // Lookup at beginning
+        let entry = func_debug.lookup_location(0).unwrap();
+        assert_eq!(entry.line, 11);
+    }
+
+    #[test]
+    fn test_module_without_debug_info() {
+        let module = Module::new("test_no_debug".to_string());
+
+        // Encode and decode
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+
+        // Verify no debug info
+        assert!(!decoded.has_debug_info());
+        assert!(decoded.debug_info.is_none());
     }
 }

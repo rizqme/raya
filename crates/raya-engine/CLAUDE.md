@@ -39,6 +39,8 @@ src/
 - **sync/**: Mutex, synchronization primitives
 - **snapshot/**: VM state serialization
 - **ffi/**: Native module interface
+- **reflect/**: Reflection API runtime (class metadata, introspection, snapshots)
+- **json/**: JSON parsing and serialization
 
 ## Compilation Pipeline
 
@@ -119,6 +121,12 @@ Vm::execute(&Module) -> VmResult<Value>
 2. Parse in `parser/parser/`
 3. Type check in `parser/checker/`
 4. Lower in `compiler/lower/`
+
+### Adding a Reflect API Method
+1. Add native ID in `vm/builtin.rs` (0x0Dxx range)
+2. Add handler in `vm/vm/task_interpreter.rs` (call_reflect_method)
+3. Add type declaration in `raya-stdlib/reflect.d.raya`
+4. Update milestone-3.8.md
 
 ## Test Files
 

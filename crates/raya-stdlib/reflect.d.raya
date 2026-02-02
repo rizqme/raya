@@ -1,0 +1,699 @@
+/**
+ * std:reflect - Runtime Reflection API
+ *
+ * Provides runtime introspection and manipulation of classes, methods, and fields.
+ * This module is foundational for decorators and dependency injection.
+ *
+ * Usage:
+ *   import * as Reflect from "std:reflect";
+ */
+
+// ============================================================================
+// Metadata Operations
+// ============================================================================
+
+/**
+ * Define metadata on a target
+ * @param key - Metadata key
+ * @param value - Metadata value
+ * @param target - Target object or class
+ */
+export function defineMetadata(key: string, value: any, target: any): void;
+
+/**
+ * Define metadata on a property
+ * @param key - Metadata key
+ * @param value - Metadata value
+ * @param target - Target object or class
+ * @param propertyKey - Property name
+ */
+export function defineMetadata(key: string, value: any, target: any, propertyKey: string): void;
+
+/**
+ * Get metadata from a target
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @returns The metadata value or null
+ */
+export function getMetadata(key: string, target: any): any;
+
+/**
+ * Get metadata from a property
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @param propertyKey - Property name
+ * @returns The metadata value or null
+ */
+export function getMetadata(key: string, target: any, propertyKey: string): any;
+
+/**
+ * Check if target has metadata
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @returns true if metadata exists
+ */
+export function hasMetadata(key: string, target: any): boolean;
+
+/**
+ * Check if property has metadata
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @param propertyKey - Property name
+ * @returns true if metadata exists
+ */
+export function hasMetadata(key: string, target: any, propertyKey: string): boolean;
+
+/**
+ * Get all metadata keys on a target
+ * @param target - Target object or class
+ * @returns Array of metadata keys
+ */
+export function getMetadataKeys(target: any): string[];
+
+/**
+ * Get all metadata keys on a property
+ * @param target - Target object or class
+ * @param propertyKey - Property name
+ * @returns Array of metadata keys
+ */
+export function getMetadataKeys(target: any, propertyKey: string): string[];
+
+/**
+ * Delete metadata from a target
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @returns true if metadata was deleted
+ */
+export function deleteMetadata(key: string, target: any): boolean;
+
+/**
+ * Delete metadata from a property
+ * @param key - Metadata key
+ * @param target - Target object or class
+ * @param propertyKey - Property name
+ * @returns true if metadata was deleted
+ */
+export function deleteMetadata(key: string, target: any, propertyKey: string): boolean;
+
+// ============================================================================
+// Class Introspection
+// ============================================================================
+
+/**
+ * Get the class ID of an object
+ * @param obj - Object instance
+ * @returns Class ID or null if not a class instance
+ */
+export function getClass<T>(obj: T): number | null;
+
+/**
+ * Look up a class by name
+ * @param name - Class name
+ * @returns Class ID or null if not found
+ */
+export function getClassByName(name: string): number | null;
+
+/**
+ * Get all registered class IDs
+ * @returns Array of class IDs
+ */
+export function getAllClasses(): number[];
+
+/**
+ * Get classes with a specific decorator
+ * @param decorator - Decorator name
+ * @returns Array of class IDs
+ */
+export function getClassesWithDecorator(decorator: string): number[];
+
+/**
+ * Check if one class is a subclass of another
+ * @param subClassId - Potential subclass ID
+ * @param superClassId - Potential superclass ID
+ * @returns true if subClassId extends superClassId
+ */
+export function isSubclassOf(subClassId: number, superClassId: number): boolean;
+
+/**
+ * Check if an object is an instance of a class
+ * @param obj - Object to check
+ * @param classId - Class ID to check against
+ * @returns true if obj is an instance of the class
+ */
+export function isInstanceOf(obj: any, classId: number): boolean;
+
+/**
+ * Get type information for a value
+ * @param target - Value to inspect
+ * @returns Type name string
+ */
+export function getTypeInfo(target: any): string;
+
+/**
+ * Get the inheritance hierarchy for an object
+ * @param obj - Object instance
+ * @returns Array of class IDs from most specific to most general
+ */
+export function getClassHierarchy(obj: any): number[];
+
+// ============================================================================
+// Field Access
+// ============================================================================
+
+/**
+ * Get a field value by name
+ * @param target - Object instance
+ * @param propertyKey - Field name
+ * @returns Field value or null
+ */
+export function get(target: any, propertyKey: string): any;
+
+/**
+ * Set a field value by name
+ * @param target - Object instance
+ * @param propertyKey - Field name
+ * @param value - Value to set
+ * @returns true if successful
+ */
+export function set(target: any, propertyKey: string, value: any): boolean;
+
+/**
+ * Check if an object has a field
+ * @param target - Object instance
+ * @param propertyKey - Field name
+ * @returns true if field exists
+ */
+export function has(target: any, propertyKey: string): boolean;
+
+/**
+ * Get all field names of an object
+ * @param target - Object instance
+ * @returns Array of field names
+ */
+export function getFieldNames(target: any): string[];
+
+/**
+ * Field information structure
+ */
+export interface FieldInfo {
+    name: string;
+    type: string;
+    index: number;
+    isStatic: boolean;
+    isReadonly: boolean;
+    declaringClass: number;
+}
+
+/**
+ * Get detailed information about a field
+ * @param target - Object instance
+ * @param propertyKey - Field name
+ * @returns FieldInfo or null
+ */
+export function getFieldInfo(target: any, propertyKey: string): FieldInfo | null;
+
+/**
+ * Get all field infos for an object
+ * @param target - Object instance
+ * @returns Array of FieldInfo
+ */
+export function getFields(target: any): FieldInfo[];
+
+/**
+ * Get static field names for a class
+ * @param classId - Class ID
+ * @returns Array of static field names
+ */
+export function getStaticFieldNames(classId: number): string[];
+
+/**
+ * Get static field infos for a class
+ * @param classId - Class ID
+ * @returns Array of FieldInfo for static fields
+ */
+export function getStaticFields(classId: number): FieldInfo[];
+
+// ============================================================================
+// Method Invocation
+// ============================================================================
+
+/**
+ * Check if an object has a method
+ * @param target - Object instance
+ * @param methodName - Method name
+ * @returns true if method exists
+ */
+export function hasMethod(target: any, methodName: string): boolean;
+
+/**
+ * Method information structure
+ */
+export interface MethodInfo {
+    name: string;
+    parameterCount: number;
+    isStatic: boolean;
+    isAsync: boolean;
+    declaringClass: number;
+}
+
+/**
+ * Get method information
+ * @param target - Object instance
+ * @param methodName - Method name
+ * @returns MethodInfo or null
+ */
+export function getMethodInfo(target: any, methodName: string): MethodInfo | null;
+
+/**
+ * Get all methods of an object
+ * @param target - Object instance
+ * @returns Array of MethodInfo
+ */
+export function getMethods(target: any): MethodInfo[];
+
+/**
+ * Get a method as a callable function
+ * @param target - Object instance
+ * @param methodName - Method name
+ * @returns Function or null
+ */
+export function getMethod(target: any, methodName: string): Function | null;
+
+/**
+ * Invoke a method dynamically
+ * @param target - Object instance
+ * @param methodName - Method name
+ * @param args - Arguments to pass
+ * @returns Method return value
+ */
+export function invoke(target: any, methodName: string, ...args: any[]): any;
+
+/**
+ * Invoke an async method dynamically
+ * @param target - Object instance
+ * @param methodName - Method name
+ * @param args - Arguments to pass
+ * @returns Promise of method return value
+ */
+export function invokeAsync(target: any, methodName: string, ...args: any[]): Promise<any>;
+
+/**
+ * Invoke a static method dynamically
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @param args - Arguments to pass
+ * @returns Method return value
+ */
+export function invokeStatic(classId: number, methodName: string, ...args: any[]): any;
+
+/**
+ * Get static methods of a class
+ * @param classId - Class ID
+ * @returns Array of MethodInfo
+ */
+export function getStaticMethods(classId: number): MethodInfo[];
+
+// ============================================================================
+// Object Creation
+// ============================================================================
+
+/**
+ * Create a new instance of a class
+ * @param classId - Class ID
+ * @param args - Constructor arguments
+ * @returns New instance
+ */
+export function construct(classId: number, ...args: any[]): any;
+
+/**
+ * Allocate an uninitialized instance
+ * @param classId - Class ID
+ * @returns Uninitialized instance (fields are null)
+ */
+export function allocate(classId: number): any;
+
+/**
+ * Create a shallow clone of an object
+ * @param obj - Object to clone
+ * @returns Cloned object
+ */
+export function clone<T>(obj: T): T;
+
+/**
+ * Create a deep clone of an object
+ * @param obj - Object to clone
+ * @returns Deep cloned object
+ */
+export function deepClone<T>(obj: T): T;
+
+/**
+ * Constructor information structure
+ */
+export interface ConstructorInfo {
+    parameterCount: number;
+    parameterTypes: string[];
+}
+
+/**
+ * Get constructor information for a class
+ * @param classId - Class ID
+ * @returns ConstructorInfo or null
+ */
+export function getConstructorInfo(classId: number): ConstructorInfo | null;
+
+// ============================================================================
+// Type Utilities
+// ============================================================================
+
+/**
+ * Check if a value is a string
+ * @param value - Value to check
+ * @returns true if value is a string
+ */
+export function isString(value: any): boolean;
+
+/**
+ * Check if a value is a number
+ * @param value - Value to check
+ * @returns true if value is a number
+ */
+export function isNumber(value: any): boolean;
+
+/**
+ * Check if a value is a boolean
+ * @param value - Value to check
+ * @returns true if value is a boolean
+ */
+export function isBoolean(value: any): boolean;
+
+/**
+ * Check if a value is null
+ * @param value - Value to check
+ * @returns true if value is null
+ */
+export function isNull(value: any): boolean;
+
+/**
+ * Check if a value is an array
+ * @param value - Value to check
+ * @returns true if value is an array
+ */
+export function isArray(value: any): boolean;
+
+/**
+ * Check if a value is a function
+ * @param value - Value to check
+ * @returns true if value is a function
+ */
+export function isFunction(value: any): boolean;
+
+/**
+ * Check if a value is an object (class instance)
+ * @param value - Value to check
+ * @returns true if value is an object
+ */
+export function isObject(value: any): boolean;
+
+/**
+ * Type information structure
+ */
+export interface TypeInfo {
+    kind: string;
+    name: string;
+    classId?: number;
+}
+
+/**
+ * Get type information from a type name
+ * @param typeName - The name of the type (e.g., "string", "number", "MyClass")
+ * @returns TypeInfo or null if type not found
+ */
+export function typeOf(typeName: string): TypeInfo | null;
+
+/**
+ * Check if a source type is assignable to a target type
+ * @param sourceType - Source type name
+ * @param targetType - Target type name
+ * @returns true if source is assignable to target
+ */
+export function isAssignableTo(sourceType: string, targetType: string): boolean;
+
+/**
+ * Safe cast - returns null if the value is not an instance of the class
+ * @param value - Value to cast
+ * @param classId - Target class ID
+ * @returns The value if compatible, null otherwise
+ */
+export function cast<T>(value: any, classId: number): T | null;
+
+/**
+ * Cast that throws an error if the value is not an instance of the class
+ * @param value - Value to cast
+ * @param classId - Target class ID
+ * @returns The value if compatible
+ * @throws TypeError if cast fails
+ */
+export function castOrThrow<T>(value: any, classId: number): T;
+
+// ============================================================================
+// Interface and Hierarchy Query
+// ============================================================================
+
+/**
+ * Check if a class implements an interface
+ * @param classId - Class ID
+ * @param interfaceName - Interface name
+ * @returns true if class implements interface
+ */
+export function implements_(classId: number, interfaceName: string): boolean;
+
+/**
+ * Get interfaces implemented by a class
+ * @param classId - Class ID
+ * @returns Array of interface names
+ */
+export function getInterfaces(classId: number): string[];
+
+/**
+ * Get the superclass of a class
+ * @param classId - Class ID
+ * @returns Parent class ID or null if no parent
+ */
+export function getSuperclass(classId: number): number | null;
+
+/**
+ * Get direct subclasses of a class
+ * @param classId - Class ID
+ * @returns Array of subclass IDs
+ */
+export function getSubclasses(classId: number): number[];
+
+/**
+ * Get all classes that implement a given interface
+ * @param interfaceName - Interface name
+ * @returns Array of class IDs implementing the interface
+ */
+export function getImplementors(interfaceName: string): number[];
+
+/**
+ * Check if two classes are structurally compatible
+ * A class is structurally compatible if it has all fields and methods of the target.
+ * @param sourceClassId - Source class ID
+ * @param targetClassId - Target class ID
+ * @returns true if source is structurally compatible with target
+ */
+export function isStructurallyCompatible(sourceClassId: number, targetClassId: number): boolean;
+
+// ============================================================================
+// Object Inspection & DevTools
+// ============================================================================
+
+/**
+ * Get a human-readable representation of an object
+ * @param obj - Object to inspect
+ * @param depth - Maximum depth to inspect (default: 2)
+ * @returns Human-readable string representation
+ */
+export function inspect(obj: any, depth?: number): string;
+
+/**
+ * Get a unique identifier for an object (for tracking/debugging)
+ * @param obj - Object to get ID for
+ * @returns Unique object identifier, or 0 for primitives
+ */
+export function getObjectId(obj: any): number;
+
+/**
+ * Get a detailed description of a class
+ * @param classId - Class ID to describe
+ * @returns Human-readable class description
+ */
+export function describe(classId: number): string;
+
+/**
+ * Object snapshot for state tracking
+ */
+export interface ObjectSnapshot {
+    className: string;
+    fields: Map<string, FieldSnapshot>;
+    identity: number;
+    timestamp: number;
+}
+
+/**
+ * Field snapshot data
+ */
+export interface FieldSnapshot {
+    name: string;
+    value: any;
+    type: string;
+}
+
+/**
+ * Capture a snapshot of an object's state
+ * @param obj - Object to snapshot
+ * @returns Object snapshot with class name, identity, timestamp, and field values
+ */
+export function snapshot(obj: any): ObjectSnapshot;
+
+/**
+ * Object diff result
+ */
+export interface ObjectDiff {
+    added: string[];
+    removed: string[];
+    changed: Map<string, { old: any; new: any }>;
+}
+
+/**
+ * Compare two objects or snapshots
+ * @param a - First object or snapshot
+ * @param b - Second object or snapshot
+ * @returns Differences between objects (added, removed, changed fields)
+ */
+export function diff(a: any, b: any): ObjectDiff;
+
+// ============================================================================
+// Memory Analysis
+// ============================================================================
+
+/**
+ * Get the shallow memory size of an object in bytes
+ * @param obj - Object to measure
+ * @returns Approximate size in bytes
+ */
+export function getObjectSize(obj: any): number;
+
+/**
+ * Get the retained size of an object (including referenced objects)
+ * @param obj - Object to measure
+ * @returns Retained size in bytes (traverses object graph)
+ */
+export function getRetainedSize(obj: any): number;
+
+/**
+ * Get objects referenced by this object
+ * @param obj - Object to analyze
+ * @returns Array of referenced objects
+ */
+export function getReferences(obj: any): any[];
+
+/**
+ * Get objects that reference this object
+ * @param obj - Object to find referrers for
+ * @returns Array of referrer objects (scans heap allocations)
+ */
+export function getReferrers(obj: any): any[];
+
+/**
+ * Heap statistics
+ */
+export interface HeapStats {
+    totalObjects: number;
+    totalBytes: number;
+    byClass: Map<string, { count: number; bytes: number }>;
+}
+
+/**
+ * Get heap statistics
+ * @returns Heap stats with total objects, bytes, and breakdown by class
+ */
+export function getHeapStats(): HeapStats;
+
+/**
+ * Find all live instances of a class
+ * @param classId - Class ID to find instances of
+ * @returns Array of all live instances (scans heap)
+ */
+export function findInstances(classId: number): any[];
+
+// ============================================================================
+// Stack Introspection
+// ============================================================================
+
+/**
+ * Call frame information
+ */
+export interface CallFrame {
+    functionName: string;
+    className: string | null;
+    args: any[];
+    sourceFile: string | null;
+    line: number | null;
+    column: number | null;
+}
+
+/**
+ * Get the current call stack
+ * @returns Array of call frames with function names and class info
+ */
+export function getCallStack(): CallFrame[];
+
+/**
+ * Get local variables in a stack frame
+ * @param frameIndex - Frame index (0 = current, default: 0)
+ * @returns Array of local variable values by index
+ */
+export function getLocals(frameIndex?: number): any[];
+
+/**
+ * Source location information
+ */
+export interface SourceLocation {
+    file: string;
+    line: number;
+    column: number;
+}
+
+/**
+ * Get source location for a method
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @returns Source location or null (requires --emit-debug flag during compilation)
+ */
+export function getSourceLocation(classId: number, methodName: string): SourceLocation | null;
+
+// ============================================================================
+// Serialization Helpers
+// ============================================================================
+
+/**
+ * Convert an object to JSON string
+ * @param obj - Object to serialize
+ * @returns JSON string representation
+ */
+export function toJSON(obj: any): string;
+
+/**
+ * Get enumerable keys of an object (suitable for iteration)
+ * @param obj - Object to get keys from
+ * @returns Array of enumerable key names
+ */
+export function getEnumerableKeys(obj: any): string[];
+
+/**
+ * Check if an object contains circular references
+ * @param obj - Object to check
+ * @returns true if object has circular references
+ */
+export function isCircular(obj: any): boolean;

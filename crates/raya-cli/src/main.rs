@@ -49,6 +49,9 @@ enum Commands {
         /// Watch for changes
         #[arg(short, long)]
         watch: bool,
+        /// Emit reflection metadata (class/field/method names for introspection)
+        #[arg(long)]
+        emit_reflection: bool,
     },
 
     /// Type-check without building
@@ -243,15 +246,18 @@ fn main() -> anyhow::Result<()> {
             out_dir,
             release,
             watch,
+            emit_reflection,
         } => {
             println!("Building: {:?}", files);
             println!("Output directory: {}", out_dir);
-            println!("Build type: binary (.ryb with mandatory reflection)");
             if release {
                 println!("Release mode: enabled");
             }
             if watch {
                 println!("Watch mode: enabled");
+            }
+            if emit_reflection {
+                println!("Reflection metadata: enabled");
             }
             println!("(Not yet implemented)");
         }

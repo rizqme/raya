@@ -196,6 +196,8 @@ mod tests {
                 name: "test".to_string(),
                 source_file: None,
             },
+            reflection: None,
+            debug_info: None,
         }
     }
 

@@ -2,7 +2,10 @@
 //!
 //! Manages state during bytecode generation from IR.
 
-use crate::compiler::bytecode::{Function, Module, Opcode};
+use crate::compiler::bytecode::{
+    ClassReflectionData, FieldReflectionData, Function, Module, Opcode, ReflectionData,
+};
+use crate::compiler::bytecode::flags;
 use crate::compiler::error::{CompileError, CompileResult};
 use crate::compiler::ir::{
     BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrConstant, IrFunction, IrInstr,
@@ -17,6 +20,8 @@ pub struct IrCodeGenerator {
     module_builder: ModuleBuilder,
     /// Current function being compiled
     current_func: Option<FunctionContext>,
+    /// Whether to emit reflection data
+    emit_reflection: bool,
 }
 
 /// Context for compiling a single function
@@ -168,7 +173,22 @@ impl IrCodeGenerator {
         Self {
             module_builder: ModuleBuilder::new(module_name.to_string()),
             current_func: None,
+            emit_reflection: false,
         }
+    }
+
+    /// Create a new code generator with reflection enabled
+    pub fn with_reflection(module_name: &str) -> Self {
+        Self {
+            module_builder: ModuleBuilder::new(module_name.to_string()),
+            current_func: None,
+            emit_reflection: true,
+        }
+    }
+
+    /// Enable reflection data emission
+    pub fn set_emit_reflection(&mut self, emit: bool) {
+        self.emit_reflection = emit;
     }
 
     /// Generate bytecode from an IR module
@@ -178,6 +198,13 @@ impl IrCodeGenerator {
             let bytecode_func = self.generate_function(func)?;
             self.module_builder.add_function(bytecode_func);
         }
+
+        // Collect reflection data if enabled
+        let reflection_data = if self.emit_reflection {
+            Some(self.generate_reflection_data(module))
+        } else {
+            None
+        };
 
         // Generate class definitions
         for class in module.classes() {
@@ -195,7 +222,69 @@ impl IrCodeGenerator {
             &mut self.module_builder,
             ModuleBuilder::new(String::new()),
         );
-        Ok(builder.build())
+        let mut bytecode_module = builder.build();
+
+        // Add reflection data if present
+        if let Some(reflection) = reflection_data {
+            bytecode_module.flags |= flags::HAS_REFLECTION;
+            bytecode_module.reflection = Some(reflection);
+        }
+
+        Ok(bytecode_module)
+    }
+
+    /// Generate reflection data from IR module
+    fn generate_reflection_data(&self, module: &IrModule) -> ReflectionData {
+        let mut reflection = ReflectionData::new();
+
+        for ir_class in module.classes() {
+            let mut class_reflection = ClassReflectionData::new();
+
+            // Add field reflection data
+            for field in &ir_class.fields {
+                let type_name = self.get_type_name(field.ty);
+                class_reflection.fields.push(FieldReflectionData::new(
+                    field.name.clone(),
+                    type_name,
+                    field.readonly,
+                    false, // Instance fields are not static
+                ));
+            }
+
+            // Add method names from the function table
+            for &method_id in &ir_class.methods {
+                if let Some(func) = module.get_function(method_id) {
+                    class_reflection.method_names.push(func.name.clone());
+                }
+            }
+
+            reflection.classes.push(class_reflection);
+        }
+
+        reflection
+    }
+
+    /// Get a human-readable type name for a TypeId
+    fn get_type_name(&self, type_id: crate::parser::TypeId) -> String {
+        // Map well-known TypeIds to names
+        // Pre-interned TypeIds from the type registry:
+        // 0 = Number (f64)
+        // 1 = String
+        // 2 = Boolean
+        // 3 = Null
+        // 4 = Void
+        // 5 = Never
+        // 6 = Unknown
+        match type_id.as_u32() {
+            0 => "number".to_string(),
+            1 => "string".to_string(),
+            2 => "boolean".to_string(),
+            3 => "null".to_string(),
+            4 => "void".to_string(),
+            5 => "never".to_string(),
+            6 => "unknown".to_string(),
+            id => format!("type#{}", id), // Unknown type, use ID as fallback
+        }
     }
 
     /// Generate bytecode for a single function

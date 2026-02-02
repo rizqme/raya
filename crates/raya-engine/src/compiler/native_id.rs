@@ -227,6 +227,80 @@ pub const REFLECT_DELETE_METADATA: u16 = 0x0D08;
 /// Reflect.deleteMetadata(key, target, propertyKey) - delete metadata from property
 pub const REFLECT_DELETE_METADATA_PROP: u16 = 0x0D09;
 
+// ============================================================================
+// Reflect - Class Introspection (0x0D10-0x0D1F)
+// ============================================================================
+
+/// Reflect.getClass(obj) - get class ID of object
+pub const REFLECT_GET_CLASS: u16 = 0x0D10;
+/// Reflect.getClassByName(name) - lookup class by name
+pub const REFLECT_GET_CLASS_BY_NAME: u16 = 0x0D11;
+/// Reflect.getAllClasses() - get all registered class IDs
+pub const REFLECT_GET_ALL_CLASSES: u16 = 0x0D12;
+/// Reflect.isSubclassOf(subClassId, superClassId) - check inheritance
+pub const REFLECT_IS_SUBCLASS_OF: u16 = 0x0D13;
+/// Reflect.isInstanceOf(obj, classId) - type guard
+pub const REFLECT_IS_INSTANCE_OF: u16 = 0x0D14;
+/// Reflect.getTypeInfo(target) - get type info string
+pub const REFLECT_GET_TYPE_INFO: u16 = 0x0D15;
+/// Reflect.getClassHierarchy(obj) - get inheritance chain
+pub const REFLECT_GET_CLASS_HIERARCHY: u16 = 0x0D16;
+/// Reflect.getClassesWithDecorator(decorator) - filter by decorator
+pub const REFLECT_GET_CLASSES_WITH_DECORATOR: u16 = 0x0D17;
+
+// ============================================================================
+// Reflect - Field Access (0x0D20-0x0D2F)
+// ============================================================================
+
+/// Reflect.get(target, propertyKey) - get field value
+pub const REFLECT_GET: u16 = 0x0D20;
+/// Reflect.set(target, propertyKey, value) - set field value
+pub const REFLECT_SET: u16 = 0x0D21;
+/// Reflect.has(target, propertyKey) - check field exists
+pub const REFLECT_HAS: u16 = 0x0D22;
+/// Reflect.getFieldNames(target) - list all field names
+pub const REFLECT_GET_FIELD_NAMES: u16 = 0x0D23;
+/// Reflect.getFieldInfo(target, propertyKey) - get field metadata
+pub const REFLECT_GET_FIELD_INFO: u16 = 0x0D24;
+/// Reflect.getFields(target) - get all field infos
+pub const REFLECT_GET_FIELDS: u16 = 0x0D25;
+/// Reflect.getStaticFieldNames(classId) - get static field names
+pub const REFLECT_GET_STATIC_FIELD_NAMES: u16 = 0x0D26;
+/// Reflect.getStaticFields(classId) - get static field infos
+pub const REFLECT_GET_STATIC_FIELDS: u16 = 0x0D27;
+
+// ============================================================================
+// Reflect - Method Invocation (0x0D30-0x0D3F)
+// ============================================================================
+
+/// Reflect.invoke(target, methodName, ...args) - call method dynamically
+pub const REFLECT_INVOKE: u16 = 0x0D30;
+/// Reflect.invokeAsync(target, methodName, ...args) - call async method
+pub const REFLECT_INVOKE_ASYNC: u16 = 0x0D31;
+/// Reflect.getMethod(target, methodName) - get method reference (function value)
+pub const REFLECT_GET_METHOD: u16 = 0x0D32;
+/// Reflect.getMethodInfo(target, methodName) - get method metadata
+pub const REFLECT_GET_METHOD_INFO: u16 = 0x0D33;
+/// Reflect.getMethods(target) - list all method infos
+pub const REFLECT_GET_METHODS: u16 = 0x0D34;
+/// Reflect.hasMethod(target, methodName) - check method exists
+pub const REFLECT_HAS_METHOD: u16 = 0x0D35;
+/// Reflect.invokeStatic(classId, methodName, ...args) - call static method
+pub const REFLECT_INVOKE_STATIC: u16 = 0x0D36;
+/// Reflect.getStaticMethods(classId) - get static method infos
+pub const REFLECT_GET_STATIC_METHODS: u16 = 0x0D37;
+
+// ============================================================================
+// Reflect - Object Creation (0x0D40-0x0D4F)
+// ============================================================================
+
+/// Reflect.construct(classId, ...args) - create instance
+pub const REFLECT_CONSTRUCT: u16 = 0x0D40;
+/// Reflect.allocate(classId) - allocate uninitialized instance
+pub const REFLECT_ALLOCATE: u16 = 0x0D41;
+/// Reflect.clone(obj) - shallow clone
+pub const REFLECT_CLONE: u16 = 0x0D42;
+
 /// Get the name of a native function for debugging purposes
 pub fn native_name(id: u16) -> &'static str {
     match id {
@@ -294,7 +368,7 @@ pub fn native_name(id: u16) -> &'static str {
         JSON_PARSE => "JSON.parse",
         JSON_DECODE_OBJECT => "JSON.decode",
 
-        // Reflect
+        // Reflect - Metadata
         REFLECT_DEFINE_METADATA => "Reflect.defineMetadata",
         REFLECT_DEFINE_METADATA_PROP => "Reflect.defineMetadata (property)",
         REFLECT_GET_METADATA => "Reflect.getMetadata",
@@ -305,6 +379,41 @@ pub fn native_name(id: u16) -> &'static str {
         REFLECT_GET_METADATA_KEYS_PROP => "Reflect.getMetadataKeys (property)",
         REFLECT_DELETE_METADATA => "Reflect.deleteMetadata",
         REFLECT_DELETE_METADATA_PROP => "Reflect.deleteMetadata (property)",
+
+        // Reflect - Class Introspection
+        REFLECT_GET_CLASS => "Reflect.getClass",
+        REFLECT_GET_CLASS_BY_NAME => "Reflect.getClassByName",
+        REFLECT_GET_ALL_CLASSES => "Reflect.getAllClasses",
+        REFLECT_IS_SUBCLASS_OF => "Reflect.isSubclassOf",
+        REFLECT_IS_INSTANCE_OF => "Reflect.isInstanceOf",
+        REFLECT_GET_TYPE_INFO => "Reflect.getTypeInfo",
+        REFLECT_GET_CLASS_HIERARCHY => "Reflect.getClassHierarchy",
+        REFLECT_GET_CLASSES_WITH_DECORATOR => "Reflect.getClassesWithDecorator",
+
+        // Reflect - Field Access
+        REFLECT_GET => "Reflect.get",
+        REFLECT_SET => "Reflect.set",
+        REFLECT_HAS => "Reflect.has",
+        REFLECT_GET_FIELD_NAMES => "Reflect.getFieldNames",
+        REFLECT_GET_FIELD_INFO => "Reflect.getFieldInfo",
+        REFLECT_GET_FIELDS => "Reflect.getFields",
+        REFLECT_GET_STATIC_FIELD_NAMES => "Reflect.getStaticFieldNames",
+        REFLECT_GET_STATIC_FIELDS => "Reflect.getStaticFields",
+
+        // Reflect - Method Invocation
+        REFLECT_INVOKE => "Reflect.invoke",
+        REFLECT_INVOKE_ASYNC => "Reflect.invokeAsync",
+        REFLECT_GET_METHOD => "Reflect.getMethod",
+        REFLECT_GET_METHOD_INFO => "Reflect.getMethodInfo",
+        REFLECT_GET_METHODS => "Reflect.getMethods",
+        REFLECT_HAS_METHOD => "Reflect.hasMethod",
+        REFLECT_INVOKE_STATIC => "Reflect.invokeStatic",
+        REFLECT_GET_STATIC_METHODS => "Reflect.getStaticMethods",
+
+        // Reflect - Object Creation
+        REFLECT_CONSTRUCT => "Reflect.construct",
+        REFLECT_ALLOCATE => "Reflect.allocate",
+        REFLECT_CLONE => "Reflect.clone",
 
         _ => "unknown",
     }

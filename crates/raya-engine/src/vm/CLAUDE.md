@@ -13,12 +13,17 @@ vm/
 ├── stack.rs       # Call frames, operand stack
 ├── value.rs       # Value representation
 ├── object.rs      # Object model (Class, Array, String)
-├── builtin.rs     # Builtin native IDs
+├── builtin.rs     # Builtin native IDs (0x0Dxx for Reflect)
 ├── types/         # Runtime type registry
 ├── sync/          # Synchronization primitives
 ├── snapshot/      # VM snapshotting
 ├── json/          # JSON runtime support
 ├── module/        # Module loading and linking
+├── reflect/       # Reflection API runtime support
+│   ├── class_metadata.rs  # ClassMetadataRegistry
+│   ├── introspection.rs   # Type info, class hierarchy
+│   ├── metadata.rs        # MetadataStore for user metadata
+│   └── snapshot.rs        # ObjectSnapshot, ObjectDiff
 └── ffi/           # Foreign function interface
 ```
 
@@ -97,6 +102,13 @@ See [snapshot/CLAUDE.md](snapshot/CLAUDE.md).
 See [ffi/CLAUDE.md](ffi/CLAUDE.md).
 - Native module loading
 - Value conversion
+
+### `reflect/` - Reflection API Runtime
+- `ClassMetadataRegistry` - stores field names, method info per class
+- `MetadataStore` - user-defined metadata via `Reflect.defineMetadata`
+- `introspection.rs` - `get_class_id`, `is_instance_of`, `TypeInfo`
+- `snapshot.rs` - `ObjectSnapshot`, `ObjectDiff` for state tracking
+- Native call handlers use IDs 0x0D00-0x0DAF (see `builtin.rs`)
 
 ## Execution Model
 

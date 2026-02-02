@@ -10,7 +10,12 @@ vm/
 ├── interpreter.rs      # Main instruction dispatch loop
 ├── class_registry.rs   # Runtime class management
 ├── shared_state.rs     # Shared state across contexts
-└── task_interpreter.rs # Task-specific interpreter
+├── task_interpreter.rs # Task-specific interpreter + Reflect handlers
+└── handlers/           # Native method handlers
+    ├── array.rs        # Array method handlers
+    ├── string.rs       # String method handlers
+    ├── regexp.rs       # RegExp method handlers
+    └── reflect.rs      # Reflect API handlers (Phases 1-5)
 ```
 
 ## Key Types
@@ -176,6 +181,23 @@ pub fn run_task(&mut self, task: &mut Task) -> TaskResult {
 }
 ```
 
+## Reflect API Handlers (`task_interpreter.rs`)
+
+Phase 6-8 handlers are inline in `call_reflect_method()`:
+- **Phase 6**: Type utilities (`typeOf`, `isAssignableTo`, `cast`)
+- **Phase 7**: Interface queries (`getInterfaces`, `implementsInterface`)
+- **Phase 8**: Object inspection, memory analysis, stack introspection
+
+Key handlers:
+- `inspect(obj)` - Human-readable object representation
+- `snapshot(obj)` - Capture object state as `ObjectSnapshot`
+- `diff(a, b)` - Compare objects/snapshots
+- `getHeapStats()` - Memory usage by class
+- `getCallStack()` - Current call frames
+- `getSourceLocation(classId, methodName)` - Source file:line:col (requires debug info)
+
+Native IDs: 0x0D00-0x0DAF (see `vm/builtin.rs`)
+
 ## For AI Assistants
 
 - Main loop is in `interpreter.rs`
@@ -185,3 +207,4 @@ pub fn run_task(&mut self, task: &mut Task) -> TaskResult {
 - Class instances are created via ClassRegistry
 - Method calls use vtable lookup
 - Exception handling uses try/catch bytecode markers
+- Reflect Phase 6-8 handlers are in `task_interpreter.rs` (inline for Task access)

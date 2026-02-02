@@ -426,6 +426,92 @@ pub mod reflect {
     pub const DEEP_CLONE: u16 = 0x0D44;
     /// `Reflect.getConstructorInfo(cls)` - Get constructor metadata
     pub const GET_CONSTRUCTOR_INFO: u16 = 0x0D45;
+
+    // ===== Phase 6: Type Utilities (0x0D50-0x0D5F) =====
+
+    /// `Reflect.isString(value)` - Check if value is string
+    pub const IS_STRING: u16 = 0x0D50;
+    /// `Reflect.isNumber(value)` - Check if value is number
+    pub const IS_NUMBER: u16 = 0x0D51;
+    /// `Reflect.isBoolean(value)` - Check if value is boolean
+    pub const IS_BOOLEAN: u16 = 0x0D52;
+    /// `Reflect.isNull(value)` - Check if value is null
+    pub const IS_NULL: u16 = 0x0D53;
+    /// `Reflect.isArray(value)` - Check if value is array
+    pub const IS_ARRAY: u16 = 0x0D54;
+    /// `Reflect.isFunction(value)` - Check if value is function
+    pub const IS_FUNCTION: u16 = 0x0D55;
+    /// `Reflect.isObject(value)` - Check if value is object
+    pub const IS_OBJECT: u16 = 0x0D56;
+    /// `Reflect.typeOf(typeName)` - Get TypeInfo from string
+    pub const TYPE_OF: u16 = 0x0D57;
+    /// `Reflect.isAssignableTo(source, target)` - Check type compatibility
+    pub const IS_ASSIGNABLE_TO: u16 = 0x0D58;
+    /// `Reflect.cast(value, classId)` - Safe cast (returns null if incompatible)
+    pub const CAST: u16 = 0x0D59;
+    /// `Reflect.castOrThrow(value, classId)` - Cast or throw error
+    pub const CAST_OR_THROW: u16 = 0x0D5A;
+
+    // ===== Phase 7: Interface and Hierarchy Query (0x0D60-0x0D6F) =====
+
+    /// `Reflect.implements(cls, interfaceName)` - Check if class implements interface
+    pub const IMPLEMENTS: u16 = 0x0D60;
+    /// `Reflect.getInterfaces(cls)` - Get interfaces implemented by class
+    pub const GET_INTERFACES: u16 = 0x0D61;
+    /// `Reflect.getSuperclass(cls)` - Get parent class
+    pub const GET_SUPERCLASS: u16 = 0x0D62;
+    /// `Reflect.getSubclasses(cls)` - Get direct subclasses
+    pub const GET_SUBCLASSES: u16 = 0x0D63;
+    /// `Reflect.getImplementors(interfaceName)` - Get all classes implementing interface
+    pub const GET_IMPLEMENTORS: u16 = 0x0D64;
+    /// `Reflect.isStructurallyCompatible(a, b)` - Check structural type compatibility
+    pub const IS_STRUCTURALLY_COMPATIBLE: u16 = 0x0D65;
+
+    // ===== Phase 8: Object Inspection (0x0D70-0x0D7F) =====
+
+    /// `Reflect.inspect(obj)` - Human-readable object representation
+    pub const INSPECT: u16 = 0x0D70;
+    /// `Reflect.getObjectId(obj)` - Get unique object identity
+    pub const GET_OBJECT_ID: u16 = 0x0D71;
+    /// `Reflect.describe(classId)` - Detailed class description string
+    pub const DESCRIBE: u16 = 0x0D72;
+    /// `Reflect.snapshot(obj)` - Capture object state
+    pub const SNAPSHOT: u16 = 0x0D73;
+    /// `Reflect.diff(a, b)` - Compare two objects/snapshots
+    pub const DIFF: u16 = 0x0D74;
+
+    // ===== Phase 8: Memory Analysis (0x0D80-0x0D8F) =====
+
+    /// `Reflect.getObjectSize(obj)` - Shallow memory footprint in bytes
+    pub const GET_OBJECT_SIZE: u16 = 0x0D80;
+    /// `Reflect.getRetainedSize(obj)` - Size with retained objects
+    pub const GET_RETAINED_SIZE: u16 = 0x0D81;
+    /// `Reflect.getReferences(obj)` - Objects referenced by this object
+    pub const GET_REFERENCES: u16 = 0x0D82;
+    /// `Reflect.getReferrers(obj)` - Objects referencing this (if GC supports)
+    pub const GET_REFERRERS: u16 = 0x0D83;
+    /// `Reflect.getHeapStats()` - Total objects, memory usage by class
+    pub const GET_HEAP_STATS: u16 = 0x0D84;
+    /// `Reflect.findInstances(classId)` - All live instances of a class
+    pub const FIND_INSTANCES: u16 = 0x0D85;
+
+    // ===== Phase 8: Stack Introspection (0x0D90-0x0D9F) =====
+
+    /// `Reflect.getCallStack()` - Current call frames
+    pub const GET_CALL_STACK: u16 = 0x0D90;
+    /// `Reflect.getLocals(frameIndex?)` - Local variables in frame
+    pub const GET_LOCALS: u16 = 0x0D91;
+    /// `Reflect.getSourceLocation(methodInfo)` - File:line:col mapping
+    pub const GET_SOURCE_LOCATION: u16 = 0x0D92;
+
+    // ===== Phase 8: Serialization Helpers (0x0DA0-0x0DAF) =====
+
+    /// `Reflect.toJSON(obj)` - Serializable representation
+    pub const TO_JSON: u16 = 0x0DA0;
+    /// `Reflect.getEnumerableKeys(obj)` - Keys suitable for iteration
+    pub const GET_ENUMERABLE_KEYS: u16 = 0x0DA1;
+    /// `Reflect.isCircular(obj)` - Check for circular references
+    pub const IS_CIRCULAR: u16 = 0x0DA2;
 }
 
 /// Built-in method IDs for Date

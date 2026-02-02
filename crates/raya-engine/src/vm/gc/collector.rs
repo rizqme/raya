@@ -443,6 +443,11 @@ impl GarbageCollector {
             threshold: self.threshold,
         }
     }
+
+    /// Get read-only access to the heap for reflection/debugging
+    pub fn heap(&self) -> &Heap {
+        &self.heap
+    }
 }
 
 /// Heap statistics

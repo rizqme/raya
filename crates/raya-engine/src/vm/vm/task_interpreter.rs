@@ -10,7 +10,13 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GarbageCollector;
 use crate::compiler::native_id::{CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_CAPACITY};
 use crate::vm::builtin::{set, regexp, buffer};
+use super::handlers::{
+    ArrayHandlerContext, RegExpHandlerContext, ReflectHandlerContext, StringHandlerContext,
+    call_array_method as array_handler, call_regexp_method as regexp_handler,
+    call_reflect_method as reflect_handler, call_string_method as string_handler,
+};
 use crate::vm::object::{Array, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString, RegExpObject, SetObject};
+use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::{ExceptionHandler, SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, MutexRegistry};
@@ -3965,7 +3971,7 @@ impl<'a> TaskInterpreter<'a> {
 
                 // Check for built-in reflect methods
                 if crate::vm::builtin::is_reflect_method(method_id) {
-                    match self.call_reflect_method(stack, method_id, arg_count) {
+                    match self.call_reflect_method(task, stack, method_id, arg_count, module) {
                         Ok(()) => return OpcodeResult::Continue,
                         Err(e) => return OpcodeResult::Error(e),
                     }
@@ -7387,9 +7393,11 @@ impl<'a> TaskInterpreter<'a> {
     /// Handle built-in Reflect methods
     fn call_reflect_method(
         &mut self,
+        task: &Arc<Task>,
         stack: &mut std::sync::MutexGuard<'_, Stack>,
         method_id: u16,
         arg_count: usize,
+        module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::reflect;
 
@@ -7866,18 +7874,195 @@ impl<'a> TaskInterpreter<'a> {
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
             }
 
-            reflect::GET_FIELD_INFO | reflect::GET_FIELDS |
-            reflect::GET_STATIC_FIELD_NAMES | reflect::GET_STATIC_FIELDS => {
-                // These require full --emit-reflection metadata
-                // Return null/empty for now
-                match method_id {
-                    reflect::GET_FIELD_INFO => Value::null(),
-                    _ => {
+            reflect::GET_FIELD_INFO => {
+                // getFieldInfo(target, propertyKey) -> get field metadata as Map
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "getFieldInfo requires 2 arguments (target, propertyKey)".to_string()
+                    ));
+                }
+                let target = args[0];
+                let property_key = get_string(args[1].clone())?;
+
+                if !target.is_ptr() {
+                    Value::null()
+                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    if let Some(meta) = class_metadata.get(class_id) {
+                        if let Some(field_info) = meta.get_field_info(&property_key) {
+                            // Create a MapObject with field info properties
+                            let mut map = MapObject::new();
+
+                            // Add field properties
+                            let name_str = RayaString::new(field_info.name.clone());
+                            let name_gc = self.gc.lock().allocate(name_str);
+                            let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap()) };
+
+                            let type_str = RayaString::new(field_info.type_info.name.clone());
+                            let type_gc = self.gc.lock().allocate(type_str);
+                            let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap()) };
+
+                            let key_name = RayaString::new("name".to_string());
+                            let key_name_gc = self.gc.lock().allocate(key_name);
+                            let key_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap()) };
+                            map.set(key_name_val, name_val);
+
+                            let key_type = RayaString::new("type".to_string());
+                            let key_type_gc = self.gc.lock().allocate(key_type);
+                            let key_type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap()) };
+                            map.set(key_type_val, type_val);
+
+                            let key_index = RayaString::new("index".to_string());
+                            let key_index_gc = self.gc.lock().allocate(key_index);
+                            let key_index_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap()) };
+                            map.set(key_index_val, Value::i32(field_info.field_index as i32));
+
+                            let key_static = RayaString::new("isStatic".to_string());
+                            let key_static_gc = self.gc.lock().allocate(key_static);
+                            let key_static_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap()) };
+                            map.set(key_static_val, Value::bool(field_info.is_static));
+
+                            let key_readonly = RayaString::new("isReadonly".to_string());
+                            let key_readonly_gc = self.gc.lock().allocate(key_readonly);
+                            let key_readonly_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap()) };
+                            map.set(key_readonly_val, Value::bool(field_info.is_readonly));
+
+                            let key_class = RayaString::new("declaringClass".to_string());
+                            let key_class_gc = self.gc.lock().allocate(key_class);
+                            let key_class_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap()) };
+                            map.set(key_class_val, Value::i32(field_info.declaring_class_id as i32));
+
+                            let map_gc = self.gc.lock().allocate(map);
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) }
+                        } else {
+                            Value::null()
+                        }
+                    } else {
+                        Value::null()
+                    }
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_FIELDS => {
+                // getFields(target) -> get all field infos as array of Maps
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getFields requires 1 argument (target)".to_string()
+                    ));
+                }
+                let target = args[0];
+
+                if !target.is_ptr() {
+                    let arr = Array::new(0, 0);
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    if let Some(meta) = class_metadata.get(class_id) {
+                        let fields = meta.get_all_field_infos();
+                        let mut arr = Array::new(fields.len(), 0);
+
+                        for (i, field_info) in fields.iter().enumerate() {
+                            // Create a MapObject for each field
+                            let mut map = MapObject::new();
+
+                            let key_name = RayaString::new("name".to_string());
+                            let key_name_gc = self.gc.lock().allocate(key_name);
+                            let key_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap()) };
+
+                            let name_str = RayaString::new(field_info.name.clone());
+                            let name_gc = self.gc.lock().allocate(name_str);
+                            let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap()) };
+                            map.set(key_name_val, name_val);
+
+                            let key_type = RayaString::new("type".to_string());
+                            let key_type_gc = self.gc.lock().allocate(key_type);
+                            let key_type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap()) };
+
+                            let type_str = RayaString::new(field_info.type_info.name.clone());
+                            let type_gc = self.gc.lock().allocate(type_str);
+                            let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap()) };
+                            map.set(key_type_val, type_val);
+
+                            let key_index = RayaString::new("index".to_string());
+                            let key_index_gc = self.gc.lock().allocate(key_index);
+                            let key_index_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap()) };
+                            map.set(key_index_val, Value::i32(field_info.field_index as i32));
+
+                            let key_static = RayaString::new("isStatic".to_string());
+                            let key_static_gc = self.gc.lock().allocate(key_static);
+                            let key_static_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap()) };
+                            map.set(key_static_val, Value::bool(field_info.is_static));
+
+                            let key_readonly = RayaString::new("isReadonly".to_string());
+                            let key_readonly_gc = self.gc.lock().allocate(key_readonly);
+                            let key_readonly_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap()) };
+                            map.set(key_readonly_val, Value::bool(field_info.is_readonly));
+
+                            let key_class = RayaString::new("declaringClass".to_string());
+                            let key_class_gc = self.gc.lock().allocate(key_class);
+                            let key_class_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap()) };
+                            map.set(key_class_val, Value::i32(field_info.declaring_class_id as i32));
+
+                            let map_gc = self.gc.lock().allocate(map);
+                            let map_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) };
+                            arr.set(i, map_val).ok();
+                        }
+
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                    } else {
                         let arr = Array::new(0, 0);
                         let arr_gc = self.gc.lock().allocate(arr);
                         unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
                     }
+                } else {
+                    let arr = Array::new(0, 0);
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
                 }
+            }
+
+            reflect::GET_STATIC_FIELD_NAMES => {
+                // getStaticFieldNames(classId) -> get static field names as array
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getStaticFieldNames requires 1 argument (classId)".to_string()
+                    ));
+                }
+                let class_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("getStaticFieldNames: classId must be a number".to_string()))?
+                    as usize;
+
+                let class_metadata = self.class_metadata.read();
+                if let Some(meta) = class_metadata.get(class_id) {
+                    let names = &meta.static_field_names;
+                    let mut arr = Array::new(names.len(), 0);
+                    for (i, name) in names.iter().enumerate() {
+                        if !name.is_empty() {
+                            let s = RayaString::new(name.clone());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            arr.set(i, val).ok();
+                        }
+                    }
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                } else {
+                    let arr = Array::new(0, 0);
+                    let arr_gc = self.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+            }
+
+            reflect::GET_STATIC_FIELDS => {
+                // getStaticFields(classId) -> get static field infos (stub for now)
+                // Static field detailed info requires additional metadata
+                let arr = Array::new(0, 0);
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
             }
 
             // ===== Phase 4: Method Invocation =====
@@ -8017,6 +8202,859 @@ impl<'a> TaskInterpreter<'a> {
                 }
             }
 
+            // ===== Phase 6: Type Utilities =====
+
+            reflect::IS_STRING => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isString requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_string = value.is_ptr() && unsafe { value.as_ptr::<RayaString>().is_some() };
+                Value::bool(is_string)
+            }
+
+            reflect::IS_NUMBER => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isNumber requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_number = value.as_f64().is_some() || value.as_i32().is_some();
+                Value::bool(is_number)
+            }
+
+            reflect::IS_BOOLEAN => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isBoolean requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_bool = value.as_bool().is_some();
+                Value::bool(is_bool)
+            }
+
+            reflect::IS_NULL => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isNull requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                Value::bool(value.is_null())
+            }
+
+            reflect::IS_ARRAY => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isArray requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_array = value.is_ptr() && unsafe { value.as_ptr::<Array>().is_some() };
+                Value::bool(is_array)
+            }
+
+            reflect::IS_FUNCTION => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isFunction requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_func = value.is_ptr() && unsafe { value.as_ptr::<Closure>().is_some() };
+                Value::bool(is_func)
+            }
+
+            reflect::IS_OBJECT => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isObject requires 1 argument".to_string()));
+                }
+                let value = args[0];
+                let is_obj = value.is_ptr() && unsafe { value.as_ptr::<Object>().is_some() };
+                Value::bool(is_obj)
+            }
+
+            reflect::TYPE_OF => {
+                // typeOf(typeName) - get TypeInfo from string
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("typeOf requires 1 argument".to_string()));
+                }
+                let type_name = get_string(args[0].clone())?;
+
+                // Check primitive types
+                let (kind, class_id) = match type_name.as_str() {
+                    "string" | "number" | "boolean" | "null" | "void" | "any" =>
+                        ("primitive".to_string(), None),
+                    _ => {
+                        // Check if it's a class name
+                        let classes = self.classes.read();
+                        if let Some(class) = classes.get_class_by_name(&type_name) {
+                            ("class".to_string(), Some(class.id))
+                        } else {
+                            // Unknown type
+                            return Ok(stack.push(Value::null())?);
+                        }
+                    }
+                };
+
+                // Return TypeInfo as a Map
+                let mut map = MapObject::new();
+                let kind_str = RayaString::new(kind);
+                let kind_ptr = self.gc.lock().allocate(kind_str);
+                let kind_key = RayaString::new("kind".to_string());
+                let kind_key_ptr = self.gc.lock().allocate(kind_key);
+                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_key_ptr.as_ptr()).unwrap()) },
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_ptr.as_ptr()).unwrap()) });
+
+                let name_str = RayaString::new(type_name);
+                let name_ptr = self.gc.lock().allocate(name_str);
+                let name_key = RayaString::new("name".to_string());
+                let name_key_ptr = self.gc.lock().allocate(name_key);
+                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap()) },
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+
+                if let Some(id) = class_id {
+                    let id_key = RayaString::new("classId".to_string());
+                    let id_key_ptr = self.gc.lock().allocate(id_key);
+                    map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(id_key_ptr.as_ptr()).unwrap()) },
+                            Value::i32(id as i32));
+                }
+
+                let map_ptr = self.gc.lock().allocate(map);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(map_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::IS_ASSIGNABLE_TO => {
+                // isAssignableTo(sourceType, targetType) - check type compatibility
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("isAssignableTo requires 2 arguments".to_string()));
+                }
+                let source = get_string(args[0].clone())?;
+                let target = get_string(args[1].clone())?;
+
+                // Same type is always assignable
+                if source == target {
+                    Value::bool(true)
+                } else if target == "any" {
+                    // Everything is assignable to any
+                    Value::bool(true)
+                } else {
+                    // Check class hierarchy
+                    let classes = self.classes.read();
+                    let source_class = classes.get_class_by_name(&source);
+                    let target_class = classes.get_class_by_name(&target);
+
+                    if let (Some(src), Some(tgt)) = (source_class, target_class) {
+                        let is_subclass = crate::vm::reflect::is_subclass_of(&classes, src.id, tgt.id);
+                        Value::bool(is_subclass)
+                    } else {
+                        Value::bool(false)
+                    }
+                }
+            }
+
+            reflect::CAST => {
+                // cast(value, classId) - safe cast, returns null if incompatible
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("cast requires 2 arguments".to_string()));
+                }
+                let value = args[0];
+                let class_id = value_to_f64(args[1])? as usize;
+
+                let classes = self.classes.read();
+                if crate::vm::reflect::is_instance_of(&classes, value, class_id) {
+                    value
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::CAST_OR_THROW => {
+                // castOrThrow(value, classId) - cast or throw error
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("castOrThrow requires 2 arguments".to_string()));
+                }
+                let value = args[0];
+                let class_id = value_to_f64(args[1])? as usize;
+
+                let classes = self.classes.read();
+                if crate::vm::reflect::is_instance_of(&classes, value, class_id) {
+                    value
+                } else {
+                    return Err(VmError::TypeError(format!(
+                        "Cannot cast value to class {}",
+                        class_id
+                    )));
+                }
+            }
+
+            // ===== Phase 7: Interface and Hierarchy Query =====
+
+            reflect::IMPLEMENTS => {
+                // implements(classId, interfaceName) - check if class implements interface
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("implements requires 2 arguments".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+                let interface_name = get_string(args[1].clone())?;
+
+                let class_metadata = self.class_metadata.read();
+                if let Some(meta) = class_metadata.get(class_id) {
+                    Value::bool(meta.implements_interface(&interface_name))
+                } else {
+                    Value::bool(false)
+                }
+            }
+
+            reflect::GET_INTERFACES => {
+                // getInterfaces(classId) - get interfaces implemented by class
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getInterfaces requires 1 argument".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+
+                let class_metadata = self.class_metadata.read();
+                let interfaces: Vec<String> = if let Some(meta) = class_metadata.get(class_id) {
+                    meta.get_interfaces().to_vec()
+                } else {
+                    Vec::new()
+                };
+                drop(class_metadata);
+
+                // Build array of interface names
+                let mut arr = Array::new(0, 0);
+                for iface in interfaces {
+                    let s = RayaString::new(iface);
+                    let s_ptr = self.gc.lock().allocate(s);
+                    arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) });
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_SUPERCLASS => {
+                // getSuperclass(classId) - get parent class
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getSuperclass requires 1 argument".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+
+                let classes = self.classes.read();
+                if let Some(class) = classes.get_class(class_id) {
+                    if let Some(parent) = class.parent_id {
+                        Value::i32(parent as i32)
+                    } else {
+                        Value::null()
+                    }
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_SUBCLASSES => {
+                // getSubclasses(classId) - get direct subclasses
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getSubclasses requires 1 argument".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+
+                let classes = self.classes.read();
+                let mut subclasses = Vec::new();
+                for (id, class) in classes.iter() {
+                    if class.parent_id == Some(class_id) {
+                        subclasses.push(id);
+                    }
+                }
+                drop(classes);
+
+                let mut arr = Array::new(0, 0);
+                for id in subclasses {
+                    arr.push(Value::i32(id as i32));
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_IMPLEMENTORS => {
+                // getImplementors(interfaceName) - get all classes implementing interface
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getImplementors requires 1 argument".to_string()));
+                }
+                let interface_name = get_string(args[0].clone())?;
+
+                let class_metadata = self.class_metadata.read();
+                let implementors = class_metadata.get_implementors(&interface_name);
+                drop(class_metadata);
+
+                let mut arr = Array::new(0, 0);
+                for id in implementors {
+                    arr.push(Value::i32(id as i32));
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::IS_STRUCTURALLY_COMPATIBLE => {
+                // isStructurallyCompatible(sourceClassId, targetClassId) - check structural compatibility
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("isStructurallyCompatible requires 2 arguments".to_string()));
+                }
+                let source_id = value_to_f64(args[0])? as usize;
+                let target_id = value_to_f64(args[1])? as usize;
+
+                let class_metadata = self.class_metadata.read();
+                let source_meta = class_metadata.get(source_id);
+                let target_meta = class_metadata.get(target_id);
+
+                if let (Some(source), Some(target)) = (source_meta, target_meta) {
+                    // Check if source has all fields of target
+                    let fields_ok = target.field_names.iter().all(|name| source.has_field(name));
+                    // Check if source has all methods of target
+                    let methods_ok = target.method_names.iter().all(|name|
+                        name.is_empty() || source.has_method(name)
+                    );
+                    Value::bool(fields_ok && methods_ok)
+                } else {
+                    Value::bool(false)
+                }
+            }
+
+            // ===== Phase 8: Object Inspection =====
+
+            reflect::INSPECT => {
+                // inspect(obj, depth?) - human-readable representation
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("inspect requires 1 argument".to_string()));
+                }
+                let target = args[0];
+                let max_depth = if args.len() > 1 {
+                    value_to_f64(args[1])? as usize
+                } else {
+                    2
+                };
+
+                let result = self.inspect_value(target, 0, max_depth)?;
+                let s = RayaString::new(result);
+                let s_ptr = self.gc.lock().allocate(s);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_OBJECT_ID => {
+                // getObjectId(obj) - unique object identifier
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getObjectId requires 1 argument".to_string()));
+                }
+                let value = args[0];
+
+                if !value.is_ptr() || value.is_null() {
+                    Value::i32(0)
+                } else if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+                    Value::i32((ptr.as_ptr() as usize & 0x7FFFFFFF) as i32)
+                } else if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+                    Value::i32((ptr.as_ptr() as usize & 0x7FFFFFFF) as i32)
+                } else if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+                    Value::i32((ptr.as_ptr() as usize & 0x7FFFFFFF) as i32)
+                } else {
+                    Value::i32(0)
+                }
+            }
+
+            reflect::DESCRIBE => {
+                // describe(classId) - detailed class description
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("describe requires 1 argument".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+
+                let classes = self.classes.read();
+                let class = classes.get_class(class_id);
+                let class_metadata = self.class_metadata.read();
+                let meta = class_metadata.get(class_id);
+
+                let description = if let Some(class) = class {
+                    let mut desc = format!("class {} {{\n", class.name);
+
+                    if let Some(m) = meta {
+                        // Fields
+                        for name in &m.field_names {
+                            desc.push_str(&format!("  {}: any;\n", name));
+                        }
+                        // Methods
+                        for name in &m.method_names {
+                            if !name.is_empty() {
+                                desc.push_str(&format!("  {}(): any;\n", name));
+                            }
+                        }
+                    } else {
+                        desc.push_str(&format!("  // {} fields\n", class.field_count));
+                    }
+
+                    desc.push_str("}");
+                    desc
+                } else {
+                    format!("Unknown class {}", class_id)
+                };
+
+                let s = RayaString::new(description);
+                let s_ptr = self.gc.lock().allocate(s);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::SNAPSHOT => {
+                // snapshot(obj) - Capture object state as a snapshot
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("snapshot requires 1 argument".to_string()));
+                }
+                let target = args[0];
+
+                // Create snapshot context with max depth of 10
+                let mut ctx = SnapshotContext::new(10);
+
+                // Get class name if it's an object
+                let (class_name, field_names) = if let Some(ptr) = unsafe { target.as_ptr::<Object>() } {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    let class_registry = self.classes.read();
+                    if let Some(class) = class_registry.get_class(obj.class_id) {
+                        let names: Vec<String> = (0..class.field_count)
+                            .map(|i| format!("field_{}", i))
+                            .collect();
+                        (class.name.clone(), names)
+                    } else {
+                        (format!("Class{}", obj.class_id), Vec::new())
+                    }
+                } else {
+                    ("unknown".to_string(), Vec::new())
+                };
+
+                // Capture the snapshot
+                let snapshot = ctx.capture_object_with_names(target, &field_names, &class_name);
+
+                // Convert snapshot to a Raya Object
+                self.snapshot_to_value(&snapshot)
+            }
+
+            reflect::DIFF => {
+                // diff(a, b) - Compare two objects and return differences
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError("diff requires 2 arguments".to_string()));
+                }
+                let obj_a = args[0];
+                let obj_b = args[1];
+
+                // Capture both objects as snapshots
+                let mut ctx = SnapshotContext::new(10);
+
+                let (class_name_a, field_names_a) = if let Some(ptr) = unsafe { obj_a.as_ptr::<Object>() } {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    let class_registry = self.classes.read();
+                    if let Some(class) = class_registry.get_class(obj.class_id) {
+                        let names: Vec<String> = (0..class.field_count)
+                            .map(|i| format!("field_{}", i))
+                            .collect();
+                        (class.name.clone(), names)
+                    } else {
+                        (format!("Class{}", obj.class_id), Vec::new())
+                    }
+                } else {
+                    ("unknown".to_string(), Vec::new())
+                };
+
+                let (class_name_b, field_names_b) = if let Some(ptr) = unsafe { obj_b.as_ptr::<Object>() } {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    let class_registry = self.classes.read();
+                    if let Some(class) = class_registry.get_class(obj.class_id) {
+                        let names: Vec<String> = (0..class.field_count)
+                            .map(|i| format!("field_{}", i))
+                            .collect();
+                        (class.name.clone(), names)
+                    } else {
+                        (format!("Class{}", obj.class_id), Vec::new())
+                    }
+                } else {
+                    ("unknown".to_string(), Vec::new())
+                };
+
+                let snapshot_a = ctx.capture_object_with_names(obj_a, &field_names_a, &class_name_a);
+                let snapshot_b = ctx.capture_object_with_names(obj_b, &field_names_b, &class_name_b);
+
+                // Compute the diff
+                let diff = ObjectDiff::compute(&snapshot_a, &snapshot_b);
+
+                // Convert diff to a Raya Object
+                self.diff_to_value(&diff)
+            }
+
+            // ===== Phase 8: Memory Analysis =====
+
+            reflect::GET_OBJECT_SIZE => {
+                // getObjectSize(obj) - shallow memory size
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getObjectSize requires 1 argument".to_string()));
+                }
+                let value = args[0];
+
+                let size = if !value.is_ptr() || value.is_null() {
+                    8 // primitive size
+                } else if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    std::mem::size_of::<Object>() + obj.fields.len() * 8
+                } else if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+                    let arr = unsafe { &*ptr.as_ptr() };
+                    std::mem::size_of::<Array>() + arr.len() * 8
+                } else if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+                    let s = unsafe { &*ptr.as_ptr() };
+                    std::mem::size_of::<RayaString>() + s.data.len()
+                } else {
+                    8
+                };
+
+                Value::i32(size as i32)
+            }
+
+            reflect::GET_RETAINED_SIZE => {
+                // getRetainedSize(obj) - size including referenced objects
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getRetainedSize requires 1 argument".to_string()));
+                }
+                let target = args[0];
+
+                let mut visited = std::collections::HashSet::new();
+                let size = self.calculate_retained_size(target, &mut visited);
+                Value::i32(size as i32)
+            }
+
+            reflect::GET_REFERENCES => {
+                // getReferences(obj) - objects referenced by this object
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getReferences requires 1 argument".to_string()));
+                }
+                let target = args[0];
+
+                let mut refs = Vec::new();
+                self.collect_references(target, &mut refs);
+
+                let mut arr = Array::new(0, 0);
+                for r in refs {
+                    arr.push(r);
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_REFERRERS => {
+                // getReferrers(obj) - objects that reference this object
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getReferrers requires 1 argument".to_string()));
+                }
+                let target = args[0];
+
+                // Get target's identity
+                let target_id = if let Some(ptr) = unsafe { target.as_ptr::<u8>() } {
+                    ptr.as_ptr() as usize
+                } else {
+                    return Ok(stack.push(Value::null())?);
+                };
+
+                // Scan all allocations for references to target
+                let gc = self.gc.lock();
+                let mut referrers = Vec::new();
+
+                for header_ptr in gc.heap().iter_allocations() {
+                    let header = unsafe { &*header_ptr };
+                    // Get the object pointer (after header)
+                    let obj_ptr = unsafe { header_ptr.add(1) as *const u8 };
+
+                    // Check if this object references the target
+                    // This is a simplified check - just look at Object types
+                    if header.type_id() == std::any::TypeId::of::<Object>() {
+                        let obj = unsafe { &*(obj_ptr as *const Object) };
+                        for field in &obj.fields {
+                            if let Some(ptr) = unsafe { field.as_ptr::<u8>() } {
+                                if ptr.as_ptr() as usize == target_id {
+                                    let value = unsafe {
+                                        Value::from_ptr(std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap())
+                                    };
+                                    referrers.push(value);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                drop(gc);
+
+                let mut arr = Array::new(0, 0);
+                for r in referrers {
+                    arr.push(r);
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_HEAP_STATS => {
+                // getHeapStats() - heap statistics
+                let gc = self.gc.lock();
+                let stats = gc.heap_stats();
+                drop(gc);
+
+                let mut map = MapObject::new();
+
+                // totalObjects
+                let key = RayaString::new("totalObjects".to_string());
+                let key_ptr = self.gc.lock().allocate(key);
+                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
+                        Value::i32(stats.allocation_count as i32));
+
+                // totalBytes
+                let key = RayaString::new("totalBytes".to_string());
+                let key_ptr = self.gc.lock().allocate(key);
+                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
+                        Value::i32(stats.allocated_bytes as i32));
+
+                let map_ptr = self.gc.lock().allocate(map);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(map_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::FIND_INSTANCES => {
+                // findInstances(classId) - find all live instances of a class
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("findInstances requires 1 argument".to_string()));
+                }
+                let class_id = value_to_f64(args[0])? as usize;
+
+                let gc = self.gc.lock();
+                let mut instances = Vec::new();
+
+                for header_ptr in gc.heap().iter_allocations() {
+                    let header = unsafe { &*header_ptr };
+                    // Check if this is an Object with matching class_id
+                    if header.type_id() == std::any::TypeId::of::<Object>() {
+                        let obj_ptr = unsafe { header_ptr.add(1) as *const Object };
+                        let obj = unsafe { &*obj_ptr };
+                        if obj.class_id == class_id {
+                            let value = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap())
+                            };
+                            instances.push(value);
+                        }
+                    }
+                }
+                drop(gc);
+
+                let mut arr = Array::new(0, 0);
+                for inst in instances {
+                    arr.push(inst);
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            // ===== Phase 8: Stack Introspection =====
+
+            reflect::GET_CALL_STACK => {
+                // getCallStack() - get current call frames
+                let call_stack = task.get_call_stack();
+                let stack_frames: Vec<_> = stack.frames().collect();
+
+                let mut arr = Array::new(0, 0);
+
+                for (i, &func_id) in call_stack.iter().enumerate() {
+                    let mut frame_map = MapObject::new();
+
+                    // Function name
+                    let func_name = module.functions.get(func_id)
+                        .map(|f| f.name.clone())
+                        .unwrap_or_else(|| format!("<function_{}>", func_id));
+
+                    let name_key = RayaString::new("functionName".to_string());
+                    let name_key_ptr = self.gc.lock().allocate(name_key);
+                    let name_val = RayaString::new(func_name);
+                    let name_val_ptr = self.gc.lock().allocate(name_val);
+                    frame_map.set(
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap()) },
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_val_ptr.as_ptr()).unwrap()) }
+                    );
+
+                    // Frame index
+                    let idx_key = RayaString::new("frameIndex".to_string());
+                    let idx_key_ptr = self.gc.lock().allocate(idx_key);
+                    frame_map.set(
+                        unsafe { Value::from_ptr(std::ptr::NonNull::new(idx_key_ptr.as_ptr()).unwrap()) },
+                        Value::i32(i as i32)
+                    );
+
+                    // Add frame info if available
+                    if let Some(frame) = stack_frames.get(i) {
+                        let locals_key = RayaString::new("localCount".to_string());
+                        let locals_key_ptr = self.gc.lock().allocate(locals_key);
+                        frame_map.set(
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(locals_key_ptr.as_ptr()).unwrap()) },
+                            Value::i32(frame.local_count as i32)
+                        );
+
+                        let args_key = RayaString::new("argCount".to_string());
+                        let args_key_ptr = self.gc.lock().allocate(args_key);
+                        frame_map.set(
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(args_key_ptr.as_ptr()).unwrap()) },
+                            Value::i32(frame.arg_count as i32)
+                        );
+                    }
+
+                    let frame_ptr = self.gc.lock().allocate(frame_map);
+                    arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(frame_ptr.as_ptr()).unwrap()) });
+                }
+
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_LOCALS => {
+                // getLocals(frameIndex?) - get local variables
+                let frame_index = if !args.is_empty() {
+                    value_to_f64(args[0])? as usize
+                } else {
+                    0
+                };
+
+                let frames: Vec<_> = stack.frames().collect();
+                if let Some(frame) = frames.get(frame_index) {
+                    let mut locals_arr = Array::new(0, 0);
+
+                    for i in 0..frame.local_count {
+                        if let Ok(local) = stack.load_local(i) {
+                            locals_arr.push(local);
+                        } else {
+                            locals_arr.push(Value::null());
+                        }
+                    }
+
+                    let arr_ptr = self.gc.lock().allocate(locals_arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_SOURCE_LOCATION => {
+                // getSourceLocation(classId, methodName) - source location
+                // Args: classId (number), methodName (string)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "getSourceLocation requires 2 arguments: classId, methodName".to_string()
+                    ));
+                }
+
+                let class_id = args[0].as_i32().ok_or_else(|| {
+                    VmError::RuntimeError("getSourceLocation: classId must be a number".to_string())
+                })? as usize;
+
+                let method_name = if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
+                    let s = unsafe { &*ptr.as_ptr() };
+                    s.data.clone()
+                } else {
+                    return Err(VmError::RuntimeError(
+                        "getSourceLocation: methodName must be a string".to_string()
+                    ));
+                };
+
+                // Check if module has debug info
+                if !module.has_debug_info() {
+                    // Return null if no debug info available
+                    Value::null()
+                } else if let Some(ref debug_info) = module.debug_info {
+                    // Find the class and method
+                    let class_def = module.classes.get(class_id);
+                    if class_def.is_none() {
+                        Value::null()
+                    } else {
+                        let class_def = class_def.unwrap();
+                        // Find the method by name
+                        let method = class_def.methods.iter()
+                            .find(|m| m.name == method_name);
+
+                        if let Some(method) = method {
+                            let function_id = method.function_id;
+
+                            // Get function debug info
+                            if let Some(func_debug) = debug_info.functions.get(function_id) {
+                                // Get source file path
+                                let source_file = debug_info
+                                    .get_source_file(func_debug.source_file_index)
+                                    .unwrap_or("unknown");
+
+                                // Create a SourceLocation object with: file, line, column
+                                let mut result_obj = Object::new(0, 3);
+
+                                // Set file
+                                let file_str = RayaString::new(source_file.to_string());
+                                let file_ptr = self.gc.lock().allocate(file_str);
+                                result_obj.set_field(0, unsafe {
+                                    Value::from_ptr(std::ptr::NonNull::new(file_ptr.as_ptr()).unwrap())
+                                });
+
+                                // Set line (1-indexed)
+                                result_obj.set_field(1, Value::i32(func_debug.start_line as i32));
+
+                                // Set column (1-indexed)
+                                result_obj.set_field(2, Value::i32(func_debug.start_column as i32));
+
+                                let result_ptr = self.gc.lock().allocate(result_obj);
+                                unsafe { Value::from_ptr(std::ptr::NonNull::new(result_ptr.as_ptr()).unwrap()) }
+                            } else {
+                                Value::null()
+                            }
+                        } else {
+                            // Method not found
+                            Value::null()
+                        }
+                    }
+                } else {
+                    Value::null()
+                }
+            }
+
+            // ===== Phase 8: Serialization Helpers =====
+
+            reflect::TO_JSON => {
+                // toJSON(obj) - JSON string representation
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("toJSON requires 1 argument".to_string()));
+                }
+                let target = args[0];
+                let mut visited = Vec::new();
+                let json = self.value_to_json(target, &mut visited)?;
+                let s = RayaString::new(json);
+                let s_ptr = self.gc.lock().allocate(s);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_ENUMERABLE_KEYS => {
+                // getEnumerableKeys(obj) - get field names
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("getEnumerableKeys requires 1 argument".to_string()));
+                }
+                let target = args[0];
+
+                let mut arr = Array::new(0, 0);
+
+                if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                    let class_metadata = self.class_metadata.read();
+                    if let Some(meta) = class_metadata.get(class_id) {
+                        for name in &meta.field_names {
+                            let s = RayaString::new(name.clone());
+                            let s_ptr = self.gc.lock().allocate(s);
+                            arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) });
+                        }
+                    }
+                }
+
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+
+            reflect::IS_CIRCULAR => {
+                // isCircular(obj) - check for circular references
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError("isCircular requires 1 argument".to_string()));
+                }
+                let target = args[0];
+                let mut visited = Vec::new();
+                let is_circular = self.check_circular(target, &mut visited);
+                Value::bool(is_circular)
+            }
+
             _ => {
                 return Err(VmError::RuntimeError(format!(
                     "Reflect method {:#06x} not yet implemented",
@@ -8027,5 +9065,465 @@ impl<'a> TaskInterpreter<'a> {
 
         stack.push(result)?;
         Ok(())
+    }
+
+    /// Helper: Inspect a value recursively with depth limit
+    fn inspect_value(&self, value: Value, depth: usize, max_depth: usize) -> Result<String, VmError> {
+        if depth > max_depth {
+            return Ok("...".to_string());
+        }
+
+        if value.is_null() {
+            return Ok("null".to_string());
+        }
+
+        if let Some(b) = value.as_bool() {
+            return Ok(if b { "true" } else { "false" }.to_string());
+        }
+
+        if let Some(i) = value.as_i32() {
+            return Ok(i.to_string());
+        }
+
+        if let Some(f) = value.as_f64() {
+            return Ok(f.to_string());
+        }
+
+        if !value.is_ptr() {
+            return Ok("<unknown>".to_string());
+        }
+
+        // String
+        if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            let s = unsafe { &*ptr.as_ptr() };
+            return Ok(format!("\"{}\"", s.data.replace('\\', "\\\\").replace('"', "\\\"")));
+        }
+
+        // Array
+        if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*ptr.as_ptr() };
+            if depth >= max_depth {
+                return Ok(format!("[Array({})]", arr.len()));
+            }
+            let mut items = Vec::new();
+            for i in 0..arr.len().min(10) {
+                items.push(self.inspect_value(arr.get(i).unwrap_or(Value::null()), depth + 1, max_depth)?);
+            }
+            if arr.len() > 10 {
+                items.push(format!("... {} more", arr.len() - 10));
+            }
+            return Ok(format!("[{}]", items.join(", ")));
+        }
+
+        // Object
+        if let Some(class_id) = crate::vm::reflect::get_class_id(value) {
+            let classes = self.classes.read();
+            let class_name = classes.get_class(class_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| format!("Class{}", class_id));
+            drop(classes);
+
+            if depth >= max_depth {
+                return Ok(format!("{} {{}}", class_name));
+            }
+
+            let class_metadata = self.class_metadata.read();
+            if let Some(meta) = class_metadata.get(class_id) {
+                let obj_ptr = unsafe { value.as_ptr::<Object>() };
+                if let Some(ptr) = obj_ptr {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    let mut fields = Vec::new();
+                    for (i, name) in meta.field_names.iter().enumerate() {
+                        if let Some(&field_val) = obj.fields.get(i) {
+                            let val_str = self.inspect_value(field_val, depth + 1, max_depth)?;
+                            fields.push(format!("{}: {}", name, val_str));
+                        }
+                    }
+                    return Ok(format!("{} {{ {} }}", class_name, fields.join(", ")));
+                }
+            }
+            return Ok(format!("{} {{ ... }}", class_name));
+        }
+
+        Ok("<ptr>".to_string())
+    }
+
+    /// Helper: Calculate retained size by traversing references
+    fn calculate_retained_size(&self, value: Value, visited: &mut std::collections::HashSet<usize>) -> usize {
+        if !value.is_ptr() || value.is_null() {
+            return 8; // primitive size
+        }
+
+        // Get object ID for cycle detection
+        let obj_id = if let Some(ptr) = unsafe { value.as_ptr::<u8>() } {
+            ptr.as_ptr() as usize
+        } else {
+            return 8;
+        };
+
+        // Already visited - don't count again
+        if visited.contains(&obj_id) {
+            return 0;
+        }
+        visited.insert(obj_id);
+
+        // Calculate size based on type
+        if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            let mut size = std::mem::size_of::<Object>() + obj.fields.len() * 8;
+            // Add retained size of referenced objects
+            for &field in &obj.fields {
+                size += self.calculate_retained_size(field, visited);
+            }
+            return size;
+        }
+
+        if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*ptr.as_ptr() };
+            let mut size = std::mem::size_of::<Array>() + arr.len() * 8;
+            // Add retained size of elements
+            for i in 0..arr.len() {
+                if let Some(elem) = arr.get(i) {
+                    size += self.calculate_retained_size(elem, visited);
+                }
+            }
+            return size;
+        }
+
+        if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            let s = unsafe { &*ptr.as_ptr() };
+            return std::mem::size_of::<RayaString>() + s.data.len();
+        }
+
+        8 // default
+    }
+
+    /// Helper: Collect direct references from an object
+    fn collect_references(&self, value: Value, refs: &mut Vec<Value>) {
+        if !value.is_ptr() || value.is_null() {
+            return;
+        }
+
+        if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            for &field in &obj.fields {
+                if field.is_ptr() && !field.is_null() {
+                    refs.push(field);
+                }
+            }
+        } else if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*ptr.as_ptr() };
+            for i in 0..arr.len() {
+                if let Some(elem) = arr.get(i) {
+                    if elem.is_ptr() && !elem.is_null() {
+                        refs.push(elem);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Helper: Convert value to JSON string
+    fn value_to_json(&self, value: Value, visited: &mut Vec<usize>) -> Result<String, VmError> {
+        if value.is_null() {
+            return Ok("null".to_string());
+        }
+
+        if let Some(b) = value.as_bool() {
+            return Ok(if b { "true" } else { "false" }.to_string());
+        }
+
+        if let Some(i) = value.as_i32() {
+            return Ok(i.to_string());
+        }
+
+        if let Some(f) = value.as_f64() {
+            if f.is_nan() || f.is_infinite() {
+                return Ok("null".to_string());
+            }
+            return Ok(f.to_string());
+        }
+
+        if !value.is_ptr() {
+            return Ok("null".to_string());
+        }
+
+        // Check for circular reference
+        let obj_id = if let Some(ptr) = unsafe { value.as_ptr::<u8>() } {
+            ptr.as_ptr() as usize
+        } else {
+            0
+        };
+
+        if obj_id != 0 && visited.contains(&obj_id) {
+            return Ok("\"[Circular]\"".to_string());
+        }
+        visited.push(obj_id);
+
+        // String
+        if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+            let s = unsafe { &*ptr.as_ptr() };
+            visited.pop();
+            return Ok(format!("\"{}\"",
+                s.data.replace('\\', "\\\\")
+                      .replace('"', "\\\"")
+                      .replace('\n', "\\n")
+                      .replace('\r', "\\r")
+                      .replace('\t', "\\t")));
+        }
+
+        // Array
+        if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*ptr.as_ptr() };
+            let mut items = Vec::new();
+            for i in 0..arr.len() {
+                if let Some(elem) = arr.get(i) {
+                    items.push(self.value_to_json(elem, visited)?);
+                }
+            }
+            visited.pop();
+            return Ok(format!("[{}]", items.join(",")));
+        }
+
+        // Object
+        if let Some(class_id) = crate::vm::reflect::get_class_id(value) {
+            let class_metadata = self.class_metadata.read();
+            if let Some(meta) = class_metadata.get(class_id) {
+                let obj_ptr = unsafe { value.as_ptr::<Object>() };
+                if let Some(ptr) = obj_ptr {
+                    let obj = unsafe { &*ptr.as_ptr() };
+                    let mut fields = Vec::new();
+                    for (i, name) in meta.field_names.iter().enumerate() {
+                        if let Some(&field_val) = obj.fields.get(i) {
+                            let val_json = self.value_to_json(field_val, visited)?;
+                            fields.push(format!("\"{}\":{}", name, val_json));
+                        }
+                    }
+                    visited.pop();
+                    return Ok(format!("{{{}}}", fields.join(",")));
+                }
+            }
+            visited.pop();
+            return Ok("{}".to_string());
+        }
+
+        visited.pop();
+        Ok("null".to_string())
+    }
+
+    /// Helper: Check for circular references
+    fn check_circular(&self, value: Value, visited: &mut Vec<usize>) -> bool {
+        if !value.is_ptr() || value.is_null() {
+            return false;
+        }
+
+        let obj_id = if let Some(ptr) = unsafe { value.as_ptr::<u8>() } {
+            ptr.as_ptr() as usize
+        } else {
+            return false;
+        };
+
+        // Found a cycle
+        if visited.contains(&obj_id) {
+            return true;
+        }
+        visited.push(obj_id);
+
+        // Check Object fields
+        if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+            let obj = unsafe { &*ptr.as_ptr() };
+            for &field in &obj.fields {
+                if self.check_circular(field, visited) {
+                    return true;
+                }
+            }
+        }
+
+        // Check Array elements
+        if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+            let arr = unsafe { &*ptr.as_ptr() };
+            for i in 0..arr.len() {
+                if let Some(elem) = arr.get(i) {
+                    if self.check_circular(elem, visited) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        visited.pop();
+        false
+    }
+
+    /// Helper: Convert ObjectSnapshot to a Raya Value (Object)
+    fn snapshot_to_value(&self, snapshot: &ObjectSnapshot) -> Value {
+        // Create an object with snapshot fields:
+        // - class_name: string
+        // - identity: number
+        // - timestamp: number
+        // - fields: object mapping field names to values
+        let mut obj = Object::new(0, 4); // class_id 0 for dynamic object, 4 fields
+
+        // Store class_name
+        let class_name_str = RayaString::new(snapshot.class_name.clone());
+        let class_name_ptr = self.gc.lock().allocate(class_name_str);
+        let class_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(class_name_ptr.as_ptr()).unwrap()) };
+        obj.set_field(0, class_name_val);
+
+        // Store identity
+        obj.set_field(1, Value::i32(snapshot.identity as i32));
+
+        // Store timestamp
+        obj.set_field(2, Value::i32(snapshot.timestamp as i32));
+
+        // Create fields object
+        let fields_obj = self.snapshot_fields_to_value(&snapshot.fields);
+        obj.set_field(3, fields_obj);
+
+        let obj_ptr = self.gc.lock().allocate(obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
+    }
+
+    /// Helper: Convert snapshot fields HashMap to a Raya Value (Object)
+    fn snapshot_fields_to_value(&self, fields: &std::collections::HashMap<String, crate::vm::reflect::FieldSnapshot>) -> Value {
+        // Create an object with field count matching the number of fields
+        let field_count = fields.len();
+        let mut obj = Object::new(0, field_count);
+
+        // Sort fields by name for consistent ordering
+        let mut field_names: Vec<_> = fields.keys().collect();
+        field_names.sort();
+
+        for (i, name) in field_names.iter().enumerate() {
+            if let Some(field) = fields.get(*name) {
+                // Create a field info object with: name, value, type_name
+                let mut field_obj = Object::new(0, 3);
+
+                // Field name
+                let name_str = RayaString::new(field.name.clone());
+                let name_ptr = self.gc.lock().allocate(name_str);
+                let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) };
+                field_obj.set_field(0, name_val);
+
+                // Field value (converted from SnapshotValue)
+                let val = self.snapshot_value_to_value(&field.value);
+                field_obj.set_field(1, val);
+
+                // Type name
+                let type_str = RayaString::new(field.type_name.clone());
+                let type_ptr = self.gc.lock().allocate(type_str);
+                let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_ptr.as_ptr()).unwrap()) };
+                field_obj.set_field(2, type_val);
+
+                let field_ptr = self.gc.lock().allocate(field_obj);
+                obj.set_field(i, unsafe { Value::from_ptr(std::ptr::NonNull::new(field_ptr.as_ptr()).unwrap()) });
+            }
+        }
+
+        let obj_ptr = self.gc.lock().allocate(obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
+    }
+
+    /// Helper: Convert SnapshotValue to a Raya Value
+    fn snapshot_value_to_value(&self, snapshot_val: &SnapshotValue) -> Value {
+        match snapshot_val {
+            SnapshotValue::Null => Value::null(),
+            SnapshotValue::Boolean(b) => Value::bool(*b),
+            SnapshotValue::Integer(i) => Value::i32(*i),
+            SnapshotValue::Float(f) => Value::f64(*f),
+            SnapshotValue::String(s) => {
+                let raya_str = RayaString::new(s.clone());
+                let str_ptr = self.gc.lock().allocate(raya_str);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(str_ptr.as_ptr()).unwrap()) }
+            }
+            SnapshotValue::ObjectRef(id) => {
+                // Return the object ID as an integer for reference tracking
+                Value::i32(*id as i32)
+            }
+            SnapshotValue::Array(elements) => {
+                let mut arr = Array::new(0, elements.len());
+                for elem in elements {
+                    arr.push(self.snapshot_value_to_value(elem));
+                }
+                let arr_ptr = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
+            }
+            SnapshotValue::Object(nested_snapshot) => {
+                // Recursively convert nested snapshot
+                self.snapshot_to_value(nested_snapshot)
+            }
+        }
+    }
+
+    /// Helper: Convert ObjectDiff to a Raya Value (Object)
+    fn diff_to_value(&self, diff: &ObjectDiff) -> Value {
+        // Create an object with diff fields:
+        // - added: string[] (field names added)
+        // - removed: string[] (field names removed)
+        // - changed: object mapping field name to { old, new }
+        let mut obj = Object::new(0, 3);
+
+        // Create added array
+        let mut added_arr = Array::new(0, diff.added.len());
+        for name in &diff.added {
+            let name_str = RayaString::new(name.clone());
+            let name_ptr = self.gc.lock().allocate(name_str);
+            added_arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+        }
+        let added_ptr = self.gc.lock().allocate(added_arr);
+        obj.set_field(0, unsafe { Value::from_ptr(std::ptr::NonNull::new(added_ptr.as_ptr()).unwrap()) });
+
+        // Create removed array
+        let mut removed_arr = Array::new(0, diff.removed.len());
+        for name in &diff.removed {
+            let name_str = RayaString::new(name.clone());
+            let name_ptr = self.gc.lock().allocate(name_str);
+            removed_arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+        }
+        let removed_ptr = self.gc.lock().allocate(removed_arr);
+        obj.set_field(1, unsafe { Value::from_ptr(std::ptr::NonNull::new(removed_ptr.as_ptr()).unwrap()) });
+
+        // Create changed object
+        let changed_obj = self.diff_changes_to_value(&diff.changed);
+        obj.set_field(2, changed_obj);
+
+        let obj_ptr = self.gc.lock().allocate(obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
+    }
+
+    /// Helper: Convert diff changes HashMap to a Raya Value (Object)
+    fn diff_changes_to_value(&self, changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>) -> Value {
+        let change_count = changes.len();
+        let mut obj = Object::new(0, change_count);
+
+        // Sort changes by name for consistent ordering
+        let mut change_names: Vec<_> = changes.keys().collect();
+        change_names.sort();
+
+        for (i, name) in change_names.iter().enumerate() {
+            if let Some(change) = changes.get(*name) {
+                // Create a change object with: fieldName, old, new
+                let mut change_obj = Object::new(0, 3);
+
+                // Field name
+                let name_str = RayaString::new((*name).clone());
+                let name_ptr = self.gc.lock().allocate(name_str);
+                change_obj.set_field(0, unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+
+                // Old value
+                let old_val = self.snapshot_value_to_value(&change.old);
+                change_obj.set_field(1, old_val);
+
+                // New value
+                let new_val = self.snapshot_value_to_value(&change.new);
+                change_obj.set_field(2, new_val);
+
+                let change_ptr = self.gc.lock().allocate(change_obj);
+                obj.set_field(i, unsafe { Value::from_ptr(std::ptr::NonNull::new(change_ptr.as_ptr()).unwrap()) });
+            }
+        }
+
+        let obj_ptr = self.gc.lock().allocate(obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
     }
 }

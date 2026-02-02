@@ -559,4 +559,130 @@ mod tests {
         assert!(!is_subclass_of(&registry, 0, 1));
         assert!(!is_subclass_of(&registry, 0, 4));
     }
+
+    #[test]
+    fn test_type_kind_values() {
+        // Test all TypeKind variants
+        assert_eq!(TypeKind::Primitive as u8, 0);
+        assert_eq!(TypeKind::Class as u8, 1);
+        assert_eq!(TypeKind::Interface as u8, 2);
+        assert_eq!(TypeKind::Union as u8, 3);
+        assert_eq!(TypeKind::Function as u8, 4);
+        assert_eq!(TypeKind::Array as u8, 5);
+        assert_eq!(TypeKind::Generic as u8, 6);
+    }
+
+    #[test]
+    fn test_type_info_for_all_primitives() {
+        // Test all primitive types
+        let types = ["string", "number", "boolean", "null", "void", "any"];
+        for type_name in types.iter() {
+            let info = TypeInfo::primitive(type_name);
+            assert_eq!(info.kind, TypeKind::Primitive);
+            assert_eq!(info.name, *type_name);
+            assert!(info.class_id.is_none());
+            assert!(info.element_type.is_none());
+            assert!(info.union_members.is_none());
+            assert!(info.type_arguments.is_none());
+        }
+    }
+
+    #[test]
+    fn test_type_info_class_with_id() {
+        let info = TypeInfo::class("MyClass", 42);
+        assert_eq!(info.kind, TypeKind::Class);
+        assert_eq!(info.name, "MyClass");
+        assert_eq!(info.class_id, Some(42));
+        assert!(info.element_type.is_none());
+        assert!(info.union_members.is_none());
+    }
+
+    #[test]
+    fn test_type_info_nested_array() {
+        // Create number[][]
+        let num = TypeInfo::primitive("number");
+        let num_arr = TypeInfo::array(num);
+        let num_arr_arr = TypeInfo::array(num_arr);
+
+        assert_eq!(num_arr_arr.kind, TypeKind::Array);
+        assert_eq!(num_arr_arr.name, "number[][]");
+
+        let inner = num_arr_arr.element_type.as_ref().unwrap();
+        assert_eq!(inner.kind, TypeKind::Array);
+        assert_eq!(inner.name, "number[]");
+
+        let innermost = inner.element_type.as_ref().unwrap();
+        assert_eq!(innermost.kind, TypeKind::Primitive);
+        assert_eq!(innermost.name, "number");
+    }
+
+    #[test]
+    fn test_is_assignable_same_type() {
+        // Same type is always assignable to itself
+        let mut registry = ClassRegistry::new();
+        let user = Class::new(0, "User".to_string(), 2);
+        registry.register_class(user);
+
+        // Same class should be assignable to itself
+        assert!(is_subclass_of(&registry, 0, 0));
+    }
+
+    #[test]
+    fn test_cast_with_inheritance() {
+        use crate::vm::gc::GarbageCollector;
+        use crate::vm::vm::VmContextId;
+        use crate::vm::types::create_standard_registry;
+        use parking_lot::Mutex;
+        use std::sync::Arc;
+
+        let mut registry = ClassRegistry::new();
+
+        // Animal (0) -> Dog (1)
+        let animal = Class::new(0, "Animal".to_string(), 1);
+        let dog = Class::with_parent(1, "Dog".to_string(), 2, 0);
+        registry.register_class(animal);
+        registry.register_class(dog);
+
+        // Create a Dog instance
+        let context_id = VmContextId::new();
+        let type_registry = Arc::new(create_standard_registry());
+        let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
+        let dog_obj = Object::new(1, 2); // class_id = 1 (Dog)
+        let dog_ptr = gc.lock().allocate(dog_obj);
+        let dog_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
+
+        // Dog can be cast to Animal (upcast)
+        assert!(is_instance_of(&registry, dog_value, 0));
+        // Dog can be cast to Dog
+        assert!(is_instance_of(&registry, dog_value, 1));
+
+        // Create an Animal instance
+        let animal_obj = Object::new(0, 1); // class_id = 0 (Animal)
+        let animal_ptr = gc.lock().allocate(animal_obj);
+        let animal_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(animal_ptr.as_ptr()).unwrap()) };
+
+        // Animal cannot be cast to Dog (downcast fails)
+        assert!(!is_instance_of(&registry, animal_value, 1));
+        // Animal can be cast to Animal
+        assert!(is_instance_of(&registry, animal_value, 0));
+    }
+
+    #[test]
+    fn test_null_is_not_instance() {
+        let registry = ClassRegistry::new();
+
+        // null is not an instance of any class
+        assert!(!is_instance_of(&registry, Value::null(), 0));
+        assert!(!is_instance_of(&registry, Value::null(), 999));
+    }
+
+    #[test]
+    fn test_primitives_are_not_instances() {
+        let registry = ClassRegistry::new();
+
+        // Primitives are not instances of any class
+        assert!(!is_instance_of(&registry, Value::i32(42), 0));
+        assert!(!is_instance_of(&registry, Value::f64(3.14), 0));
+        assert!(!is_instance_of(&registry, Value::bool(true), 0));
+    }
 }

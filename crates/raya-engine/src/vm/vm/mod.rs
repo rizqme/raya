@@ -4,6 +4,7 @@ mod capabilities;
 mod class_registry;
 mod context;
 mod execution;
+mod handlers;
 mod interpreter;
 mod task_interpreter;
 mod lifecycle;

@@ -111,7 +111,8 @@ INSTANCEOF <class_id>
 │ Header (48 bytes)                       │
 │   magic: [u8; 4]     "RAYA"            │
 │   version: u32                          │
-│   flags: u32                            │
+│   flags: u32         HAS_DEBUG_INFO=1  │
+│                      HAS_REFLECTION=2   │
 │   crc32: u32                            │
 │   sha256: [u8; 32]                      │
 ├─────────────────────────────────────────┤
@@ -134,8 +135,26 @@ INSTANCEOF <class_id>
 ├─────────────────────────────────────────┤
 │ Metadata                                │
 │   module_name, source_file              │
+├─────────────────────────────────────────┤
+│ Reflection Data (if HAS_REFLECTION)     │
+│   per-class field names, method names   │
+├─────────────────────────────────────────┤
+│ Debug Info (if HAS_DEBUG_INFO)          │
+│   source_files: Vec<String>             │
+│   functions: Vec<FunctionDebugInfo>     │
+│     - source_file_index                 │
+│     - start_line, start_column          │
+│     - line_table: Vec<LineEntry>        │
+│   classes: Vec<ClassDebugInfo>          │
 └─────────────────────────────────────────┘
 ```
+
+## Debug Info (for `getSourceLocation`)
+
+When `HAS_DEBUG_INFO` flag is set:
+- `FunctionDebugInfo` maps bytecode offsets to source lines
+- `LineEntry { bytecode_offset, line, column }` for line table
+- `lookup_location(offset)` finds source line for any bytecode position
 
 ## BytecodeWriter
 
