@@ -322,7 +322,7 @@ try {
 try {
     riskyOperation();
 } catch (e) {
-    console.log("Error: " + e);
+    logger.info("Error: " + e);
 }
 
 // Bytecode:
@@ -335,7 +335,7 @@ STORE_LOCAL 0  // Store exception in local 0
 CONST_STR "Error: "
 LOAD_LOCAL 0
 SCONCAT
-CALL console.log
+CALL logger.info
 // end:
 ```
 

@@ -11,7 +11,7 @@ This document defines the complete API for Raya's standard library modules.
 3. [raya:json - JSON Support](#3-rayajson---json-support)
 4. [raya:json/internal - Internal JSON Utilities](#4-rayajsoninternal---internal-json-utilities)
 5. [raya:reflect - Reflection API](#5-rayareflect---reflection-api-optional)
-6. [Console API](#6-console-api)
+6. [std:logger - Logging Module](#6-stdlogger---logging-module)
 7. [Built-in Types](#7-built-in-types)
 
 ---
@@ -108,8 +108,8 @@ type ID = string | number;
 const id: ID = 42;
 
 match(id, {
-  string: (s) => console.log(`String: ${s}`),
-  number: (n) => console.log(`Number: ${n}`)
+  string: (s) => logger.info(`String: ${s}`),
+  number: (n) => logger.info(`Number: ${n}`)
 });
 ```
 
@@ -148,9 +148,9 @@ async function sleep(ms: number): Task<void>;
 **Example:**
 ```ts
 async function delayed(): Task<void> {
-  console.log("Starting...");
+  logger.info("Starting...");
   await sleep(1000);  // Wait 1 second
-  console.log("Done!");
+  logger.info("Done!");
 }
 ```
 
@@ -259,7 +259,7 @@ const user: User = { name: "Alice", age: 30, email: null };
 const result = JSON.encode(user);
 
 if (result.status === "ok") {
-  console.log(result.value);  // {"name":"Alice","age":30,"email":null}
+  logger.info(result.value);  // {"name":"Alice","age":30,"email":null}
 }
 ```
 
@@ -294,9 +294,9 @@ const result = JSON.decode<User>(jsonString);
 
 if (result.status === "ok") {
   const user = result.value;
-  console.log(user.name);  // "Bob"
+  logger.info(user.name);  // "Bob"
 } else {
-  console.error(result.error.message);
+  logger.error(result.error.message);
 }
 ```
 
@@ -360,7 +360,7 @@ if (result.status === "ok") {
   if (json.kind === "object") {
     const id = json.value.get("id");
     if (id && id.kind === "number") {
-      console.log(id.value);  // 123
+      logger.info(id.value);  // 123
     }
   }
 }
@@ -424,56 +424,18 @@ module "raya:reflect" {
 
 ---
 
-## 6. Console API
+## 6. std:logger - Logging Module
+
+> **Note:** Console API has been replaced with `std:logger`. See [milestone-4.2.md](../plans/milestone-4.2.md) for the logger API.
 
 ```ts
-// Global console object (automatically available)
-const console: {
-  log(...args: any[]): void;
-  error(...args: any[]): void;
-  warn(...args: any[]): void;
-  info(...args: any[]): void;
-};
+import logger from "std:logger";
+
+logger.info("Server started");
+logger.error("Connection failed");
+logger.warn("Deprecated API");
+logger.debug("Request payload:", data);
 ```
-
-### console.log()
-
-**Type Signature:**
-```ts
-log(...args: any[]): void;
-```
-
-**Description:** Prints arguments to standard output.
-
-**Behavior:**
-- Arguments are converted to strings via `toString()`
-- Separated by spaces
-- Ends with newline
-
----
-
-### console.error()
-
-**Type Signature:**
-```ts
-error(...args: any[]): void;
-```
-
-**Description:** Prints arguments to standard error.
-
-**Behavior:** Same as `console.log()` but writes to stderr.
-
----
-
-### console.warn() and console.info()
-
-**Type Signature:**
-```ts
-warn(...args: any[]): void;
-info(...args: any[]): void;
-```
-
-**Description:** Aliases for `console.error()` and `console.log()` respectively.
 
 ---
 

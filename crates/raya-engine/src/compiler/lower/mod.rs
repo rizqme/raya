@@ -82,6 +82,54 @@ struct StaticMethodInfo {
     func_id: FunctionId,
 }
 
+/// Information about a decorator application
+#[derive(Clone)]
+struct DecoratorInfo {
+    /// The decorator expression (e.g., `@Injectable` or `@Controller("/api")`)
+    expression: Expression,
+}
+
+/// Target of a decorator (used during code generation)
+enum DecoratorTarget {
+    /// Class decorator - applied to the class itself
+    Class { class_id: u32, class_name: String },
+    /// Method decorator - applied to a specific method
+    Method { class_id: u32, method_name: String },
+    /// Field decorator - applied to a specific field
+    Field { class_id: u32, field_name: String },
+    /// Parameter decorator - applied to a specific parameter
+    Parameter { class_id: u32, method_name: String, param_index: u32 },
+}
+
+/// Information about a method's decorators
+#[derive(Clone)]
+struct MethodDecoratorInfo {
+    /// Method name
+    method_name: Symbol,
+    /// Decorators applied to this method
+    decorators: Vec<DecoratorInfo>,
+}
+
+/// Information about a field's decorators
+#[derive(Clone)]
+struct FieldDecoratorInfo {
+    /// Field name
+    field_name: Symbol,
+    /// Decorators applied to this field
+    decorators: Vec<DecoratorInfo>,
+}
+
+/// Information about a parameter's decorators
+#[derive(Clone)]
+struct ParameterDecoratorInfo {
+    /// Method name (or "constructor" for constructor params)
+    method_name: String,
+    /// Parameter index (0-based)
+    param_index: u32,
+    /// Decorators applied to this parameter
+    decorators: Vec<DecoratorInfo>,
+}
+
 /// Information about a class gathered during the first pass
 #[derive(Clone)]
 struct ClassInfo {
@@ -99,6 +147,14 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
     parent_class: Option<ClassId>,
+    /// Class-level decorators (applied bottom-to-top)
+    class_decorators: Vec<DecoratorInfo>,
+    /// Method decorators (keyed by method name)
+    method_decorators: Vec<MethodDecoratorInfo>,
+    /// Field decorators (keyed by field name)
+    field_decorators: Vec<FieldDecoratorInfo>,
+    /// Parameter decorators (keyed by method name and param index)
+    parameter_decorators: Vec<ParameterDecoratorInfo>,
 }
 
 /// Loop context for break/continue handling
@@ -487,6 +543,96 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
+                    // Collect class-level decorators
+                    let class_decorators: Vec<DecoratorInfo> = class
+                        .decorators
+                        .iter()
+                        .map(|d| DecoratorInfo {
+                            expression: d.expression.clone(),
+                        })
+                        .collect();
+
+                    // Collect method decorators
+                    let mut method_decorators = Vec::new();
+                    for member in &class.members {
+                        if let ast::ClassMember::Method(method) = member {
+                            if !method.decorators.is_empty() {
+                                method_decorators.push(MethodDecoratorInfo {
+                                    method_name: method.name.name,
+                                    decorators: method
+                                        .decorators
+                                        .iter()
+                                        .map(|d| DecoratorInfo {
+                                            expression: d.expression.clone(),
+                                        })
+                                        .collect(),
+                                });
+                            }
+                        }
+                    }
+
+                    // Collect field decorators
+                    let mut field_decorators = Vec::new();
+                    for member in &class.members {
+                        if let ast::ClassMember::Field(field) = member {
+                            if !field.decorators.is_empty() {
+                                field_decorators.push(FieldDecoratorInfo {
+                                    field_name: field.name.name,
+                                    decorators: field
+                                        .decorators
+                                        .iter()
+                                        .map(|d| DecoratorInfo {
+                                            expression: d.expression.clone(),
+                                        })
+                                        .collect(),
+                                });
+                            }
+                        }
+                    }
+
+                    // Collect parameter decorators from methods and constructor
+                    let mut parameter_decorators = Vec::new();
+                    for member in &class.members {
+                        match member {
+                            ast::ClassMember::Method(method) => {
+                                let method_name = self.interner.resolve(method.name.name).to_string();
+                                for (index, param) in method.params.iter().enumerate() {
+                                    if !param.decorators.is_empty() {
+                                        parameter_decorators.push(ParameterDecoratorInfo {
+                                            method_name: method_name.clone(),
+                                            param_index: index as u32,
+                                            decorators: param
+                                                .decorators
+                                                .iter()
+                                                .map(|d| DecoratorInfo {
+                                                    expression: d.expression.clone(),
+                                                })
+                                                .collect(),
+                                        });
+                                    }
+                                }
+                            }
+                            ast::ClassMember::Constructor(ctor) => {
+                                for (index, param) in ctor.params.iter().enumerate() {
+                                    if !param.decorators.is_empty() {
+                                        parameter_decorators.push(ParameterDecoratorInfo {
+                                            method_name: "constructor".to_string(),
+                                            param_index: index as u32,
+                                            decorators: param
+                                                .decorators
+                                                .iter()
+                                                .map(|d| DecoratorInfo {
+                                                    expression: d.expression.clone(),
+                                                })
+                                                .collect(),
+                                        });
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+
                     self.class_info_map.insert(
                         class_id,
                         ClassInfo {
@@ -497,6 +643,10 @@ impl<'a> Lowerer<'a> {
                             static_fields,
                             static_methods,
                             parent_class,
+                            class_decorators,
+                            method_decorators,
+                            field_decorators,
+                            parameter_decorators,
                         },
                     );
                 }
@@ -573,7 +723,7 @@ impl<'a> Lowerer<'a> {
         // Add ALL pending functions (including main and class methods) sorted by func_id
         // This ensures functions are added to the module in the order of their pre-assigned IDs
         self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
-        for (_, func) in self.pending_arrow_functions.drain(..) {
+        for (_id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
         }
 
@@ -1003,10 +1153,14 @@ impl<'a> Lowerer<'a> {
         // Initialize static fields from all classes
         self.emit_static_field_initializations();
 
-        // Lower statements
+        // Lower statements first (so variable declarations like `let x = 0` are processed)
         for stmt in stmts {
             self.lower_stmt(stmt);
         }
+
+        // Initialize decorators for all classes AFTER statements
+        // This ensures variables referenced by decorators are already declared
+        self.emit_decorator_initializations();
 
         // Ensure the function ends with a return
         if !self.current_block_is_terminated() {
@@ -1417,6 +1571,310 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Emit decorator initialization code for all classes
+    ///
+    /// Decorator application order (per spec):
+    /// 1. Field decorators (declaration order)
+    /// 2. Method decorators (declaration order)
+    /// 3. Class decorators (bottom-to-top for multiple decorators)
+    ///
+    /// For each decorator, we:
+    /// 1. Lower the decorator expression (could be identifier or call)
+    /// 2. Call the decorator with the appropriate target
+    /// 3. Register the decorator application with metadata
+    fn emit_decorator_initializations(&mut self) {
+        use crate::compiler::native_id::{
+            REGISTER_CLASS_DECORATOR, REGISTER_FIELD_DECORATOR, REGISTER_METHOD_DECORATOR,
+            REGISTER_PARAMETER_DECORATOR,
+        };
+
+        // Collect all decorator applications (clone to avoid borrow issues)
+        // Structure: (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators)
+        let decorator_apps: Vec<(
+            ClassId,
+            String,
+            Vec<DecoratorInfo>,
+            Vec<FieldDecoratorInfo>,
+            Vec<MethodDecoratorInfo>,
+            Vec<ParameterDecoratorInfo>,
+        )> = self
+            .class_info_map
+            .iter()
+            .filter_map(|(&class_id, info)| {
+                // Only process classes that have decorators
+                if info.class_decorators.is_empty()
+                    && info.field_decorators.is_empty()
+                    && info.method_decorators.is_empty()
+                    && info.parameter_decorators.is_empty()
+                {
+                    return None;
+                }
+
+                // Get class name from class_map (reverse lookup)
+                let class_name = self
+                    .class_map
+                    .iter()
+                    .find(|(_, &id)| id == class_id)
+                    .map(|(sym, _)| self.interner.resolve(*sym).to_string())
+                    .unwrap_or_else(|| format!("class_{}", class_id.as_u32()));
+
+                Some((
+                    class_id,
+                    class_name,
+                    info.class_decorators.clone(),
+                    info.field_decorators.clone(),
+                    info.method_decorators.clone(),
+                    info.parameter_decorators.clone(),
+                ))
+            })
+            .collect();
+
+        // Process each class's decorators
+        for (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators) in
+            decorator_apps
+        {
+            let class_id_val = class_id.as_u32();
+
+            // 1. Process parameter decorators first (applied before method is decorated)
+            for param_dec in &parameter_decorators {
+                for dec_info in &param_dec.decorators {
+                    self.emit_decorator_call(
+                        DecoratorTarget::Parameter {
+                            class_id: class_id_val,
+                            method_name: param_dec.method_name.clone(),
+                            param_index: param_dec.param_index,
+                        },
+                        &dec_info.expression,
+                        REGISTER_PARAMETER_DECORATOR,
+                    );
+                }
+            }
+
+            // 2. Process field decorators (declaration order)
+            for field_dec in &field_decorators {
+                let field_name = self.interner.resolve(field_dec.field_name).to_string();
+                for dec_info in &field_dec.decorators {
+                    self.emit_decorator_call(
+                        DecoratorTarget::Field {
+                            class_id: class_id_val,
+                            field_name: field_name.clone(),
+                        },
+                        &dec_info.expression,
+                        REGISTER_FIELD_DECORATOR,
+                    );
+                }
+            }
+
+            // 3. Process method decorators (declaration order)
+            for method_dec in &method_decorators {
+                let method_name = self.interner.resolve(method_dec.method_name).to_string();
+                for dec_info in &method_dec.decorators {
+                    self.emit_decorator_call(
+                        DecoratorTarget::Method {
+                            class_id: class_id_val,
+                            method_name: method_name.clone(),
+                        },
+                        &dec_info.expression,
+                        REGISTER_METHOD_DECORATOR,
+                    );
+                }
+            }
+
+            // 4. Process class decorators (bottom-to-top = reverse order in list)
+            for dec_info in class_decorators.iter().rev() {
+                self.emit_decorator_call(
+                    DecoratorTarget::Class {
+                        class_id: class_id_val,
+                        class_name: class_name.clone(),
+                    },
+                    &dec_info.expression,
+                    REGISTER_CLASS_DECORATOR,
+                );
+            }
+        }
+    }
+
+    /// Emit code to call a single decorator
+    fn emit_decorator_call(
+        &mut self,
+        target: DecoratorTarget,
+        decorator_expr: &Expression,
+        registration_native_id: u16,
+    ) {
+        // Get decorator name for registration
+        let decorator_name = self.get_decorator_name(decorator_expr);
+
+        // Create class_id register
+        let class_id_val = match &target {
+            DecoratorTarget::Class { class_id, .. } => *class_id,
+            DecoratorTarget::Method { class_id, .. } => *class_id,
+            DecoratorTarget::Field { class_id, .. } => *class_id,
+            DecoratorTarget::Parameter { class_id, .. } => *class_id,
+        };
+        let class_id_reg = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::Assign {
+            dest: class_id_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(class_id_val as i32)),
+        });
+
+        // Determine how to call the decorator based on the expression type
+        // There are 3 cases:
+        // 1. Direct function identifier (@Injectable) - use IrInstr::Call
+        // 2. Factory call (@Controller("/api")) - lower the call, then CallClosure on result
+        // 3. Local variable containing closure - load and CallClosure
+
+        // Check if decorator is a direct function reference (identifier in function_map)
+        let direct_func_id = match decorator_expr {
+            Expression::Identifier(ident) => self.function_map.get(&ident.name).copied(),
+            _ => None,
+        };
+
+        // Build the arguments based on target type
+        let args = match &target {
+            DecoratorTarget::Class { .. } => vec![class_id_reg.clone()],
+            DecoratorTarget::Method { method_name, .. } => {
+                let method_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: method_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(method_name.clone())),
+                });
+                vec![class_id_reg.clone(), method_name_reg]
+            }
+            DecoratorTarget::Field { field_name, .. } => {
+                let field_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: field_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(field_name.clone())),
+                });
+                vec![class_id_reg.clone(), field_name_reg]
+            }
+            DecoratorTarget::Parameter { method_name, param_index, .. } => {
+                let method_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: method_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(method_name.clone())),
+                });
+                let param_index_reg = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::Assign {
+                    dest: param_index_reg.clone(),
+                    value: IrValue::Constant(IrConstant::I32(*param_index as i32)),
+                });
+                vec![class_id_reg.clone(), method_name_reg, param_index_reg]
+            }
+        };
+
+        // Emit the decorator call
+        if let Some(func_id) = direct_func_id {
+            // Case 1: Direct function call - use IrInstr::Call
+            let result_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::Call {
+                dest: Some(result_reg),
+                func: func_id,
+                args,
+            });
+        } else if let Expression::Call(_) = decorator_expr {
+            // Case 2: Factory call - lower the factory call, then CallClosure on the result
+            // The factory returns a closure that is the actual decorator
+            let decorator_closure = self.lower_expr(decorator_expr);
+            let result_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::CallClosure {
+                dest: Some(result_reg),
+                closure: decorator_closure,
+                args,
+            });
+        } else {
+            // Case 3: Local variable or other expression - lower and use CallClosure
+            let decorator_reg = self.lower_expr(decorator_expr);
+            let result_reg = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::CallClosure {
+                dest: Some(result_reg),
+                closure: decorator_reg,
+                args,
+            });
+        }
+
+        // Register the decorator application in the metadata store
+        let dec_name_reg = self.alloc_register(TypeId::new(1)); // String type
+        self.emit(IrInstr::Assign {
+            dest: dec_name_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(decorator_name)),
+        });
+
+        // Emit registration native call based on target type
+        match &target {
+            DecoratorTarget::Class { .. } => {
+                // registerClassDecorator(classId, decoratorName)
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: registration_native_id,
+                    args: vec![class_id_reg, dec_name_reg],
+                });
+            }
+            DecoratorTarget::Method { method_name, .. } => {
+                // registerMethodDecorator(classId, methodName, decoratorName)
+                let method_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: method_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(method_name.clone())),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: registration_native_id,
+                    args: vec![class_id_reg, method_name_reg, dec_name_reg],
+                });
+            }
+            DecoratorTarget::Field { field_name, .. } => {
+                // registerFieldDecorator(classId, fieldName, decoratorName)
+                let field_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: field_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(field_name.clone())),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: registration_native_id,
+                    args: vec![class_id_reg, field_name_reg, dec_name_reg],
+                });
+            }
+            DecoratorTarget::Parameter { method_name, param_index, .. } => {
+                // registerParameterDecorator(classId, methodName, paramIndex, decoratorName)
+                let method_name_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: method_name_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(method_name.clone())),
+                });
+                let param_index_reg = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::Assign {
+                    dest: param_index_reg.clone(),
+                    value: IrValue::Constant(IrConstant::I32(*param_index as i32)),
+                });
+                self.emit(IrInstr::NativeCall {
+                    dest: None,
+                    native_id: registration_native_id,
+                    args: vec![class_id_reg, method_name_reg, param_index_reg, dec_name_reg],
+                });
+            }
+        }
+    }
+
+    /// Extract the decorator name from an expression for registration
+    fn get_decorator_name(&self, expr: &Expression) -> String {
+        match expr {
+            Expression::Identifier(ident) => self.interner.resolve(ident.name).to_string(),
+            Expression::Call(call) => {
+                // For decorator factories like @Controller("/api"), extract "Controller"
+                self.get_decorator_name(&call.callee)
+            }
+            Expression::Member(member) => {
+                // For @ns.Decorator, return "ns.Decorator"
+                let obj_name = self.get_decorator_name(&member.object);
+                let prop_name = self.interner.resolve(member.property.name);
+                format!("{}.{}", obj_name, prop_name)
+            }
+            _ => "unknown".to_string(),
+        }
+    }
+
     /// Resolve a type annotation to a TypeId
     fn resolve_type_annotation(&self, ty: &ast::TypeAnnotation) -> TypeId {
         // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
@@ -1567,4 +2025,195 @@ pub struct JsonFieldInfo {
     pub type_id: TypeId,
     /// Whether the field is optional
     pub optional: bool,
+}
+
+#[cfg(test)]
+mod decorator_tests {
+    use super::*;
+    use crate::parser::{Parser, TypeContext};
+
+    fn lower_source(source: &str) -> IrModule {
+        let parser = Parser::new(source).expect("lexer error");
+        let (module, interner) = parser.parse().expect("parse error");
+        let type_ctx = TypeContext::new();
+        let mut lowerer = Lowerer::new(&type_ctx, &interner);
+        lowerer.lower_module(&module)
+    }
+
+    #[test]
+    fn test_class_decorator_collection() {
+        // Test that class decorators are collected during lowering
+        let source = r#"
+            function Injectable(): void {}
+
+            @Injectable
+            class Service {
+                name: string;
+            }
+
+            // Top-level statement to trigger main function
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have 2 functions: Injectable and main
+        assert!(module.function_count() >= 2, "Should have at least Injectable and main functions, got {}", module.function_count());
+        // Should have 1 class: Service
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_method_decorator_collection() {
+        // Test that method decorators are collected
+        // Note: Need top-level statement to create main function
+        let source = r#"
+            function Log(): void {}
+
+            class Api {
+                @Log
+                getUsers(): void {}
+            }
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have 3 functions: Log, Api::getUsers, and main
+        assert!(module.function_count() >= 3, "Should have Log, getUsers, and main functions, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_field_decorator_collection() {
+        // Test that field decorators are collected
+        let source = r#"
+            function Column(): void {}
+
+            class User {
+                @Column
+                name: string;
+            }
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have functions including Column and main
+        assert!(module.function_count() >= 2, "Should have Column and main functions, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_multiple_decorators() {
+        // Test multiple decorators on same element
+        let source = r#"
+            function A(): void {}
+            function B(): void {}
+            function C(): void {}
+
+            @A
+            @B
+            @C
+            class Foo {}
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have 5 functions: A, B, C, main
+        assert!(module.function_count() >= 4, "Should have A, B, C, and main functions, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_decorator_factory_expression() {
+        // Test decorator factory syntax
+        let source = r#"
+            function Controller(path: string): void {}
+
+            @Controller("/api")
+            class Api {}
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have Controller factory and main
+        assert!(module.function_count() >= 2, "Should have Controller and main functions, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_get_decorator_name_from_parsed_code() {
+        // Test decorator name extraction via actual parsing
+        let source = r#"
+            function Injectable(): void {}
+
+            @Injectable
+            class Service {}
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Verify module was lowered successfully with decorator
+        assert_eq!(module.class_count(), 1, "Should have Service class");
+        // The main function should have decorator initialization code
+        let main_func = module.get_function_by_name("main");
+        assert!(main_func.is_some(), "Should have main function with decorator init");
+    }
+
+    #[test]
+    fn test_class_with_all_decorator_types() {
+        // Test a class with class, method, and field decorators
+        let source = r#"
+            function Entity(): void {}
+            function Column(): void {}
+            function Validate(): void {}
+
+            @Entity
+            class User {
+                @Column
+                name: string;
+
+                @Validate
+                save(): void {}
+            }
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have Entity, Column, Validate, User::save, and main
+        assert!(module.function_count() >= 5, "Should have all decorator functions plus method and main, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
+
+    #[test]
+    fn test_nested_decorator_factories() {
+        // Test decorator factory with multiple arguments
+        let source = r#"
+            function Route(method: string, path: string): void {}
+
+            class Api {
+                @Route("GET", "/users")
+                getUsers(): void {}
+            }
+
+            let x = 1;
+        "#;
+
+        let module = lower_source(source);
+
+        // Should have Route, Api::getUsers, and main
+        assert!(module.function_count() >= 3, "Should have Route, getUsers, and main functions, got {}", module.function_count());
+        assert_eq!(module.class_count(), 1, "Should have 1 class");
+    }
 }

@@ -245,7 +245,7 @@ fn test_parse_while_statement() {
 
 #[test]
 fn test_parse_for_statement() {
-    let source = "for (let i = 0; i < 10; i = i + 1) { console.log(i); }";
+    let source = "for (let i = 0; i < 10; i = i + 1) { logger.info(i); }";
     let parser = Parser::new(source).unwrap();
     let (module, _interner) = parser.parse().unwrap();
 
@@ -262,7 +262,7 @@ fn test_parse_for_statement() {
 
 #[test]
 fn test_parse_for_statement_no_init() {
-    let source = "for (; i < 10; i = i + 1) { console.log(i); }";
+    let source = "for (; i < 10; i = i + 1) { logger.info(i); }";
     let parser = Parser::new(source).unwrap();
     let (module, _interner) = parser.parse().unwrap();
 
@@ -279,7 +279,7 @@ fn test_parse_for_statement_no_init() {
 
 #[test]
 fn test_parse_for_statement_expression_init() {
-    let source = "for (i = 0; i < 10; i = i + 1) { console.log(i); }";
+    let source = "for (i = 0; i < 10; i = i + 1) { logger.info(i); }";
     let parser = Parser::new(source).unwrap();
     let (module, _interner) = parser.parse().unwrap();
 
@@ -621,7 +621,7 @@ fn test_parse_try_catch() {
         try {
             throw new Error();
         } catch (e) {
-            console.log(e);
+            logger.info(e);
         }
     "#;
     let parser = Parser::new(source).unwrap();
@@ -959,6 +959,36 @@ fn test_parse_export_type_alias() {
     }
 }
 
+#[test]
+fn test_parse_export_default_identifier() {
+    let source = "const x = 42;\nexport default x;";
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 2);
+    match &module.statements[1] {
+        Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
+            assert!(matches!(expression.as_ref(), Expression::Identifier(_)));
+        }
+        _ => panic!("Expected export default declaration"),
+    }
+}
+
+#[test]
+fn test_parse_export_default_new_expression() {
+    let source = "class Foo {}\nexport default new Foo();";
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 2);
+    match &module.statements[1] {
+        Statement::ExportDecl(ExportDecl::Default { expression, .. }) => {
+            assert!(matches!(expression.as_ref(), Expression::New(_)));
+        }
+        _ => panic!("Expected export default declaration"),
+    }
+}
+
 // ============================================================================
 // Mixed Statements
 // ============================================================================
@@ -1033,7 +1063,7 @@ fn test_parse_do_while_without_semicolon() {
 fn test_parse_for_of_with_const() {
     let source = r#"
         for (const item of items) {
-            console.log(item);
+            logger.info(item);
         }
     "#;
     let parser = Parser::new(source).unwrap();

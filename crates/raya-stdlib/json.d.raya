@@ -15,7 +15,7 @@
  *
  * @example
  * const data = JSON.parse('{"name": "Alice", "age": 30}');
- * console.log(data.name); // "Alice"
+ * logger.info(data.name); // "Alice"
  */
 export function parse(jsonString: string): any;
 
@@ -28,7 +28,7 @@ export function parse(jsonString: string): any;
  *
  * @example
  * const json = JSON.stringify({ name: "Alice", age: 30 });
- * console.log(json); // '{"name":"Alice","age":30}'
+ * logger.info(json); // '{"name":"Alice","age":30}'
  */
 export function stringify(value: any): string;
 

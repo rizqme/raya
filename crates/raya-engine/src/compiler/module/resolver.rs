@@ -48,6 +48,10 @@ pub enum ResolveError {
     #[error("Package '{name}@{version}' not found in cache (run `raya install` first)")]
     PackageNotCached { name: String, version: String },
 
+    /// Standard library module (resolved via StdModuleRegistry, not file system)
+    #[error("Standard library module: {0}")]
+    StdModule(String),
+
     /// Package version constraint invalid
     #[error("Invalid version constraint for '{package}': {error}")]
     InvalidVersionConstraint { package: String, error: String },
@@ -305,6 +309,11 @@ impl ModuleResolver {
     /// 1. Check raya.toml for `my-local-pkg = { path = "./local/path" }`
     /// 2. Resolve to local package entry point
     pub fn resolve(&self, specifier: &str, from_file: &Path) -> Result<ResolvedModule, ResolveError> {
+        // Check for std: namespace imports (handled by StdModuleRegistry, not file resolution)
+        if specifier.starts_with("std:") {
+            return Err(ResolveError::StdModule(specifier.to_string()));
+        }
+
         // Check for HTTP/HTTPS URL imports
         if specifier.starts_with("http://") || specifier.starts_with("https://") {
             return self.resolve_url(specifier);

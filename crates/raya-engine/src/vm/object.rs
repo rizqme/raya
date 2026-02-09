@@ -907,60 +907,230 @@ impl DateObject {
         self.timestamp_ms
     }
 
+    // ---- Civil date helpers (Howard Hinnant's algorithms) ----
+
+    /// Convert days since Unix epoch to (year, month[1-12], day[1-31])
+    fn civil_from_days(days: i64) -> (i32, i32, i32) {
+        let z = days + 719468;
+        let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+        let doe = (z - era * 146097) as u32;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        (y as i32, m as i32, d as i32)
+    }
+
+    /// Convert (year, month[1-12], day[1-31]) to days since Unix epoch
+    fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+        let y = if m <= 2 { y as i64 - 1 } else { y as i64 };
+        let era = (if y >= 0 { y } else { y - 399 }) / 400;
+        let yoe = (y - era * 400) as u32;
+        let m = m as u32;
+        let d = d as u32;
+        let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146097 + doe as i64 - 719468
+    }
+
+    /// Decompose timestamp into (year, month[0-11], day[1-31], hour, min, sec, ms)
+    fn decompose(&self) -> (i32, i32, i32, i32, i32, i32, i32) {
+        let total_ms = self.timestamp_ms;
+        let ms = ((total_ms % 1000 + 1000) % 1000) as i32;
+        let total_secs = if total_ms >= 0 {
+            total_ms / 1000
+        } else {
+            (total_ms - 999) / 1000
+        };
+        let day_secs = ((total_secs % 86400) + 86400) % 86400;
+        let hour = (day_secs / 3600) as i32;
+        let min = ((day_secs % 3600) / 60) as i32;
+        let sec = (day_secs % 60) as i32;
+        let days = (total_secs - day_secs) / 86400;
+        let (y, m, d) = Self::civil_from_days(days);
+        (y, m - 1, d, hour, min, sec, ms)
+    }
+
+    /// Recompose from (year, month[0-11], day[1-31], hour, min, sec, ms) to timestamp_ms
+    fn recompose(y: i32, m: i32, d: i32, h: i32, min: i32, sec: i32, ms: i32) -> i64 {
+        let days = Self::days_from_civil(y, m + 1, d);
+        days * 86400_000 + h as i64 * 3600_000 + min as i64 * 60_000 + sec as i64 * 1000 + ms as i64
+    }
+
+    // ---- Getters ----
+
     /// Get year (4-digit)
     pub fn get_full_year(&self) -> i32 {
-        // Convert timestamp to date components
-        let secs = self.timestamp_ms / 1000;
-        let days = secs / 86400;
-        // Approximate year calculation (doesn't handle leap years perfectly)
-        let years_since_1970 = days / 365;
-        (1970 + years_since_1970) as i32
+        self.decompose().0
     }
 
     /// Get month (0-11)
     pub fn get_month(&self) -> i32 {
-        // Simplified calculation - a proper implementation would handle calendars correctly
-        let secs = self.timestamp_ms / 1000;
-        let days = (secs / 86400) % 365;
-        (days / 30) as i32 % 12
+        self.decompose().1
     }
 
     /// Get day of month (1-31)
     pub fn get_date(&self) -> i32 {
-        let secs = self.timestamp_ms / 1000;
-        let days = (secs / 86400) % 365;
-        ((days % 30) + 1) as i32
+        self.decompose().2
     }
 
     /// Get day of week (0-6, 0=Sunday)
     pub fn get_day(&self) -> i32 {
-        // Jan 1, 1970 was a Thursday (4)
-        let secs = self.timestamp_ms / 1000;
-        let days = secs / 86400;
-        ((days + 4) % 7) as i32
+        let total_secs = if self.timestamp_ms >= 0 {
+            self.timestamp_ms / 1000
+        } else {
+            (self.timestamp_ms - 999) / 1000
+        };
+        let day_secs = ((total_secs % 86400) + 86400) % 86400;
+        let days = (total_secs - day_secs) / 86400;
+        (((days + 4) % 7 + 7) % 7) as i32
     }
 
     /// Get hours (0-23)
     pub fn get_hours(&self) -> i32 {
-        let secs = self.timestamp_ms / 1000;
-        ((secs % 86400) / 3600) as i32
+        self.decompose().3
     }
 
     /// Get minutes (0-59)
     pub fn get_minutes(&self) -> i32 {
-        let secs = self.timestamp_ms / 1000;
-        ((secs % 3600) / 60) as i32
+        self.decompose().4
     }
 
     /// Get seconds (0-59)
     pub fn get_seconds(&self) -> i32 {
-        let secs = self.timestamp_ms / 1000;
-        (secs % 60) as i32
+        self.decompose().5
     }
 
     /// Get milliseconds (0-999)
     pub fn get_milliseconds(&self) -> i32 {
-        (self.timestamp_ms % 1000) as i32
+        self.decompose().6
+    }
+
+    // ---- Setters (return new timestamp) ----
+
+    pub fn set_full_year(&self, year: i32) -> i64 {
+        let (_, m, d, h, min, sec, ms) = self.decompose();
+        Self::recompose(year, m, d, h, min, sec, ms)
+    }
+
+    pub fn set_month(&self, month: i32) -> i64 {
+        let (y, _, d, h, min, sec, ms) = self.decompose();
+        Self::recompose(y, month, d, h, min, sec, ms)
+    }
+
+    pub fn set_date(&self, day: i32) -> i64 {
+        let (y, m, _, h, min, sec, ms) = self.decompose();
+        Self::recompose(y, m, day, h, min, sec, ms)
+    }
+
+    pub fn set_hours(&self, hours: i32) -> i64 {
+        let (y, m, d, _, min, sec, ms) = self.decompose();
+        Self::recompose(y, m, d, hours, min, sec, ms)
+    }
+
+    pub fn set_minutes(&self, minutes: i32) -> i64 {
+        let (y, m, d, h, _, sec, ms) = self.decompose();
+        Self::recompose(y, m, d, h, minutes, sec, ms)
+    }
+
+    pub fn set_seconds(&self, seconds: i32) -> i64 {
+        let (y, m, d, h, min, _, ms) = self.decompose();
+        Self::recompose(y, m, d, h, min, seconds, ms)
+    }
+
+    pub fn set_milliseconds(&self, millis: i32) -> i64 {
+        let (y, m, d, h, min, sec, _) = self.decompose();
+        Self::recompose(y, m, d, h, min, sec, millis)
+    }
+
+    // ---- Formatting ----
+
+    fn day_name(dow: i32) -> &'static str {
+        match dow {
+            0 => "Sun", 1 => "Mon", 2 => "Tue", 3 => "Wed",
+            4 => "Thu", 5 => "Fri", 6 => "Sat", _ => "???",
+        }
+    }
+
+    fn month_name(m: i32) -> &'static str {
+        match m {
+            0 => "Jan", 1 => "Feb", 2 => "Mar", 3 => "Apr",
+            4 => "May", 5 => "Jun", 6 => "Jul", 7 => "Aug",
+            8 => "Sep", 9 => "Oct", 10 => "Nov", 11 => "Dec",
+            _ => "???",
+        }
+    }
+
+    /// Human-readable string: "Mon Jan 15 2024 10:30:00"
+    pub fn to_string_repr(&self) -> String {
+        let (y, m, d, h, min, sec, _) = self.decompose();
+        let dow = self.get_day();
+        format!(
+            "{} {} {:02} {:04} {:02}:{:02}:{:02}",
+            Self::day_name(dow), Self::month_name(m), d, y, h, min, sec
+        )
+    }
+
+    /// ISO 8601: "2024-01-15T10:30:00.000Z"
+    pub fn to_iso_string(&self) -> String {
+        let (y, m, d, h, min, sec, ms) = self.decompose();
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            y, m + 1, d, h, min, sec, ms
+        )
+    }
+
+    /// Date portion: "Mon Jan 15 2024"
+    pub fn to_date_string(&self) -> String {
+        let (y, m, d, _, _, _, _) = self.decompose();
+        let dow = self.get_day();
+        format!("{} {} {:02} {:04}", Self::day_name(dow), Self::month_name(m), d, y)
+    }
+
+    /// Time portion: "10:30:00"
+    pub fn to_time_string(&self) -> String {
+        let (_, _, _, h, min, sec, _) = self.decompose();
+        format!("{:02}:{:02}:{:02}", h, min, sec)
+    }
+
+    // ---- Parsing ----
+
+    /// Parse ISO 8601 date string to timestamp ms
+    pub fn parse(s: &str) -> Option<i64> {
+        let s = s.trim().trim_end_matches('Z');
+        let (date_part, time_part) = if let Some(idx) = s.find('T') {
+            (&s[..idx], Some(&s[idx + 1..]))
+        } else {
+            (s, None)
+        };
+
+        let date_parts: Vec<&str> = date_part.split('-').collect();
+        if date_parts.len() != 3 { return None; }
+        let y: i32 = date_parts[0].parse().ok()?;
+        let m: i32 = date_parts[1].parse().ok()?;
+        let d: i32 = date_parts[2].parse().ok()?;
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) { return None; }
+
+        let (h, min, sec, ms) = if let Some(tp) = time_part {
+            let (time_str, ms) = if let Some(dot_idx) = tp.find('.') {
+                let ms: i32 = tp[dot_idx + 1..].parse().ok()?;
+                (&tp[..dot_idx], ms)
+            } else {
+                (tp, 0)
+            };
+            let time_parts: Vec<&str> = time_str.split(':').collect();
+            let h: i32 = time_parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+            let min: i32 = time_parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let sec: i32 = time_parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+            (h, min, sec, ms)
+        } else {
+            (0, 0, 0, 0)
+        };
+
+        Some(Self::recompose(y, m - 1, d, h, min, sec, ms))
     }
 }
 

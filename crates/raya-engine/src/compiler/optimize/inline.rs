@@ -433,6 +433,16 @@ impl Inliner {
                 object: self.rename_register(object, reg_map),
                 class_id: *class_id,
             }),
+            IrInstr::MakeClosure { dest, func, captures } => Some(IrInstr::MakeClosure {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                func: *func,
+                captures: captures.iter().map(|c| self.rename_register(c, reg_map)).collect(),
+            }),
+            IrInstr::CallClosure { dest, closure, args: closure_args } => Some(IrInstr::CallClosure {
+                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+                closure: self.rename_register(closure, reg_map),
+                args: closure_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+            }),
             // For instructions we don't expect in inlinable functions,
             // clone them as-is (they should have been filtered out)
             other => Some(other.clone()),

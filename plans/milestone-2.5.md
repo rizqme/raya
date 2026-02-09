@@ -1379,7 +1379,7 @@ fn test_discriminant_narrowing() {
             if (result.status === "ok") {
                 return result.value;  // Should work
             } else {
-                console.log(result.error);  // Should work
+                logger.info(result.error);  // Should work
                 return 0;
             }
         }
@@ -1465,9 +1465,9 @@ fn test_nested_narrowing() {
         function process(val: Value): void {
             if (val !== null) {
                 if (typeof val === "string") {
-                    console.log(val.toUpperCase());
+                    logger.info(val.toUpperCase());
                 } else {
-                    console.log(val + 1);
+                    logger.info(val + 1);
                 }
             }
         }

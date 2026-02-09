@@ -110,11 +110,12 @@ raya-stdlib/
 │   ├── lib.rs              # Main entry point
 │   ├── json.rs             # Custom JSON implementation
 │   ├── json_native.rs      # Native FFI wrapper
-│   └── console.rs          # Console module (placeholder)
+│   └── logger.rs           # Logger module implementation
 ├── tests/
 │   ├── json_native.rs      # Module initialization tests
 │   └── json_dynamic_loading.rs  # Dynamic loading tests
 ├── json.d.raya             # TypeScript type definitions
+├── reflect.d.raya          # Reflection API type definitions
 └── Cargo.toml
 ```
 
@@ -146,7 +147,7 @@ The JSON module is automatically exported with the module name `"std:json"` and 
 import * as JSON from "std:json";
 
 const data = JSON.parse('{"name": "Alice"}');
-console.log(data.name);
+logger.info(data.name);
 ```
 
 ## Future Modules

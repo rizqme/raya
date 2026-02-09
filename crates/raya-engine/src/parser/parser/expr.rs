@@ -1476,6 +1476,9 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
         guard.check()?;
         let start_span = parser.current_span();
 
+        // Parse parameter decorators (@Inject, @Validate, etc.)
+        let decorators = super::stmt::parse_decorators(parser)?;
+
         if let Token::Identifier(name) = parser.current() {
             let name = name.clone();
             parser.advance();
@@ -1496,7 +1499,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
             };
 
             params.push(Parameter {
-                decorators: vec![],
+                decorators,
                 pattern: Pattern::Identifier(Identifier {
                     name,
                     span: start_span,

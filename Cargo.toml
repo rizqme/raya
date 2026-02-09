@@ -4,6 +4,7 @@ members = [
     "crates/raya-engine",
     "crates/raya-sdk",
     "crates/raya-stdlib",
+    "crates/raya-runtime",
     "crates/raya-cli",
     "crates/raya-lsp",
     "crates/raya-pm",
@@ -65,6 +66,7 @@ tokio = { version = "1.35", features = ["full"] }
 raya-engine = { path = "crates/raya-engine" }
 raya-sdk = { path = "crates/raya-sdk" }
 raya-stdlib = { path = "crates/raya-stdlib" }
+raya-runtime = { path = "crates/raya-runtime" }
 raya-native = { path = "crates/raya-native" }
 
 [profile.release]

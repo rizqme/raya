@@ -20,6 +20,7 @@ use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotVa
 use crate::vm::scheduler::{ExceptionHandler, SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::{MutexId, MutexRegistry};
+use crate::vm::native_handler::NativeHandler;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
@@ -71,6 +72,9 @@ pub struct TaskInterpreter<'a> {
 
     /// Class metadata registry for reflection (field/method names)
     class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
+
+    /// External native call handler (stdlib implementation)
+    native_handler: &'a Arc<dyn NativeHandler>,
 }
 
 impl<'a> TaskInterpreter<'a> {
@@ -85,6 +89,7 @@ impl<'a> TaskInterpreter<'a> {
         injector: &'a Arc<Injector<Arc<Task>>>,
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
+        native_handler: &'a Arc<dyn NativeHandler>,
     ) -> Self {
         Self {
             gc,
@@ -96,6 +101,7 @@ impl<'a> TaskInterpreter<'a> {
             injector,
             metadata,
             class_metadata,
+            native_handler,
         }
     }
 
@@ -3273,6 +3279,152 @@ impl<'a> TaskInterpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    // Number native calls
+                    id if id == 0x0F00u16 => {
+                        // NUMBER_TO_FIXED: format number with fixed decimal places
+                        // args[0] = number value, args[1] = digits
+                        let value = args[0].as_f64()
+                            .or_else(|| args[0].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0);
+                        let digits = args.get(1).and_then(|v| v.as_i32()).unwrap_or(0) as usize;
+                        let formatted = format!("{:.prec$}", value, prec = digits);
+                        let s = RayaString::new(formatted);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0F01u16 => {
+                        // NUMBER_TO_PRECISION: format with N significant digits
+                        let value = args[0].as_f64()
+                            .or_else(|| args[0].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0);
+                        let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                        let formatted = if value == 0.0 {
+                            format!("{:.prec$}", 0.0, prec = prec - 1)
+                        } else {
+                            let magnitude = value.abs().log10().floor() as i32;
+                            let decimal_places = if prec as i32 > magnitude + 1 {
+                                (prec as i32 - magnitude - 1) as usize
+                            } else {
+                                0
+                            };
+                            format!("{:.prec$}", value, prec = decimal_places)
+                        };
+                        let s = RayaString::new(formatted);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0F02u16 => {
+                        // NUMBER_TO_STRING_RADIX: convert to string with radix
+                        let value = args[0].as_f64()
+                            .or_else(|| args[0].as_i32().map(|v| v as f64))
+                            .unwrap_or(0.0);
+                        let radix = args.get(1).and_then(|v| v.as_i32()).unwrap_or(10);
+                        let formatted = if radix == 10 || radix < 2 || radix > 36 {
+                            if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                format!("{}", value as i64)
+                            } else {
+                                format!("{}", value)
+                            }
+                        } else {
+                            // Integer radix conversion
+                            let int_val = value as i64;
+                            match radix {
+                                2 => format!("{:b}", int_val),
+                                8 => format!("{:o}", int_val),
+                                16 => format!("{:x}", int_val),
+                                _ => {
+                                    // General radix conversion
+                                    if int_val == 0 { "0".to_string() }
+                                    else {
+                                        let negative = int_val < 0;
+                                        let mut n = int_val.unsigned_abs();
+                                        let mut digits = Vec::new();
+                                        let radix = radix as u64;
+                                        while n > 0 {
+                                            let d = (n % radix) as u8;
+                                            digits.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+                                            n /= radix;
+                                        }
+                                        digits.reverse();
+                                        let s = String::from_utf8(digits).unwrap_or_default();
+                                        if negative { format!("-{}", s) } else { s }
+                                    }
+                                }
+                            }
+                        };
+                        let s = RayaString::new(formatted);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Object native calls
+                    id if id == 0x0001u16 => {
+                        // OBJECT_TO_STRING: return "[object Object]"
+                        let s = RayaString::new("[object Object]".to_string());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0002u16 => {
+                        // OBJECT_HASH_CODE: return identity hash from object pointer
+                        let hash = if !args.is_empty() {
+                            // Use the raw bits of the value as a hash
+                            let bits = args[0].as_u64().unwrap_or(0);
+                            (bits ^ (bits >> 16)) as i32
+                        } else {
+                            0
+                        };
+                        if let Err(e) = stack.push(Value::i32(hash)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0003u16 => {
+                        // OBJECT_EQUAL: reference equality
+                        let equal = if args.len() >= 2 {
+                            args[0].as_u64() == args[1].as_u64()
+                        } else {
+                            false
+                        };
+                        if let Err(e) = stack.push(Value::bool(equal)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Task native calls
+                    id if id == 0x0500u16 => {
+                        // TASK_IS_DONE: check if task completed
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let is_done = tasks.get(&task_id)
+                            .map(|t| matches!(t.state(), TaskState::Completed | TaskState::Failed))
+                            .unwrap_or(true);
+                        if let Err(e) = stack.push(Value::bool(is_done)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0501u16 => {
+                        // TASK_IS_CANCELLED: check if task cancelled
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let is_cancelled = tasks.get(&task_id)
+                            .map(|t| t.is_cancelled())
+                            .unwrap_or(false);
+                        if let Err(e) = stack.push(Value::bool(is_cancelled)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Error native calls
+                    id if id == 0x0600u16 => {
+                        // ERROR_STACK: return stack trace string
+                        // The stack trace is captured at throw time and stored in the error object
+                        // For now, return an empty string as placeholder
+                        let s = RayaString::new(String::new());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
                     // Date native calls
                     id if id == date::NOW as u16 => {
                         use std::time::{SystemTime, UNIX_EPOCH};
@@ -3328,6 +3480,131 @@ impl<'a> TaskInterpreter<'a> {
                         if let Err(e) = stack.push(Value::i32(date.get_day())) {
                             return OpcodeResult::Error(e);
                         }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::GET_HOURS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::i32(date.get_hours())) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::GET_MINUTES as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::i32(date.get_minutes())) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::GET_SECONDS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::i32(date.get_seconds())) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::GET_MILLISECONDS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::i32(date.get_milliseconds())) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Date setters: args[0]=timestamp, args[1]=new value, returns new timestamp as f64
+                    id if id == date::SET_FULL_YEAR as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_full_year(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_MONTH as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_month(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_DATE as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(1);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_date(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_HOURS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_hours(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_MINUTES as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_minutes(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_SECONDS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_seconds(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::SET_MILLISECONDS as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let val = args[1].as_i32().unwrap_or(0);
+                        let date = DateObject::from_timestamp(timestamp);
+                        if let Err(e) = stack.push(Value::f64(date.set_milliseconds(val) as f64)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Date string formatting: args[0]=timestamp, returns string
+                    id if id == date::TO_STRING as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        let s = RayaString::new(date.to_string_repr());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::TO_ISO_STRING as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        let s = RayaString::new(date.to_iso_string());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::TO_DATE_STRING as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        let s = RayaString::new(date.to_date_string());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == date::TO_TIME_STRING as u16 => {
+                        let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                        let date = DateObject::from_timestamp(timestamp);
+                        let s = RayaString::new(date.to_time_string());
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    // Date.parse: args[0]=string, returns timestamp f64 (NaN on failure)
+                    id if id == date::PARSE as u16 => {
+                        let input = if !args.is_empty() && args[0].is_ptr() {
+                            if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                                unsafe { &*s.as_ptr() }.data.clone()
+                            } else { String::new() }
+                        } else { String::new() };
+                        let result = match DateObject::parse(&input) {
+                            Some(ts) => Value::f64(ts as f64),
+                            None => Value::f64(f64::NAN),
+                        };
+                        if let Err(e) = stack.push(result) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
                     // RegExp native calls
@@ -3718,7 +3995,44 @@ impl<'a> TaskInterpreter<'a> {
                         OpcodeResult::Continue
                     }
 
+                    // Logger native calls (std:logger) — dispatches to native handler
+                    id if crate::vm::builtin::is_logger_method(id) => {
+                        use crate::vm::NativeCallResult;
+                        let arg_strings = Self::values_to_strings(&args);
+                        match self.native_handler.call(id, &arg_strings) {
+                            NativeCallResult::Void => {
+                                if let Err(e) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                OpcodeResult::Continue
+                            }
+                            NativeCallResult::Unhandled => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Native call {:#06x} not handled by native handler",
+                                    id
+                                )));
+                            }
+                            NativeCallResult::Error(msg) => {
+                                return OpcodeResult::Error(VmError::RuntimeError(msg));
+                            }
+                            _ => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Unexpected result type from logger native call {:#06x}",
+                                    id
+                                )));
+                            }
+                        }
+                    }
+
                     _ => {
+                        // Check if this is a reflect method - pass args directly (don't push/pop)
+                        if crate::vm::builtin::is_reflect_method(native_id) {
+                            match self.call_reflect_method(task, stack, native_id, args, module) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
                         // Other native calls not yet implemented
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "NativeCall {:#06x} not yet implemented in TaskInterpreter (args={})",
@@ -3980,15 +4294,118 @@ impl<'a> TaskInterpreter<'a> {
 
                 // Check for built-in regexp methods
                 if crate::vm::builtin::is_regexp_method(method_id) {
-                    match self.call_regexp_method(task, stack, method_id, arg_count) {
+                    match self.call_regexp_method(task, stack, method_id, arg_count, module) {
                         Ok(()) => return OpcodeResult::Continue,
                         Err(e) => return OpcodeResult::Error(e),
                     }
                 }
 
+                // Check for built-in number methods
+                if crate::vm::builtin::is_number_method(method_id) {
+                    // Pop arguments
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        match stack.pop() {
+                            Ok(v) => args.push(v),
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    args.reverse();
+                    // Pop receiver (number value)
+                    let receiver = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    // Prepend receiver as args[0] for NativeCall pattern
+                    let mut native_args = Vec::with_capacity(args.len() + 1);
+                    native_args.push(receiver);
+                    native_args.extend(args);
+
+                    // Dispatch based on method ID
+                    let value = native_args[0].as_f64()
+                        .or_else(|| native_args[0].as_i32().map(|v| v as f64))
+                        .unwrap_or(0.0);
+
+                    let result_str = match method_id {
+                        0x0F00 => {
+                            // toFixed(digits)
+                            let digits = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(0) as usize;
+                            format!("{:.prec$}", value, prec = digits)
+                        }
+                        0x0F01 => {
+                            // toPrecision(prec)
+                            let prec = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                            if value == 0.0 {
+                                format!("{:.prec$}", 0.0, prec = prec - 1)
+                            } else {
+                                let magnitude = value.abs().log10().floor() as i32;
+                                if prec as i32 <= magnitude + 1 {
+                                    let shift = 10f64.powi(magnitude + 1 - prec as i32);
+                                    let rounded = (value / shift).round() * shift;
+                                    format!("{}", rounded as i64)
+                                } else {
+                                    let decimal_places = (prec as i32 - magnitude - 1) as usize;
+                                    format!("{:.prec$}", value, prec = decimal_places)
+                                }
+                            }
+                        }
+                        0x0F02 => {
+                            // toString(radix?)
+                            let radix = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(10);
+                            if radix == 10 || radix < 2 || radix > 36 {
+                                if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                    format!("{}", value as i64)
+                                } else {
+                                    format!("{}", value)
+                                }
+                            } else {
+                                let int_val = value as i64;
+                                match radix {
+                                    2 => format!("{:b}", int_val),
+                                    8 => format!("{:o}", int_val),
+                                    16 => format!("{:x}", int_val),
+                                    _ => {
+                                        if int_val == 0 { "0".to_string() }
+                                        else {
+                                            let negative = int_val < 0;
+                                            let mut n = int_val.unsigned_abs();
+                                            let mut digits = Vec::new();
+                                            let r = radix as u64;
+                                            while n > 0 {
+                                                let d = (n % r) as u8;
+                                                digits.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+                                                n /= r;
+                                            }
+                                            digits.reverse();
+                                            let s = String::from_utf8(digits).unwrap_or_default();
+                                            if negative { format!("-{}", s) } else { s }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => String::new(),
+                    };
+
+                    let s = RayaString::new(result_str);
+                    let gc_ptr = self.gc.lock().allocate(s);
+                    let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                    return OpcodeResult::Continue;
+                }
+
                 // Check for built-in reflect methods
                 if crate::vm::builtin::is_reflect_method(method_id) {
-                    match self.call_reflect_method(task, stack, method_id, arg_count, module) {
+                    // Pop args from stack into a Vec for call_reflect_method
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        match stack.pop() {
+                            Ok(v) => args.push(v),
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    args.reverse();
+                    match self.call_reflect_method(task, stack, method_id, args, module) {
                         Ok(()) => return OpcodeResult::Continue,
                         Err(e) => return OpcodeResult::Error(e),
                     }
@@ -5374,6 +5791,139 @@ impl<'a> TaskInterpreter<'a> {
                             let ch = unsafe { &*ch_ptr };
                             call_stack.push(Value::i32(ch.capacity() as i32))?;
                         }
+                        // Number native calls
+                        id if id == 0x0F00u32 => {
+                            // NUMBER_TO_FIXED: format number with fixed decimal places
+                            let value = args[0].as_f64()
+                                .or_else(|| args[0].as_i32().map(|v| v as f64))
+                                .unwrap_or(0.0);
+                            let digits = args.get(1).and_then(|v| v.as_i32()).unwrap_or(0) as usize;
+                            let formatted = format!("{:.prec$}", value, prec = digits);
+                            let s = RayaString::new(formatted);
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(val)?;
+                        }
+                        id if id == 0x0F01u32 => {
+                            // NUMBER_TO_PRECISION: format with N significant digits
+                            let value = args[0].as_f64()
+                                .or_else(|| args[0].as_i32().map(|v| v as f64))
+                                .unwrap_or(0.0);
+                            let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                            let formatted = if value == 0.0 {
+                                format!("{:.prec$}", 0.0, prec = prec - 1)
+                            } else {
+                                let magnitude = value.abs().log10().floor() as i32;
+                                if prec as i32 <= magnitude + 1 {
+                                    let shift = 10f64.powi(magnitude + 1 - prec as i32);
+                                    let rounded = (value / shift).round() * shift;
+                                    format!("{}", rounded as i64)
+                                } else {
+                                    let decimal_places = (prec as i32 - magnitude - 1) as usize;
+                                    format!("{:.prec$}", value, prec = decimal_places)
+                                }
+                            };
+                            let s = RayaString::new(formatted);
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(val)?;
+                        }
+                        id if id == 0x0F02u32 => {
+                            // NUMBER_TO_STRING_RADIX: convert to string with radix
+                            let value = args[0].as_f64()
+                                .or_else(|| args[0].as_i32().map(|v| v as f64))
+                                .unwrap_or(0.0);
+                            let radix = args.get(1).and_then(|v| v.as_i32()).unwrap_or(10);
+                            let formatted = if radix == 10 || radix < 2 || radix > 36 {
+                                if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                    format!("{}", value as i64)
+                                } else {
+                                    format!("{}", value)
+                                }
+                            } else {
+                                let int_val = value as i64;
+                                match radix {
+                                    2 => format!("{:b}", int_val),
+                                    8 => format!("{:o}", int_val),
+                                    16 => format!("{:x}", int_val),
+                                    _ => {
+                                        if int_val == 0 { "0".to_string() }
+                                        else {
+                                            let negative = int_val < 0;
+                                            let mut n = int_val.unsigned_abs();
+                                            let mut digits = Vec::new();
+                                            let radix = radix as u64;
+                                            while n > 0 {
+                                                let d = (n % radix) as u8;
+                                                digits.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+                                                n /= radix;
+                                            }
+                                            digits.reverse();
+                                            let s = String::from_utf8(digits).unwrap_or_default();
+                                            if negative { format!("-{}", s) } else { s }
+                                        }
+                                    }
+                                }
+                            };
+                            let s = RayaString::new(formatted);
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(val)?;
+                        }
+                        // Object native calls
+                        id if id == 0x0001u32 => {
+                            // OBJECT_TO_STRING: return "[object Object]"
+                            let s = RayaString::new("[object Object]".to_string());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
+                        id if id == 0x0002u32 => {
+                            // OBJECT_HASH_CODE: return identity hash from object pointer
+                            let hash = if !args.is_empty() {
+                                let bits = args[0].as_u64().unwrap_or(0);
+                                (bits ^ (bits >> 16)) as i32
+                            } else {
+                                0
+                            };
+                            call_stack.push(Value::i32(hash))?;
+                        }
+                        id if id == 0x0003u32 => {
+                            // OBJECT_EQUAL: reference equality
+                            let equal = if args.len() >= 2 {
+                                args[0].as_u64() == args[1].as_u64()
+                            } else {
+                                false
+                            };
+                            call_stack.push(Value::bool(equal))?;
+                        }
+                        // Task native calls
+                        id if id == 0x0500u32 => {
+                            // TASK_IS_DONE: check if task completed
+                            let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                            let tasks = self.tasks.read();
+                            let is_done = tasks.get(&task_id)
+                                .map(|t| matches!(t.state(), TaskState::Completed | TaskState::Failed))
+                                .unwrap_or(true);
+                            call_stack.push(Value::bool(is_done))?;
+                        }
+                        id if id == 0x0501u32 => {
+                            // TASK_IS_CANCELLED: check if task cancelled
+                            let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                            let tasks = self.tasks.read();
+                            let is_cancelled = tasks.get(&task_id)
+                                .map(|t| t.is_cancelled())
+                                .unwrap_or(false);
+                            call_stack.push(Value::bool(is_cancelled))?;
+                        }
+                        // Error native calls
+                        id if id == 0x0600u32 => {
+                            // ERROR_STACK: return stack trace string
+                            let s = RayaString::new(String::new());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
                         // Date native calls
                         id if id == date::NOW as u32 => {
                             use std::time::{SystemTime, UNIX_EPOCH};
@@ -5415,6 +5965,100 @@ impl<'a> TaskInterpreter<'a> {
                                 .unwrap_or(0.0) as i64;
                             let date = DateObject::from_timestamp(timestamp);
                             call_stack.push(Value::i32(date.get_day()))?;
+                        }
+                        id if id == date::GET_HOURS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            call_stack.push(Value::i32(DateObject::from_timestamp(timestamp).get_hours()))?;
+                        }
+                        id if id == date::GET_MINUTES as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            call_stack.push(Value::i32(DateObject::from_timestamp(timestamp).get_minutes()))?;
+                        }
+                        id if id == date::GET_SECONDS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            call_stack.push(Value::i32(DateObject::from_timestamp(timestamp).get_seconds()))?;
+                        }
+                        id if id == date::GET_MILLISECONDS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            call_stack.push(Value::i32(DateObject::from_timestamp(timestamp).get_milliseconds()))?;
+                        }
+                        // Date setters
+                        id if id == date::SET_FULL_YEAR as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_full_year(val) as f64))?;
+                        }
+                        id if id == date::SET_MONTH as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_month(val) as f64))?;
+                        }
+                        id if id == date::SET_DATE as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(1);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_date(val) as f64))?;
+                        }
+                        id if id == date::SET_HOURS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_hours(val) as f64))?;
+                        }
+                        id if id == date::SET_MINUTES as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_minutes(val) as f64))?;
+                        }
+                        id if id == date::SET_SECONDS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_seconds(val) as f64))?;
+                        }
+                        id if id == date::SET_MILLISECONDS as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let val = args[1].as_i32().unwrap_or(0);
+                            call_stack.push(Value::f64(DateObject::from_timestamp(timestamp).set_milliseconds(val) as f64))?;
+                        }
+                        // Date string formatting
+                        id if id == date::TO_STRING as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let s = RayaString::new(DateObject::from_timestamp(timestamp).to_string_repr());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
+                        id if id == date::TO_ISO_STRING as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let s = RayaString::new(DateObject::from_timestamp(timestamp).to_iso_string());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
+                        id if id == date::TO_DATE_STRING as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let s = RayaString::new(DateObject::from_timestamp(timestamp).to_date_string());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
+                        id if id == date::TO_TIME_STRING as u32 => {
+                            let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
+                            let s = RayaString::new(DateObject::from_timestamp(timestamp).to_time_string());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            call_stack.push(value)?;
+                        }
+                        // Date.parse
+                        id if id == date::PARSE as u32 => {
+                            let input = if !args.is_empty() && args[0].is_ptr() {
+                                if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                                    unsafe { &*s.as_ptr() }.data.clone()
+                                } else { String::new() }
+                            } else { String::new() };
+                            let result = match DateObject::parse(&input) {
+                                Some(ts) => Value::f64(ts as f64),
+                                None => Value::f64(f64::NAN),
+                            };
+                            call_stack.push(result)?;
                         }
                         // RegExp native calls
                         id if id == regexp::NEW as u32 => {
@@ -5636,6 +6280,31 @@ impl<'a> TaskInterpreter<'a> {
                             };
                             call_stack.push(arr_val)?;
                         }
+                        // Logger native calls (std:logger) — dispatches to native handler
+                        id if crate::vm::builtin::is_logger_method(id as u16) => {
+                            use crate::vm::NativeCallResult;
+                            let arg_strings = Self::values_to_strings(&args);
+                            match self.native_handler.call(id as u16, &arg_strings) {
+                                NativeCallResult::Void => {
+                                    call_stack.push(Value::null())?;
+                                }
+                                NativeCallResult::Unhandled => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Native call {:#06x} not handled by native handler",
+                                        id
+                                    )));
+                                }
+                                NativeCallResult::Error(msg) => {
+                                    return Err(VmError::RuntimeError(msg));
+                                }
+                                _ => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Unexpected result type from logger native call {:#06x}",
+                                        id
+                                    )));
+                                }
+                            }
+                        }
                         _ => {
                             return Err(VmError::RuntimeError(format!(
                                 "NativeCall {:#06x} not implemented in nested call (args={})",
@@ -5814,6 +6483,39 @@ impl<'a> TaskInterpreter<'a> {
     }
 
     // ===== Helper Methods =====
+
+    /// Convert a list of Value arguments to string representations for native calls
+    ///
+    /// Extracts string content from RayaString pointers, and falls back
+    /// to Display formatting for primitive values.
+    fn values_to_strings(args: &[Value]) -> Vec<String> {
+        let mut parts = Vec::with_capacity(args.len());
+        for arg in args {
+            if arg.is_null() {
+                parts.push("null".to_string());
+            } else if let Some(b) = arg.as_bool() {
+                parts.push(if b { "true".to_string() } else { "false".to_string() });
+            } else if let Some(i) = arg.as_i32() {
+                parts.push(i.to_string());
+            } else if let Some(f) = arg.as_f64() {
+                if f.fract() == 0.0 && f.abs() < 1e15 {
+                    parts.push((f as i64).to_string());
+                } else {
+                    parts.push(f.to_string());
+                }
+            } else if arg.is_ptr() {
+                if let Some(str_ptr) = unsafe { arg.as_ptr::<RayaString>() } {
+                    let rs = unsafe { &*str_ptr.as_ptr() };
+                    parts.push(rs.data.clone());
+                } else {
+                    parts.push("[object]".to_string());
+                }
+            } else {
+                parts.push(format!("{}", arg));
+            }
+        }
+        parts
+    }
 
     #[inline]
     fn read_u8(code: &[u8], ip: &mut usize) -> Result<u8, VmError> {
@@ -7229,10 +7931,11 @@ impl<'a> TaskInterpreter<'a> {
     /// Handle built-in regexp methods
     fn call_regexp_method(
         &mut self,
-        _task: &Arc<Task>,
+        task: &Arc<Task>,
         stack: &mut std::sync::MutexGuard<'_, Stack>,
         method_id: u16,
         arg_count: usize,
+        module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::regexp;
 
@@ -7407,6 +8110,84 @@ impl<'a> TaskInterpreter<'a> {
                 };
                 stack.push(arr_val)?;
             }
+            id if id == regexp::REPLACE_WITH => {
+                // replaceWith(str, callback): replace matches using callback
+                let input = if !args.is_empty() && args[0].is_ptr() {
+                    if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                        unsafe { &*s.as_ptr() }.data.clone()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                let callback_val = if args.len() > 1 { args[1] } else {
+                    return Err(VmError::TypeError("Expected callback function".to_string()));
+                };
+                if !callback_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected callback function".to_string()));
+                }
+                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
+                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+                let func_index = closure.func_id();
+
+                let is_global = re.flags.contains('g');
+                let mut result = String::new();
+                let mut last_end = 0;
+
+                task.push_closure(callback_val);
+
+                if is_global {
+                    for m in re.compiled.find_iter(&input) {
+                        result.push_str(&input[last_end..m.start()]);
+                        let mut match_arr = Array::new(0, 0);
+                        let match_str = RayaString::new(m.as_str().to_string());
+                        let gc_ptr = self.gc.lock().allocate(match_str);
+                        let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        match_arr.push(match_val);
+                        let arr_gc_ptr = self.gc.lock().allocate(match_arr);
+                        let arr_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc_ptr.as_ptr()).unwrap()) };
+                        let callback_result = self.execute_nested_function(task, func_index, vec![arr_val], module)?;
+                        let replacement = if let Some(ptr) = unsafe { callback_result.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            String::new()
+                        };
+                        result.push_str(&replacement);
+                        last_end = m.end();
+                    }
+                } else {
+                    if let Some(m) = re.compiled.find(&input) {
+                        result.push_str(&input[..m.start()]);
+                        let mut match_arr = Array::new(0, 0);
+                        let match_str = RayaString::new(m.as_str().to_string());
+                        let gc_ptr = self.gc.lock().allocate(match_str);
+                        let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        match_arr.push(match_val);
+                        let arr_gc_ptr = self.gc.lock().allocate(match_arr);
+                        let arr_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc_ptr.as_ptr()).unwrap()) };
+                        let callback_result = self.execute_nested_function(task, func_index, vec![arr_val], module)?;
+                        let replacement = if let Some(ptr) = unsafe { callback_result.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            String::new()
+                        };
+                        result.push_str(&replacement);
+                        last_end = m.end();
+                    }
+                }
+
+                result.push_str(&input[last_end..]);
+                task.pop_closure();
+
+                let result_str = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(result_str);
+                let result_val = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                };
+                stack.push(result_val)?;
+            }
             _ => {
                 return Err(VmError::RuntimeError(format!(
                     "RegExp method {:#06x} not yet implemented in TaskInterpreter",
@@ -7423,17 +8204,10 @@ impl<'a> TaskInterpreter<'a> {
         task: &Arc<Task>,
         stack: &mut std::sync::MutexGuard<'_, Stack>,
         method_id: u16,
-        arg_count: usize,
+        args: Vec<Value>,
         module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::reflect;
-
-        // Pop arguments
-        let mut args = Vec::with_capacity(arg_count);
-        for _ in 0..arg_count {
-            args.push(stack.pop()?);
-        }
-        args.reverse();
 
         // Helper to get string from Value
         let get_string = |v: Value| -> Result<String, VmError> {
@@ -9080,6 +9854,56 @@ impl<'a> TaskInterpreter<'a> {
                 let mut visited = Vec::new();
                 let is_circular = self.check_circular(target, &mut visited);
                 Value::bool(is_circular)
+            }
+
+            // ===== Decorator Registration (Phase 3/4 codegen) =====
+
+            reflect::REGISTER_CLASS_DECORATOR => {
+                // registerClassDecorator(classId, decoratorName)
+                // Metadata registration - currently a no-op, decorator function does the work
+                // The DecoratorRegistry is populated by the codegen emitted registration calls
+                // which use global state. For now, we just acknowledge the call.
+                Value::null()
+            }
+
+            reflect::REGISTER_METHOD_DECORATOR => {
+                // registerMethodDecorator(classId, methodName, decoratorName)
+                // Metadata registration - currently a no-op
+                Value::null()
+            }
+
+            reflect::REGISTER_FIELD_DECORATOR => {
+                // registerFieldDecorator(classId, fieldName, decoratorName)
+                // Metadata registration - currently a no-op
+                Value::null()
+            }
+
+            reflect::REGISTER_PARAMETER_DECORATOR => {
+                // registerParameterDecorator(classId, methodName, paramIndex, decoratorName)
+                // Metadata registration - currently a no-op
+                Value::null()
+            }
+
+            reflect::GET_CLASS_DECORATORS => {
+                // getClassDecorators(classId) -> get decorators applied to class
+                // Returns empty array for now - full implementation uses DecoratorRegistry
+                let arr = Array::new(0, 0);
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_METHOD_DECORATORS => {
+                // getMethodDecorators(classId, methodName) -> get decorators on method
+                let arr = Array::new(0, 0);
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::GET_FIELD_DECORATORS => {
+                // getFieldDecorators(classId, fieldName) -> get decorators on field
+                let arr = Array::new(0, 0);
+                let arr_gc = self.gc.lock().allocate(arr);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
             }
 
             _ => {

@@ -165,23 +165,23 @@ const sum = add(5, 3);           // 8
 const product = multiply(4.5, 2.0);  // 9.0
 const even = isEven(42);          // true
 
-console.log(`5 + 3 = ${sum}`);
-console.log(`4.5 * 2.0 = ${product}`);
-console.log(`Is 42 even? ${even}`);
+logger.info(`5 + 3 = ${sum}`);
+logger.info(`4.5 * 2.0 = ${product}`);
+logger.info(`Is 42 even? ${even}`);
 
 // Error handling with Result types
 try {
     const result = power(2.0, 8.0);  // 256.0
-    console.log(`2^8 = ${result}`);
+    logger.info(`2^8 = ${result}`);
 } catch (e) {
-    console.error(`Error: ${e}`);
+    logger.error(`Error: ${e}`);
 }
 
 // This will throw
 try {
     const bad = power(0.0, -1.0);  // Error!
 } catch (e) {
-    console.error(`Expected error: ${e}`);
+    logger.error(`Expected error: ${e}`);
 }
 ```
 

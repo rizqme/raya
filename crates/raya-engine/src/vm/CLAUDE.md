@@ -24,7 +24,13 @@ vm/
 │   ├── introspection.rs   # Type info, class hierarchy
 │   ├── metadata.rs        # MetadataStore for user metadata
 │   ├── snapshot.rs        # ObjectSnapshot, ObjectDiff
-│   └── proxy.rs           # Proxy detection and trap dispatch
+│   ├── proxy.rs           # Proxy detection and trap dispatch
+│   ├── type_builder.rs    # Dynamic class creation (Phase 10)
+│   ├── runtime_builder.rs # Runtime type creation (Phase 14)
+│   ├── bytecode_builder.rs # Dynamic bytecode generation (Phase 15)
+│   ├── permissions.rs     # Security & permissions (Phase 16)
+│   ├── dynamic_module.rs  # Dynamic module system (Phase 17)
+│   └── bootstrap.rs       # Bootstrap context (Phase 17)
 └── ffi/           # Foreign function interface
 ```
 
@@ -110,7 +116,28 @@ See [ffi/CLAUDE.md](ffi/CLAUDE.md).
 - `introspection.rs` - `get_class_id`, `is_instance_of`, `TypeInfo`
 - `snapshot.rs` - `ObjectSnapshot`, `ObjectDiff` for state tracking
 - `proxy.rs` - Proxy detection and trap helpers (`try_unwrap_proxy`, `unwrap_proxy_target`)
-- Native call handlers use IDs 0x0D00-0x0DBF (see `builtin.rs`)
+- `type_builder.rs` - Dynamic class creation (`SubclassDefinition`, `FieldDefinition`, `DynamicClassBuilder`)
+- `generic_metadata.rs` - Generic type tracking (`GenericTypeInfo`, `GenericParameterInfo`, `GenericTypeRegistry`)
+- `runtime_builder.rs` - Runtime type creation (`ClassBuilder`, `DynamicFunction`, `SpecializationCache`)
+- `bytecode_builder.rs` - Dynamic bytecode generation (`BytecodeBuilder`, `CompiledFunction`, `Label`)
+- Native call handlers use IDs 0x0D00-0x0E2F (see `builtin.rs`)
+  - 0x0D00-0x0D0F: Metadata operations
+  - 0x0D10-0x0D1F: Class introspection
+  - 0x0D20-0x0D2F: Field access
+  - 0x0D30-0x0D3F: Method invocation
+  - 0x0D40-0x0D4F: Object creation
+  - 0x0D50-0x0D5F: Type utilities
+  - 0x0D60-0x0D6F: Interface/hierarchy query
+  - 0x0D70-0x0D8F: Object inspection/memory
+  - 0x0D90-0x0D9F: Stack introspection
+  - 0x0DA0-0x0DAF: Serialization helpers
+  - 0x0DB0-0x0DBF: Proxy objects (Phase 9)
+  - 0x0DC0-0x0DCF: Dynamic subclass creation (Phase 10)
+  - 0x0DD0-0x0DDF: Generic type metadata (Phase 13)
+  - 0x0DE0-0x0DEF: Runtime type creation (Phase 14)
+  - 0x0DF0-0x0DFF: Dynamic bytecode generation (Phase 15)
+  - 0x0E00-0x0E0F: Security & permissions (Phase 16)
+  - 0x0E10-0x0E2F: Dynamic VM bootstrap (Phase 17)
 
 ## Execution Model
 

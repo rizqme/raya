@@ -641,7 +641,7 @@ type Printable = {
 };
 
 class Document implements Printable {
-  print(): void { console.log(this.content); }
+  print(): void { logger.info(this.content); }
 }
 ```
 

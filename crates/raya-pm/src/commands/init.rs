@@ -78,7 +78,7 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
             r#"// Main entry point
 
 function main(): void {
-    console.log("Hello, Raya!");
+    logger.info("Hello, Raya!");
 }
 
 main();

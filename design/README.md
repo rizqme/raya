@@ -117,8 +117,8 @@ let id: ID = 42;
 
 import { match } from "raya:std";
 match(id, {
-  string: (s) => console.log(`String: ${s}`),
-  number: (n) => console.log(`Number: ${n}`)
+  string: (s) => logger.info(`String: ${s}`),
+  number: (n) => logger.info(`Number: ${n}`)
 });
 ```
 
@@ -130,8 +130,8 @@ type Value =
   | { kind: "number"; value: number };
 
 match(value, {
-  string: (v) => console.log(v.value),
-  number: (v) => console.log(v.value)
+  string: (v) => logger.info(v.value),
+  number: (v) => logger.info(v.value)
 });
 ```
 
@@ -294,7 +294,7 @@ class Box<T> {
 
 ## Standard Library (Minimal)
 
-- **Console**: `console.log`, `console.error`
+- **Console**: `logger.info`, `logger.error`
 - **Math**: Basic math operations
 - **String**: Standard string methods
 - **Array**: Standard array methods
@@ -346,7 +346,7 @@ import * as Reflect from "raya:reflect";
 
 // Get type information
 const typeInfo = Reflect.typeOf(value);
-console.log(typeInfo.name); // "User"
+logger.info(typeInfo.name); // "User"
 
 // Build TypeScript compat shim
 export function typeof(value: any): string {

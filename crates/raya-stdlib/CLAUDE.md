@@ -4,78 +4,113 @@ Native implementations for Raya's standard library.
 
 ## Overview
 
-This crate contains native (Rust) implementations of standard library functions that can't be efficiently implemented in pure Raya, such as:
-- Console I/O
-- JSON serialization/deserialization
-- File system operations (planned)
-- Network operations (planned)
+This crate contains native (Rust) implementations of standard library functions that can't be efficiently implemented in pure Raya. **Decoupled from raya-engine via the `NativeHandler` trait** — the runtime layer (`raya-runtime`) binds them together.
+
+## Architecture (Post-M4.2)
+
+```
+raya-engine (defines NativeHandler trait)
+    ↓
+raya-stdlib (implements logger, future std modules)
+    ↓
+raya-runtime (StdNativeHandler routes calls)
+```
 
 ## Module Structure
 
 ```
 src/
 ├── lib.rs          # Crate entry point
-├── console.rs      # Console I/O (print, log, etc.)
-├── json.rs         # JSON types and utilities
-└── json_native.rs  # Native JSON functions
+└── logger.rs       # Logger implementations (debug, info, warn, error)
+
+# Type definition & source files (.d.raya, .raya)
+├── Logger.raya     # std:logger source (default export)
+├── json.d.raya     # Type definitions for std:json
+└── reflect.d.raya  # Type definitions for std:reflect
 ```
 
 ## Current Implementations
 
-### Console (`console.rs`)
-- `console.log()` - Print to stdout with newline
-- `console.error()` - Print to stderr
-- `console.warn()` - Warning messages
+### Logger (`logger.rs`, `Logger.raya`)
+- `logger.debug(msg)` - Print debug to stdout with `[DEBUG]` prefix
+- `logger.info(msg)` - Print to stdout (no prefix)
+- `logger.warn(msg)` - Print to stderr with `[WARN]` prefix
+- `logger.error(msg)` - Print to stderr with `[ERROR]` prefix
 
-### JSON (`json_native.rs`)
-- `JSON.parse()` - Parse JSON string to value
-- `JSON.stringify()` - Convert value to JSON string
-- Type-safe `JSON.decode<T>()` (compile-time specialized)
-- Type-safe `JSON.encode<T>()` (compile-time specialized)
+**Usage:**
+```typescript
+import logger from "std:logger";
+
+logger.info("Server started");
+logger.error("Connection failed");
+```
+
+**Native IDs:** 0x1000-0x1003 (defined in `raya-engine/src/vm/builtin.rs`)
+
+### JSON (Type defs only)
+Type definitions in `json.d.raya` — implementation pending migration to new architecture.
+
+### Reflect (`reflect.d.raya`)
+Type definitions for the Reflection API (implementation in raya-engine):
+- **Metadata**: `defineMetadata`, `getMetadata`, `hasMetadata`, `deleteMetadata`
+- **Introspection**: `getClass`, `getFields`, `getMethods`, `getTypeInfo`
+- **Dynamic access**: `get`, `set`, `invoke`, `construct`
+- **Proxies**: `createProxy`, `isProxy`, `getProxyTarget`
+- **Dynamic classes**: `createSubclass`, `defineClass`, `newClassBuilder`
+- **Bytecode generation**: `newBytecodeBuilder`, `bcEmit*`, `bcBuild`
+- **Permissions**: `setPermissions`, `getPermissions`, `sealPermissions`
+- **Dynamic modules**: `createModule`, `moduleAddFunction`, `moduleSeal`
+- **Bootstrap**: `bootstrap`, `isBootstrapped`, `getObjectClass`
+
+Note: Reflect implementations use native call IDs (0x0Dxx-0x0Exx) handled in `raya-engine/src/vm/vm/handlers/reflect.rs`
 
 ## Integration with VM
 
-Native functions are registered using the FFI system:
+**Post-M4.2:** Native functions are routed via the `NativeHandler` trait in `raya-runtime`:
 
 ```rust
-use raya_sdk::NativeModule;
-use raya_native::{function, module};
-
-#[function]
-fn json_parse(input: String) -> NativeValue {
-    // Parse JSON and return Raya value
-}
-
-#[module]
-pub fn init() -> NativeModule {
-    let mut module = NativeModule::new("json", "1.0.0");
-    module.register_function("parse", json_parse_ffi);
-    module
+// raya-runtime/src/lib.rs
+impl NativeHandler for StdNativeHandler {
+    fn call(&self, id: u16, args: &[String]) -> NativeCallResult {
+        match id {
+            0x1001 => {
+                let msg = args.join(" ");
+                raya_stdlib::logger::info(&msg);
+                NativeCallResult::Void
+            }
+            // ...
+        }
+    }
 }
 ```
 
-## Adding New Native Functions
+The VM (`raya-engine`) remains decoupled from specific stdlib implementations.
 
-1. Create the function with `#[function]` attribute
-2. Register in the module initializer
-3. Add corresponding native ID in `raya-engine/src/compiler/native_id.rs`
-4. Add dispatch in `raya-engine/src/vm/vm/interpreter.rs`
+## Adding New Stdlib Modules
+
+1. **Create `.raya` source** in `crates/raya-stdlib/` (e.g., `Math.raya`)
+2. **Define native IDs** in `raya-engine/src/vm/builtin.rs`
+3. **Add to std registry** in `raya-engine/src/compiler/module/std_modules.rs`
+4. **Implement Rust functions** in `crates/raya-stdlib/src/` (e.g., `math.rs`)
+5. **Route in StdNativeHandler** in `raya-runtime/src/lib.rs`
 
 ## Implementation Status
 
-| Module | Status |
-|--------|--------|
-| console | Complete |
-| JSON | Partial |
-| fs | Not started |
-| net | Not started |
-| crypto | Not started |
-| os | Not started |
+| Module | Status | Notes |
+|--------|--------|-------|
+| logger | ✅ Complete | Via NativeHandler (M4.2) |
+| JSON | Type defs only | Migration pending |
+| reflect | ✅ Type defs complete | Handlers in raya-engine |
+| math | Planned (M4.3) | abs, floor, ceil, PI, E, etc. |
+| fs | Not started | |
+| net | Not started | |
+| crypto | Not started | |
+| os | Not started | |
 
 ## For AI Assistants
 
-- Use `raya-sdk` and `raya-native` for FFI
-- Native IDs must match `compiler/native_id.rs`
-- Console output goes through Rust's stdout/stderr
-- JSON uses `serde_json` internally
+- **Architecture**: Engine defines `NativeHandler` trait, stdlib implements functions, runtime binds them
+- **No direct coupling**: `raya-engine` does NOT depend on `raya-stdlib`
+- **Native IDs** must match across `builtin.rs`, `.raya` sources, and `StdNativeHandler`
+- **std: prefix**: Standard library modules use `std:` namespace (e.g., `import logger from "std:logger"`)
 - Keep implementations simple - complex logic should be in Raya

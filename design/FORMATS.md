@@ -50,7 +50,7 @@ TypeScript-compatible syntax (strict subset). See [LANG.md](LANG.md) for complet
 ```typescript
 // hello.raya
 function main(): void {
-  console.log("Hello, Raya!");
+  logger.info("Hello, Raya!");
 }
 ```
 
@@ -303,7 +303,7 @@ Binary files are verified on load:
 ```typescript
 // hello.raya - Has main() function
 function main(): void {
-  console.log("Hello, Raya!");
+  logger.info("Hello, Raya!");
 }
 ```
 
@@ -350,10 +350,10 @@ $ raya build math.raya
 import { add, Calculator } from "./math.ryb";
 
 function main(): void {
-  console.log(add(2, 3));  // 5
+  logger.info(add(2, 3));  // 5
 
   const calc = new Calculator();
-  console.log(calc.multiply(4, 5));  // 20
+  logger.info(calc.multiply(4, 5));  // 20
 }
 ```
 
@@ -366,8 +366,8 @@ export function helper(): string {
 }
 
 function main(): void {
-  console.log("Running utils directly");
-  console.log(helper());
+  logger.info("Running utils directly");
+  logger.info(helper());
 }
 ```
 

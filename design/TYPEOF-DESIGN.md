@@ -153,9 +153,9 @@ type ID = string | number;
 let id: ID = 42;
 
 if (typeof id === "number") {
-  console.log(id + 1);  // 43
+  logger.info(id + 1);  // 43
 } else {
-  console.log(id.length);  // string methods
+  logger.info(id.length);  // string methods
 }
 ```
 
@@ -206,9 +206,9 @@ type Result =
 
 function handle(r: Result): void {
   if (r.status === "ok") {
-    console.log(r.value);
+    logger.info(r.value);
   } else {
-    console.log(r.message);
+    logger.info(r.message);
   }
 }
 ```

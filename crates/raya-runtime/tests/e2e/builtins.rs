@@ -9,7 +9,7 @@
 //! NOTE: These tests will fail at runtime until native function implementations
 //! are added to the VM. The tests verify compilation succeeds.
 
-use super::harness::{expect_i32_with_builtins, expect_bool_with_builtins, expect_i32, expect_bool, expect_string};
+use super::harness::{expect_i32_with_builtins, expect_bool_with_builtins, expect_string_with_builtins, expect_i32, expect_bool, expect_string};
 
 // ============================================================================
 // Map tests
@@ -843,4 +843,309 @@ fn test_regexp_match_groups_second() {
         // result[3] = second group "domain"
         return result[3];
     "#, "domain");
+}
+
+// ============================================================================
+// Date getter tests (new handlers)
+// ============================================================================
+
+#[test]
+fn test_date_get_hours() {
+    // Epoch (setTime(0)) = Jan 1, 1970 00:00:00 UTC
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.getHours();
+    "#, 0);
+}
+
+#[test]
+fn test_date_get_minutes() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.getMinutes();
+    "#, 0);
+}
+
+#[test]
+fn test_date_get_seconds() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.getSeconds();
+    "#, 0);
+}
+
+#[test]
+fn test_date_get_milliseconds() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.getMilliseconds();
+    "#, 0);
+}
+
+#[test]
+fn test_date_get_hours_nonzero() {
+    // 3600000ms = 1 hour from epoch
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(3600000);
+        return date.getHours();
+    "#, 1);
+}
+
+#[test]
+fn test_date_get_minutes_nonzero() {
+    // 900000ms = 15 minutes from epoch
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(900000);
+        return date.getMinutes();
+    "#, 15);
+}
+
+#[test]
+fn test_date_get_seconds_nonzero() {
+    // 45000ms = 45 seconds from epoch
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(45000);
+        return date.getSeconds();
+    "#, 45);
+}
+
+#[test]
+fn test_date_get_milliseconds_nonzero() {
+    // 123ms from epoch
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(123);
+        return date.getMilliseconds();
+    "#, 123);
+}
+
+// ============================================================================
+// Date setter tests
+// ============================================================================
+
+#[test]
+fn test_date_set_full_year() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setFullYear(2024);
+        return date.getFullYear();
+    "#, 2024);
+}
+
+#[test]
+fn test_date_set_month() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setMonth(5);
+        return date.getMonth();
+    "#, 5);
+}
+
+#[test]
+fn test_date_set_date() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setDate(15);
+        return date.getDate();
+    "#, 15);
+}
+
+#[test]
+fn test_date_set_hours() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setHours(14);
+        return date.getHours();
+    "#, 14);
+}
+
+#[test]
+fn test_date_set_minutes() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setMinutes(30);
+        return date.getMinutes();
+    "#, 30);
+}
+
+#[test]
+fn test_date_set_seconds() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setSeconds(45);
+        return date.getSeconds();
+    "#, 45);
+}
+
+#[test]
+fn test_date_set_milliseconds() {
+    expect_i32_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        date.setMilliseconds(999);
+        return date.getMilliseconds();
+    "#, 999);
+}
+
+// ============================================================================
+// Date formatting tests
+// ============================================================================
+
+#[test]
+fn test_date_to_iso_string() {
+    expect_string_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.toISOString();
+    "#, "1970-01-01T00:00:00.000Z");
+}
+
+#[test]
+fn test_date_to_date_string() {
+    expect_string_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.toDateString();
+    "#, "Thu Jan 01 1970");
+}
+
+#[test]
+fn test_date_to_time_string() {
+    expect_string_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.toTimeString();
+    "#, "00:00:00");
+}
+
+#[test]
+fn test_date_to_string() {
+    expect_string_with_builtins(r#"
+        let date = new Date();
+        date.setTime(0);
+        return date.toString();
+    "#, "Thu Jan 01 1970 00:00:00");
+}
+
+// Note: Date.parse tests require adding a static parse() method to Date.raya
+// The VM handler (DATE_PARSE) exists but the class method is not yet defined
+
+// ============================================================================
+// Object tests
+// ============================================================================
+
+#[test]
+fn test_object_hash_code() {
+    // hashCode should return an integer
+    expect_bool_with_builtins(r#"
+        let obj = new Object();
+        let hash = obj.hashCode();
+        return hash == hash;
+    "#, true);
+}
+
+#[test]
+fn test_object_equals_same() {
+    // An object should equal itself
+    expect_bool_with_builtins(r#"
+        let obj = new Object();
+        return obj.equals(obj);
+    "#, true);
+}
+
+#[test]
+fn test_object_to_string() {
+    expect_string_with_builtins(r#"
+        let obj = new Object();
+        return obj.toString();
+    "#, "[object Object]");
+}
+
+// ============================================================================
+// Number method tests
+// ============================================================================
+
+#[test]
+fn test_number_to_fixed_zero() {
+    expect_string(r#"
+        let x: number = 3.14159;
+        return x.toFixed(0);
+    "#, "3");
+}
+
+#[test]
+fn test_number_to_fixed_two() {
+    expect_string(r#"
+        let x: number = 3.14159;
+        return x.toFixed(2);
+    "#, "3.14");
+}
+
+#[test]
+fn test_number_to_fixed_four() {
+    expect_string(r#"
+        let x: number = 3.14159;
+        return x.toFixed(4);
+    "#, "3.1416");
+}
+
+#[test]
+fn test_number_to_precision() {
+    expect_string(r#"
+        let x: number = 123.456;
+        return x.toPrecision(5);
+    "#, "123.46");
+}
+
+#[test]
+fn test_number_to_precision_one() {
+    expect_string(r#"
+        let x: number = 123.456;
+        return x.toPrecision(1);
+    "#, "100");
+}
+
+#[test]
+fn test_number_to_string_decimal() {
+    expect_string(r#"
+        let x: number = 255;
+        return x.toString(10);
+    "#, "255");
+}
+
+#[test]
+fn test_number_to_string_binary() {
+    expect_string(r#"
+        let x: number = 255;
+        return x.toString(2);
+    "#, "11111111");
+}
+
+#[test]
+fn test_number_to_string_hex() {
+    expect_string(r#"
+        let x: number = 255;
+        return x.toString(16);
+    "#, "ff");
+}
+
+#[test]
+fn test_number_to_string_octal() {
+    expect_string(r#"
+        let x: number = 255;
+        return x.toString(8);
+    "#, "377");
 }

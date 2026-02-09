@@ -1,7 +1,7 @@
 # Reflection API in Raya
 
-**Status:** Design
-**Last Updated:** 2026-01-31
+**Status:** In Progress (Phases 1-9 complete)
+**Last Updated:** 2026-02-02
 
 ---
 
@@ -27,6 +27,8 @@ Raya provides a comprehensive `Reflect` API for runtime introspection and manipu
 4. **AOP Support** - Enable cross-cutting concerns (logging, caching, security)
 5. **Framework Enablement** - Support DI containers, ORMs, serialization
 6. **Always Available** - Reflection metadata always included for full runtime support
+7. **Zero Overhead Principle** - Static code pays no cost when dynamic features are unused
+8. **Near-Native Dynamic Code** - Dynamic bytecode executes on same interpreter as static code
 
 ---
 
@@ -249,7 +251,7 @@ let dog = new Dog();
 
 // Get class
 let dogClass = Reflect.getClass(dog);  // Class<Dog>
-console.log(dogClass.name);  // "Dog"
+logger.info(dogClass.name);  // "Dog"
 
 // Check relationships
 Reflect.isSubclassOf(Dog, Animal);  // true
@@ -258,7 +260,7 @@ Reflect.isInstanceOf(dog, Animal);  // true
 // Get all classes with @Entity decorator
 let entities = Reflect.getClassesWithDecorator("Entity");
 for (let entity of entities) {
-    console.log(entity.name);
+    logger.info(entity.name);
 }
 ```
 
@@ -309,7 +311,7 @@ Reflect.set(user, "name", "Bob");
 // Get all fields
 let fields = Reflect.getFields(user);
 for (let field of fields) {
-    console.log(field.name + ": " + field.type.name);
+    logger.info(field.name + ": " + field.type.name);
 }
 // Output: "name: string", "age: number"
 ```
@@ -365,8 +367,8 @@ let data = await Reflect.invokeAsync<string>(calc, "fetchData", "https://api.exa
 
 // Get method info
 let methodInfo = Reflect.getMethodInfo(calc, "add");
-console.log(methodInfo.parameters.length);  // 2
-console.log(methodInfo.returnType.name);    // "number"
+logger.info(methodInfo.parameters.length);  // 2
+logger.info(methodInfo.returnType.name);    // "number"
 ```
 
 ---
@@ -462,14 +464,14 @@ let DogClass = Reflect.createSubclass(Animal, "Dog", {
     ]),
     methods: new Map([
         ["speak", function(): string { return "Woof!"; }],
-        ["fetch", function(): void { console.log("Fetching..."); }]
+        ["fetch", function(): void { logger.info("Fetching..."); }]
     ])
 });
 
 let dog = Reflect.construct(DogClass);
 dog.name = "Buddy";
 dog.breed = "Labrador";
-console.log(dog.speak());  // "Woof!"
+logger.info(dog.speak());  // "Woof!"
 ```
 
 ---
@@ -542,9 +544,9 @@ let service = new UserService();
 // Create logging proxy
 let proxy = Reflect.createProxy(service, {
     invoke(target, method, args) {
-        console.log("Calling " + method + " with args: " + args);
+        logger.info("Calling " + method + " with args: " + args);
         let result = Reflect.invoke(target, method, ...args);
-        console.log("Result: " + result);
+        logger.info("Result: " + result);
         return result;
     }
 });
@@ -566,7 +568,7 @@ let wrapped = Reflect.wrapMethod(calc, "add", (original, args, target, name) => 
     let start = Date.now();
     let result = original(...args);
     let elapsed = Date.now() - start;
-    console.log(name + " took " + elapsed + "ms");
+    logger.info(name + " took " + elapsed + "ms");
     return result;
 });
 
@@ -589,10 +591,10 @@ let enhanced = Reflect.createAspect(service, [
     {
         pointcut: /.*/,
         before(target, method, args) {
-            console.log(">>> " + method);
+            logger.info(">>> " + method);
         },
         after(target, method, args, result) {
-            console.log("<<< " + method + " returned " + result);
+            logger.info("<<< " + method + " returned " + result);
         }
     },
     // Transaction aspect for mutating methods
@@ -620,6 +622,345 @@ let enhanced = Reflect.createAspect(service, [
 ]);
 
 enhanced.createOrder(order);  // Wrapped with logging + transaction
+```
+
+---
+
+### Generic Type Inspection
+
+Inspect generic type origins after monomorphization:
+
+```typescript
+class Reflect {
+    // Get the original generic type name (e.g., "Box" for Box_number)
+    static getGenericOrigin<T>(cls: Class<T>): string | null;
+
+    // Get type parameters from the generic definition
+    static getTypeParameters<T>(cls: Class<T>): GenericParameterInfo[];
+
+    // Get actual type arguments (e.g., [number] for Box<number>)
+    static getTypeArguments<T>(cls: Class<T>): TypeInfo[];
+
+    // Check if this is a monomorphized generic instance
+    static isGenericInstance<T>(cls: Class<T>): boolean;
+
+    // Find all specializations of a generic type
+    static findSpecializations(genericName: string): Class<Object>[];
+
+    // Create a new specialization at runtime
+    static specialize<T>(genericName: string, typeArgs: TypeInfo[]): Class<T>;
+}
+
+interface GenericParameterInfo {
+    readonly name: string;           // e.g., "T"
+    readonly index: number;          // Position in type parameter list
+    readonly constraint: TypeInfo | null;  // e.g., "extends Comparable"
+}
+
+interface GenericOrigin {
+    readonly name: string;           // e.g., "Box"
+    readonly typeParameters: string[];  // e.g., ["T"]
+    readonly typeArguments: TypeInfo[];  // e.g., [TypeInfo(number)]
+}
+```
+
+**Example:**
+```typescript
+class Box<T> {
+    value: T;
+    constructor(value: T) { this.value = value; }
+}
+
+let box = new Box<number>(42);
+let boxClass = Reflect.getClass(box);
+
+// Inspect generic origin
+Reflect.getGenericOrigin(boxClass);      // "Box"
+Reflect.isGenericInstance(boxClass);     // true
+Reflect.getTypeArguments(boxClass);      // [TypeInfo { kind: "primitive", name: "number" }]
+Reflect.getTypeParameters(boxClass);     // [{ name: "T", index: 0, constraint: null }]
+
+// Find all Box specializations
+let allBoxes = Reflect.findSpecializations("Box");
+// [Box_number, Box_string, Box_User, ...]
+
+// Create new specialization at runtime
+let Box_boolean = Reflect.specialize<Box<boolean>>("Box", [Reflect.typeOf("boolean")]);
+```
+
+**Background:**
+Raya uses monomorphization - generics are specialized at compile time. `Box<number>` becomes `Box_number` in the compiled bytecode. The generic origin metadata preserves the connection to the original generic type, enabling runtime inspection and new specializations.
+
+---
+
+### Runtime Type Creation
+
+Create new types dynamically:
+
+```typescript
+class Reflect {
+    // Create a new class at runtime
+    static createClass<T>(name: string, definition: ClassDefinition): Class<T>;
+
+    // Create a function at runtime
+    static createFunction<R>(
+        name: string,
+        params: ParameterDefinition[],
+        body: FunctionBody
+    ): (...args: unknown[]) => R;
+
+    // Create an async function at runtime
+    static createAsyncFunction<R>(
+        name: string,
+        params: ParameterDefinition[],
+        body: FunctionBody
+    ): (...args: unknown[]) => Task<R>;
+}
+
+interface ClassDefinition {
+    fields?: FieldDefinition[];
+    methods?: MethodDefinition[];
+    constructor?: ConstructorDefinition;
+    parent?: Class<Object>;
+    interfaces?: string[];
+}
+
+interface MethodDefinition {
+    name: string;
+    params: ParameterDefinition[];
+    returnType: TypeInfo;
+    body: FunctionBody;
+    isStatic?: boolean;
+    isAsync?: boolean;
+}
+
+interface ParameterDefinition {
+    name: string;
+    type: TypeInfo;
+    isOptional?: boolean;
+    defaultValue?: unknown;
+}
+
+// Function body can be bytecode, AST, or native callback
+type FunctionBody =
+    | { kind: "bytecode"; instructions: number[] }
+    | { kind: "ast"; statements: Statement[] }
+    | { kind: "native"; callback: NativeCallback };
+```
+
+**Example:**
+```typescript
+// Create a simple class at runtime
+let PointClass = Reflect.createClass<{ x: number; y: number }>("Point", {
+    fields: [
+        { name: "x", type: Reflect.typeOf("number"), initialValue: 0 },
+        { name: "y", type: Reflect.typeOf("number"), initialValue: 0 },
+    ],
+    methods: [
+        {
+            name: "toString",
+            params: [],
+            returnType: Reflect.typeOf("string"),
+            body: { kind: "native", callback: (self) => `(${self.x}, ${self.y})` },
+        },
+    ],
+});
+
+let point = Reflect.construct(PointClass);
+point.x = 10;
+point.y = 20;
+logger.info(point.toString());  // "(10, 20)"
+
+// Create a function at runtime
+let addFunc = Reflect.createFunction<number>("add", [
+    { name: "a", type: Reflect.typeOf("number") },
+    { name: "b", type: Reflect.typeOf("number") },
+], {
+    kind: "bytecode",
+    instructions: [0x10, 0x00, 0x10, 0x01, 0x60, 0xB1]  // LOAD_LOCAL 0, LOAD_LOCAL 1, IADD, RETURN
+});
+
+logger.info(addFunc(2, 3));  // 5
+```
+
+---
+
+### Dynamic Bytecode Generation
+
+Programmatic bytecode construction for advanced use cases:
+
+```typescript
+class BytecodeBuilder {
+    constructor(name: string, params: ParameterDefinition[], returnType: TypeInfo);
+
+    // Instruction emission
+    emit(opcode: number, ...operands: number[]): void;
+    emitPush(value: unknown): void;
+    emitPop(): void;
+
+    // Labels and control flow
+    defineLabel(): Label;
+    markLabel(label: Label): void;
+    emitJump(label: Label): void;
+    emitJumpIf(label: Label): void;
+    emitJumpIfNot(label: Label): void;
+
+    // Locals
+    declareLocal(type: TypeInfo): number;
+    emitLoadLocal(index: number): void;
+    emitStoreLocal(index: number): void;
+
+    // Object operations
+    emitNew(classId: number): void;
+    emitLoadField(fieldOffset: number): void;
+    emitStoreField(fieldOffset: number): void;
+
+    // Calls
+    emitCall(functionId: number): void;
+    emitVirtualCall(methodIndex: number): void;
+    emitNativeCall(nativeId: number): void;
+
+    // Arithmetic (typed opcodes)
+    emitIAdd(): void;  // Integer add
+    emitFAdd(): void;  // Float add
+
+    // Build final function
+    validate(): ValidationResult;
+    build(): CompiledFunction;
+}
+```
+
+**Example - Building a function dynamically:**
+```typescript
+// Build: function multiply(a: number, b: number): number { return a * b; }
+let builder = new BytecodeBuilder("multiply", [
+    { name: "a", type: Reflect.typeOf("number") },
+    { name: "b", type: Reflect.typeOf("number") },
+], Reflect.typeOf("number"));
+
+builder.emitLoadLocal(0);   // Load 'a'
+builder.emitLoadLocal(1);   // Load 'b'
+builder.emit(0x68);         // IMUL opcode
+builder.emitReturn();
+
+let result = builder.validate();
+if (!result.isValid) {
+    throw new Error("Invalid bytecode: " + result.errors.join(", "));
+}
+
+let multiply = builder.build();
+logger.info(multiply(6, 7));  // 42
+```
+
+---
+
+### Dynamic VM Bootstrap
+
+Create and execute code from an empty VM:
+
+```typescript
+class Reflect {
+    // Initialize minimal runtime environment
+    static bootstrap(): BootstrapContext;
+
+    // Create a new module at runtime
+    static createModule(name: string): DynamicModule;
+
+    // Execute dynamically created code
+    static execute<R>(func: CompiledFunction | Closure, ...args: unknown[]): R;
+    static spawn<R>(func: CompiledFunction | Closure, ...args: unknown[]): Task<R>;
+    static eval(bytecode: number[]): unknown;
+}
+
+interface DynamicModule {
+    readonly name: string;
+    readonly isSealed: boolean;
+
+    addFunction(func: CompiledFunction): number;
+    addClass(cls: DynamicClass): number;
+    addGlobal(name: string, value: unknown): void;
+    seal(): void;
+}
+
+interface BootstrapContext {
+    readonly objectClass: Class<Object>;
+    readonly arrayClass: Class<Array<unknown>>;
+    readonly stringClass: Class<string>;
+    readonly taskClass: Class<Task<unknown>>;
+
+    print(message: string): void;
+    createArray<T>(elements: T[]): T[];
+    createString(value: string): string;
+}
+```
+
+**Example - Creating a Program from Scratch:**
+```typescript
+// Start with nothing - create everything dynamically
+const ctx = Reflect.bootstrap();
+const module = Reflect.createModule("main");
+
+// Create a simple "add" function using BytecodeBuilder
+const builder = new BytecodeBuilder("add", [
+    { name: "a", type: Reflect.typeOf("number") },
+    { name: "b", type: Reflect.typeOf("number") },
+], Reflect.typeOf("number"));
+
+builder.emitLoadLocal(0);   // Load 'a'
+builder.emitLoadLocal(1);   // Load 'b'
+builder.emitIAdd();         // Integer add
+builder.emitReturn();
+
+const addFunc = builder.build();
+module.addFunction(addFunc);
+module.seal();
+
+// Execute the dynamically created function
+const result = Reflect.execute(addFunc, 2, 3);  // Returns 5
+
+// Can also create classes dynamically
+const PointClass = Reflect.createClass("Point", {
+    fields: [
+        { name: "x", type: Reflect.typeOf("number") },
+        { name: "y", type: Reflect.typeOf("number") },
+    ],
+});
+module.addClass(PointClass);
+
+const point = Reflect.construct(PointClass, 10, 20);
+```
+
+This enables:
+- REPL/interpreter implementations
+- Hot code reloading
+- Plugin systems with runtime-defined types
+- Meta-programming and code generation
+- Educational tools and sandboxes
+
+---
+
+### Performance Principles
+
+Dynamic code generation is designed with **zero overhead** for static code:
+
+**Key Design Decisions:**
+
+1. **Unified Function Table**: Dynamic functions are stored in the same `Module.functions` array as static functions. No separate lookup path.
+
+2. **Identical Bytecode Format**: `BytecodeBuilder` emits the exact same bytecode format as the compiler. The interpreter cannot distinguish dynamic from static code.
+
+3. **No Runtime Discrimination**: There are no `if (is_dynamic)` checks in the interpreter hot path. All code is treated identically.
+
+4. **Validation at Build Time**: Bytecode is fully validated when `build()` is called. Execution assumes valid bytecode - no per-instruction validation.
+
+5. **Lazy Initialization**: Dynamic infrastructure (module registry, bootstrap context) is only allocated when first used. Programs that don't use dynamic features pay nothing.
+
+**Performance Targets:**
+```
+Static code with reflect infrastructure:     0% overhead
+Dynamic function call vs static:           < 5% overhead
+Dynamic class instantiation:              < 10% overhead
+Dynamic method dispatch:                  < 10% overhead
 ```
 
 ---
@@ -656,16 +997,16 @@ class Reflect {
 ```typescript
 function processValue(value: unknown): void {
     if (Reflect.isString(value)) {
-        console.log(value.toUpperCase());  // Type narrowed to string
+        logger.info(value.toUpperCase());  // Type narrowed to string
     } else if (Reflect.isNumber(value)) {
-        console.log(value.toFixed(2));  // Type narrowed to number
+        logger.info(value.toFixed(2));  // Type narrowed to number
     }
 }
 
 // Safe casting
 let user = Reflect.cast(obj, User);
 if (user != null) {
-    console.log(user.name);
+    logger.info(user.name);
 }
 
 // Or throw on failure
@@ -1015,11 +1356,14 @@ rayac program.raya
 | Feature | Raya | TypeScript | Java | C# |
 |---------|------|------------|------|-----|
 | Metadata API | Built-in | reflect-metadata lib | Annotations | Attributes |
-| Type info at runtime | Opt-in | None (erased) | Full | Full |
+| Type info at runtime | Always | None (erased) | Full | Full |
+| Generic type inspection | Yes (via origin tracking) | No (erased) | Yes (reified) | Yes (reified) |
 | Dynamic invocation | Yes | Limited | Yes | Yes |
 | Dynamic class creation | Yes | No | Yes (bytecode) | Yes (Emit) |
+| Dynamic bytecode generation | Yes (BytecodeBuilder) | No | Yes (ASM/Javassist) | Yes (Emit.ILGenerator) |
 | AOP/Proxies | Built-in | Limited | Spring AOP | Castle DynamicProxy |
 | Constructor params | Yes | No | Yes | Yes |
+| Runtime generic specialization | Yes | No | No | No |
 
 ---
 
@@ -1033,4 +1377,5 @@ rayac program.raya
 ---
 
 **Document History:**
+- 2026-02-02: Added generic type inspection, runtime type creation, and dynamic bytecode generation
 - 2026-01-31: Initial design document

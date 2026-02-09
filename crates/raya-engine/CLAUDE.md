@@ -39,7 +39,7 @@ src/
 - **sync/**: Mutex, synchronization primitives
 - **snapshot/**: VM state serialization
 - **ffi/**: Native module interface
-- **reflect/**: Reflection API runtime (class metadata, introspection, snapshots)
+- **reflect/**: Reflection API runtime (metadata, introspection, proxies, dynamic code) - see `vm/reflect/CLAUDE.md`
 - **json/**: JSON parsing and serialization
 
 ## Compilation Pipeline

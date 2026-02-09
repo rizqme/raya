@@ -6,9 +6,11 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use crate::compiler::Module;
 use crate::vm::builtin::regexp;
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::object::{Array, RayaString, RegExpObject};
+use crate::vm::object::{Array, Closure, RayaString, RegExpObject};
+use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -16,6 +18,10 @@ use crate::vm::VmError;
 /// Context needed for regexp method execution
 pub struct RegExpHandlerContext<'a> {
     pub gc: &'a Mutex<Gc>,
+    pub task: &'a Arc<Task>,
+    pub module: &'a Module,
+    /// Function to execute nested callbacks (replaceWith)
+    pub execute_nested: &'a dyn Fn(&Arc<Task>, usize, Vec<Value>, &Module) -> Result<Value, VmError>,
 }
 
 /// Handle built-in regexp methods
@@ -195,6 +201,89 @@ pub fn call_regexp_method(
                 Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
             };
             stack.push(arr_val)?;
+        }
+        id if id == regexp::REPLACE_WITH => {
+            // replaceWith(str, callback): replace matches using callback function
+            // args[0] = input string, args[1] = callback closure
+            let input = if !args.is_empty() && args[0].is_ptr() {
+                if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                    unsafe { &*s.as_ptr() }.data.clone()
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            };
+
+            let callback_val = if args.len() > 1 { args[1] } else {
+                return Err(VmError::TypeError("Expected callback function".to_string()));
+            };
+            if !callback_val.is_ptr() {
+                return Err(VmError::TypeError("Expected callback function".to_string()));
+            }
+            let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
+            let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+            let func_index = closure.func_id();
+
+            let is_global = re.flags.contains('g');
+            let mut result = String::new();
+            let mut last_end = 0;
+
+            ctx.task.push_closure(callback_val);
+
+            if is_global {
+                for m in re.compiled.find_iter(&input) {
+                    result.push_str(&input[last_end..m.start()]);
+
+                    let mut match_arr = Array::new(0, 0);
+                    let match_str = RayaString::new(m.as_str().to_string());
+                    let gc_ptr = ctx.gc.lock().allocate(match_str);
+                    let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    match_arr.push(match_val);
+                    let arr_gc_ptr = ctx.gc.lock().allocate(match_arr);
+                    let arr_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc_ptr.as_ptr()).unwrap()) };
+
+                    let callback_result = (ctx.execute_nested)(ctx.task, func_index, vec![arr_val], ctx.module)?;
+                    let replacement = if let Some(ptr) = unsafe { callback_result.as_ptr::<RayaString>() } {
+                        unsafe { &*ptr.as_ptr() }.data.clone()
+                    } else {
+                        String::new()
+                    };
+                    result.push_str(&replacement);
+                    last_end = m.end();
+                }
+            } else {
+                if let Some(m) = re.compiled.find(&input) {
+                    result.push_str(&input[..m.start()]);
+
+                    let mut match_arr = Array::new(0, 0);
+                    let match_str = RayaString::new(m.as_str().to_string());
+                    let gc_ptr = ctx.gc.lock().allocate(match_str);
+                    let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    match_arr.push(match_val);
+                    let arr_gc_ptr = ctx.gc.lock().allocate(match_arr);
+                    let arr_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc_ptr.as_ptr()).unwrap()) };
+
+                    let callback_result = (ctx.execute_nested)(ctx.task, func_index, vec![arr_val], ctx.module)?;
+                    let replacement = if let Some(ptr) = unsafe { callback_result.as_ptr::<RayaString>() } {
+                        unsafe { &*ptr.as_ptr() }.data.clone()
+                    } else {
+                        String::new()
+                    };
+                    result.push_str(&replacement);
+                    last_end = m.end();
+                }
+            }
+
+            result.push_str(&input[last_end..]);
+            ctx.task.pop_closure();
+
+            let result_str = RayaString::new(result);
+            let gc_ptr = ctx.gc.lock().allocate(result_str);
+            let result_val = unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+            };
+            stack.push(result_val)?;
         }
         _ => {
             return Err(VmError::RuntimeError(format!(

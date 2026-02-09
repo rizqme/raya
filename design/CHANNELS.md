@@ -413,13 +413,13 @@ A future enhancement could add Go-style select for multiple channels:
 // Future syntax (not implemented yet)
 select {
     case value = ch1.receive():
-        console.log("Received from ch1:", value);
+        logger.info("Received from ch1:", value);
     case value = ch2.receive():
-        console.log("Received from ch2:", value);
+        logger.info("Received from ch2:", value);
     case ch3.send(42):
-        console.log("Sent to ch3");
+        logger.info("Sent to ch3");
     default:
-        console.log("No channel ready");
+        logger.info("No channel ready");
 }
 ```
 
@@ -551,7 +551,7 @@ async function main(): Task<number> {
 try {
     ch.send(42);
 } catch (e) {
-    console.log("Channel closed");
+    logger.info("Channel closed");
 }
 ```
 
@@ -562,9 +562,9 @@ Throws: `"ChannelClosed: cannot send on closed channel"`
 ```typescript
 let value = ch.receive();  // Blocking, no await
 if (value === null) {
-    console.log("Channel closed");
+    logger.info("Channel closed");
 } else {
-    console.log("Received:", value);
+    logger.info("Received:", value);
 }
 ```
 

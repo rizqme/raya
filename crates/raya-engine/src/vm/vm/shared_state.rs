@@ -4,6 +4,7 @@
 //! worker threads executing tasks concurrently.
 
 use crate::vm::gc::GarbageCollector;
+use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::object::{Array, Closure, Object, RayaString};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState, TimerThread};
@@ -70,14 +71,27 @@ pub struct SharedVmState {
     /// Class metadata registry for reflection (field names, method names)
     /// Populated when --emit-reflection is used
     pub class_metadata: RwLock<ClassMetadataRegistry>,
+
+    /// External native call handler (stdlib implementation)
+    pub native_handler: Arc<dyn NativeHandler>,
 }
 
 impl SharedVmState {
-    /// Create new shared VM state
+    /// Create new shared VM state with default (no-op) native handler
     pub fn new(
         safepoint: Arc<SafepointCoordinator>,
         tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
         injector: Arc<Injector<Arc<Task>>>,
+    ) -> Self {
+        Self::with_native_handler(safepoint, tasks, injector, Arc::new(NoopNativeHandler))
+    }
+
+    /// Create new shared VM state with a custom native handler
+    pub fn with_native_handler(
+        safepoint: Arc<SafepointCoordinator>,
+        tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
+        injector: Arc<Injector<Arc<Task>>>,
+        native_handler: Arc<dyn NativeHandler>,
     ) -> Self {
         let timer = TimerThread::new();
         // Start timer thread immediately
@@ -95,6 +109,7 @@ impl SharedVmState {
             timer,
             metadata: Mutex::new(MetadataStore::new()),
             class_metadata: RwLock::new(ClassMetadataRegistry::new()),
+            native_handler,
         }
     }
 

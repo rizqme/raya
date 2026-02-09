@@ -445,9 +445,9 @@ id = "abc";       // OK
 
 // Type narrowing with typeof
 if (typeof id === "int") {
-  console.log(id + 1);  // id is narrowed to int
+  logger.info(id + 1);  // id is narrowed to int
 } else {
-  console.log(id.toUpperCase());  // id is narrowed to string
+  logger.info(id.toUpperCase());  // id is narrowed to string
 }
 ```
 
@@ -579,10 +579,10 @@ type Value =
 function handle(v: Value): void {
   switch (v.kind) {
     case "string":
-      console.log(v.value.toUpperCase());
+      logger.info(v.value.toUpperCase());
       break;
     case "number":
-      console.log(v.value.toFixed(2));
+      logger.info(v.value.toFixed(2));
       break;
   }
 }
@@ -625,10 +625,10 @@ async function main(): Task<void> {
 
   switch (result.status) {
     case "ok":
-      console.log(`User: ${result.value.name}`);
+      logger.info(`User: ${result.value.name}`);
       break;
     case "err":
-      console.error(`Error: ${result.error}`);
+      logger.error(`Error: ${result.error}`);
       break;
   }
 }
@@ -706,7 +706,7 @@ let x: number = 42;
 let s: string = x;  // Implicitly converts to "42"
 
 function fn(x: string): void {
-  console.log(x);
+  logger.info(x);
 }
 fn(42);  // OK: number coerces to string
 
@@ -777,8 +777,8 @@ function drive(car: Car): void {
 }
 
 let raceCar: RaceCar = {
-  honk() { console.log("Beep!"); },
-  speed() { console.log("Zoom!"); }
+  honk() { logger.info("Beep!"); },
+  speed() { logger.info("Zoom!"); }
 };
 
 drive(raceCar);  // OK: RaceCar has all properties of Car
@@ -873,7 +873,7 @@ type Value =
 function processValue(v: Value): void {
   if (v.kind === "string") {
     // v is narrowed to { kind: "string"; value: string }
-    console.log(v.value.toUpperCase());
+    logger.info(v.value.toUpperCase());
   }
 }
 ```
@@ -910,7 +910,7 @@ function area(shape: Shape): number {
 ```ts
 function process(value: string | null): void {
   if (value !== null) {
-    console.log(value.length);  // value: string
+    logger.info(value.length);  // value: string
   }
 }
 ```
@@ -1035,9 +1035,9 @@ Inner scopes can shadow outer names:
 let x = 1;
 {
   let x = 2;  // shadows outer x
-  console.log(x);  // prints 2
+  logger.info(x);  // prints 2
 }
-console.log(x);  // prints 1
+logger.info(x);  // prints 1
 ```
 
 ### 5.4 Initialization
@@ -1046,9 +1046,9 @@ Variables must be initialized before use:
 
 ```ts
 let x: number;
-console.log(x);  // ERROR: variable used before initialization
+logger.info(x);  // ERROR: variable used before initialization
 x = 42;
-console.log(x);  // OK
+logger.info(x);  // OK
 ```
 
 ---
@@ -1174,7 +1174,7 @@ let obj = {
   name: "Alice",
   age: 30,
   greet(): void {
-    console.log(`Hello, ${this.name}`);
+    logger.info(`Hello, ${this.name}`);
   }
 };
 ```
@@ -1221,9 +1221,9 @@ Type rules:
 type ID = string | number | boolean | null;
 function processID(id: ID): void {
   if (typeof id === "string") {
-    console.log(id.toUpperCase());
+    logger.info(id.toUpperCase());
   } else if (typeof id === "number") {
-    console.log(id.toFixed(2));
+    logger.info(id.toFixed(2));
   }
 }
 
@@ -1446,7 +1446,7 @@ function add(a: number, b: number): number {
 }
 
 function greet(name: string): void {
-  console.log(`Hello, ${name}`);
+  logger.info(`Hello, ${name}`);
 }
 ```
 
@@ -1460,7 +1460,7 @@ function greet(name: string): void {
 const add = (a: number, b: number): number => a + b;
 
 const greet = (name: string): void => {
-  console.log(`Hello, ${name}`);
+  logger.info(`Hello, ${name}`);
 };
 ```
 
@@ -1469,9 +1469,9 @@ const greet = (name: string): void => {
 ```ts
 function greet(name: string, title?: string): void {
   if (title !== null) {
-    console.log(`Hello, ${title} ${name}`);
+    logger.info(`Hello, ${title} ${name}`);
   } else {
-    console.log(`Hello, ${name}`);
+    logger.info(`Hello, ${name}`);
   }
 }
 
@@ -1485,7 +1485,7 @@ Optional parameters have type `T | null`.
 
 ```ts
 function greet(name: string, greeting: string = "Hello"): void {
-  console.log(`${greeting}, ${name}`);
+  logger.info(`${greeting}, ${name}`);
 }
 
 greet("Alice");           // "Hello, Alice"
@@ -1631,8 +1631,8 @@ class Math {
   }
 }
 
-console.log(Math.PI);      // 3.14159
-console.log(Math.abs(-5)); // 5
+logger.info(Math.PI);      // 3.14159
+logger.info(Math.abs(-5)); // 5
 ```
 
 ### 9.6 Inheritance
@@ -1642,13 +1642,13 @@ class Animal {
   constructor(public name: string) {}
 
   move(distance: number): void {
-    console.log(`${this.name} moved ${distance}m`);
+    logger.info(`${this.name} moved ${distance}m`);
   }
 }
 
 class Dog extends Animal {
   bark(): void {
-    console.log("Woof!");
+    logger.info("Woof!");
   }
 }
 
@@ -1667,13 +1667,13 @@ dog.bark();    // own method
 ```ts
 class Animal {
   move(): void {
-    console.log("Moving");
+    logger.info("Moving");
   }
 }
 
 class Bird extends Animal {
   move(): void {
-    console.log("Flying");
+    logger.info("Flying");
   }
 }
 ```
@@ -1731,7 +1731,7 @@ let shape = new Shape();
 
 // ✅ OK: Instantiate concrete subclass
 let circle = new Circle(5);
-console.log(circle.describe());  // "Area: 78.54, Perimeter: 31.42"
+logger.info(circle.describe());  // "Area: 78.54, Perimeter: 31.42"
 ```
 
 **Rules:**
@@ -1749,9 +1749,9 @@ Decorators provide a way to add metadata and modify class behavior at compile-ti
 function logged(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
   const original = descriptor.value;
   descriptor.value = function(...args: any[]): any {
-    console.log(`Calling ${propertyKey} with`, args);
+    logger.info(`Calling ${propertyKey} with`, args);
     const result = original.apply(this, args);
-    console.log(`Result:`, result);
+    logger.info(`Result:`, result);
     return result;
   };
 }
@@ -1827,7 +1827,7 @@ class BankAccount {
   }
 
   protected logTransaction(type: string, amount: number): void {
-    console.log(`${type}: ${amount}`);
+    logger.info(`${type}: ${amount}`);
   }
 }
 ```
@@ -1950,7 +1950,7 @@ class Document implements Printable {
   constructor(public content: string) {}
 
   print(): void {
-    console.log(this.content);
+    logger.info(this.content);
   }
 }
 ```
@@ -2110,7 +2110,7 @@ let matrix: number[][] = [
   [7, 8, 9]
 ];
 
-console.log(matrix[1][2]);  // 6
+logger.info(matrix[1][2]);  // 6
 ```
 
 ### 12.4 Tuple Types
@@ -2168,7 +2168,7 @@ class Box<T> {
 }
 
 let box = new Box<number>(42);
-console.log(box.get());  // 42
+logger.info(box.get());  // 42
 ```
 
 ### 13.3 Generic Interfaces
@@ -2203,7 +2203,7 @@ interface HasLength {
 }
 
 function logLength<T extends HasLength>(item: T): void {
-  console.log(item.length);
+  logger.info(item.length);
 }
 
 logLength("hello");        // OK
@@ -2338,10 +2338,10 @@ type Value =
 function process(v: Value): void {
   switch (v.kind) { // Checked at compile time
     case "string":
-      console.log(v.value); // v.value: string
+      logger.info(v.value); // v.value: string
       break;
     case "number":
-      console.log(v.value); // v.value: number
+      logger.info(v.value); // v.value: number
       break;
   }
 }
@@ -2429,7 +2429,7 @@ async function main(): Task<void> {
   const task = compute();  // start Task
   // Task is now running concurrently
   const result = await task;  // suspend until complete
-  console.log(result);
+  logger.info(result);
 }
 ```
 
@@ -2476,10 +2476,10 @@ async function processData(): Task<void> {
   const task = async heavyComputation(data);
 
   // Do other work while computation runs
-  console.log("Computing...");
+  logger.info("Computing...");
 
   const result = await task;
-  console.log(result);
+  logger.info(result);
 }
 
 // 2. Explicit parallelization
@@ -2547,7 +2547,7 @@ async function main(): Task<void> {
   const result = await task;
 
   // Task is now COMPLETED
-  console.log(result);
+  logger.info(result);
 }
 ```
 
@@ -2646,7 +2646,7 @@ async function main(): Task<void> {
     tasks.push(increment());
   }
   for (const t of tasks) await t;
-  console.log(counter);  // May not be 1000!
+  logger.info(counter);  // May not be 1000!
 }
 ```
 
@@ -2708,7 +2708,7 @@ async function main(): Task<void> {
     tasks.push(increment());
   }
   for (const t of tasks) await t;
-  console.log(counter);  // Always 1000
+  logger.info(counter);  // Always 1000
 }
 ```
 
@@ -2806,8 +2806,8 @@ export class Calculator {
 // main.raya
 import { add, PI } from "./math";
 
-console.log(add(1, 2));
-console.log(PI);
+logger.info(add(1, 2));
+logger.info(PI);
 ```
 
 ### 16.4 Namespace Imports
@@ -2815,8 +2815,8 @@ console.log(PI);
 ```ts
 import * as Math from "./math";
 
-console.log(Math.add(1, 2));
-console.log(Math.PI);
+logger.info(Math.add(1, 2));
+logger.info(Math.PI);
 ```
 
 ### 16.5 Export Lists
@@ -3071,7 +3071,7 @@ function Button(props: ButtonProps) {
 const btn = <Button label="Click" />;  // ERROR
 
 // Correct
-const btn = <Button label="Click" onClick={() => console.log("clicked")} />;
+const btn = <Button label="Click" onClick={() => logger.info("clicked")} />;
 ```
 
 ### 17.11 JSX Transformation
@@ -3123,8 +3123,8 @@ utils.raya      // Plain Raya, no JSX
 ### 17.1 Console
 
 ```ts
-console.log(...values: any[]): void;
-console.error(...values: any[]): void;
+logger.info(...values: any[]): void;
+logger.error(...values: any[]): void;
 ```
 
 ### 17.2 Math
@@ -3248,9 +3248,9 @@ type Primitive = string | number | boolean;
 const prim: Primitive = true;
 
 match(prim, {
-  string: (s) => console.log(`String: ${s}`),
-  number: (n) => console.log(`Number: ${n}`),
-  boolean: (b) => console.log(`Boolean: ${b}`)
+  string: (s) => logger.info(`String: ${s}`),
+  number: (n) => logger.info(`Number: ${n}`),
+  boolean: (b) => logger.info(`Boolean: ${b}`)
 });
 
 // Example 3: Discriminated union
@@ -3273,11 +3273,11 @@ type Response =
 match(response, {
   ok: (r) => {
     match(r.data, {
-      string: (s) => console.log(`Text: ${s}`),
-      number: (n) => console.log(`ID: ${n}`)
+      string: (s) => logger.info(`Text: ${s}`),
+      number: (n) => logger.info(`ID: ${n}`)
     });
   },
-  error: (r) => console.error(`Error ${r.code}`)
+  error: (r) => logger.error(`Error ${r.code}`)
 });
 ```
 
@@ -3357,8 +3357,8 @@ type Point = Point2D | Point3D;
 
 // Now match() works!
 match(point, {
-  2: (p) => console.log(`2D: (${p.x}, ${p.y})`),
-  3: (p) => console.log(`3D: (${p.x}, ${p.y}, ${p.z})`)
+  2: (p) => logger.info(`2D: (${p.x}, ${p.y})`),
+  3: (p) => logger.info(`3D: (${p.x}, ${p.y}, ${p.z})`)
 });
 ```
 
@@ -3385,14 +3385,14 @@ const response: Response = /* ... */;
 
 // Match on the primitive union
 match(response.id, {
-  string: (id) => console.log(`String ID: ${id}`),
-  number: (id) => console.log(`Numeric ID: ${id}`)
+  string: (id) => logger.info(`String ID: ${id}`),
+  number: (id) => logger.info(`Numeric ID: ${id}`)
 });
 
 // Match on the interface union
 match(response.data, {
-  text: (d) => console.log(d.content),
-  binary: (d) => console.log(d.buffer.byteLength)
+  text: (d) => logger.info(d.content),
+  binary: (d) => logger.info(d.buffer.byteLength)
 });
 ```
 
@@ -3546,7 +3546,7 @@ if (result.status === "ok") {
     number: (id) => `Numeric ID: ${id}`
   });
 
-  console.log(idString);
+  logger.info(idString);
 }
 ```
 
@@ -3565,8 +3565,8 @@ if (result.status === "ok") {
 
   // Direct pattern matching
   match(user.id, {
-    string: (id) => console.log(`String ID: ${id}`),
-    number: (id) => console.log(`Numeric ID: ${id}`)
+    string: (id) => logger.info(`String ID: ${id}`),
+    number: (id) => logger.info(`Numeric ID: ${id}`)
   });
 }
 ```
@@ -3666,10 +3666,10 @@ if (result.status === "ok") {
   // Now statically handle the discriminated union
   switch (user.id.kind) {
     case "numeric":
-      console.log(`Numeric ID: ${user.id.value}`);
+      logger.info(`Numeric ID: ${user.id.value}`);
       break;
     case "string":
-      console.log(`String ID: ${user.id.value}`);
+      logger.info(`String ID: ${user.id.value}`);
       break;
   }
 }
@@ -3870,7 +3870,7 @@ import { typeof, instanceof } from "./ts-compat";
 // Now you can use TypeScript-style type checking
 let x: any = 42;
 if (typeof(x) === "number") {
-  console.log("It's a number!");
+  logger.info("It's a number!");
 }
 
 class User {
@@ -3879,7 +3879,7 @@ class User {
 
 let obj: any = new User("Alice");
 if (instanceof(obj, User)) {
-  console.log("It's a User!");
+  logger.info("It's a User!");
 }
 ```
 
@@ -3978,7 +3978,7 @@ class User {
 }
 
 const user = new User("Alice", 30);
-console.log(inspect(user));
+logger.info(inspect(user));
 
 // Output:
 // Type: class (User)
@@ -4131,7 +4131,7 @@ async function safe(): Task<void> {
   try {
     await riskyOperation();
   } catch (e) {
-    console.error("Caught:", e);
+    logger.error("Caught:", e);
   }
 }
 
@@ -4149,7 +4149,7 @@ async function complete(): Task<void> {
   try {
     await riskyOperation();
   } catch (e) {
-    console.error("Error:", e);
+    logger.error("Error:", e);
   } finally {
     await cleanup();  // Always executes
   }
@@ -4181,7 +4181,7 @@ async function outer(): Task<void> {
     await middle();
   } catch (e) {
     // Catches exception from inner()
-    console.log("Caught:", e);
+    logger.info("Caught:", e);
   }
 }
 ```
@@ -4196,7 +4196,7 @@ async function example(): Task<void> {
     }
     throw new Error("error");  // Finally still runs
   } finally {
-    console.log("Cleanup");  // Always prints
+    logger.info("Cleanup");  // Always prints
   }
 }
 ```
@@ -4208,7 +4208,7 @@ async function logAndRethrow(): Task<void> {
   try {
     await riskyOperation();
   } catch (e) {
-    console.error("Operation failed:", e);
+    logger.error("Operation failed:", e);
     throw e;  // Re-raise to caller
   }
 }
@@ -4276,7 +4276,7 @@ Primitives are copied by value:
 let a = 42;
 let b = a;  // copy
 b = 100;
-console.log(a);  // still 42
+logger.info(a);  // still 42
 ```
 
 Objects are copied by reference:
@@ -4285,7 +4285,7 @@ Objects are copied by reference:
 let obj1 = { x: 1 };
 let obj2 = obj1;  // reference copy
 obj2.x = 100;
-console.log(obj1.x);  // 100 - same object
+logger.info(obj1.x);  // 100 - same object
 ```
 
 ### 20.4 Memory Safety
@@ -4321,10 +4321,10 @@ async function main(): Task<void> {
 
   switch (result.status) {
     case "success":
-      console.log(`Got: ${result.value}`);
+      logger.info(`Got: ${result.value}`);
       break;
     case "error":
-      console.error(`Error: ${result.error}`);
+      logger.error(`Error: ${result.error}`);
       break;
   }
 }
@@ -4356,7 +4356,7 @@ async function main(): Task<void> {
   for (const t of tasks) {
     await t;
   }
-  console.log(counter.value);  // 1000
+  logger.info(counter.value);  // 1000
 }
 ```
 
@@ -4384,7 +4384,7 @@ async function parallelMap(items: number[]): Task<number[]> {
 async function main(): Task<void> {
   const input = [1, 2, 3, 4, 5];
   const output = await parallelMap(input);
-  console.log(output);  // [2, 4, 6, 8, 10]
+  logger.info(output);  // [2, 4, 6, 8, 10]
 }
 ```
 
@@ -4421,7 +4421,7 @@ async function consumer(id: number): Task<void> {
   for (let i = 0; i < 10; i++) {
     const item = queue.pop();
     if (item !== null) {
-      console.log(`Consumer ${id} got ${item}`);
+      logger.info(`Consumer ${id} got ${item}`);
     }
   }
 }
@@ -4461,8 +4461,8 @@ class Stack<T> {
 const stack = new Stack<number>();
 stack.push(1);
 stack.push(2);
-console.log(stack.pop());  // 2
-console.log(stack.peek()); // 1
+logger.info(stack.pop());  // 2
+logger.info(stack.peek()); // 1
 ```
 
 ### 22.### 21.6 Interface Implementation
@@ -4480,7 +4480,7 @@ class Sprite implements Drawable, Movable {
   constructor(public x: number, public y: number) {}
 
   draw(): void {
-    console.log(`Drawing at (${this.x}, ${this.y})`);
+    logger.info(`Drawing at (${this.x}, ${this.y})`);
   }
 
   move(x: number, y: number): void {

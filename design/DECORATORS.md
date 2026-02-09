@@ -515,7 +515,7 @@ function Deprecated<F>(message: string): (method: F) => F {
     return function(method: F): F {
         // For method decorators, wrap to add runtime behavior
         // The exact wrapping depends on F's signature
-        console.warn("Method is deprecated: " + message);
+        logger.warn("Method is deprecated: " + message);
         return method;
     };
 }
@@ -721,9 +721,9 @@ function AsyncGET(path: string): MethodDecorator<AsyncHttpHandler> {
 // Logging decorator - wraps the handler
 function Logged(handler: HttpHandler): HttpHandler {
     return function(req: Request): Response {
-        console.log("Request: " + req.method + " " + req.path);
+        logger.info("Request: " + req.method + " " + req.path);
         let response = handler(req);
-        console.log("Response: " + response.status);
+        logger.info("Response: " + response.status);
         return response;
     };
 }

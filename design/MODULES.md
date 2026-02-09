@@ -986,11 +986,11 @@ export class Logger {
     constructor(private name: string) {}
 
     info(message: string): void {
-        console.log(`[${this.name}] INFO: ${message}`);
+        logger.info(`[${this.name}] INFO: ${message}`);
     }
 
     error(message: string): void {
-        console.error(`[${this.name}] ERROR: ${message}`);
+        logger.error(`[${this.name}] ERROR: ${message}`);
     }
 }
 ```

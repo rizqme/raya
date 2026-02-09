@@ -1951,39 +1951,49 @@ impl Optimizer {
 
 ### 3.8 Reflection API (std:reflect)
 
-**Status:** Not Started
+**Status:** Core Implementation Complete (Phases 1-17 handlers done; Phase 12, 18 blocked pending compiler std: import support)
 
-**Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, and devtools support.
+**Goal:** Implement comprehensive runtime reflection for introspection, metadata, dynamic invocation, devtools support, and dynamic code generation.
 
-The Reflection API enables runtime introspection and manipulation of classes, methods, and fields. Requires `--emit-reflection` compiler flag for full type metadata.
+The Reflection API enables runtime introspection and manipulation of classes, methods, and fields. Reflection metadata is always emitted (no compiler flag needed).
 
 **Key Capabilities:**
-- Metadata storage on any target (works without `--emit-reflection`)
+- Metadata storage on any target
 - Type introspection (query class structure)
+- Generic type inspection (track monomorphized generic origins)
 - Dynamic invocation (call methods, get/set fields)
 - Object creation (instantiate classes dynamically)
 - Object inspection for debugging and devtools
 - Proxy objects for interception
+- Runtime type creation (classes, functions, generic specializations)
+- Dynamic bytecode generation
+- Full VM bootstrap (create and execute code from empty VM)
 
-**Phases (12 total, ~116 tasks):**
-- Phase 1: Core Types and Metadata Storage
-- Phase 2: Class Introspection
-- Phase 3: Field Access
-- Phase 4: Method Invocation
-- Phase 5: Object Creation
-- Phase 6: Type Utilities
-- Phase 7: Interface and Hierarchy Query
-- Phase 8: Object Inspection & DevTools (inspection, memory, stack, serialization)
-- Phase 9: Proxy Objects
-- Phase 10: Dynamic Subclass Creation
-- Phase 11: Compiler Integration
-- Phase 12: Framework Integration Tests
+**Phases (18 total, ~199 tasks):**
+- Phase 1: Core Types and Metadata Storage ✅
+- Phase 2: Class Introspection ✅
+- Phase 3: Field Access ✅
+- Phase 4: Method Invocation ✅ (method overloading N/A - banned in Raya)
+- Phase 5: Object Creation ✅
+- Phase 6: Type Utilities ✅ (typeOf<T>() compile-time feature deferred)
+- Phase 7: Interface and Hierarchy Query ✅
+- Phase 8: Object Inspection & DevTools ✅
+- Phase 9: Proxy Objects ✅
+- Phase 10: Dynamic Subclass Creation ✅
+- Phase 11: Compiler Integration ✅ (parameter info deferred)
+- Phase 12: Framework Integration Tests (blocked: needs compiler std: import support)
+- Phase 13: Generic Type Metadata ✅
+- Phase 14: Runtime Type Creation ✅
+- Phase 15: Dynamic Bytecode Generation ✅
+- Phase 16: Reflection Security & Permissions ✅
+- Phase 17: Dynamic VM Bootstrap ✅
+- Phase 18: Performance Validation (blocked: needs Phase 12)
 
 **Reference:** `design/REFLECTION.md`, `plans/milestone-3.8.md`
 
 ### 3.9 Decorators
 
-**Status:** In Progress (Phase 2)
+**Status:** In Progress (Phase 2 complete, Phase 3 next)
 
 **Goal:** Implement type-safe decorators for classes, methods, fields, and parameters.
 
@@ -1995,11 +2005,17 @@ Parser support is complete (Milestone 2.11). This milestone adds:
 
 **Phases:**
 - Phase 1: Built-in Types ✅
-- Phase 2: Type Checking (In Progress)
-- Phase 3: Code Generation
-- Phase 4: Runtime Support
+- Phase 2: Type Checking ✅
+- Phase 3: Code Generation (next)
+- Phase 4: Runtime Support (leverages Milestone 3.8 infrastructure)
+- Phase 5: Integration Tests (includes reflection integration)
 
-**Dependencies:** Milestone 3.8 (Reflection API) for `Reflect` metadata
+**Dependencies:** Milestone 3.8 (Reflection API) - decorators leverage:
+- `MetadataStore` for decorator metadata storage
+- `ClassMetadataRegistry` for class introspection in decorators
+- `DynamicClassBuilder` for class transformation decorators
+- `BytecodeBuilder` for method wrapper generation
+- `PermissionStore` for security constraints
 
 **Reference:** `design/DECORATORS.md`, `plans/milestone-3.9.md`
 
@@ -2029,15 +2045,18 @@ crates/raya-compiler/tests/
 
 **Goal:** Implement core runtime functionality.
 
-### 4.1 Core Types
+### 4.1 Core Types ✅
 
-**Location:** `stdlib/core.raya`
+**Status:** Complete
 
 **Tasks:**
-- [ ] Implement `Error` class
-- [ ] Define `Result<T, E>` type
-- [ ] Define `Task<T>` interface
-- [ ] Add `PromiseLike<T>` compatibility
+- [x] Implement all Date handlers (20/20: getters, setters, formatters, parse)
+- [x] Implement Object handlers (hashCode, equals, toString)
+- [x] Implement Task handlers (isDone, isCancelled)
+- [x] Implement Error handler (ERROR_STACK — placeholder)
+- [x] Implement Number methods (toFixed, toPrecision, toString with radix)
+- [x] Verify String-RegExp bridge, implement RegExp.replaceWith
+- [x] 34 new e2e tests (594 total)
 
 **Files:**
 ```typescript
@@ -2058,40 +2077,48 @@ export interface Task<T> extends PromiseLike<T> {
 
 **Reference:** `design/STDLIB.md` Section 1
 
-### 4.2 raya:std Module
+### 4.2 std:logger Module
 
-**Location:** `stdlib/std.raya`
+**Goal:** Replace global `logger.info` with `std:logger` module
 
 **Tasks:**
-- [ ] Implement `sleep()` (native)
-- [ ] Implement `all()` for task aggregation
-- [ ] Implement `race()` for task racing
+- [ ] Define logger as default-exported singleton (info, error, warn, debug)
+- [ ] Native IDs, type checker, compiler lowering, VM handlers (4 handlers)
+- [ ] Remove console global from STDLIB.md and raya-stdlib
+- [ ] Migrate all documentation references (97+ files)
 
-**Files:**
+**API:**
 ```typescript
-// stdlib/std.raya
-declare function sleep(ms: number): Task<void>;
-declare function all<T>(tasks: Task<T>[]): Task<T[]>;
-declare function race<T>(tasks: Task<T>[]): Task<T>;
+import logger from "std:logger";
+
+logger.info("message");     // stdout
+logger.error("message");    // stderr
+logger.warn("message");     // stderr
+logger.debug("message");    // stdout
 ```
 
-**Native Implementation:**
-```rust
-// crates/raya-stdlib/src/std.rs
-pub fn sleep(vm: &mut Vm, ms: f64) -> Result<TaskId, VmError> {
-    let task = vm.scheduler.spawn_delayed(Duration::from_millis(ms as u64));
-    Ok(task)
-}
+**Reference:** `plans/milestone-4.2.md`
 
-pub fn all(vm: &mut Vm, tasks: Vec<TaskId>) -> Result<TaskId, VmError> {
-    let task = vm.scheduler.all(tasks);
-    Ok(task)
-}
+### 4.3 std:math Module
+
+**Goal:** Implement Math as `std:math` standard library module (default export)
+
+**Tasks:**
+- [ ] Define native IDs (0x0F10-0x0F24), type checker, compiler lowering
+- [ ] VM handlers for 20 methods + 2 constants (PI, E)
+
+**API:**
+```typescript
+import math from "std:math";
+
+math.floor(3.7);               // 3
+math.pow(2, 10);               // 1024
+let area = math.PI * r * r;
 ```
 
-**Reference:** `design/STDLIB.md` Section 2
+**Reference:** `plans/milestone-4.3.md`
 
-### 4.3 raya:json Module
+### 4.4 raya:json Module
 
 **Location:** `stdlib/json.raya`
 
@@ -2118,7 +2145,7 @@ export class JSON {
 
 **Reference:** `design/STDLIB.md` Section 3
 
-### 4.4 raya:json/internal Module
+### 4.5 raya:json/internal Module
 
 **Tasks:**
 - [ ] Implement `JsonValue` type
@@ -2149,7 +2176,7 @@ pub fn parse_json(input: &str) -> Result<Value, VmError> {
 
 **Reference:** `design/STDLIB.md` Section 4
 
-### 4.5 raya:reflect Module (Optional)
+### 4.6 raya:reflect Module (Optional)
 
 **Tasks:**
 - [ ] Implement reflection API when `--emit-reflection` flag is set
@@ -2171,7 +2198,7 @@ pub mod reflect {
 
 **Reference:** `design/STDLIB.md` Section 5, `design/LANG.md` Section 18
 
-### 4.6 Built-in Types
+### 4.7 Built-in Types
 
 **Tasks:**
 - [ ] Implement String methods (native)
@@ -2203,33 +2230,6 @@ pub fn array_map(vm: &mut Vm, arr: &[Value], f: FunctionRef) -> Result<Vec<Value
 ```
 
 **Reference:** `design/STDLIB.md` Section 7
-
-### 4.7 Console API
-
-**Tasks:**
-- [ ] Implement `console.log()` (native)
-- [ ] Implement `console.error()` (native)
-- [ ] Implement `console.warn()` and `console.info()` (aliases)
-
-**Files:**
-```rust
-// crates/raya-stdlib/src/console.rs
-pub fn console_log(args: &[Value]) {
-    for arg in args {
-        print!("{} ", arg.to_string());
-    }
-    println!();
-}
-
-pub fn console_error(args: &[Value]) {
-    for arg in args {
-        eprint!("{} ", arg.to_string());
-    }
-    eprintln!();
-}
-```
-
-**Reference:** `design/STDLIB.md` Section 6
 
 ### 4.8 Testing
 
@@ -2685,7 +2685,7 @@ impl DocGenerator {
 
 ```typescript
 function main(): void {
-  console.log("Hello, World!");
+  logger.info("Hello, World!");
 }
 ```
 

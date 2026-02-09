@@ -67,13 +67,13 @@ type ID =
 // User code:
 let id: ID = "abc";
 if (typeof id === "string") {
-  console.log(id.toUpperCase());  // Works transparently
+  logger.info(id.toUpperCase());  // Works transparently
 }
 
 // Compiler generates:
 let id: ID = { $type: "string", $value: "abc" };
 if (id.$type === "string") {
-  console.log(id.$value.toUpperCase());
+  logger.info(id.$value.toUpperCase());
 }
 ```
 
@@ -1015,9 +1015,9 @@ fn test_complete_bare_union_program() {
 
         function handle(resp: Response): void {
             if (typeof resp === "string") {
-                console.log(resp);
+                logger.info(resp);
             } else {
-                console.log(`Error ${resp.code}: ${resp.message}`);
+                logger.info(`Error ${resp.code}: ${resp.message}`);
             }
         }
     "#;

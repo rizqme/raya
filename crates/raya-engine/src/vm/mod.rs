@@ -31,6 +31,7 @@ pub mod ffi;
 pub mod gc;
 pub mod json;
 pub mod module;
+pub mod native_handler;
 pub mod object;
 pub mod reflect;
 pub mod scheduler;
@@ -49,6 +50,7 @@ pub use stack::{CallFrame, Stack, StackStats};
 pub use sync::{Mutex, MutexError, MutexId, MutexRegistry};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
+pub use native_handler::{NativeCallResult, NativeHandler, NoopNativeHandler};
 pub use vm::{
     ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
     VmOptions,

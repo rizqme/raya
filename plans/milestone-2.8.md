@@ -438,7 +438,7 @@ error[E2003]: Cannot access internal field '$type' on bare union
 error[E2002]: Cannot find name 'vlaue'
   --> src/main.raya:8:5
    |
- 8 | console.log(vlaue);
+ 8 | logger.info(vlaue);
    |             ^^^^^ not found in this scope
    |
    = help: Did you mean 'value'?

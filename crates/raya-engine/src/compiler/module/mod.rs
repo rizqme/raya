@@ -14,6 +14,7 @@ mod compiler;
 mod exports;
 mod graph;
 mod resolver;
+mod std_modules;
 mod typedef;
 
 pub use cache::ModuleCache;
@@ -24,6 +25,7 @@ pub use resolver::{
     ModuleResolver, PackageResolverConfig, PackageSpecifier,
     ResolveError, ResolvedModule, ResolvedPackageInfo,
 };
+pub use std_modules::StdModuleRegistry;
 pub use typedef::{
     ClassMemberSignature, ClassSignature, FunctionSignature, TypeAliasSignature,
     TypeDefError, TypeDefExport, TypeDefFile, TypeDefParser, VariableSignature,

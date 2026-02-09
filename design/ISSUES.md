@@ -155,8 +155,8 @@ type ID = string | number;
 let id: ID = 42;
 
 // Can I do this?
-console.log(id.$type);  // ???
-console.log(id.$value); // ???
+logger.info(id.$type);  // ???
+logger.info(id.$value); // ???
 
 // Or is unwrapping always automatic?
 const len = id.length;  // If id is string, this works?
@@ -240,7 +240,7 @@ But this should be made explicit to avoid confusion.
 **Issue:** Section 17 lists standard library modules but doesn't specify their APIs.
 
 **What's Listed (README.md):**
-- Console: `console.log`, `console.error`
+- Console: `logger.info`, `logger.error`
 - Math: "Basic math operations" (which ones?)
 - String: "Standard string methods" (which ones?)
 - Array: "Standard array methods" (which ones?)

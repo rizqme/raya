@@ -374,6 +374,22 @@ pub mod reflect {
     /// `Reflect.getClassHierarchy(obj)` - Get inheritance chain
     pub const GET_CLASS_HIERARCHY: u16 = 0x0D17;
 
+    // Decorator Registration (for Phase 3 codegen)
+    /// `Reflect.registerClassDecorator(classId, name, args)` - Register decorator on class
+    pub const REGISTER_CLASS_DECORATOR: u16 = 0x0D18;
+    /// `Reflect.registerMethodDecorator(classId, methodName, name, args)` - Register decorator on method
+    pub const REGISTER_METHOD_DECORATOR: u16 = 0x0D19;
+    /// `Reflect.registerFieldDecorator(classId, fieldName, name, args)` - Register decorator on field
+    pub const REGISTER_FIELD_DECORATOR: u16 = 0x0D1A;
+    /// `Reflect.registerParameterDecorator(classId, methodName, paramIndex, name, args)` - Register on param
+    pub const REGISTER_PARAMETER_DECORATOR: u16 = 0x0D1B;
+    /// `Reflect.getClassDecorators(classId)` - Get decorators on a class
+    pub const GET_CLASS_DECORATORS: u16 = 0x0D1C;
+    /// `Reflect.getMethodDecorators(classId, methodName)` - Get decorators on a method
+    pub const GET_METHOD_DECORATORS: u16 = 0x0D1D;
+    /// `Reflect.getFieldDecorators(classId, fieldName)` - Get decorators on a field
+    pub const GET_FIELD_DECORATORS: u16 = 0x0D1E;
+
     // ===== Phase 3: Field Access (0x0D20-0x0D2F) =====
 
     /// `Reflect.get(target, propertyKey)` - Get field value by name
@@ -523,6 +539,200 @@ pub mod reflect {
     pub const GET_PROXY_TARGET: u16 = 0x0DB2;
     /// `Reflect.getProxyHandler(proxy)` - Get the handler of a proxy
     pub const GET_PROXY_HANDLER: u16 = 0x0DB3;
+
+    // ===== Phase 10: Dynamic Subclass Creation (0x0DC0-0x0DCF) =====
+
+    /// `Reflect.createSubclass(superclassId, name, definition)` - Create a new subclass
+    pub const CREATE_SUBCLASS: u16 = 0x0DC0;
+    /// `Reflect.extendWith(classId, fields)` - Add fields to a class (returns new class)
+    pub const EXTEND_WITH: u16 = 0x0DC1;
+    /// `Reflect.defineClass(name, definition)` - Create a new root class
+    pub const DEFINE_CLASS: u16 = 0x0DC2;
+    /// `Reflect.addMethod(classId, name, methodImpl)` - Add method to class
+    pub const ADD_METHOD: u16 = 0x0DC3;
+    /// `Reflect.setConstructor(classId, constructorImpl)` - Set class constructor
+    pub const SET_CONSTRUCTOR: u16 = 0x0DC4;
+
+    // ===== Phase 13: Generic Type Metadata (0x0DD0-0x0DDF) =====
+
+    /// `Reflect.getGenericOrigin(cls)` - Get generic class name (e.g., "Box" for Box_number)
+    pub const GET_GENERIC_ORIGIN: u16 = 0x0DD0;
+    /// `Reflect.getTypeParameters(cls)` - Get type parameter info
+    pub const GET_TYPE_PARAMETERS: u16 = 0x0DD1;
+    /// `Reflect.getTypeArguments(cls)` - Get actual type arguments
+    pub const GET_TYPE_ARGUMENTS: u16 = 0x0DD2;
+    /// `Reflect.isGenericInstance(cls)` - Check if monomorphized
+    pub const IS_GENERIC_INSTANCE: u16 = 0x0DD3;
+    /// `Reflect.getGenericBase(genericName)` - Get base generic class ID
+    pub const GET_GENERIC_BASE: u16 = 0x0DD4;
+    /// `Reflect.findSpecializations(genericName)` - Find all monomorphized versions
+    pub const FIND_SPECIALIZATIONS: u16 = 0x0DD5;
+
+    // ===== Phase 14: Runtime Type Creation (0x0DE0-0x0DEF) =====
+
+    // Class Builder
+    /// `Reflect.newClassBuilder(name)` - Create a new class builder
+    pub const NEW_CLASS_BUILDER: u16 = 0x0DE0;
+    /// `ClassBuilder.addField(builderId, name, typeName, options)` - Add field to builder
+    pub const BUILDER_ADD_FIELD: u16 = 0x0DE1;
+    /// `ClassBuilder.addMethod(builderId, name, functionId, options)` - Add method to builder
+    pub const BUILDER_ADD_METHOD: u16 = 0x0DE2;
+    /// `ClassBuilder.setConstructor(builderId, functionId)` - Set constructor
+    pub const BUILDER_SET_CONSTRUCTOR: u16 = 0x0DE3;
+    /// `ClassBuilder.setParent(builderId, parentClassId)` - Set parent class
+    pub const BUILDER_SET_PARENT: u16 = 0x0DE4;
+    /// `ClassBuilder.addInterface(builderId, interfaceName)` - Add interface
+    pub const BUILDER_ADD_INTERFACE: u16 = 0x0DE5;
+    /// `ClassBuilder.build(builderId)` - Finalize and register class
+    pub const BUILDER_BUILD: u16 = 0x0DE6;
+
+    // Function Creation
+    /// `Reflect.createFunction(name, paramCount, bytecode)` - Create function from bytecode
+    pub const CREATE_FUNCTION: u16 = 0x0DE7;
+    /// `Reflect.createAsyncFunction(name, paramCount, bytecode)` - Create async function
+    pub const CREATE_ASYNC_FUNCTION: u16 = 0x0DE8;
+    /// `Reflect.createClosure(functionId, captures)` - Create closure with captures
+    pub const CREATE_CLOSURE: u16 = 0x0DE9;
+    /// `Reflect.createNativeCallback(callbackId)` - Register native callback
+    pub const CREATE_NATIVE_CALLBACK: u16 = 0x0DEA;
+
+    // Generic Specialization
+    /// `Reflect.specialize(genericName, typeArgs)` - Create new monomorphization
+    pub const SPECIALIZE: u16 = 0x0DEB;
+    /// `Reflect.getSpecializationCache()` - Get cached specializations
+    pub const GET_SPECIALIZATION_CACHE: u16 = 0x0DEC;
+
+    // High-level Function Builder (for decorators)
+    /// `Reflect.createWrapper(method, hooks)` - Create method wrapper with before/after/around hooks
+    pub const CREATE_WRAPPER: u16 = 0x0DED;
+    /// `Reflect.createMethodWrapper(method, wrapper)` - Create wrapper that calls wrapper(method, args)
+    pub const CREATE_METHOD_WRAPPER: u16 = 0x0DEE;
+
+    // ===== Phase 15: Dynamic Bytecode Generation (0x0DF0-0x0DFF) =====
+
+    // BytecodeBuilder creation and management
+    /// `Reflect.newBytecodeBuilder(name, paramCount, returnType)` - Create bytecode builder
+    pub const NEW_BYTECODE_BUILDER: u16 = 0x0DF0;
+    /// `BytecodeBuilder.emit(builderId, opcode, ...operands)` - Emit instruction
+    pub const BUILDER_EMIT: u16 = 0x0DF1;
+    /// `BytecodeBuilder.emitPush(builderId, value)` - Push constant value
+    pub const BUILDER_EMIT_PUSH: u16 = 0x0DF2;
+    /// `BytecodeBuilder.defineLabel(builderId)` - Define a new label
+    pub const BUILDER_DEFINE_LABEL: u16 = 0x0DF3;
+    /// `BytecodeBuilder.markLabel(builderId, labelId)` - Mark label position
+    pub const BUILDER_MARK_LABEL: u16 = 0x0DF4;
+    /// `BytecodeBuilder.emitJump(builderId, labelId)` - Emit unconditional jump
+    pub const BUILDER_EMIT_JUMP: u16 = 0x0DF5;
+    /// `BytecodeBuilder.emitJumpIf(builderId, labelId)` - Emit conditional jump
+    pub const BUILDER_EMIT_JUMP_IF: u16 = 0x0DF6;
+    /// `BytecodeBuilder.declareLocal(builderId, typeName)` - Declare local variable
+    pub const BUILDER_DECLARE_LOCAL: u16 = 0x0DF7;
+    /// `BytecodeBuilder.emitLoadLocal(builderId, index)` - Load local variable
+    pub const BUILDER_EMIT_LOAD_LOCAL: u16 = 0x0DF8;
+    /// `BytecodeBuilder.emitStoreLocal(builderId, index)` - Store local variable
+    pub const BUILDER_EMIT_STORE_LOCAL: u16 = 0x0DF9;
+    /// `BytecodeBuilder.emitCall(builderId, functionId)` - Emit function call
+    pub const BUILDER_EMIT_CALL: u16 = 0x0DFA;
+    /// `BytecodeBuilder.emitReturn(builderId)` - Emit return instruction
+    pub const BUILDER_EMIT_RETURN: u16 = 0x0DFB;
+    /// `BytecodeBuilder.validate(builderId)` - Validate bytecode
+    pub const BUILDER_VALIDATE: u16 = 0x0DFC;
+    /// `BytecodeBuilder.build(builderId)` - Build and register function
+    pub const BUILDER_BUILD_FUNCTION: u16 = 0x0DFD;
+    /// `Reflect.extendModule(moduleName, additions)` - Extend module with dynamic code
+    pub const EXTEND_MODULE: u16 = 0x0DFE;
+
+    // ===== Phase 16: Reflection Security & Permissions (0x0E00-0x0E0F) =====
+
+    // Object-level permissions
+    /// `Reflect.setPermissions(target, permissions)` - Set object-level permissions
+    pub const SET_PERMISSIONS: u16 = 0x0E00;
+    /// `Reflect.getPermissions(target)` - Get resolved permissions for target
+    pub const GET_PERMISSIONS: u16 = 0x0E01;
+    /// `Reflect.hasPermission(target, permission)` - Check specific permission flag
+    pub const HAS_PERMISSION: u16 = 0x0E02;
+    /// `Reflect.clearPermissions(target)` - Clear object-level permissions
+    pub const CLEAR_PERMISSIONS: u16 = 0x0E03;
+
+    // Class-level permissions
+    /// `Reflect.setClassPermissions(classId, permissions)` - Set class-level permissions
+    pub const SET_CLASS_PERMISSIONS: u16 = 0x0E04;
+    /// `Reflect.getClassPermissions(classId)` - Get class-level permissions
+    pub const GET_CLASS_PERMISSIONS: u16 = 0x0E05;
+    /// `Reflect.clearClassPermissions(classId)` - Clear class-level permissions
+    pub const CLEAR_CLASS_PERMISSIONS: u16 = 0x0E06;
+
+    // Module-level permissions
+    /// `Reflect.setModulePermissions(moduleName, permissions)` - Set module-level permissions
+    pub const SET_MODULE_PERMISSIONS: u16 = 0x0E07;
+    /// `Reflect.getModulePermissions(moduleName)` - Get module-level permissions
+    pub const GET_MODULE_PERMISSIONS: u16 = 0x0E08;
+    /// `Reflect.clearModulePermissions(moduleName)` - Clear module-level permissions
+    pub const CLEAR_MODULE_PERMISSIONS: u16 = 0x0E09;
+
+    // Global permissions
+    /// `Reflect.setGlobalPermissions(permissions)` - Set global default permissions
+    pub const SET_GLOBAL_PERMISSIONS: u16 = 0x0E0A;
+    /// `Reflect.getGlobalPermissions()` - Get global default permissions
+    pub const GET_GLOBAL_PERMISSIONS: u16 = 0x0E0B;
+
+    // Permission sealing
+    /// `Reflect.sealPermissions(target)` - Make permissions immutable
+    pub const SEAL_PERMISSIONS: u16 = 0x0E0C;
+    /// `Reflect.isPermissionsSealed(target)` - Check if permissions are sealed
+    pub const IS_PERMISSIONS_SEALED: u16 = 0x0E0D;
+
+    // ===== Phase 17: Dynamic VM Bootstrap (0x0E10-0x0E2F) =====
+
+    // Module creation (0x0E10-0x0E17)
+    /// `Reflect.createModule(name)` - Create empty dynamic module
+    pub const CREATE_MODULE: u16 = 0x0E10;
+    /// `Reflect.moduleAddFunction(moduleId, func)` - Add function to module
+    pub const MODULE_ADD_FUNCTION: u16 = 0x0E11;
+    /// `Reflect.moduleAddClass(moduleId, classId)` - Add class to module
+    pub const MODULE_ADD_CLASS: u16 = 0x0E12;
+    /// `Reflect.moduleAddGlobal(moduleId, name, value)` - Add global variable
+    pub const MODULE_ADD_GLOBAL: u16 = 0x0E13;
+    /// `Reflect.moduleSeal(moduleId)` - Finalize module for execution
+    pub const MODULE_SEAL: u16 = 0x0E14;
+    /// `Reflect.moduleLink(moduleId, imports)` - Resolve imports
+    pub const MODULE_LINK: u16 = 0x0E15;
+    /// `Reflect.getModule(moduleId)` - Get module info by ID
+    pub const GET_MODULE: u16 = 0x0E16;
+    /// `Reflect.getModuleByName(name)` - Get module by name
+    pub const GET_MODULE_BY_NAME: u16 = 0x0E17;
+
+    // Execution (0x0E18-0x0E1F)
+    /// `Reflect.execute(functionId, args)` - Execute function synchronously
+    pub const EXECUTE: u16 = 0x0E18;
+    /// `Reflect.spawn(functionId, args)` - Execute function as Task
+    pub const SPAWN: u16 = 0x0E19;
+    /// `Reflect.eval(bytecode)` - Execute raw bytecode
+    pub const EVAL: u16 = 0x0E1A;
+    /// `Reflect.callDynamic(functionId, args)` - Call dynamic function by ID
+    pub const CALL_DYNAMIC: u16 = 0x0E1B;
+    /// `Reflect.invokeDynamicMethod(target, methodIndex, args)` - Invoke method on dynamic class
+    pub const INVOKE_DYNAMIC_METHOD: u16 = 0x0E1C;
+
+    // Bootstrap (0x0E20-0x0E2F)
+    /// `Reflect.bootstrap()` - Initialize minimal runtime environment
+    pub const BOOTSTRAP: u16 = 0x0E20;
+    /// `Reflect.getObjectClass()` - Get core Object class ID
+    pub const GET_OBJECT_CLASS: u16 = 0x0E21;
+    /// `Reflect.getArrayClass()` - Get core Array class ID
+    pub const GET_ARRAY_CLASS: u16 = 0x0E22;
+    /// `Reflect.getStringClass()` - Get core String class ID
+    pub const GET_STRING_CLASS: u16 = 0x0E23;
+    /// `Reflect.getTaskClass()` - Get core Task class ID
+    pub const GET_TASK_CLASS: u16 = 0x0E24;
+    /// `Reflect.dynamicPrint(message)` - Print to console from dynamic code
+    pub const DYNAMIC_PRINT: u16 = 0x0E25;
+    /// `Reflect.createDynamicArray(elements)` - Create array from values
+    pub const CREATE_DYNAMIC_ARRAY: u16 = 0x0E26;
+    /// `Reflect.createDynamicString(value)` - Create string value
+    pub const CREATE_DYNAMIC_STRING: u16 = 0x0E27;
+    /// `Reflect.isBootstrapped()` - Check if bootstrap context exists
+    pub const IS_BOOTSTRAPPED: u16 = 0x0E28;
 }
 
 /// Built-in method IDs for Date
@@ -571,6 +781,33 @@ pub mod date {
     pub const TO_DATE_STRING: u16 = 0x0B22;
     /// `date.toTimeString()` - Get time portion
     pub const TO_TIME_STRING: u16 = 0x0B23;
+}
+
+/// Built-in method IDs for Logger (std:logger)
+pub mod logger {
+    /// `logger.debug(message)` - Print debug output to stdout
+    pub const DEBUG: u16 = 0x1000;
+    /// `logger.info(message)` - Print info output to stdout
+    pub const INFO: u16 = 0x1001;
+    /// `logger.warn(message)` - Print warning to stderr
+    pub const WARN: u16 = 0x1002;
+    /// `logger.error(message)` - Print error to stderr
+    pub const ERROR: u16 = 0x1003;
+}
+
+/// Check if a method ID is a logger method
+pub fn is_logger_method(method_id: u16) -> bool {
+    (0x1000..=0x10FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Number
+pub mod number {
+    /// `number.toFixed(digits)` - Format with fixed decimal places
+    pub const TO_FIXED: u16 = 0x0F00;
+    /// `number.toPrecision(precision)` - Format with significant digits
+    pub const TO_PRECISION: u16 = 0x0F01;
+    /// `number.toString(radix?)` - Convert to string with optional radix
+    pub const TO_STRING_RADIX: u16 = 0x0F02;
 }
 
 /// Look up built-in method ID by type and method name
@@ -664,6 +901,11 @@ pub fn is_date_method(method_id: u16) -> bool {
 /// Check if a method ID is a built-in reflect method
 pub fn is_reflect_method(method_id: u16) -> bool {
     (0x0D00..=0x0DFF).contains(&method_id)
+}
+
+/// Check if a method ID is a built-in number method
+pub fn is_number_method(method_id: u16) -> bool {
+    (0x0F00..=0x0F0F).contains(&method_id)
 }
 
 /// Check if a method ID is a proxy-related reflect method

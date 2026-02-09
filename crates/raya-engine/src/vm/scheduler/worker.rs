@@ -114,6 +114,7 @@ impl Worker {
                 &state.injector,
                 &state.metadata,
                 &state.class_metadata,
+                &state.native_handler,
             );
 
             // Execute task using the suspendable interpreter

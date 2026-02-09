@@ -73,7 +73,7 @@ Every JSX element type is checked:
 
 ```tsx
 // ✅ Valid: Button has onClick and children props
-<Button onClick={() => console.log("clicked")}>Click me</Button>
+<Button onClick={() => logger.info("clicked")}>Click me</Button>
 
 // ❌ Error: Button doesn't have invalidProp
 <Button invalidProp="value">Click me</Button>

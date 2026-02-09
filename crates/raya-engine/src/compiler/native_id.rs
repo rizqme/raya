@@ -190,6 +190,27 @@ pub const DATE_TO_DATE_STRING: u16 = 0x0B22;
 pub const DATE_TO_TIME_STRING: u16 = 0x0B23;
 
 // ============================================================================
+// Number (0x0F00-0x0F0F)
+// ============================================================================
+
+pub const NUMBER_TO_FIXED: u16 = 0x0F00;
+pub const NUMBER_TO_PRECISION: u16 = 0x0F01;
+pub const NUMBER_TO_STRING_RADIX: u16 = 0x0F02;
+
+// ============================================================================
+// Logger (0x10xx)
+// ============================================================================
+
+/// logger.debug(...args) - Print debug output to stdout
+pub const LOGGER_DEBUG: u16 = 0x1000;
+/// logger.info(...args) - Print info output to stdout
+pub const LOGGER_INFO: u16 = 0x1001;
+/// logger.warn(...args) - Print warning to stderr
+pub const LOGGER_WARN: u16 = 0x1002;
+/// logger.error(...args) - Print error to stderr
+pub const LOGGER_ERROR: u16 = 0x1003;
+
+// ============================================================================
 // JSON (0x0Cxx)
 // ============================================================================
 
@@ -247,6 +268,27 @@ pub const REFLECT_GET_TYPE_INFO: u16 = 0x0D15;
 pub const REFLECT_GET_CLASS_HIERARCHY: u16 = 0x0D16;
 /// Reflect.getClassesWithDecorator(decorator) - filter by decorator
 pub const REFLECT_GET_CLASSES_WITH_DECORATOR: u16 = 0x0D17;
+
+// ============================================================================
+// Reflect - Decorator Registration (0x0D18-0x0D1F)
+// ============================================================================
+
+/// registerClassDecorator(classId, decoratorName) - register class decorator
+pub const REGISTER_CLASS_DECORATOR: u16 = 0x0D18;
+/// registerMethodDecorator(classId, methodName, decoratorName) - register method decorator
+pub const REGISTER_METHOD_DECORATOR: u16 = 0x0D19;
+/// registerFieldDecorator(classId, fieldName, decoratorName) - register field decorator
+pub const REGISTER_FIELD_DECORATOR: u16 = 0x0D1A;
+/// registerParameterDecorator(classId, methodName, paramIndex, decoratorName) - register parameter decorator
+pub const REGISTER_PARAMETER_DECORATOR: u16 = 0x0D1B;
+/// getClassDecorators(classId) - get decorators applied to class
+pub const REFLECT_GET_CLASS_DECORATORS: u16 = 0x0D1C;
+/// getMethodDecorators(classId, methodName) - get decorators applied to method
+pub const REFLECT_GET_METHOD_DECORATORS: u16 = 0x0D1D;
+/// getFieldDecorators(classId, fieldName) - get decorators applied to field
+pub const REFLECT_GET_FIELD_DECORATORS: u16 = 0x0D1E;
+/// getParameterDecorators(classId, methodName, paramIndex) - get decorators applied to parameter
+pub const REFLECT_GET_PARAMETER_DECORATORS: u16 = 0x0D1F;
 
 // ============================================================================
 // Reflect - Field Access (0x0D20-0x0D2F)
@@ -390,6 +432,16 @@ pub fn native_name(id: u16) -> &'static str {
         REFLECT_GET_CLASS_HIERARCHY => "Reflect.getClassHierarchy",
         REFLECT_GET_CLASSES_WITH_DECORATOR => "Reflect.getClassesWithDecorator",
 
+        // Decorator Registration
+        REGISTER_CLASS_DECORATOR => "registerClassDecorator",
+        REGISTER_METHOD_DECORATOR => "registerMethodDecorator",
+        REGISTER_FIELD_DECORATOR => "registerFieldDecorator",
+        REGISTER_PARAMETER_DECORATOR => "registerParameterDecorator",
+        REFLECT_GET_CLASS_DECORATORS => "Reflect.getClassDecorators",
+        REFLECT_GET_METHOD_DECORATORS => "Reflect.getMethodDecorators",
+        REFLECT_GET_FIELD_DECORATORS => "Reflect.getFieldDecorators",
+        REFLECT_GET_PARAMETER_DECORATORS => "Reflect.getParameterDecorators",
+
         // Reflect - Field Access
         REFLECT_GET => "Reflect.get",
         REFLECT_SET => "Reflect.set",
@@ -414,6 +466,17 @@ pub fn native_name(id: u16) -> &'static str {
         REFLECT_CONSTRUCT => "Reflect.construct",
         REFLECT_ALLOCATE => "Reflect.allocate",
         REFLECT_CLONE => "Reflect.clone",
+
+        // Number
+        NUMBER_TO_FIXED => "Number.toFixed",
+        NUMBER_TO_PRECISION => "Number.toPrecision",
+        NUMBER_TO_STRING_RADIX => "Number.toString",
+
+        // Logger
+        LOGGER_DEBUG => "logger.debug",
+        LOGGER_INFO => "logger.info",
+        LOGGER_WARN => "logger.warn",
+        LOGGER_ERROR => "logger.error",
 
         _ => "unknown",
     }

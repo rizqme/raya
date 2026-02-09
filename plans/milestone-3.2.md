@@ -664,7 +664,7 @@ fn test_constraint_validation() {
     let source = r#"
         interface HasLength { length: number; }
         function logLength<T extends HasLength>(item: T): void {
-            console.log(item.length);
+            logger.info(item.length);
         }
         logLength("hello");  // OK: string has length
         logLength(42);       // ERROR: number has no length
@@ -706,8 +706,8 @@ fn test_full_pipeline() {
         function main(): void {
             let a = identity(42);
             let b = identity("hello");
-            console.log(a);
-            console.log(b);
+            logger.info(a);
+            logger.info(b);
         }
     "#;
 
@@ -730,7 +730,7 @@ fn test_generic_class_methods() {
         function main(): void {
             let c = new Container(42);
             c.set(100);
-            console.log(c.get());
+            logger.info(c.get());
         }
     "#;
 

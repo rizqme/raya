@@ -9,6 +9,141 @@
  */
 
 // ============================================================================
+// Standard Decorator Metadata Keys
+// ============================================================================
+
+/**
+ * Standard metadata key for design-time type information on fields/parameters.
+ * Value: type name string (e.g., "string", "number", "MyClass")
+ *
+ * Automatically emitted by compiler when using decorators on typed fields.
+ */
+export const DESIGN_TYPE: string = "design:type";
+
+/**
+ * Standard metadata key for parameter types of a method.
+ * Value: string[] of parameter type names
+ *
+ * Automatically emitted by compiler when using decorators on methods.
+ */
+export const DESIGN_PARAM_TYPES: string = "design:paramtypes";
+
+/**
+ * Standard metadata key for return type of a method.
+ * Value: type name string
+ *
+ * Automatically emitted by compiler when using decorators on methods.
+ */
+export const DESIGN_RETURN_TYPE: string = "design:returntype";
+
+/**
+ * Metadata key for storing decorator information on a class.
+ * Value: DecoratorInfo[]
+ *
+ * Emitted when decorators are applied to classes, methods, or fields.
+ */
+export const DECORATORS: string = "reflect:decorators";
+
+/**
+ * Metadata key for storing the class constructor reference.
+ * Value: Class<T> reference
+ *
+ * Used by dependency injection frameworks.
+ */
+export const CONSTRUCTOR: string = "reflect:constructor";
+
+// ============================================================================
+// Decorator Information Types
+// ============================================================================
+
+/**
+ * Information about an applied decorator
+ */
+export interface DecoratorInfo {
+    /** Decorator function name */
+    readonly name: string;
+    /** Arguments passed to the decorator factory (if any) */
+    readonly args: readonly any[];
+    /** Target type: "class", "method", "field", or "parameter" */
+    readonly targetType: "class" | "method" | "field" | "parameter";
+    /** Property key for method/field/parameter decorators */
+    readonly propertyKey?: string;
+    /** Parameter index for parameter decorators */
+    readonly parameterIndex?: number;
+}
+
+// ============================================================================
+// Decorator Registration (used by codegen, rarely called directly)
+// ============================================================================
+
+/**
+ * Register a decorator application on a class
+ * Called by generated code to track decorator applications
+ * @param classId - Class ID
+ * @param decoratorName - Name of the decorator function
+ * @param args - Arguments passed to the decorator factory
+ */
+export function registerClassDecorator(classId: number, decoratorName: string, args?: any[]): void;
+
+/**
+ * Register a decorator application on a method
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @param decoratorName - Name of the decorator function
+ * @param args - Arguments passed to the decorator factory
+ */
+export function registerMethodDecorator(classId: number, methodName: string, decoratorName: string, args?: any[]): void;
+
+/**
+ * Register a decorator application on a field
+ * @param classId - Class ID
+ * @param fieldName - Field name
+ * @param decoratorName - Name of the decorator function
+ * @param args - Arguments passed to the decorator factory
+ */
+export function registerFieldDecorator(classId: number, fieldName: string, decoratorName: string, args?: any[]): void;
+
+/**
+ * Register a decorator application on a parameter
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @param paramIndex - Parameter index (0-based)
+ * @param decoratorName - Name of the decorator function
+ * @param args - Arguments passed to the decorator factory
+ */
+export function registerParameterDecorator(classId: number, methodName: string, paramIndex: number, decoratorName: string, args?: any[]): void;
+
+/**
+ * Get all classes that have a specific decorator applied
+ * @param decoratorName - Name of the decorator to search for
+ * @returns Array of class IDs that have the decorator
+ */
+export function getClassesWithDecorator(decoratorName: string): number[];
+
+/**
+ * Get all decorators applied to a class
+ * @param classId - Class ID
+ * @returns Array of DecoratorInfo objects
+ */
+export function getClassDecorators(classId: number): DecoratorInfo[];
+
+/**
+ * Get all decorators applied to a method
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @returns Array of DecoratorInfo objects
+ */
+export function getMethodDecorators(classId: number, methodName: string): DecoratorInfo[];
+
+/**
+ * Get all decorators applied to a field
+ * @param classId - Class ID
+ * @param fieldName - Field name
+ * @returns Array of DecoratorInfo objects
+ */
+export function getFieldDecorators(classId: number, fieldName: string): DecoratorInfo[];
+
+// ============================================================================
 // Metadata Operations
 // ============================================================================
 
@@ -770,3 +905,736 @@ export function getProxyTarget<T extends object>(proxy: T): T | null;
  * @returns The handler object, or null if not a proxy
  */
 export function getProxyHandler<T extends object>(proxy: T): ProxyHandler<T> | null;
+
+// ============================================================================
+// Parameter Information (Phase 11)
+// ============================================================================
+
+/**
+ * Parameter information structure
+ */
+export interface ParameterInfo {
+    /** Parameter name */
+    readonly name: string;
+    /** Parameter type name */
+    readonly type: string;
+    /** Parameter index (0-based) */
+    readonly index: number;
+    /** Whether the parameter is optional */
+    readonly isOptional: boolean;
+    /** Default value expression (string representation) or null */
+    readonly defaultValue: string | null;
+}
+
+/**
+ * Access modifiers for fields and methods
+ */
+export interface Modifiers {
+    /** Is publicly accessible */
+    readonly isPublic: boolean;
+    /** Is privately accessible (class-only) */
+    readonly isPrivate: boolean;
+    /** Is protected (class and subclasses) */
+    readonly isProtected: boolean;
+    /** Is a static member */
+    readonly isStatic: boolean;
+    /** Is readonly (cannot be reassigned) */
+    readonly isReadonly: boolean;
+    /** Is abstract (must be implemented by subclass) */
+    readonly isAbstract: boolean;
+}
+
+/**
+ * Get parameter information for a method
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @returns Array of ParameterInfo for the method's parameters
+ */
+export function getParameterInfo(classId: number, methodName: string): ParameterInfo[];
+
+/**
+ * Get modifiers for a field
+ * @param classId - Class ID
+ * @param fieldName - Field name
+ * @returns Modifiers object or null if field not found
+ */
+export function getFieldModifiers(classId: number, fieldName: string): Modifiers | null;
+
+/**
+ * Get modifiers for a method
+ * @param classId - Class ID
+ * @param methodName - Method name
+ * @returns Modifiers object or null if method not found
+ */
+export function getMethodModifiers(classId: number, methodName: string): Modifiers | null;
+
+// ============================================================================
+// Dynamic Class Creation (Phase 10)
+// ============================================================================
+
+/**
+ * Field definition for dynamic class creation
+ */
+export interface FieldDefinition {
+    name: string;
+    type: string;
+    initialValue?: any;
+    isStatic?: boolean;
+    isReadonly?: boolean;
+}
+
+/**
+ * Method definition for dynamic class creation
+ */
+export interface MethodDefinition {
+    name: string;
+    implementation: Function;
+    isStatic?: boolean;
+    isAsync?: boolean;
+}
+
+/**
+ * Subclass definition for createSubclass
+ */
+export interface SubclassDefinition {
+    fields?: FieldDefinition[];
+    methods?: MethodDefinition[];
+    constructor?: (...args: any[]) => void;
+}
+
+/**
+ * Create a subclass of an existing class
+ * @param superclassId - Parent class ID
+ * @param name - Name for the new class
+ * @param definition - Fields, methods, and constructor for the subclass
+ * @returns Class ID of the new subclass
+ */
+export function createSubclass(superclassId: number, name: string, definition: SubclassDefinition): number;
+
+/**
+ * Extend a class with additional fields
+ * @param classId - Class ID to extend
+ * @param fields - Array of field definitions to add
+ * @returns New class ID with the additional fields
+ */
+export function extendWith(classId: number, fields: FieldDefinition[]): number;
+
+/**
+ * Define a new class from scratch
+ * @param name - Class name
+ * @param definition - Class definition
+ * @returns Class ID of the new class
+ */
+export function defineClass(name: string, definition: SubclassDefinition): number;
+
+/**
+ * Add a method to an existing dynamic class
+ * @param classId - Class ID
+ * @param name - Method name
+ * @param functionId - Function ID for the method implementation
+ */
+export function addMethod(classId: number, name: string, functionId: number): void;
+
+/**
+ * Set the constructor for a dynamic class
+ * @param classId - Class ID
+ * @param functionId - Function ID for the constructor implementation
+ */
+export function setConstructor(classId: number, functionId: number): void;
+
+// ============================================================================
+// Generic Type Metadata (Phase 13)
+// ============================================================================
+
+/**
+ * Generic parameter information
+ */
+export interface GenericParameterInfo {
+    /** Parameter name (e.g., "T") */
+    readonly name: string;
+    /** Position in type parameter list */
+    readonly index: number;
+    /** Type constraint (e.g., "extends Comparable") or null */
+    readonly constraint: string | null;
+}
+
+/**
+ * Generic origin information for monomorphized types
+ */
+export interface GenericOrigin {
+    /** Original generic class name (e.g., "Box") */
+    readonly name: string;
+    /** Type parameter names (e.g., ["T"]) */
+    readonly typeParameters: string[];
+    /** Actual type arguments (e.g., ["number"]) */
+    readonly typeArguments: string[];
+}
+
+/**
+ * Get the generic origin of a monomorphized class
+ * @param classId - Class ID of a monomorphized class (e.g., Box_number)
+ * @returns Original generic class name (e.g., "Box") or null if not a generic instance
+ */
+export function getGenericOrigin(classId: number): string | null;
+
+/**
+ * Get type parameters of a generic class
+ * @param classId - Class ID
+ * @returns Array of GenericParameterInfo
+ */
+export function getTypeParameters(classId: number): GenericParameterInfo[];
+
+/**
+ * Get type arguments of a monomorphized class
+ * @param classId - Class ID
+ * @returns Array of type argument names
+ */
+export function getTypeArguments(classId: number): string[];
+
+/**
+ * Check if a class is a generic instance (monomorphized from a generic)
+ * @param classId - Class ID
+ * @returns true if class was created by monomorphization
+ */
+export function isGenericInstance(classId: number): boolean;
+
+/**
+ * Get the base generic class ID
+ * @param genericName - Name of the generic class (e.g., "Box")
+ * @returns Class ID or null if not found
+ */
+export function getGenericBase(genericName: string): number | null;
+
+/**
+ * Find all specializations of a generic class
+ * @param genericName - Name of the generic class (e.g., "Box")
+ * @returns Array of class IDs for all specializations (e.g., Box_number, Box_string)
+ */
+export function findSpecializations(genericName: string): number[];
+
+// ============================================================================
+// Runtime Type Creation (Phase 14)
+// ============================================================================
+
+/**
+ * Create a new ClassBuilder for incremental class construction
+ * @param name - Name for the new class
+ * @returns Builder ID for use with other ClassBuilder methods
+ */
+export function newClassBuilder(name: string): number;
+
+/**
+ * Set the parent class for a ClassBuilder
+ * @param builderId - Builder ID from newClassBuilder
+ * @param parentClassId - Parent class ID
+ */
+export function builderSetParent(builderId: number, parentClassId: number): void;
+
+/**
+ * Add a field to a ClassBuilder
+ * @param builderId - Builder ID
+ * @param name - Field name
+ * @param typeName - Type name string
+ * @param isReadonly - Whether the field is readonly
+ * @param isStatic - Whether the field is static
+ */
+export function builderAddField(builderId: number, name: string, typeName: string, isReadonly: boolean, isStatic: boolean): void;
+
+/**
+ * Add a method to a ClassBuilder
+ * @param builderId - Builder ID
+ * @param name - Method name
+ * @param functionId - Function ID for the method implementation
+ * @param isStatic - Whether the method is static
+ * @param isAsync - Whether the method is async
+ */
+export function builderAddMethod(builderId: number, name: string, functionId: number, isStatic: boolean, isAsync: boolean): void;
+
+/**
+ * Set the constructor for a ClassBuilder
+ * @param builderId - Builder ID
+ * @param functionId - Function ID for the constructor
+ */
+export function builderSetConstructor(builderId: number, functionId: number): void;
+
+/**
+ * Add an interface to a ClassBuilder
+ * @param builderId - Builder ID
+ * @param interfaceName - Interface name
+ */
+export function builderAddInterface(builderId: number, interfaceName: string): void;
+
+/**
+ * Build the class from a ClassBuilder
+ * @param builderId - Builder ID
+ * @returns Class ID of the newly created class
+ */
+export function builderBuild(builderId: number): number;
+
+/**
+ * Create a function from bytecode
+ * @param name - Function name
+ * @param paramCount - Number of parameters
+ * @param bytecode - Array of bytecode instructions
+ * @returns Function ID
+ */
+export function createFunction(name: string, paramCount: number, bytecode: number[]): number;
+
+/**
+ * Create an async function from bytecode
+ * @param name - Function name
+ * @param paramCount - Number of parameters
+ * @param bytecode - Array of bytecode instructions
+ * @returns Function ID
+ */
+export function createAsyncFunction(name: string, paramCount: number, bytecode: number[]): number;
+
+/**
+ * Create a closure with captured variables
+ * @param functionId - Base function ID
+ * @param captures - Array of captured values
+ * @returns Closure ID
+ */
+export function createClosure(functionId: number, captures: any[]): number;
+
+/**
+ * Specialize a generic class with type arguments
+ * @param genericName - Name of the generic class
+ * @param typeArgs - Array of type argument names
+ * @returns Class ID of the specialized class
+ */
+export function specialize(genericName: string, typeArgs: string[]): number;
+
+// ============================================================================
+// Method Wrapper Builder (Phase 14 - High-level API for Decorators)
+// ============================================================================
+
+/**
+ * Wrapper hooks for method decoration
+ * All hooks are optional - only provide the ones you need
+ */
+export interface WrapperHooks<F extends Function> {
+    /** Called before the original method with its arguments */
+    before?: (args: any[]) => void;
+    /** Called after the original method with its result */
+    after?: (result: any) => void;
+    /** Called instead of the original - receives method and args, must call method */
+    around?: (method: F, args: any[]) => any;
+    /** Called if the original method throws an error */
+    onError?: (error: any) => any;
+}
+
+/**
+ * Create a wrapper function around a method (preferred API for decorators)
+ *
+ * This is a high-level API that internally uses DynamicFunctionBuilder.
+ * Use this instead of BytecodeBuilder for method decorators.
+ *
+ * @param method - The original method to wrap
+ * @param hooks - Wrapper hooks (before, after, around, onError)
+ * @returns A new function that wraps the original
+ *
+ * @example
+ * ```typescript
+ * function Logged(): MethodDecorator<Function> {
+ *     return (method: Function): Function => {
+ *         return Reflect.createWrapper(method, {
+ *             before: (args) => logger.info("Calling with", args),
+ *             after: (result) => logger.info("Returned", result)
+ *         });
+ *     };
+ * }
+ * ```
+ */
+export function createWrapper<F extends Function>(method: F, hooks: WrapperHooks<F>): F;
+
+/**
+ * Create a simple method wrapper where wrapper controls execution
+ *
+ * @param method - The original method
+ * @param wrapper - Wrapper function that receives (method, ...args) and controls execution
+ * @returns A new function that delegates to the wrapper
+ *
+ * @example
+ * ```typescript
+ * function Cached(): MethodDecorator<Function> {
+ *     const cache = new Map();
+ *     return (method: Function): Function => {
+ *         return Reflect.createMethodWrapper(method, (fn, ...args) => {
+ *             const key = JSON.stringify(args);
+ *             if (cache.has(key)) return cache.get(key);
+ *             const result = fn(...args);
+ *             cache.set(key, result);
+ *             return result;
+ *         });
+ *     };
+ * }
+ * ```
+ */
+export function createMethodWrapper<F extends Function>(method: F, wrapper: (method: F, ...args: any[]) => any): F;
+
+// ============================================================================
+// Bytecode Builder (Phase 15 - Low-level API)
+// ============================================================================
+
+/**
+ * Create a new BytecodeBuilder
+ * @param name - Function name
+ * @param paramCount - Number of parameters
+ * @returns Builder ID
+ */
+export function newBytecodeBuilder(name: string, paramCount: number): number;
+
+/**
+ * Emit a bytecode instruction
+ * @param builderId - Builder ID
+ * @param opcode - Opcode number
+ * @param operands - Operand values
+ */
+export function bcEmit(builderId: number, opcode: number, ...operands: number[]): void;
+
+/**
+ * Push a value onto the stack
+ * @param builderId - Builder ID
+ * @param value - Value to push
+ */
+export function bcEmitPush(builderId: number, value: any): void;
+
+/**
+ * Define a label for jumps
+ * @param builderId - Builder ID
+ * @returns Label ID
+ */
+export function bcDefineLabel(builderId: number): number;
+
+/**
+ * Mark the current position with a label
+ * @param builderId - Builder ID
+ * @param labelId - Label ID from bcDefineLabel
+ */
+export function bcMarkLabel(builderId: number, labelId: number): void;
+
+/**
+ * Emit a jump to a label
+ * @param builderId - Builder ID
+ * @param labelId - Label ID
+ */
+export function bcEmitJump(builderId: number, labelId: number): void;
+
+/**
+ * Emit a conditional jump
+ * @param builderId - Builder ID
+ * @param labelId - Label ID
+ */
+export function bcEmitJumpIf(builderId: number, labelId: number): void;
+
+/**
+ * Declare a local variable
+ * @param builderId - Builder ID
+ * @param typeName - Type name
+ * @returns Local index
+ */
+export function bcDeclareLocal(builderId: number, typeName: string): number;
+
+/**
+ * Load a local variable
+ * @param builderId - Builder ID
+ * @param localIndex - Local index
+ */
+export function bcEmitLoadLocal(builderId: number, localIndex: number): void;
+
+/**
+ * Store to a local variable
+ * @param builderId - Builder ID
+ * @param localIndex - Local index
+ */
+export function bcEmitStoreLocal(builderId: number, localIndex: number): void;
+
+/**
+ * Emit a function call
+ * @param builderId - Builder ID
+ * @param functionId - Function ID to call
+ * @param argCount - Number of arguments
+ */
+export function bcEmitCall(builderId: number, functionId: number, argCount: number): void;
+
+/**
+ * Emit a return instruction
+ * @param builderId - Builder ID
+ */
+export function bcEmitReturn(builderId: number): void;
+
+/**
+ * Validate the bytecode
+ * @param builderId - Builder ID
+ * @returns Array of error messages (empty if valid)
+ */
+export function bcValidate(builderId: number): string[];
+
+/**
+ * Build the function from bytecode
+ * @param builderId - Builder ID
+ * @returns Function ID
+ */
+export function bcBuild(builderId: number): number;
+
+// ============================================================================
+// Reflection Permissions (Phase 16)
+// ============================================================================
+
+/**
+ * Reflection permission flags (can be combined with |)
+ */
+export const enum ReflectionPermission {
+    NONE = 0,
+    READ_PUBLIC = 1,
+    READ_PRIVATE = 2,
+    WRITE_PUBLIC = 4,
+    WRITE_PRIVATE = 8,
+    INVOKE_PUBLIC = 16,
+    INVOKE_PRIVATE = 32,
+    CREATE_TYPES = 64,
+    GENERATE_BYTECODE = 128,
+    ALL = 255,
+}
+
+/**
+ * Set permissions on an object or class
+ * @param target - Target object or class ID
+ * @param permissions - Permission flags
+ */
+export function setPermissions(target: any, permissions: number): void;
+
+/**
+ * Get permissions for an object or class
+ * @param target - Target object or class ID
+ * @returns Permission flags
+ */
+export function getPermissions(target: any): number;
+
+/**
+ * Check if a specific permission is granted
+ * @param target - Target object or class ID
+ * @param permission - Permission flag to check
+ * @returns true if permission is granted
+ */
+export function hasPermission(target: any, permission: number): boolean;
+
+/**
+ * Clear all permissions on an object
+ * @param target - Target object or class ID
+ */
+export function clearPermissions(target: any): void;
+
+/**
+ * Set class-level permissions
+ * @param classId - Class ID
+ * @param permissions - Permission flags
+ */
+export function setClassPermissions(classId: number, permissions: number): void;
+
+/**
+ * Get class-level permissions
+ * @param classId - Class ID
+ * @returns Permission flags
+ */
+export function getClassPermissions(classId: number): number;
+
+/**
+ * Clear class-level permissions
+ * @param classId - Class ID
+ */
+export function clearClassPermissions(classId: number): void;
+
+/**
+ * Set module-level permissions
+ * @param moduleName - Module name
+ * @param permissions - Permission flags
+ */
+export function setModulePermissions(moduleName: string, permissions: number): void;
+
+/**
+ * Get module-level permissions
+ * @param moduleName - Module name
+ * @returns Permission flags
+ */
+export function getModulePermissions(moduleName: string): number;
+
+/**
+ * Clear module-level permissions
+ * @param moduleName - Module name
+ */
+export function clearModulePermissions(moduleName: string): void;
+
+/**
+ * Set global default permissions
+ * @param permissions - Permission flags
+ */
+export function setGlobalPermissions(permissions: number): void;
+
+/**
+ * Get global default permissions
+ * @returns Permission flags
+ */
+export function getGlobalPermissions(): number;
+
+/**
+ * Seal permissions on a target (make immutable)
+ * @param target - Target object or class ID
+ */
+export function sealPermissions(target: any): void;
+
+/**
+ * Check if permissions are sealed
+ * @param target - Target object or class ID
+ * @returns true if permissions are sealed
+ */
+export function isPermissionsSealed(target: any): boolean;
+
+// ============================================================================
+// Dynamic Module System (Phase 17)
+// ============================================================================
+
+/**
+ * Create a new dynamic module
+ * @param name - Module name
+ * @returns Module ID
+ */
+export function createModule(name: string): number;
+
+/**
+ * Add a function to a dynamic module
+ * @param moduleId - Module ID
+ * @param functionId - Function ID to add
+ */
+export function moduleAddFunction(moduleId: number, functionId: number): void;
+
+/**
+ * Add a class to a dynamic module
+ * @param moduleId - Module ID
+ * @param classId - Class ID to add
+ * @param name - Export name for the class
+ */
+export function moduleAddClass(moduleId: number, classId: number, name: string): void;
+
+/**
+ * Add a global variable to a dynamic module
+ * @param moduleId - Module ID
+ * @param name - Variable name
+ * @param value - Initial value
+ */
+export function moduleAddGlobal(moduleId: number, name: string, value: any): void;
+
+/**
+ * Seal a module (finalize for execution)
+ * @param moduleId - Module ID
+ */
+export function moduleSeal(moduleId: number): void;
+
+/**
+ * Link module imports
+ * @param moduleId - Module ID
+ * @param imports - Import specifications
+ */
+export function moduleLink(moduleId: number, imports: Map<string, number>): void;
+
+/**
+ * Get module info by ID
+ * @param moduleId - Module ID
+ * @returns Module info object or null
+ */
+export function getModule(moduleId: number): { name: string; isSealed: boolean } | null;
+
+/**
+ * Get module by name
+ * @param name - Module name
+ * @returns Module ID or null
+ */
+export function getModuleByName(name: string): number | null;
+
+// ============================================================================
+// Dynamic Execution (Phase 17)
+// ============================================================================
+
+/**
+ * Execute a function dynamically
+ * @param functionId - Function ID to execute
+ * @param args - Arguments
+ * @returns Function result
+ */
+export function execute(functionId: number, ...args: any[]): any;
+
+/**
+ * Spawn a function as a Task
+ * @param functionId - Function ID to spawn
+ * @param args - Arguments
+ * @returns Task handle
+ */
+export function spawn(functionId: number, ...args: any[]): any;
+
+/**
+ * Execute raw bytecode
+ * @param bytecode - Bytecode array
+ * @returns Execution result
+ */
+export function eval_(bytecode: number[]): any;
+
+// ============================================================================
+// Bootstrap Context (Phase 17)
+// ============================================================================
+
+/**
+ * Initialize the bootstrap context
+ * @returns true if bootstrap succeeded
+ */
+export function bootstrap(): boolean;
+
+/**
+ * Check if bootstrap context is initialized
+ * @returns true if bootstrapped
+ */
+export function isBootstrapped(): boolean;
+
+/**
+ * Get the core Object class ID
+ * @returns Class ID for Object
+ */
+export function getObjectClass(): number;
+
+/**
+ * Get the core Array class ID
+ * @returns Class ID for Array
+ */
+export function getArrayClass(): number;
+
+/**
+ * Get the core String class ID
+ * @returns Class ID for String
+ */
+export function getStringClass(): number;
+
+/**
+ * Get the core Task class ID
+ * @returns Class ID for Task
+ */
+export function getTaskClass(): number;
+
+/**
+ * Print a message (for dynamic code)
+ * @param message - Message to print
+ */
+export function dynamicPrint(message: string): void;
+
+/**
+ * Create a dynamic array
+ * @param elements - Array elements
+ * @returns Array reference
+ */
+export function createDynamicArray(elements: any[]): any[];
+
+/**
+ * Create a dynamic string
+ * @param value - String value
+ * @returns String reference
+ */
+export function createDynamicString(value: string): string;

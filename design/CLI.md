@@ -61,7 +61,7 @@ Raya source code files. These are human-readable TypeScript-syntax files.
 ```typescript
 // main.raya
 function main(): void {
-  console.log("Hello, Raya!");
+  logger.info("Hello, Raya!");
 }
 ```
 

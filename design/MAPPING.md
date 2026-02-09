@@ -858,9 +858,9 @@ STORE_LOCAL 0
 ```ts
 function greet(name: string, title?: string): void {
   if (title !== null) {
-    console.log(`Hello, ${title} ${name}`);
+    logger.info(`Hello, ${title} ${name}`);
   } else {
-    console.log(`Hello, ${name}`);
+    logger.info(`Hello, ${name}`);
   }
 }
 ```
@@ -880,14 +880,14 @@ CONST_STR 1           // " "
 SCONCAT
 LOAD_LOCAL 0
 SCONCAT
-CALL <console.log>, 1
+CALL <logger.info>, 1
 JMP end
 
 else_branch:
 CONST_STR 2           // "Hello, "
 LOAD_LOCAL 0
 SCONCAT
-CALL <console.log>, 1
+CALL <logger.info>, 1
 
 end:
 RETURN_VOID
@@ -900,7 +900,7 @@ RETURN_VOID
 **Raya:**
 ```ts
 function greet(name: string, greeting: string = "Hello"): void {
-  console.log(`${greeting}, ${name}`);
+  logger.info(`${greeting}, ${name}`);
 }
 ```
 
@@ -922,7 +922,7 @@ CONST_STR 1           // ", "
 SCONCAT
 LOAD_LOCAL 0
 SCONCAT
-CALL <console.log>, 1
+CALL <logger.info>, 1
 RETURN_VOID
 ```
 
@@ -1152,7 +1152,7 @@ class Animal {
   constructor(public name: string) {}
 
   move(): void {
-    console.log(`${this.name} is moving`);
+    logger.info(`${this.name} is moving`);
   }
 }
 
@@ -1162,7 +1162,7 @@ class Dog extends Animal {
   }
 
   bark(): void {
-    console.log("Woof!");
+    logger.info("Woof!");
   }
 }
 ```
@@ -1764,10 +1764,10 @@ type Value =
 function process(v: Value): void {
   switch (v.kind) {
     case "string":
-      console.log(v.value.toUpperCase());
+      logger.info(v.value.toUpperCase());
       break;
     case "number":
-      console.log(v.value.toFixed(2));
+      logger.info(v.value.toFixed(2));
       break;
   }
 }
@@ -1797,7 +1797,7 @@ POP                   // remove duplicate
 LOAD_LOCAL 0
 LOAD_FIELD 1          // v.value (string)
 CALL_METHOD <String.toUpperCase>, 0
-CALL <console.log>, 1
+CALL <logger.info>, 1
 JMP end
 
 number_case:
@@ -1806,7 +1806,7 @@ LOAD_LOCAL 0
 LOAD_FIELD 1          // v.value (number)
 CONST_I32 2
 CALL_METHOD <Number.toFixed>, 1
-CALL <console.log>, 1
+CALL <logger.info>, 1
 
 end:
 RETURN_VOID
@@ -1943,7 +1943,7 @@ id = "abc";
 
 function printId(value: ID): void {
   // Access methods - compiler unwraps automatically
-  console.log(value.toString());
+  logger.info(value.toString());
 }
 ```
 
@@ -1975,7 +1975,7 @@ STORE_LOCAL 0                  // id
 LOAD_LOCAL 0                   // id
 LOAD_FIELD 1                   // id.$value (unwrap)
 CALL_METHOD <toString>, 0      // Call method on unwrapped value
-CALL <console.log>, 1
+CALL <logger.info>, 1
 RETURN_VOID
 ```
 
@@ -2609,7 +2609,7 @@ The compiler should emit specialized opcodes based on static type information:
 try {
   riskyOperation();
 } catch (e) {
-  console.log("Error: " + e);
+  logger.info("Error: " + e);
 }
 ```
 
@@ -2625,7 +2625,7 @@ STORE_LOCAL 0                           // Store exception in local 0
 CONST_STR "Error: "
 LOAD_LOCAL 0
 SCONCAT
-CALL console.log
+CALL logger.info
 // end:
 ```
 

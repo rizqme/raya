@@ -67,6 +67,13 @@ mod builtin_string {
     pub const REPLACE_WITH_REGEXP: u16 = 0x0217;
 }
 
+/// Built-in Number method IDs (must match raya-core/src/builtin.rs)
+mod builtin_number {
+    pub const TO_FIXED: u16 = 0x0F00;
+    pub const TO_PRECISION: u16 = 0x0F01;
+    pub const TO_STRING_RADIX: u16 = 0x0F02;
+}
+
 /// Built-in RegExp method IDs (must match raya-core/src/builtin.rs)
 mod builtin_regexp {
     pub const NEW: u16 = 0x0A00;
@@ -83,6 +90,16 @@ mod builtin_regexp {
 /// 7=Mutex, 8=RegExp, 9=Date, 10=Buffer, etc.
 /// Array types are interned dynamically (TypeId >= 15 typically)
 fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
+    // Number type (TypeId 0)
+    if obj_type_id == 0 {
+        match method_name {
+            "toFixed" => return Some(builtin_number::TO_FIXED),
+            "toPrecision" => return Some(builtin_number::TO_PRECISION),
+            "toString" => return Some(builtin_number::TO_STRING_RADIX),
+            _ => {}
+        }
+    }
+
     // RegExp type (TypeId 8)
     if obj_type_id == 8 {
         match method_name {

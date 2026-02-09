@@ -103,8 +103,8 @@ function main(): void {
   const result = await task;  // Suspend until complete
 
   match(result, {
-    ok: (r) => console.log("Success:", r.value),
-    error: (r) => console.log("Error:", r.error)
+    ok: (r) => logger.info("Success:", r.value),
+    error: (r) => logger.info("Error:", r.error)
   });
 }
 ```

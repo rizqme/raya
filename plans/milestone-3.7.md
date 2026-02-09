@@ -89,7 +89,7 @@ user.email = null;
 // Type-safe encode (compiler generates specialized function)
 const result = JSON.encode(user);
 if (result.status === "ok") {
-  console.log(result.value);
+  logger.info(result.value);
   // {"user_name":"Alice","email":null}
   // age omitted (omitEmpty + zero)
   // internalId omitted ("-")
@@ -98,7 +98,7 @@ if (result.status === "ok") {
 // Type-safe decode
 const decoded = JSON.decode<User>('{"user_name":"Bob","email":"bob@test.com"}');
 if (decoded.status === "ok") {
-  console.log(decoded.value.name);  // "Bob"
+  logger.info(decoded.value.name);  // "Bob"
 }
 ```
 

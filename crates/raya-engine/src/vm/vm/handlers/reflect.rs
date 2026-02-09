@@ -3,12 +3,45 @@
 //! Native implementation of Reflect API for metadata, class introspection,
 //! field access, method invocation, and object creation.
 
+use std::sync::LazyLock;
+
 use parking_lot::{Mutex, RwLock};
 
 use crate::vm::builtin::reflect;
+
+// Lazy static registries for Phase 13 and 14 runtime type creation
+static CLASS_BUILDER_REGISTRY: LazyLock<Mutex<ClassBuilderRegistry>> =
+    LazyLock::new(|| Mutex::new(ClassBuilderRegistry::new()));
+static DYNAMIC_FUNCTION_REGISTRY: LazyLock<Mutex<DynamicFunctionRegistry>> =
+    LazyLock::new(|| Mutex::new(DynamicFunctionRegistry::new()));
+static SPECIALIZATION_CACHE: LazyLock<Mutex<SpecializationCache>> =
+    LazyLock::new(|| Mutex::new(SpecializationCache::new()));
+static GENERIC_TYPE_REGISTRY: LazyLock<Mutex<GenericTypeRegistry>> =
+    LazyLock::new(|| Mutex::new(GenericTypeRegistry::new()));
+static BYTECODE_BUILDER_REGISTRY: LazyLock<Mutex<BytecodeBuilderRegistry>> =
+    LazyLock::new(|| Mutex::new(BytecodeBuilderRegistry::new()));
+static PERMISSION_STORE: LazyLock<Mutex<PermissionStore>> =
+    LazyLock::new(|| Mutex::new(PermissionStore::new()));
+static DYNAMIC_MODULE_REGISTRY: LazyLock<Mutex<DynamicModuleRegistry>> =
+    LazyLock::new(|| Mutex::new(DynamicModuleRegistry::new()));
+static BOOTSTRAP_CONTEXT: LazyLock<Mutex<BootstrapContext>> =
+    LazyLock::new(|| Mutex::new(BootstrapContext::new()));
+static WRAPPER_FUNCTION_REGISTRY: LazyLock<Mutex<WrapperFunctionRegistry>> =
+    LazyLock::new(|| Mutex::new(WrapperFunctionRegistry::new()));
+static DECORATOR_REGISTRY: LazyLock<Mutex<DecoratorRegistry>> =
+    LazyLock::new(|| Mutex::new(DecoratorRegistry::new()));
+
 use crate::vm::gc::GarbageCollector as Gc;
 use crate::vm::object::{Array, Closure, MapObject, Object, Proxy, RayaString};
-use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
+use crate::vm::reflect::{
+    BootstrapContext, BytecodeBuilderRegistry, ClassBuilder, ClassBuilderRegistry,
+    ClassMetadataRegistry, DecoratorApplication, DecoratorRegistry, DecoratorTargetType,
+    DynamicClassBuilder, DynamicClosure, DynamicFunction, DynamicFunctionRegistry,
+    DynamicModuleRegistry, FieldDefinition, FunctionWrapper, GenericTypeRegistry,
+    MetadataStore, PermissionStore, ReflectionPermission, SpecializationCache, StackType,
+    SubclassDefinition, TypeInfo, WrapperFunctionRegistry, core_class_ids, is_bootstrapped,
+    mark_bootstrapped,
+};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -270,10 +303,254 @@ pub fn call_reflect_method(
         }
 
         reflect::GET_CLASSES_WITH_DECORATOR => {
-            // getClassesWithDecorator(decorator) -> returns array of class IDs
-            // NOTE: This requires --emit-reflection to work fully
-            // For now, returns empty array (decorator metadata not yet stored)
-            let arr = Array::new(0, 0);
+            // getClassesWithDecorator(decoratorName) -> returns array of class IDs
+            // Queries the DecoratorRegistry for classes with the specified decorator
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getClassesWithDecorator requires 1 argument (decoratorName)".to_string()
+                ));
+            }
+
+            let decorator_name = get_string(args[0].clone())?;
+
+            // Query the decorator registry
+            let registry = DECORATOR_REGISTRY.lock();
+            let class_ids = registry.get_classes_with_decorator(&decorator_name);
+            drop(registry);
+
+            // Convert to array of class IDs
+            let mut arr = Array::new(0, class_ids.len());
+            for (i, class_id) in class_ids.into_iter().enumerate() {
+                arr.set(i, Value::i32(class_id as i32)).ok();
+            }
+            let arr_gc = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::REGISTER_CLASS_DECORATOR => {
+            // registerClassDecorator(classId, decoratorName, argsArray)
+            // Called by codegen to register decorator applications
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "registerClassDecorator requires at least 2 arguments (classId, decoratorName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let decorator_name = get_string(args[1].clone())?;
+
+            // Parse args array if provided
+            let decorator_args = if args.len() > 2 {
+                parse_value_array(ctx, args[2])?
+            } else {
+                Vec::new()
+            };
+
+            let decorator = DecoratorApplication {
+                name: decorator_name,
+                args: decorator_args,
+                target_type: DecoratorTargetType::Class,
+                property_key: None,
+                parameter_index: None,
+            };
+
+            // Register in decorator registry (primary store for decorator metadata)
+            // Query via getClassDecorators(classId), getClassesWithDecorator(name)
+            let mut registry = DECORATOR_REGISTRY.lock();
+            registry.register_class_decorator(class_id, decorator);
+
+            Value::null()
+        }
+
+        reflect::REGISTER_METHOD_DECORATOR => {
+            // registerMethodDecorator(classId, methodName, decoratorName, argsArray)
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "registerMethodDecorator requires at least 3 arguments (classId, methodName, decoratorName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let method_name = get_string(args[1].clone())?;
+            let decorator_name = get_string(args[2].clone())?;
+
+            let decorator_args = if args.len() > 3 {
+                parse_value_array(ctx, args[3])?
+            } else {
+                Vec::new()
+            };
+
+            let decorator = DecoratorApplication {
+                name: decorator_name,
+                args: decorator_args,
+                target_type: DecoratorTargetType::Method,
+                property_key: Some(method_name.clone()),
+                parameter_index: None,
+            };
+
+            // Register in decorator registry
+            // Query via getMethodDecorators(classId, methodName)
+            let mut registry = DECORATOR_REGISTRY.lock();
+            registry.register_method_decorator(class_id, method_name, decorator);
+
+            Value::null()
+        }
+
+        reflect::REGISTER_FIELD_DECORATOR => {
+            // registerFieldDecorator(classId, fieldName, decoratorName, argsArray)
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "registerFieldDecorator requires at least 3 arguments (classId, fieldName, decoratorName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let field_name = get_string(args[1].clone())?;
+            let decorator_name = get_string(args[2].clone())?;
+
+            let decorator_args = if args.len() > 3 {
+                parse_value_array(ctx, args[3])?
+            } else {
+                Vec::new()
+            };
+
+            let decorator = DecoratorApplication {
+                name: decorator_name,
+                args: decorator_args,
+                target_type: DecoratorTargetType::Field,
+                property_key: Some(field_name.clone()),
+                parameter_index: None,
+            };
+
+            // Register in decorator registry
+            // Query via getFieldDecorators(classId, fieldName)
+            let mut registry = DECORATOR_REGISTRY.lock();
+            registry.register_field_decorator(class_id, field_name, decorator);
+
+            Value::null()
+        }
+
+        reflect::REGISTER_PARAMETER_DECORATOR => {
+            // registerParameterDecorator(classId, methodName, paramIndex, decoratorName, argsArray)
+            if args.len() < 4 {
+                return Err(VmError::RuntimeError(
+                    "registerParameterDecorator requires at least 4 arguments (classId, methodName, paramIndex, decoratorName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let method_name = get_string(args[1].clone())?;
+            let param_index = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("paramIndex must be a number".to_string()))?
+                as usize;
+            let decorator_name = get_string(args[3].clone())?;
+
+            let decorator_args = if args.len() > 4 {
+                parse_value_array(ctx, args[4])?
+            } else {
+                Vec::new()
+            };
+
+            let decorator = DecoratorApplication {
+                name: decorator_name,
+                args: decorator_args,
+                target_type: DecoratorTargetType::Parameter,
+                property_key: Some(method_name.clone()),
+                parameter_index: Some(param_index),
+            };
+
+            let mut registry = DECORATOR_REGISTRY.lock();
+            registry.register_parameter_decorator(class_id, method_name, param_index, decorator);
+
+            Value::null()
+        }
+
+        reflect::GET_CLASS_DECORATORS => {
+            // getClassDecorators(classId) -> array of DecoratorInfo objects
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getClassDecorators requires 1 argument (classId)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let registry = DECORATOR_REGISTRY.lock();
+            let decorators = registry.get_class_decorators(class_id);
+
+            // Create array of decorator info objects
+            let mut arr = Array::new(0, decorators.len());
+            for (i, dec) in decorators.iter().enumerate() {
+                // Create a simple object with name and targetType
+                let obj = create_decorator_info_object(ctx, dec)?;
+                arr.set(i, obj).ok();
+            }
+            drop(registry);
+
+            let arr_gc = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::GET_METHOD_DECORATORS => {
+            // getMethodDecorators(classId, methodName) -> array of DecoratorInfo objects
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "getMethodDecorators requires 2 arguments (classId, methodName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let method_name = get_string(args[1].clone())?;
+
+            let registry = DECORATOR_REGISTRY.lock();
+            let decorators = registry.get_method_decorators(class_id, &method_name);
+
+            let mut arr = Array::new(0, decorators.len());
+            for (i, dec) in decorators.iter().enumerate() {
+                let obj = create_decorator_info_object(ctx, dec)?;
+                arr.set(i, obj).ok();
+            }
+            drop(registry);
+
+            let arr_gc = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::GET_FIELD_DECORATORS => {
+            // getFieldDecorators(classId, fieldName) -> array of DecoratorInfo objects
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "getFieldDecorators requires 2 arguments (classId, fieldName)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let field_name = get_string(args[1].clone())?;
+
+            let registry = DECORATOR_REGISTRY.lock();
+            let decorators = registry.get_field_decorators(class_id, &field_name);
+
+            let mut arr = Array::new(0, decorators.len());
+            for (i, dec) in decorators.iter().enumerate() {
+                let obj = create_decorator_info_object(ctx, dec)?;
+                arr.set(i, obj).ok();
+            }
+            drop(registry);
+
             let arr_gc = ctx.gc.lock().allocate(arr);
             unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
         }
@@ -1891,6 +2168,1903 @@ pub fn call_reflect_method(
             }
         }
 
+        // ===== Phase 10: Dynamic Subclass Creation =====
+
+        reflect::CREATE_SUBCLASS => {
+            // createSubclass(superclassId, name, fieldsArray) -> create a new subclass
+            // Args: superclassId (i32), name (string), fieldsArray (Array of field definition objects)
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "createSubclass requires 3 arguments (superclassId, name, fieldsArray)".to_string()
+                ));
+            }
+
+            let superclass_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("createSubclass: superclassId must be a number".to_string()))?
+                as usize;
+            let name = get_string(args[1].clone())?;
+
+            // Get superclass info
+            let classes = ctx.classes.read();
+            let superclass = classes.get_class(superclass_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Superclass {} not found", superclass_id)))?
+                .clone();
+            drop(classes);
+
+            // Get parent metadata
+            let class_metadata_guard = ctx.class_metadata.read();
+            let parent_metadata = class_metadata_guard.get(superclass_id).cloned();
+            drop(class_metadata_guard);
+
+            // Parse fields array to build SubclassDefinition
+            let def = parse_fields_array(ctx, args[2])?;
+
+            // Create the subclass
+            let mut classes_write = ctx.classes.write();
+            let next_id = classes_write.next_class_id();
+            let mut builder = DynamicClassBuilder::new(next_id);
+
+            let (new_class, new_metadata) = builder.create_subclass(
+                name,
+                &superclass,
+                parent_metadata.as_ref(),
+                &def,
+            );
+
+            let new_class_id = new_class.id;
+            classes_write.register_class(new_class);
+            drop(classes_write);
+
+            // Register metadata
+            let mut class_metadata_write = ctx.class_metadata.write();
+            class_metadata_write.register(new_class_id, new_metadata);
+            drop(class_metadata_write);
+
+            Value::i32(new_class_id as i32)
+        }
+
+        reflect::EXTEND_WITH => {
+            // extendWith(classId, fieldsArray) -> create extended class with additional fields
+            // Args: classId (i32), fieldsArray (Array of field definition objects)
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "extendWith requires 2 arguments (classId, fieldsArray)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("extendWith: classId must be a number".to_string()))?
+                as usize;
+
+            // Get original class info
+            let classes = ctx.classes.read();
+            let original_class = classes.get_class(class_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?
+                .clone();
+            drop(classes);
+
+            // Get original metadata
+            let class_metadata_guard = ctx.class_metadata.read();
+            let original_metadata = class_metadata_guard.get(class_id).cloned();
+            drop(class_metadata_guard);
+
+            // Parse fields array
+            let def = parse_fields_array(ctx, args[1])?;
+
+            // Create extended class
+            let mut classes_write = ctx.classes.write();
+            let next_id = classes_write.next_class_id();
+            let mut builder = DynamicClassBuilder::new(next_id);
+
+            let (new_class, new_metadata) = builder.extend_with_fields(
+                &original_class,
+                original_metadata.as_ref(),
+                &def.fields,
+            );
+
+            let new_class_id = new_class.id;
+            classes_write.register_class(new_class);
+            drop(classes_write);
+
+            // Register metadata
+            let mut class_metadata_write = ctx.class_metadata.write();
+            class_metadata_write.register(new_class_id, new_metadata);
+            drop(class_metadata_write);
+
+            Value::i32(new_class_id as i32)
+        }
+
+        reflect::DEFINE_CLASS => {
+            // defineClass(name, fieldsArray) -> create a new root class
+            // Args: name (string), fieldsArray (Array of field definition objects)
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "defineClass requires 2 arguments (name, fieldsArray)".to_string()
+                ));
+            }
+
+            let name = get_string(args[0].clone())?;
+
+            // Parse fields array to build SubclassDefinition
+            let def = parse_fields_array(ctx, args[1])?;
+
+            // Create the class
+            let mut classes_write = ctx.classes.write();
+            let next_id = classes_write.next_class_id();
+            let mut builder = DynamicClassBuilder::new(next_id);
+
+            let (new_class, new_metadata) = builder.create_root_class(name, &def);
+
+            let new_class_id = new_class.id;
+            classes_write.register_class(new_class);
+            drop(classes_write);
+
+            // Register metadata
+            let mut class_metadata_write = ctx.class_metadata.write();
+            class_metadata_write.register(new_class_id, new_metadata);
+            drop(class_metadata_write);
+
+            Value::i32(new_class_id as i32)
+        }
+
+        reflect::ADD_METHOD => {
+            // addMethod(classId, name, functionId) -> add method to class vtable
+            // Args: classId (i32), name (string), functionId (i32)
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "addMethod requires 3 arguments (classId, name, functionId)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("addMethod: classId must be a number".to_string()))?
+                as usize;
+            let method_name = get_string(args[1].clone())?;
+            let function_id = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("addMethod: functionId must be a number".to_string()))?
+                as usize;
+
+            // Add method to class vtable
+            let mut classes = ctx.classes.write();
+            let class = classes.get_class_mut(class_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+            class.add_method(function_id);
+            let method_index = class.vtable.method_count() - 1;
+            drop(classes);
+
+            // Update metadata
+            let mut class_metadata = ctx.class_metadata.write();
+            let meta = class_metadata.get_or_create(class_id);
+            meta.add_method(method_name, method_index);
+            drop(class_metadata);
+
+            Value::i32(method_index as i32)
+        }
+
+        reflect::SET_CONSTRUCTOR => {
+            // setConstructor(classId, functionId) -> set constructor for class
+            // Args: classId (i32), functionId (i32)
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "setConstructor requires 2 arguments (classId, functionId)".to_string()
+                ));
+            }
+
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("setConstructor: classId must be a number".to_string()))?
+                as usize;
+            let function_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("setConstructor: functionId must be a number".to_string()))?
+                as usize;
+
+            // Set constructor
+            let mut classes = ctx.classes.write();
+            let class = classes.get_class_mut(class_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+            class.set_constructor(function_id);
+            drop(classes);
+
+            Value::null()
+        }
+
+        // ===== Phase 13: Generic Type Metadata =====
+
+        reflect::GET_GENERIC_ORIGIN => {
+            // getGenericOrigin(classId) -> string | null
+            // Returns the original generic name (e.g., "Box" for Box_number)
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getGenericOrigin requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            match registry.get_generic_origin(class_id) {
+                Some(name) => {
+                    let s = RayaString::new(name.to_string());
+                    let gc_ptr = ctx.gc.lock().allocate(s);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                }
+                None => Value::null()
+            }
+        }
+
+        reflect::GET_TYPE_PARAMETERS => {
+            // getTypeParameters(classId) -> GenericParameterInfo[]
+            // Returns type parameter info for a generic class
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getTypeParameters requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            // First check if this is a specialized class, get its generic name
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            let generic_name = registry.get_generic_origin(class_id)
+                .map(|s| s.to_string());
+
+            let params = if let Some(name) = generic_name {
+                registry.get_type_parameters(&name)
+            } else {
+                None
+            };
+
+            match params {
+                Some(params) => {
+                    // Create an array of parameter info objects
+                    // Each element is a Map with name, index, constraint
+                    let mut arr = Array::new(0, params.len());
+                    for (i, param) in params.iter().enumerate() {
+                        let mut map = MapObject::new();
+
+                        // Set name
+                        let name_key = RayaString::new("name".to_string());
+                        let name_key_gc = ctx.gc.lock().allocate(name_key);
+                        let name_val = RayaString::new(param.name.clone());
+                        let name_val_gc = ctx.gc.lock().allocate(name_val);
+                        let name_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_gc.as_ptr()).unwrap()) };
+                        let name_val_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_val_gc.as_ptr()).unwrap()) };
+                        map.set(name_key_v, name_val_v);
+
+                        // Set index
+                        let index_key = RayaString::new("index".to_string());
+                        let index_key_gc = ctx.gc.lock().allocate(index_key);
+                        let index_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(index_key_gc.as_ptr()).unwrap()) };
+                        map.set(index_key_v, Value::i32(param.index as i32));
+
+                        // Set constraint (null if none)
+                        let constraint_key = RayaString::new("constraint".to_string());
+                        let constraint_key_gc = ctx.gc.lock().allocate(constraint_key);
+                        let constraint_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(constraint_key_gc.as_ptr()).unwrap()) };
+                        let constraint_val = if let Some(ref c) = param.constraint {
+                            let c_name = RayaString::new(c.name.clone());
+                            let c_gc = ctx.gc.lock().allocate(c_name);
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(c_gc.as_ptr()).unwrap()) }
+                        } else {
+                            Value::null()
+                        };
+                        map.set(constraint_key_v, constraint_val);
+
+                        let map_gc = ctx.gc.lock().allocate(map);
+                        let map_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) };
+                        arr.set(i, map_val).ok();
+                    }
+                    let arr_gc = ctx.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+                None => {
+                    // Return empty array
+                    let arr = Array::new(0, 0);
+                    let arr_gc = ctx.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+            }
+        }
+
+        reflect::GET_TYPE_ARGUMENTS => {
+            // getTypeArguments(classId) -> TypeInfo[]
+            // Returns actual type arguments for a monomorphized class
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getTypeArguments requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            match registry.get_type_arguments(class_id) {
+                Some(type_args) => {
+                    // Create array of TypeInfo representations (as Maps)
+                    let mut arr = Array::new(0, type_args.len());
+                    for (i, type_info) in type_args.iter().enumerate() {
+                        let mut map = MapObject::new();
+
+                        // Set name
+                        let name_key = RayaString::new("name".to_string());
+                        let name_key_gc = ctx.gc.lock().allocate(name_key);
+                        let name_val = RayaString::new(type_info.name.clone());
+                        let name_val_gc = ctx.gc.lock().allocate(name_val);
+                        let name_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_gc.as_ptr()).unwrap()) };
+                        let name_val_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_val_gc.as_ptr()).unwrap()) };
+                        map.set(name_key_v, name_val_v);
+
+                        // Set kind
+                        let kind_key = RayaString::new("kind".to_string());
+                        let kind_key_gc = ctx.gc.lock().allocate(kind_key);
+                        let kind_val = RayaString::new(format!("{:?}", type_info.kind));
+                        let kind_val_gc = ctx.gc.lock().allocate(kind_val);
+                        let kind_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_key_gc.as_ptr()).unwrap()) };
+                        let kind_val_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_val_gc.as_ptr()).unwrap()) };
+                        map.set(kind_key_v, kind_val_v);
+
+                        // Set classId if present
+                        if let Some(cid) = type_info.class_id {
+                            let cid_key = RayaString::new("classId".to_string());
+                            let cid_key_gc = ctx.gc.lock().allocate(cid_key);
+                            let cid_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(cid_key_gc.as_ptr()).unwrap()) };
+                            map.set(cid_key_v, Value::i32(cid as i32));
+                        }
+
+                        let map_gc = ctx.gc.lock().allocate(map);
+                        let map_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) };
+                        arr.set(i, map_val).ok();
+                    }
+                    let arr_gc = ctx.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+                None => {
+                    // Return empty array
+                    let arr = Array::new(0, 0);
+                    let arr_gc = ctx.gc.lock().allocate(arr);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+                }
+            }
+        }
+
+        reflect::IS_GENERIC_INSTANCE => {
+            // isGenericInstance(classId) -> boolean
+            // Returns true if the class is a monomorphized generic
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "isGenericInstance requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            Value::bool(registry.is_generic_instance(class_id))
+        }
+
+        reflect::GET_GENERIC_BASE => {
+            // getGenericBase(genericName) -> number | null
+            // Returns the base generic class ID for a generic definition
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getGenericBase requires 1 argument (genericName)".to_string()
+                ));
+            }
+            let generic_name = get_string(args[0].clone())?;
+
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            match registry.get_generic_base(&generic_name) {
+                Some(class_id) => Value::i32(class_id as i32),
+                None => Value::null()
+            }
+        }
+
+        reflect::FIND_SPECIALIZATIONS => {
+            // findSpecializations(genericName) -> number[]
+            // Returns array of class IDs for all monomorphizations of a generic
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "findSpecializations requires 1 argument (genericName)".to_string()
+                ));
+            }
+            let generic_name = get_string(args[0].clone())?;
+
+            let registry = GENERIC_TYPE_REGISTRY.lock();
+            let specializations = registry.find_specializations(&generic_name);
+
+            let mut arr = Array::new(0, specializations.len());
+            for (i, class_id) in specializations.iter().enumerate() {
+                arr.set(i, Value::i32(*class_id as i32)).ok();
+            }
+            let arr_gc = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+        }
+
+        // ===== Phase 14: Runtime Type Creation =====
+
+        reflect::NEW_CLASS_BUILDER => {
+            // newClassBuilder(name) -> create a new ClassBuilder, returns builder ID
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "newClassBuilder requires 1 argument (name)".to_string()
+                ));
+            }
+            let name = get_string(args[0].clone())?;
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder_id = registry.create_builder(name);
+
+            Value::i32(builder_id as i32)
+        }
+
+        reflect::BUILDER_ADD_FIELD => {
+            // builderAddField(builderId, name, typeName, isStatic, isReadonly) -> add field
+            if args.len() < 5 {
+                return Err(VmError::RuntimeError(
+                    "builderAddField requires 5 arguments (builderId, name, typeName, isStatic, isReadonly)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let name = get_string(args[1].clone())?;
+            let type_name = get_string(args[2].clone())?;
+            let is_static = args[3].as_bool().unwrap_or(false);
+            let is_readonly = args[4].as_bool().unwrap_or(false);
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+
+            builder.add_field(name, &type_name, is_static, is_readonly)?;
+
+            Value::null()
+        }
+
+        reflect::BUILDER_ADD_METHOD => {
+            // builderAddMethod(builderId, name, functionId, isStatic, isAsync) -> add method
+            if args.len() < 5 {
+                return Err(VmError::RuntimeError(
+                    "builderAddMethod requires 5 arguments (builderId, name, functionId, isStatic, isAsync)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let name = get_string(args[1].clone())?;
+            let function_id = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as usize;
+            let is_static = args[3].as_bool().unwrap_or(false);
+            let is_async = args[4].as_bool().unwrap_or(false);
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+
+            builder.add_method(name, function_id, is_static, is_async)?;
+
+            Value::null()
+        }
+
+        reflect::BUILDER_SET_CONSTRUCTOR => {
+            // builderSetConstructor(builderId, functionId) -> set constructor
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderSetConstructor requires 2 arguments (builderId, functionId)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let function_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+
+            builder.set_constructor(function_id)?;
+
+            Value::null()
+        }
+
+        reflect::BUILDER_SET_PARENT => {
+            // builderSetParent(builderId, parentClassId) -> set parent class
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderSetParent requires 2 arguments (builderId, parentClassId)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let parent_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("parentClassId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+
+            builder.set_parent(parent_id)?;
+
+            Value::null()
+        }
+
+        reflect::BUILDER_ADD_INTERFACE => {
+            // builderAddInterface(builderId, interfaceName) -> add interface
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderAddInterface requires 2 arguments (builderId, interfaceName)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let interface_name = get_string(args[1].clone())?;
+
+            let mut registry = CLASS_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+
+            builder.add_interface(interface_name)?;
+
+            Value::null()
+        }
+
+        reflect::BUILDER_BUILD => {
+            // builderBuild(builderId) -> finalize and register class, returns class ID
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "builderBuild requires 1 argument (builderId)".to_string()
+                ));
+            }
+
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+
+            // Get and remove the builder
+            let builder = {
+                let mut registry = CLASS_BUILDER_REGISTRY.lock();
+                registry.remove(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?
+            };
+
+            // Convert to definition
+            let def = builder.to_definition();
+
+            // Build the class
+            let mut classes_write = ctx.classes.write();
+            let next_id = classes_write.next_class_id();
+            let mut dyn_builder = DynamicClassBuilder::new(next_id);
+
+            let (new_class, new_metadata) = if let Some(parent_id) = builder.parent_id {
+                // Get parent info
+                let parent = classes_write.get_class(parent_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Parent class {} not found", parent_id)))?
+                    .clone();
+                drop(classes_write);
+
+                let class_metadata_guard = ctx.class_metadata.read();
+                let parent_metadata = class_metadata_guard.get(parent_id).cloned();
+                drop(class_metadata_guard);
+
+                let result = dyn_builder.create_subclass(
+                    builder.name,
+                    &parent,
+                    parent_metadata.as_ref(),
+                    &def,
+                );
+
+                // Re-acquire write lock
+                classes_write = ctx.classes.write();
+                result
+            } else {
+                dyn_builder.create_root_class(builder.name, &def)
+            };
+
+            let new_class_id = new_class.id;
+            classes_write.register_class(new_class);
+            drop(classes_write);
+
+            // Register metadata
+            let mut class_metadata_write = ctx.class_metadata.write();
+            class_metadata_write.register(new_class_id, new_metadata);
+            drop(class_metadata_write);
+
+            Value::i32(new_class_id as i32)
+        }
+
+        reflect::CREATE_FUNCTION => {
+            // createFunction(name, paramCount, bytecodeArray) -> create function, returns function ID
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "createFunction requires 3 arguments (name, paramCount, bytecodeArray)".to_string()
+                ));
+            }
+
+            let name = get_string(args[0].clone())?;
+            let param_count = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
+                as usize;
+
+            // Parse bytecode array
+            let bytecode = parse_bytecode_array(args[2])?;
+
+            let func = DynamicFunction::new(name, param_count, bytecode);
+            let func_id = func.id;
+
+            let mut registry = DYNAMIC_FUNCTION_REGISTRY.lock();
+            registry.register(func);
+
+            Value::i32(func_id as i32)
+        }
+
+        reflect::CREATE_ASYNC_FUNCTION => {
+            // createAsyncFunction(name, paramCount, bytecodeArray) -> create async function
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "createAsyncFunction requires 3 arguments (name, paramCount, bytecodeArray)".to_string()
+                ));
+            }
+
+            let name = get_string(args[0].clone())?;
+            let param_count = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
+                as usize;
+
+            let bytecode = parse_bytecode_array(args[2])?;
+
+            let func = DynamicFunction::new_async(name, param_count, bytecode);
+            let func_id = func.id;
+
+            let mut registry = DYNAMIC_FUNCTION_REGISTRY.lock();
+            registry.register(func);
+
+            Value::i32(func_id as i32)
+        }
+
+        reflect::CREATE_CLOSURE => {
+            // createClosure(functionId, capturesArray) -> create closure with captures
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "createClosure requires 2 arguments (functionId, capturesArray)".to_string()
+                ));
+            }
+
+            let function_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as usize;
+
+            // Parse captures array
+            let captures = parse_captures_array(args[1])?;
+
+            // Create Closure object
+            let closure = Closure::new(function_id, captures);
+            let gc_ptr = ctx.gc.lock().allocate(closure);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+        }
+
+        reflect::CREATE_NATIVE_CALLBACK => {
+            // createNativeCallback(callbackId) -> register a native callback (stub)
+            // In a real implementation, this would register a callback function pointer
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "createNativeCallback requires 1 argument (callbackId)".to_string()
+                ));
+            }
+
+            let callback_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("callbackId must be a number".to_string()))?;
+
+            // For now, just return the callback ID (would need FFI integration for real usage)
+            Value::i32(callback_id)
+        }
+
+        reflect::SPECIALIZE => {
+            // specialize(genericName, typeArgsArray) -> create/lookup specialization
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "specialize requires 2 arguments (genericName, typeArgsArray)".to_string()
+                ));
+            }
+
+            let generic_name = get_string(args[0].clone())?;
+            let type_args = parse_string_array(ctx, args[1])?;
+
+            // Check cache first
+            let mut cache = SPECIALIZATION_CACHE.lock();
+            if let Some(class_id) = cache.get(&generic_name, &type_args) {
+                return stack.push(Value::i32(class_id as i32)).map(|_| ());
+            }
+
+            // For now, specialization creation is a stub - would need compiler integration
+            // to actually generate specialized bytecode from generic template
+            return Err(VmError::RuntimeError(format!(
+                "Runtime specialization of '{}' not yet implemented - requires compiler integration",
+                generic_name
+            )));
+        }
+
+        reflect::GET_SPECIALIZATION_CACHE => {
+            // getSpecializationCache() -> get all cached specializations as array
+            let cache = SPECIALIZATION_CACHE.lock();
+            let entries: Vec<_> = cache.entries().collect();
+
+            // Create array of [key, classId] pairs
+            let mut arr = Array::new(0, entries.len());
+            for (i, (key, &class_id)) in entries.iter().enumerate() {
+                // Create a simple representation - just return class IDs for now
+                arr.set(i, Value::i32(class_id as i32)).ok();
+            }
+
+            let arr_gc = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
+        }
+
+        // ===== High-level Function Builder (for Decorators) =====
+
+        reflect::CREATE_WRAPPER => {
+            // createWrapper(method, hooks) -> wrapped function
+            // High-level API for method decorators
+            // hooks: { before?, after?, around?, onError? }
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "createWrapper requires 2 arguments (method, hooks)".to_string()
+                ));
+            }
+
+            let method = args[0];
+            let hooks_obj = args[1];
+
+            // Get method function ID (if it's a closure or function reference)
+            let method_func_id = if method.is_ptr() {
+                // Try to extract function ID from closure
+                if let Some(closure_ptr) = unsafe { method.as_ptr::<Closure>() } {
+                    let closure = unsafe { &*closure_ptr.as_ptr() };
+                    closure.func_id
+                } else {
+                    // Use a placeholder ID for non-closure functions
+                    0
+                }
+            } else if let Some(func_id) = method.as_i32() {
+                func_id as usize
+            } else {
+                // Unknown method type - return as-is
+                return stack.push(method).map(|_| ());
+            };
+
+            // Build a simple wrapper that stores the original method and hooks
+            let wrapper = FunctionWrapper::new(method_func_id, 0)
+                .build()
+                .map_err(|e| VmError::RuntimeError(format!("Failed to build wrapper: {:?}", e)))?;
+            let wrapper_id = wrapper.id;
+
+            // Register the wrapper
+            let mut registry = WRAPPER_FUNCTION_REGISTRY.lock();
+            registry.register(wrapper);
+            drop(registry);
+
+            // Create a closure that captures: [original_method, wrapper_id_value, hooks_obj]
+            // The interpreter can use these captures to execute the wrapper logic
+            let captures = vec![method, Value::i32(wrapper_id as i32), hooks_obj];
+            let closure = Closure::new(wrapper_id, captures);
+
+            // Allocate and return the closure
+            let closure_gc = ctx.gc.lock().allocate(closure);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(closure_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::CREATE_METHOD_WRAPPER => {
+            // createMethodWrapper(method, wrapper) -> wrapped function
+            // Simple wrapper where wrapper function controls execution
+            // The wrapper function receives (method, ...args)
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "createMethodWrapper requires 2 arguments (method, wrapperFn)".to_string()
+                ));
+            }
+
+            let method = args[0];
+            let wrapper_fn = args[1];
+
+            // Get method function ID
+            let method_func_id = if method.is_ptr() {
+                if let Some(closure_ptr) = unsafe { method.as_ptr::<Closure>() } {
+                    let closure = unsafe { &*closure_ptr.as_ptr() };
+                    closure.func_id
+                } else {
+                    0
+                }
+            } else if let Some(func_id) = method.as_i32() {
+                func_id as usize
+            } else {
+                return stack.push(method).map(|_| ());
+            };
+
+            // Create a wrapper
+            let wrapper = FunctionWrapper::new(method_func_id, 0)
+                .with_hook_closure(crate::vm::reflect::HookType::Around, wrapper_fn)
+                .build()
+                .map_err(|e| VmError::RuntimeError(format!("Failed to build wrapper: {:?}", e)))?;
+            let wrapper_id = wrapper.id;
+
+            // Register the wrapper
+            let mut registry = WRAPPER_FUNCTION_REGISTRY.lock();
+            registry.register(wrapper);
+            drop(registry);
+
+            // Create a closure that captures: [original_method, wrapper_id, wrapper_fn]
+            let captures = vec![method, Value::i32(wrapper_id as i32), wrapper_fn];
+            let closure = Closure::new(wrapper_id, captures);
+
+            // Allocate and return the closure
+            let closure_gc = ctx.gc.lock().allocate(closure);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(closure_gc.as_ptr()).unwrap()) }
+        }
+
+        // ===== Phase 15: Dynamic Bytecode Generation =====
+
+        reflect::NEW_BYTECODE_BUILDER => {
+            // newBytecodeBuilder(name, paramCount, returnType) -> builderId
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "newBytecodeBuilder requires 3 arguments (name, paramCount, returnType)".to_string()
+                ));
+            }
+            let name = get_string(args[0].clone())?;
+            let param_count = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
+                as usize;
+            let return_type = get_string(args[2].clone())?;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder_id = registry.create_builder(name, param_count, return_type);
+
+            Value::i32(builder_id as i32)
+        }
+
+        reflect::BUILDER_EMIT => {
+            // builderEmit(builderId, opcode, ...operands) -> emit raw instruction
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderEmit requires at least 2 arguments (builderId, opcode)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let opcode = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("opcode must be a number".to_string()))?
+                as u8;
+
+            // Collect operands
+            let operands: Vec<u8> = args[2..].iter()
+                .filter_map(|v| v.as_i32().map(|n| n as u8))
+                .collect();
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.emit(opcode, &operands)?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_PUSH => {
+            // builderEmitPush(builderId, value) -> emit push constant
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitPush requires 2 arguments (builderId, value)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let value = args[1];
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            // Emit appropriate push based on value type
+            if value.is_null() {
+                builder.emit_push_null()?;
+            } else if let Some(b) = value.as_bool() {
+                builder.emit_push_bool(b)?;
+            } else if let Some(i) = value.as_i32() {
+                builder.emit_push_i32(i)?;
+            } else if let Some(f) = value.as_f64() {
+                builder.emit_push_f64(f)?;
+            } else if value.is_ptr() {
+                // Try as string
+                if let Ok(s) = get_string(value) {
+                    builder.emit_push_string(s)?;
+                } else {
+                    return Err(VmError::TypeError("Unsupported value type for push".to_string()));
+                }
+            }
+
+            Value::null()
+        }
+
+        reflect::BUILDER_DEFINE_LABEL => {
+            // builderDefineLabel(builderId) -> labelId
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "builderDefineLabel requires 1 argument (builderId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            let label = builder.define_label();
+            Value::i32(label.id as i32)
+        }
+
+        reflect::BUILDER_MARK_LABEL => {
+            // builderMarkLabel(builderId, labelId) -> mark label position
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderMarkLabel requires 2 arguments (builderId, labelId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let label_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.mark_label(crate::vm::reflect::Label { id: label_id })?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_JUMP => {
+            // builderEmitJump(builderId, labelId) -> emit unconditional jump
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitJump requires 2 arguments (builderId, labelId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let label_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.emit_jump(crate::vm::reflect::Label { id: label_id })?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_JUMP_IF => {
+            // builderEmitJumpIf(builderId, labelId, ifTrue) -> emit conditional jump
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitJumpIf requires 3 arguments (builderId, labelId, ifTrue)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let label_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                as usize;
+            let if_true = args[2].as_bool().unwrap_or(false);
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            if if_true {
+                builder.emit_jump_if_true(crate::vm::reflect::Label { id: label_id })?;
+            } else {
+                builder.emit_jump_if_false(crate::vm::reflect::Label { id: label_id })?;
+            }
+            Value::null()
+        }
+
+        reflect::BUILDER_DECLARE_LOCAL => {
+            // builderDeclareLocal(builderId, typeName) -> localIndex
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderDeclareLocal requires 2 arguments (builderId, typeName)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let type_name = get_string(args[1].clone())?;
+
+            // Map type name to StackType
+            let stack_type = match type_name.as_str() {
+                "number" | "i32" | "i64" | "int" => StackType::Integer,
+                "f64" | "float" => StackType::Float,
+                "boolean" | "bool" => StackType::Boolean,
+                "string" => StackType::String,
+                "null" => StackType::Null,
+                _ => StackType::Object,
+            };
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            let index = builder.declare_local(None, stack_type)?;
+            Value::i32(index as i32)
+        }
+
+        reflect::BUILDER_EMIT_LOAD_LOCAL => {
+            // builderEmitLoadLocal(builderId, index) -> emit load local
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitLoadLocal requires 2 arguments (builderId, index)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let index = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.emit_load_local(index)?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_STORE_LOCAL => {
+            // builderEmitStoreLocal(builderId, index) -> emit store local
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitStoreLocal requires 2 arguments (builderId, index)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let index = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.emit_store_local(index)?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_CALL => {
+            // builderEmitCall(builderId, functionId, argCount) -> emit function call
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "builderEmitCall requires 3 arguments (builderId, functionId, argCount)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let function_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as u32;
+            let arg_count = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("argCount must be a number".to_string()))?
+                as u16;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            builder.emit_call(function_id, arg_count)?;
+            Value::null()
+        }
+
+        reflect::BUILDER_EMIT_RETURN => {
+            // builderEmitReturn(builderId, hasValue) -> emit return
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "builderEmitReturn requires at least 1 argument (builderId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+            let has_value = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            if has_value {
+                builder.emit_return()?;
+            } else {
+                builder.emit_return_void()?;
+            }
+            Value::null()
+        }
+
+        reflect::BUILDER_VALIDATE => {
+            // builderValidate(builderId) -> validation result object
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "builderValidate requires 1 argument (builderId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            let result = builder.validate();
+
+            // Create result object with isValid and errors
+            let mut map = MapObject::new();
+
+            let valid_key = RayaString::new("isValid".to_string());
+            let valid_key_gc = ctx.gc.lock().allocate(valid_key);
+            let valid_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(valid_key_gc.as_ptr()).unwrap()) };
+            map.set(valid_key_v, Value::bool(result.is_valid));
+
+            let errors_key = RayaString::new("errors".to_string());
+            let errors_key_gc = ctx.gc.lock().allocate(errors_key);
+            let errors_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(errors_key_gc.as_ptr()).unwrap()) };
+
+            let mut errors_arr = Array::new(0, result.errors.len());
+            for (i, err) in result.errors.iter().enumerate() {
+                let s = RayaString::new(err.clone());
+                let s_gc = ctx.gc.lock().allocate(s);
+                let s_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(s_gc.as_ptr()).unwrap()) };
+                errors_arr.set(i, s_v).ok();
+            }
+            let errors_gc = ctx.gc.lock().allocate(errors_arr);
+            let errors_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(errors_gc.as_ptr()).unwrap()) };
+            map.set(errors_key_v, errors_v);
+
+            let map_gc = ctx.gc.lock().allocate(map);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::BUILDER_BUILD_FUNCTION => {
+            // builderBuildFunction(builderId) -> functionId
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "builderBuildFunction requires 1 argument (builderId)".to_string()
+                ));
+            }
+            let builder_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let builder = registry.get_mut(builder_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+
+            let func = builder.build()?;
+            let func_id = func.function_id;
+            registry.register_function(func);
+
+            Value::i32(func_id as i32)
+        }
+
+        reflect::EXTEND_MODULE => {
+            // extendModule(moduleName, additions) -> extend module with dynamic code
+            // For now, this is a stub that returns null
+            // Full implementation requires module registry integration
+            Value::null()
+        }
+
+        // ===== Phase 16: Reflection Security & Permissions =====
+
+        reflect::SET_PERMISSIONS => {
+            // setPermissions(target, permissions) -> set object-level permissions
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "setPermissions requires 2 arguments (target, permissions)".to_string()
+                ));
+            }
+            let target = args[0];
+            let perms_val = args[1];
+
+            // Get object ID from target pointer
+            let object_id = get_object_identity(target)
+                .ok_or_else(|| VmError::TypeError("setPermissions: target must be an object".to_string()))?;
+
+            // Parse permissions (can be number or string)
+            let perms = if let Some(bits) = perms_val.as_i32() {
+                ReflectionPermission::from_bits(bits as u8)
+            } else if perms_val.is_ptr() {
+                let s = get_string(perms_val)?;
+                ReflectionPermission::from_combined_str(&s)
+                    .ok_or_else(|| VmError::TypeError(format!("Invalid permission: {}", s)))?
+            } else {
+                return Err(VmError::TypeError("permissions must be a number or string".to_string()));
+            };
+
+            let mut store = PERMISSION_STORE.lock();
+            store.set_object(object_id, perms)?;
+            Value::null()
+        }
+
+        reflect::GET_PERMISSIONS => {
+            // getPermissions(target) -> get resolved permissions for target
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getPermissions requires 1 argument (target)".to_string()
+                ));
+            }
+            let target = args[0];
+
+            // Get object ID and class ID
+            let object_id = get_object_identity(target);
+            let class_id = crate::vm::reflect::get_class_id(target);
+
+            let store = PERMISSION_STORE.lock();
+            let perms = store.resolve(object_id, class_id, None);
+            Value::i32(perms.bits() as i32)
+        }
+
+        reflect::HAS_PERMISSION => {
+            // hasPermission(target, permission) -> check specific permission flag
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "hasPermission requires 2 arguments (target, permission)".to_string()
+                ));
+            }
+            let target = args[0];
+            let perm_val = args[1];
+
+            // Get object ID and class ID
+            let object_id = get_object_identity(target);
+            let class_id = crate::vm::reflect::get_class_id(target);
+
+            // Parse permission
+            let required = if let Some(bits) = perm_val.as_i32() {
+                ReflectionPermission::from_bits(bits as u8)
+            } else if perm_val.is_ptr() {
+                let s = get_string(perm_val)?;
+                ReflectionPermission::from_combined_str(&s)
+                    .ok_or_else(|| VmError::TypeError(format!("Invalid permission: {}", s)))?
+            } else {
+                return Err(VmError::TypeError("permission must be a number or string".to_string()));
+            };
+
+            let store = PERMISSION_STORE.lock();
+            let has = store.check_permission(object_id, class_id, None, required);
+            Value::bool(has)
+        }
+
+        reflect::CLEAR_PERMISSIONS => {
+            // clearPermissions(target) -> clear object-level permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "clearPermissions requires 1 argument (target)".to_string()
+                ));
+            }
+            let target = args[0];
+
+            let object_id = get_object_identity(target)
+                .ok_or_else(|| VmError::TypeError("clearPermissions: target must be an object".to_string()))?;
+
+            let mut store = PERMISSION_STORE.lock();
+            store.clear_object(object_id)?;
+            Value::null()
+        }
+
+        reflect::SET_CLASS_PERMISSIONS => {
+            // setClassPermissions(classId, permissions) -> set class-level permissions
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "setClassPermissions requires 2 arguments (classId, permissions)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let perms_val = args[1];
+
+            let perms = if let Some(bits) = perms_val.as_i32() {
+                ReflectionPermission::from_bits(bits as u8)
+            } else if perms_val.is_ptr() {
+                let s = get_string(perms_val)?;
+                ReflectionPermission::from_combined_str(&s)
+                    .ok_or_else(|| VmError::TypeError(format!("Invalid permission: {}", s)))?
+            } else {
+                return Err(VmError::TypeError("permissions must be a number or string".to_string()));
+            };
+
+            let mut store = PERMISSION_STORE.lock();
+            store.set_class(class_id, perms)?;
+            Value::null()
+        }
+
+        reflect::GET_CLASS_PERMISSIONS => {
+            // getClassPermissions(classId) -> get class-level permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getClassPermissions requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let store = PERMISSION_STORE.lock();
+            match store.get_class(class_id) {
+                Some(perms) => Value::i32(perms.bits() as i32),
+                None => Value::null()
+            }
+        }
+
+        reflect::CLEAR_CLASS_PERMISSIONS => {
+            // clearClassPermissions(classId) -> clear class-level permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "clearClassPermissions requires 1 argument (classId)".to_string()
+                ));
+            }
+            let class_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+
+            let mut store = PERMISSION_STORE.lock();
+            store.clear_class(class_id)?;
+            Value::null()
+        }
+
+        reflect::SET_MODULE_PERMISSIONS => {
+            // setModulePermissions(moduleName, permissions) -> set module-level permissions
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "setModulePermissions requires 2 arguments (moduleName, permissions)".to_string()
+                ));
+            }
+            let module_name = get_string(args[0].clone())?;
+            let perms_val = args[1];
+
+            let perms = if let Some(bits) = perms_val.as_i32() {
+                ReflectionPermission::from_bits(bits as u8)
+            } else if perms_val.is_ptr() {
+                let s = get_string(perms_val)?;
+                ReflectionPermission::from_combined_str(&s)
+                    .ok_or_else(|| VmError::TypeError(format!("Invalid permission: {}", s)))?
+            } else {
+                return Err(VmError::TypeError("permissions must be a number or string".to_string()));
+            };
+
+            let mut store = PERMISSION_STORE.lock();
+            store.set_module(&module_name, perms);
+            Value::null()
+        }
+
+        reflect::GET_MODULE_PERMISSIONS => {
+            // getModulePermissions(moduleName) -> get module-level permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getModulePermissions requires 1 argument (moduleName)".to_string()
+                ));
+            }
+            let module_name = get_string(args[0].clone())?;
+
+            let store = PERMISSION_STORE.lock();
+            match store.get_module_resolved(&module_name) {
+                Some(perms) => Value::i32(perms.bits() as i32),
+                None => Value::null()
+            }
+        }
+
+        reflect::CLEAR_MODULE_PERMISSIONS => {
+            // clearModulePermissions(moduleName) -> clear module-level permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "clearModulePermissions requires 1 argument (moduleName)".to_string()
+                ));
+            }
+            let module_name = get_string(args[0].clone())?;
+
+            let mut store = PERMISSION_STORE.lock();
+            store.clear_module(&module_name);
+            Value::null()
+        }
+
+        reflect::SET_GLOBAL_PERMISSIONS => {
+            // setGlobalPermissions(permissions) -> set global default permissions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "setGlobalPermissions requires 1 argument (permissions)".to_string()
+                ));
+            }
+            let perms_val = args[0];
+
+            let perms = if let Some(bits) = perms_val.as_i32() {
+                ReflectionPermission::from_bits(bits as u8)
+            } else if perms_val.is_ptr() {
+                let s = get_string(perms_val)?;
+                ReflectionPermission::from_combined_str(&s)
+                    .ok_or_else(|| VmError::TypeError(format!("Invalid permission: {}", s)))?
+            } else {
+                return Err(VmError::TypeError("permissions must be a number or string".to_string()));
+            };
+
+            let mut store = PERMISSION_STORE.lock();
+            store.set_global(perms);
+            Value::null()
+        }
+
+        reflect::GET_GLOBAL_PERMISSIONS => {
+            // getGlobalPermissions() -> get global default permissions
+            let store = PERMISSION_STORE.lock();
+            Value::i32(store.get_global().bits() as i32)
+        }
+
+        reflect::SEAL_PERMISSIONS => {
+            // sealPermissions(target) -> make permissions immutable
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "sealPermissions requires 1 argument (target)".to_string()
+                ));
+            }
+            let target = args[0];
+
+            // Can seal objects or classes (by class_id)
+            if let Some(class_id) = target.as_i32() {
+                // Seal class by ID
+                let mut store = PERMISSION_STORE.lock();
+                store.seal_class(class_id as usize);
+            } else if let Some(object_id) = get_object_identity(target) {
+                // Seal object
+                let mut store = PERMISSION_STORE.lock();
+                store.seal_object(object_id);
+            } else {
+                return Err(VmError::TypeError("sealPermissions: target must be an object or classId".to_string()));
+            }
+            Value::null()
+        }
+
+        reflect::IS_PERMISSIONS_SEALED => {
+            // isPermissionsSealed(target) -> check if permissions are sealed
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "isPermissionsSealed requires 1 argument (target)".to_string()
+                ));
+            }
+            let target = args[0];
+
+            let is_sealed = if let Some(class_id) = target.as_i32() {
+                let store = PERMISSION_STORE.lock();
+                store.is_class_sealed(class_id as usize)
+            } else if let Some(object_id) = get_object_identity(target) {
+                let store = PERMISSION_STORE.lock();
+                store.is_object_sealed(object_id)
+            } else {
+                false
+            };
+            Value::bool(is_sealed)
+        }
+
+        // ===== Phase 17: Dynamic VM Bootstrap =====
+
+        // ----- Module Creation (0x0E10-0x0E17) -----
+
+        reflect::CREATE_MODULE => {
+            // createModule(name) -> create empty dynamic module
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "createModule requires 1 argument (name)".to_string()
+                ));
+            }
+            let name = get_string(args[0].clone())?;
+
+            let mut registry = DYNAMIC_MODULE_REGISTRY.lock();
+            let module_id = registry.create_module(name)?;
+            Value::i32(module_id as i32)
+        }
+
+        reflect::MODULE_ADD_FUNCTION => {
+            // moduleAddFunction(moduleId, functionId) -> add function to module
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "moduleAddFunction requires 2 arguments (moduleId, functionId)".to_string()
+                ));
+            }
+            let module_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                as usize;
+            let function_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as usize;
+
+            // Get the compiled function from BytecodeBuilderRegistry
+            let bytecode_registry = BYTECODE_BUILDER_REGISTRY.lock();
+            let func = bytecode_registry.get_function(function_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Function {} not found", function_id)))?
+                .clone();
+            drop(bytecode_registry);
+
+            let mut registry = DYNAMIC_MODULE_REGISTRY.lock();
+            let module = registry.get_mut(module_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+            module.add_function(func)?;
+
+            Value::null()
+        }
+
+        reflect::MODULE_ADD_CLASS => {
+            // moduleAddClass(moduleId, classId, name) -> add class to module
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "moduleAddClass requires 3 arguments (moduleId, classId, name)".to_string()
+                ));
+            }
+            let module_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                as usize;
+            let class_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                as usize;
+            let name = get_string(args[2].clone())?;
+
+            let mut registry = DYNAMIC_MODULE_REGISTRY.lock();
+            let module = registry.get_mut(module_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+
+            // Use class_id as both local and global ID for now
+            module.add_class(class_id, class_id, name)?;
+
+            Value::null()
+        }
+
+        reflect::MODULE_ADD_GLOBAL => {
+            // moduleAddGlobal(moduleId, name, value) -> add global variable
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError(
+                    "moduleAddGlobal requires 3 arguments (moduleId, name, value)".to_string()
+                ));
+            }
+            let module_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                as usize;
+            let name = get_string(args[1].clone())?;
+            let value = args[2];
+
+            let mut registry = DYNAMIC_MODULE_REGISTRY.lock();
+            let module = registry.get_mut(module_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+            module.add_global(name, value)?;
+
+            Value::null()
+        }
+
+        reflect::MODULE_SEAL => {
+            // moduleSeal(moduleId) -> finalize module for execution
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "moduleSeal requires 1 argument (moduleId)".to_string()
+                ));
+            }
+            let module_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                as usize;
+
+            let mut registry = DYNAMIC_MODULE_REGISTRY.lock();
+            let module = registry.get_mut(module_id)
+                .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+            module.seal()?;
+
+            Value::null()
+        }
+
+        reflect::MODULE_LINK => {
+            // moduleLink(moduleId, imports) -> resolve imports
+            // For now, this is a stub - full import resolution requires more infrastructure
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "moduleLink requires 1 argument (moduleId)".to_string()
+                ));
+            }
+            // Stub: just return success
+            Value::null()
+        }
+
+        reflect::GET_MODULE => {
+            // getModule(moduleId) -> get module info by ID
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getModule requires 1 argument (moduleId)".to_string()
+                ));
+            }
+            let module_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                as usize;
+
+            let registry = DYNAMIC_MODULE_REGISTRY.lock();
+            match registry.get(module_id) {
+                Some(module) => {
+                    // Create info object
+                    let info = module.get_info();
+                    let mut map = MapObject::new();
+
+                    // Add id
+                    let id_key = RayaString::new("id".to_string());
+                    let id_key_gc = ctx.gc.lock().allocate(id_key);
+                    let id_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(id_key_gc.as_ptr()).unwrap()) };
+                    map.set(id_key_v, Value::i32(info.id as i32));
+
+                    // Add name
+                    let name_key = RayaString::new("name".to_string());
+                    let name_key_gc = ctx.gc.lock().allocate(name_key);
+                    let name_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_gc.as_ptr()).unwrap()) };
+                    let name_val = RayaString::new(info.name);
+                    let name_val_gc = ctx.gc.lock().allocate(name_val);
+                    let name_val_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_val_gc.as_ptr()).unwrap()) };
+                    map.set(name_key_v, name_val_v);
+
+                    // Add isSealed
+                    let sealed_key = RayaString::new("isSealed".to_string());
+                    let sealed_key_gc = ctx.gc.lock().allocate(sealed_key);
+                    let sealed_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(sealed_key_gc.as_ptr()).unwrap()) };
+                    map.set(sealed_key_v, Value::bool(info.is_sealed));
+
+                    // Add function count
+                    let fc_key = RayaString::new("functionCount".to_string());
+                    let fc_key_gc = ctx.gc.lock().allocate(fc_key);
+                    let fc_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(fc_key_gc.as_ptr()).unwrap()) };
+                    map.set(fc_key_v, Value::i32(info.function_count as i32));
+
+                    let map_gc = ctx.gc.lock().allocate(map);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) }
+                }
+                None => Value::null()
+            }
+        }
+
+        reflect::GET_MODULE_BY_NAME => {
+            // getModuleByName(name) -> get module ID by name
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "getModuleByName requires 1 argument (name)".to_string()
+                ));
+            }
+            let name = get_string(args[0].clone())?;
+
+            let registry = DYNAMIC_MODULE_REGISTRY.lock();
+            match registry.get_by_name(&name) {
+                Some(module) => Value::i32(module.id as i32),
+                None => Value::null()
+            }
+        }
+
+        // ----- Execution (0x0E18-0x0E1F) -----
+
+        reflect::EXECUTE => {
+            // execute(functionId, argsArray) -> execute function synchronously
+            // Note: Full execution requires VM context which we don't have here
+            // This is a stub that returns null for now
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "execute requires at least 1 argument (functionId)".to_string()
+                ));
+            }
+            let function_id = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                as usize;
+
+            // Verify function exists
+            let registry = DYNAMIC_MODULE_REGISTRY.lock();
+            if registry.get_function(function_id).is_none() {
+                // Also check bytecode builder registry
+                let bc_registry = BYTECODE_BUILDER_REGISTRY.lock();
+                if bc_registry.get_function(function_id).is_none() {
+                    return Err(VmError::RuntimeError(
+                        format!("Function {} not found", function_id)
+                    ));
+                }
+            }
+
+            // Stub: execution requires VM context passed through
+            // Return null to indicate stub behavior
+            Value::null()
+        }
+
+        reflect::SPAWN => {
+            // spawn(functionId, argsArray) -> execute function as Task
+            // This is a stub - spawning tasks requires scheduler access
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "spawn requires at least 1 argument (functionId)".to_string()
+                ));
+            }
+            // Stub: return -1 to indicate not implemented
+            Value::i32(-1)
+        }
+
+        reflect::EVAL => {
+            // eval(bytecodeArray) -> execute raw bytecode
+            // This is a stub - direct bytecode execution requires VM context
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "eval requires 1 argument (bytecodeArray)".to_string()
+                ));
+            }
+            // Stub: return null
+            Value::null()
+        }
+
+        reflect::CALL_DYNAMIC => {
+            // callDynamic(functionId, argsArray) -> call dynamic function
+            // Similar to execute but specifically for dynamic functions
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "callDynamic requires at least 1 argument (functionId)".to_string()
+                ));
+            }
+            // Stub: return null
+            Value::null()
+        }
+
+        reflect::INVOKE_DYNAMIC_METHOD => {
+            // invokeDynamicMethod(target, methodIndex, argsArray) -> invoke method
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError(
+                    "invokeDynamicMethod requires at least 2 arguments (target, methodIndex)".to_string()
+                ));
+            }
+            // Stub: return null
+            Value::null()
+        }
+
+        // ----- Bootstrap (0x0E20-0x0E2F) -----
+
+        reflect::BOOTSTRAP => {
+            // bootstrap() -> initialize minimal runtime environment
+            let mut ctx_guard = BOOTSTRAP_CONTEXT.lock();
+            if ctx_guard.is_initialized() {
+                return Err(VmError::RuntimeError(
+                    "Bootstrap context already initialized".to_string()
+                ));
+            }
+            ctx_guard.initialize()?;
+            mark_bootstrapped();
+
+            // Return bootstrap info as an object
+            let info = ctx_guard.get_info();
+            drop(ctx_guard);
+
+            let mut map = MapObject::new();
+
+            // Add objectClassId
+            let obj_key = RayaString::new("objectClassId".to_string());
+            let obj_key_gc = ctx.gc.lock().allocate(obj_key);
+            let obj_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_key_gc.as_ptr()).unwrap()) };
+            map.set(obj_key_v, Value::i32(info.object_class_id as i32));
+
+            // Add arrayClassId
+            let arr_key = RayaString::new("arrayClassId".to_string());
+            let arr_key_gc = ctx.gc.lock().allocate(arr_key);
+            let arr_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_key_gc.as_ptr()).unwrap()) };
+            map.set(arr_key_v, Value::i32(info.array_class_id as i32));
+
+            // Add stringClassId
+            let str_key = RayaString::new("stringClassId".to_string());
+            let str_key_gc = ctx.gc.lock().allocate(str_key);
+            let str_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(str_key_gc.as_ptr()).unwrap()) };
+            map.set(str_key_v, Value::i32(info.string_class_id as i32));
+
+            // Add printNativeId
+            let print_key = RayaString::new("printNativeId".to_string());
+            let print_key_gc = ctx.gc.lock().allocate(print_key);
+            let print_key_v = unsafe { Value::from_ptr(std::ptr::NonNull::new(print_key_gc.as_ptr()).unwrap()) };
+            map.set(print_key_v, Value::i32(info.print_native_id as i32));
+
+            let map_gc = ctx.gc.lock().allocate(map);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) }
+        }
+
+        reflect::GET_OBJECT_CLASS => {
+            // getObjectClass() -> get core Object class ID
+            Value::i32(core_class_ids::OBJECT as i32)
+        }
+
+        reflect::GET_ARRAY_CLASS => {
+            // getArrayClass() -> get core Array class ID
+            Value::i32(core_class_ids::ARRAY as i32)
+        }
+
+        reflect::GET_STRING_CLASS => {
+            // getStringClass() -> get core String class ID
+            Value::i32(core_class_ids::STRING as i32)
+        }
+
+        reflect::GET_TASK_CLASS => {
+            // getTaskClass() -> get core Task class ID
+            Value::i32(core_class_ids::TASK as i32)
+        }
+
+        reflect::DYNAMIC_PRINT => {
+            // dynamicPrint(message) -> print to console
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "dynamicPrint requires 1 argument (message)".to_string()
+                ));
+            }
+            let message = get_string(args[0].clone())?;
+            println!("{}", message);
+            Value::null()
+        }
+
+        reflect::CREATE_DYNAMIC_ARRAY => {
+            // createDynamicArray(elements...) -> create array from values
+            let len = args.len();
+            let mut arr = Array::new(len, 0);
+            for (i, val) in args.into_iter().enumerate() {
+                arr.set(i, val).ok();
+            }
+            let gc_ptr = ctx.gc.lock().allocate(arr);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+        }
+
+        reflect::CREATE_DYNAMIC_STRING => {
+            // createDynamicString(value) -> create string value
+            if args.is_empty() {
+                return Err(VmError::RuntimeError(
+                    "createDynamicString requires 1 argument (value)".to_string()
+                ));
+            }
+            let s = if args[0].is_ptr() {
+                get_string(args[0].clone())?
+            } else if let Some(i) = args[0].as_i32() {
+                i.to_string()
+            } else if let Some(f) = args[0].as_f64() {
+                f.to_string()
+            } else if let Some(b) = args[0].as_bool() {
+                b.to_string()
+            } else if args[0].is_null() {
+                "null".to_string()
+            } else {
+                "[object]".to_string()
+            };
+
+            let str_obj = RayaString::new(s);
+            let gc_ptr = ctx.gc.lock().allocate(str_obj);
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+        }
+
+        reflect::IS_BOOTSTRAPPED => {
+            // isBootstrapped() -> check if bootstrap context exists
+            Value::bool(is_bootstrapped())
+        }
+
         _ => {
             return Err(VmError::RuntimeError(format!(
                 "Reflect method {:#06x} not yet implemented",
@@ -1901,6 +4075,30 @@ pub fn call_reflect_method(
 
     stack.push(result)?;
     Ok(())
+}
+
+/// Get a unique identity for an object based on its pointer address
+fn get_object_identity(value: Value) -> Option<usize> {
+    if !value.is_ptr() || value.is_null() {
+        return None;
+    }
+
+    // Use pointer address as identity (same approach as getObjectId)
+    if let Some(ptr) = unsafe { value.as_ptr::<Object>() } {
+        Some(ptr.as_ptr() as usize)
+    } else if let Some(ptr) = unsafe { value.as_ptr::<Array>() } {
+        Some(ptr.as_ptr() as usize)
+    } else if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
+        Some(ptr.as_ptr() as usize)
+    } else if let Some(ptr) = unsafe { value.as_ptr::<Closure>() } {
+        Some(ptr.as_ptr() as usize)
+    } else if let Some(ptr) = unsafe { value.as_ptr::<Proxy>() } {
+        Some(ptr.as_ptr() as usize)
+    } else if let Some(ptr) = unsafe { value.as_ptr::<MapObject>() } {
+        Some(ptr.as_ptr() as usize)
+    } else {
+        None
+    }
 }
 
 /// Deep clone a value recursively
@@ -2247,4 +4445,286 @@ fn check_circular(ctx: &ReflectHandlerContext, value: Value, visited: &mut Vec<u
 
     visited.pop();
     false
+}
+
+/// Parse an array of field definition objects into a SubclassDefinition
+///
+/// Each element of the array should be an object with fields:
+/// - name: string (required)
+/// - type: string (optional, defaults to "any")
+/// - isStatic: boolean (optional, defaults to false)
+/// - isReadonly: boolean (optional, defaults to false)
+fn parse_fields_array(ctx: &ReflectHandlerContext, value: Value) -> Result<SubclassDefinition, VmError> {
+    if !value.is_ptr() || value.is_null() {
+        // Empty array - return empty definition
+        return Ok(SubclassDefinition::new());
+    }
+
+    // Helper to extract string from Value
+    let extract_string = |v: Value| -> Option<String> {
+        if v.is_ptr() && !v.is_null() {
+            if let Some(str_ptr) = unsafe { v.as_ptr::<RayaString>() } {
+                let s = unsafe { &*str_ptr.as_ptr() };
+                return Some(s.data.clone());
+            }
+        }
+        None
+    };
+
+    // Try to interpret as array
+    if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+        let arr = unsafe { &*arr_ptr.as_ptr() };
+        let len = arr.len();
+
+        let mut def = SubclassDefinition::new();
+
+        for i in 0..len {
+            if let Some(elem) = arr.get(i) {
+                // Each element should be an object with field definition
+                if elem.is_ptr() && !elem.is_null() {
+                    // Try to read as an Object with specific fields
+                    // We look for: name, type, isStatic, isReadonly
+                    if let Some(class_id) = crate::vm::reflect::get_class_id(elem) {
+                        let obj_ptr = unsafe { elem.as_ptr::<Object>() };
+                        let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+
+                        // Get field metadata to look up fields by name
+                        let class_metadata = ctx.class_metadata.read();
+                        let meta = class_metadata.get(class_id);
+
+                        let mut field_name: Option<String> = None;
+                        let mut field_type = "any".to_string();
+                        let mut is_static = false;
+                        let mut is_readonly = false;
+
+                        if let Some(m) = meta {
+                            // Look up "name" field
+                            if let Some(idx) = m.get_field_index("name") {
+                                if let Some(val) = obj.get_field(idx) {
+                                    field_name = extract_string(val);
+                                }
+                            }
+                            // Look up "type" field
+                            if let Some(idx) = m.get_field_index("type") {
+                                if let Some(val) = obj.get_field(idx) {
+                                    if let Some(t) = extract_string(val) {
+                                        field_type = t;
+                                    }
+                                }
+                            }
+                            // Look up "isStatic" field
+                            if let Some(idx) = m.get_field_index("isStatic") {
+                                if let Some(val) = obj.get_field(idx) {
+                                    if let Some(b) = val.as_bool() {
+                                        is_static = b;
+                                    }
+                                }
+                            }
+                            // Look up "isReadonly" field
+                            if let Some(idx) = m.get_field_index("isReadonly") {
+                                if let Some(val) = obj.get_field(idx) {
+                                    if let Some(b) = val.as_bool() {
+                                        is_readonly = b;
+                                    }
+                                }
+                            }
+                        }
+                        drop(class_metadata);
+
+                        if let Some(name) = field_name {
+                            let mut field_def = FieldDefinition::new(name, &field_type);
+                            if is_static {
+                                field_def = field_def.as_static();
+                            }
+                            if is_readonly {
+                                field_def = field_def.as_readonly();
+                            }
+                            def = def.add_field(field_def);
+                        }
+                    }
+                }
+            }
+        }
+
+        return Ok(def);
+    }
+
+    // Not an array, return empty definition
+    Ok(SubclassDefinition::new())
+}
+
+/// Parse a bytecode array (array of numbers) into a Vec<u8>
+fn parse_bytecode_array(value: Value) -> Result<Vec<u8>, VmError> {
+    if !value.is_ptr() || value.is_null() {
+        return Ok(Vec::new());
+    }
+
+    if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+        let arr = unsafe { &*arr_ptr.as_ptr() };
+        let mut bytecode = Vec::with_capacity(arr.len());
+
+        for i in 0..arr.len() {
+            if let Some(elem) = arr.get(i) {
+                if let Some(n) = elem.as_i32() {
+                    if n < 0 || n > 255 {
+                        return Err(VmError::RuntimeError(format!(
+                            "Bytecode value {} at index {} out of range (0-255)",
+                            n, i
+                        )));
+                    }
+                    bytecode.push(n as u8);
+                } else {
+                    return Err(VmError::TypeError(format!(
+                        "Bytecode array element at index {} must be a number",
+                        i
+                    )));
+                }
+            }
+        }
+
+        Ok(bytecode)
+    } else {
+        Err(VmError::TypeError("bytecodeArray must be an array".to_string()))
+    }
+}
+
+/// Parse a captures array (array of values) into a Vec<Value>
+fn parse_captures_array(value: Value) -> Result<Vec<Value>, VmError> {
+    if !value.is_ptr() || value.is_null() {
+        return Ok(Vec::new());
+    }
+
+    if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+        let arr = unsafe { &*arr_ptr.as_ptr() };
+        let mut captures = Vec::with_capacity(arr.len());
+
+        for i in 0..arr.len() {
+            if let Some(elem) = arr.get(i) {
+                captures.push(elem);
+            } else {
+                captures.push(Value::null());
+            }
+        }
+
+        Ok(captures)
+    } else {
+        Err(VmError::TypeError("capturesArray must be an array".to_string()))
+    }
+}
+
+/// Parse an array of strings into a Vec<String>
+fn parse_string_array(ctx: &ReflectHandlerContext, value: Value) -> Result<Vec<String>, VmError> {
+    if !value.is_ptr() || value.is_null() {
+        return Ok(Vec::new());
+    }
+
+    if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+        let arr = unsafe { &*arr_ptr.as_ptr() };
+        let mut strings = Vec::with_capacity(arr.len());
+
+        for i in 0..arr.len() {
+            if let Some(elem) = arr.get(i) {
+                if elem.is_ptr() && !elem.is_null() {
+                    if let Some(str_ptr) = unsafe { elem.as_ptr::<RayaString>() } {
+                        let s = unsafe { &*str_ptr.as_ptr() };
+                        strings.push(s.data.clone());
+                    } else {
+                        return Err(VmError::TypeError(format!(
+                            "Array element at index {} must be a string",
+                            i
+                        )));
+                    }
+                } else {
+                    return Err(VmError::TypeError(format!(
+                        "Array element at index {} must be a string",
+                        i
+                    )));
+                }
+            }
+        }
+
+        Ok(strings)
+    } else {
+        Err(VmError::TypeError("typeArgsArray must be an array".to_string()))
+    }
+}
+
+/// Parse an array of values into a Vec<Value>
+fn parse_value_array(ctx: &ReflectHandlerContext, value: Value) -> Result<Vec<Value>, VmError> {
+    if !value.is_ptr() || value.is_null() {
+        return Ok(Vec::new());
+    }
+
+    if let Some(arr_ptr) = unsafe { value.as_ptr::<Array>() } {
+        let arr = unsafe { &*arr_ptr.as_ptr() };
+        let mut values = Vec::with_capacity(arr.len());
+
+        for i in 0..arr.len() {
+            if let Some(elem) = arr.get(i) {
+                values.push(elem);
+            }
+        }
+
+        Ok(values)
+    } else {
+        Err(VmError::TypeError("Expected an array".to_string()))
+    }
+}
+
+/// Create a DecoratorInfo object from a DecoratorApplication
+/// Returns a MapObject with keys: name, args, targetType, propertyKey, parameterIndex
+fn create_decorator_info_object(
+    ctx: &ReflectHandlerContext,
+    decorator: &DecoratorApplication,
+) -> Result<Value, VmError> {
+    // Use MapObject for dynamic key-value storage
+    let mut map = MapObject::new();
+
+    // Helper to create string key
+    let create_string_key = |s: &str| -> Value {
+        let str_obj = RayaString::new(s.to_string());
+        let str_gc = ctx.gc.lock().allocate(str_obj);
+        unsafe { Value::from_ptr(std::ptr::NonNull::new(str_gc.as_ptr()).unwrap()) }
+    };
+
+    // Set name field
+    let name_key = create_string_key("name");
+    let name_val = create_string_key(&decorator.name);
+    map.set(name_key, name_val);
+
+    // Set targetType field
+    let target_type_key = create_string_key("targetType");
+    let target_type_val = create_string_key(decorator.target_type.as_str());
+    map.set(target_type_key, target_type_val);
+
+    // Set args field (as array)
+    let args_key = create_string_key("args");
+    let mut args_arr = Array::new(0, decorator.args.len());
+    for (i, arg) in decorator.args.iter().enumerate() {
+        args_arr.set(i, *arg).ok();
+    }
+    let args_gc = ctx.gc.lock().allocate(args_arr);
+    let args_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(args_gc.as_ptr()).unwrap()) };
+    map.set(args_key, args_val);
+
+    // Set propertyKey field (optional)
+    let prop_key_key = create_string_key("propertyKey");
+    if let Some(ref key) = decorator.property_key {
+        let key_val = create_string_key(key);
+        map.set(prop_key_key, key_val);
+    } else {
+        map.set(prop_key_key, Value::null());
+    }
+
+    // Set parameterIndex field (optional)
+    let param_idx_key = create_string_key("parameterIndex");
+    if let Some(idx) = decorator.parameter_index {
+        map.set(param_idx_key, Value::i32(idx as i32));
+    } else {
+        map.set(param_idx_key, Value::null());
+    }
+
+    // Allocate the map
+    let map_gc = ctx.gc.lock().allocate(map);
+    Ok(unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) })
 }

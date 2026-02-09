@@ -41,6 +41,9 @@ impl<'a> Binder<'a> {
         // Register compiler intrinsics first
         self.register_intrinsics();
 
+        // Register decorator type aliases (ClassDecorator<T>, etc.)
+        self.register_decorator_types();
+
         for sig in builtins {
             // Register each class from this builtin module
             for class_sig in &sig.classes {
@@ -338,6 +341,148 @@ impl<'a> Binder<'a> {
         let _ = self.symbols.define(symbol);
     }
 
+    /// Register decorator-related built-in types
+    ///
+    /// This registers:
+    /// - Class<T>: Interface representing a class constructor
+    /// - ClassDecorator<T>: (target: Class<T>) => Class<T> | void
+    /// - MethodDecorator<F>: (method: F) => F
+    /// - FieldDecorator<T>: (target: T, fieldName: string) => void
+    /// - ParameterDecorator<T>: (target: T, methodName: string, parameterIndex: number) => void
+    fn register_decorator_types(&mut self) {
+        let string_ty = self.type_ctx.string_type();
+        let number_ty = self.type_ctx.number_type();
+        let void_ty = self.type_ctx.void_type();
+
+        // Register Class<T> interface
+        // Class<T> has: name: string, prototype: T, and is callable as constructor
+        let t_var = self.type_ctx.type_variable("T".to_string());
+        let class_interface = ClassType {
+            name: "Class".to_string(),
+            type_params: vec!["T".to_string()],
+            properties: vec![
+                PropertySignature {
+                    name: "name".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                },
+                PropertySignature {
+                    name: "prototype".to_string(),
+                    ty: t_var,
+                    optional: false,
+                    readonly: true,
+                },
+            ],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+        };
+        let class_ty = self.type_ctx.intern(Type::Class(class_interface));
+        let class_symbol = Symbol {
+            name: "Class".to_string(),
+            kind: SymbolKind::Class,
+            ty: class_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(class_symbol);
+
+        // ClassDecorator<T> = (target: Class<T>) => Class<T> | void
+        // For simplicity, we register it as a function type with type variable
+        let class_t_var = self.type_ctx.type_variable("T".to_string());
+        let class_decorator_return = self.type_ctx.union_type(vec![class_t_var, void_ty]);
+        let class_decorator_ty = self.type_ctx.function_type(
+            vec![class_t_var], // target: Class<T> - using T as approximation
+            class_decorator_return,
+            false,
+        );
+        let class_decorator_symbol = Symbol {
+            name: "ClassDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: class_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(class_decorator_symbol);
+
+        // MethodDecorator<F> = (method: F) => F
+        let f_var = self.type_ctx.type_variable("F".to_string());
+        let method_decorator_ty = self.type_ctx.function_type(vec![f_var], f_var, false);
+        let method_decorator_symbol = Symbol {
+            name: "MethodDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: method_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(method_decorator_symbol);
+
+        // FieldDecorator<T> = (target: T, fieldName: string) => void
+        let field_t_var = self.type_ctx.type_variable("T".to_string());
+        let field_decorator_ty = self.type_ctx.function_type(
+            vec![field_t_var, string_ty],
+            void_ty,
+            false,
+        );
+        let field_decorator_symbol = Symbol {
+            name: "FieldDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: field_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(field_decorator_symbol);
+
+        // ParameterDecorator<T> = (target: T, methodName: string, parameterIndex: number) => void
+        let param_t_var = self.type_ctx.type_variable("T".to_string());
+        let param_decorator_ty = self.type_ctx.function_type(
+            vec![param_t_var, string_ty, number_ty],
+            void_ty,
+            false,
+        );
+        let param_decorator_symbol = Symbol {
+            name: "ParameterDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: param_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+        };
+        let _ = self.symbols.define(param_decorator_symbol);
+    }
+
     /// Register a single builtin class
     fn register_builtin_class(&mut self, class_sig: &super::builtins::BuiltinClass) {
         // Create type parameters map for resolving generic types
@@ -598,6 +743,48 @@ impl<'a> Binder<'a> {
             }
             ExportDecl::All { .. } => {
                 // Re-exports are handled at module linking time, not binding time
+                Ok(())
+            }
+            ExportDecl::Default { expression, span } => {
+                // export default <expr> — create a "default" symbol with the expression's type
+                // For identifier expressions (e.g., `export default logger`), copy the symbol's type
+                if let Expression::Identifier(ident) = expression.as_ref() {
+                    let name = self.interner.resolve(ident.name).to_string();
+                    if let Some(sym) = self.symbols.resolve(&name) {
+                        let default_sym = Symbol {
+                            name: "default".to_string(),
+                            kind: sym.kind,
+                            ty: sym.ty,
+                            flags: SymbolFlags {
+                                is_exported: true,
+                                is_const: sym.flags.is_const,
+                                is_async: sym.flags.is_async,
+                                is_readonly: sym.flags.is_readonly,
+                            },
+                            scope_id: self.symbols.current_scope_id(),
+                            span: span.clone(),
+                        };
+                        let _ = self.symbols.define(default_sym);
+                    }
+                } else {
+                    // For non-identifier expressions (e.g., `export default new Logger()`),
+                    // create a default symbol with unknown type (type checker will infer)
+                    let unknown_ty = self.type_ctx.unknown_type();
+                    let default_sym = Symbol {
+                        name: "default".to_string(),
+                        kind: SymbolKind::Variable,
+                        ty: unknown_ty,
+                        flags: SymbolFlags {
+                            is_exported: true,
+                            is_const: true,
+                            is_async: false,
+                            is_readonly: false,
+                        },
+                        scope_id: self.symbols.current_scope_id(),
+                        span: span.clone(),
+                    };
+                    let _ = self.symbols.define(default_sym);
+                }
                 Ok(())
             }
         }
@@ -950,6 +1137,13 @@ impl<'a> Binder<'a> {
             })
             .collect();
 
+        // Resolve the extends clause if present
+        let extends_ty = if let Some(ref extends_ann) = class.extends {
+            Some(self.resolve_type_annotation(extends_ann)?)
+        } else {
+            None
+        };
+
         // Create the full class type with properties and methods
         let full_class_type = ClassType {
             name: class_name.clone(),
@@ -958,7 +1152,7 @@ impl<'a> Binder<'a> {
             methods: method_sigs,
             static_properties,
             static_methods: static_method_sigs,
-            extends: None,
+            extends: extends_ty,
             implements: vec![],
         };
         let full_class_ty = self.type_ctx.intern(Type::Class(full_class_type));

@@ -357,10 +357,13 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::Call);
                 ctx.emit_u32(func.as_u32());
                 ctx.emit_u16(args.len() as u16);
-                // Store result if needed
+                // Store result if needed, or pop if not used
                 if let Some(dest) = dest {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
+                } else {
+                    // Pop the result that Call pushes since we don't need it
+                    ctx.emit(Opcode::Pop);
                 }
             }
 
@@ -375,10 +378,13 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::CallMethod);
                 ctx.emit_u32(*method as u32);
                 ctx.emit_u16(args.len() as u16);
-                // Store result if needed
+                // Store result if needed, or pop if not used
                 if let Some(dest) = dest {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
+                } else {
+                    // Pop the result that CallMethod pushes since we don't need it
+                    ctx.emit(Opcode::Pop);
                 }
             }
 
@@ -391,10 +397,13 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::NativeCall);
                 ctx.emit_u16(*native_id);
                 ctx.emit_u8(args.len() as u8);
-                // Store result if needed
+                // Store result if needed, or pop if not used
                 if let Some(dest) = dest {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
+                } else {
+                    // Pop the result that NativeCall pushes since we don't need it
+                    ctx.emit(Opcode::Pop);
                 }
             }
 
@@ -654,10 +663,13 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::Call);
                 ctx.emit_u32(0xFFFFFFFF); // Special value signals closure call
                 ctx.emit_u16(args.len() as u16);
-                // Store result if needed
+                // Store result if needed, or pop if not used
                 if let Some(dest) = dest {
                     let slot = ctx.get_or_alloc_slot(dest);
                     self.emit_store_local(ctx, slot);
+                } else {
+                    // Pop the result that Call pushes since we don't need it
+                    ctx.emit(Opcode::Pop);
                 }
             }
 

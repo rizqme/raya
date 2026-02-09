@@ -626,6 +626,12 @@ pub enum ExportDecl {
 
     /// export * from "./foo";
     All { source: StringLiteral, span: Span },
+
+    /// export default expr;
+    Default {
+        expression: Box<Expression>,
+        span: Span,
+    },
 }
 
 impl ExportDecl {
@@ -634,6 +640,7 @@ impl ExportDecl {
             ExportDecl::Declaration(stmt) => stmt.span(),
             ExportDecl::Named { span, .. } => span,
             ExportDecl::All { span, .. } => span,
+            ExportDecl::Default { span, .. } => span,
         }
     }
 }

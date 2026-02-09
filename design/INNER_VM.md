@@ -148,7 +148,7 @@ An inner VM does **not** automatically inherit host capabilities. It runs in a *
 ```typescript
 const vm = new Vm({
   capabilities: {
-    log: (msg: string) => console.log("[inner]", msg),
+    log: (msg: string) => logger.info("[inner]", msg),
     query: (sql: string) => db.safeQuery(sql),
   }
 });

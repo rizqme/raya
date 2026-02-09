@@ -276,8 +276,8 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         guard.check()?;
         let start_span = parser.current_span();
 
-        // TODO: Parse decorators when implemented
-        let decorators = vec![];
+        // Parse parameter decorators (@Inject, @Validate, etc.)
+        let decorators = parse_decorators(parser)?;
 
         // Parse parameter pattern
         let pattern = super::pattern::parse_pattern(parser)?;
@@ -1327,7 +1327,7 @@ fn parse_constructor(parser: &mut Parser, start_span: Span) -> Result<ClassMembe
 // ============================================================================
 
 /// Parse decorators: @name or @name(args)
-fn parse_decorators(parser: &mut Parser) -> Result<Vec<Decorator>, ParseError> {
+pub(super) fn parse_decorators(parser: &mut Parser) -> Result<Vec<Decorator>, ParseError> {
     let mut decorators = Vec::new();
     let mut guard = super::guards::LoopGuard::new("decorators");
 
@@ -1383,8 +1383,8 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
         }
     }
 
-    // Check for call: @decorator(args)
-    if parser.check(&Token::LeftParen) {
+    // Check for call(s): @decorator(args) or chained @decorator(args1)(args2)...
+    while parser.check(&Token::LeftParen) {
         let call_start = expression.span().clone();
         parser.advance();
 
@@ -1668,6 +1668,22 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
             source,
             span,
         }))
+    } else if parser.check(&Token::Default) {
+        // export default <expression>;
+        parser.advance(); // consume 'default'
+
+        let expr = super::expr::parse_expression(parser)?;
+
+        if parser.check(&Token::Semicolon) {
+            parser.advance();
+        }
+
+        let span = parser.combine_spans(&start_span, expr.span());
+
+        Ok(Statement::ExportDecl(ExportDecl::Default {
+            expression: Box::new(expr),
+            span,
+        }))
     } else {
         // export const/let/function/class declaration
         let declaration = match parser.current() {
@@ -1684,6 +1700,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
                     Token::Type,
                     Token::LeftBrace,
                     Token::Star,
+                    Token::Default,
                 ]));
             }
         };

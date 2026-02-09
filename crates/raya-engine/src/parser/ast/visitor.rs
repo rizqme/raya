@@ -333,6 +333,9 @@ pub fn walk_export_decl<V: Visitor>(visitor: &mut V, decl: &ExportDecl) {
         ExportDecl::Declaration(stmt) => visitor.visit_statement(stmt),
         ExportDecl::Named { .. } => {}
         ExportDecl::All { .. } => {}
+        ExportDecl::Default { expression, .. } => {
+            visitor.visit_expression(expression);
+        }
     }
 }
 

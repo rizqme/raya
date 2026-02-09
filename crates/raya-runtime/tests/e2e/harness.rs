@@ -13,31 +13,43 @@ use raya_engine::parser::checker::{Binder, TypeChecker};
 fn get_builtin_sources() -> &'static str {
     concat!(
         // Object class (base class)
-        include_str!("../../builtins/Object.raya"),
+        include_str!("../../../raya-engine/builtins/Object.raya"),
         "\n",
         // Error classes (must come before other classes that might throw)
-        include_str!("../../builtins/Error.raya"),
+        include_str!("../../../raya-engine/builtins/Error.raya"),
         "\n",
         // Map class
-        include_str!("../../builtins/Map.raya"),
+        include_str!("../../../raya-engine/builtins/Map.raya"),
         "\n",
         // Set class
-        include_str!("../../builtins/Set.raya"),
+        include_str!("../../../raya-engine/builtins/Set.raya"),
         "\n",
         // Buffer class
-        include_str!("../../builtins/Buffer.raya"),
+        include_str!("../../../raya-engine/builtins/Buffer.raya"),
         "\n",
         // Date class
-        include_str!("../../builtins/Date.raya"),
+        include_str!("../../../raya-engine/builtins/Date.raya"),
         "\n",
         // Channel class
-        include_str!("../../builtins/Channel.raya"),
+        include_str!("../../../raya-engine/builtins/Channel.raya"),
         "\n",
         // Mutex class
-        include_str!("../../builtins/Mutex.raya"),
+        include_str!("../../../raya-engine/builtins/Mutex.raya"),
         "\n",
         // Task class
-        include_str!("../../builtins/Task.raya"),
+        include_str!("../../../raya-engine/builtins/Task.raya"),
+        "\n",
+    )
+}
+
+/// Get the standard library module sources
+///
+/// Returns source code for std: modules (Logger, etc.) that are
+/// included as builtins for single-file compilation in tests.
+fn get_std_sources() -> &'static str {
+    concat!(
+        // Logger (std:logger)
+        include_str!("../../../raya-stdlib/Logger.raya"),
         "\n",
     )
 }
@@ -89,9 +101,9 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
 
 /// Internal compile function
 fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
-    // Optionally prepend builtin sources
+    // Optionally prepend builtin and std sources
     let full_source = if include_builtins {
-        format!("{}\n{}", get_builtin_sources(), source)
+        format!("{}\n{}\n{}", get_builtin_sources(), get_std_sources(), source)
     } else {
         source.to_string()
     };

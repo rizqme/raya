@@ -16,7 +16,7 @@
 //! ```raya
 //! let response: json = await fetch("/api/user");
 //! let user = response as User;  // Runtime validation
-//! console.log(user.name.toUpperCase());  // Fully typed
+//! logger.info(user.name.toUpperCase());  // Fully typed
 //! ```
 
 use crate::vm::gc::{GarbageCollector, GcPtr};

@@ -439,12 +439,12 @@ async function getUsers(): Task<void> {
     const result = await query(pool, "SELECT id, name FROM users");
 
     const rowCount = getRowCount(result);
-    console.log(`Found ${rowCount} users`);
+    logger.info(`Found ${rowCount} users`);
 
     // Iterate through rows
     for (let i = 0; i < rowCount; i++) {
         const row = getRow(result, i);
-        console.log(`User ${row[0]}: ${row[1]}`);
+        logger.info(`User ${row[0]}: ${row[1]}`);
     }
 }
 
@@ -646,7 +646,7 @@ try {
     const result = await queryWithTimeout("main", "SELECT ...", 5000);
 } catch (e) {
     // e is string from DbError::to_string()
-    console.error(`Database error: ${e}`);
+    logger.error(`Database error: ${e}`);
 }
 ```
 
@@ -680,7 +680,7 @@ impl ToRaya for PoolStats {
 Raya side:
 ```typescript
 const stats = poolGetStats(pool);
-console.log(`Active: ${stats.active}, Idle: ${stats.idle}`);
+logger.info(`Active: ${stats.active}, Idle: ${stats.idle}`);
 ```
 
 ### Pattern 3: Resource Cleanup (RAII)

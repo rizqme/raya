@@ -15,7 +15,7 @@ vm/
     ├── array.rs        # Array method handlers
     ├── string.rs       # String method handlers
     ├── regexp.rs       # RegExp method handlers
-    └── reflect.rs      # Reflect API handlers (Phases 1-5)
+    └── reflect.rs      # Reflect API handlers (Phases 1-17)
 ```
 
 ## Key Types
@@ -129,8 +129,8 @@ fn native_call(&mut self, ctx: &mut VmContext, native_id: u16, arg_count: usize)
         STRING_CHAR_AT => self.string_char_at(&args)?,
         STRING_SUBSTRING => self.string_substring(&args)?,
 
-        // Console (0x04xx)
-        CONSOLE_LOG => self.console_log(&args)?,
+        // Logger (0x10xx) - delegates to NativeHandler trait
+        0x1000..=0x1003 => self.native_handler.call(native_id, &args)?,
 
         // ... etc
         _ => return Err(VmError::RuntimeError(format!("Unknown native: {}", native_id))),
@@ -181,30 +181,32 @@ pub fn run_task(&mut self, task: &mut Task) -> TaskResult {
 }
 ```
 
-## Reflect API Handlers (`task_interpreter.rs`)
+## Reflect API Handlers (`handlers/reflect.rs`)
 
-Phase 6-8 handlers are inline in `call_reflect_method()`:
-- **Phase 6**: Type utilities (`typeOf`, `isAssignableTo`, `cast`)
-- **Phase 7**: Interface queries (`getInterfaces`, `implementsInterface`)
+All Reflect phases (1-17) are implemented in the handlers:
+- **Phase 1-5**: Metadata, introspection, field access, method invocation, object creation
+- **Phase 6-7**: Type utilities, interface queries
 - **Phase 8**: Object inspection, memory analysis, stack introspection
+- **Phase 9**: Proxy objects
+- **Phase 10**: Dynamic subclass creation
+- **Phase 13**: Generic type metadata
+- **Phase 14**: Runtime type creation (ClassBuilder, DynamicFunction)
+- **Phase 15**: Bytecode builder
+- **Phase 16**: Permissions
+- **Phase 17**: Dynamic modules, VM bootstrap
 
-Key handlers:
-- `inspect(obj)` - Human-readable object representation
-- `snapshot(obj)` - Capture object state as `ObjectSnapshot`
-- `diff(a, b)` - Compare objects/snapshots
-- `getHeapStats()` - Memory usage by class
-- `getCallStack()` - Current call frames
-- `getSourceLocation(classId, methodName)` - Source file:line:col (requires debug info)
+Native IDs: 0x0D00-0x0E2F (see `vm/builtin.rs`)
 
-Native IDs: 0x0D00-0x0DAF (see `vm/builtin.rs`)
+See `vm/reflect/CLAUDE.md` for detailed implementation info.
 
 ## For AI Assistants
 
 - Main loop is in `interpreter.rs`
 - Each opcode has explicit handling (no jump table)
-- Native calls dispatch by ID to Rust implementations
+- Native calls dispatch by ID: builtin methods are inline, stdlib methods use `NativeHandler` trait
 - Task preemption is cooperative (checked periodically)
 - Class instances are created via ClassRegistry
 - Method calls use vtable lookup
 - Exception handling uses try/catch bytecode markers
 - Reflect Phase 6-8 handlers are in `task_interpreter.rs` (inline for Task access)
+- **Post-M4.2**: Stdlib native calls (logger, etc.) use `NativeHandler` trait for decoupling

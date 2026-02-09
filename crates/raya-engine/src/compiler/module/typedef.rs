@@ -208,6 +208,10 @@ impl TypeDefParser {
                         ExportDecl::All { .. } => {
                             // Re-exports from other modules
                         }
+                        ExportDecl::Default { .. } => {
+                            // Default exports — type information comes from the expression
+                            // For .d.raya files, default exports are handled via named "default" symbol
+                        }
                     }
                 }
                 // Non-exported declarations are ignored in .d.raya files

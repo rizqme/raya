@@ -1,0 +1,13 @@
+[package]
+name = "raya-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Raya runtime that binds the engine with standard library"
+
+[dependencies]
+raya-engine = { workspace = true }
+raya-stdlib = { path = "../raya-stdlib" }

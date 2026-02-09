@@ -102,7 +102,7 @@ let missing: json = data.foo;  // Runtime: JsonValue::Undefined
 
 // Can check with typeof or equality
 if (typeof missing === "undefined") {
-  console.log("Property doesn't exist");
+  logger.info("Property doesn't exist");
 }
 ```
 
@@ -136,8 +136,8 @@ let response: json = fetch("https://api.example.com/user");
 let user = response as User;  // Runtime validation
 
 // Now fully typed
-console.log(user.name.toUpperCase());  // ✅ user.name is string
-console.log(user.age + 1);             // ✅ user.age is number
+logger.info(user.name.toUpperCase());  // ✅ user.name is string
+logger.info(user.age + 1);             // ✅ user.age is number
 ```
 
 ### Runtime Validation Rules
@@ -254,11 +254,11 @@ The compiler treats `json` as opaque:
 ```typescript
 function processUser(data: json) {
   // ❌ Cannot use json directly as typed value
-  console.log(data.name.toUpperCase());  // Error: json has no known properties
+  logger.info(data.name.toUpperCase());  // Error: json has no known properties
 
   // ✅ Must cast first
   let user = data as User;
-  console.log(user.name.toUpperCase());  // OK
+  logger.info(user.name.toUpperCase());  // OK
 }
 ```
 
@@ -289,7 +289,7 @@ let users = response as User[];
 
 // If we get past the line above, 'users' is guaranteed to be User[]
 for (let user of users) {
-  console.log(user.name);  // No further validation needed
+  logger.info(user.name);  // No further validation needed
 }
 ```
 
@@ -535,7 +535,7 @@ async function getUser(id: number): Promise<User> {
 
 // Usage
 let user = await getUser(123);
-console.log(user.name.toUpperCase());  // Fully typed
+logger.info(user.name.toUpperCase());  // Fully typed
 ```
 
 ### Example 2: Nested Structures
@@ -562,7 +562,7 @@ let response: json = await fetch("/api/user");
 // Single cast validates entire tree
 let user = response as User;
 
-console.log(user.company.address.city);  // Fully typed
+logger.info(user.company.address.city);  // Fully typed
 ```
 
 ### Example 3: Arrays
@@ -580,7 +580,7 @@ let response: json = await fetch("/api/products");
 let products = response as Product[];
 
 for (let product of products) {
-  console.log(`${product.name}: $${product.price}`);
+  logger.info(`${product.name}: $${product.price}`);
 }
 ```
 
@@ -614,9 +614,9 @@ let response: json = await fetch("/api/user");
 
 try {
   let user = response as User;
-  console.log(user.name);
+  logger.info(user.name);
 } catch (e: TypeError) {
-  console.error("Invalid user data:", e.message);
+  logger.error("Invalid user data:", e.message);
   // Handle validation error
 }
 ```
@@ -658,7 +658,7 @@ type ApiResponse =
 let response = await fetch("/api/user");  // Already parsed to union
 
 if (response.status === "ok") {
-  console.log(response.data.name);
+  logger.info(response.data.name);
 }
 ```
 
@@ -666,7 +666,7 @@ if (response.status === "ok") {
 ```typescript
 let response: json = await fetch("/api/user");
 let user = response as User;  // Direct cast
-console.log(user.name);
+logger.info(user.name);
 ```
 
 **Advantage:** No need to wrap API responses in discriminated unions.
@@ -682,7 +682,7 @@ $ openapi-codegen api.yaml --out types.ts
 import { User } from "./types";  // Generated
 
 let response = await fetchUser(123);  // Already typed
-console.log(response.name);
+logger.info(response.name);
 ```
 
 **With json type:**
@@ -694,7 +694,7 @@ interface User {  // Manual, but simple
 
 let response: json = await fetch("/api/user");
 let user = response as User;
-console.log(user.name);
+logger.info(user.name);
 ```
 
 **Advantage:** No build step, no generated code to maintain.
