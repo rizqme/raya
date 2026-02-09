@@ -1,0 +1,132 @@
+// Math - Standard math module
+// Usage: import math from "std:math";
+
+// Native call IDs (must match raya-engine/src/compiler/native_id.rs)
+const MATH_ABS: number = 0x2000;
+const MATH_SIGN: number = 0x2001;
+const MATH_FLOOR: number = 0x2002;
+const MATH_CEIL: number = 0x2003;
+const MATH_ROUND: number = 0x2004;
+const MATH_TRUNC: number = 0x2005;
+const MATH_MIN: number = 0x2006;
+const MATH_MAX: number = 0x2007;
+const MATH_POW: number = 0x2008;
+const MATH_SQRT: number = 0x2009;
+const MATH_SIN: number = 0x200A;
+const MATH_COS: number = 0x200B;
+const MATH_TAN: number = 0x200C;
+const MATH_ASIN: number = 0x200D;
+const MATH_ACOS: number = 0x200E;
+const MATH_ATAN: number = 0x200F;
+const MATH_ATAN2: number = 0x2010;
+const MATH_EXP: number = 0x2011;
+const MATH_LOG: number = 0x2012;
+const MATH_LOG10: number = 0x2013;
+const MATH_RANDOM: number = 0x2014;
+const MATH_PI: number = 0x2015;
+const MATH_E: number = 0x2016;
+
+class Math {
+    // Constants
+    PI(): number {
+        return __NATIVE_CALL(MATH_PI);
+    }
+
+    E(): number {
+        return __NATIVE_CALL(MATH_E);
+    }
+
+    // Basic
+    abs(x: number): number {
+        return __NATIVE_CALL(MATH_ABS, x);
+    }
+
+    sign(x: number): number {
+        return __NATIVE_CALL(MATH_SIGN, x);
+    }
+
+    // Rounding
+    floor(x: number): number {
+        return __NATIVE_CALL(MATH_FLOOR, x);
+    }
+
+    ceil(x: number): number {
+        return __NATIVE_CALL(MATH_CEIL, x);
+    }
+
+    round(x: number): number {
+        return __NATIVE_CALL(MATH_ROUND, x);
+    }
+
+    trunc(x: number): number {
+        return __NATIVE_CALL(MATH_TRUNC, x);
+    }
+
+    // Min/Max
+    min(a: number, b: number): number {
+        return __NATIVE_CALL(MATH_MIN, a, b);
+    }
+
+    max(a: number, b: number): number {
+        return __NATIVE_CALL(MATH_MAX, a, b);
+    }
+
+    // Power
+    pow(base: number, exp: number): number {
+        return __NATIVE_CALL(MATH_POW, base, exp);
+    }
+
+    sqrt(x: number): number {
+        return __NATIVE_CALL(MATH_SQRT, x);
+    }
+
+    // Trigonometry
+    sin(x: number): number {
+        return __NATIVE_CALL(MATH_SIN, x);
+    }
+
+    cos(x: number): number {
+        return __NATIVE_CALL(MATH_COS, x);
+    }
+
+    tan(x: number): number {
+        return __NATIVE_CALL(MATH_TAN, x);
+    }
+
+    asin(x: number): number {
+        return __NATIVE_CALL(MATH_ASIN, x);
+    }
+
+    acos(x: number): number {
+        return __NATIVE_CALL(MATH_ACOS, x);
+    }
+
+    atan(x: number): number {
+        return __NATIVE_CALL(MATH_ATAN, x);
+    }
+
+    atan2(y: number, x: number): number {
+        return __NATIVE_CALL(MATH_ATAN2, y, x);
+    }
+
+    // Exponential/Logarithmic
+    exp(x: number): number {
+        return __NATIVE_CALL(MATH_EXP, x);
+    }
+
+    log(x: number): number {
+        return __NATIVE_CALL(MATH_LOG, x);
+    }
+
+    log10(x: number): number {
+        return __NATIVE_CALL(MATH_LOG10, x);
+    }
+
+    // Random
+    random(): number {
+        return __NATIVE_CALL(MATH_RANDOM);
+    }
+}
+
+const math = new Math();
+export default math;

@@ -9,3 +9,4 @@ rust-version.workspace = true
 description = "Standard library native implementations for Raya"
 
 [dependencies]
+rand = "0.8"

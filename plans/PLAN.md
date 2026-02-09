@@ -2077,15 +2077,15 @@ export interface Task<T> extends PromiseLike<T> {
 
 **Reference:** `design/STDLIB.md` Section 1
 
-### 4.2 std:logger Module
+### 4.2 std:logger Module ✅
 
 **Goal:** Replace global `logger.info` with `std:logger` module
 
 **Tasks:**
-- [ ] Define logger as default-exported singleton (info, error, warn, debug)
-- [ ] Native IDs, type checker, compiler lowering, VM handlers (4 handlers)
-- [ ] Remove console global from STDLIB.md and raya-stdlib
-- [ ] Migrate all documentation references (97+ files)
+- [x] Define logger as default-exported singleton (info, error, warn, debug)
+- [x] Native IDs, type checker, compiler lowering, VM handlers (4 handlers)
+- [x] Remove console global from STDLIB.md and raya-stdlib
+- [x] Migrate all documentation references (97+ files)
 
 **API:**
 ```typescript
@@ -2099,13 +2099,13 @@ logger.debug("message");    // stdout
 
 **Reference:** `plans/milestone-4.2.md`
 
-### 4.3 std:math Module
+### 4.3 std:math Module ✅
 
 **Goal:** Implement Math as `std:math` standard library module (default export)
 
 **Tasks:**
-- [ ] Define native IDs (0x0F10-0x0F24), type checker, compiler lowering
-- [ ] VM handlers for 20 methods + 2 constants (PI, E)
+- [x] Define native IDs (0x2000-0x2016), stdlib implementation, VM dispatch
+- [x] 20 methods + 2 constants (PI, E) — 44 e2e tests passing
 
 **API:**
 ```typescript

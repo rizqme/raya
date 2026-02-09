@@ -20,5 +20,7 @@ mod concurrency;
 mod exceptions;
 mod builtins;
 mod json;
+mod logger;
+mod math;
 
 pub use harness::*;

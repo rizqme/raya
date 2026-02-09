@@ -6,6 +6,8 @@ use raya_engine::compiler::{Compiler, Module};
 use raya_engine::vm::{Value, Vm, VmError, RayaString};
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::parser::checker::{Binder, TypeChecker};
+use raya_runtime::StdNativeHandler;
+use std::sync::Arc;
 
 /// Get the builtin source files content
 ///
@@ -50,6 +52,9 @@ fn get_std_sources() -> &'static str {
     concat!(
         // Logger (std:logger)
         include_str!("../../../raya-stdlib/Logger.raya"),
+        "\n",
+        // Math (std:math)
+        include_str!("../../../raya-stdlib/Math.raya"),
         "\n",
     )
 }
@@ -169,12 +174,12 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
 
 /// Compile and execute with builtins included
 ///
-/// Use this for tests that use Map, Set, Buffer, Date, Channel, etc.
+/// Use this for tests that use Map, Set, Buffer, Date, Channel, Logger, etc.
 pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     let (module, _interner) = compile_with_builtins(source)?;
 
-    // Use single worker to avoid resource contention during parallel test execution
-    let mut vm = Vm::with_worker_count(1);
+    // Use single worker with StdNativeHandler for stdlib support (logger, etc.)
+    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
     vm.execute(&module).map_err(E2EError::Vm)
 }
 
@@ -187,6 +192,26 @@ pub fn expect_i32_with_builtins(source: &str, expected: i32) {
                 value, source
             ));
             assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with builtins, expecting a specific f64 result (within epsilon)
+pub fn expect_f64_with_builtins(source: &str, expected: f64) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            let actual = value.as_f64().expect(&format!(
+                "Expected f64 result, got {:?}\nSource:\n{}",
+                value, source
+            ));
+            assert!(
+                (actual - expected).abs() < 1e-10,
+                "Expected {}, got {} for:\n{}",
+                expected, actual, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);

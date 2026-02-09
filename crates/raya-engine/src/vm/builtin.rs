@@ -800,6 +800,61 @@ pub fn is_logger_method(method_id: u16) -> bool {
     (0x1000..=0x10FF).contains(&method_id)
 }
 
+/// Built-in method IDs for Math (std:math)
+pub mod math {
+    /// `math.abs(x)` - Absolute value
+    pub const ABS: u16 = 0x2000;
+    /// `math.sign(x)` - Sign of number (-1, 0, 1)
+    pub const SIGN: u16 = 0x2001;
+    /// `math.floor(x)` - Round down
+    pub const FLOOR: u16 = 0x2002;
+    /// `math.ceil(x)` - Round up
+    pub const CEIL: u16 = 0x2003;
+    /// `math.round(x)` - Round to nearest integer
+    pub const ROUND: u16 = 0x2004;
+    /// `math.trunc(x)` - Truncate decimal part
+    pub const TRUNC: u16 = 0x2005;
+    /// `math.min(a, b)` - Minimum of two numbers
+    pub const MIN: u16 = 0x2006;
+    /// `math.max(a, b)` - Maximum of two numbers
+    pub const MAX: u16 = 0x2007;
+    /// `math.pow(base, exp)` - Power
+    pub const POW: u16 = 0x2008;
+    /// `math.sqrt(x)` - Square root
+    pub const SQRT: u16 = 0x2009;
+    /// `math.sin(x)` - Sine
+    pub const SIN: u16 = 0x200A;
+    /// `math.cos(x)` - Cosine
+    pub const COS: u16 = 0x200B;
+    /// `math.tan(x)` - Tangent
+    pub const TAN: u16 = 0x200C;
+    /// `math.asin(x)` - Arcsine
+    pub const ASIN: u16 = 0x200D;
+    /// `math.acos(x)` - Arccosine
+    pub const ACOS: u16 = 0x200E;
+    /// `math.atan(x)` - Arctangent
+    pub const ATAN: u16 = 0x200F;
+    /// `math.atan2(y, x)` - Two-argument arctangent
+    pub const ATAN2: u16 = 0x2010;
+    /// `math.exp(x)` - e^x
+    pub const EXP: u16 = 0x2011;
+    /// `math.log(x)` - Natural logarithm
+    pub const LOG: u16 = 0x2012;
+    /// `math.log10(x)` - Base-10 logarithm
+    pub const LOG10: u16 = 0x2013;
+    /// `math.random()` - Random number in [0, 1)
+    pub const RANDOM: u16 = 0x2014;
+    /// `math.PI()` - Pi constant
+    pub const PI: u16 = 0x2015;
+    /// `math.E()` - Euler's number constant
+    pub const E: u16 = 0x2016;
+}
+
+/// Check if a method ID is a math method
+pub fn is_math_method(method_id: u16) -> bool {
+    (0x2000..=0x20FF).contains(&method_id)
+}
+
 /// Built-in method IDs for Number
 pub mod number {
     /// `number.toFixed(digits)` - Format with fixed decimal places

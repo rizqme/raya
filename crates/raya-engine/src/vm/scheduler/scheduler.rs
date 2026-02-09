@@ -83,8 +83,18 @@ impl Scheduler {
         Self::with_limits(count, SchedulerLimits::default())
     }
 
+    /// Create a new scheduler with a custom native handler
+    pub fn with_native_handler(worker_count: usize, native_handler: Arc<dyn crate::vm::NativeHandler>) -> Self {
+        Self::with_limits_and_handler(worker_count, SchedulerLimits::default(), native_handler)
+    }
+
     /// Create a new scheduler with resource limits (for sub-schedulers)
     pub fn with_limits(worker_count: usize, limits: SchedulerLimits) -> Self {
+        Self::with_limits_and_handler(worker_count, limits, Arc::new(crate::vm::NoopNativeHandler))
+    }
+
+    /// Create a new scheduler with resource limits and a custom native handler
+    pub fn with_limits_and_handler(worker_count: usize, limits: SchedulerLimits, native_handler: Arc<dyn crate::vm::NativeHandler>) -> Self {
         // Apply worker limit if specified
         let actual_worker_count = limits
             .max_workers
@@ -96,10 +106,11 @@ impl Scheduler {
         let tasks = Arc::new(RwLock::new(FxHashMap::default()));
 
         // Create shared VM state
-        let shared_state = Arc::new(SharedVmState::new(
+        let shared_state = Arc::new(SharedVmState::with_native_handler(
             safepoint.clone(),
             tasks.clone(),
             injector.clone(),
+            native_handler,
         ));
 
         // Create worker deques to get stealers

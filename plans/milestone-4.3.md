@@ -1,24 +1,37 @@
 # Milestone 4.3: std:math Module
 
-**Status:** Not Started
-**Depends on:** Milestone 3.7 (Module System)
-**Goal:** Implement the Math module as `std:math` with 20 methods and 2 constants, imported explicitly
+**Status:** Complete
+**Depends on:** Milestone 4.2 (std:logger — established stdlib pattern)
+**Goal:** Implement the Math module as `std:math` with 20 methods and 2 constants, following the stdlib decoupling pattern (raya-stdlib + raya-runtime)
 
 ---
 
 ## Overview
 
-Math functions are provided as a standard library module `std:math`, not as a global namespace. Users must import it explicitly.
+Math functions are provided as a standard library module `std:math`, not as a global namespace. Follows the same architecture as `std:logger`:
+
+```
+Math.raya (raya-stdlib)  →  __NATIVE_CALL(ID, args)
+                                    ↓
+                         NativeCall opcode (VM)
+                                    ↓
+                         is_math_method() check (builtin.rs)
+                                    ↓
+                         NativeHandler::call() (trait)
+                                    ↓
+                         StdNativeHandler (raya-runtime)
+                                    ↓
+                         raya_stdlib::math::* (Rust)
+```
 
 ### Usage
 
 ```typescript
-import math from "std:math";
-
-let radius = 5.0;
-let area = math.PI * math.pow(radius, 2);
-let angle = math.atan2(3, 4);
-let rounded = math.floor(3.7);  // 3
+// math is a global (default export from Math.raya, like logger)
+let radius: number = 5;
+let area: number = math.PI() * math.pow(radius, 2);
+let angle: number = math.atan2(3, 4);
+let rounded: number = math.floor(3.7);  // 3
 ```
 
 ---
@@ -28,11 +41,11 @@ let rounded = math.floor(3.7);  // 3
 ### Module: `std:math`
 
 ```typescript
-module "std:math" {
-  interface Math {
-    // Constants
-    readonly PI: number;   // 3.141592653589793
-    readonly E: number;    // 2.718281828459045
+// Math.raya — defines class + default export (like Logger.raya)
+class Math {
+    // Constants (as zero-arg methods, matching __NATIVE_CALL pattern)
+    PI(): number;    // 3.141592653589793
+    E(): number;     // 2.718281828459045
 
     // Basic
     abs(x: number): number;
@@ -68,135 +81,144 @@ module "std:math" {
 
     // Random
     random(): number;
-  }
-
-  const math: Math;
-  export default math;
 }
+
+const math = new Math();
+export default math;
 ```
 
 ---
 
 ## Phases
 
-### Phase 1: Native IDs & Type Registration ⬜
+### Phase 1: Native IDs & Engine Infrastructure ✅
 
-**Status:** Not Started
+**Status:** Complete
 
 **Tasks:**
-- [ ] Define native IDs in `builtin.rs`
-  - [ ] Add `pub mod math { ... }` with IDs 0x0F10-0x0F2F
-- [ ] Add corresponding constants in `native_id.rs`
-  - [ ] `MATH_ABS` (0x0F10)
-  - [ ] `MATH_SIGN` (0x0F11)
-  - [ ] `MATH_FLOOR` (0x0F12)
-  - [ ] `MATH_CEIL` (0x0F13)
-  - [ ] `MATH_ROUND` (0x0F14)
-  - [ ] `MATH_TRUNC` (0x0F15)
-  - [ ] `MATH_MIN` (0x0F16)
-  - [ ] `MATH_MAX` (0x0F17)
-  - [ ] `MATH_POW` (0x0F18)
-  - [ ] `MATH_SQRT` (0x0F19)
-  - [ ] `MATH_SIN` (0x0F1A)
-  - [ ] `MATH_COS` (0x0F1B)
-  - [ ] `MATH_TAN` (0x0F1C)
-  - [ ] `MATH_ASIN` (0x0F1D)
-  - [ ] `MATH_ACOS` (0x0F1E)
-  - [ ] `MATH_ATAN` (0x0F1F)
-  - [ ] `MATH_ATAN2` (0x0F20)
-  - [ ] `MATH_EXP` (0x0F21)
-  - [ ] `MATH_LOG` (0x0F22)
-  - [ ] `MATH_LOG10` (0x0F23)
-  - [ ] `MATH_RANDOM` (0x0F24)
-- [ ] Register math as default-exported singleton in type checker
-  - [ ] Define `Math` interface with all method signatures
-  - [ ] `PI` and `E` as readonly number properties
+- [x] Define native IDs in `builtin.rs`
+  - [x] Add `pub mod math { ... }` with IDs in 0x2000-0x20FF range
+  - [x] Add `is_math_method()` helper (like `is_logger_method()`)
+- [x] Add corresponding constants in `native_id.rs`
+  - [x] `MATH_ABS` (0x2000)
+  - [x] `MATH_SIGN` (0x2001)
+  - [x] `MATH_FLOOR` (0x2002)
+  - [x] `MATH_CEIL` (0x2003)
+  - [x] `MATH_ROUND` (0x2004)
+  - [x] `MATH_TRUNC` (0x2005)
+  - [x] `MATH_MIN` (0x2006)
+  - [x] `MATH_MAX` (0x2007)
+  - [x] `MATH_POW` (0x2008)
+  - [x] `MATH_SQRT` (0x2009)
+  - [x] `MATH_SIN` (0x200A)
+  - [x] `MATH_COS` (0x200B)
+  - [x] `MATH_TAN` (0x200C)
+  - [x] `MATH_ASIN` (0x200D)
+  - [x] `MATH_ACOS` (0x200E)
+  - [x] `MATH_ATAN` (0x200F)
+  - [x] `MATH_ATAN2` (0x2010)
+  - [x] `MATH_EXP` (0x2011)
+  - [x] `MATH_LOG` (0x2012)
+  - [x] `MATH_LOG10` (0x2013)
+  - [x] `MATH_RANDOM` (0x2014)
+  - [x] `MATH_PI` (0x2015)
+  - [x] `MATH_E` (0x2016)
+- [x] Add `native_name()` entries for all math IDs
 
 **Files:**
 - `crates/raya-engine/src/vm/builtin.rs`
 - `crates/raya-engine/src/compiler/native_id.rs`
-- `crates/raya-engine/src/parser/checker/checker.rs`
-- `crates/raya-engine/src/parser/checker/builtins.rs`
 
 ---
 
-### Phase 2: Compiler Lowering ⬜
+### Phase 2: Raya Source & Stdlib Implementation ✅
 
-**Status:** Not Started
+**Status:** Complete
 
 **Tasks:**
-- [ ] Lower `math.PI` → `PUSH_F64 3.141592653589793` (constant fold)
-- [ ] Lower `math.E` → `PUSH_F64 2.718281828459045` (constant fold)
-- [ ] Lower `math.abs(x)` → `NATIVE_CALL(MATH_ABS, x)`
-- [ ] Same pattern for all 20 methods
-- [ ] Handle `math.min(a, b)` / `math.max(a, b)` — variadic → pairwise in compiler
+- [x] Create `crates/raya-stdlib/Math.raya` — class with `__NATIVE_CALL` methods
+- [x] Create `crates/raya-stdlib/src/math.rs` — Rust native implementations
+  - [x] All 20 methods + 2 constants using `f64` std library
+  - [x] `random()` using `rand` crate
+- [x] Register `pub mod math;` in `crates/raya-stdlib/src/lib.rs`
+- [x] Register `Math.raya` in std module registry (`std_modules.rs`)
+- [x] Add `rand` dependency to `crates/raya-stdlib/Cargo.toml`
 
 **Files:**
-- `crates/raya-engine/src/compiler/lower/expr.rs`
+- `crates/raya-stdlib/Math.raya` (new)
+- `crates/raya-stdlib/src/math.rs` (new)
+- `crates/raya-stdlib/src/lib.rs`
+- `crates/raya-engine/src/compiler/module/std_modules.rs`
+- `crates/raya-stdlib/Cargo.toml`
 
 ---
 
-### Phase 3: VM Handlers ⬜
+### Phase 3: VM Dispatch & Runtime Handler ✅
 
-**Status:** Not Started
-
-All handlers take f64 args, return f64.
+**Status:** Complete
 
 **Tasks:**
-- [ ] Implement 20 match arms in `task_interpreter.rs`
+- [x] Add math dispatch in `task_interpreter.rs` (like logger dispatch)
+  - [x] `is_math_method(id)` → convert args to string, call handler
+  - [x] Handle `NativeCallResult::Number(f64)` → push `Value::f64()` onto stack
+  - [x] Handle both NativeCall handler locations (2 sites in task_interpreter.rs)
+- [x] Update `StdNativeHandler` in `crates/raya-runtime/src/lib.rs`
+  - [x] Add match arms for 0x2000-0x2016 routing to `raya_stdlib::math::*`
+  - [x] Parse string args to f64, call math function, return `NativeCallResult::Number(result)`
 
 | Native ID | Method | Rust Implementation | Notes |
 |-----------|--------|---------------------|-------|
-| 0x0F10 | `abs(x)` | `f64::abs()` | |
-| 0x0F11 | `sign(x)` | `f64::signum()` | Returns -1, 0, or 1 |
-| 0x0F12 | `floor(x)` | `f64::floor()` | |
-| 0x0F13 | `ceil(x)` | `f64::ceil()` | |
-| 0x0F14 | `round(x)` | `f64::round()` | |
-| 0x0F15 | `trunc(x)` | `f64::trunc()` | |
-| 0x0F16 | `min(a, b)` | `f64::min(a, b)` | |
-| 0x0F17 | `max(a, b)` | `f64::max(a, b)` | |
-| 0x0F18 | `pow(base, exp)` | `f64::powf(exp)` | |
-| 0x0F19 | `sqrt(x)` | `f64::sqrt()` | |
-| 0x0F1A | `sin(x)` | `f64::sin()` | |
-| 0x0F1B | `cos(x)` | `f64::cos()` | |
-| 0x0F1C | `tan(x)` | `f64::tan()` | |
-| 0x0F1D | `asin(x)` | `f64::asin()` | |
-| 0x0F1E | `acos(x)` | `f64::acos()` | |
-| 0x0F1F | `atan(x)` | `f64::atan()` | |
-| 0x0F20 | `atan2(y, x)` | `f64::atan2(x)` | Note: y.atan2(x) |
-| 0x0F21 | `exp(x)` | `f64::exp()` | |
-| 0x0F22 | `log(x)` | `f64::ln()` | Natural logarithm |
-| 0x0F23 | `log10(x)` | `f64::log10()` | |
-| 0x0F24 | `random()` | `rand::thread_rng().gen::<f64>()` | Returns [0, 1) |
+| 0x2000 | `abs(x)` | `f64::abs()` | |
+| 0x2001 | `sign(x)` | `f64::signum()` | Returns -1, 0, or 1 |
+| 0x2002 | `floor(x)` | `f64::floor()` | |
+| 0x2003 | `ceil(x)` | `f64::ceil()` | |
+| 0x2004 | `round(x)` | `f64::round()` | |
+| 0x2005 | `trunc(x)` | `f64::trunc()` | |
+| 0x2006 | `min(a, b)` | `f64::min(a, b)` | |
+| 0x2007 | `max(a, b)` | `f64::max(a, b)` | |
+| 0x2008 | `pow(base, exp)` | `f64::powf(exp)` | |
+| 0x2009 | `sqrt(x)` | `f64::sqrt()` | |
+| 0x200A | `sin(x)` | `f64::sin()` | |
+| 0x200B | `cos(x)` | `f64::cos()` | |
+| 0x200C | `tan(x)` | `f64::tan()` | |
+| 0x200D | `asin(x)` | `f64::asin()` | |
+| 0x200E | `acos(x)` | `f64::acos()` | |
+| 0x200F | `atan(x)` | `f64::atan()` | |
+| 0x2010 | `atan2(y, x)` | `y.atan2(x)` | Note: y.atan2(x) |
+| 0x2011 | `exp(x)` | `f64::exp()` | |
+| 0x2012 | `log(x)` | `f64::ln()` | Natural logarithm |
+| 0x2013 | `log10(x)` | `f64::log10()` | |
+| 0x2014 | `random()` | `rand::random::<f64>()` | Returns [0, 1) |
+| 0x2015 | `PI()` | `std::f64::consts::PI` | 3.141592653589793 |
+| 0x2016 | `E()` | `std::f64::consts::E` | 2.718281828459045 |
 
 **Files:**
 - `crates/raya-engine/src/vm/vm/task_interpreter.rs`
+- `crates/raya-runtime/src/lib.rs`
 
 ---
 
-### Phase 4: Tests ⬜
+### Phase 4: Test Harness & E2E Tests ✅
 
-**Status:** Not Started
+**Status:** Complete
 
 **Tasks:**
-- [ ] `test_math_constants` — `math.PI`, `math.E`
-- [ ] `test_math_abs_sign` — `math.abs(-5)`, `math.sign(-3)`
-- [ ] `test_math_floor_ceil_round_trunc` — Rounding functions
-- [ ] `test_math_min_max` — `math.min(1, 2)`, `math.max(1, 2)`
-- [ ] `test_math_pow_sqrt` — `math.pow(2, 10)`, `math.sqrt(16)`
-- [ ] `test_math_trig` — sin, cos, tan, asin, acos, atan, atan2
-- [ ] `test_math_exp_log` — `math.exp(1)`, `math.log(math.E)`, `math.log10(100)`
-- [ ] `test_math_random` — Returns value in [0, 1)
-- [ ] `test_math_import` — Must import from "std:math" (no global)
+- [x] Update test harness `get_std_sources()` to include `Math.raya`
+- [x] Add `expect_f64_with_builtins()` helper for floating-point assertions
+- [x] Create `crates/raya-runtime/tests/e2e/math.rs` with 44 tests
+- [x] Register `mod math;` in `crates/raya-runtime/tests/e2e/mod.rs`
+- [x] All tests include `import math from "std:math"` syntax
 
 **Files:**
-- `crates/raya-engine/tests/e2e/math.rs`
+- `crates/raya-runtime/tests/e2e/harness.rs`
+- `crates/raya-runtime/tests/e2e/math.rs` (new)
+- `crates/raya-runtime/tests/e2e/mod.rs`
 
 ---
 
 ## Dependencies
 
-- **rand** crate for `math.random()`
+- **rand** crate for `math.random()` (add to raya-stdlib)
 
 ---
 
@@ -204,9 +226,14 @@ All handlers take f64 args, return f64.
 
 | File | Purpose |
 |------|---------|
-| `crates/raya-engine/src/vm/builtin.rs` | Math native ID module |
-| `crates/raya-engine/src/compiler/native_id.rs` | Math native ID constants |
-| `crates/raya-engine/src/parser/checker/checker.rs` | Math type resolution |
-| `crates/raya-engine/src/compiler/lower/expr.rs` | math → NATIVE_CALL lowering |
-| `crates/raya-engine/src/vm/vm/task_interpreter.rs` | Math VM handlers (20 arms) |
+| `crates/raya-stdlib/Math.raya` | Raya source: Math class + `__NATIVE_CALL` + `export default` |
+| `crates/raya-stdlib/src/math.rs` | Rust implementations (22 functions) |
+| `crates/raya-stdlib/src/lib.rs` | Register `pub mod math;` |
+| `crates/raya-engine/src/vm/builtin.rs` | `pub mod math` IDs + `is_math_method()` |
+| `crates/raya-engine/src/compiler/native_id.rs` | `MATH_*` constants + `native_name()` entries |
+| `crates/raya-engine/src/compiler/module/std_modules.rs` | Register `Math.raya` in std module registry |
+| `crates/raya-engine/src/vm/vm/task_interpreter.rs` | VM dispatch: `is_math_method()` → native handler |
+| `crates/raya-runtime/src/lib.rs` | `StdNativeHandler` match arms for math IDs |
+| `crates/raya-runtime/tests/e2e/harness.rs` | `get_std_sources()` includes `Math.raya` |
+| `crates/raya-runtime/tests/e2e/math.rs` | E2E tests |
 | `design/STDLIB.md` | API specification |

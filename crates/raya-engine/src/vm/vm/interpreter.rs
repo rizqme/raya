@@ -70,6 +70,27 @@ impl Vm {
         }
     }
 
+    /// Create a new VM with specified worker count and native handler
+    pub fn with_native_handler(worker_count: usize, native_handler: std::sync::Arc<dyn crate::vm::NativeHandler>) -> Self {
+        let mut scheduler = Scheduler::with_native_handler(worker_count, native_handler);
+        scheduler.start();
+
+        Self {
+            gc: GarbageCollector::default(),
+            stack: Stack::new(),
+            globals: rustc_hash::FxHashMap::default(),
+            globals_by_index: Vec::new(),
+            classes: ClassRegistry::new(),
+            scheduler,
+            closure_stack: Vec::new(),
+            exception_handlers: Vec::new(),
+            current_exception: None,
+            caught_exception: None,
+            held_mutexes: Vec::new(),
+            mutex_registry: MutexRegistry::new(),
+        }
+    }
+
     /// Get the scheduler
     pub fn scheduler(&self) -> &Scheduler {
         &self.scheduler

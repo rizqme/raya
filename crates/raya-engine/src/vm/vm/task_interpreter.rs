@@ -4024,6 +4024,35 @@ impl<'a> TaskInterpreter<'a> {
                         }
                     }
 
+                    // Math native calls (std:math) — dispatches to native handler
+                    id if crate::vm::builtin::is_math_method(id) => {
+                        use crate::vm::NativeCallResult;
+                        let arg_strings = Self::values_to_strings(&args);
+                        match self.native_handler.call(id, &arg_strings) {
+                            NativeCallResult::Number(n) => {
+                                if let Err(e) = stack.push(Value::f64(n)) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                OpcodeResult::Continue
+                            }
+                            NativeCallResult::Unhandled => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Native call {:#06x} not handled by native handler",
+                                    id
+                                )));
+                            }
+                            NativeCallResult::Error(msg) => {
+                                return OpcodeResult::Error(VmError::RuntimeError(msg));
+                            }
+                            _ => {
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Unexpected result type from math native call {:#06x}",
+                                    id
+                                )));
+                            }
+                        }
+                    }
+
                     _ => {
                         // Check if this is a reflect method - pass args directly (don't push/pop)
                         if crate::vm::builtin::is_reflect_method(native_id) {
@@ -6300,6 +6329,31 @@ impl<'a> TaskInterpreter<'a> {
                                 _ => {
                                     return Err(VmError::RuntimeError(format!(
                                         "Unexpected result type from logger native call {:#06x}",
+                                        id
+                                    )));
+                                }
+                            }
+                        }
+                        // Math native calls (std:math) — dispatches to native handler
+                        id if crate::vm::builtin::is_math_method(id as u16) => {
+                            use crate::vm::NativeCallResult;
+                            let arg_strings = Self::values_to_strings(&args);
+                            match self.native_handler.call(id as u16, &arg_strings) {
+                                NativeCallResult::Number(n) => {
+                                    call_stack.push(Value::f64(n))?;
+                                }
+                                NativeCallResult::Unhandled => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Native call {:#06x} not handled by native handler",
+                                        id
+                                    )));
+                                }
+                                NativeCallResult::Error(msg) => {
+                                    return Err(VmError::RuntimeError(msg));
+                                }
+                                _ => {
+                                    return Err(VmError::RuntimeError(format!(
+                                        "Unexpected result type from math native call {:#06x}",
                                         id
                                     )));
                                 }

@@ -63,13 +63,15 @@
 - ✅ Phase 4: E2E tests moved to raya-runtime
   - All 594 e2e tests moved from raya-engine to raya-runtime
   - Tests run with StdNativeHandler integration
-- Tests: 1,724 engine (827 lib + 897 integration), 596 runtime (594 e2e + 2 unit), 4 stdlib, 200 rpkg (2,524 total)
+- Tests: 827 engine lib, 659 runtime (e2e + unit), 13 stdlib
 
-**Milestone 4.3 (std:math):** Not Started
-- Default export: `import math from "std:math"` → `math.abs()`, `math.floor()`, `math.PI`, etc.
-- 20 methods + 2 constants, native IDs, type checker, compiler lowering, VM handlers
+**Milestone 4.3 (std:math):** Complete
+- ✅ All 4 phases complete: native IDs, Math.raya + stdlib, VM dispatch, e2e tests
+- 22 functions: abs, sign, floor, ceil, round, trunc, min, max, pow, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, random, PI, E
+- Native ID range: 0x2000-0x2016
+- 44 e2e tests + 10 stdlib unit tests passing
 
-**Tests:** 2,524 total (1,724 engine, 596 runtime, 4 stdlib, 200 rpkg)
+**Tests:** 1,499 total (827 engine lib, 659 runtime, 13 stdlib)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), and [plans/milestone-4.3.md](plans/milestone-4.3.md) for details.
 
@@ -136,11 +138,11 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (2,524)
-cargo test -p raya-engine      # Engine tests only (1,724)
-cargo test -p raya-runtime     # Runtime + e2e tests (596)
-cargo test -p raya-stdlib      # Stdlib tests (4)
-cargo test -p rpkg             # Package manager tests (200)
+cargo test                     # Run all tests (1,499+)
+cargo test -p raya-engine      # Engine tests only (827)
+cargo test -p raya-runtime     # Runtime + e2e tests (659)
+cargo test -p raya-stdlib      # Stdlib tests (13)
+cargo test -p rpkg             # Package manager tests
 ```
 
 ---

@@ -211,6 +211,57 @@ pub const LOGGER_WARN: u16 = 0x1002;
 pub const LOGGER_ERROR: u16 = 0x1003;
 
 // ============================================================================
+// Math (0x20xx) - std:math module
+// ============================================================================
+
+/// math.abs(x) - Absolute value
+pub const MATH_ABS: u16 = 0x2000;
+/// math.sign(x) - Sign of number
+pub const MATH_SIGN: u16 = 0x2001;
+/// math.floor(x) - Round down
+pub const MATH_FLOOR: u16 = 0x2002;
+/// math.ceil(x) - Round up
+pub const MATH_CEIL: u16 = 0x2003;
+/// math.round(x) - Round to nearest integer
+pub const MATH_ROUND: u16 = 0x2004;
+/// math.trunc(x) - Truncate decimal part
+pub const MATH_TRUNC: u16 = 0x2005;
+/// math.min(a, b) - Minimum of two numbers
+pub const MATH_MIN: u16 = 0x2006;
+/// math.max(a, b) - Maximum of two numbers
+pub const MATH_MAX: u16 = 0x2007;
+/// math.pow(base, exp) - Power
+pub const MATH_POW: u16 = 0x2008;
+/// math.sqrt(x) - Square root
+pub const MATH_SQRT: u16 = 0x2009;
+/// math.sin(x) - Sine
+pub const MATH_SIN: u16 = 0x200A;
+/// math.cos(x) - Cosine
+pub const MATH_COS: u16 = 0x200B;
+/// math.tan(x) - Tangent
+pub const MATH_TAN: u16 = 0x200C;
+/// math.asin(x) - Arcsine
+pub const MATH_ASIN: u16 = 0x200D;
+/// math.acos(x) - Arccosine
+pub const MATH_ACOS: u16 = 0x200E;
+/// math.atan(x) - Arctangent
+pub const MATH_ATAN: u16 = 0x200F;
+/// math.atan2(y, x) - Two-argument arctangent
+pub const MATH_ATAN2: u16 = 0x2010;
+/// math.exp(x) - e^x
+pub const MATH_EXP: u16 = 0x2011;
+/// math.log(x) - Natural logarithm
+pub const MATH_LOG: u16 = 0x2012;
+/// math.log10(x) - Base-10 logarithm
+pub const MATH_LOG10: u16 = 0x2013;
+/// math.random() - Random number in [0, 1)
+pub const MATH_RANDOM: u16 = 0x2014;
+/// math.PI() - Pi constant
+pub const MATH_PI: u16 = 0x2015;
+/// math.E() - Euler's number constant
+pub const MATH_E: u16 = 0x2016;
+
+// ============================================================================
 // JSON (0x0Cxx)
 // ============================================================================
 
@@ -477,6 +528,31 @@ pub fn native_name(id: u16) -> &'static str {
         LOGGER_INFO => "logger.info",
         LOGGER_WARN => "logger.warn",
         LOGGER_ERROR => "logger.error",
+
+        // Math
+        MATH_ABS => "math.abs",
+        MATH_SIGN => "math.sign",
+        MATH_FLOOR => "math.floor",
+        MATH_CEIL => "math.ceil",
+        MATH_ROUND => "math.round",
+        MATH_TRUNC => "math.trunc",
+        MATH_MIN => "math.min",
+        MATH_MAX => "math.max",
+        MATH_POW => "math.pow",
+        MATH_SQRT => "math.sqrt",
+        MATH_SIN => "math.sin",
+        MATH_COS => "math.cos",
+        MATH_TAN => "math.tan",
+        MATH_ASIN => "math.asin",
+        MATH_ACOS => "math.acos",
+        MATH_ATAN => "math.atan",
+        MATH_ATAN2 => "math.atan2",
+        MATH_EXP => "math.exp",
+        MATH_LOG => "math.log",
+        MATH_LOG10 => "math.log10",
+        MATH_RANDOM => "math.random",
+        MATH_PI => "math.PI",
+        MATH_E => "math.E",
 
         _ => "unknown",
     }

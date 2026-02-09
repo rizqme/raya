@@ -26,6 +26,10 @@ impl StdModuleRegistry {
             "logger",
             include_str!("../../../../raya-stdlib/Logger.raya"),
         );
+        modules.insert(
+            "math",
+            include_str!("../../../../raya-stdlib/Math.raya"),
+        );
 
         Self { modules }
     }
