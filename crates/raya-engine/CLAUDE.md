@@ -6,7 +6,7 @@ The core Raya language engine containing the parser, compiler, and virtual machi
 
 ```
 src/
-├── lib.rs           # Crate entry point, re-exports
+├── lib.rs           # Crate entry point, re-exports, NativeHandler trait
 ├── parser/          # Lexer, parser, type checker
 ├── compiler/        # IR, optimizations, bytecode generation
 ├── vm/              # Interpreter, scheduler, GC, runtime
@@ -29,6 +29,7 @@ src/
 - **optimize/**: Constant folding, DCE, inlining
 - **codegen/**: IR → Bytecode generation
 - **bytecode/**: Opcode definitions, module format
+- **module/**: Multi-module compilation, std: module registry
 
 ### `vm/` - Runtime
 - **vm/**: Core interpreter, context management
@@ -40,6 +41,7 @@ src/
 - **snapshot/**: VM state serialization
 - **ffi/**: Native module interface
 - **reflect/**: Reflection API runtime (metadata, introspection, proxies, dynamic code) - see `vm/reflect/CLAUDE.md`
+- **module/**: Module loading and linking
 - **json/**: JSON parsing and serialization
 
 ## Compilation Pipeline
@@ -124,15 +126,24 @@ Vm::execute(&Module) -> VmResult<Value>
 
 ### Adding a Reflect API Method
 1. Add native ID in `vm/builtin.rs` (0x0Dxx range)
-2. Add handler in `vm/vm/task_interpreter.rs` (call_reflect_method)
+2. Add handler in `vm/vm/handlers/reflect.rs`
 3. Add type declaration in `raya-stdlib/reflect.d.raya`
 4. Update milestone-3.8.md
 
+### Adding a New Stdlib Module
+1. Create `.raya` source in `crates/raya-stdlib/` (e.g., `Math.raya`)
+2. Define native IDs in `vm/builtin.rs`
+3. Add to std registry in `compiler/module/std_modules.rs`
+4. Implement Rust functions in `crates/raya-stdlib/src/`
+5. Route in `StdNativeHandler` in `raya-runtime/src/lib.rs`
+
 ## Test Files
 
-- `tests/e2e_tests.rs`: End-to-end compilation + execution tests
+- **Engine unit tests** (827): Colocated `#[cfg(test)]` blocks in each module
+- **Engine integration tests** (897): `tests/*.rs` files (codegen, IR, concurrency, etc.)
+- **E2E tests** (594): Moved to `raya-runtime/tests/` in M4.2 (require `StdNativeHandler`)
+- `tests/reflect_phase8_tests.rs`: Reflect API integration tests
 - `tests/opcode_tests.rs`: Individual opcode tests
-- Unit tests are colocated in each module
 
 ## Important Notes
 
@@ -140,5 +151,7 @@ Vm::execute(&Module) -> VmResult<Value>
 - **Monomorphization**: Generics are specialized per concrete type
 - **Task-based concurrency**: `async` creates Tasks, `await` suspends
 - **Typed opcodes**: `IADD` (int), `FADD` (float), `NADD` (number)
+- **NativeHandler trait**: Engine defines this trait for stdlib decoupling; `raya-runtime` binds implementations
+- **Reflection always enabled**: No compiler flag needed, metadata always emitted
 
 See submodule CLAUDE.md files for detailed guidance on each component.

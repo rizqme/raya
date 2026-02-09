@@ -26,8 +26,10 @@ vm/
 │   ├── snapshot.rs        # ObjectSnapshot, ObjectDiff
 │   ├── proxy.rs           # Proxy detection and trap dispatch
 │   ├── type_builder.rs    # Dynamic class creation (Phase 10)
+│   ├── generic_metadata.rs # Generic type tracking (Phase 13)
 │   ├── runtime_builder.rs # Runtime type creation (Phase 14)
 │   ├── bytecode_builder.rs # Dynamic bytecode generation (Phase 15)
+│   ├── function_builder.rs # FunctionWrapper, DecoratorRegistry (M3.9)
 │   ├── permissions.rs     # Security & permissions (Phase 16)
 │   ├── dynamic_module.rs  # Dynamic module system (Phase 17)
 │   └── bootstrap.rs       # Bootstrap context (Phase 17)

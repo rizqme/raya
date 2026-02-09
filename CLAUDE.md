@@ -22,7 +22,7 @@
 **Milestone 3.8 (Reflection API):** Core implementation complete
 - Phases 1-17 handlers done (metadata, introspection, proxies, dynamic classes, bytecode generation, permissions, VM bootstrap)
 - Phases 12, 18 blocked (framework tests, performance validation) - waiting for compiler `std:` import support
-- 141+ reflect unit tests passing
+- 149+ reflect unit tests passing
 
 **Milestone 3.9 (Decorators):** Complete (41/41 e2e tests)
 - Type aliases registered (`ClassDecorator<T>`, `MethodDecorator<F>`, `ParameterDecorator<T>`, etc.)
@@ -63,13 +63,13 @@
 - ✅ Phase 4: E2E tests moved to raya-runtime
   - All 594 e2e tests moved from raya-engine to raya-runtime
   - Tests run with StdNativeHandler integration
-- Tests: 827 engine lib, 596 runtime (594 e2e + 2 unit), 4 stdlib (1,427 total)
+- Tests: 1,724 engine (827 lib + 897 integration), 596 runtime (594 e2e + 2 unit), 4 stdlib, 200 rpkg (2,524 total)
 
 **Milestone 4.3 (std:math):** Not Started
 - Default export: `import math from "std:math"` → `math.abs()`, `math.floor()`, `math.PI`, etc.
 - 20 methods + 2 constants, native IDs, type checker, compiler lowering, VM handlers
 
-**Tests:** 1,427 total (827 engine lib, 596 runtime, 4 stdlib)
+**Tests:** 2,524 total (1,724 engine, 596 runtime, 4 stdlib, 200 rpkg)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), and [plans/milestone-4.3.md](plans/milestone-4.3.md) for details.
 
@@ -136,9 +136,11 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests
-cargo test -p raya-engine      # Engine tests only
-cargo test -p rpkg             # Package manager tests
+cargo test                     # Run all tests (2,524)
+cargo test -p raya-engine      # Engine tests only (1,724)
+cargo test -p raya-runtime     # Runtime + e2e tests (596)
+cargo test -p raya-stdlib      # Stdlib tests (4)
+cargo test -p rpkg             # Package manager tests (200)
 ```
 
 ---

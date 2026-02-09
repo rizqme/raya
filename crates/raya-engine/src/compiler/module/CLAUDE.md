@@ -23,7 +23,8 @@ module/
 ├── cache.rs        # Module cache
 ├── exports.rs      # Export tracking for cross-module resolution
 ├── compiler.rs     # ModuleCompiler orchestrator
-└── typedef.rs      # Type definition (.d.raya) parsing
+├── typedef.rs      # Type definition (.d.raya) parsing
+└── std_modules.rs  # std: module registry (embedded sources)
 ```
 
 ## Key Types
@@ -150,6 +151,8 @@ for module in compiled {
 | .d.raya type definitions | ✅ Complete |
 | URL imports (via lockfile) | ✅ Complete |
 | Path dependency mapping | ✅ Complete |
+| `std:` module registry | ✅ Complete (M4.2) |
+| `export default` support | ✅ Complete (M4.2) |
 | Bytecode linking | ❌ Future |
 
 ## Phase 3: Cross-Module Symbol Resolution
@@ -192,3 +195,5 @@ This limitation exists because TypeIDs are local to each module's TypeContext. A
 - URL imports (`"https://..."`) require entry in `raya.lock` with cached checksum
 - Cache uses mtime for invalidation (detects source file changes)
 - Graph uses topological sort (Kahn's algorithm) for compilation order
+- `std:` modules (e.g., `std:logger`) are resolved via `std_modules.rs` with embedded sources
+- `export default` is supported for default imports (`import logger from "std:logger"`)

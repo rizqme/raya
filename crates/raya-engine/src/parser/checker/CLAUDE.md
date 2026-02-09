@@ -112,7 +112,8 @@ pub enum CheckError {
 Pre-defined signatures for:
 - Primitives: `number`, `string`, `boolean`, `null`, `void`
 - Built-in classes: `Array<T>`, `Map<K,V>`, `Set<T>`, etc.
-- Global objects: `console`, `JSON`, `Math`
+- Global objects: `JSON`
+- Decorator type aliases: `ClassDecorator<T>`, `MethodDecorator<F>`, `ParameterDecorator<T>`, etc.
 
 ## For AI Assistants
 
