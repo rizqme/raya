@@ -1,0 +1,490 @@
+// Runtime - Standard runtime module
+// Usage: import { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder } from "std:runtime";
+
+// ============================================================================
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+// ============================================================================
+
+// Compiler class (0x3000-0x3005)
+const COMPILER_COMPILE: number = 0x3000;
+const COMPILER_COMPILE_EXPRESSION: number = 0x3001;
+const COMPILER_COMPILE_AST: number = 0x3002;
+const COMPILER_EVAL: number = 0x3003;
+const COMPILER_EXECUTE: number = 0x3004;
+const COMPILER_EXECUTE_FUNCTION: number = 0x3005;
+
+// Bytecode class (0x3010-0x3019)
+const BYTECODE_ENCODE: number = 0x3010;
+const BYTECODE_DECODE: number = 0x3011;
+const BYTECODE_VALIDATE: number = 0x3012;
+const BYTECODE_DISASSEMBLE: number = 0x3013;
+const BYTECODE_GET_MODULE_NAME: number = 0x3014;
+const BYTECODE_GET_MODULE_FUNCTIONS: number = 0x3015;
+const BYTECODE_GET_MODULE_CLASSES: number = 0x3016;
+const BYTECODE_LOAD_LIBRARY: number = 0x3017;
+const BYTECODE_LOAD_DEPENDENCY: number = 0x3018;
+const BYTECODE_RESOLVE_DEPENDENCY: number = 0x3019;
+
+// Parser class (0x3050-0x3051)
+const PARSER_PARSE: number = 0x3050;
+const PARSER_PARSE_EXPRESSION: number = 0x3051;
+
+// TypeChecker class (0x3060-0x3061)
+const TYPECHECKER_CHECK: number = 0x3060;
+const TYPECHECKER_CHECK_EXPRESSION: number = 0x3061;
+
+// Vm class (0x3020-0x3021)
+const VM_CURRENT: number = 0x3020;
+const VM_SPAWN: number = 0x3021;
+
+// Permission management (0x3030-0x3035)
+const VM_HAS_PERMISSION: number = 0x3030;
+const VM_GET_PERMISSIONS: number = 0x3031;
+const VM_GET_ALLOWED_STDLIB: number = 0x3034;
+const VM_IS_STDLIB_ALLOWED: number = 0x3035;
+
+// VM Introspection (0x3040-0x304A)
+const VM_HEAP_USED: number = 0x3040;
+const VM_HEAP_LIMIT: number = 0x3041;
+const VM_TASK_COUNT: number = 0x3042;
+const VM_CONCURRENCY: number = 0x3043;
+const VM_THREAD_COUNT: number = 0x3044;
+const VM_GC_COLLECT: number = 0x3045;
+const VM_GC_STATS: number = 0x3046;
+const VM_VERSION: number = 0x3047;
+const VM_UPTIME: number = 0x3048;
+const VM_LOADED_MODULES: number = 0x3049;
+const VM_HAS_MODULE: number = 0x304A;
+
+// BytecodeBuilder (wraps reflect handlers 0x0DF0-0x0DFD)
+const BCB_NEW: number = 0x0DF0;
+const BCB_EMIT: number = 0x0DF1;
+const BCB_EMIT_PUSH: number = 0x0DF2;
+const BCB_DEFINE_LABEL: number = 0x0DF3;
+const BCB_MARK_LABEL: number = 0x0DF4;
+const BCB_EMIT_JUMP: number = 0x0DF5;
+const BCB_EMIT_JUMP_IF: number = 0x0DF6;
+const BCB_DECLARE_LOCAL: number = 0x0DF7;
+const BCB_EMIT_LOAD_LOCAL: number = 0x0DF8;
+const BCB_EMIT_STORE_LOCAL: number = 0x0DF9;
+const BCB_EMIT_CALL: number = 0x0DFA;
+const BCB_EMIT_RETURN: number = 0x0DFB;
+const BCB_VALIDATE: number = 0x0DFC;
+const BCB_BUILD: number = 0x0DFD;
+
+// ClassBuilder (wraps reflect handlers 0x0DE0-0x0DE6)
+const CB_NEW: number = 0x0DE0;
+const CB_ADD_FIELD: number = 0x0DE1;
+const CB_ADD_METHOD: number = 0x0DE2;
+const CB_SET_CONSTRUCTOR: number = 0x0DE3;
+const CB_SET_PARENT: number = 0x0DE4;
+const CB_ADD_INTERFACE: number = 0x0DE5;
+const CB_BUILD: number = 0x0DE6;
+
+// DynamicModule (wraps reflect handlers 0x0E10-0x0E15)
+const DM_CREATE: number = 0x0E10;
+const DM_ADD_FUNCTION: number = 0x0E11;
+const DM_ADD_CLASS: number = 0x0E12;
+const DM_ADD_GLOBAL: number = 0x0E13;
+const DM_SEAL: number = 0x0E14;
+const DM_LINK: number = 0x0E15;
+
+// VmInstance methods (0x3022-0x302C)
+const VM_INSTANCE_ID: number = 0x3022;
+const VM_INSTANCE_IS_ROOT: number = 0x3023;
+const VM_INSTANCE_IS_ALIVE: number = 0x3024;
+const VM_INSTANCE_LOAD_BYTECODE: number = 0x3025;
+const VM_INSTANCE_RUN_ENTRY: number = 0x3027;
+const VM_INSTANCE_COMPILE: number = 0x3028;
+const VM_INSTANCE_TERMINATE: number = 0x3029;
+const VM_INSTANCE_IS_DESTROYED: number = 0x302A;
+const VM_INSTANCE_EXECUTE: number = 0x302B;
+const VM_INSTANCE_EVAL: number = 0x302C;
+
+// ============================================================================
+// Compiler class
+// ============================================================================
+
+class CompilerClass {
+    compile(source: string): number {
+        return __NATIVE_CALL<number>(COMPILER_COMPILE, source);
+    }
+
+    compileExpression(expr: string): number {
+        return __NATIVE_CALL<number>(COMPILER_COMPILE_EXPRESSION, expr);
+    }
+
+    compileAst(astId: number): number {
+        return __NATIVE_CALL<number>(COMPILER_COMPILE_AST, astId);
+    }
+
+    eval(source: string): number {
+        return __NATIVE_CALL<number>(COMPILER_EVAL, source);
+    }
+
+    execute(moduleId: number): number {
+        return __NATIVE_CALL<number>(COMPILER_EXECUTE, moduleId);
+    }
+
+    executeFunction(moduleId: number, funcName: string): number {
+        return __NATIVE_CALL<number>(COMPILER_EXECUTE_FUNCTION, moduleId, funcName);
+    }
+}
+
+// ============================================================================
+// Bytecode class
+// ============================================================================
+
+class BytecodeClass {
+    encode(moduleId: number): Buffer {
+        return __NATIVE_CALL<Buffer>(BYTECODE_ENCODE, moduleId);
+    }
+
+    decode(data: Buffer): number {
+        return __NATIVE_CALL<number>(BYTECODE_DECODE, data);
+    }
+
+    validate(moduleId: number): boolean {
+        return __NATIVE_CALL<boolean>(BYTECODE_VALIDATE, moduleId);
+    }
+
+    disassemble(moduleId: number): string {
+        return __NATIVE_CALL<string>(BYTECODE_DISASSEMBLE, moduleId);
+    }
+
+    getModuleName(moduleId: number): string {
+        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_NAME, moduleId);
+    }
+
+    getModuleFunctions(moduleId: number): string {
+        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_FUNCTIONS, moduleId);
+    }
+
+    getModuleClasses(moduleId: number): string {
+        return __NATIVE_CALL<string>(BYTECODE_GET_MODULE_CLASSES, moduleId);
+    }
+
+    loadLibrary(path: string): number {
+        return __NATIVE_CALL<number>(BYTECODE_LOAD_LIBRARY, path);
+    }
+
+    loadDependency(path: string, name: string): number {
+        return __NATIVE_CALL<number>(BYTECODE_LOAD_DEPENDENCY, path, name);
+    }
+
+    resolveDependency(name: string): number {
+        return __NATIVE_CALL<number>(BYTECODE_RESOLVE_DEPENDENCY, name);
+    }
+}
+
+// ============================================================================
+// Parser class
+// ============================================================================
+
+class ParserClass {
+    parse(source: string): number {
+        return __NATIVE_CALL<number>(PARSER_PARSE, source);
+    }
+
+    parseExpression(expr: string): number {
+        return __NATIVE_CALL<number>(PARSER_PARSE_EXPRESSION, expr);
+    }
+}
+
+// ============================================================================
+// TypeChecker class
+// ============================================================================
+
+class TypeCheckerClass {
+    check(astId: number): number {
+        return __NATIVE_CALL<number>(TYPECHECKER_CHECK, astId);
+    }
+
+    checkExpression(astId: number): number {
+        return __NATIVE_CALL<number>(TYPECHECKER_CHECK_EXPRESSION, astId);
+    }
+}
+
+// ============================================================================
+// BytecodeBuilder class (wraps reflect bytecode generation handlers)
+// ============================================================================
+
+class BytecodeBuilder {
+    _id: number;
+
+    constructor(name: string, paramCount: number, returnType: string) {
+        this._id = __NATIVE_CALL<number>(BCB_NEW, name, paramCount, returnType);
+    }
+
+    emit(opcode: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT, this._id, opcode);
+    }
+
+    emitWithArg(opcode: number, operand: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT, this._id, opcode, operand);
+    }
+
+    emitWithArgs(opcode: number, op1: number, op2: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT, this._id, opcode, op1, op2);
+    }
+
+    emitPush(value: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT_PUSH, this._id, value);
+    }
+
+    defineLabel(): number {
+        return __NATIVE_CALL<number>(BCB_DEFINE_LABEL, this._id);
+    }
+
+    markLabel(labelId: number): void {
+        __NATIVE_CALL<number>(BCB_MARK_LABEL, this._id, labelId);
+    }
+
+    emitJump(labelId: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT_JUMP, this._id, labelId);
+    }
+
+    emitJumpIf(labelId: number, ifTrue: boolean): void {
+        __NATIVE_CALL<number>(BCB_EMIT_JUMP_IF, this._id, labelId, ifTrue);
+    }
+
+    declareLocal(typeName: string): number {
+        return __NATIVE_CALL<number>(BCB_DECLARE_LOCAL, this._id, typeName);
+    }
+
+    emitLoadLocal(index: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT_LOAD_LOCAL, this._id, index);
+    }
+
+    emitStoreLocal(index: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT_STORE_LOCAL, this._id, index);
+    }
+
+    emitCall(functionId: number, argCount: number): void {
+        __NATIVE_CALL<number>(BCB_EMIT_CALL, this._id, functionId, argCount);
+    }
+
+    emitReturn(): void {
+        __NATIVE_CALL<number>(BCB_EMIT_RETURN, this._id, true);
+    }
+
+    emitReturnVoid(): void {
+        __NATIVE_CALL<number>(BCB_EMIT_RETURN, this._id, false);
+    }
+
+    validate(): boolean {
+        return __NATIVE_CALL<boolean>(BCB_VALIDATE, this._id);
+    }
+
+    build(): number {
+        return __NATIVE_CALL<number>(BCB_BUILD, this._id);
+    }
+}
+
+// ============================================================================
+// ClassBuilder class (wraps reflect runtime type creation handlers)
+// ============================================================================
+
+class ClassBuilder {
+    _id: number;
+
+    constructor(name: string) {
+        this._id = __NATIVE_CALL<number>(CB_NEW, name);
+    }
+
+    addField(name: string, typeName: string, isStatic: boolean, isReadonly: boolean): void {
+        __NATIVE_CALL<number>(CB_ADD_FIELD, this._id, name, typeName, isStatic, isReadonly);
+    }
+
+    addMethod(name: string, functionId: number, isStatic: boolean, isAsync: boolean): void {
+        __NATIVE_CALL<number>(CB_ADD_METHOD, this._id, name, functionId, isStatic, isAsync);
+    }
+
+    setConstructor(functionId: number): void {
+        __NATIVE_CALL<number>(CB_SET_CONSTRUCTOR, this._id, functionId);
+    }
+
+    setParent(parentClassId: number): void {
+        __NATIVE_CALL<number>(CB_SET_PARENT, this._id, parentClassId);
+    }
+
+    addInterface(interfaceName: string): void {
+        __NATIVE_CALL<number>(CB_ADD_INTERFACE, this._id, interfaceName);
+    }
+
+    build(): number {
+        return __NATIVE_CALL<number>(CB_BUILD, this._id);
+    }
+}
+
+// ============================================================================
+// DynamicModule class (wraps reflect dynamic module creation handlers)
+// ============================================================================
+
+class DynamicModule {
+    _id: number;
+
+    constructor(name: string) {
+        this._id = __NATIVE_CALL<number>(DM_CREATE, name);
+    }
+
+    addFunction(functionId: number): void {
+        __NATIVE_CALL<number>(DM_ADD_FUNCTION, this._id, functionId);
+    }
+
+    addClass(classId: number, name: string): void {
+        __NATIVE_CALL<number>(DM_ADD_CLASS, this._id, classId, name);
+    }
+
+    addGlobal(name: string, value: number): void {
+        __NATIVE_CALL<number>(DM_ADD_GLOBAL, this._id, name, value);
+    }
+
+    seal(): void {
+        __NATIVE_CALL<number>(DM_SEAL, this._id);
+    }
+
+    link(): void {
+        __NATIVE_CALL<number>(DM_LINK, this._id);
+    }
+}
+
+// ============================================================================
+// VmInstance class (wraps opaque handle)
+// ============================================================================
+
+class VmInstance {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    id(): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_ID, this._handle);
+    }
+
+    isRoot(): boolean {
+        return __NATIVE_CALL<boolean>(VM_INSTANCE_IS_ROOT, this._handle);
+    }
+
+    isAlive(): boolean {
+        return __NATIVE_CALL<boolean>(VM_INSTANCE_IS_ALIVE, this._handle);
+    }
+
+    isDestroyed(): boolean {
+        return __NATIVE_CALL<boolean>(VM_INSTANCE_IS_DESTROYED, this._handle);
+    }
+
+    compile(source: string): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_COMPILE, this._handle, source);
+    }
+
+    execute(moduleId: number): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_EXECUTE, this._handle, moduleId);
+    }
+
+    eval(source: string): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_EVAL, this._handle, source);
+    }
+
+    loadBytecode(bytes: Buffer): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_LOAD_BYTECODE, this._handle, bytes);
+    }
+
+    runEntry(name: string): number {
+        return __NATIVE_CALL<number>(VM_INSTANCE_RUN_ENTRY, this._handle, name);
+    }
+
+    terminate(): void {
+        __NATIVE_CALL<number>(VM_INSTANCE_TERMINATE, this._handle);
+    }
+}
+
+// ============================================================================
+// Vm class
+// ============================================================================
+
+class VmClass {
+    current(): VmInstance {
+        let handle: number = __NATIVE_CALL<number>(VM_CURRENT);
+        return new VmInstance(handle);
+    }
+
+    spawn(): VmInstance {
+        let handle: number = __NATIVE_CALL<number>(VM_SPAWN);
+        return new VmInstance(handle);
+    }
+
+    hasPermission(name: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_HAS_PERMISSION, name);
+    }
+
+    getPermissions(): string {
+        return __NATIVE_CALL<string>(VM_GET_PERMISSIONS);
+    }
+
+    getAllowedStdlib(): string {
+        return __NATIVE_CALL<string>(VM_GET_ALLOWED_STDLIB);
+    }
+
+    isStdlibAllowed(module: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_IS_STDLIB_ALLOWED, module);
+    }
+
+    heapUsed(): number {
+        return __NATIVE_CALL<number>(VM_HEAP_USED);
+    }
+
+    heapLimit(): number {
+        return __NATIVE_CALL<number>(VM_HEAP_LIMIT);
+    }
+
+    taskCount(): number {
+        return __NATIVE_CALL<number>(VM_TASK_COUNT);
+    }
+
+    concurrency(): number {
+        return __NATIVE_CALL<number>(VM_CONCURRENCY);
+    }
+
+    threadCount(): number {
+        return __NATIVE_CALL<number>(VM_THREAD_COUNT);
+    }
+
+    gcCollect(): void {
+        __NATIVE_CALL<number>(VM_GC_COLLECT);
+    }
+
+    gcStats(): number {
+        return __NATIVE_CALL<number>(VM_GC_STATS);
+    }
+
+    version(): string {
+        return __NATIVE_CALL<string>(VM_VERSION);
+    }
+
+    uptime(): number {
+        return __NATIVE_CALL<number>(VM_UPTIME);
+    }
+
+    loadedModules(): string {
+        return __NATIVE_CALL<string>(VM_LOADED_MODULES);
+    }
+
+    hasModule(name: string): boolean {
+        return __NATIVE_CALL<boolean>(VM_HAS_MODULE, name);
+    }
+}
+
+// ============================================================================
+// Named exports
+// ============================================================================
+
+const Compiler = new CompilerClass();
+const Bytecode = new BytecodeClass();
+const Parser = new ParserClass();
+const TypeChecker = new TypeCheckerClass();
+const Vm = new VmClass();
+
+export { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule };

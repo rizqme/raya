@@ -1,0 +1,103 @@
+/**
+ * std:math - Standard Math Module
+ *
+ * Provides mathematical functions and constants.
+ *
+ * Usage:
+ *   import math from "std:math";
+ *   let x: number = math.sqrt(16);
+ */
+
+/**
+ * Math provides mathematical operations and constants.
+ */
+export class Math {
+    // Constants
+
+    /** The ratio of a circle's circumference to its diameter (~3.14159) */
+    PI(): number;
+
+    /** Euler's number (~2.71828) */
+    E(): number;
+
+    // Basic
+
+    /** Returns the absolute value of x */
+    abs(x: number): number;
+
+    /** Returns the sign of x (-1, 0, or 1) */
+    sign(x: number): number;
+
+    // Rounding
+
+    /** Returns the largest integer less than or equal to x */
+    floor(x: number): number;
+
+    /** Returns the smallest integer greater than or equal to x */
+    ceil(x: number): number;
+
+    /** Returns x rounded to the nearest integer */
+    round(x: number): number;
+
+    /** Returns the integer part of x (removes fractional digits) */
+    trunc(x: number): number;
+
+    // Min/Max
+
+    /** Returns the smaller of a and b */
+    min(a: number, b: number): number;
+
+    /** Returns the larger of a and b */
+    max(a: number, b: number): number;
+
+    // Power
+
+    /** Returns base raised to the power of exp */
+    pow(base: number, exp: number): number;
+
+    /** Returns the square root of x */
+    sqrt(x: number): number;
+
+    // Trigonometry
+
+    /** Returns the sine of x (in radians) */
+    sin(x: number): number;
+
+    /** Returns the cosine of x (in radians) */
+    cos(x: number): number;
+
+    /** Returns the tangent of x (in radians) */
+    tan(x: number): number;
+
+    /** Returns the arcsine of x (in radians) */
+    asin(x: number): number;
+
+    /** Returns the arccosine of x (in radians) */
+    acos(x: number): number;
+
+    /** Returns the arctangent of x (in radians) */
+    atan(x: number): number;
+
+    /** Returns the arctangent of y/x (in radians) */
+    atan2(y: number, x: number): number;
+
+    // Exponential/Logarithmic
+
+    /** Returns e raised to the power of x */
+    exp(x: number): number;
+
+    /** Returns the natural logarithm (base e) of x */
+    log(x: number): number;
+
+    /** Returns the base-10 logarithm of x */
+    log10(x: number): number;
+
+    // Random
+
+    /** Returns a pseudo-random number between 0 (inclusive) and 1 (exclusive) */
+    random(): number;
+}
+
+/** Default math instance */
+declare const math: Math;
+export default math;

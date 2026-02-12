@@ -1,0 +1,70 @@
+// Time - Standard time module
+// Usage: import time from "std:time";
+
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+const TIME_NOW: number = 0x5000;
+const TIME_MONOTONIC: number = 0x5001;
+const TIME_HRTIME: number = 0x5002;
+const TIME_SLEEP: number = 0x5003;
+const TIME_SLEEP_MICROS: number = 0x5004;
+
+class Time {
+    // ── Wall Clock ──
+
+    now(): number {
+        return __NATIVE_CALL<number>(TIME_NOW);
+    }
+
+    // ── Monotonic Clock ──
+
+    monotonic(): number {
+        return __NATIVE_CALL<number>(TIME_MONOTONIC);
+    }
+
+    hrtime(): number {
+        return __NATIVE_CALL<number>(TIME_HRTIME);
+    }
+
+    elapsed(start: number): number {
+        return __NATIVE_CALL<number>(TIME_MONOTONIC) - start;
+    }
+
+    // ── Sleep ──
+
+    sleep(ms: number): void {
+        __NATIVE_CALL<number>(TIME_SLEEP, ms);
+    }
+
+    sleepMicros(us: number): void {
+        __NATIVE_CALL<number>(TIME_SLEEP_MICROS, us);
+    }
+
+    // ── Duration Conversion (pure Raya) ──
+
+    seconds(n: number): number {
+        return n * 1000;
+    }
+
+    minutes(n: number): number {
+        return n * 60000;
+    }
+
+    hours(n: number): number {
+        return n * 3600000;
+    }
+
+    toSeconds(ms: number): number {
+        return ms / 1000;
+    }
+
+    toMinutes(ms: number): number {
+        return ms / 60000;
+    }
+
+    toHours(ms: number): number {
+        return ms / 3600000;
+    }
+}
+
+const time = new Time();
+export default time;

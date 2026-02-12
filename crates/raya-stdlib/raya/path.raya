@@ -1,0 +1,95 @@
+// Path - Standard path module
+// Usage: import path from "std:path";
+
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+const PATH_JOIN: number = 0x6000;
+const PATH_NORMALIZE: number = 0x6001;
+const PATH_DIRNAME: number = 0x6002;
+const PATH_BASENAME: number = 0x6003;
+const PATH_EXTNAME: number = 0x6004;
+const PATH_IS_ABSOLUTE: number = 0x6005;
+const PATH_RESOLVE: number = 0x6006;
+const PATH_RELATIVE: number = 0x6007;
+const PATH_CWD: number = 0x6008;
+const PATH_SEP: number = 0x6009;
+const PATH_DELIMITER: number = 0x600A;
+
+class Path {
+    // ── Join & Normalize ──
+
+    join(a: string, b: string): string {
+        return __NATIVE_CALL<string>(PATH_JOIN, a, b);
+    }
+
+    normalize(p: string): string {
+        return __NATIVE_CALL<string>(PATH_NORMALIZE, p);
+    }
+
+    // ── Components ──
+
+    dirname(p: string): string {
+        return __NATIVE_CALL<string>(PATH_DIRNAME, p);
+    }
+
+    basename(p: string): string {
+        return __NATIVE_CALL<string>(PATH_BASENAME, p);
+    }
+
+    extname(p: string): string {
+        return __NATIVE_CALL<string>(PATH_EXTNAME, p);
+    }
+
+    // ── Resolution ──
+
+    isAbsolute(p: string): boolean {
+        return __NATIVE_CALL<boolean>(PATH_IS_ABSOLUTE, p);
+    }
+
+    resolve(base: string, target: string): string {
+        return __NATIVE_CALL<string>(PATH_RESOLVE, base, target);
+    }
+
+    relative(base: string, target: string): string {
+        return __NATIVE_CALL<string>(PATH_RELATIVE, base, target);
+    }
+
+    cwd(): string {
+        return __NATIVE_CALL<string>(PATH_CWD);
+    }
+
+    // ── OS Constants ──
+
+    sep(): string {
+        return __NATIVE_CALL<string>(PATH_SEP);
+    }
+
+    delimiter(): string {
+        return __NATIVE_CALL<string>(PATH_DELIMITER);
+    }
+
+    // ── Utilities (pure Raya) ──
+
+    stripExt(p: string): string {
+        let ext: string = this.extname(p);
+        let base: string = this.basename(p);
+        if (ext == "") {
+            return base;
+        }
+        return base.substring(0, base.length - ext.length);
+    }
+
+    withExt(p: string, ext: string): string {
+        let oldExt: string = this.extname(p);
+        if (oldExt == "") {
+            return p + ext;
+        }
+        return p.substring(0, p.length - oldExt.length) + ext;
+    }
+
+    isRelative(p: string): boolean {
+        return !this.isAbsolute(p);
+    }
+}
+
+const path = new Path();
+export default path;

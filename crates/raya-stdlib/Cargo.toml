@@ -10,3 +10,4 @@ description = "Standard library native implementations for Raya"
 
 [dependencies]
 rand = "0.8"
+raya-engine = { workspace = true }

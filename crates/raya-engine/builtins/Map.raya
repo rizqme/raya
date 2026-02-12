@@ -52,17 +52,17 @@ class Map<K, V> {
     }
 
     // Get all keys as an array
-    keys(): Array<K> {
+    keys(): K[] {
         return __NATIVE_CALL(MAP_KEYS, this.mapPtr);
     }
 
     // Get all values as an array
-    values(): Array<V> {
+    values(): V[] {
         return __NATIVE_CALL(MAP_VALUES, this.mapPtr);
     }
 
     // Get all entries as array of [key, value] tuples
-    entries(): Array<[K, V]> {
+    entries(): [K, V][] {
         return __NATIVE_CALL(MAP_ENTRIES, this.mapPtr);
     }
 

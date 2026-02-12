@@ -2118,7 +2118,81 @@ let area = math.PI * r * r;
 
 **Reference:** `plans/milestone-4.3.md`
 
-### 4.4 raya:json Module
+### 4.4 std:reflect Module
+
+**Goal:** Expose existing Reflect API (141+ handlers) as `std:reflect` module with Raya source file and e2e tests
+
+**Tasks:**
+- [ ] Create `Reflect.raya` with `__NATIVE_CALL` wrappers for all reflect methods
+- [ ] Register in std_modules registry
+- [ ] Fix `is_reflect_method()` range to cover 0x0D00-0x0E2F
+- [ ] E2E tests for metadata, introspection, field access, proxies, permissions
+
+**API:**
+```typescript
+import reflect from "std:reflect";
+
+reflect.defineMetadata("key", value, target);
+let cls: Class<User> = reflect.getClass(user);
+let val: string = reflect.get(target, "name");
+let isStr: boolean = reflect.isString(value);
+```
+
+**Reference:** `plans/milestone-4.4.md`
+
+### 4.5 std:runtime Module
+
+**Goal:** Expose the Raya compilation pipeline and VM operations as `std:runtime` — with separate classes for parsing, type checking, compiling, bytecode I/O, and VM instances
+
+**Status:** In Progress (Phase 1)
+
+**Tasks:**
+- [ ] Phase 1: Compiler + Bytecode I/O (0x3000-0x3005, 0x3010-0x3019)
+- [ ] Phase 2: Bytecode Inspection + Parser + TypeChecker (0x3012-0x3016, 0x3050-0x3051, 0x3060-0x3061)
+- [ ] Phase 3: VM Instances & Isolation (0x3020-0x302A)
+- [ ] Phase 4: Permission Management (0x3030-0x3035)
+- [ ] Phase 5: VM Introspection & Resource Control (0x3040-0x304A)
+- [ ] Phase 6: Bytecode Builder wrappers (existing 0x0DF0-0x0DFD)
+- [ ] Phase 7: Dynamic Modules & Runtime Types wrappers (existing 0x0DE0-0x0E17)
+- [ ] Phase 8: E2E Tests
+- [ ] Phase 9: Documentation
+
+**API (5 separate classes, named exports):**
+```typescript
+import { Compiler, Bytecode, Vm, Parser, TypeChecker } from "std:runtime";
+
+// Compiler class — compile & execute
+let mod: number = Compiler.compile("function add(a: number, b: number): number { return a + b; }");
+let sum: number = Compiler.executeFunction(mod, "add", 10, 20);
+let result: number = Compiler.eval("return 1 + 2;");
+
+// Bytecode class — binary I/O & dependencies
+let bytes: Buffer = Bytecode.encode(mod);
+let loaded: number = Bytecode.decode(bytes);
+Bytecode.resolveDependency("utils");
+Bytecode.loadDependency("./vendor/utils.ryb", "utils");
+
+// Vm class — isolated VM instances (from INNER_VM.md)
+let child: VmInstance = Vm.spawn({ maxHeap: 64 * 1024 * 1024, timeout: 5000 });
+child.loadBytecode(bytes);
+let task = child.runEntry("main");
+child.terminate();
+
+// Parser & TypeChecker — advanced pipeline access
+let ast: number = Parser.parse("let x: number = 42;");
+let checked: number = TypeChecker.check(ast);
+```
+
+**Key Features:**
+- 5 classes with named exports (not singleton default export)
+- In-process VM isolation via separate `VmContext` (heap, globals, modules independent)
+- VmInstance API: `loadBytecode`, `runEntry`, `spawn`, `terminate` (from INNER_VM.md)
+- Fault isolation: child failures never affect parent
+- Dependency loading: bundled by default, runtime resolution for unbundled `.ryb` files
+
+**Reference:** `plans/milestone-4.5.md`
+
+### 4.6 raya:json Module
 
 **Location:** `stdlib/json.raya`
 
@@ -2145,7 +2219,7 @@ export class JSON {
 
 **Reference:** `design/STDLIB.md` Section 3
 
-### 4.5 raya:json/internal Module
+### 4.6 raya:json/internal Module
 
 **Tasks:**
 - [ ] Implement `JsonValue` type
@@ -2176,7 +2250,7 @@ pub fn parse_json(input: &str) -> Result<Value, VmError> {
 
 **Reference:** `design/STDLIB.md` Section 4
 
-### 4.6 raya:reflect Module (Optional)
+### 4.7 raya:reflect Module (Optional)
 
 **Tasks:**
 - [ ] Implement reflection API when `--emit-reflection` flag is set
@@ -2198,7 +2272,7 @@ pub mod reflect {
 
 **Reference:** `design/STDLIB.md` Section 5, `design/LANG.md` Section 18
 
-### 4.7 Built-in Types
+### 4.8 Built-in Types
 
 **Tasks:**
 - [ ] Implement String methods (native)

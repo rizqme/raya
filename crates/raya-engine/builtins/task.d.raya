@@ -1,0 +1,26 @@
+/**
+ * Task<T> - Asynchronous computation (green thread)
+ *
+ * Represents a lightweight concurrent task managed by the runtime scheduler.
+ * Tasks are created with the `async` keyword and awaited with `await`.
+ *
+ * Usage:
+ *   let task: Task<number> = async computeValue();
+ *   let result: number = await task;
+ */
+export class Task<T> {
+    /** Cancel the task */
+    cancel(): void;
+
+    /** Check if the task has completed (success or failure) */
+    isDone(): boolean;
+
+    /** Check if the task was cancelled */
+    isCancelled(): boolean;
+}
+
+/** Yield control to other tasks */
+declare function taskYield(): void;
+
+/** Sleep for a specified number of milliseconds */
+declare function taskSleep(durationMs: number): void;

@@ -1,0 +1,53 @@
+/**
+ * Error - Base error class and standard error types
+ *
+ * Error hierarchy for exception handling with try/catch.
+ *
+ * Usage:
+ *   throw new TypeError("expected string");
+ */
+export class Error {
+    /** The error message */
+    message: string;
+
+    /** The error type name */
+    name: string;
+
+    /** Stack trace (if available) */
+    stack: string;
+
+    constructor(message?: string);
+
+    /** Get string representation: "ErrorName: message" */
+    toString(): string;
+}
+
+/** Thrown when a value is not of the expected type */
+export class TypeError extends Error {
+    constructor(message?: string);
+}
+
+/** Thrown when a value is outside the allowed range */
+export class RangeError extends Error {
+    constructor(message?: string);
+}
+
+/** Thrown when a non-existent variable is referenced */
+export class ReferenceError extends Error {
+    constructor(message?: string);
+}
+
+/** Thrown when a parsing error occurs */
+export class SyntaxError extends Error {
+    constructor(message?: string);
+}
+
+/** Thrown when operating on a closed channel */
+export class ChannelClosedError extends Error {
+    constructor(message?: string);
+}
+
+/** Thrown when an assertion fails */
+export class AssertionError extends Error {
+    constructor(message?: string);
+}

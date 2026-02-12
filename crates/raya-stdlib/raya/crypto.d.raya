@@ -1,0 +1,61 @@
+/**
+ * std:crypto - Standard Crypto Module
+ *
+ * Provides cryptographic primitives: hashing, HMAC, secure random,
+ * encoding, and constant-time comparison.
+ *
+ * Usage:
+ *   import crypto from "std:crypto";
+ *   let digest: string = crypto.hash("sha256", "hello world");
+ *   let bytes: Buffer = crypto.randomBytes(32);
+ *   let id: string = crypto.randomUUID();
+ */
+
+/**
+ * Crypto provides methods for hashing, HMAC, random generation,
+ * encoding/decoding, and constant-time comparison.
+ *
+ * Supported hash algorithms: "sha256", "sha384", "sha512", "sha1", "md5"
+ */
+export class CryptoClass {
+    /** One-shot hash. Returns hex-encoded digest string. */
+    hash(algorithm: string, data: string): string;
+
+    /** Hash binary data. Returns raw digest bytes. */
+    hashBytes(algorithm: string, data: Buffer): Buffer;
+
+    /** Keyed HMAC. Returns hex-encoded MAC string. */
+    hmac(algorithm: string, key: string, data: string): string;
+
+    /** HMAC on binary data. Returns raw MAC bytes. */
+    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer;
+
+    /** Cryptographically secure random bytes. */
+    randomBytes(size: number): Buffer;
+
+    /** Random integer in [min, max). */
+    randomInt(min: number, max: number): number;
+
+    /** Generate UUID v4 string. */
+    randomUUID(): string;
+
+    /** Binary to hex string. */
+    toHex(data: Buffer): string;
+
+    /** Hex string to binary. Errors on invalid hex. */
+    fromHex(hex: string): Buffer;
+
+    /** Binary to base64 string (standard encoding). */
+    toBase64(data: Buffer): string;
+
+    /** Base64 string to binary. Errors on invalid base64. */
+    fromBase64(b64: string): Buffer;
+
+    /** Constant-time equality check (prevents timing attacks). */
+    timingSafeEqual(a: Buffer, b: Buffer): boolean;
+}
+
+/** crypto singleton instance */
+declare const crypto: CryptoClass;
+
+export default crypto;

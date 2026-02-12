@@ -1,0 +1,116 @@
+// Codec - Standard codec module
+// Usage: import { Utf8, Msgpack, Cbor, Protobuf, TypeSchema } from "std:codec";
+
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+const UTF8_ENCODE: number = 0x7000;
+const UTF8_DECODE: number = 0x7001;
+const UTF8_IS_VALID: number = 0x7002;
+const UTF8_BYTE_LENGTH: number = 0x7003;
+
+const MSGPACK_ENCODE_OBJECT: number = 0x7010;
+const MSGPACK_DECODE_OBJECT: number = 0x7011;
+const MSGPACK_ENCODED_SIZE: number = 0x7012;
+
+const CBOR_ENCODE_OBJECT: number = 0x7020;
+const CBOR_DECODE_OBJECT: number = 0x7021;
+const CBOR_DIAGNOSTIC: number = 0x7022;
+
+const PROTO_ENCODE_OBJECT: number = 0x7030;
+const PROTO_DECODE_OBJECT: number = 0x7031;
+
+const TYPE_SCHEMA_CREATE: number = 0x7100;
+
+// ── TypeSchema ──
+// Opaque handle to compile-time type metadata.
+// Created by the compiler from type parameters in encode<T>/decode<T>.
+// Contains field names (from //@@json) and proto annotations (from //@@proto).
+
+class TypeSchema {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+}
+
+// ── Utf8 ──
+
+class Utf8Codec {
+    encode(text: string): Buffer {
+        return __NATIVE_CALL<Buffer>(UTF8_ENCODE, text);
+    }
+
+    decode(bytes: Buffer): string {
+        return __NATIVE_CALL<string>(UTF8_DECODE, bytes);
+    }
+
+    isValid(bytes: Buffer): boolean {
+        return __NATIVE_CALL<boolean>(UTF8_IS_VALID, bytes);
+    }
+
+    byteLength(text: string): number {
+        return __NATIVE_CALL<number>(UTF8_BYTE_LENGTH, text);
+    }
+}
+
+// ── Msgpack ──
+// encode<T> and decode<T> are compiler-lowered — the compiler creates a
+// TypeSchema from T and passes it to the native handler.
+
+class MsgpackCodec {
+    encode<T>(obj: T): Buffer {
+        // Compiler-lowered: creates TypeSchema from T, calls native encode
+        return __NATIVE_CALL<Buffer>(MSGPACK_ENCODE_OBJECT, obj);
+    }
+
+    decode<T>(bytes: Buffer): T {
+        // Compiler-lowered: creates TypeSchema from T, calls native decode
+        return __NATIVE_CALL<T>(MSGPACK_DECODE_OBJECT, bytes);
+    }
+
+    encodedSize(bytes: Buffer): number {
+        return __NATIVE_CALL<number>(MSGPACK_ENCODED_SIZE, bytes);
+    }
+}
+
+// ── Cbor ──
+// encode<T> and decode<T> are compiler-lowered — the compiler creates a
+// TypeSchema from T and passes it to the native handler.
+
+class CborCodec {
+    encode<T>(obj: T): Buffer {
+        // Compiler-lowered: creates TypeSchema from T, calls native encode
+        return __NATIVE_CALL<Buffer>(CBOR_ENCODE_OBJECT, obj);
+    }
+
+    decode<T>(bytes: Buffer): T {
+        // Compiler-lowered: creates TypeSchema from T, calls native decode
+        return __NATIVE_CALL<T>(CBOR_DECODE_OBJECT, bytes);
+    }
+
+    diagnostic(bytes: Buffer): string {
+        return __NATIVE_CALL<string>(CBOR_DIAGNOSTIC, bytes);
+    }
+}
+
+// ── Protobuf ──
+// encode<T> and decode<T> are compiler-lowered — the compiler creates a
+// TypeSchema from T and passes it to the native handler with //@@proto metadata.
+
+class ProtobufCodec {
+    encode<T>(obj: T): Buffer {
+        // Compiler-lowered: creates TypeSchema from T with proto annotations
+        return __NATIVE_CALL<Buffer>(PROTO_ENCODE_OBJECT, obj);
+    }
+
+    decode<T>(bytes: Buffer): T {
+        // Compiler-lowered: creates TypeSchema from T with proto annotations
+        return __NATIVE_CALL<T>(PROTO_DECODE_OBJECT, bytes);
+    }
+}
+
+const Utf8 = new Utf8Codec();
+const Msgpack = new MsgpackCodec();
+const Cbor = new CborCodec();
+const Protobuf = new ProtobufCodec();
+export { Utf8, Msgpack, Cbor, Protobuf, TypeSchema };

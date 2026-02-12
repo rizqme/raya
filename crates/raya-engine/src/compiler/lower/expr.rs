@@ -829,6 +829,105 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
+
+                // Check for Msgpack type-safe codec methods
+                if obj_name == "Msgpack" {
+                    match method_name {
+                        "encode" => {
+                            // Msgpack.encode<T>(obj) -> typed encoder with field metadata
+                            use crate::compiler::native_id::MSGPACK_ENCODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
+                                        return self.emit_codec_encode_with_fields(
+                                            dest.clone(), args, field_info, MSGPACK_ENCODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        "decode" => {
+                            // Msgpack.decode<T>(bytes) -> typed decoder with field metadata
+                            use crate::compiler::native_id::MSGPACK_DECODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
+                                        return self.emit_codec_decode_with_fields(
+                                            dest.clone(), args, field_info, MSGPACK_DECODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Check for Cbor type-safe codec methods
+                if obj_name == "Cbor" {
+                    match method_name {
+                        "encode" => {
+                            // Cbor.encode<T>(obj) -> typed encoder with field metadata
+                            use crate::compiler::native_id::CBOR_ENCODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
+                                        return self.emit_codec_encode_with_fields(
+                                            dest.clone(), args, field_info, CBOR_ENCODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        "decode" => {
+                            // Cbor.decode<T>(bytes) -> typed decoder with field metadata
+                            use crate::compiler::native_id::CBOR_DECODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
+                                        return self.emit_codec_decode_with_fields(
+                                            dest.clone(), args, field_info, CBOR_DECODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Check for Protobuf type-safe codec methods
+                if obj_name == "Protobuf" {
+                    match method_name {
+                        "encode" => {
+                            // Protobuf.encode<T>(obj) -> typed encoder with proto field metadata
+                            use crate::compiler::native_id::PROTO_ENCODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_proto_field_info(&first_type.ty) {
+                                        return self.emit_proto_encode_with_fields(
+                                            dest.clone(), args, field_info, PROTO_ENCODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        "decode" => {
+                            // Protobuf.decode<T>(bytes) -> typed decoder with proto field metadata
+                            use crate::compiler::native_id::PROTO_DECODE_OBJECT;
+                            if let Some(type_args) = &call.type_args {
+                                if let Some(first_type) = type_args.first() {
+                                    if let Some(field_info) = self.get_proto_field_info(&first_type.ty) {
+                                        return self.emit_proto_decode_with_fields(
+                                            dest.clone(), args, field_info, PROTO_DECODE_OBJECT,
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
             }
 
             // Check if this is a Task method call (e.g., task.cancel())
@@ -1093,7 +1192,21 @@ impl<'a> Lowerer<'a> {
                 (0, TypeId::new(0))
             }
         } else {
-            (0, TypeId::new(0))
+            // Check variable_object_fields for decoded object field layout
+            let obj_field_idx = match &*member.object {
+                Expression::Identifier(ident) => {
+                    self.variable_object_fields
+                        .get(&ident.name)
+                        .and_then(|fields| {
+                            fields
+                                .iter()
+                                .find(|(name, _)| name == prop_name)
+                                .map(|(_, idx)| *idx as u16)
+                        })
+                }
+                _ => None,
+            };
+            (obj_field_idx.unwrap_or(0), TypeId::new(0))
         };
 
         // Fall back to field access for objects
@@ -2138,13 +2251,16 @@ impl<'a> Lowerer<'a> {
                 }
                 None
             }
-            // Method call: if we know the class and method, check if it returns the same class
+            // Method call: check if the method has a known return class type
             Expression::Call(call) => {
                 if let Expression::Member(member) = &*call.callee {
                     let obj_class_id = self.infer_class_id(&member.object)?;
                     let method_name = member.property.name;
-                    // If the method exists on the class, assume it returns 'this' (same class)
-                    // This is a simplification - ideally we'd check the return type
+                    // Check if method has an explicit return class type
+                    if let Some(&ret_class_id) = self.method_return_class_map.get(&(obj_class_id, method_name)) {
+                        return Some(ret_class_id);
+                    }
+                    // Otherwise, if the method exists, assume it returns the same class
                     if self.method_map.contains_key(&(obj_class_id, method_name)) {
                         return Some(obj_class_id);
                     }

@@ -1,0 +1,79 @@
+/**
+ * string - Primitive string type
+ *
+ * Strings are immutable sequences of characters with rich manipulation methods.
+ *
+ * Usage:
+ *   let greeting: string = "Hello, World!";
+ *   let upper: string = greeting.toUpperCase();
+ */
+export class string {
+    /** Number of characters in the string */
+    length: number;
+
+    /** Get the character at the given index */
+    charAt(index: number): string;
+
+    /** Get the Unicode code point at the given index */
+    charCodeAt(index: number): number;
+
+    /** Extract a section of the string between start and end indices */
+    substring(start: number, end: number): string;
+
+    /** Convert all characters to uppercase */
+    toUpperCase(): string;
+
+    /** Convert all characters to lowercase */
+    toLowerCase(): string;
+
+    /** Remove whitespace from both ends */
+    trim(): string;
+
+    /** Remove whitespace from the start */
+    trimStart(): string;
+
+    /** Remove whitespace from the end */
+    trimEnd(): string;
+
+    /** Find the first occurrence of searchStr, or -1 if not found */
+    indexOf(searchStr: string): number;
+
+    /** Find the last occurrence of searchStr, or -1 if not found */
+    lastIndexOf(searchStr: string): number;
+
+    /** Check if the string contains the search string */
+    includes(searchStr: string): boolean;
+
+    /** Check if the string starts with the given prefix */
+    startsWith(prefix: string): boolean;
+
+    /** Check if the string ends with the given suffix */
+    endsWith(suffix: string): boolean;
+
+    /** Split the string by a separator into an array */
+    split(separator: string, limit: number): string[];
+
+    /** Replace the first occurrence of search with replacement */
+    replace(search: string, replacement: string): string;
+
+    /** Repeat the string count times */
+    repeat(count: number): string;
+
+    /** Pad the start of the string to reach the target length */
+    padStart(length: number, pad: string): string;
+
+    /** Pad the end of the string to reach the target length */
+    padEnd(length: number, pad: string): string;
+
+    /** Match against a regular expression pattern */
+    match(pattern: RegExp): string[] | null;
+
+    /** Match all occurrences of a regular expression pattern */
+    matchAll(pattern: RegExp): string[][];
+
+    /** Search for a match, returns the index or -1 */
+    search(pattern: RegExp): number;
+
+    /** Replace matches using a callback function */
+    replaceWith(pattern: RegExp, replacer: (match: (string | number)[]) => string): string;
+}

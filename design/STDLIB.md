@@ -12,7 +12,8 @@ This document defines the complete API for Raya's standard library modules.
 4. [raya:json/internal - Internal JSON Utilities](#4-rayajsoninternal---internal-json-utilities)
 5. [raya:reflect - Reflection API](#5-rayareflect---reflection-api-optional)
 6. [std:logger - Logging Module](#6-stdlogger---logging-module)
-7. [Built-in Types](#7-built-in-types)
+7. [std:vm - VM Operations Module](#7-stdvm---vm-operations-module)
+8. [Built-in Types](#8-built-in-types)
 
 ---
 
@@ -439,7 +440,95 @@ logger.debug("Request payload:", data);
 
 ---
 
-## 7. Built-in Types
+## 7. std:runtime - Runtime Operations Module
+
+> Compile, execute, load/save bytecode, spawn isolated VMs, manage permissions, and introspect the runtime. Uses **named exports** with five separate classes. See [milestone-4.5.md](../plans/milestone-4.5.md) for full implementation plan.
+
+```ts
+import { Compiler, Bytecode, Vm, Parser, TypeChecker } from "std:runtime";
+```
+
+### Compiler — Compile & Execute
+
+```ts
+Compiler.compile(source: string): number;           // Parse + type-check + compile, returns module ID
+Compiler.compileExpression(expr: string): number;    // Compile a single expression
+Compiler.compileAst(astId: number): number;          // Compile a pre-parsed AST
+Compiler.eval(source: string): number;               // Compile and immediately execute
+Compiler.execute(moduleId: number): number;          // Execute a compiled module's main function
+Compiler.executeFunction(moduleId: number, funcName: string, ...args: number[]): number;
+```
+
+### Bytecode — Binary I/O & Dependencies
+
+```ts
+Bytecode.encode(moduleId: number): Buffer;           // Serialize module to .ryb binary
+Bytecode.decode(data: Buffer): number;               // Deserialize .ryb binary to module
+Bytecode.validate(moduleId: number): boolean;        // Verify module integrity
+Bytecode.disassemble(moduleId: number): string;      // Human-readable bytecode listing
+Bytecode.getModuleName(moduleId: number): string;
+Bytecode.getModuleFunctions(moduleId: number): string[];
+Bytecode.getModuleClasses(moduleId: number): string[];
+Bytecode.loadLibrary(path: string): number;          // Load .ryb file from path
+Bytecode.loadDependency(path: string, name: string): number;  // Load + register as importable
+Bytecode.resolveDependency(name: string): number;    // Auto-resolve from search paths
+```
+
+**Dependency model:** By default, dependencies are bundled into the `.ryb` at compile time. When bundling isn't possible, use `resolveDependency` (auto-search: `./deps/` → `./lib/` → `<entry_dir>/deps/` → `~/.raya/libs/`) or `loadDependency` (explicit path) at runtime.
+
+### Parser & TypeChecker — Advanced Pipeline Access
+
+```ts
+Parser.parse(source: string): number;               // Parse source to AST, returns AST ID
+Parser.parseExpression(expr: string): number;        // Parse a single expression
+
+TypeChecker.check(astId: number): number;            // Type-check AST, returns typed AST ID
+TypeChecker.checkExpression(astId: number): number;  // Type-check expression AST
+```
+
+### Vm — Instances & Isolation
+
+```ts
+// Spawn isolated child VM
+let child: VmInstance = Vm.spawn({
+    maxHeap: 64 * 1024 * 1024,
+    maxConcurrency: 4,
+    maxResource: 0.25,
+    priority: 5,
+    timeout: 5000,
+    permissions: { allowStdlib: ["std:math"], allowReflect: false }
+});
+
+// Load and run bytecode in child VM (from INNER_VM.md)
+child.loadBytecode(bytes);
+let task = child.runEntry("main");
+let result: number = await task;
+child.terminate();
+
+// Current VM introspection (permission-gated)
+let current: VmInstance = Vm.current();
+```
+
+**Isolation:** Each child VM gets a separate heap, globals, and module registry. Child failures never affect the parent. Resource limits and permissions are strictly bounded by the parent (recursive for nested VMs).
+
+### Vm — Permissions & Introspection
+
+```ts
+Vm.hasPermission(name: string): boolean;
+Vm.getPermissions(): VmPermissions;
+Vm.heapUsed(): number;
+Vm.heapLimit(): number;
+Vm.taskCount(): number;
+Vm.version(): string;
+Vm.uptime(): number;
+Vm.loadedModules(): string[];
+```
+
+**Permission names:** `"reflect"`, `"vmAccess"`, `"vmSpawn"`, `"libLoad"`, `"nativeCalls"`, `"eval"`, `"binaryIO"`, `"stdlib:<name>"`
+
+---
+
+## 8. Built-in Types
 
 ### String Methods
 
@@ -696,6 +785,6 @@ class ArrayBuffer {
 
 ---
 
-**Version:** v0.5 (Specification)
+**Version:** v0.6 (Specification)
 
 **Status:** This specification is complete but subject to minor refinements based on implementation experience.

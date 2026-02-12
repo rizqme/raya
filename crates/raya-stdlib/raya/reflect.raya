@@ -1,0 +1,464 @@
+// Reflect - Standard reflection module
+// Usage: import reflect from "std:reflect";
+
+// ============================================================================
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+// ============================================================================
+
+// Phase 1: Metadata Operations (0x0D00-0x0D09)
+const REFLECT_DEFINE_METADATA: number = 0x0D00;
+const REFLECT_DEFINE_METADATA_PROP: number = 0x0D01;
+const REFLECT_GET_METADATA: number = 0x0D02;
+const REFLECT_GET_METADATA_PROP: number = 0x0D03;
+const REFLECT_HAS_METADATA: number = 0x0D04;
+const REFLECT_HAS_METADATA_PROP: number = 0x0D05;
+const REFLECT_GET_METADATA_KEYS: number = 0x0D06;
+const REFLECT_GET_METADATA_KEYS_PROP: number = 0x0D07;
+const REFLECT_DELETE_METADATA: number = 0x0D08;
+const REFLECT_DELETE_METADATA_PROP: number = 0x0D09;
+
+// Phase 2: Class Introspection (0x0D10-0x0D17)
+const REFLECT_GET_CLASS: number = 0x0D10;
+const REFLECT_GET_CLASS_BY_NAME: number = 0x0D11;
+const REFLECT_GET_ALL_CLASSES: number = 0x0D12;
+const REFLECT_GET_CLASSES_WITH_DECORATOR: number = 0x0D13;
+const REFLECT_IS_SUBCLASS_OF: number = 0x0D14;
+const REFLECT_IS_INSTANCE_OF: number = 0x0D15;
+const REFLECT_GET_TYPE_INFO: number = 0x0D16;
+const REFLECT_GET_CLASS_HIERARCHY: number = 0x0D17;
+
+// Phase 2: Decorator Registration (0x0D18-0x0D1F)
+const REFLECT_REGISTER_CLASS_DECORATOR: number = 0x0D18;
+const REFLECT_REGISTER_METHOD_DECORATOR: number = 0x0D19;
+const REFLECT_REGISTER_FIELD_DECORATOR: number = 0x0D1A;
+const REFLECT_REGISTER_PARAMETER_DECORATOR: number = 0x0D1B;
+const REFLECT_GET_CLASS_DECORATORS: number = 0x0D1C;
+const REFLECT_GET_METHOD_DECORATORS: number = 0x0D1D;
+const REFLECT_GET_FIELD_DECORATORS: number = 0x0D1E;
+
+// Phase 3: Field Access (0x0D20-0x0D27)
+const REFLECT_GET: number = 0x0D20;
+const REFLECT_SET: number = 0x0D21;
+const REFLECT_HAS: number = 0x0D22;
+const REFLECT_GET_FIELD_NAMES: number = 0x0D23;
+const REFLECT_GET_FIELD_INFO: number = 0x0D24;
+const REFLECT_GET_FIELDS: number = 0x0D25;
+const REFLECT_GET_STATIC_FIELD_NAMES: number = 0x0D26;
+const REFLECT_GET_STATIC_FIELDS: number = 0x0D27;
+
+// Phase 4: Method Invocation (0x0D30-0x0D37)
+const REFLECT_INVOKE: number = 0x0D30;
+const REFLECT_INVOKE_ASYNC: number = 0x0D31;
+const REFLECT_GET_METHOD: number = 0x0D32;
+const REFLECT_GET_METHOD_INFO: number = 0x0D33;
+const REFLECT_GET_METHODS: number = 0x0D34;
+const REFLECT_HAS_METHOD: number = 0x0D35;
+const REFLECT_INVOKE_STATIC: number = 0x0D36;
+const REFLECT_GET_STATIC_METHODS: number = 0x0D37;
+
+// Phase 5: Object Creation (0x0D40-0x0D45)
+const REFLECT_CONSTRUCT: number = 0x0D40;
+const REFLECT_CONSTRUCT_WITH: number = 0x0D41;
+const REFLECT_ALLOCATE: number = 0x0D42;
+const REFLECT_CLONE: number = 0x0D43;
+const REFLECT_DEEP_CLONE: number = 0x0D44;
+const REFLECT_GET_CONSTRUCTOR_INFO: number = 0x0D45;
+
+// Phase 6: Type Utilities (0x0D50-0x0D5A)
+const REFLECT_IS_STRING: number = 0x0D50;
+const REFLECT_IS_NUMBER: number = 0x0D51;
+const REFLECT_IS_BOOLEAN: number = 0x0D52;
+const REFLECT_IS_NULL: number = 0x0D53;
+const REFLECT_IS_ARRAY: number = 0x0D54;
+const REFLECT_IS_FUNCTION: number = 0x0D55;
+const REFLECT_IS_OBJECT: number = 0x0D56;
+const REFLECT_TYPE_OF: number = 0x0D57;
+const REFLECT_IS_ASSIGNABLE_TO: number = 0x0D58;
+const REFLECT_CAST: number = 0x0D59;
+const REFLECT_CAST_OR_THROW: number = 0x0D5A;
+
+// Phase 7: Interface and Hierarchy Query (0x0D60-0x0D65)
+const REFLECT_IMPLEMENTS: number = 0x0D60;
+const REFLECT_GET_INTERFACES: number = 0x0D61;
+const REFLECT_GET_SUPERCLASS: number = 0x0D62;
+const REFLECT_GET_SUBCLASSES: number = 0x0D63;
+const REFLECT_GET_IMPLEMENTORS: number = 0x0D64;
+const REFLECT_IS_STRUCTURALLY_COMPATIBLE: number = 0x0D65;
+
+// Phase 8: Object Inspection (0x0D70-0x0D74)
+const REFLECT_INSPECT: number = 0x0D70;
+const REFLECT_GET_OBJECT_ID: number = 0x0D71;
+const REFLECT_DESCRIBE: number = 0x0D72;
+const REFLECT_SNAPSHOT: number = 0x0D73;
+const REFLECT_DIFF: number = 0x0D74;
+
+// Phase 8: Memory Analysis (0x0D80-0x0D85)
+const REFLECT_GET_OBJECT_SIZE: number = 0x0D80;
+const REFLECT_GET_RETAINED_SIZE: number = 0x0D81;
+const REFLECT_GET_REFERENCES: number = 0x0D82;
+const REFLECT_GET_REFERRERS: number = 0x0D83;
+const REFLECT_GET_HEAP_STATS: number = 0x0D84;
+const REFLECT_FIND_INSTANCES: number = 0x0D85;
+
+// Phase 8: Stack Introspection (0x0D90-0x0D92)
+const REFLECT_GET_CALL_STACK: number = 0x0D90;
+const REFLECT_GET_LOCALS: number = 0x0D91;
+const REFLECT_GET_SOURCE_LOCATION: number = 0x0D92;
+
+// Phase 8: Serialization (0x0DA0-0x0DA2)
+const REFLECT_TO_JSON: number = 0x0DA0;
+const REFLECT_GET_ENUMERABLE_KEYS: number = 0x0DA1;
+const REFLECT_IS_CIRCULAR: number = 0x0DA2;
+
+// Phase 9: Proxy Objects (0x0DB0-0x0DB3)
+const REFLECT_CREATE_PROXY: number = 0x0DB0;
+const REFLECT_IS_PROXY: number = 0x0DB1;
+const REFLECT_GET_PROXY_TARGET: number = 0x0DB2;
+const REFLECT_GET_PROXY_HANDLER: number = 0x0DB3;
+
+// Phase 10: Dynamic Subclass (0x0DC0-0x0DC4)
+const REFLECT_CREATE_SUBCLASS: number = 0x0DC0;
+const REFLECT_EXTEND_WITH: number = 0x0DC1;
+const REFLECT_DEFINE_CLASS: number = 0x0DC2;
+const REFLECT_ADD_METHOD: number = 0x0DC3;
+const REFLECT_SET_CONSTRUCTOR: number = 0x0DC4;
+
+// Phase 13: Generic Metadata (0x0DD0-0x0DD5)
+const REFLECT_GET_GENERIC_ORIGIN: number = 0x0DD0;
+const REFLECT_GET_TYPE_PARAMETERS: number = 0x0DD1;
+const REFLECT_GET_TYPE_ARGUMENTS: number = 0x0DD2;
+const REFLECT_IS_GENERIC_INSTANCE: number = 0x0DD3;
+const REFLECT_GET_GENERIC_BASE: number = 0x0DD4;
+const REFLECT_FIND_SPECIALIZATIONS: number = 0x0DD5;
+
+// Phase 16: Permissions (0x0E00-0x0E0D)
+const REFLECT_SET_PERMISSIONS: number = 0x0E00;
+const REFLECT_GET_PERMISSIONS: number = 0x0E01;
+const REFLECT_HAS_PERMISSION: number = 0x0E02;
+const REFLECT_CLEAR_PERMISSIONS: number = 0x0E03;
+const REFLECT_SET_CLASS_PERMISSIONS: number = 0x0E04;
+const REFLECT_GET_CLASS_PERMISSIONS: number = 0x0E05;
+const REFLECT_CLEAR_CLASS_PERMISSIONS: number = 0x0E06;
+const REFLECT_SET_GLOBAL_PERMISSIONS: number = 0x0E0A;
+const REFLECT_GET_GLOBAL_PERMISSIONS: number = 0x0E0B;
+const REFLECT_SEAL_PERMISSIONS: number = 0x0E0C;
+const REFLECT_IS_PERMISSIONS_SEALED: number = 0x0E0D;
+
+// Phase 17: Bootstrap (0x0E20-0x0E28)
+const REFLECT_BOOTSTRAP: number = 0x0E20;
+const REFLECT_IS_BOOTSTRAPPED: number = 0x0E28;
+
+// ============================================================================
+// Reflect class
+// ============================================================================
+
+class Reflect {
+
+    // ========================================================================
+    // Phase 1: Metadata Operations
+    // ========================================================================
+
+    defineMetadata(key: string, value: number, target: number): void {
+        __NATIVE_CALL(REFLECT_DEFINE_METADATA, key, value, target);
+    }
+
+    defineMetadataProp(key: string, value: number, target: number, prop: string): void {
+        __NATIVE_CALL(REFLECT_DEFINE_METADATA_PROP, key, value, target, prop);
+    }
+
+    getMetadata(key: string, target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METADATA, key, target);
+    }
+
+    getMetadataProp(key: string, target: number, prop: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_PROP, key, target, prop);
+    }
+
+    hasMetadata(key: string, target: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_HAS_METADATA, key, target);
+    }
+
+    hasMetadataProp(key: string, target: number, prop: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_HAS_METADATA_PROP, key, target, prop);
+    }
+
+    getMetadataKeys(target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_KEYS, target);
+    }
+
+    getMetadataKeysProp(target: number, prop: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METADATA_KEYS_PROP, target, prop);
+    }
+
+    deleteMetadata(key: string, target: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_DELETE_METADATA, key, target);
+    }
+
+    deleteMetadataProp(key: string, target: number, prop: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_DELETE_METADATA_PROP, key, target, prop);
+    }
+
+    // ========================================================================
+    // Phase 2: Class Introspection
+    // ========================================================================
+
+    getClass(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASS, obj);
+    }
+
+    getClassByName(name: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_BY_NAME, name);
+    }
+
+    getAllClasses(): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_ALL_CLASSES);
+    }
+
+    getClassesWithDecorator(decorator: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASSES_WITH_DECORATOR, decorator);
+    }
+
+    isSubclassOf(sub: number, sup: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_SUBCLASS_OF, sub, sup);
+    }
+
+    isInstanceOf(obj: number, cls: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_INSTANCE_OF, obj, cls);
+    }
+
+    getTypeInfo(target: number): string {
+        return __NATIVE_CALL<string>(REFLECT_GET_TYPE_INFO, target);
+    }
+
+    getClassHierarchy(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_HIERARCHY, obj);
+    }
+
+    // Decorator queries
+    getClassDecorators(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CLASS_DECORATORS, cls);
+    }
+
+    getMethodDecorators(cls: number, method: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METHOD_DECORATORS, cls, method);
+    }
+
+    getFieldDecorators(cls: number, field: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_DECORATORS, cls, field);
+    }
+
+    // ========================================================================
+    // Phase 3: Field Access
+    // ========================================================================
+
+    get(target: number, key: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET, target, key);
+    }
+
+    set(target: number, key: string, value: number): void {
+        __NATIVE_CALL(REFLECT_SET, target, key, value);
+    }
+
+    has(target: number, key: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_HAS, target, key);
+    }
+
+    getFieldNames(target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_NAMES, target);
+    }
+
+    getFieldInfo(target: number, key: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_FIELD_INFO, target, key);
+    }
+
+    getFields(target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_FIELDS, target);
+    }
+
+    getStaticFieldNames(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELD_NAMES, cls);
+    }
+
+    getStaticFields(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_FIELDS, cls);
+    }
+
+    // ========================================================================
+    // Phase 4: Method Invocation
+    // ========================================================================
+
+    invoke(target: number, method: string, args: number): number {
+        return __NATIVE_CALL<number>(REFLECT_INVOKE, target, method, args);
+    }
+
+    hasMethod(target: number, method: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_HAS_METHOD, target, method);
+    }
+
+    getMethodInfo(target: number, method: string): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METHOD_INFO, target, method);
+    }
+
+    getMethods(target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_METHODS, target);
+    }
+
+    getStaticMethods(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_STATIC_METHODS, cls);
+    }
+
+    // ========================================================================
+    // Phase 5: Object Creation
+    // ========================================================================
+
+    construct(cls: number, args: number): number {
+        return __NATIVE_CALL<number>(REFLECT_CONSTRUCT, cls, args);
+    }
+
+    allocate(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_ALLOCATE, cls);
+    }
+
+    clone(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_CLONE, obj);
+    }
+
+    deepClone(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_DEEP_CLONE, obj);
+    }
+
+    getConstructorInfo(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_CONSTRUCTOR_INFO, cls);
+    }
+
+    // ========================================================================
+    // Phase 6: Type Utilities
+    // ========================================================================
+
+    isString(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_STRING, value);
+    }
+
+    isNumber(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_NUMBER, value);
+    }
+
+    isBoolean(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_BOOLEAN, value);
+    }
+
+    isNull(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_NULL, value);
+    }
+
+    isArray(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_ARRAY, value);
+    }
+
+    isFunction(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_FUNCTION, value);
+    }
+
+    isObject(value: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_OBJECT, value);
+    }
+
+    // ========================================================================
+    // Phase 7: Interface and Hierarchy Query
+    // ========================================================================
+
+    implementsInterface(cls: number, iface: string): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IMPLEMENTS, cls, iface);
+    }
+
+    getInterfaces(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_INTERFACES, cls);
+    }
+
+    getSuperclass(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_SUPERCLASS, cls);
+    }
+
+    getSubclasses(cls: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_SUBCLASSES, cls);
+    }
+
+    // ========================================================================
+    // Phase 8: Object Inspection
+    // ========================================================================
+
+    inspect(obj: number): string {
+        return __NATIVE_CALL<string>(REFLECT_INSPECT, obj);
+    }
+
+    getObjectId(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_OBJECT_ID, obj);
+    }
+
+    describe(cls: number): string {
+        return __NATIVE_CALL<string>(REFLECT_DESCRIBE, cls);
+    }
+
+    getObjectSize(obj: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_OBJECT_SIZE, obj);
+    }
+
+    // ========================================================================
+    // Phase 9: Proxy Objects
+    // ========================================================================
+
+    createProxy(target: number, handler: number): number {
+        return __NATIVE_CALL<number>(REFLECT_CREATE_PROXY, target, handler);
+    }
+
+    isProxy(obj: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_PROXY, obj);
+    }
+
+    getProxyTarget(proxy: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_PROXY_TARGET, proxy);
+    }
+
+    // ========================================================================
+    // Phase 16: Permissions
+    // ========================================================================
+
+    setPermissions(target: number, perms: number): void {
+        __NATIVE_CALL(REFLECT_SET_PERMISSIONS, target, perms);
+    }
+
+    getPermissions(target: number): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_PERMISSIONS, target);
+    }
+
+    hasPermission(target: number, perm: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_HAS_PERMISSION, target, perm);
+    }
+
+    clearPermissions(target: number): void {
+        __NATIVE_CALL(REFLECT_CLEAR_PERMISSIONS, target);
+    }
+
+    setGlobalPermissions(perms: number): void {
+        __NATIVE_CALL(REFLECT_SET_GLOBAL_PERMISSIONS, perms);
+    }
+
+    getGlobalPermissions(): number {
+        return __NATIVE_CALL<number>(REFLECT_GET_GLOBAL_PERMISSIONS);
+    }
+
+    isPermissionsSealed(target: number): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_PERMISSIONS_SEALED, target);
+    }
+
+    // ========================================================================
+    // Phase 17: Bootstrap
+    // ========================================================================
+
+    isBootstrapped(): boolean {
+        return __NATIVE_CALL<boolean>(REFLECT_IS_BOOTSTRAPPED);
+    }
+}
+
+const reflect = new Reflect();
+export default reflect;

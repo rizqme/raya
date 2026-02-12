@@ -47,7 +47,7 @@ class Set<T> {
     }
 
     // Get all values as an array
-    values(): Array<T> {
+    values(): T[] {
         return __NATIVE_CALL(SET_VALUES, this.setPtr);
     }
 

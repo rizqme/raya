@@ -1,0 +1,30 @@
+/**
+ * std:logger - Standard Logging Module
+ *
+ * Provides structured logging with severity levels.
+ *
+ * Usage:
+ *   import logger from "std:logger";
+ *   logger.info("Application started");
+ */
+
+/**
+ * Logger provides methods for outputting messages at different severity levels.
+ */
+export class Logger {
+    /** Log a debug message (lowest severity) */
+    debug(message: string): void;
+
+    /** Log an informational message */
+    info(message: string): void;
+
+    /** Log a warning message */
+    warn(message: string): void;
+
+    /** Log an error message (highest severity) */
+    error(message: string): void;
+}
+
+/** Default logger instance */
+declare const logger: Logger;
+export default logger;

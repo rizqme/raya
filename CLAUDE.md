@@ -65,15 +65,105 @@
   - Tests run with StdNativeHandler integration
 - Tests: 827 engine lib, 659 runtime (e2e + unit), 13 stdlib
 
+**Milestone 4.8 (std:path & std:codec):** Complete
+- ✅ Phase 1: Native IDs & engine infrastructure complete
+  - `pub mod path` (0x6000-0x600A) + `pub mod codec` (0x7000-0x71FF) in builtin.rs
+  - 23+ constants in native_id.rs, Cargo.toml deps (rmp-serde, ciborium, pathdiff)
+- ✅ Phase 2: std:path complete
+  - 14 methods (11 native + 3 pure Raya): join, normalize, dirname, basename, extname, isAbsolute, resolve, relative, cwd, sep, delimiter, stripExt, withExt, isRelative
+  - Engine-side handler with GC context for string allocation
+  - 21 e2e tests (19 passing, 2 ignored — CallMethod in nested call)
+- ✅ Phase 3: std:codec complete (Utf8 + Msgpack + CBOR)
+  - Utf8: 4 methods (encode, decode, isValid, byteLength)
+  - Msgpack: encode<T>, decode<T>, encodedSize — compiler-lowered with field metadata
+  - CBOR: encode<T>, decode<T>, diagnostic — compiler-lowered with field metadata
+  - TypeSchema class for compile-time type metadata (opaque handle)
+  - encode<T>/decode<T> generic methods in .raya classes (compiler intercepts at call site)
+  - Field layout tracking for decoded object property access
+  - get_field_value() fix: whole-number f64 → JSON integer for codec roundtrips
+- ✅ Phase 4: Protobuf complete
+  - encode<T>, decode<T> with //@@proto annotations for field numbers + wire types
+  - Hand-rolled wire format (varint, fixed32/64, length-delimited)
+  - get_proto_field_info() extracts ProtoFieldInfo from type annotations
+- ✅ Phase 5: E2E tests complete (31 codec + 21 path = 52 total)
+  - 9 Utf8, 8 Msgpack, 7 CBOR, 7 Protobuf tests passing
+
 **Milestone 4.3 (std:math):** Complete
 - ✅ All 4 phases complete: native IDs, Math.raya + stdlib, VM dispatch, e2e tests
 - 22 functions: abs, sign, floor, ceil, round, trunc, min, max, pow, sqrt, sin, cos, tan, asin, acos, atan, atan2, exp, log, log10, random, PI, E
 - Native ID range: 0x2000-0x2016
 - 44 e2e tests + 10 stdlib unit tests passing
 
-**Tests:** 1,499 total (827 engine lib, 659 runtime, 13 stdlib)
+**Milestone 4.6 (std:crypto):** Complete
+- ✅ All 4 phases complete: native IDs, Crypto.raya, engine handler, e2e tests
+- 12 methods: hash, hashBytes, hmac, hmacBytes, randomBytes, randomInt, randomUUID, toHex, fromHex, toBase64, fromBase64, timingSafeEqual
+- Engine-side handler (not NativeHandler) — needs direct Buffer/GC heap access
+- Native ID range: 0x4000-0x400B
+- Algorithms: SHA-256, SHA-384, SHA-512, SHA-1, MD5 (hash); SHA-256/384/512 (HMAC)
+- 27 e2e tests passing
 
-See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), and [plans/milestone-4.3.md](plans/milestone-4.3.md) for details.
+**Milestone 4.7 (std:time):** Complete
+- ✅ All 3 phases complete: native IDs, Time.raya + engine handler, e2e tests
+- 12 methods: now, monotonic, hrtime, elapsed, sleep, sleepMicros, seconds, minutes, hours, toSeconds, toMinutes, toHours
+- Only 5 native calls (system operations); 7 pure Raya methods (duration conversions)
+- Engine-side handler with `LazyLock<Instant>` monotonic epoch
+- Native ID range: 0x5000-0x5004
+- 19 e2e tests passing
+
+**Milestone 4.4 (std:reflect):** Not Started
+- Expose existing Reflect API (141+ handlers) as `std:reflect` module
+- Create Reflect.raya with `__NATIVE_CALL` wrappers, register in std_modules
+- Fix `is_reflect_method()` range to cover 0x0D00-0x0E2F
+- Handlers stay in raya-engine (need VM internals), no raya-stdlib module needed
+- E2E tests for metadata, introspection, field access, proxies, permissions
+
+**Milestone 4.5 (std:runtime):** In Progress (Phases 1-8 Complete)
+- `import { Compiler, Bytecode, Vm, Parser, TypeChecker, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule } from "std:runtime"` — 9 exports, named
+- ✅ Phase 1: Compiler + Bytecode I/O complete
+  - Compiler: compile, compileExpression, eval, execute, executeFunction
+  - Bytecode: encode, decode, loadLibrary, loadDependency, resolveDependency
+  - 15 e2e tests
+- ✅ Phase 2: Bytecode Inspection + Parser + TypeChecker complete
+  - Bytecode: validate, disassemble, getModuleName, getModuleFunctions, getModuleClasses
+  - Parser: parse, parseExpression; TypeChecker: check, checkExpression; Compiler.compileAst
+  - 11 new e2e tests (26 total)
+- ✅ Phase 3: VM Instances & Isolation complete
+  - Vm.current(), Vm.spawn() → VmInstance with id/isRoot/isAlive/isDestroyed
+  - VmInstance: compile, execute, eval, loadBytecode, runEntry, terminate
+  - VmInstanceRegistry with per-instance module isolation, cascading terminate
+  - Compiler fix: variable_class_map from type annotations + method_return_class_map for chained calls
+  - 13 new e2e tests (39 total runtime tests)
+- ✅ Phase 4: Permission Management complete
+  - VmPermissions struct (eval, binaryIO, vmSpawn, vmAccess, libLoad, reflect, nativeCalls, allowStdlib)
+  - Vm.hasPermission(), getPermissions(), getAllowedStdlib(), isStdlibAllowed()
+  - Permission checks integrated into dispatch (eval, encode/decode, loadLibrary, loadDependency, resolveDependency, spawn)
+  - 11 new e2e tests (50 total runtime tests)
+- ✅ Phase 5: VM Introspection & Resource Control complete
+  - Vm: heapUsed, heapLimit, taskCount, concurrency, threadCount, gcCollect, gcStats, version, uptime, loadedModules, hasModule
+  - heapUsed queries GC heap_stats; threadCount uses available_parallelism; version returns "0.1.0"
+  - 11 new e2e tests (61 total runtime tests)
+- ✅ Phase 6: Bytecode Builder complete
+  - BytecodeBuilder class wrapping reflect handlers 0x0DF0-0x0DFD
+  - 16 methods: emit, emitWithArg, emitWithArgs, emitPush, defineLabel, markLabel, emitJump, emitJumpIf, declareLocal, emitLoadLocal, emitStoreLocal, emitCall, emitReturn, emitReturnVoid, validate, build
+  - Added 14 bytecode builder match arms to task_interpreter.rs call_reflect_method
+  - 5 new e2e tests (66 total runtime tests)
+- ✅ Phase 7: Dynamic Modules & Runtime Types complete
+  - ClassBuilder class wrapping reflect handlers 0x0DE0-0x0DE6 (addField, addMethod, setConstructor, setParent, addInterface, build)
+  - DynamicModule class wrapping reflect handlers 0x0E10-0x0E15 (addFunction, addClass, addGlobal, seal, link)
+  - Added 13 dispatch match arms to task_interpreter.rs (7 ClassBuilder + 6 DynamicModule)
+  - 10 new e2e tests (76 total runtime tests)
+- ✅ Phase 8: E2E Tests complete
+  - 20 new gap/integration tests covering all phases
+  - Phase 1 gaps: executeFunction, eval complex, encode-decode-execute roundtrip
+  - Phase 2 gaps: getModuleName, checkExpression, validate after decode
+  - Phase 3 gaps: loadBytecode+execute, runEntry, fault containment, multiple evals, unique spawn IDs
+  - Cross-phase: full pipeline, BytecodeBuilder+DynamicModule, ClassBuilder+DynamicModule, labels+jumps
+  - 96 total runtime e2e tests
+- Remaining: documentation (Phase 9)
+
+**Tests:** 1,731 total (831 engine lib, 883 runtime, 17 stdlib) — 2 ignored (path CallMethod)
+
+See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), and [plans/milestone-4.8.md](plans/milestone-4.8.md) for details.
 
 ---
 
@@ -111,6 +201,11 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 | [plans/milestone-4.1.md](plans/milestone-4.1.md) | Core Types (built-in functions) |
 | [plans/milestone-4.2.md](plans/milestone-4.2.md) | std:logger (replaces logger.info) |
 | [plans/milestone-4.3.md](plans/milestone-4.3.md) | std:math (20 methods + PI, E) |
+| [plans/milestone-4.4.md](plans/milestone-4.4.md) | std:reflect (141+ handlers as module) |
+| [plans/milestone-4.5.md](plans/milestone-4.5.md) | std:vm (compile, execute, isolation, permissions) |
+| [plans/milestone-4.6.md](plans/milestone-4.6.md) | std:crypto (hashing, HMAC, random, encoding) |
+| [plans/milestone-4.7.md](plans/milestone-4.7.md) | std:time (clocks, sleep, duration utilities) |
+| [plans/milestone-4.8.md](plans/milestone-4.8.md) | std:path & std:codec (path manipulation, UTF-8, MessagePack, CBOR, Protobuf) |
 
 ---
 
@@ -138,11 +233,16 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (1,499+)
-cargo test -p raya-engine      # Engine tests only (827)
-cargo test -p raya-runtime     # Runtime + e2e tests (659)
-cargo test -p raya-stdlib      # Stdlib tests (13)
+cargo test                     # Run all tests (1,731+)
+cargo test -p raya-engine      # Engine tests only (831)
+cargo test -p raya-runtime     # Runtime + e2e tests (883)
+cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests
+```
+
+**Important:** Runtime tests that spawn child VMs (std:runtime Phase 3+) are sensitive to thread contention. When running runtime tests, limit parallelism to 2:
+```bash
+cargo test -p raya-runtime runtime -- --test-threads=2
 ```
 
 ---

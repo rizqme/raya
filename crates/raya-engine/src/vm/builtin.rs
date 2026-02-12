@@ -735,6 +735,270 @@ pub mod reflect {
     pub const IS_BOOTSTRAPPED: u16 = 0x0E28;
 }
 
+/// Built-in method IDs for runtime operations (std:runtime)
+pub mod runtime {
+    // ── Compiler class (0x3000-0x3005) ──
+    /// `Compiler.compile(source)` - Parse + type-check + compile to bytecode, returns module ID
+    pub const COMPILE: u16 = 0x3000;
+    /// `Compiler.compileExpression(expr)` - Wrap expression in `return <expr>;`, compile
+    pub const COMPILE_EXPRESSION: u16 = 0x3001;
+    /// `Compiler.compileAst(astId)` - Compile a pre-parsed AST to bytecode
+    pub const COMPILE_AST: u16 = 0x3002;
+    /// `Compiler.eval(source)` - Compile and immediately execute source
+    pub const EVAL: u16 = 0x3003;
+    /// `Compiler.execute(moduleId)` - Execute a compiled module's main function
+    pub const EXECUTE: u16 = 0x3004;
+    /// `Compiler.executeFunction(moduleId, funcName, ...args)` - Execute a named function
+    pub const EXECUTE_FUNCTION: u16 = 0x3005;
+
+    // ── Bytecode class (0x3010-0x3019) ──
+    /// `Bytecode.encode(moduleId)` - Serialize module to .ryb binary
+    pub const ENCODE: u16 = 0x3010;
+    /// `Bytecode.decode(data)` - Deserialize .ryb binary to module
+    pub const DECODE: u16 = 0x3011;
+    /// `Bytecode.validate(moduleId)` - Verify module integrity
+    pub const VALIDATE: u16 = 0x3012;
+    /// `Bytecode.disassemble(moduleId)` - Disassemble to human-readable listing
+    pub const DISASSEMBLE: u16 = 0x3013;
+    /// `Bytecode.getModuleName(moduleId)` - Get module name
+    pub const GET_MODULE_NAME: u16 = 0x3014;
+    /// `Bytecode.getModuleFunctions(moduleId)` - List function names
+    pub const GET_MODULE_FUNCTIONS: u16 = 0x3015;
+    /// `Bytecode.getModuleClasses(moduleId)` - List class names
+    pub const GET_MODULE_CLASSES: u16 = 0x3016;
+    /// `Bytecode.loadLibrary(path)` - Load .ryb file from path
+    pub const LOAD_LIBRARY: u16 = 0x3017;
+    /// `Bytecode.loadDependency(path, name)` - Load .ryb and register as importable module
+    pub const LOAD_DEPENDENCY: u16 = 0x3018;
+    /// `Bytecode.resolveDependency(name)` - Auto-resolve .ryb from search paths
+    pub const RESOLVE_DEPENDENCY: u16 = 0x3019;
+
+    // ── Parser class (0x3050-0x3051) ──
+    /// `Parser.parse(source)` - Parse source to AST, returns AST ID
+    pub const PARSE: u16 = 0x3050;
+    /// `Parser.parseExpression(expr)` - Parse a single expression to AST
+    pub const PARSE_EXPRESSION: u16 = 0x3051;
+
+    // ── TypeChecker class (0x3060-0x3061) ──
+    /// `TypeChecker.check(astId)` - Type-check AST, returns typed AST ID
+    pub const CHECK: u16 = 0x3060;
+    /// `TypeChecker.checkExpression(astId)` - Type-check expression AST
+    pub const CHECK_EXPRESSION: u16 = 0x3061;
+
+    // ── Vm class (0x3020-0x3021) ──
+    /// `Vm.current()` - Get root VM instance handle
+    pub const VM_CURRENT: u16 = 0x3020;
+    /// `Vm.spawn()` - Create child VM instance
+    pub const VM_SPAWN: u16 = 0x3021;
+
+    // ── VmInstance methods (0x3022-0x302C) ──
+    /// `instance.id()` - Get instance ID
+    pub const VM_INSTANCE_ID: u16 = 0x3022;
+    /// `instance.isRoot()` - Check if root VM
+    pub const VM_INSTANCE_IS_ROOT: u16 = 0x3023;
+    /// `instance.isAlive()` - Check if alive
+    pub const VM_INSTANCE_IS_ALIVE: u16 = 0x3024;
+    /// `instance.loadBytecode(bytes)` - Load bytecode into child
+    pub const VM_INSTANCE_LOAD_BYTECODE: u16 = 0x3025;
+    /// `instance.runEntry(name)` - Run named entry function
+    pub const VM_INSTANCE_RUN_ENTRY: u16 = 0x3027;
+    /// `instance.compile(source)` - Compile within child
+    pub const VM_INSTANCE_COMPILE: u16 = 0x3028;
+    /// `instance.terminate()` - Terminate child and descendants
+    pub const VM_INSTANCE_TERMINATE: u16 = 0x3029;
+    /// `instance.isDestroyed()` - Check if terminated
+    pub const VM_INSTANCE_IS_DESTROYED: u16 = 0x302A;
+    /// `instance.execute(moduleId)` - Execute module in child
+    pub const VM_INSTANCE_EXECUTE: u16 = 0x302B;
+    /// `instance.eval(source)` - Compile + execute in child
+    pub const VM_INSTANCE_EVAL: u16 = 0x302C;
+
+    // ── Permission management (0x3030-0x3035) ──
+    /// `Vm.hasPermission(name)` - Check if current VM has a named permission
+    pub const HAS_PERMISSION: u16 = 0x3030;
+    /// `Vm.getPermissions()` - Get current VM's permission policy as comma-separated string
+    pub const GET_PERMISSIONS: u16 = 0x3031;
+    /// `Vm.getAllowedStdlib()` - List allowed stdlib modules as comma-separated string
+    pub const GET_ALLOWED_STDLIB: u16 = 0x3034;
+    /// `Vm.isStdlibAllowed(module)` - Check if a specific stdlib module is allowed
+    pub const IS_STDLIB_ALLOWED: u16 = 0x3035;
+
+    // ── VM Introspection & Resource Control (0x3040-0x304A) ──
+    /// `Vm.heapUsed()` - Current heap allocation in bytes
+    pub const HEAP_USED: u16 = 0x3040;
+    /// `Vm.heapLimit()` - Max heap size (0 = unlimited)
+    pub const HEAP_LIMIT: u16 = 0x3041;
+    /// `Vm.taskCount()` - Total tasks
+    pub const TASK_COUNT: u16 = 0x3042;
+    /// `Vm.concurrency()` - Tasks actively running
+    pub const CONCURRENCY: u16 = 0x3043;
+    /// `Vm.threadCount()` - Max worker threads
+    pub const THREAD_COUNT: u16 = 0x3044;
+    /// `Vm.gcCollect()` - Trigger manual GC
+    pub const GC_COLLECT: u16 = 0x3045;
+    /// `Vm.gcStats()` - Total bytes freed by GC
+    pub const GC_STATS: u16 = 0x3046;
+    /// `Vm.version()` - Raya VM version string
+    pub const VERSION: u16 = 0x3047;
+    /// `Vm.uptime()` - VM uptime in milliseconds
+    pub const UPTIME: u16 = 0x3048;
+    /// `Vm.loadedModules()` - Comma-separated list of loaded module names
+    pub const LOADED_MODULES: u16 = 0x3049;
+    /// `Vm.hasModule(name)` - Check if a module is loaded
+    pub const HAS_MODULE: u16 = 0x304A;
+}
+
+/// Check if a method ID is a runtime method (std:runtime)
+pub fn is_runtime_method(method_id: u16) -> bool {
+    (0x3000..=0x30FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Crypto (std:crypto)
+pub mod crypto {
+    // ── Hashing (0x4000-0x4001) ──
+    /// `crypto.hash(algorithm, data)` - One-shot hash, returns hex string
+    pub const HASH: u16 = 0x4000;
+    /// `crypto.hashBytes(algorithm, data)` - Hash binary data, returns raw bytes
+    pub const HASH_BYTES: u16 = 0x4001;
+
+    // ── HMAC (0x4002-0x4003) ──
+    /// `crypto.hmac(algorithm, key, data)` - Keyed HMAC, returns hex string
+    pub const HMAC: u16 = 0x4002;
+    /// `crypto.hmacBytes(algorithm, key, data)` - HMAC on binary data, returns raw bytes
+    pub const HMAC_BYTES: u16 = 0x4003;
+
+    // ── Random (0x4004-0x4006) ──
+    /// `crypto.randomBytes(size)` - Cryptographically secure random bytes
+    pub const RANDOM_BYTES: u16 = 0x4004;
+    /// `crypto.randomInt(min, max)` - Random integer in [min, max)
+    pub const RANDOM_INT: u16 = 0x4005;
+    /// `crypto.randomUUID()` - Generate UUID v4 string
+    pub const RANDOM_UUID: u16 = 0x4006;
+
+    // ── Encoding (0x4007-0x400A) ──
+    /// `crypto.toHex(data)` - Binary to hex string
+    pub const TO_HEX: u16 = 0x4007;
+    /// `crypto.fromHex(hex)` - Hex string to binary
+    pub const FROM_HEX: u16 = 0x4008;
+    /// `crypto.toBase64(data)` - Binary to base64 string
+    pub const TO_BASE64: u16 = 0x4009;
+    /// `crypto.fromBase64(b64)` - Base64 string to binary
+    pub const FROM_BASE64: u16 = 0x400A;
+
+    // ── Comparison (0x400B) ──
+    /// `crypto.timingSafeEqual(a, b)` - Constant-time equality check
+    pub const TIMING_SAFE_EQUAL: u16 = 0x400B;
+}
+
+/// Check if a method ID is a crypto method (std:crypto)
+pub fn is_crypto_method(method_id: u16) -> bool {
+    (0x4000..=0x40FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Time (std:time)
+pub mod time {
+    // ── Clock (0x5000-0x5002) ──
+    /// `time.now()` - Wall clock: ms since Unix epoch
+    pub const NOW: u16 = 0x5000;
+    /// `time.monotonic()` - Monotonic clock: ms since process start
+    pub const MONOTONIC: u16 = 0x5001;
+    /// `time.hrtime()` - High-resolution monotonic: nanoseconds
+    pub const HRTIME: u16 = 0x5002;
+
+    // ── Sleep (0x5003-0x5004) ──
+    /// `time.sleep(ms)` - Synchronous sleep (blocks thread)
+    pub const SLEEP: u16 = 0x5003;
+    /// `time.sleepMicros(us)` - Microsecond precision sleep
+    pub const SLEEP_MICROS: u16 = 0x5004;
+}
+
+/// Check if a method ID is a time method (std:time)
+pub fn is_time_method(method_id: u16) -> bool {
+    (0x5000..=0x50FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Path (std:path)
+pub mod path {
+    // ── Join & Normalize (0x6000-0x6001) ──
+    /// `path.join(a, b)` - Join two path segments
+    pub const JOIN: u16 = 0x6000;
+    /// `path.normalize(p)` - Normalize path (resolve `.` and `..`)
+    pub const NORMALIZE: u16 = 0x6001;
+
+    // ── Components (0x6002-0x6004) ──
+    /// `path.dirname(p)` - Directory name
+    pub const DIRNAME: u16 = 0x6002;
+    /// `path.basename(p)` - Base filename
+    pub const BASENAME: u16 = 0x6003;
+    /// `path.extname(p)` - File extension (with dot)
+    pub const EXTNAME: u16 = 0x6004;
+
+    // ── Resolution (0x6005-0x6008) ──
+    /// `path.isAbsolute(p)` - Check if path is absolute
+    pub const IS_ABSOLUTE: u16 = 0x6005;
+    /// `path.resolve(from, to)` - Resolve path relative to base
+    pub const RESOLVE: u16 = 0x6006;
+    /// `path.relative(from, to)` - Compute relative path
+    pub const RELATIVE: u16 = 0x6007;
+    /// `path.cwd()` - Current working directory
+    pub const CWD: u16 = 0x6008;
+
+    // ── OS Constants (0x6009-0x600A) ──
+    /// `path.sep()` - Path separator ("/" or "\\")
+    pub const SEP: u16 = 0x6009;
+    /// `path.delimiter()` - Path list delimiter (":" or ";")
+    pub const DELIMITER: u16 = 0x600A;
+}
+
+/// Check if a method ID is a path method (std:path)
+pub fn is_path_method(method_id: u16) -> bool {
+    (0x6000..=0x60FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Codec (std:codec)
+pub mod codec {
+    // ── Utf8 (0x7000-0x7003) ──
+    /// `Utf8.encode(text)` - String to UTF-8 bytes
+    pub const UTF8_ENCODE: u16 = 0x7000;
+    /// `Utf8.decode(bytes)` - UTF-8 bytes to string
+    pub const UTF8_DECODE: u16 = 0x7001;
+    /// `Utf8.isValid(bytes)` - Check if bytes are valid UTF-8
+    pub const UTF8_IS_VALID: u16 = 0x7002;
+    /// `Utf8.byteLength(text)` - Byte length of string as UTF-8
+    pub const UTF8_BYTE_LENGTH: u16 = 0x7003;
+
+    // ── Msgpack (0x7010-0x7012) ──
+    /// `Msgpack.encode<T>(obj)` - Typed encode to MessagePack
+    pub const MSGPACK_ENCODE_OBJECT: u16 = 0x7010;
+    /// `Msgpack.decode<T>(bytes)` - Typed decode from MessagePack
+    pub const MSGPACK_DECODE_OBJECT: u16 = 0x7011;
+    /// `Msgpack.encodedSize(bytes)` - Byte size of buffer
+    pub const MSGPACK_ENCODED_SIZE: u16 = 0x7012;
+
+    // ── CBOR (0x7020-0x7022) ──
+    /// `Cbor.encode<T>(obj)` - Typed encode to CBOR
+    pub const CBOR_ENCODE_OBJECT: u16 = 0x7020;
+    /// `Cbor.decode<T>(bytes)` - Typed decode from CBOR
+    pub const CBOR_DECODE_OBJECT: u16 = 0x7021;
+    /// `Cbor.diagnostic(bytes)` - CBOR diagnostic notation
+    pub const CBOR_DIAGNOSTIC: u16 = 0x7022;
+
+    // ── Protobuf (0x7030-0x7031) ──
+    /// `Protobuf.encode<T>(obj)` - Typed encode to Protobuf wire format
+    pub const PROTO_ENCODE_OBJECT: u16 = 0x7030;
+    /// `Protobuf.decode<T>(bytes)` - Typed decode from Protobuf wire format
+    pub const PROTO_DECODE_OBJECT: u16 = 0x7031;
+
+    // ── TypeSchema (0x7100) ──
+    /// Create a TypeSchema from compile-time field metadata
+    pub const TYPE_SCHEMA_CREATE: u16 = 0x7100;
+}
+
+/// Check if a method ID is a codec method (std:codec)
+pub fn is_codec_method(method_id: u16) -> bool {
+    (0x7000..=0x71FF).contains(&method_id)
+}
+
 /// Built-in method IDs for Date
 pub mod date {
     /// `Date.now()` - Get current timestamp
@@ -954,8 +1218,9 @@ pub fn is_date_method(method_id: u16) -> bool {
 }
 
 /// Check if a method ID is a built-in reflect method
+/// Covers Phases 1-17: 0x0D00-0x0DFF (core) + 0x0E00-0x0E2F (permissions + bootstrap)
 pub fn is_reflect_method(method_id: u16) -> bool {
-    (0x0D00..=0x0DFF).contains(&method_id)
+    (0x0D00..=0x0E2F).contains(&method_id)
 }
 
 /// Check if a method ID is a built-in number method

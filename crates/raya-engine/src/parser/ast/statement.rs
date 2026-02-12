@@ -413,6 +413,35 @@ impl Annotation {
     pub fn has_omitempty(&self) -> bool {
         self.value.as_ref().map_or(false, |v| v.contains("omitempty"))
     }
+
+    /// Get the proto field number if this is a proto annotation
+    /// Returns None if this is not a proto annotation or if the value is "-" (skip)
+    pub fn proto_field_number(&self) -> Option<u32> {
+        if self.tag != "proto" {
+            return None;
+        }
+        match &self.value {
+            None => None,
+            Some(v) if v == "-" => None,
+            Some(v) => {
+                // Parse field number, ignoring optional wire hint after comma
+                let num_str = v.split(',').next().unwrap_or(v).trim();
+                num_str.parse::<u32>().ok()
+            }
+        }
+    }
+
+    /// Get the proto wire type hint if specified (e.g., "int32", "float", "int64")
+    pub fn proto_wire_hint(&self) -> Option<&str> {
+        if self.tag != "proto" {
+            return None;
+        }
+        self.value.as_ref().and_then(|v| {
+            let mut parts = v.split(',');
+            parts.next(); // skip field number
+            parts.next().map(|s| s.trim())
+        })
+    }
 }
 
 // ============================================================================

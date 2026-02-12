@@ -1,0 +1,19 @@
+/**
+ * number - Primitive numeric type
+ *
+ * Numbers are 64-bit IEEE 754 floating-point values (integers use 32-bit when possible).
+ *
+ * Usage:
+ *   let pi: number = 3.14159;
+ *   let formatted: string = pi.toFixed(2); // "3.14"
+ */
+export class number {
+    /** Format with a fixed number of decimal digits */
+    toFixed(digits: number): string;
+
+    /** Format to the specified number of significant digits */
+    toPrecision(precision: number): string;
+
+    /** Convert to string with the given radix (base 2-36) */
+    toString(radix: number): string;
+}

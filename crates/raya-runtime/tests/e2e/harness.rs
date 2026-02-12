@@ -51,10 +51,28 @@ fn get_builtin_sources() -> &'static str {
 fn get_std_sources() -> &'static str {
     concat!(
         // Logger (std:logger)
-        include_str!("../../../raya-stdlib/Logger.raya"),
+        include_str!("../../../raya-stdlib/raya/logger.raya"),
         "\n",
         // Math (std:math)
-        include_str!("../../../raya-stdlib/Math.raya"),
+        include_str!("../../../raya-stdlib/raya/math.raya"),
+        "\n",
+        // Reflect (std:reflect)
+        include_str!("../../../raya-stdlib/raya/reflect.raya"),
+        "\n",
+        // Runtime (std:runtime)
+        include_str!("../../../raya-stdlib/raya/runtime.raya"),
+        "\n",
+        // Crypto (std:crypto)
+        include_str!("../../../raya-stdlib/raya/crypto.raya"),
+        "\n",
+        // Time (std:time)
+        include_str!("../../../raya-stdlib/raya/time.raya"),
+        "\n",
+        // Path (std:path)
+        include_str!("../../../raya-stdlib/raya/path.raya"),
+        "\n",
+        // Codec (std:codec)
+        include_str!("../../../raya-stdlib/raya/codec.raya"),
         "\n",
     )
 }

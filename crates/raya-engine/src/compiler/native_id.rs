@@ -262,6 +262,118 @@ pub const MATH_PI: u16 = 0x2015;
 pub const MATH_E: u16 = 0x2016;
 
 // ============================================================================
+// Crypto (0x40xx) - std:crypto module
+// ============================================================================
+
+/// crypto.hash(algorithm, data) - One-shot hash, returns hex string
+pub const CRYPTO_HASH: u16 = 0x4000;
+/// crypto.hashBytes(algorithm, data) - Hash binary data, returns raw bytes
+pub const CRYPTO_HASH_BYTES: u16 = 0x4001;
+/// crypto.hmac(algorithm, key, data) - Keyed HMAC, returns hex string
+pub const CRYPTO_HMAC: u16 = 0x4002;
+/// crypto.hmacBytes(algorithm, key, data) - HMAC on binary data, returns raw bytes
+pub const CRYPTO_HMAC_BYTES: u16 = 0x4003;
+/// crypto.randomBytes(size) - Cryptographically secure random bytes
+pub const CRYPTO_RANDOM_BYTES: u16 = 0x4004;
+/// crypto.randomInt(min, max) - Random integer in [min, max)
+pub const CRYPTO_RANDOM_INT: u16 = 0x4005;
+/// crypto.randomUUID() - Generate UUID v4 string
+pub const CRYPTO_RANDOM_UUID: u16 = 0x4006;
+/// crypto.toHex(data) - Binary to hex string
+pub const CRYPTO_TO_HEX: u16 = 0x4007;
+/// crypto.fromHex(hex) - Hex string to binary
+pub const CRYPTO_FROM_HEX: u16 = 0x4008;
+/// crypto.toBase64(data) - Binary to base64 string
+pub const CRYPTO_TO_BASE64: u16 = 0x4009;
+/// crypto.fromBase64(b64) - Base64 string to binary
+pub const CRYPTO_FROM_BASE64: u16 = 0x400A;
+/// crypto.timingSafeEqual(a, b) - Constant-time equality check
+pub const CRYPTO_TIMING_SAFE_EQUAL: u16 = 0x400B;
+
+// ============================================================================
+// Time (0x50xx) - std:time module
+// ============================================================================
+
+/// time.now() - Wall clock: ms since Unix epoch
+pub const TIME_NOW: u16 = 0x5000;
+/// time.monotonic() - Monotonic clock: ms since process start
+pub const TIME_MONOTONIC: u16 = 0x5001;
+/// time.hrtime() - High-resolution monotonic: nanoseconds
+pub const TIME_HRTIME: u16 = 0x5002;
+/// time.sleep(ms) - Synchronous sleep (blocks thread)
+pub const TIME_SLEEP: u16 = 0x5003;
+/// time.sleepMicros(us) - Microsecond precision sleep
+pub const TIME_SLEEP_MICROS: u16 = 0x5004;
+
+// ============================================================================
+// Path (0x60xx) - std:path module
+// ============================================================================
+
+/// path.join(a, b) - Join two path segments
+pub const PATH_JOIN: u16 = 0x6000;
+/// path.normalize(p) - Normalize path
+pub const PATH_NORMALIZE: u16 = 0x6001;
+/// path.dirname(p) - Directory name
+pub const PATH_DIRNAME: u16 = 0x6002;
+/// path.basename(p) - Base filename
+pub const PATH_BASENAME: u16 = 0x6003;
+/// path.extname(p) - File extension
+pub const PATH_EXTNAME: u16 = 0x6004;
+/// path.isAbsolute(p) - Check if absolute
+pub const PATH_IS_ABSOLUTE: u16 = 0x6005;
+/// path.resolve(from, to) - Resolve path
+pub const PATH_RESOLVE: u16 = 0x6006;
+/// path.relative(from, to) - Relative path
+pub const PATH_RELATIVE: u16 = 0x6007;
+/// path.cwd() - Current working directory
+pub const PATH_CWD: u16 = 0x6008;
+/// path.sep() - Path separator
+pub const PATH_SEP: u16 = 0x6009;
+/// path.delimiter() - Path list delimiter
+pub const PATH_DELIMITER: u16 = 0x600A;
+
+// ============================================================================
+// Codec (0x70xx) - std:codec module
+// ============================================================================
+
+// ── Utf8 (0x7000-0x7003) ──
+/// Utf8.encode(text) - String to UTF-8 bytes
+pub const UTF8_ENCODE: u16 = 0x7000;
+/// Utf8.decode(bytes) - UTF-8 bytes to string
+pub const UTF8_DECODE: u16 = 0x7001;
+/// Utf8.isValid(bytes) - Check valid UTF-8
+pub const UTF8_IS_VALID: u16 = 0x7002;
+/// Utf8.byteLength(text) - Byte length of string
+pub const UTF8_BYTE_LENGTH: u16 = 0x7003;
+
+// ── Msgpack (0x7010-0x7012) ──
+/// Msgpack.encode<T>(obj) - Typed encode to MessagePack
+pub const MSGPACK_ENCODE_OBJECT: u16 = 0x7010;
+/// Msgpack.decode<T>(bytes) - Typed decode from MessagePack
+pub const MSGPACK_DECODE_OBJECT: u16 = 0x7011;
+/// Msgpack.encodedSize(bytes) - Buffer byte size
+pub const MSGPACK_ENCODED_SIZE: u16 = 0x7012;
+
+// ── CBOR (0x7020-0x7022) ──
+/// Cbor.encode<T>(obj) - Typed encode to CBOR
+pub const CBOR_ENCODE_OBJECT: u16 = 0x7020;
+/// Cbor.decode<T>(bytes) - Typed decode from CBOR
+pub const CBOR_DECODE_OBJECT: u16 = 0x7021;
+/// Cbor.diagnostic(bytes) - CBOR diagnostic notation
+pub const CBOR_DIAGNOSTIC: u16 = 0x7022;
+
+// ── Protobuf (0x7030-0x7031) ──
+/// Protobuf.encode<T>(obj) - Typed encode to Protobuf
+pub const PROTO_ENCODE_OBJECT: u16 = 0x7030;
+/// Protobuf.decode<T>(bytes) - Typed decode from Protobuf
+pub const PROTO_DECODE_OBJECT: u16 = 0x7031;
+
+// ── TypeSchema (0x7100) ──
+/// Create TypeSchema from compile-time field metadata
+/// Args: [field_count, field_name_1, json_key_1, proto_num_1, proto_type_1, ...]
+pub const TYPE_SCHEMA_CREATE: u16 = 0x7100;
+
+// ============================================================================
 // JSON (0x0Cxx)
 // ============================================================================
 
@@ -529,6 +641,20 @@ pub fn native_name(id: u16) -> &'static str {
         LOGGER_WARN => "logger.warn",
         LOGGER_ERROR => "logger.error",
 
+        // Crypto
+        CRYPTO_HASH => "crypto.hash",
+        CRYPTO_HASH_BYTES => "crypto.hashBytes",
+        CRYPTO_HMAC => "crypto.hmac",
+        CRYPTO_HMAC_BYTES => "crypto.hmacBytes",
+        CRYPTO_RANDOM_BYTES => "crypto.randomBytes",
+        CRYPTO_RANDOM_INT => "crypto.randomInt",
+        CRYPTO_RANDOM_UUID => "crypto.randomUUID",
+        CRYPTO_TO_HEX => "crypto.toHex",
+        CRYPTO_FROM_HEX => "crypto.fromHex",
+        CRYPTO_TO_BASE64 => "crypto.toBase64",
+        CRYPTO_FROM_BASE64 => "crypto.fromBase64",
+        CRYPTO_TIMING_SAFE_EQUAL => "crypto.timingSafeEqual",
+
         // Math
         MATH_ABS => "math.abs",
         MATH_SIGN => "math.sign",
@@ -553,6 +679,41 @@ pub fn native_name(id: u16) -> &'static str {
         MATH_RANDOM => "math.random",
         MATH_PI => "math.PI",
         MATH_E => "math.E",
+
+        // Time
+        TIME_NOW => "time.now",
+        TIME_MONOTONIC => "time.monotonic",
+        TIME_HRTIME => "time.hrtime",
+        TIME_SLEEP => "time.sleep",
+        TIME_SLEEP_MICROS => "time.sleepMicros",
+
+        // Path
+        PATH_JOIN => "path.join",
+        PATH_NORMALIZE => "path.normalize",
+        PATH_DIRNAME => "path.dirname",
+        PATH_BASENAME => "path.basename",
+        PATH_EXTNAME => "path.extname",
+        PATH_IS_ABSOLUTE => "path.isAbsolute",
+        PATH_RESOLVE => "path.resolve",
+        PATH_RELATIVE => "path.relative",
+        PATH_CWD => "path.cwd",
+        PATH_SEP => "path.sep",
+        PATH_DELIMITER => "path.delimiter",
+
+        // Codec
+        UTF8_ENCODE => "Utf8.encode",
+        UTF8_DECODE => "Utf8.decode",
+        UTF8_IS_VALID => "Utf8.isValid",
+        UTF8_BYTE_LENGTH => "Utf8.byteLength",
+        MSGPACK_ENCODE_OBJECT => "Msgpack.encode",
+        MSGPACK_DECODE_OBJECT => "Msgpack.decode",
+        MSGPACK_ENCODED_SIZE => "Msgpack.encodedSize",
+        CBOR_ENCODE_OBJECT => "Cbor.encode",
+        CBOR_DECODE_OBJECT => "Cbor.decode",
+        CBOR_DIAGNOSTIC => "Cbor.diagnostic",
+        PROTO_ENCODE_OBJECT => "Protobuf.encode",
+        PROTO_DECODE_OBJECT => "Protobuf.decode",
+        TYPE_SCHEMA_CREATE => "TypeSchema.create",
 
         _ => "unknown",
     }

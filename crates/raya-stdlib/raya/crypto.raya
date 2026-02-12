@@ -1,0 +1,79 @@
+// Crypto - Standard crypto module
+// Usage: import crypto from "std:crypto";
+
+// Native call IDs (must match raya-engine/src/vm/builtin.rs)
+const CRYPTO_HASH: number = 0x4000;
+const CRYPTO_HASH_BYTES: number = 0x4001;
+const CRYPTO_HMAC: number = 0x4002;
+const CRYPTO_HMAC_BYTES: number = 0x4003;
+const CRYPTO_RANDOM_BYTES: number = 0x4004;
+const CRYPTO_RANDOM_INT: number = 0x4005;
+const CRYPTO_RANDOM_UUID: number = 0x4006;
+const CRYPTO_TO_HEX: number = 0x4007;
+const CRYPTO_FROM_HEX: number = 0x4008;
+const CRYPTO_TO_BASE64: number = 0x4009;
+const CRYPTO_FROM_BASE64: number = 0x400A;
+const CRYPTO_TIMING_SAFE_EQUAL: number = 0x400B;
+
+class Crypto {
+    // ── Hashing ──
+
+    hash(algorithm: string, data: string): string {
+        return __NATIVE_CALL<string>(CRYPTO_HASH, algorithm, data);
+    }
+
+    hashBytes(algorithm: string, data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>(CRYPTO_HASH_BYTES, algorithm, data);
+    }
+
+    // ── HMAC ──
+
+    hmac(algorithm: string, key: string, data: string): string {
+        return __NATIVE_CALL<string>(CRYPTO_HMAC, algorithm, key, data);
+    }
+
+    hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>(CRYPTO_HMAC_BYTES, algorithm, key, data);
+    }
+
+    // ── Random ──
+
+    randomBytes(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>(CRYPTO_RANDOM_BYTES, size);
+    }
+
+    randomInt(min: number, max: number): number {
+        return __NATIVE_CALL<number>(CRYPTO_RANDOM_INT, min, max);
+    }
+
+    randomUUID(): string {
+        return __NATIVE_CALL<string>(CRYPTO_RANDOM_UUID);
+    }
+
+    // ── Encoding ──
+
+    toHex(data: Buffer): string {
+        return __NATIVE_CALL<string>(CRYPTO_TO_HEX, data);
+    }
+
+    fromHex(hex: string): Buffer {
+        return __NATIVE_CALL<Buffer>(CRYPTO_FROM_HEX, hex);
+    }
+
+    toBase64(data: Buffer): string {
+        return __NATIVE_CALL<string>(CRYPTO_TO_BASE64, data);
+    }
+
+    fromBase64(b64: string): Buffer {
+        return __NATIVE_CALL<Buffer>(CRYPTO_FROM_BASE64, b64);
+    }
+
+    // ── Comparison ──
+
+    timingSafeEqual(a: Buffer, b: Buffer): boolean {
+        return __NATIVE_CALL<boolean>(CRYPTO_TIMING_SAFE_EQUAL, a, b);
+    }
+}
+
+const crypto = new Crypto();
+export default crypto;

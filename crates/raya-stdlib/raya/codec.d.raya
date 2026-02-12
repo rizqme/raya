@@ -1,0 +1,58 @@
+/** std:codec - Binary encoding/decoding utilities */
+
+/** Opaque handle to compile-time type metadata.
+ *  Created by the compiler from type parameters in encode<T>/decode<T>.
+ *  Contains field names and proto annotations derived from the type. */
+declare class TypeSchema {
+    /** The opaque handle ID. */
+    _handle: number;
+    constructor(handle: number);
+}
+
+declare class Utf8 {
+    /** Encode string to UTF-8 bytes. */
+    encode(text: string): Buffer;
+    /** Decode UTF-8 bytes to string. Throws on invalid UTF-8. */
+    decode(bytes: Buffer): string;
+    /** Check if bytes are valid UTF-8. */
+    isValid(bytes: Buffer): boolean;
+    /** Get byte length of string when encoded as UTF-8. */
+    byteLength(text: string): number;
+}
+
+declare class Msgpack {
+    /** Encode typed object as MessagePack bytes.
+     *  Compiler derives field names from <T> using //@@json annotations. */
+    encode<T>(obj: T): Buffer;
+    /** Decode MessagePack bytes to typed object.
+     *  Compiler derives field names from <T> using //@@json annotations. */
+    decode<T>(bytes: Buffer): T;
+    /** Get byte size of a MessagePack buffer. */
+    encodedSize(bytes: Buffer): number;
+}
+
+declare class Cbor {
+    /** Encode typed object as CBOR bytes.
+     *  Compiler derives field names from <T> using //@@json annotations. */
+    encode<T>(obj: T): Buffer;
+    /** Decode CBOR bytes to typed object.
+     *  Compiler derives field names from <T> using //@@json annotations. */
+    decode<T>(bytes: Buffer): T;
+    /** Get CBOR diagnostic notation string (human-readable debug format). */
+    diagnostic(bytes: Buffer): string;
+}
+
+declare class Protobuf {
+    /** Encode typed object as Protobuf bytes.
+     *  Compiler derives proto schema from <T> using //@@proto annotations. */
+    encode<T>(obj: T): Buffer;
+    /** Decode Protobuf bytes to typed object.
+     *  Compiler derives proto schema from <T> using //@@proto annotations. */
+    decode<T>(bytes: Buffer): T;
+}
+
+declare const Utf8: Utf8;
+declare const Msgpack: Msgpack;
+declare const Cbor: Cbor;
+declare const Protobuf: Protobuf;
+export { Utf8, Msgpack, Cbor, Protobuf, TypeSchema };

@@ -10,7 +10,7 @@ use parking_lot::{Mutex, RwLock};
 use crate::vm::builtin::reflect;
 
 // Lazy static registries for Phase 13 and 14 runtime type creation
-static CLASS_BUILDER_REGISTRY: LazyLock<Mutex<ClassBuilderRegistry>> =
+pub(crate) static CLASS_BUILDER_REGISTRY: LazyLock<Mutex<ClassBuilderRegistry>> =
     LazyLock::new(|| Mutex::new(ClassBuilderRegistry::new()));
 static DYNAMIC_FUNCTION_REGISTRY: LazyLock<Mutex<DynamicFunctionRegistry>> =
     LazyLock::new(|| Mutex::new(DynamicFunctionRegistry::new()));
@@ -18,11 +18,11 @@ static SPECIALIZATION_CACHE: LazyLock<Mutex<SpecializationCache>> =
     LazyLock::new(|| Mutex::new(SpecializationCache::new()));
 static GENERIC_TYPE_REGISTRY: LazyLock<Mutex<GenericTypeRegistry>> =
     LazyLock::new(|| Mutex::new(GenericTypeRegistry::new()));
-static BYTECODE_BUILDER_REGISTRY: LazyLock<Mutex<BytecodeBuilderRegistry>> =
+pub(crate) static BYTECODE_BUILDER_REGISTRY: LazyLock<Mutex<BytecodeBuilderRegistry>> =
     LazyLock::new(|| Mutex::new(BytecodeBuilderRegistry::new()));
 static PERMISSION_STORE: LazyLock<Mutex<PermissionStore>> =
     LazyLock::new(|| Mutex::new(PermissionStore::new()));
-static DYNAMIC_MODULE_REGISTRY: LazyLock<Mutex<DynamicModuleRegistry>> =
+pub(crate) static DYNAMIC_MODULE_REGISTRY: LazyLock<Mutex<DynamicModuleRegistry>> =
     LazyLock::new(|| Mutex::new(DynamicModuleRegistry::new()));
 static BOOTSTRAP_CONTEXT: LazyLock<Mutex<BootstrapContext>> =
     LazyLock::new(|| Mutex::new(BootstrapContext::new()));

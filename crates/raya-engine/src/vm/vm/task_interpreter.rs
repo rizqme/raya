@@ -12,8 +12,10 @@ use crate::compiler::native_id::{CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND
 use crate::vm::builtin::{set, regexp, buffer};
 use super::handlers::{
     ArrayHandlerContext, RegExpHandlerContext, ReflectHandlerContext, StringHandlerContext,
+    RuntimeHandlerContext,
     call_array_method as array_handler, call_regexp_method as regexp_handler,
     call_reflect_method as reflect_handler, call_string_method as string_handler,
+    call_runtime_method as runtime_handler,
 };
 use crate::vm::object::{Array, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString, RegExpObject, SetObject};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
@@ -4056,7 +4058,47 @@ impl<'a> TaskInterpreter<'a> {
                     _ => {
                         // Check if this is a reflect method - pass args directly (don't push/pop)
                         if crate::vm::builtin::is_reflect_method(native_id) {
-                            match self.call_reflect_method(task, stack, native_id, args, module) {
+                            match self.call_reflect_method(task, &mut **stack, native_id, args, module) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // Check if this is a runtime method (std:runtime)
+                        if crate::vm::builtin::is_runtime_method(native_id) {
+                            match self.call_runtime_method(task, &mut **stack, native_id, args, module) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // Check if this is a crypto method (std:crypto)
+                        if crate::vm::builtin::is_crypto_method(native_id) {
+                            match self.call_crypto_method(task, &mut **stack, native_id, args, module) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // Check if this is a time method (std:time)
+                        if crate::vm::builtin::is_time_method(native_id) {
+                            match self.call_time_method(&mut **stack, native_id, args) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // Check if this is a path method (std:path)
+                        if crate::vm::builtin::is_path_method(native_id) {
+                            match self.call_path_method(&mut **stack, native_id, args) {
+                                Ok(()) => return OpcodeResult::Continue,
+                                Err(e) => return OpcodeResult::Error(e),
+                            }
+                        }
+
+                        // Check if this is a codec method (std:codec)
+                        if crate::vm::builtin::is_codec_method(native_id) {
+                            match self.call_codec_method(&mut **stack, native_id, args) {
                                 Ok(()) => return OpcodeResult::Continue,
                                 Err(e) => return OpcodeResult::Error(e),
                             }
@@ -4434,7 +4476,23 @@ impl<'a> TaskInterpreter<'a> {
                         }
                     }
                     args.reverse();
-                    match self.call_reflect_method(task, stack, method_id, args, module) {
+                    match self.call_reflect_method(task, &mut **stack, method_id, args, module) {
+                        Ok(()) => return OpcodeResult::Continue,
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+
+                // Check for built-in runtime methods (std:runtime)
+                if crate::vm::builtin::is_runtime_method(method_id) {
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        match stack.pop() {
+                            Ok(v) => args.push(v),
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    args.reverse();
+                    match self.call_runtime_method(task, &mut **stack, method_id, args, module) {
                         Ok(()) => return OpcodeResult::Continue,
                         Err(e) => return OpcodeResult::Error(e),
                     }
@@ -6359,6 +6417,30 @@ impl<'a> TaskInterpreter<'a> {
                                 }
                             }
                         }
+                        // Reflect native calls (std:reflect) — dispatches directly via call_reflect_method
+                        id if crate::vm::builtin::is_reflect_method(id as u16) => {
+                            self.call_reflect_method(task, &mut call_stack, id as u16, args, module)?;
+                        }
+                        // Runtime native calls (std:runtime) — dispatches directly via call_runtime_method
+                        id if crate::vm::builtin::is_runtime_method(id as u16) => {
+                            self.call_runtime_method(task, &mut call_stack, id as u16, args, module)?;
+                        }
+                        // Crypto native calls (std:crypto) — dispatches directly via call_crypto_method
+                        id if crate::vm::builtin::is_crypto_method(id as u16) => {
+                            self.call_crypto_method(task, &mut call_stack, id as u16, args, module)?;
+                        }
+                        // Time native calls (std:time) — dispatches directly via call_time_method
+                        id if crate::vm::builtin::is_time_method(id as u16) => {
+                            self.call_time_method(&mut call_stack, id as u16, args)?;
+                        }
+                        // Path native calls (std:path) — dispatches directly via call_path_method
+                        id if crate::vm::builtin::is_path_method(id as u16) => {
+                            self.call_path_method(&mut call_stack, id as u16, args)?;
+                        }
+                        // Codec native calls (std:codec) — dispatches directly via call_codec_method
+                        id if crate::vm::builtin::is_codec_method(id as u16) => {
+                            self.call_codec_method(&mut call_stack, id as u16, args)?;
+                        }
                         _ => {
                             return Err(VmError::RuntimeError(format!(
                                 "NativeCall {:#06x} not implemented in nested call (args={})",
@@ -8256,7 +8338,7 @@ impl<'a> TaskInterpreter<'a> {
     fn call_reflect_method(
         &mut self,
         task: &Arc<Task>,
-        stack: &mut std::sync::MutexGuard<'_, Stack>,
+        stack: &mut Stack,
         method_id: u16,
         args: Vec<Value>,
         module: &Module,
@@ -9960,6 +10042,561 @@ impl<'a> TaskInterpreter<'a> {
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) }
             }
 
+            // ── BytecodeBuilder (Phase 15, delegated from std:runtime Phase 6) ──
+
+            reflect::NEW_BYTECODE_BUILDER => {
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "BytecodeBuilder requires 3 arguments (name, paramCount, returnType)".to_string()
+                    ));
+                }
+                let name = get_string(args[0].clone())?;
+                let param_count = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
+                    as usize;
+                let return_type = get_string(args[2].clone())?;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder_id = registry.create_builder(name, param_count, return_type);
+                Value::i32(builder_id as i32)
+            }
+
+            reflect::BUILDER_EMIT => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "emit requires at least 2 arguments (builderId, opcode)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let opcode = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("opcode must be a number".to_string()))?
+                    as u8;
+                let operands: Vec<u8> = args[2..].iter()
+                    .filter_map(|v| v.as_i32().map(|n| n as u8))
+                    .collect();
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.emit(opcode, &operands)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_PUSH => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "emitPush requires 2 arguments (builderId, value)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let value = args[1];
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                if value.is_null() {
+                    builder.emit_push_null()?;
+                } else if let Some(b) = value.as_bool() {
+                    builder.emit_push_bool(b)?;
+                } else if let Some(i) = value.as_i32() {
+                    builder.emit_push_i32(i)?;
+                } else if let Some(f) = value.as_f64() {
+                    builder.emit_push_f64(f)?;
+                } else {
+                    builder.emit_push_i32(0)?;
+                }
+                Value::null()
+            }
+
+            reflect::BUILDER_DEFINE_LABEL => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "defineLabel requires 1 argument (builderId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let label = builder.define_label();
+                Value::i32(label.id as i32)
+            }
+
+            reflect::BUILDER_MARK_LABEL => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "markLabel requires 2 arguments (builderId, labelId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let label_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.mark_label(crate::vm::reflect::Label { id: label_id })?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_JUMP => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "emitJump requires 2 arguments (builderId, labelId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let label_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.emit_jump(crate::vm::reflect::Label { id: label_id })?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_JUMP_IF => {
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "emitJumpIf requires 3 arguments (builderId, labelId, ifTrue)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let label_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
+                    as usize;
+                let if_true = args[2].as_bool().unwrap_or(false);
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                if if_true {
+                    builder.emit_jump_if_true(crate::vm::reflect::Label { id: label_id })?;
+                } else {
+                    builder.emit_jump_if_false(crate::vm::reflect::Label { id: label_id })?;
+                }
+                Value::null()
+            }
+
+            reflect::BUILDER_DECLARE_LOCAL => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "declareLocal requires 2 arguments (builderId, typeName)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let type_name = get_string(args[1].clone())?;
+                let stack_type = match type_name.as_str() {
+                    "number" | "i32" | "i64" | "int" => crate::vm::reflect::StackType::Integer,
+                    "f64" | "float" => crate::vm::reflect::StackType::Float,
+                    "boolean" | "bool" => crate::vm::reflect::StackType::Boolean,
+                    "string" => crate::vm::reflect::StackType::String,
+                    "null" => crate::vm::reflect::StackType::Null,
+                    _ => crate::vm::reflect::StackType::Object,
+                };
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let index = builder.declare_local(None, stack_type)?;
+                Value::i32(index as i32)
+            }
+
+            reflect::BUILDER_EMIT_LOAD_LOCAL => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "emitLoadLocal requires 2 arguments (builderId, index)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let index = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.emit_load_local(index)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_STORE_LOCAL => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "emitStoreLocal requires 2 arguments (builderId, index)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let index = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.emit_store_local(index)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_CALL => {
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "emitCall requires 3 arguments (builderId, functionId, argCount)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let function_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                    as u32;
+                let arg_count = args[2].as_i32()
+                    .ok_or_else(|| VmError::TypeError("argCount must be a number".to_string()))?
+                    as u16;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                builder.emit_call(function_id, arg_count)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_EMIT_RETURN => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "emitReturn requires at least 1 argument (builderId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let has_value = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                if has_value {
+                    builder.emit_return()?;
+                } else {
+                    builder.emit_return_void()?;
+                }
+                Value::null()
+            }
+
+            reflect::BUILDER_VALIDATE => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "validate requires 1 argument (builderId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let result = builder.validate();
+                Value::bool(result.is_valid)
+            }
+
+            reflect::BUILDER_BUILD_FUNCTION => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "build requires 1 argument (builderId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let func = builder.build()?;
+                let func_id = func.function_id;
+                registry.register_function(func);
+                Value::i32(func_id as i32)
+            }
+
+            // ===== Phase 14: ClassBuilder (0x0DE0-0x0DE6) =====
+
+            reflect::NEW_CLASS_BUILDER => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "newClassBuilder requires 1 argument (name)".to_string()
+                    ));
+                }
+                let name = get_string(args[0].clone())?;
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder_id = registry.create_builder(name);
+                Value::i32(builder_id as i32)
+            }
+
+            reflect::BUILDER_ADD_FIELD => {
+                if args.len() < 5 {
+                    return Err(VmError::RuntimeError(
+                        "addField requires 5 arguments (builderId, name, typeName, isStatic, isReadonly)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let name = get_string(args[1].clone())?;
+                let type_name = get_string(args[2].clone())?;
+                let is_static = args[3].as_bool().unwrap_or(false);
+                let is_readonly = args[4].as_bool().unwrap_or(false);
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                builder.add_field(name, &type_name, is_static, is_readonly)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_ADD_METHOD => {
+                if args.len() < 5 {
+                    return Err(VmError::RuntimeError(
+                        "addMethod requires 5 arguments (builderId, name, functionId, isStatic, isAsync)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let name = get_string(args[1].clone())?;
+                let function_id = args[2].as_i32()
+                    .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                    as usize;
+                let is_static = args[3].as_bool().unwrap_or(false);
+                let is_async = args[4].as_bool().unwrap_or(false);
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                builder.add_method(name, function_id, is_static, is_async)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_SET_CONSTRUCTOR => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "setConstructor requires 2 arguments (builderId, functionId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let function_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                builder.set_constructor(function_id)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_SET_PARENT => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "setParent requires 2 arguments (builderId, parentClassId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let parent_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("parentClassId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                builder.set_parent(parent_id)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_ADD_INTERFACE => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "addInterface requires 2 arguments (builderId, interfaceName)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+                let interface_name = get_string(args[1].clone())?;
+                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                builder.add_interface(interface_name)?;
+                Value::null()
+            }
+
+            reflect::BUILDER_BUILD => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "build requires 1 argument (builderId)".to_string()
+                    ));
+                }
+                let builder_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
+                    as usize;
+
+                let builder = {
+                    let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                    registry.remove(builder_id)
+                        .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?
+                };
+
+                let def = builder.to_definition();
+                let mut classes_write = self.classes.write();
+                let next_id = classes_write.next_class_id();
+                let mut dyn_builder = crate::vm::reflect::DynamicClassBuilder::new(next_id);
+
+                let (new_class, new_metadata) = if let Some(parent_id) = builder.parent_id {
+                    let parent = classes_write.get_class(parent_id)
+                        .ok_or_else(|| VmError::RuntimeError(format!("Parent class {} not found", parent_id)))?
+                        .clone();
+                    drop(classes_write);
+
+                    let class_metadata_guard = self.class_metadata.read();
+                    let parent_metadata = class_metadata_guard.get(parent_id).cloned();
+                    drop(class_metadata_guard);
+
+                    let result = dyn_builder.create_subclass(
+                        builder.name,
+                        &parent,
+                        parent_metadata.as_ref(),
+                        &def,
+                    );
+                    classes_write = self.classes.write();
+                    result
+                } else {
+                    dyn_builder.create_root_class(builder.name, &def)
+                };
+
+                let new_class_id = new_class.id;
+                classes_write.register_class(new_class);
+                drop(classes_write);
+
+                let mut class_metadata_write = self.class_metadata.write();
+                class_metadata_write.register(new_class_id, new_metadata);
+                drop(class_metadata_write);
+
+                Value::i32(new_class_id as i32)
+            }
+
+            // ===== Phase 17: DynamicModule (0x0E10-0x0E15) =====
+
+            reflect::CREATE_MODULE => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "createModule requires 1 argument (name)".to_string()
+                    ));
+                }
+                let name = get_string(args[0].clone())?;
+                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module_id = registry.create_module(name)?;
+                Value::i32(module_id as i32)
+            }
+
+            reflect::MODULE_ADD_FUNCTION => {
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "addFunction requires 2 arguments (moduleId, functionId)".to_string()
+                    ));
+                }
+                let module_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                    as usize;
+                // Cast i32 → u32 → usize to preserve bit pattern (function IDs start at 0x8000_0000)
+                let function_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
+                    as u32 as usize;
+
+                let bytecode_registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let func = bytecode_registry.get_function(function_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Function {} not found", function_id)))?
+                    .clone();
+                drop(bytecode_registry);
+
+                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                module.add_function(func)?;
+                Value::null()
+            }
+
+            reflect::MODULE_ADD_CLASS => {
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "addClass requires 3 arguments (moduleId, classId, name)".to_string()
+                    ));
+                }
+                let module_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                    as usize;
+                let class_id = args[1].as_i32()
+                    .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
+                    as usize;
+                let name = get_string(args[2].clone())?;
+                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                module.add_class(class_id, class_id, name)?;
+                Value::null()
+            }
+
+            reflect::MODULE_ADD_GLOBAL => {
+                if args.len() < 3 {
+                    return Err(VmError::RuntimeError(
+                        "addGlobal requires 3 arguments (moduleId, name, value)".to_string()
+                    ));
+                }
+                let module_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                    as usize;
+                let name = get_string(args[1].clone())?;
+                let value = args[2];
+                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                module.add_global(name, value)?;
+                Value::null()
+            }
+
+            reflect::MODULE_SEAL => {
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "seal requires 1 argument (moduleId)".to_string()
+                    ));
+                }
+                let module_id = args[0].as_i32()
+                    .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
+                    as usize;
+                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                module.seal()?;
+                Value::null()
+            }
+
+            reflect::MODULE_LINK => {
+                // Stub: full import resolution not yet implemented
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "link requires 1 argument (moduleId)".to_string()
+                    ));
+                }
+                Value::null()
+            }
+
             _ => {
                 return Err(VmError::RuntimeError(format!(
                     "Reflect method {:#06x} not yet implemented",
@@ -10430,5 +11067,113 @@ impl<'a> TaskInterpreter<'a> {
 
         let obj_ptr = self.gc.lock().allocate(obj);
         unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
+    }
+
+    /// Handle built-in runtime methods (std:runtime)
+    ///
+    /// Bridge between TaskInterpreter's call convention (pre-popped args Vec)
+    /// and the runtime handler's stack-based convention.
+    fn call_runtime_method(
+        &mut self,
+        _task: &Arc<Task>,
+        stack: &mut Stack,
+        method_id: u16,
+        args: Vec<Value>,
+        _module: &Module,
+    ) -> Result<(), VmError> {
+        let ctx = RuntimeHandlerContext {
+            gc: &self.gc,
+        };
+
+        // Push args back onto stack so the handler can pop them
+        let arg_count = args.len();
+        for arg in args {
+            stack.push(arg)?;
+        }
+
+        runtime_handler(&ctx, stack, method_id, arg_count)
+    }
+
+    /// Handle built-in crypto methods (std:crypto)
+    ///
+    /// Bridge between TaskInterpreter's call convention (pre-popped args Vec)
+    /// and the crypto handler's stack-based convention.
+    fn call_crypto_method(
+        &mut self,
+        _task: &Arc<Task>,
+        stack: &mut Stack,
+        method_id: u16,
+        args: Vec<Value>,
+        _module: &Module,
+    ) -> Result<(), VmError> {
+        use crate::vm::vm::handlers::crypto::{call_crypto_method, CryptoHandlerContext};
+        let ctx = CryptoHandlerContext {
+            gc: &self.gc,
+        };
+
+        // Push args back onto stack so the handler can pop them
+        let arg_count = args.len();
+        for arg in args {
+            stack.push(arg)?;
+        }
+
+        call_crypto_method(&ctx, stack, method_id, arg_count)
+    }
+
+    fn call_time_method(
+        &mut self,
+        stack: &mut Stack,
+        method_id: u16,
+        args: Vec<Value>,
+    ) -> Result<(), VmError> {
+        use crate::vm::vm::handlers::time::call_time_method;
+
+        // Push args back onto stack so the handler can pop them
+        let arg_count = args.len();
+        for arg in args {
+            stack.push(arg)?;
+        }
+
+        call_time_method(stack, method_id, arg_count)
+    }
+
+    fn call_path_method(
+        &mut self,
+        stack: &mut Stack,
+        method_id: u16,
+        args: Vec<Value>,
+    ) -> Result<(), VmError> {
+        use crate::vm::vm::handlers::path::{call_path_method, PathHandlerContext};
+        let ctx = PathHandlerContext {
+            gc: &self.gc,
+        };
+
+        // Push args back onto stack so the handler can pop them
+        let arg_count = args.len();
+        for arg in args {
+            stack.push(arg)?;
+        }
+
+        call_path_method(&ctx, stack, method_id, arg_count)
+    }
+
+    fn call_codec_method(
+        &mut self,
+        stack: &mut Stack,
+        method_id: u16,
+        args: Vec<Value>,
+    ) -> Result<(), VmError> {
+        use crate::vm::vm::handlers::codec::{call_codec_method, CodecHandlerContext};
+        let ctx = CodecHandlerContext {
+            gc: &self.gc,
+        };
+
+        // Push args back onto stack so the handler can pop them
+        let arg_count = args.len();
+        for arg in args {
+            stack.push(arg)?;
+        }
+
+        call_codec_method(&ctx, stack, method_id, arg_count)
     }
 }

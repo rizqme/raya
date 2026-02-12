@@ -22,5 +22,11 @@ mod builtins;
 mod json;
 mod logger;
 mod math;
+mod reflect;
+mod runtime;
+mod crypto;
+mod time;
+mod path;
+mod codec;
 
 pub use harness::*;

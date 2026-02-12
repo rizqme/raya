@@ -1,0 +1,35 @@
+/** std:path - Path manipulation utilities */
+
+declare class Path {
+    /** Join two path segments. */
+    join(a: string, b: string): string;
+    /** Normalize path, resolving `.` and `..` components. */
+    normalize(p: string): string;
+    /** Get the directory name of a path. */
+    dirname(p: string): string;
+    /** Get the base filename of a path. */
+    basename(p: string): string;
+    /** Get the file extension (with dot). */
+    extname(p: string): string;
+    /** Check if a path is absolute. */
+    isAbsolute(p: string): boolean;
+    /** Resolve a relative path against a base. */
+    resolve(base: string, target: string): string;
+    /** Compute relative path from one path to another. */
+    relative(base: string, target: string): string;
+    /** Get the current working directory. */
+    cwd(): string;
+    /** Get the OS path separator ("/" or "\\"). */
+    sep(): string;
+    /** Get the OS path list delimiter (":" or ";"). */
+    delimiter(): string;
+    /** Get basename without extension. */
+    stripExt(p: string): string;
+    /** Replace a file extension. */
+    withExt(p: string, ext: string): string;
+    /** Check if a path is relative (not absolute). */
+    isRelative(p: string): boolean;
+}
+
+declare const path: Path;
+export default path;

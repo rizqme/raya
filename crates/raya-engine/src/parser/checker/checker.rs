@@ -1539,8 +1539,13 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Check for __NATIVE_CALL intrinsic
+        // Supports __NATIVE_CALL<T>(id, args...) to specify return type T
         if name == "__NATIVE_CALL" {
-            // Returns unknown type - actual type depends on native_id
+            if let Some(ref type_args) = call.type_args {
+                if type_args.len() == 1 {
+                    return Some(self.resolve_type_annotation(&type_args[0]));
+                }
+            }
             return Some(self.type_ctx.unknown_type());
         }
 
@@ -2861,7 +2866,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Parser doesn't support parameter decorators yet"]
     fn test_parameter_decorator_valid() {
         // A valid parameter decorator takes (target, methodName, index) and returns void
         // Note: Parameter decorators on constructor params may not be fully supported by parser
@@ -2878,7 +2882,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Parser doesn't support decorator validation yet"]
     fn test_decorator_not_a_function() {
         // Non-function as decorator should error
         let result = parse_and_check(r#"
@@ -2894,7 +2897,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Parser doesn't support decorator validation yet"]
     fn test_field_decorator_wrong_param_count() {
         // Field decorator with wrong parameter count should error
         let result = parse_and_check(r#"
@@ -2912,7 +2914,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Parser doesn't support decorator validation yet"]
     fn test_field_decorator_wrong_return_type() {
         // Field decorator must return void
         let result = parse_and_check(r#"

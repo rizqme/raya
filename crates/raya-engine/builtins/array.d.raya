@@ -1,0 +1,79 @@
+/**
+ * Array<T> - Ordered collection of elements
+ *
+ * Arrays are generic, typed collections with rich transformation methods.
+ *
+ * Usage:
+ *   let nums: number[] = [1, 2, 3];
+ *   let doubled: number[] = nums.map((x: number): number => x * 2);
+ */
+export class Array<T> {
+    /** Number of elements in the array */
+    length: number;
+
+    /** Add an element to the end, returns new length */
+    push(element: T): number;
+
+    /** Remove and return the last element */
+    pop(): T;
+
+    /** Remove and return the first element */
+    shift(): T;
+
+    /** Add an element to the beginning, returns new length */
+    unshift(element: T): number;
+
+    /** Find the first index of element, or -1 if not found */
+    indexOf(element: T): number;
+
+    /** Find the last index of element, or -1 if not found */
+    lastIndexOf(element: T): number;
+
+    /** Check if the array contains the element */
+    includes(element: T): boolean;
+
+    /** Return a shallow copy of a portion of the array */
+    slice(start: number, end: number): T[];
+
+    /** Merge two arrays into a new array */
+    concat(other: T[]): T[];
+
+    /** Join all elements into a string with the given separator */
+    join(separator: string): string;
+
+    /** Reverse the array in place */
+    reverse(): T[];
+
+    /** Execute a function for each element */
+    forEach(fn: (element: T) => void): void;
+
+    /** Create a new array with elements that pass the predicate */
+    filter(predicate: (element: T) => boolean): T[];
+
+    /** Return the first element that satisfies the predicate, or null */
+    find(predicate: (element: T) => boolean): T | null;
+
+    /** Return the index of the first element that satisfies the predicate, or -1 */
+    findIndex(predicate: (element: T) => boolean): number;
+
+    /** Check if every element satisfies the predicate */
+    every(predicate: (element: T) => boolean): boolean;
+
+    /** Check if at least one element satisfies the predicate */
+    some(predicate: (element: T) => boolean): boolean;
+
+    /** Sort the array in place using a comparison function */
+    sort(compareFn: (a: T, b: T) => number): T[];
+
+    /** Create a new array by transforming each element */
+    map(fn: (element: T) => T): T[];
+
+    /** Reduce the array to a single value */
+    reduce(fn: (accumulator: T, element: T) => T, initial: T): T;
+
+    /** Fill the array with a value from start to end index */
+    fill(value: T, start: number, end: number): T[];
+
+    /** Flatten one level of nested arrays */
+    flat(): T[];
+}

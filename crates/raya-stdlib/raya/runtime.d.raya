@@ -1,0 +1,341 @@
+/**
+ * std:runtime - Standard Runtime Module
+ *
+ * Provides programmatic access to the Raya compilation pipeline,
+ * bytecode management, and isolated VM instances.
+ *
+ * Usage:
+ *   import { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder } from "std:runtime";
+ *   let mod: number = Compiler.compile("return 42;");
+ *   let result: number = Compiler.execute(mod);
+ *
+ *   let child: VmInstance = Vm.spawn();
+ *   let r: number = child.eval("return 10 + 20;");
+ *   child.terminate();
+ */
+
+/**
+ * Compiler provides methods for compiling and executing Raya source code.
+ */
+export class CompilerClass {
+    /** Parse, type-check, and compile source to bytecode. Returns module ID. */
+    compile(source: string): number;
+
+    /** Wrap expression in `return <expr>;` and compile. Returns module ID. */
+    compileExpression(expr: string): number;
+
+    /** Compile a pre-parsed and type-checked AST to bytecode. Returns module ID. */
+    compileAst(astId: number): number;
+
+    /** Compile and immediately execute source. Returns result. */
+    eval(source: string): number;
+
+    /** Execute a compiled module's main function. Returns result. */
+    execute(moduleId: number): number;
+
+    /** Execute a named function from a compiled module with arguments. Returns result. */
+    executeFunction(moduleId: number, funcName: string): number;
+}
+
+/**
+ * Bytecode provides methods for binary I/O, bytecode inspection,
+ * library loading, and dependency management.
+ */
+export class BytecodeClass {
+    /** Serialize a compiled module to .ryb binary format. Returns Buffer. */
+    encode(moduleId: number): Buffer;
+
+    /** Deserialize .ryb binary data to a module. Returns module ID. */
+    decode(data: Buffer): number;
+
+    /** Verify module integrity (magic, version, bytecode verification). Returns true if valid. */
+    validate(moduleId: number): boolean;
+
+    /** Disassemble module bytecode to human-readable listing. */
+    disassemble(moduleId: number): string;
+
+    /** Get the module's name from its metadata. */
+    getModuleName(moduleId: number): string;
+
+    /** Get comma-separated list of function names in the module. */
+    getModuleFunctions(moduleId: number): string;
+
+    /** Get comma-separated list of class names in the module. */
+    getModuleClasses(moduleId: number): string;
+
+    /** Load a .ryb file from the given path. Returns module ID. */
+    loadLibrary(path: string): number;
+
+    /** Load a .ryb file and register it as an importable module under `name`. Returns module ID. */
+    loadDependency(path: string, name: string): number;
+
+    /** Auto-resolve a .ryb file from search paths and register as importable. Returns module ID. */
+    resolveDependency(name: string): number;
+}
+
+/**
+ * Parser provides methods for parsing Raya source code to an AST.
+ */
+export class ParserClass {
+    /** Parse source code to an AST. Returns AST ID. */
+    parse(source: string): number;
+
+    /** Parse a single expression (wraps as `return <expr>;`). Returns AST ID. */
+    parseExpression(expr: string): number;
+}
+
+/**
+ * TypeChecker provides methods for type-checking parsed ASTs.
+ */
+export class TypeCheckerClass {
+    /** Type-check a parsed AST. Returns typed AST ID. */
+    check(astId: number): number;
+
+    /** Type-check an expression AST. Returns typed AST ID. */
+    checkExpression(astId: number): number;
+}
+
+/**
+ * BytecodeBuilder provides a fluent API for generating bytecode at runtime.
+ * Wraps the Reflect bytecode generation handlers.
+ *
+ * Usage:
+ *   let builder: BytecodeBuilder = new BytecodeBuilder("myFunc", 1, "number");
+ *   builder.emitPush(42);
+ *   builder.emitReturn();
+ *   let funcId: number = builder.build();
+ */
+export class BytecodeBuilder {
+    /** Internal builder ID. */
+    _id: number;
+
+    /** Create a new bytecode builder for a function with the given name, parameter count, and return type. */
+    constructor(name: string, paramCount: number, returnType: string);
+
+    /** Emit a raw opcode with no operands. */
+    emit(opcode: number): void;
+
+    /** Emit a raw opcode with one operand. */
+    emitWithArg(opcode: number, operand: number): void;
+
+    /** Emit a raw opcode with two operands. */
+    emitWithArgs(opcode: number, op1: number, op2: number): void;
+
+    /** Emit a push constant instruction. */
+    emitPush(value: number): void;
+
+    /** Define a new label for jump targets. Returns label ID. */
+    defineLabel(): number;
+
+    /** Mark a label at the current position in the bytecode. */
+    markLabel(labelId: number): void;
+
+    /** Emit an unconditional jump to a label. */
+    emitJump(labelId: number): void;
+
+    /** Emit a conditional jump to a label. */
+    emitJumpIf(labelId: number, ifTrue: boolean): void;
+
+    /** Declare a local variable with the given type. Returns local index. */
+    declareLocal(typeName: string): number;
+
+    /** Emit a load local variable instruction. */
+    emitLoadLocal(index: number): void;
+
+    /** Emit a store local variable instruction. */
+    emitStoreLocal(index: number): void;
+
+    /** Emit a function call instruction. */
+    emitCall(functionId: number, argCount: number): void;
+
+    /** Emit a return instruction (returns the top-of-stack value). */
+    emitReturn(): void;
+
+    /** Emit a return void instruction (no return value). */
+    emitReturnVoid(): void;
+
+    /** Validate the bytecode. Returns true if valid. */
+    validate(): boolean;
+
+    /** Build and register the function. Returns function ID. */
+    build(): number;
+}
+
+/**
+ * ClassBuilder provides a fluent API for creating classes at runtime.
+ * Wraps the Reflect runtime type creation handlers.
+ *
+ * Usage:
+ *   let builder: ClassBuilder = new ClassBuilder("MyClass");
+ *   builder.addField("x", "number", false, false);
+ *   let classId: number = builder.build();
+ */
+export class ClassBuilder {
+    /** Internal builder ID. */
+    _id: number;
+
+    /** Create a new class builder with the given class name. */
+    constructor(name: string);
+
+    /** Add a field to the class being built. */
+    addField(name: string, typeName: string, isStatic: boolean, isReadonly: boolean): void;
+
+    /** Add a method to the class. functionId should come from BytecodeBuilder.build(). */
+    addMethod(name: string, functionId: number, isStatic: boolean, isAsync: boolean): void;
+
+    /** Set the constructor function. functionId should come from BytecodeBuilder.build(). */
+    setConstructor(functionId: number): void;
+
+    /** Set the parent class for inheritance. */
+    setParent(parentClassId: number): void;
+
+    /** Add an interface that this class implements. */
+    addInterface(interfaceName: string): void;
+
+    /** Finalize and register the class. Returns class ID. */
+    build(): number;
+}
+
+/**
+ * DynamicModule provides a fluent API for creating modules at runtime.
+ * Modules can contain functions, classes, and global variables.
+ *
+ * Usage:
+ *   let mod: DynamicModule = new DynamicModule("myModule");
+ *   mod.addFunction(funcId);
+ *   mod.seal();
+ */
+export class DynamicModule {
+    /** Internal module ID. */
+    _id: number;
+
+    /** Create a new dynamic module with the given name. */
+    constructor(name: string);
+
+    /** Add a function to the module. functionId should come from BytecodeBuilder.build(). */
+    addFunction(functionId: number): void;
+
+    /** Add a class to the module with an export name. */
+    addClass(classId: number, name: string): void;
+
+    /** Add a global variable to the module. */
+    addGlobal(name: string, value: number): void;
+
+    /** Seal the module, preventing further modifications. */
+    seal(): void;
+
+    /** Link module imports (stub - not yet fully implemented). */
+    link(): void;
+}
+
+/**
+ * VmInstance represents an isolated VM execution context.
+ * Created via Vm.spawn() or Vm.current().
+ */
+export class VmInstance {
+    /** Internal handle to the VM instance. */
+    _handle: number;
+
+    /** Get the instance ID. */
+    id(): number;
+
+    /** Check if this is the root (parent) VM. */
+    isRoot(): boolean;
+
+    /** Check if the VM instance is still alive. */
+    isAlive(): boolean;
+
+    /** Check if the VM instance has been terminated. */
+    isDestroyed(): boolean;
+
+    /** Compile source code within this VM instance. Returns module ID. */
+    compile(source: string): number;
+
+    /** Execute a compiled module within this VM instance. Returns result. */
+    execute(moduleId: number): number;
+
+    /** Compile and immediately execute source within this VM instance. Returns result. */
+    eval(source: string): number;
+
+    /** Load bytecode buffer into this VM instance. Returns module ID. */
+    loadBytecode(bytes: Buffer): number;
+
+    /** Run a named entry function from a loaded module. Returns result. */
+    runEntry(name: string): number;
+
+    /** Terminate this VM instance and all its descendants. */
+    terminate(): void;
+}
+
+/**
+ * Vm provides methods for managing VM instances.
+ */
+export class VmClass {
+    /** Get the current (root) VM instance. */
+    current(): VmInstance;
+
+    /** Spawn a new isolated child VM instance. */
+    spawn(): VmInstance;
+
+    /** Check if the current VM has a named permission (e.g. "eval", "vmSpawn", "libLoad"). */
+    hasPermission(name: string): boolean;
+
+    /** Get the current VM's enabled permissions as a comma-separated string. */
+    getPermissions(): string;
+
+    /** Get the allowed stdlib modules as a comma-separated string ("*" = all). */
+    getAllowedStdlib(): string;
+
+    /** Check if a specific stdlib module is allowed (e.g. "std:math"). */
+    isStdlibAllowed(module: string): boolean;
+
+    /** Get current heap allocation in bytes. */
+    heapUsed(): number;
+
+    /** Get max heap size in bytes (0 = unlimited). */
+    heapLimit(): number;
+
+    /** Get total task count (queued + running + suspended). */
+    taskCount(): number;
+
+    /** Get number of tasks actively running right now. */
+    concurrency(): number;
+
+    /** Get number of available worker threads. */
+    threadCount(): number;
+
+    /** Trigger manual garbage collection. */
+    gcCollect(): void;
+
+    /** Get total bytes freed by garbage collection. */
+    gcStats(): number;
+
+    /** Get the Raya VM version string. */
+    version(): string;
+
+    /** Get VM uptime in milliseconds. */
+    uptime(): number;
+
+    /** Get comma-separated list of loaded module names. */
+    loadedModules(): string;
+
+    /** Check if a module is loaded by name. */
+    hasModule(name: string): boolean;
+}
+
+/** Compiler singleton instance */
+declare const Compiler: CompilerClass;
+
+/** Bytecode singleton instance */
+declare const Bytecode: BytecodeClass;
+
+/** Parser singleton instance */
+declare const Parser: ParserClass;
+
+/** TypeChecker singleton instance */
+declare const TypeChecker: TypeCheckerClass;
+
+/** Vm singleton instance */
+declare const Vm: VmClass;
+
+export { Compiler, Bytecode, Parser, TypeChecker, Vm, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule };

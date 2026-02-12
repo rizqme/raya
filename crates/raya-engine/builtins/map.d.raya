@@ -1,0 +1,43 @@
+/**
+ * Map<K, V> - Key-value dictionary
+ *
+ * A collection of key-value pairs with any key type.
+ *
+ * Usage:
+ *   let m: Map<string, number> = new Map<string, number>();
+ *   m.set("age", 25);
+ *   let age: number | null = m.get("age");
+ */
+export class Map<K, V> {
+    constructor();
+
+    /** Get the number of entries */
+    size(): number;
+
+    /** Get value by key (returns null if not found) */
+    get(key: K): V | null;
+
+    /** Set a key-value pair */
+    set(key: K, value: V): void;
+
+    /** Check if key exists */
+    has(key: K): boolean;
+
+    /** Delete a key (returns true if existed) */
+    delete(key: K): boolean;
+
+    /** Remove all entries */
+    clear(): void;
+
+    /** Get all keys as an array */
+    keys(): K[];
+
+    /** Get all values as an array */
+    values(): V[];
+
+    /** Get all entries as array of [key, value] tuples */
+    entries(): [K, V][];
+
+    /** Iterate over all entries */
+    forEach(fn: (value: V, key: K) => void): void;
+}

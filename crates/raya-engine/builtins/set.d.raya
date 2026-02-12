@@ -1,0 +1,43 @@
+/**
+ * Set<T> - Collection of unique values
+ *
+ * A collection that stores unique elements of a given type.
+ *
+ * Usage:
+ *   let s: Set<string> = new Set<string>();
+ *   s.add("hello");
+ *   let exists: boolean = s.has("hello");
+ */
+export class Set<T> {
+    constructor();
+
+    /** Get the number of elements */
+    size(): number;
+
+    /** Add a value to the set */
+    add(value: T): void;
+
+    /** Check if value exists */
+    has(value: T): boolean;
+
+    /** Delete a value (returns true if existed) */
+    delete(value: T): boolean;
+
+    /** Remove all elements */
+    clear(): void;
+
+    /** Get all values as an array */
+    values(): T[];
+
+    /** Iterate over all values */
+    forEach(fn: (value: T) => void): void;
+
+    /** Return a new set containing elements from both sets */
+    union(other: Set<T>): Set<T>;
+
+    /** Return a new set containing elements present in both sets */
+    intersection(other: Set<T>): Set<T>;
+
+    /** Return a new set containing elements in this set but not in other */
+    difference(other: Set<T>): Set<T>;
+}

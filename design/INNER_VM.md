@@ -231,7 +231,7 @@ The outer VM may:
 ## 12. Example Usage
 
 ```typescript
-import { Vm, Compiler } from "raya:vm";
+import { Vm, Compiler } from "std:runtime";
 
 const compiler = new Compiler();
 const program = compiler.compileString(`

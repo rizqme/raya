@@ -24,11 +24,35 @@ impl StdModuleRegistry {
         // Register standard library modules
         modules.insert(
             "logger",
-            include_str!("../../../../raya-stdlib/Logger.raya"),
+            include_str!("../../../../raya-stdlib/raya/logger.raya"),
         );
         modules.insert(
             "math",
-            include_str!("../../../../raya-stdlib/Math.raya"),
+            include_str!("../../../../raya-stdlib/raya/math.raya"),
+        );
+        modules.insert(
+            "reflect",
+            include_str!("../../../../raya-stdlib/raya/reflect.raya"),
+        );
+        modules.insert(
+            "runtime",
+            include_str!("../../../../raya-stdlib/raya/runtime.raya"),
+        );
+        modules.insert(
+            "crypto",
+            include_str!("../../../../raya-stdlib/raya/crypto.raya"),
+        );
+        modules.insert(
+            "time",
+            include_str!("../../../../raya-stdlib/raya/time.raya"),
+        );
+        modules.insert(
+            "path",
+            include_str!("../../../../raya-stdlib/raya/path.raya"),
+        );
+        modules.insert(
+            "codec",
+            include_str!("../../../../raya-stdlib/raya/codec.raya"),
         );
 
         Self { modules }

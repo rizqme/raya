@@ -1,0 +1,39 @@
+/**
+ * Channel<T> - Inter-task communication primitive
+ *
+ * Typed channel for sending values between concurrent tasks.
+ * Supports buffered and unbuffered modes.
+ *
+ * Usage:
+ *   let ch: Channel<string> = new Channel<string>(10);
+ *   ch.send("hello");
+ *   let msg: string = ch.receive();
+ */
+export class Channel<T> {
+    /** Create a new channel. capacity=0 means unbuffered (synchronous). */
+    constructor(capacity: number);
+
+    /** Send a value to the channel (blocks if buffer full) */
+    send(value: T): void;
+
+    /** Receive a value from the channel (blocks if empty) */
+    receive(): T;
+
+    /** Try to send without blocking (returns true if sent) */
+    trySend(value: T): boolean;
+
+    /** Try to receive without blocking (returns null if empty) */
+    tryReceive(): T | null;
+
+    /** Close the channel (no more sends allowed) */
+    close(): void;
+
+    /** Check if channel is closed */
+    isClosed(): boolean;
+
+    /** Get number of elements in buffer */
+    length(): number;
+
+    /** Get buffer capacity */
+    capacity(): number;
+}

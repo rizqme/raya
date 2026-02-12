@@ -1,0 +1,45 @@
+/**
+ * Buffer - Raw binary data buffer
+ *
+ * Fixed-size byte buffer for low-level binary data manipulation.
+ *
+ * Usage:
+ *   let buf: Buffer = new Buffer(1024);
+ *   buf.setByte(0, 0xFF);
+ */
+export class Buffer {
+    constructor(size: number);
+
+    /** Get buffer length in bytes */
+    length(): number;
+
+    /** Read a single byte (0-255) at the given index */
+    getByte(index: number): number;
+
+    /** Write a single byte (0-255) at the given index */
+    setByte(index: number, value: number): void;
+
+    /** Read a 32-bit signed integer (little-endian) at the given index */
+    getInt32(index: number): number;
+
+    /** Write a 32-bit signed integer (little-endian) at the given index */
+    setInt32(index: number, value: number): void;
+
+    /** Read a 64-bit float (little-endian) at the given index */
+    getFloat64(index: number): number;
+
+    /** Write a 64-bit float (little-endian) at the given index */
+    setFloat64(index: number, value: number): void;
+
+    /** Create a new buffer from a slice of this buffer */
+    slice(start: number, end: number): Buffer;
+
+    /** Copy bytes from this buffer to another, returns number of bytes copied */
+    copy(target: Buffer, targetStart: number, sourceStart: number, sourceEnd: number): number;
+
+    /** Convert buffer to string using specified encoding */
+    toString(encoding: string): string;
+
+    /** Convert buffer to UTF-8 string */
+    toUtf8String(): string;
+}

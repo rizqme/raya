@@ -12,11 +12,11 @@ class RegExpMatch {
     public input: string;
 
     // Captured groups (index 0 is the full match)
-    public groups: Array<string>;
+    public groups: string[];
 
     // Note: RegExpMatch objects are created by the VM when executing
     // RegExp.exec() or similar methods. Users don't construct these directly.
-    constructor(match: string, index: number, input: string, groups: Array<string>) {
+    constructor(match: string, index: number, input: string, groups: string[]) {
         this.match = match;
         this.index = index;
         this.input = input;

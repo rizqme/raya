@@ -1,0 +1,15 @@
+/**
+ * Object - Base class for all objects
+ *
+ * Every class implicitly extends Object.
+ */
+export class Object {
+    /** Get string representation of the object */
+    toString(): string;
+
+    /** Get hash code for this object (based on object identity) */
+    hashCode(): number;
+
+    /** Check equality with another object (identity comparison) */
+    equals(other: Object): boolean;
+}

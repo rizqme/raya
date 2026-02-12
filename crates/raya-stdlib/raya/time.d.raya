@@ -1,0 +1,51 @@
+// Type declarations for std:time module
+
+/**
+ * Time utilities: clocks, sleep, and duration conversion.
+ *
+ * Usage:
+ *   import time from "std:time";
+ *   let start: number = time.monotonic();
+ *   time.sleep(100);
+ *   let elapsed: number = time.elapsed(start);
+ */
+declare class Time {
+    /** Milliseconds since Unix epoch (Jan 1 1970 00:00:00 UTC). */
+    now(): number;
+
+    /** Monotonic timestamp in milliseconds. Not affected by system clock changes. */
+    monotonic(): number;
+
+    /** High-resolution monotonic timestamp in nanoseconds. */
+    hrtime(): number;
+
+    /** Milliseconds elapsed since a monotonic start point. */
+    elapsed(start: number): number;
+
+    /** Sleep for the given number of milliseconds. Blocks the current thread. */
+    sleep(ms: number): void;
+
+    /** Sleep for the given number of microseconds. Blocks the current thread. */
+    sleepMicros(us: number): void;
+
+    /** Convert seconds to milliseconds. */
+    seconds(n: number): number;
+
+    /** Convert minutes to milliseconds. */
+    minutes(n: number): number;
+
+    /** Convert hours to milliseconds. */
+    hours(n: number): number;
+
+    /** Convert milliseconds to seconds. */
+    toSeconds(ms: number): number;
+
+    /** Convert milliseconds to minutes. */
+    toMinutes(ms: number): number;
+
+    /** Convert milliseconds to hours. */
+    toHours(ms: number): number;
+}
+
+declare const time: Time;
+export default time;

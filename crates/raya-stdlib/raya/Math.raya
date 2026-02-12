@@ -29,102 +29,102 @@ const MATH_E: number = 0x2016;
 class Math {
     // Constants
     PI(): number {
-        return __NATIVE_CALL(MATH_PI);
+        return __NATIVE_CALL<number>(MATH_PI);
     }
 
     E(): number {
-        return __NATIVE_CALL(MATH_E);
+        return __NATIVE_CALL<number>(MATH_E);
     }
 
     // Basic
     abs(x: number): number {
-        return __NATIVE_CALL(MATH_ABS, x);
+        return __NATIVE_CALL<number>(MATH_ABS, x);
     }
 
     sign(x: number): number {
-        return __NATIVE_CALL(MATH_SIGN, x);
+        return __NATIVE_CALL<number>(MATH_SIGN, x);
     }
 
     // Rounding
     floor(x: number): number {
-        return __NATIVE_CALL(MATH_FLOOR, x);
+        return __NATIVE_CALL<number>(MATH_FLOOR, x);
     }
 
     ceil(x: number): number {
-        return __NATIVE_CALL(MATH_CEIL, x);
+        return __NATIVE_CALL<number>(MATH_CEIL, x);
     }
 
     round(x: number): number {
-        return __NATIVE_CALL(MATH_ROUND, x);
+        return __NATIVE_CALL<number>(MATH_ROUND, x);
     }
 
     trunc(x: number): number {
-        return __NATIVE_CALL(MATH_TRUNC, x);
+        return __NATIVE_CALL<number>(MATH_TRUNC, x);
     }
 
     // Min/Max
     min(a: number, b: number): number {
-        return __NATIVE_CALL(MATH_MIN, a, b);
+        return __NATIVE_CALL<number>(MATH_MIN, a, b);
     }
 
     max(a: number, b: number): number {
-        return __NATIVE_CALL(MATH_MAX, a, b);
+        return __NATIVE_CALL<number>(MATH_MAX, a, b);
     }
 
     // Power
     pow(base: number, exp: number): number {
-        return __NATIVE_CALL(MATH_POW, base, exp);
+        return __NATIVE_CALL<number>(MATH_POW, base, exp);
     }
 
     sqrt(x: number): number {
-        return __NATIVE_CALL(MATH_SQRT, x);
+        return __NATIVE_CALL<number>(MATH_SQRT, x);
     }
 
     // Trigonometry
     sin(x: number): number {
-        return __NATIVE_CALL(MATH_SIN, x);
+        return __NATIVE_CALL<number>(MATH_SIN, x);
     }
 
     cos(x: number): number {
-        return __NATIVE_CALL(MATH_COS, x);
+        return __NATIVE_CALL<number>(MATH_COS, x);
     }
 
     tan(x: number): number {
-        return __NATIVE_CALL(MATH_TAN, x);
+        return __NATIVE_CALL<number>(MATH_TAN, x);
     }
 
     asin(x: number): number {
-        return __NATIVE_CALL(MATH_ASIN, x);
+        return __NATIVE_CALL<number>(MATH_ASIN, x);
     }
 
     acos(x: number): number {
-        return __NATIVE_CALL(MATH_ACOS, x);
+        return __NATIVE_CALL<number>(MATH_ACOS, x);
     }
 
     atan(x: number): number {
-        return __NATIVE_CALL(MATH_ATAN, x);
+        return __NATIVE_CALL<number>(MATH_ATAN, x);
     }
 
     atan2(y: number, x: number): number {
-        return __NATIVE_CALL(MATH_ATAN2, y, x);
+        return __NATIVE_CALL<number>(MATH_ATAN2, y, x);
     }
 
     // Exponential/Logarithmic
     exp(x: number): number {
-        return __NATIVE_CALL(MATH_EXP, x);
+        return __NATIVE_CALL<number>(MATH_EXP, x);
     }
 
     log(x: number): number {
-        return __NATIVE_CALL(MATH_LOG, x);
+        return __NATIVE_CALL<number>(MATH_LOG, x);
     }
 
     log10(x: number): number {
-        return __NATIVE_CALL(MATH_LOG10, x);
+        return __NATIVE_CALL<number>(MATH_LOG10, x);
     }
 
     // Random
     random(): number {
-        return __NATIVE_CALL(MATH_RANDOM);
+        return __NATIVE_CALL<number>(MATH_RANDOM);
     }
 }
 

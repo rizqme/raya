@@ -323,6 +323,17 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
+            // Also track class type from explicit type annotation (e.g., `let x: MyClass = someCall()`)
+            if !self.variable_class_map.contains_key(&name) {
+                if let Some(type_ann) = &decl.type_annotation {
+                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(name, class_id);
+                        }
+                    }
+                }
+            }
+
             // Track if this is an arrow function for async closure detection
             let is_async_arrow = if let ast::Expression::Arrow(arrow) = init {
                 arrow.is_async
@@ -331,6 +342,12 @@ impl<'a> Lowerer<'a> {
             };
 
             let value = self.lower_expr(init);
+
+            // Transfer object field layout from register to variable
+            // (for decode<T> results so property access resolves correctly)
+            if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
+                self.variable_object_fields.insert(name, fields);
+            }
 
             // Track closure locals for async closure detection
             // After lowering an arrow, last_closure_info has the function ID
