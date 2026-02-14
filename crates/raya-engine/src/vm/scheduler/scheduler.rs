@@ -3,7 +3,7 @@
 use crate::vm::scheduler::{
     PreemptMonitor, Task, TaskId, TaskState, Worker, DEFAULT_PREEMPT_THRESHOLD,
 };
-use crate::vm::vm::{SafepointCoordinator, SharedVmState};
+use crate::vm::interpreter::{SafepointCoordinator, SharedVmState};
 use crossbeam_deque::{Injector, Worker as CWorker};
 use parking_lot::RwLock;
 use rustc_hash::FxHashMap;

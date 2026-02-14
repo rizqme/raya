@@ -62,8 +62,8 @@ pub mod compiler;
 /// VM module: Interpreter, scheduler, GC, and runtime
 pub mod vm;
 
-/// Builtins module: Precompiled builtin types and signatures
-pub mod builtins;
+/// Builtins module: Precompiled builtin types and signatures (re-exported from vm::builtins)
+pub use vm::builtins;
 
 // ============================================================================
 // Re-exports from Parser

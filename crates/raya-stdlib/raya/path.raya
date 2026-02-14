@@ -13,6 +13,8 @@ const PATH_RELATIVE: number = 0x6007;
 const PATH_CWD: number = 0x6008;
 const PATH_SEP: number = 0x6009;
 const PATH_DELIMITER: number = 0x600A;
+const PATH_STRIP_EXT: number = 0x600B;
+const PATH_WITH_EXT: number = 0x600C;
 
 class Path {
     // ── Join & Normalize ──
@@ -67,23 +69,14 @@ class Path {
         return __NATIVE_CALL<string>(PATH_DELIMITER);
     }
 
-    // ── Utilities (pure Raya) ──
+    // ── Utilities ──
 
     stripExt(p: string): string {
-        let ext: string = this.extname(p);
-        let base: string = this.basename(p);
-        if (ext == "") {
-            return base;
-        }
-        return base.substring(0, base.length - ext.length);
+        return __NATIVE_CALL<string>(PATH_STRIP_EXT, p);
     }
 
     withExt(p: string, ext: string): string {
-        let oldExt: string = this.extname(p);
-        if (oldExt == "") {
-            return p + ext;
-        }
-        return p.substring(0, p.length - oldExt.length) + ext;
+        return __NATIVE_CALL<string>(PATH_WITH_EXT, p, ext);
     }
 
     isRelative(p: string): boolean {

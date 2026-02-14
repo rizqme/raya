@@ -1,4 +1,5 @@
-//! Virtual machine interpreter
+//! Synchronous VM facade for testing and simple execution
+
 
 use super::{ClassRegistry, SafepointCoordinator};
 use crate::vm::{

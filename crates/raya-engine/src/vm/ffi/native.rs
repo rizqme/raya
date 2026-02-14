@@ -6,7 +6,7 @@
 //!
 //! The core FFI types (NativeValue, NativeModule, etc.) are provided by raya-sdk.
 
-use crate::vm::vm::VmContext;
+use crate::vm::interpreter::VmContext;
 use raya_sdk::{NativeModule, NativeValue};
 
 // ============================================================================

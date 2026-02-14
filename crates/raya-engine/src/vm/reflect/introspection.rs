@@ -17,7 +17,7 @@
 
 use crate::vm::object::{Class, Object};
 use crate::vm::value::Value;
-use crate::vm::vm::ClassRegistry;
+use crate::vm::interpreter::ClassRegistry;
 
 /// Runtime type information (simplified for basic introspection)
 #[derive(Debug, Clone)]
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn test_get_class_id_for_object() {
         use crate::vm::gc::GarbageCollector;
-        use crate::vm::vm::VmContextId;
+        use crate::vm::interpreter::VmContextId;
         use crate::vm::types::create_standard_registry;
         use parking_lot::Mutex;
         use std::sync::Arc;
@@ -483,7 +483,7 @@ mod tests {
     #[test]
     fn test_is_instance_of_with_inheritance() {
         use crate::vm::gc::GarbageCollector;
-        use crate::vm::vm::VmContextId;
+        use crate::vm::interpreter::VmContextId;
         use crate::vm::types::create_standard_registry;
         use parking_lot::Mutex;
         use std::sync::Arc;
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn test_cast_with_inheritance() {
         use crate::vm::gc::GarbageCollector;
-        use crate::vm::vm::VmContextId;
+        use crate::vm::interpreter::VmContextId;
         use crate::vm::types::create_standard_registry;
         use parking_lot::Mutex;
         use std::sync::Arc;

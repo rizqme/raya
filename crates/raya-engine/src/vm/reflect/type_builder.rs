@@ -16,7 +16,7 @@
 use crate::vm::object::{Class, VTable};
 use crate::vm::reflect::{ClassMetadata, FieldInfo, MethodInfo, TypeInfo, TypeKind};
 use crate::vm::value::Value;
-use crate::vm::vm::ClassRegistry;
+use crate::vm::interpreter::ClassRegistry;
 
 /// Definition for a field to be added to a dynamic class
 #[derive(Debug, Clone)]

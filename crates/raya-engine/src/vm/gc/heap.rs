@@ -5,7 +5,7 @@
 use super::header::GcHeader;
 use super::ptr::GcPtr;
 use crate::vm::types::TypeRegistry;
-use crate::vm::vm::VmContextId;
+use crate::vm::interpreter::VmContextId;
 use std::alloc::{alloc, Layout};
 use std::any::TypeId;
 use std::ptr::NonNull;

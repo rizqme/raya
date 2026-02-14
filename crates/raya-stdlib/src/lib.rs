@@ -9,5 +9,8 @@
 pub mod handler;
 pub mod logger;
 pub mod math;
+pub mod crypto;
+pub mod codec;
+pub mod path;
 
 pub use handler::StdNativeHandler;

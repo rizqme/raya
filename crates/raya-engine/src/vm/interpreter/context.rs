@@ -12,7 +12,7 @@ use crate::vm::gc::{GarbageCollector, GcStats, HeapStats};
 use crate::vm::scheduler::TaskId;
 use crate::vm::types::TypeRegistry;
 use crate::vm::value::Value;
-use crate::vm::vm::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
+use crate::vm::interpreter::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use crate::compiler::Module;
@@ -247,7 +247,7 @@ pub struct VmContext {
     module_registry: ModuleRegistry,
 
     /// Native module registry (loaded native modules)
-    native_module_registry: crate::vm::vm::NativeModuleRegistry,
+    native_module_registry: crate::vm::interpreter::NativeModuleRegistry,
 
     /// Parent context (for nested VMs)
     parent: Option<VmContextId>,
@@ -285,7 +285,7 @@ impl VmContext {
             task_registry: Vec::new(),
             class_registry: ClassRegistry::new(),
             module_registry: ModuleRegistry::new(),
-            native_module_registry: crate::vm::vm::NativeModuleRegistry::new(),
+            native_module_registry: crate::vm::interpreter::NativeModuleRegistry::new(),
             parent: None,
             capabilities: options.capabilities,
         }
@@ -448,12 +448,12 @@ impl VmContext {
     }
 
     /// Get the native module registry
-    pub fn native_module_registry(&self) -> &crate::vm::vm::NativeModuleRegistry {
+    pub fn native_module_registry(&self) -> &crate::vm::interpreter::NativeModuleRegistry {
         &self.native_module_registry
     }
 
     /// Get mutable access to the native module registry
-    pub fn native_module_registry_mut(&mut self) -> &mut crate::vm::vm::NativeModuleRegistry {
+    pub fn native_module_registry_mut(&mut self) -> &mut crate::vm::interpreter::NativeModuleRegistry {
         &mut self.native_module_registry
     }
 
@@ -474,7 +474,7 @@ impl VmContext {
     /// let module = Arc::new(NativeModule::new("math", "1.0.0"));
     /// vm_context.register_native_module(module)?;
     /// ```
-    pub fn register_native_module(&mut self, module: Arc<crate::vm::vm::NativeModule>) -> Result<(), String> {
+    pub fn register_native_module(&mut self, module: Arc<crate::vm::interpreter::NativeModule>) -> Result<(), String> {
         self.native_module_registry.register(module)
     }
 
@@ -500,7 +500,7 @@ impl VmContext {
     pub fn register_native_module_as(
         &mut self,
         name: impl Into<String>,
-        module: Arc<crate::vm::vm::NativeModule>,
+        module: Arc<crate::vm::interpreter::NativeModule>,
     ) -> Result<(), String> {
         self.native_module_registry.register_as(name, module)
     }

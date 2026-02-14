@@ -4,7 +4,7 @@
 //! Values are deep-copied across context boundaries to maintain heap isolation.
 
 use crate::vm::value::Value;
-use crate::vm::vm::VmContext;
+use crate::vm::interpreter::VmContext;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;

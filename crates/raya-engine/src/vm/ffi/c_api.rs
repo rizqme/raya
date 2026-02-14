@@ -10,7 +10,7 @@
 
 use crate::compiler::Module;
 use crate::vm::value::Value;
-use crate::vm::vm::Vm;
+use crate::vm::interpreter::Vm;
 use crate::vm::VmError;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};

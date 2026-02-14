@@ -287,7 +287,7 @@ pub fn call_regexp_method(
         }
         _ => {
             return Err(VmError::RuntimeError(format!(
-                "RegExp method {:#06x} not yet implemented in TaskInterpreter",
+                "RegExp method {:#06x} not yet implemented in Interpreter",
                 method_id
             )));
         }

@@ -233,7 +233,6 @@ fn test_path_delimiter() {
 // ============================================================================
 
 #[test]
-#[ignore = "Pure Raya method uses this.method() which requires CallMethod in nested call"]
 fn test_path_strip_ext() {
     expect_string_with_builtins(
         r#"
@@ -245,7 +244,6 @@ fn test_path_strip_ext() {
 }
 
 #[test]
-#[ignore = "Pure Raya method uses this.method() which requires CallMethod in nested call"]
 fn test_path_with_ext() {
     expect_string_with_builtins(
         r#"

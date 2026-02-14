@@ -5,7 +5,7 @@
 
 use crate::vm::scheduler::TaskId;
 use crate::vm::value::Value;
-use crate::vm::vm::{VmContext, VmContextId, VmOptions};
+use crate::vm::interpreter::{VmContext, VmContextId, VmOptions};
 use parking_lot::RwLock;
 use crate::compiler::Module;
 use std::path::Path;
@@ -443,7 +443,7 @@ pub struct FrameSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::vm::ResourceLimits;
+    use crate::vm::interpreter::ResourceLimits;
 
     #[test]
     fn test_vm_creation() {

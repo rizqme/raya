@@ -1,12 +1,16 @@
-//! Precompiled Raya Builtin Types
+//! Raya Builtin Types and Handlers
 //!
-//! This module provides precompiled bytecode and type signatures for Raya's builtin types.
+//! This module provides:
+//! - Precompiled bytecode and type signatures for Raya's builtin types
+//! - Native method handlers for built-in types (arrays, strings, numbers, etc.)
+//!
 //! The builtins are compiled at build time and embedded in the library.
+//! The handlers implement native operations called from the VM.
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use raya_engine::builtins::{get_builtin, builtin_names, get_all_signatures};
+//! use raya_engine::vm::builtins::{get_builtin, builtin_names, get_all_signatures};
 //!
 //! // Get a specific builtin module
 //! if let Some(module) = get_builtin("Map") {
@@ -16,6 +20,9 @@
 //! // Get type signatures for type checking
 //! let signatures = get_all_signatures();
 //! ```
+
+// Handler modules for built-in type methods
+pub mod handlers;
 
 use crate::compiler::Module;
 use std::sync::OnceLock;

@@ -117,6 +117,15 @@
 - Handlers stay in raya-engine (need VM internals), no raya-stdlib module needed
 - E2E tests for metadata, introspection, field access, proxies, permissions
 
+**Milestone 4.9 (Native ABI Refactor):** In Progress (Phases 1-2 Complete)
+- Unified NativeHandler interface with full VM context (GC, classes, scheduler)
+- Type-safe NativeValue wrapper (no string parsing)
+- Support for all value types (primitives, strings, buffers, objects, arrays)
+- Phase 1: Core ABI infrastructure complete (331 lines)
+- Phase 2: Interface refactor complete (NativeHandler trait updated)
+- Remaining: VM dispatcher migration, stdlib handler migration, crypto migration
+- Design doc: [design/ABI.md](design/ABI.md)
+
 **Milestone 4.5 (std:runtime):** In Progress (Phases 1-8 Complete)
 - `import { Compiler, Bytecode, Vm, Parser, TypeChecker, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule } from "std:runtime"` — 9 exports, named
 - ✅ Phase 1: Compiler + Bytecode I/O complete
@@ -163,7 +172,7 @@
 
 **Tests:** 1,731 total (831 engine lib, 883 runtime, 17 stdlib) — 2 ignored (path CallMethod)
 
-See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), and [plans/milestone-4.8.md](plans/milestone-4.8.md) for details.
+See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
 ---
 
@@ -206,6 +215,8 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 | [plans/milestone-4.6.md](plans/milestone-4.6.md) | std:crypto (hashing, HMAC, random, encoding) |
 | [plans/milestone-4.7.md](plans/milestone-4.7.md) | std:time (clocks, sleep, duration utilities) |
 | [plans/milestone-4.8.md](plans/milestone-4.8.md) | std:path & std:codec (path manipulation, UTF-8, MessagePack, CBOR, Protobuf) |
+| [plans/milestone-4.9.md](plans/milestone-4.9.md) | Native ABI Refactor (unified interface, full VM context) |
+| [design/ABI.md](design/ABI.md) | Native ABI design specification |
 
 ---
 

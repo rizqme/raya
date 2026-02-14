@@ -10,7 +10,7 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GarbageCollector;
 use crate::compiler::native_id::{CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_CAPACITY};
 use crate::vm::builtin::{set, regexp, buffer};
-use super::handlers::{
+use crate::vm::builtins::handlers::{
     ArrayHandlerContext, RegExpHandlerContext, ReflectHandlerContext, StringHandlerContext,
     RuntimeHandlerContext,
     call_array_method as array_handler, call_regexp_method as regexp_handler,
@@ -47,7 +47,7 @@ fn value_to_f64(v: Value) -> Result<f64, VmError> {
 ///
 /// This struct holds references to shared state and executes a task.
 /// The task's execution state (stack, IP, exception handlers, etc.) lives in the Task itself.
-pub struct TaskInterpreter<'a> {
+pub struct Interpreter<'a> {
     /// Reference to the garbage collector
     gc: &'a parking_lot::Mutex<GarbageCollector>,
 
@@ -79,7 +79,7 @@ pub struct TaskInterpreter<'a> {
     native_handler: &'a Arc<dyn NativeHandler>,
 }
 
-impl<'a> TaskInterpreter<'a> {
+impl<'a> Interpreter<'a> {
     /// Create a new task interpreter
     pub fn new(
         gc: &'a parking_lot::Mutex<GarbageCollector>,
@@ -3997,42 +3997,32 @@ impl<'a> TaskInterpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    // Logger native calls (std:logger) — dispatches to native handler
-                    id if crate::vm::builtin::is_logger_method(id) => {
-                        use crate::vm::NativeCallResult;
-                        let arg_strings = Self::values_to_strings(&args);
-                        match self.native_handler.call(id, &arg_strings) {
-                            NativeCallResult::Void => {
-                                if let Err(e) = stack.push(Value::null()) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
-                            }
-                            NativeCallResult::Unhandled => {
-                                return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Native call {:#06x} not handled by native handler",
-                                    id
-                                )));
-                            }
-                            NativeCallResult::Error(msg) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(msg));
-                            }
-                            _ => {
-                                return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Unexpected result type from logger native call {:#06x}",
-                                    id
-                                )));
-                            }
-                        }
-                    }
+                    // Logger/Math/Crypto/Path/Codec native calls — dispatches to native handler
+                    id if crate::vm::builtin::is_logger_method(id)
+                        || crate::vm::builtin::is_math_method(id)
+                        || crate::vm::builtin::is_crypto_method(id)
+                        || crate::vm::builtin::is_path_method(id)
+                        || crate::vm::builtin::is_codec_method(id) => {
+                        use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
+                        use std::sync::Arc;
 
-                    // Math native calls (std:math) — dispatches to native handler
-                    id if crate::vm::builtin::is_math_method(id) => {
-                        use crate::vm::NativeCallResult;
-                        let arg_strings = Self::values_to_strings(&args);
-                        match self.native_handler.call(id, &arg_strings) {
-                            NativeCallResult::Number(n) => {
-                                if let Err(e) = stack.push(Value::f64(n)) {
+                        // Create placeholder scheduler for NativeContext (task operations are stubbed)
+                        let placeholder_scheduler = Arc::new(Scheduler::new(1));
+                        let ctx = NativeContext::new(
+                            self.gc,
+                            self.classes,
+                            &placeholder_scheduler,
+                            task.id(),
+                        );
+
+                        // Convert arguments to NativeValue
+                        let native_args: Vec<NativeValue> = args.iter()
+                            .map(|v| NativeValue::from_value(*v))
+                            .collect();
+
+                        match self.native_handler.call(&ctx, id, &native_args) {
+                            NativeCallResult::Value(val) => {
+                                if let Err(e) = stack.push(val.into_value()) {
                                     return OpcodeResult::Error(e);
                                 }
                                 OpcodeResult::Continue
@@ -4045,12 +4035,6 @@ impl<'a> TaskInterpreter<'a> {
                             }
                             NativeCallResult::Error(msg) => {
                                 return OpcodeResult::Error(VmError::RuntimeError(msg));
-                            }
-                            _ => {
-                                return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Unexpected result type from math native call {:#06x}",
-                                    id
-                                )));
                             }
                         }
                     }
@@ -4072,14 +4056,6 @@ impl<'a> TaskInterpreter<'a> {
                             }
                         }
 
-                        // Check if this is a crypto method (std:crypto)
-                        if crate::vm::builtin::is_crypto_method(native_id) {
-                            match self.call_crypto_method(task, &mut **stack, native_id, args, module) {
-                                Ok(()) => return OpcodeResult::Continue,
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-
                         // Check if this is a time method (std:time)
                         if crate::vm::builtin::is_time_method(native_id) {
                             match self.call_time_method(&mut **stack, native_id, args) {
@@ -4088,25 +4064,9 @@ impl<'a> TaskInterpreter<'a> {
                             }
                         }
 
-                        // Check if this is a path method (std:path)
-                        if crate::vm::builtin::is_path_method(native_id) {
-                            match self.call_path_method(&mut **stack, native_id, args) {
-                                Ok(()) => return OpcodeResult::Continue,
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-
-                        // Check if this is a codec method (std:codec)
-                        if crate::vm::builtin::is_codec_method(native_id) {
-                            match self.call_codec_method(&mut **stack, native_id, args) {
-                                Ok(()) => return OpcodeResult::Continue,
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
-
                         // Other native calls not yet implemented
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "NativeCall {:#06x} not yet implemented in TaskInterpreter (args={})",
+                            "NativeCall {:#06x} not yet implemented in Interpreter (args={})",
                             native_id, args.len()
                         )));
                     }
@@ -4820,7 +4780,7 @@ impl<'a> TaskInterpreter<'a> {
             // Catch-all for unimplemented opcodes
             // =========================================================
             _ => OpcodeResult::Error(VmError::RuntimeError(format!(
-                "Opcode {:?} not yet implemented in TaskInterpreter",
+                "Opcode {:?} not yet implemented in Interpreter",
                 opcode
             ))),
         }
@@ -6367,13 +6327,32 @@ impl<'a> TaskInterpreter<'a> {
                             };
                             call_stack.push(arr_val)?;
                         }
-                        // Logger native calls (std:logger) — dispatches to native handler
-                        id if crate::vm::builtin::is_logger_method(id as u16) => {
-                            use crate::vm::NativeCallResult;
-                            let arg_strings = Self::values_to_strings(&args);
-                            match self.native_handler.call(id as u16, &arg_strings) {
-                                NativeCallResult::Void => {
-                                    call_stack.push(Value::null())?;
+                        // Logger/Math/Crypto/Path/Codec native calls — dispatches to native handler
+                        id if crate::vm::builtin::is_logger_method(id as u16)
+                            || crate::vm::builtin::is_math_method(id as u16)
+                            || crate::vm::builtin::is_crypto_method(id as u16)
+                            || crate::vm::builtin::is_path_method(id as u16)
+                            || crate::vm::builtin::is_codec_method(id as u16) => {
+                            use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
+                            use std::sync::Arc;
+
+                            // Create placeholder scheduler for NativeContext (task operations are stubbed)
+                            let placeholder_scheduler = Arc::new(Scheduler::new(1));
+                            let ctx = NativeContext::new(
+                                self.gc,
+                                self.classes,
+                                &placeholder_scheduler,
+                                task.id(),
+                            );
+
+                            // Convert arguments to NativeValue
+                            let native_args: Vec<NativeValue> = args.iter()
+                                .map(|v| NativeValue::from_value(*v))
+                                .collect();
+
+                            match self.native_handler.call(&ctx, id as u16, &native_args) {
+                                NativeCallResult::Value(val) => {
+                                    call_stack.push(val.into_value())?;
                                 }
                                 NativeCallResult::Unhandled => {
                                     return Err(VmError::RuntimeError(format!(
@@ -6383,37 +6362,6 @@ impl<'a> TaskInterpreter<'a> {
                                 }
                                 NativeCallResult::Error(msg) => {
                                     return Err(VmError::RuntimeError(msg));
-                                }
-                                _ => {
-                                    return Err(VmError::RuntimeError(format!(
-                                        "Unexpected result type from logger native call {:#06x}",
-                                        id
-                                    )));
-                                }
-                            }
-                        }
-                        // Math native calls (std:math) — dispatches to native handler
-                        id if crate::vm::builtin::is_math_method(id as u16) => {
-                            use crate::vm::NativeCallResult;
-                            let arg_strings = Self::values_to_strings(&args);
-                            match self.native_handler.call(id as u16, &arg_strings) {
-                                NativeCallResult::Number(n) => {
-                                    call_stack.push(Value::f64(n))?;
-                                }
-                                NativeCallResult::Unhandled => {
-                                    return Err(VmError::RuntimeError(format!(
-                                        "Native call {:#06x} not handled by native handler",
-                                        id
-                                    )));
-                                }
-                                NativeCallResult::Error(msg) => {
-                                    return Err(VmError::RuntimeError(msg));
-                                }
-                                _ => {
-                                    return Err(VmError::RuntimeError(format!(
-                                        "Unexpected result type from math native call {:#06x}",
-                                        id
-                                    )));
                                 }
                             }
                         }
@@ -6425,21 +6373,9 @@ impl<'a> TaskInterpreter<'a> {
                         id if crate::vm::builtin::is_runtime_method(id as u16) => {
                             self.call_runtime_method(task, &mut call_stack, id as u16, args, module)?;
                         }
-                        // Crypto native calls (std:crypto) — dispatches directly via call_crypto_method
-                        id if crate::vm::builtin::is_crypto_method(id as u16) => {
-                            self.call_crypto_method(task, &mut call_stack, id as u16, args, module)?;
-                        }
                         // Time native calls (std:time) — dispatches directly via call_time_method
                         id if crate::vm::builtin::is_time_method(id as u16) => {
                             self.call_time_method(&mut call_stack, id as u16, args)?;
-                        }
-                        // Path native calls (std:path) — dispatches directly via call_path_method
-                        id if crate::vm::builtin::is_path_method(id as u16) => {
-                            self.call_path_method(&mut call_stack, id as u16, args)?;
-                        }
-                        // Codec native calls (std:codec) — dispatches directly via call_codec_method
-                        id if crate::vm::builtin::is_codec_method(id as u16) => {
-                            self.call_codec_method(&mut call_stack, id as u16, args)?;
                         }
                         _ => {
                             return Err(VmError::RuntimeError(format!(
@@ -6619,39 +6555,6 @@ impl<'a> TaskInterpreter<'a> {
     }
 
     // ===== Helper Methods =====
-
-    /// Convert a list of Value arguments to string representations for native calls
-    ///
-    /// Extracts string content from RayaString pointers, and falls back
-    /// to Display formatting for primitive values.
-    fn values_to_strings(args: &[Value]) -> Vec<String> {
-        let mut parts = Vec::with_capacity(args.len());
-        for arg in args {
-            if arg.is_null() {
-                parts.push("null".to_string());
-            } else if let Some(b) = arg.as_bool() {
-                parts.push(if b { "true".to_string() } else { "false".to_string() });
-            } else if let Some(i) = arg.as_i32() {
-                parts.push(i.to_string());
-            } else if let Some(f) = arg.as_f64() {
-                if f.fract() == 0.0 && f.abs() < 1e15 {
-                    parts.push((f as i64).to_string());
-                } else {
-                    parts.push(f.to_string());
-                }
-            } else if arg.is_ptr() {
-                if let Some(str_ptr) = unsafe { arg.as_ptr::<RayaString>() } {
-                    let rs = unsafe { &*str_ptr.as_ptr() };
-                    parts.push(rs.data.clone());
-                } else {
-                    parts.push("[object]".to_string());
-                }
-            } else {
-                parts.push(format!("{}", arg));
-            }
-        }
-        parts
-    }
 
     #[inline]
     fn read_u8(code: &[u8], ip: &mut usize) -> Result<u8, VmError> {
@@ -7445,7 +7348,7 @@ impl<'a> TaskInterpreter<'a> {
                 Ok(())
             }
             _ => Err(VmError::RuntimeError(format!(
-                "Array method {:#06x} not yet implemented in TaskInterpreter",
+                "Array method {:#06x} not yet implemented in Interpreter",
                 method_id
             ))),
         }
@@ -8058,7 +7961,7 @@ impl<'a> TaskInterpreter<'a> {
                 Ok(())
             }
             _ => Err(VmError::RuntimeError(format!(
-                "String method {:#06x} not yet implemented in TaskInterpreter",
+                "String method {:#06x} not yet implemented in Interpreter",
                 method_id
             ))),
         }
@@ -8326,7 +8229,7 @@ impl<'a> TaskInterpreter<'a> {
             }
             _ => {
                 return Err(VmError::RuntimeError(format!(
-                    "RegExp method {:#06x} not yet implemented in TaskInterpreter",
+                    "RegExp method {:#06x} not yet implemented in Interpreter",
                     method_id
                 )));
             }
@@ -10055,7 +9958,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
                     as usize;
                 let return_type = get_string(args[2].clone())?;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name, param_count, return_type);
                 Value::i32(builder_id as i32)
             }
@@ -10075,7 +9978,7 @@ impl<'a> TaskInterpreter<'a> {
                 let operands: Vec<u8> = args[2..].iter()
                     .filter_map(|v| v.as_i32().map(|n| n as u8))
                     .collect();
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.emit(opcode, &operands)?;
@@ -10092,7 +9995,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let value = args[1];
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 if value.is_null() {
@@ -10118,7 +10021,7 @@ impl<'a> TaskInterpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 let label = builder.define_label();
@@ -10137,7 +10040,7 @@ impl<'a> TaskInterpreter<'a> {
                 let label_id = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.mark_label(crate::vm::reflect::Label { id: label_id })?;
@@ -10156,7 +10059,7 @@ impl<'a> TaskInterpreter<'a> {
                 let label_id = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.emit_jump(crate::vm::reflect::Label { id: label_id })?;
@@ -10176,7 +10079,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
                 let if_true = args[2].as_bool().unwrap_or(false);
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 if if_true {
@@ -10205,7 +10108,7 @@ impl<'a> TaskInterpreter<'a> {
                     "null" => crate::vm::reflect::StackType::Null,
                     _ => crate::vm::reflect::StackType::Object,
                 };
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 let index = builder.declare_local(None, stack_type)?;
@@ -10224,7 +10127,7 @@ impl<'a> TaskInterpreter<'a> {
                 let index = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.emit_load_local(index)?;
@@ -10243,7 +10146,7 @@ impl<'a> TaskInterpreter<'a> {
                 let index = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.emit_store_local(index)?;
@@ -10265,7 +10168,7 @@ impl<'a> TaskInterpreter<'a> {
                 let arg_count = args[2].as_i32()
                     .ok_or_else(|| VmError::TypeError("argCount must be a number".to_string()))?
                     as u16;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 builder.emit_call(function_id, arg_count)?;
@@ -10282,7 +10185,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let has_value = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 if has_value {
@@ -10302,7 +10205,7 @@ impl<'a> TaskInterpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 let result = builder.validate();
@@ -10318,7 +10221,7 @@ impl<'a> TaskInterpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
                 let func = builder.build()?;
@@ -10336,7 +10239,7 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
                 let name = get_string(args[0].clone())?;
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name);
                 Value::i32(builder_id as i32)
             }
@@ -10354,7 +10257,7 @@ impl<'a> TaskInterpreter<'a> {
                 let type_name = get_string(args[2].clone())?;
                 let is_static = args[3].as_bool().unwrap_or(false);
                 let is_readonly = args[4].as_bool().unwrap_or(false);
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
                 builder.add_field(name, &type_name, is_static, is_readonly)?;
@@ -10376,7 +10279,7 @@ impl<'a> TaskInterpreter<'a> {
                     as usize;
                 let is_static = args[3].as_bool().unwrap_or(false);
                 let is_async = args[4].as_bool().unwrap_or(false);
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
                 builder.add_method(name, function_id, is_static, is_async)?;
@@ -10395,7 +10298,7 @@ impl<'a> TaskInterpreter<'a> {
                 let function_id = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
                 builder.set_constructor(function_id)?;
@@ -10414,7 +10317,7 @@ impl<'a> TaskInterpreter<'a> {
                 let parent_id = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("parentClassId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
                 builder.set_parent(parent_id)?;
@@ -10431,7 +10334,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let interface_name = get_string(args[1].clone())?;
-                let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
                 builder.add_interface(interface_name)?;
@@ -10449,7 +10352,7 @@ impl<'a> TaskInterpreter<'a> {
                     as usize;
 
                 let builder = {
-                    let mut registry = super::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                    let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                     registry.remove(builder_id)
                         .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?
                 };
@@ -10501,7 +10404,7 @@ impl<'a> TaskInterpreter<'a> {
                     ));
                 }
                 let name = get_string(args[0].clone())?;
-                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module_id = registry.create_module(name)?;
                 Value::i32(module_id as i32)
             }
@@ -10520,13 +10423,13 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as u32 as usize;
 
-                let bytecode_registry = super::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let bytecode_registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let func = bytecode_registry.get_function(function_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Function {} not found", function_id)))?
                     .clone();
                 drop(bytecode_registry);
 
-                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
                 module.add_function(func)?;
@@ -10546,7 +10449,7 @@ impl<'a> TaskInterpreter<'a> {
                     .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
                     as usize;
                 let name = get_string(args[2].clone())?;
-                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
                 module.add_class(class_id, class_id, name)?;
@@ -10564,7 +10467,7 @@ impl<'a> TaskInterpreter<'a> {
                     as usize;
                 let name = get_string(args[1].clone())?;
                 let value = args[2];
-                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
                 module.add_global(name, value)?;
@@ -10580,7 +10483,7 @@ impl<'a> TaskInterpreter<'a> {
                 let module_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
-                let mut registry = super::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
                 module.seal()?;
@@ -11071,7 +10974,7 @@ impl<'a> TaskInterpreter<'a> {
 
     /// Handle built-in runtime methods (std:runtime)
     ///
-    /// Bridge between TaskInterpreter's call convention (pre-popped args Vec)
+    /// Bridge between Interpreter's call convention (pre-popped args Vec)
     /// and the runtime handler's stack-based convention.
     fn call_runtime_method(
         &mut self,
@@ -11096,37 +10999,15 @@ impl<'a> TaskInterpreter<'a> {
 
     /// Handle built-in crypto methods (std:crypto)
     ///
-    /// Bridge between TaskInterpreter's call convention (pre-popped args Vec)
+    /// Bridge between Interpreter's call convention (pre-popped args Vec)
     /// and the crypto handler's stack-based convention.
-    fn call_crypto_method(
-        &mut self,
-        _task: &Arc<Task>,
-        stack: &mut Stack,
-        method_id: u16,
-        args: Vec<Value>,
-        _module: &Module,
-    ) -> Result<(), VmError> {
-        use crate::vm::vm::handlers::crypto::{call_crypto_method, CryptoHandlerContext};
-        let ctx = CryptoHandlerContext {
-            gc: &self.gc,
-        };
-
-        // Push args back onto stack so the handler can pop them
-        let arg_count = args.len();
-        for arg in args {
-            stack.push(arg)?;
-        }
-
-        call_crypto_method(&ctx, stack, method_id, arg_count)
-    }
-
     fn call_time_method(
         &mut self,
         stack: &mut Stack,
         method_id: u16,
         args: Vec<Value>,
     ) -> Result<(), VmError> {
-        use crate::vm::vm::handlers::time::call_time_method;
+        use crate::vm::builtins::handlers::time::call_time_method;
 
         // Push args back onto stack so the handler can pop them
         let arg_count = args.len();
@@ -11137,43 +11018,4 @@ impl<'a> TaskInterpreter<'a> {
         call_time_method(stack, method_id, arg_count)
     }
 
-    fn call_path_method(
-        &mut self,
-        stack: &mut Stack,
-        method_id: u16,
-        args: Vec<Value>,
-    ) -> Result<(), VmError> {
-        use crate::vm::vm::handlers::path::{call_path_method, PathHandlerContext};
-        let ctx = PathHandlerContext {
-            gc: &self.gc,
-        };
-
-        // Push args back onto stack so the handler can pop them
-        let arg_count = args.len();
-        for arg in args {
-            stack.push(arg)?;
-        }
-
-        call_path_method(&ctx, stack, method_id, arg_count)
-    }
-
-    fn call_codec_method(
-        &mut self,
-        stack: &mut Stack,
-        method_id: u16,
-        args: Vec<Value>,
-    ) -> Result<(), VmError> {
-        use crate::vm::vm::handlers::codec::{call_codec_method, CodecHandlerContext};
-        let ctx = CodecHandlerContext {
-            gc: &self.gc,
-        };
-
-        // Push args back onto stack so the handler can pop them
-        let arg_count = args.len();
-        for arg in args {
-            stack.push(arg)?;
-        }
-
-        call_codec_method(&ctx, stack, method_id, arg_count)
-    }
 }

@@ -948,6 +948,12 @@ pub mod path {
     pub const SEP: u16 = 0x6009;
     /// `path.delimiter()` - Path list delimiter (":" or ";")
     pub const DELIMITER: u16 = 0x600A;
+
+    // ── Utilities (0x600B-0x600C) ──
+    /// `path.stripExt(p)` - Remove extension from path
+    pub const STRIP_EXT: u16 = 0x600B;
+    /// `path.withExt(p, ext)` - Replace extension
+    pub const WITH_EXT: u16 = 0x600C;
 }
 
 /// Check if a method ID is a path method (std:path)

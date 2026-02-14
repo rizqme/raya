@@ -331,6 +331,10 @@ pub const PATH_CWD: u16 = 0x6008;
 pub const PATH_SEP: u16 = 0x6009;
 /// path.delimiter() - Path list delimiter
 pub const PATH_DELIMITER: u16 = 0x600A;
+/// path.stripExt(p) - Remove extension
+pub const PATH_STRIP_EXT: u16 = 0x600B;
+/// path.withExt(p, ext) - Replace extension
+pub const PATH_WITH_EXT: u16 = 0x600C;
 
 // ============================================================================
 // Codec (0x70xx) - std:codec module
@@ -699,6 +703,8 @@ pub fn native_name(id: u16) -> &'static str {
         PATH_CWD => "path.cwd",
         PATH_SEP => "path.sep",
         PATH_DELIMITER => "path.delimiter",
+        PATH_STRIP_EXT => "path.stripExt",
+        PATH_WITH_EXT => "path.withExt",
 
         // Codec
         UTF8_ENCODE => "Utf8.encode",

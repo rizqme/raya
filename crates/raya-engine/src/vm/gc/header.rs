@@ -2,7 +2,7 @@
 //!
 //! Every heap-allocated object has a header that stores metadata for the GC.
 
-use crate::vm::vm::VmContextId;
+use crate::vm::interpreter::VmContextId;
 use std::any::TypeId;
 
 /// GC header stored before each allocated object

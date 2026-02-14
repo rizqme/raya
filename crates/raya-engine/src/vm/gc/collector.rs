@@ -8,7 +8,7 @@ use super::ptr::GcPtr;
 use super::roots::RootSet;
 use crate::vm::types::TypeRegistry;
 use crate::vm::value::Value;
-use crate::vm::vm::VmContextId;
+use crate::vm::interpreter::VmContextId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

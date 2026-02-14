@@ -1,10 +1,10 @@
 //! Worker thread that executes Tasks
 //!
 //! Workers pick up tasks from the global injector or steal from other workers,
-//! then execute them using the TaskInterpreter for proper cooperative scheduling.
+//! then execute them using the Interpreter for proper cooperative scheduling.
 
 use crate::vm::scheduler::{SuspendReason, Task, TaskState};
-use crate::vm::vm::{ExecutionResult, SharedVmState, TaskInterpreter};
+use crate::vm::interpreter::{ExecutionResult, SharedVmState, Interpreter};
 use crossbeam_deque::{Injector, Stealer, Worker as CWorker};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -103,8 +103,8 @@ impl Worker {
             // Record start time for preemption monitoring (like Go)
             task.set_start_time(Instant::now());
 
-            // Create TaskInterpreter with shared state
-            let mut interpreter = TaskInterpreter::new(
+            // Create Interpreter with shared state
+            let mut interpreter = Interpreter::new(
                 &state.gc,
                 &state.classes,
                 &state.mutex_registry,
@@ -139,7 +139,7 @@ impl Worker {
                     match reason {
                         SuspendReason::AwaitTask(awaited_id) => {
                             // The awaited task will wake this task when it completes
-                            // This is already set up in the TaskInterpreter (add_waiter)
+                            // This is already set up in the Interpreter (add_waiter)
                             #[cfg(debug_assertions)]
                             eprintln!(
                                 "Worker {}: Task {} suspended awaiting task {:?}",
@@ -322,7 +322,7 @@ mod tests {
     use super::*;
     use crate::vm::scheduler::{Task, TaskId};
     use crate::vm::value::Value;
-    use crate::vm::vm::SafepointCoordinator;
+    use crate::vm::interpreter::SafepointCoordinator;
     use crossbeam_deque::Injector;
     use parking_lot::RwLock;
     use crate::compiler::{Function, Module, Opcode};

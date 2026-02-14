@@ -627,7 +627,7 @@ pub fn call_string_method(
             Ok(())
         }
         _ => Err(VmError::RuntimeError(format!(
-            "String method {:#06x} not yet implemented in TaskInterpreter",
+            "String method {:#06x} not yet implemented in Interpreter",
             method_id
         ))),
     }

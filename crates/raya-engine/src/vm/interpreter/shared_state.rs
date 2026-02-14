@@ -11,7 +11,7 @@ use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState, TimerThrea
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
-use crate::vm::vm::{ClassRegistry, SafepointCoordinator};
+use crate::vm::interpreter::{ClassRegistry, SafepointCoordinator};
 use crate::vm::{VmError, VmResult};
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};

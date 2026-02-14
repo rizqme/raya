@@ -45,7 +45,7 @@ use crate::vm::reflect::{
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::vm::vm::ClassRegistry;
+use crate::vm::interpreter::ClassRegistry;
 
 /// Context needed for reflect method execution
 pub struct ReflectHandlerContext<'a> {
@@ -1238,7 +1238,7 @@ pub fn call_reflect_method(
 
         reflect::INVOKE | reflect::INVOKE_ASYNC | reflect::INVOKE_STATIC => {
             // These require VM execution context to call methods
-            // TODO: Implement once TaskInterpreter context is available to handlers
+            // TODO: Implement once Interpreter context is available to handlers
             return Err(VmError::RuntimeError(format!(
                 "Dynamic method invocation ({}) requires VM execution context - use direct method calls instead",
                 match method_id {

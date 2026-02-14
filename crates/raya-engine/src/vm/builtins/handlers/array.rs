@@ -726,7 +726,7 @@ pub fn call_array_method(
             Ok(())
         }
         _ => Err(VmError::RuntimeError(format!(
-            "Array method {:#06x} not yet implemented in TaskInterpreter",
+            "Array method {:#06x} not yet implemented in Interpreter",
             method_id
         ))),
     }

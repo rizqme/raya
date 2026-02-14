@@ -26,7 +26,9 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 #![allow(ambiguous_wide_pointer_comparisons)]
 
+pub mod abi;
 pub mod builtin;
+pub mod builtins;
 pub mod ffi;
 pub mod gc;
 pub mod json;
@@ -40,9 +42,16 @@ pub mod stack;
 pub mod sync;
 pub mod types;
 pub mod value;
-pub mod vm;
+pub mod interpreter;
 
+pub use abi::{
+    array_allocate, array_get, array_length, buffer_allocate, buffer_read_bytes, class_get_info,
+    object_allocate, object_class_id, object_get_field, object_set_field, string_allocate,
+    string_read, task_cancel, task_is_done, task_spawn, AbiResult, ClassInfo, NativeContext,
+    NativeValue,
+};
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
+pub use native_handler::{NativeCallResult, NativeHandler, NoopNativeHandler};
 pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
@@ -50,8 +59,7 @@ pub use stack::{CallFrame, Stack, StackStats};
 pub use sync::{Mutex, MutexError, MutexId, MutexRegistry};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
-pub use native_handler::{NativeCallResult, NativeHandler, NoopNativeHandler};
-pub use vm::{
+pub use interpreter::{
     ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
     VmOptions,
 };
