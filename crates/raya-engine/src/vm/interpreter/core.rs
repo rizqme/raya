@@ -4846,7 +4846,10 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Execute a nested function call
-    fn execute_nested_function(
+    ///
+    /// This method is accessible within the interpreter module for use by
+    /// ExecutionContext implementations.
+    pub(super) fn execute_nested_function(
         &mut self,
         task: &Arc<Task>,
         func_index: usize,

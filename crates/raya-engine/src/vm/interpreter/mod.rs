@@ -4,11 +4,13 @@ mod capabilities;
 mod class_registry;
 mod context;
 mod core;
+mod exec_context;
 mod execution;
 mod lifecycle;
 mod marshal;
 mod module_registry;
 mod native_module_registry;
+pub mod opcodes;
 mod safepoint;
 mod shared_state;
 mod vm_facade;
@@ -20,7 +22,8 @@ pub use context::{
     ContextRegistry, ResourceCounters, ResourceLimits, VmContext, VmContextId, VmOptions,
 };
 pub use core::Interpreter;
-pub use execution::{ExecutionResult, OpcodeResult};
+pub use exec_context::{AsyncContext, ExecutionContext, SyncContext};
+pub use execution::{ControlFlow, ExecutionResult, OpcodeResult};
 pub use lifecycle::{
     ContextSnapshot, FrameSnapshot, TaskSnapshot, Vm as InnerVm, VmError, VmSnapshot, VmStats,
 };

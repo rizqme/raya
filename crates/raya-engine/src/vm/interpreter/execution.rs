@@ -103,3 +103,83 @@ impl OpcodeResult {
         OpcodeResult::Error(e)
     }
 }
+
+// ============================================================================
+// ControlFlow - New unified opcode execution result (Phase 1)
+// ============================================================================
+
+/// Control flow directive from opcode execution
+///
+/// This enum represents the result of executing a single opcode in the
+/// unified dispatcher. It replaces `OpcodeResult` and is used by both
+/// async and sync execution contexts.
+///
+/// # Differences from OpcodeResult
+///
+/// - Adds `Jump` variant for control flow opcodes
+/// - Adds `Exception` variant for exception handling
+/// - Uses `Result<ControlFlow, VmError>` instead of embedding errors
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// fn handle_iadd<C: ExecutionContext>(ctx: &mut C) -> Result<ControlFlow, VmError> {
+///     let stack = ctx.stack_mut();
+///     let b = stack.pop()?.as_i32()?;
+///     let a = stack.pop()?.as_i32()?;
+///     stack.push(Value::i32(a.wrapping_add(b)))?;
+///     Ok(ControlFlow::Continue)
+/// }
+/// ```
+#[derive(Debug)]
+pub enum ControlFlow {
+    /// Continue to next instruction
+    Continue,
+
+    /// Suspend execution with given reason
+    ///
+    /// Only valid in async contexts. Sync contexts will return an error
+    /// if they try to suspend.
+    Suspend(SuspendReason),
+
+    /// Return from current function with a value
+    Return(Value),
+
+    /// Jump to a specific instruction offset
+    ///
+    /// Used by Jump, JumpIf, JumpIfNot opcodes.
+    Jump(usize),
+
+    /// Exception was thrown
+    ///
+    /// The value is the exception object. The interpreter will search for
+    /// an exception handler or propagate to the caller.
+    Exception(Value),
+}
+
+impl ControlFlow {
+    /// Create a continue control flow
+    pub fn cont() -> Self {
+        ControlFlow::Continue
+    }
+
+    /// Create a suspend control flow
+    pub fn suspend(reason: SuspendReason) -> Self {
+        ControlFlow::Suspend(reason)
+    }
+
+    /// Create a return control flow
+    pub fn ret(value: Value) -> Self {
+        ControlFlow::Return(value)
+    }
+
+    /// Create a jump control flow
+    pub fn jump(offset: usize) -> Self {
+        ControlFlow::Jump(offset)
+    }
+
+    /// Create an exception control flow
+    pub fn exception(value: Value) -> Self {
+        ControlFlow::Exception(value)
+    }
+}
