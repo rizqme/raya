@@ -27,10 +27,13 @@ impl ConstantFolder {
     }
 
     /// Fold constants in a function
+    ///
+    /// Each block gets its own fresh constants map. We do NOT propagate
+    /// constants across block boundaries because that's unsound in the
+    /// presence of loops (back-edges can redefine registers).
     fn fold_function(&self, func: &mut IrFunction) {
-        let mut constants = FxHashMap::default();
-
         for block in &mut func.blocks {
+            let mut constants = FxHashMap::default();
             self.fold_block(block, &mut constants);
         }
     }

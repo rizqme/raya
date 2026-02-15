@@ -1074,6 +1074,23 @@ impl<'a> Lowerer<'a> {
                 lookup_builtin_method(obj_type_id, method_name).unwrap_or(0)
             };
 
+            // Array callback methods are inlined as compiler intrinsics
+            // instead of emitting CallMethod (which would need nested execution)
+            const ARRAY_CALLBACK_METHODS: &[u16] = &[
+                builtin_array::MAP,
+                builtin_array::FILTER,
+                builtin_array::REDUCE,
+                builtin_array::FOR_EACH,
+                builtin_array::FIND,
+                builtin_array::FIND_INDEX,
+                builtin_array::SOME,
+                builtin_array::EVERY,
+                builtin_array::SORT,
+            ];
+            if ARRAY_CALLBACK_METHODS.contains(&method_id) {
+                return self.lower_array_intrinsic(dest, method_id, object, args);
+            }
+
             self.emit(IrInstr::CallMethod {
                 dest: Some(dest.clone()),
                 object,
@@ -1090,6 +1107,1044 @@ impl<'a> Lowerer<'a> {
             dest: Some(dest.clone()),
             closure,
             args,
+        });
+        dest
+    }
+
+    /// Lower array callback methods as inline loops (compiler intrinsics).
+    ///
+    /// Instead of emitting CallMethod that requires nested execution in the VM,
+    /// we emit the iteration loop directly with CallClosure for the callback.
+    /// The callback executes on the main interpreter stack via normal frame push/pop.
+    fn lower_array_intrinsic(
+        &mut self,
+        dest: Register,
+        method_id: u16,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        match method_id {
+            builtin_array::MAP => self.lower_array_map(dest, array, args),
+            builtin_array::FILTER => self.lower_array_filter(dest, array, args),
+            builtin_array::FOR_EACH => self.lower_array_foreach(dest, array, args),
+            builtin_array::REDUCE => self.lower_array_reduce(dest, array, args),
+            builtin_array::FIND => self.lower_array_find(dest, array, args),
+            builtin_array::FIND_INDEX => self.lower_array_find_index(dest, array, args),
+            builtin_array::SOME => self.lower_array_some(dest, array, args),
+            builtin_array::EVERY => self.lower_array_every(dest, array, args),
+            builtin_array::SORT => self.lower_array_sort(dest, array, args),
+            _ => unreachable!("Not an array callback method: 0x{:04X}", method_id),
+        }
+    }
+
+    /// Helper: emit integer constant into a register
+    fn emit_i32_const(&mut self, value: i32) -> Register {
+        let reg = self.alloc_register(TypeId::new(0)); // number type
+        self.emit(IrInstr::Assign {
+            dest: reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(value)),
+        });
+        reg
+    }
+
+    /// Helper: emit boolean constant into a register
+    fn emit_bool_const(&mut self, value: bool) -> Register {
+        let reg = self.alloc_register(TypeId::new(2)); // boolean type
+        self.emit(IrInstr::Assign {
+            dest: reg.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(value)),
+        });
+        reg
+    }
+
+    /// Helper: emit null constant into a register
+    fn emit_null_const(&mut self) -> Register {
+        let reg = self.alloc_register(TypeId::new(3)); // null type
+        self.emit(IrInstr::Assign {
+            dest: reg.clone(),
+            value: IrValue::Constant(IrConstant::Null),
+        });
+        reg
+    }
+
+    /// Helper: create a new block and switch to it
+    fn enter_new_block(&mut self, label: &str) -> crate::compiler::ir::BasicBlockId {
+        let block = self.alloc_block();
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(block, label));
+        self.current_block = block;
+        block
+    }
+
+    // arr.map(callback) → inline loop with CallClosure
+    fn lower_array_map(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("map requires a callback argument");
+
+        // Get array length
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        // Create result array
+        let result = self.alloc_register(array.ty);
+        self.emit(IrInstr::ArrayLiteral {
+            dest: result.clone(),
+            elements: vec![],
+            elem_ty: TypeId::new(0),
+        });
+
+        // i = 0
+        let i = self.emit_i32_const(0);
+
+        // Allocate blocks
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        // Jump to header
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header: if i < len → body, else → exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "map.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body: elem = arr[i]; mapped = callback(elem); result.push(mapped); i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "map.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let mapped = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(mapped.clone()),
+            closure: callback.clone(),
+            args: vec![elem],
+        });
+
+        self.emit(IrInstr::ArrayPush {
+            array: result.clone(),
+            element: mapped,
+        });
+
+        // i = i + 1
+        let one = self.emit_i32_const(1);
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit block
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "map.exit"));
+        self.current_block = exit_block;
+
+        // Copy result to dest
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.filter(predicate) → inline loop with conditional push
+    fn lower_array_filter(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("filter requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let result = self.alloc_register(array.ty);
+        self.emit(IrInstr::ArrayLiteral {
+            dest: result.clone(),
+            elements: vec![],
+            elem_ty: TypeId::new(0),
+        });
+
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let keep_block = self.alloc_block();
+        let skip_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "filter.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body: test = callback(elem)
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "filter.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let test = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(test.clone()),
+            closure: callback.clone(),
+            args: vec![elem.clone()],
+        });
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: test,
+            then_block: keep_block,
+            else_block: skip_block,
+        });
+
+        // Keep: push elem to result
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(keep_block, "filter.keep"));
+        self.current_block = keep_block;
+        self.emit(IrInstr::ArrayPush {
+            array: result.clone(),
+            element: elem,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(skip_block));
+
+        // Skip: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(skip_block, "filter.skip"));
+        self.current_block = skip_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "filter.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.forEach(callback) → inline loop, discard results
+    fn lower_array_foreach(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("forEach requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "forEach.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "forEach.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        self.emit(IrInstr::CallClosure {
+            dest: None,
+            closure: callback.clone(),
+            args: vec![elem],
+        });
+
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "forEach.exit"));
+        self.current_block = exit_block;
+        dest
+    }
+
+    // arr.reduce(callback, initial) → accumulator loop
+    fn lower_array_reduce(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let mut args_iter = args.into_iter();
+        let callback = args_iter.next().expect("reduce requires a callback argument");
+        let initial = args_iter.next();
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        // Set up accumulator and start index based on whether initial value provided
+        let acc = self.alloc_register(TypeId::new(0));
+        let i = self.alloc_register(TypeId::new(0));
+
+        if let Some(init_val) = initial {
+            // acc = initial, i = 0
+            self.emit(IrInstr::Assign {
+                dest: acc.clone(),
+                value: IrValue::Register(init_val),
+            });
+            self.emit(IrInstr::Assign {
+                dest: i.clone(),
+                value: IrValue::Constant(IrConstant::I32(0)),
+            });
+        } else {
+            // acc = arr[0], i = 1
+            let zero = self.emit_i32_const(0);
+            self.emit(IrInstr::LoadElement {
+                dest: acc.clone(),
+                array: array.clone(),
+                index: zero,
+            });
+            self.emit(IrInstr::Assign {
+                dest: i.clone(),
+                value: IrValue::Constant(IrConstant::I32(1)),
+            });
+        }
+
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "reduce.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body: acc = callback(acc, elem)
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "reduce.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        self.emit(IrInstr::CallClosure {
+            dest: Some(acc.clone()),
+            closure: callback.clone(),
+            args: vec![acc.clone(), elem],
+        });
+
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "reduce.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(acc),
+        });
+        dest
+    }
+
+    // arr.find(predicate) → returns first matching element or null
+    fn lower_array_find(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("find requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let result = self.emit_null_const();
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let found_block = self.alloc_block();
+        let next_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "find.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "find.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let test = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(test.clone()),
+            closure: callback.clone(),
+            args: vec![elem.clone()],
+        });
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: test,
+            then_block: found_block,
+            else_block: next_block,
+        });
+
+        // Found
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(found_block, "find.found"));
+        self.current_block = found_block;
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Register(elem),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(exit_block));
+
+        // Next: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(next_block, "find.next"));
+        self.current_block = next_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "find.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.findIndex(predicate) → returns first matching index or -1
+    fn lower_array_find_index(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("findIndex requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let result = self.emit_i32_const(-1);
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let found_block = self.alloc_block();
+        let next_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "findIndex.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "findIndex.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let test = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(test.clone()),
+            closure: callback.clone(),
+            args: vec![elem],
+        });
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: test,
+            then_block: found_block,
+            else_block: next_block,
+        });
+
+        // Found: result = i
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(found_block, "findIndex.found"));
+        self.current_block = found_block;
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Register(i.clone()),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(exit_block));
+
+        // Next: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(next_block, "findIndex.next"));
+        self.current_block = next_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "findIndex.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.some(predicate) → returns true if any element matches
+    fn lower_array_some(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("some requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let result = self.emit_bool_const(false);
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let found_block = self.alloc_block();
+        let next_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "some.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "some.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let test = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(test.clone()),
+            closure: callback.clone(),
+            args: vec![elem],
+        });
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: test,
+            then_block: found_block,
+            else_block: next_block,
+        });
+
+        // Found: result = true
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(found_block, "some.found"));
+        self.current_block = found_block;
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(true)),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(exit_block));
+
+        // Next: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(next_block, "some.next"));
+        self.current_block = next_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "some.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.every(predicate) → returns false if any element fails
+    fn lower_array_every(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let callback = args.into_iter().next().expect("every requires a callback argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let result = self.emit_bool_const(true);
+        let i = self.emit_i32_const(0);
+        let one = self.emit_i32_const(1);
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let failed_block = self.alloc_block();
+        let next_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "every.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "every.body"));
+        self.current_block = body_block;
+
+        let elem = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: elem.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let test = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(test.clone()),
+            closure: callback.clone(),
+            args: vec![elem],
+        });
+
+        // Branch: if test → next, else → failed
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: test,
+            then_block: next_block,
+            else_block: failed_block,
+        });
+
+        // Failed: result = false
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(failed_block, "every.failed"));
+        self.current_block = failed_block;
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(false)),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(exit_block));
+
+        // Next: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(next_block, "every.next"));
+        self.current_block = next_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "every.exit"));
+        self.current_block = exit_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(result),
+        });
+        dest
+    }
+
+    // arr.sort(compareFn) → bubble sort in-place, returns array
+    fn lower_array_sort(
+        &mut self,
+        dest: Register,
+        array: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        let compare_fn = args.into_iter().next().expect("sort requires a compareFn argument");
+
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array.clone(),
+        });
+
+        let one = self.emit_i32_const(1);
+        let zero_f64 = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::Assign {
+            dest: zero_f64.clone(),
+            value: IrValue::Constant(IrConstant::F64(0.0)),
+        });
+
+        // limit = len - 1
+        let limit = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::BinaryOp {
+            dest: limit.clone(),
+            op: BinaryOp::Sub,
+            left: len.clone(),
+            right: one.clone(),
+        });
+
+        let swapped = self.emit_bool_const(false);
+        let i = self.emit_i32_const(0);
+
+        let outer_header = self.alloc_block();
+        let inner_header = self.alloc_block();
+        let inner_body = self.alloc_block();
+        let swap_block = self.alloc_block();
+        let no_swap_block = self.alloc_block();
+        let inner_exit = self.alloc_block();
+        let done_block = self.alloc_block();
+
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(outer_header));
+
+        // Outer header: swapped = false, i = 0
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(outer_header, "sort.outer"));
+        self.current_block = outer_header;
+        self.emit(IrInstr::Assign {
+            dest: swapped.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(false)),
+        });
+        self.emit(IrInstr::Assign {
+            dest: i.clone(),
+            value: IrValue::Constant(IrConstant::I32(0)),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(inner_header));
+
+        // Inner header: if i < limit → inner_body, else → inner_exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(inner_header, "sort.inner.header"));
+        self.current_block = inner_header;
+        let inner_cond = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: inner_cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: limit.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: inner_cond,
+            then_block: inner_body,
+            else_block: inner_exit,
+        });
+
+        // Inner body: compare arr[i] and arr[i+1]
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(inner_body, "sort.inner.body"));
+        self.current_block = inner_body;
+
+        let j = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::BinaryOp {
+            dest: j.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one.clone(),
+        });
+
+        let a = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: a.clone(),
+            array: array.clone(),
+            index: i.clone(),
+        });
+
+        let b = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: b.clone(),
+            array: array.clone(),
+            index: j.clone(),
+        });
+
+        let cmp = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::CallClosure {
+            dest: Some(cmp.clone()),
+            closure: compare_fn.clone(),
+            args: vec![a.clone(), b.clone()],
+        });
+
+        let should_swap = self.alloc_register(TypeId::new(2));
+        self.emit(IrInstr::BinaryOp {
+            dest: should_swap.clone(),
+            op: BinaryOp::Greater,
+            left: cmp,
+            right: zero_f64.clone(),
+        });
+
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: should_swap,
+            then_block: swap_block,
+            else_block: no_swap_block,
+        });
+
+        // Swap: arr[i] = b, arr[j] = a, swapped = true
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(swap_block, "sort.swap"));
+        self.current_block = swap_block;
+        self.emit(IrInstr::StoreElement {
+            array: array.clone(),
+            index: i.clone(),
+            value: b,
+        });
+        self.emit(IrInstr::StoreElement {
+            array: array.clone(),
+            index: j.clone(),
+            value: a,
+        });
+        self.emit(IrInstr::Assign {
+            dest: swapped.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(true)),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(no_swap_block));
+
+        // No swap: i++
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(no_swap_block, "sort.no_swap"));
+        self.current_block = no_swap_block;
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(inner_header));
+
+        // Inner exit: if swapped → outer_header, else → done
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(inner_exit, "sort.inner.exit"));
+        self.current_block = inner_exit;
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond: swapped.clone(),
+            then_block: outer_header,
+            else_block: done_block,
+        });
+
+        // Done: dest = arr
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(done_block, "sort.done"));
+        self.current_block = done_block;
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(array),
         });
         dest
     }

@@ -1442,7 +1442,6 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Throw => {
-                eprintln!("[DEBUG] Throw opcode in execute_opcode (main)");
                 let exception = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
@@ -1546,7 +1545,6 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[DEBUG] Closure call returned error: {:?}", e);
                             return OpcodeResult::Error(e);
                         }
                     }
@@ -1560,7 +1558,6 @@ impl<'a> Interpreter<'a> {
                             }
                         }
                         Err(e) => {
-                            eprintln!("[DEBUG] Function call returned error: {:?}", e);
                             return OpcodeResult::Error(e);
                         }
                     }
@@ -1927,6 +1924,47 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
                 if let Err(e) = stack.push(Value::i32(arr.len() as i32)) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::ArrayPush => {
+                // Stack: [value, array] -> [] (mutates array in-place)
+                let element = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let arr_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                if !arr_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError("Expected array".to_string()));
+                }
+
+                let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+                arr.push(element);
+                OpcodeResult::Continue
+            }
+
+            Opcode::ArrayPop => {
+                // Stack: [array] -> [popped_element]
+                let arr_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                if !arr_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError("Expected array".to_string()));
+                }
+
+                let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+                let value = arr.pop().unwrap_or(Value::null());
+                if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -6474,7 +6512,6 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 Opcode::Throw => {
-                    eprintln!("[DEBUG] Throw opcode in execute_nested_function");
                     // Pop exception value from stack
                     let exception = call_stack.pop()?;
 
@@ -6493,9 +6530,6 @@ impl<'a> Interpreter<'a> {
                                     || class.name == "SyntaxError"
                                     || class.name == "ChannelClosedError"
                                     || class.name == "AssertionError";
-
-                                eprintln!("[DEBUG] Throw in nested: class={}, is_error={}, fields_len={}",
-                                    class.name, is_error, obj.fields.len());
 
                                 if is_error && obj.fields.len() >= 3 {
                                     // Get error name and message
@@ -6521,8 +6555,6 @@ impl<'a> Interpreter<'a> {
                                     let stack_trace =
                                         task.build_stack_trace(&error_name, &error_message);
 
-                                    eprintln!("[DEBUG] Built stack trace: {}", stack_trace);
-
                                     // Allocate stack trace string
                                     let raya_string = RayaString::new(stack_trace);
                                     let gc_ptr = self.gc.lock().allocate(raya_string);
@@ -6532,12 +6564,8 @@ impl<'a> Interpreter<'a> {
                                         )
                                     };
 
-                                    eprintln!("[DEBUG] Setting field[2], is_ptr before: {}", obj.fields[2].is_ptr());
-
                                     // Set stack field (index 2)
                                     obj.fields[2] = stack_value;
-
-                                    eprintln!("[DEBUG] Set field[2], is_ptr after: {}", obj.fields[2].is_ptr());
                                 }
                             }
                         }
@@ -6951,104 +6979,9 @@ impl<'a> Interpreter<'a> {
                 stack.push(value)?;
                 Ok(())
             }
-            array::SORT => {
-                // sort(compareFn?): sort array
-                let callback_val = if arg_count >= 1 { Some(stack.pop()?) } else { None };
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
-
-                if let Some(cb) = callback_val {
-                    // Sort with custom comparator
-                    if !cb.is_ptr() {
-                        return Err(VmError::TypeError("Expected callback function".to_string()));
-                    }
-                    let closure_ptr = unsafe { cb.as_ptr::<Closure>() };
-                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                    let func_index = closure.func_id();
-
-                    // We need to implement a sort that calls the callback
-                    // For now, just use a simple bubble sort
-                    task.push_closure(cb);
-                    let n = arr.len();
-                    for i in 0..n {
-                        for j in 0..n - i - 1 {
-                            let a = arr.elements[j];
-                            let b = arr.elements[j + 1];
-                            let args = vec![a, b];
-                            let result = self.execute_nested_function(task, func_index, args, module)?;
-                            let cmp = result.as_i32().unwrap_or(0);
-                            if cmp > 0 {
-                                arr.elements.swap(j, j + 1);
-                            }
-                        }
-                    }
-                    task.pop_closure();
-                } else {
-                    // Default sort (numeric/string comparison)
-                    arr.elements.sort_by(|a, b| {
-                        if let (Some(ai), Some(bi)) = (a.as_i32(), b.as_i32()) {
-                            ai.cmp(&bi)
-                        } else if let (Some(af), Some(bf)) = (a.as_f64(), b.as_f64()) {
-                            af.partial_cmp(&bf).unwrap_or(std::cmp::Ordering::Equal)
-                        } else {
-                            std::cmp::Ordering::Equal
-                        }
-                    });
-                }
-
-                stack.push(array_val)?;
-                Ok(())
-            }
-            array::REDUCE => {
-                // reduce(callback, initialValue?): reduce to single value
-                if arg_count < 1 || arg_count > 2 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.reduce expects 1-2 arguments, got {}", arg_count
-                    )));
-                }
-
-                let initial_value = if arg_count >= 2 { Some(stack.pop()?) } else { None };
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                let (start_idx, mut accumulator) = if let Some(init) = initial_value {
-                    (0, init)
-                } else if !arr.elements.is_empty() {
-                    (1, arr.elements[0])
-                } else {
-                    return Err(VmError::RuntimeError("Reduce of empty array with no initial value".to_string()));
-                };
-
-                task.push_closure(callback_val);
-                for i in start_idx..arr.len() {
-                    let elem = arr.elements[i];
-                    let args = vec![accumulator, elem];
-                    accumulator = self.execute_nested_function(task, func_index, args, module)?;
-                }
-                task.pop_closure();
-
-                stack.push(accumulator)?;
-                Ok(())
-            }
+            // NOTE: SORT, REDUCE, FILTER, MAP, FIND, FIND_INDEX, FOR_EACH, EVERY, SOME
+            // are now compiled as inline loops by the compiler (see lower_array_intrinsic in expr.rs)
+            // and never reach this handler at runtime.
             array::JOIN => {
                 // join(separator?) - arg_count is 0 or 1
                 let sep = if arg_count >= 1 {
@@ -7093,263 +7026,9 @@ impl<'a> Interpreter<'a> {
                 stack.push(value)?;
                 Ok(())
             }
-            array::FILTER => {
-                // filter(callback): array method with callback
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.filter expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                // Filter elements
-                let mut result_arr = Array::new(0, 0);
-                task.push_closure(callback_val);
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    if result.is_truthy() {
-                        result_arr.push(*elem);
-                    }
-                }
-                task.pop_closure();
-
-                let gc_ptr = self.gc.lock().allocate(result_arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
-                stack.push(value)?;
-                Ok(())
-            }
-            array::MAP => {
-                // map(callback): transform each element
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.map expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                let mut result_arr = Array::new(0, 0);
-                task.push_closure(callback_val);
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    result_arr.push(result);
-                }
-                task.pop_closure();
-
-                let gc_ptr = self.gc.lock().allocate(result_arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
-                stack.push(value)?;
-                Ok(())
-            }
-            array::FIND => {
-                // find(callback): find first element matching predicate
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.find expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                task.push_closure(callback_val);
-                let mut found = Value::null();
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    if result.is_truthy() {
-                        found = *elem;
-                        break;
-                    }
-                }
-                task.pop_closure();
-                stack.push(found)?;
-                Ok(())
-            }
-            array::FIND_INDEX => {
-                // findIndex(callback): find index of first element matching predicate
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.findIndex expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                task.push_closure(callback_val);
-                let mut found_index: i32 = -1;
-                for (i, elem) in arr.elements.iter().enumerate() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    if result.is_truthy() {
-                        found_index = i as i32;
-                        break;
-                    }
-                }
-                task.pop_closure();
-                stack.push(Value::i32(found_index))?;
-                Ok(())
-            }
-            array::FOR_EACH => {
-                // forEach(callback): execute callback for each element
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.forEach expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                task.push_closure(callback_val);
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let _ = self.execute_nested_function(task, func_index, args, module)?;
-                }
-                task.pop_closure();
-                stack.push(Value::null())?;
-                Ok(())
-            }
-            array::EVERY => {
-                // every(callback): check if all elements match predicate
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.every expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                task.push_closure(callback_val);
-                let mut all_match = true;
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    if !result.is_truthy() {
-                        all_match = false;
-                        break;
-                    }
-                }
-                task.pop_closure();
-                stack.push(Value::bool(all_match))?;
-                Ok(())
-            }
-            array::SOME => {
-                // some(callback): check if any element matches predicate
-                if arg_count != 1 {
-                    return Err(VmError::RuntimeError(format!(
-                        "Array.some expects 1 argument, got {}", arg_count
-                    )));
-                }
-                let callback_val = stack.pop()?;
-                let array_val = stack.pop()?;
-
-                if !array_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected array".to_string()));
-                }
-                if !callback_val.is_ptr() {
-                    return Err(VmError::TypeError("Expected callback function".to_string()));
-                }
-
-                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
-                let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let closure_ptr = unsafe { callback_val.as_ptr::<Closure>() };
-                let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                let func_index = closure.func_id();
-
-                task.push_closure(callback_val);
-                let mut any_match = false;
-                for elem in arr.elements.iter() {
-                    let args = vec![*elem];
-                    let result = self.execute_nested_function(task, func_index, args, module)?;
-                    if result.is_truthy() {
-                        any_match = true;
-                        break;
-                    }
-                }
-                task.pop_closure();
-                stack.push(Value::bool(any_match))?;
-                Ok(())
-            }
+            // NOTE: FILTER, MAP, FIND, FIND_INDEX, FOR_EACH, EVERY, SOME, SORT, REDUCE
+            // are now compiled as inline loops by the compiler (see lower_array_intrinsic in expr.rs)
+            // and never reach this handler at runtime.
             _ => Err(VmError::RuntimeError(format!(
                 "Array method {:#06x} not yet implemented in Interpreter",
                 method_id
