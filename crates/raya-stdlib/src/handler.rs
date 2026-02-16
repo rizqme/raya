@@ -35,11 +35,6 @@ impl NativeHandler for StdNativeHandler {
             // Path methods (0x6000-0x600C)
             return crate::path::call_path_method(ctx, id, args);
         }
-        if (0x7000..=0x71FF).contains(&id) {
-            // Codec methods (UTF-8: 0x7000-0x7003, Msgpack: 0x7010-0x7012, CBOR: 0x7020-0x7022, Proto: 0x7030-0x7031)
-            return crate::codec::call_codec_method(ctx, id, args);
-        }
-
         match id {
             // Logger methods (0x1000-0x1003)
             0x1000 => {

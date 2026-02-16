@@ -61,11 +61,30 @@ impl Worker {
     }
 
     /// Stop the worker thread
+    ///
+    /// Signals the worker to shut down and waits briefly for it to exit.
+    /// If the worker is still executing a task after the timeout, the thread
+    /// is detached (the Arc<SharedVmState> keeps shared state alive until exit).
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
 
         if let Some(handle) = self.handle.take() {
-            handle.join().expect("Failed to join worker thread");
+            // Wait up to 2 seconds for the worker to finish gracefully
+            let start = Instant::now();
+            let timeout = Duration::from_secs(2);
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    return;
+                }
+                if start.elapsed() > timeout {
+                    // Worker is stuck executing a task — detach it.
+                    // Arc<SharedVmState> keeps shared state alive until the thread exits.
+                    drop(handle);
+                    return;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
         }
     }
 
@@ -115,6 +134,7 @@ impl Worker {
                 &state.metadata,
                 &state.class_metadata,
                 &state.native_handler,
+                &state.resolved_natives,
             );
 
             // Execute task using the suspendable interpreter

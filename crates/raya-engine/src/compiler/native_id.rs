@@ -337,47 +337,6 @@ pub const PATH_STRIP_EXT: u16 = 0x600B;
 pub const PATH_WITH_EXT: u16 = 0x600C;
 
 // ============================================================================
-// Codec (0x70xx) - std:codec module
-// ============================================================================
-
-// ── Utf8 (0x7000-0x7003) ──
-/// Utf8.encode(text) - String to UTF-8 bytes
-pub const UTF8_ENCODE: u16 = 0x7000;
-/// Utf8.decode(bytes) - UTF-8 bytes to string
-pub const UTF8_DECODE: u16 = 0x7001;
-/// Utf8.isValid(bytes) - Check valid UTF-8
-pub const UTF8_IS_VALID: u16 = 0x7002;
-/// Utf8.byteLength(text) - Byte length of string
-pub const UTF8_BYTE_LENGTH: u16 = 0x7003;
-
-// ── Msgpack (0x7010-0x7012) ──
-/// Msgpack.encode<T>(obj) - Typed encode to MessagePack
-pub const MSGPACK_ENCODE_OBJECT: u16 = 0x7010;
-/// Msgpack.decode<T>(bytes) - Typed decode from MessagePack
-pub const MSGPACK_DECODE_OBJECT: u16 = 0x7011;
-/// Msgpack.encodedSize(bytes) - Buffer byte size
-pub const MSGPACK_ENCODED_SIZE: u16 = 0x7012;
-
-// ── CBOR (0x7020-0x7022) ──
-/// Cbor.encode<T>(obj) - Typed encode to CBOR
-pub const CBOR_ENCODE_OBJECT: u16 = 0x7020;
-/// Cbor.decode<T>(bytes) - Typed decode from CBOR
-pub const CBOR_DECODE_OBJECT: u16 = 0x7021;
-/// Cbor.diagnostic(bytes) - CBOR diagnostic notation
-pub const CBOR_DIAGNOSTIC: u16 = 0x7022;
-
-// ── Protobuf (0x7030-0x7031) ──
-/// Protobuf.encode<T>(obj) - Typed encode to Protobuf
-pub const PROTO_ENCODE_OBJECT: u16 = 0x7030;
-/// Protobuf.decode<T>(bytes) - Typed decode from Protobuf
-pub const PROTO_DECODE_OBJECT: u16 = 0x7031;
-
-// ── TypeSchema (0x7100) ──
-/// Create TypeSchema from compile-time field metadata
-/// Args: [field_count, field_name_1, json_key_1, proto_num_1, proto_type_1, ...]
-pub const TYPE_SCHEMA_CREATE: u16 = 0x7100;
-
-// ============================================================================
 // JSON (0x0Cxx)
 // ============================================================================
 
@@ -705,21 +664,6 @@ pub fn native_name(id: u16) -> &'static str {
         PATH_DELIMITER => "path.delimiter",
         PATH_STRIP_EXT => "path.stripExt",
         PATH_WITH_EXT => "path.withExt",
-
-        // Codec
-        UTF8_ENCODE => "Utf8.encode",
-        UTF8_DECODE => "Utf8.decode",
-        UTF8_IS_VALID => "Utf8.isValid",
-        UTF8_BYTE_LENGTH => "Utf8.byteLength",
-        MSGPACK_ENCODE_OBJECT => "Msgpack.encode",
-        MSGPACK_DECODE_OBJECT => "Msgpack.decode",
-        MSGPACK_ENCODED_SIZE => "Msgpack.encodedSize",
-        CBOR_ENCODE_OBJECT => "Cbor.encode",
-        CBOR_DECODE_OBJECT => "Cbor.decode",
-        CBOR_DIAGNOSTIC => "Cbor.diagnostic",
-        PROTO_ENCODE_OBJECT => "Protobuf.encode",
-        PROTO_DECODE_OBJECT => "Protobuf.decode",
-        TYPE_SCHEMA_CREATE => "TypeSchema.create",
 
         _ => "unknown",
     }

@@ -77,6 +77,9 @@ pub struct Interpreter<'a> {
 
     /// External native call handler (stdlib implementation)
     native_handler: &'a Arc<dyn NativeHandler>,
+
+    /// Resolved native functions for ModuleNativeCall dispatch
+    resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -92,6 +95,7 @@ impl<'a> Interpreter<'a> {
         metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
+        resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
     ) -> Self {
         Self {
             gc,
@@ -104,6 +108,7 @@ impl<'a> Interpreter<'a> {
             metadata,
             class_metadata,
             native_handler,
+            resolved_natives,
         }
     }
 
@@ -4035,48 +4040,6 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
 
-                    // Logger/Math/Crypto/Path/Codec native calls — dispatches to native handler
-                    id if crate::vm::builtin::is_logger_method(id)
-                        || crate::vm::builtin::is_math_method(id)
-                        || crate::vm::builtin::is_crypto_method(id)
-                        || crate::vm::builtin::is_path_method(id)
-                        || crate::vm::builtin::is_codec_method(id) => {
-                        use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
-                        use std::sync::Arc;
-
-                        // Create placeholder scheduler for NativeContext (task operations are stubbed)
-                        let placeholder_scheduler = Arc::new(Scheduler::new(1));
-                        let ctx = NativeContext::new(
-                            self.gc,
-                            self.classes,
-                            &placeholder_scheduler,
-                            task.id(),
-                        );
-
-                        // Convert arguments to NativeValue
-                        let native_args: Vec<NativeValue> = args.iter()
-                            .map(|v| NativeValue::from_value(*v))
-                            .collect();
-
-                        match self.native_handler.call(&ctx, id, &native_args) {
-                            NativeCallResult::Value(val) => {
-                                if let Err(e) = stack.push(val.into_value()) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
-                            }
-                            NativeCallResult::Unhandled => {
-                                return OpcodeResult::Error(VmError::RuntimeError(format!(
-                                    "Native call {:#06x} not handled by native handler",
-                                    id
-                                )));
-                            }
-                            NativeCallResult::Error(msg) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(msg));
-                            }
-                        }
-                    }
-
                     _ => {
                         // Check if this is a reflect method - pass args directly (don't push/pop)
                         if crate::vm::builtin::is_reflect_method(native_id) {
@@ -4094,19 +4057,70 @@ impl<'a> Interpreter<'a> {
                             }
                         }
 
-                        // Check if this is a time method (std:time)
-                        if crate::vm::builtin::is_time_method(native_id) {
-                            match self.call_time_method(&mut **stack, native_id, args) {
-                                Ok(()) => return OpcodeResult::Continue,
-                                Err(e) => return OpcodeResult::Error(e),
-                            }
-                        }
 
                         // Other native calls not yet implemented
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "NativeCall {:#06x} not yet implemented in Interpreter (args={})",
                             native_id, args.len()
                         )));
+                    }
+                }
+            }
+
+            Opcode::ModuleNativeCall => {
+                use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
+                use std::sync::Arc;
+
+                let local_idx = match Self::read_u16(code, ip) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let arg_count = match Self::read_u8(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Pop arguments
+                let mut args = Vec::with_capacity(arg_count);
+                for _ in 0..arg_count {
+                    match stack.pop() {
+                        Ok(v) => args.push(v),
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+                args.reverse();
+
+                // Create NativeContext for handler
+                let placeholder_scheduler = Arc::new(Scheduler::new(1));
+                let ctx = NativeContext::new(
+                    self.gc,
+                    self.classes,
+                    &placeholder_scheduler,
+                    task.id(),
+                );
+
+                // Convert arguments to NativeValue
+                let native_args: Vec<NativeValue> = args.iter()
+                    .map(|v| NativeValue::from_value(*v))
+                    .collect();
+
+                // Dispatch via resolved natives table (read lock - uncontended, nearly free)
+                let resolved = self.resolved_natives.read();
+                match resolved.call(local_idx, &ctx, &native_args) {
+                    NativeCallResult::Value(val) => {
+                        if let Err(e) = stack.push(val.into_value()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    NativeCallResult::Unhandled => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "ModuleNativeCall index {} unhandled",
+                            local_idx
+                        )));
+                    }
+                    NativeCallResult::Error(msg) => {
+                        return OpcodeResult::Error(VmError::RuntimeError(msg));
                     }
                 }
             }
@@ -6368,44 +6382,6 @@ impl<'a> Interpreter<'a> {
                             };
                             call_stack.push(arr_val)?;
                         }
-                        // Logger/Math/Crypto/Path/Codec native calls — dispatches to native handler
-                        id if crate::vm::builtin::is_logger_method(id as u16)
-                            || crate::vm::builtin::is_math_method(id as u16)
-                            || crate::vm::builtin::is_crypto_method(id as u16)
-                            || crate::vm::builtin::is_path_method(id as u16)
-                            || crate::vm::builtin::is_codec_method(id as u16) => {
-                            use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
-                            use std::sync::Arc;
-
-                            // Create placeholder scheduler for NativeContext (task operations are stubbed)
-                            let placeholder_scheduler = Arc::new(Scheduler::new(1));
-                            let ctx = NativeContext::new(
-                                self.gc,
-                                self.classes,
-                                &placeholder_scheduler,
-                                task.id(),
-                            );
-
-                            // Convert arguments to NativeValue
-                            let native_args: Vec<NativeValue> = args.iter()
-                                .map(|v| NativeValue::from_value(*v))
-                                .collect();
-
-                            match self.native_handler.call(&ctx, id as u16, &native_args) {
-                                NativeCallResult::Value(val) => {
-                                    call_stack.push(val.into_value())?;
-                                }
-                                NativeCallResult::Unhandled => {
-                                    return Err(VmError::RuntimeError(format!(
-                                        "Native call {:#06x} not handled by native handler",
-                                        id
-                                    )));
-                                }
-                                NativeCallResult::Error(msg) => {
-                                    return Err(VmError::RuntimeError(msg));
-                                }
-                            }
-                        }
                         // Reflect native calls (std:reflect) — dispatches directly via call_reflect_method
                         id if crate::vm::builtin::is_reflect_method(id as u16) => {
                             self.call_reflect_method(task, &mut call_stack, id as u16, args, module)?;
@@ -6413,10 +6389,6 @@ impl<'a> Interpreter<'a> {
                         // Runtime native calls (std:runtime) — dispatches directly via call_runtime_method
                         id if crate::vm::builtin::is_runtime_method(id as u16) => {
                             self.call_runtime_method(task, &mut call_stack, id as u16, args, module)?;
-                        }
-                        // Time native calls (std:time) — dispatches directly via call_time_method
-                        id if crate::vm::builtin::is_time_method(id as u16) => {
-                            self.call_time_method(&mut call_stack, id as u16, args)?;
                         }
                         _ => {
                             return Err(VmError::RuntimeError(format!(
@@ -6574,6 +6546,51 @@ impl<'a> Interpreter<'a> {
                     // Set exception and return error to propagate
                     task.set_exception(exception);
                     return Err(VmError::RuntimeError("throw".to_string()));
+                }
+                Opcode::ModuleNativeCall => {
+                    use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
+                    use std::sync::Arc;
+
+                    let local_idx = Self::read_u16(code, &mut ip)?;
+                    let arg_count = Self::read_u8(code, &mut ip)? as usize;
+
+                    // Pop arguments
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(call_stack.pop()?);
+                    }
+                    args.reverse();
+
+                    // Create NativeContext for handler
+                    let placeholder_scheduler = Arc::new(Scheduler::new(1));
+                    let ctx = NativeContext::new(
+                        self.gc,
+                        self.classes,
+                        &placeholder_scheduler,
+                        task.id(),
+                    );
+
+                    // Convert arguments to NativeValue
+                    let native_args: Vec<NativeValue> = args.iter()
+                        .map(|v| NativeValue::from_value(*v))
+                        .collect();
+
+                    // Dispatch via resolved natives table
+                    let resolved = self.resolved_natives.read();
+                    match resolved.call(local_idx, &ctx, &native_args) {
+                        NativeCallResult::Value(val) => {
+                            call_stack.push(val.into_value())?;
+                        }
+                        NativeCallResult::Unhandled => {
+                            return Err(VmError::RuntimeError(format!(
+                                "ModuleNativeCall index {} unhandled",
+                                local_idx
+                            )));
+                        }
+                        NativeCallResult::Error(msg) => {
+                            return Err(VmError::RuntimeError(msg));
+                        }
+                    }
                 }
                 _ => {
                     return Err(VmError::RuntimeError(format!(
@@ -10677,27 +10694,6 @@ impl<'a> Interpreter<'a> {
         }
 
         runtime_handler(&ctx, stack, method_id, arg_count)
-    }
-
-    /// Handle built-in crypto methods (std:crypto)
-    ///
-    /// Bridge between Interpreter's call convention (pre-popped args Vec)
-    /// and the crypto handler's stack-based convention.
-    fn call_time_method(
-        &mut self,
-        stack: &mut Stack,
-        method_id: u16,
-        args: Vec<Value>,
-    ) -> Result<(), VmError> {
-        use crate::vm::builtins::handlers::time::call_time_method;
-
-        // Push args back onto stack so the handler can pop them
-        let arg_count = args.len();
-        for arg in args {
-            stack.push(arg)?;
-        }
-
-        call_time_method(stack, method_id, arg_count)
     }
 
 }

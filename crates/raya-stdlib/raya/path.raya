@@ -1,82 +1,67 @@
 // Path - Standard path module
 // Usage: import path from "std:path";
 
-// Native call IDs (must match raya-engine/src/vm/builtin.rs)
-const PATH_JOIN: number = 0x6000;
-const PATH_NORMALIZE: number = 0x6001;
-const PATH_DIRNAME: number = 0x6002;
-const PATH_BASENAME: number = 0x6003;
-const PATH_EXTNAME: number = 0x6004;
-const PATH_IS_ABSOLUTE: number = 0x6005;
-const PATH_RESOLVE: number = 0x6006;
-const PATH_RELATIVE: number = 0x6007;
-const PATH_CWD: number = 0x6008;
-const PATH_SEP: number = 0x6009;
-const PATH_DELIMITER: number = 0x600A;
-const PATH_STRIP_EXT: number = 0x600B;
-const PATH_WITH_EXT: number = 0x600C;
-
 class Path {
     // ── Join & Normalize ──
 
     join(a: string, b: string): string {
-        return __NATIVE_CALL<string>(PATH_JOIN, a, b);
+        return __NATIVE_CALL<string>("path.join", a, b);
     }
 
     normalize(p: string): string {
-        return __NATIVE_CALL<string>(PATH_NORMALIZE, p);
+        return __NATIVE_CALL<string>("path.normalize", p);
     }
 
     // ── Components ──
 
     dirname(p: string): string {
-        return __NATIVE_CALL<string>(PATH_DIRNAME, p);
+        return __NATIVE_CALL<string>("path.dirname", p);
     }
 
     basename(p: string): string {
-        return __NATIVE_CALL<string>(PATH_BASENAME, p);
+        return __NATIVE_CALL<string>("path.basename", p);
     }
 
     extname(p: string): string {
-        return __NATIVE_CALL<string>(PATH_EXTNAME, p);
+        return __NATIVE_CALL<string>("path.extname", p);
     }
 
     // ── Resolution ──
 
     isAbsolute(p: string): boolean {
-        return __NATIVE_CALL<boolean>(PATH_IS_ABSOLUTE, p);
+        return __NATIVE_CALL<boolean>("path.isAbsolute", p);
     }
 
     resolve(base: string, target: string): string {
-        return __NATIVE_CALL<string>(PATH_RESOLVE, base, target);
+        return __NATIVE_CALL<string>("path.resolve", base, target);
     }
 
     relative(base: string, target: string): string {
-        return __NATIVE_CALL<string>(PATH_RELATIVE, base, target);
+        return __NATIVE_CALL<string>("path.relative", base, target);
     }
 
     cwd(): string {
-        return __NATIVE_CALL<string>(PATH_CWD);
+        return __NATIVE_CALL<string>("path.cwd");
     }
 
     // ── OS Constants ──
 
     sep(): string {
-        return __NATIVE_CALL<string>(PATH_SEP);
+        return __NATIVE_CALL<string>("path.sep");
     }
 
     delimiter(): string {
-        return __NATIVE_CALL<string>(PATH_DELIMITER);
+        return __NATIVE_CALL<string>("path.delimiter");
     }
 
     // ── Utilities ──
 
     stripExt(p: string): string {
-        return __NATIVE_CALL<string>(PATH_STRIP_EXT, p);
+        return __NATIVE_CALL<string>("path.stripExt", p);
     }
 
     withExt(p: string, ext: string): string {
-        return __NATIVE_CALL<string>(PATH_WITH_EXT, p, ext);
+        return __NATIVE_CALL<string>("path.withExt", p, ext);
     }
 
     isRelative(p: string): boolean {

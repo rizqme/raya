@@ -241,7 +241,8 @@ impl Inliner {
                 f(dest.id.as_u32());
                 f(array.id.as_u32());
             }
-            IrInstr::NativeCall { dest, args, .. } => {
+            IrInstr::NativeCall { dest, args, .. }
+            | IrInstr::ModuleNativeCall { dest, args, .. } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
                 }
@@ -385,6 +386,11 @@ impl Inliner {
             IrInstr::NativeCall { dest, native_id, args: native_args } => Some(IrInstr::NativeCall {
                 dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 native_id: *native_id,
+                args: native_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+            }),
+            IrInstr::ModuleNativeCall { dest, local_idx, args: native_args } => Some(IrInstr::ModuleNativeCall {
+                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+                local_idx: *local_idx,
                 args: native_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
             }),
             IrInstr::MutexLock { mutex } => Some(IrInstr::MutexLock {

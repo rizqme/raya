@@ -97,6 +97,10 @@ pub struct Module {
     pub reflection: Option<ReflectionData>,
     /// Debug information (present when HAS_DEBUG_INFO flag is set)
     pub debug_info: Option<DebugInfo>,
+    /// Native function names used by this module (indexed by local native ID).
+    /// Present when HAS_NATIVE_FUNCTIONS flag is set.
+    /// At load time, these names are resolved to handler functions via the NativeFunctionRegistry.
+    pub native_functions: Vec<String>,
 }
 
 /// Module flags
@@ -105,6 +109,8 @@ pub mod flags {
     pub const HAS_DEBUG_INFO: u32 = 1 << 0;
     /// Module has reflection data
     pub const HAS_REFLECTION: u32 = 1 << 1;
+    /// Module has native function table (for ModuleNativeCall)
+    pub const HAS_NATIVE_FUNCTIONS: u32 = 1 << 2;
 }
 
 /// Reflection data for the entire module
@@ -898,6 +904,7 @@ impl Module {
             checksum: [0; 32], // Will be computed during encode()
             reflection: Some(ReflectionData::new()),
             debug_info: None,
+            native_functions: Vec::new(),
         }
     }
 
@@ -1019,6 +1026,15 @@ impl Module {
             }
         }
 
+        // Encode native function table if present
+        if (self.flags & flags::HAS_NATIVE_FUNCTIONS) != 0 {
+            writer.emit_u32(self.native_functions.len() as u32);
+            for name in &self.native_functions {
+                writer.emit_u32(name.len() as u32);
+                writer.buffer.extend_from_slice(name.as_bytes());
+            }
+        }
+
         // Calculate checksums (of everything after header)
         let payload_start = header_start + 48; // Skip magic + version + flags + crc32 + sha256
         let payload = writer.buffer[payload_start..].to_vec(); // Clone to avoid borrow issues
@@ -1129,6 +1145,18 @@ impl Module {
             None
         };
 
+        // Decode native function table if present
+        let native_functions = if (flags & flags::HAS_NATIVE_FUNCTIONS) != 0 {
+            let count = reader.read_u32()? as usize;
+            let mut names = Vec::with_capacity(count);
+            for _ in 0..count {
+                names.push(reader.read_string()?);
+            }
+            names
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             magic,
             version,
@@ -1142,6 +1170,7 @@ impl Module {
             checksum,
             reflection,
             debug_info,
+            native_functions,
         })
     }
 }

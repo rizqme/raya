@@ -531,9 +531,30 @@ impl<'a> Lowerer<'a> {
             let name = self.interner.resolve(ident.name);
 
             // Handle __NATIVE_CALL intrinsic: __NATIVE_CALL(native_id, args...)
+            // First argument can be:
+            //   - StringLiteral: symbolic name → ModuleNativeCall (stdlib)
+            //   - IntLiteral/Identifier: numeric ID → NativeCall (engine-internal)
             if name == "__NATIVE_CALL" {
-                // First argument must be the native ID (integer literal or constant)
                 if let Some(first_arg) = call.arguments.first() {
+                    // Check for string literal first → ModuleNativeCall
+                    if let Expression::StringLiteral(lit) = first_arg {
+                        let fn_name = self.interner.resolve(lit.value);
+                        let local_idx = self.resolve_native_name(&fn_name);
+
+                        let native_args: Vec<Register> = call.arguments[1..]
+                            .iter()
+                            .map(|a| self.lower_expr(a))
+                            .collect();
+
+                        self.emit(IrInstr::ModuleNativeCall {
+                            dest: Some(dest.clone()),
+                            local_idx,
+                            args: native_args,
+                        });
+                        return dest;
+                    }
+
+                    // Numeric ID → NativeCall (engine-internal: reflect, runtime, builtins)
                     let native_id = match first_arg {
                         Expression::IntLiteral(lit) => lit.value as u16,
                         Expression::Identifier(id_expr) => {
@@ -555,7 +576,7 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                         _ => {
-                            eprintln!("Warning: __NATIVE_CALL first argument must be an integer literal or constant");
+                            eprintln!("Warning: __NATIVE_CALL first argument must be a string literal, integer literal, or constant");
                             0
                         }
                     };
@@ -830,104 +851,6 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
-                // Check for Msgpack type-safe codec methods
-                if obj_name == "Msgpack" {
-                    match method_name {
-                        "encode" => {
-                            // Msgpack.encode<T>(obj) -> typed encoder with field metadata
-                            use crate::compiler::native_id::MSGPACK_ENCODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
-                                        return self.emit_codec_encode_with_fields(
-                                            dest.clone(), args, field_info, MSGPACK_ENCODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        "decode" => {
-                            // Msgpack.decode<T>(bytes) -> typed decoder with field metadata
-                            use crate::compiler::native_id::MSGPACK_DECODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
-                                        return self.emit_codec_decode_with_fields(
-                                            dest.clone(), args, field_info, MSGPACK_DECODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Check for Cbor type-safe codec methods
-                if obj_name == "Cbor" {
-                    match method_name {
-                        "encode" => {
-                            // Cbor.encode<T>(obj) -> typed encoder with field metadata
-                            use crate::compiler::native_id::CBOR_ENCODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
-                                        return self.emit_codec_encode_with_fields(
-                                            dest.clone(), args, field_info, CBOR_ENCODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        "decode" => {
-                            // Cbor.decode<T>(bytes) -> typed decoder with field metadata
-                            use crate::compiler::native_id::CBOR_DECODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_json_field_info(&first_type.ty) {
-                                        return self.emit_codec_decode_with_fields(
-                                            dest.clone(), args, field_info, CBOR_DECODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Check for Protobuf type-safe codec methods
-                if obj_name == "Protobuf" {
-                    match method_name {
-                        "encode" => {
-                            // Protobuf.encode<T>(obj) -> typed encoder with proto field metadata
-                            use crate::compiler::native_id::PROTO_ENCODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_proto_field_info(&first_type.ty) {
-                                        return self.emit_proto_encode_with_fields(
-                                            dest.clone(), args, field_info, PROTO_ENCODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        "decode" => {
-                            // Protobuf.decode<T>(bytes) -> typed decoder with proto field metadata
-                            use crate::compiler::native_id::PROTO_DECODE_OBJECT;
-                            if let Some(type_args) = &call.type_args {
-                                if let Some(first_type) = type_args.first() {
-                                    if let Some(field_info) = self.get_proto_field_info(&first_type.ty) {
-                                        return self.emit_proto_decode_with_fields(
-                                            dest.clone(), args, field_info, PROTO_DECODE_OBJECT,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
             }
 
             // Check if this is a Task method call (e.g., task.cancel())

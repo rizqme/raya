@@ -63,30 +63,16 @@
 - ✅ Phase 4: E2E tests moved to raya-runtime
   - All 594 e2e tests moved from raya-engine to raya-runtime
   - Tests run with StdNativeHandler integration
-- Tests: 827 engine lib, 659 runtime (e2e + unit), 13 stdlib
+- Tests: 843 engine lib, 854 runtime (e2e + unit), 17 stdlib
 
-**Milestone 4.8 (std:path & std:codec):** Complete
+**Milestone 4.8 (std:path):** Complete (codec removed — not in initial release)
 - ✅ Phase 1: Native IDs & engine infrastructure complete
-  - `pub mod path` (0x6000-0x600A) + `pub mod codec` (0x7000-0x71FF) in builtin.rs
-  - 23+ constants in native_id.rs, Cargo.toml deps (rmp-serde, ciborium, pathdiff)
+  - `pub mod path` (0x6000-0x600A) in builtin.rs
+  - Cargo.toml deps (pathdiff)
 - ✅ Phase 2: std:path complete
   - 14 methods (11 native + 3 pure Raya): join, normalize, dirname, basename, extname, isAbsolute, resolve, relative, cwd, sep, delimiter, stripExt, withExt, isRelative
   - Engine-side handler with GC context for string allocation
   - 21 e2e tests (19 passing, 2 ignored — CallMethod in nested call)
-- ✅ Phase 3: std:codec complete (Utf8 + Msgpack + CBOR)
-  - Utf8: 4 methods (encode, decode, isValid, byteLength)
-  - Msgpack: encode<T>, decode<T>, encodedSize — compiler-lowered with field metadata
-  - CBOR: encode<T>, decode<T>, diagnostic — compiler-lowered with field metadata
-  - TypeSchema class for compile-time type metadata (opaque handle)
-  - encode<T>/decode<T> generic methods in .raya classes (compiler intercepts at call site)
-  - Field layout tracking for decoded object property access
-  - get_field_value() fix: whole-number f64 → JSON integer for codec roundtrips
-- ✅ Phase 4: Protobuf complete
-  - encode<T>, decode<T> with //@@proto annotations for field numbers + wire types
-  - Hand-rolled wire format (varint, fixed32/64, length-delimited)
-  - get_proto_field_info() extracts ProtoFieldInfo from type annotations
-- ✅ Phase 5: E2E tests complete (31 codec + 21 path = 52 total)
-  - 9 Utf8, 8 Msgpack, 7 CBOR, 7 Protobuf tests passing
 
 **Milestone 4.3 (std:math):** Complete
 - ✅ All 4 phases complete: native IDs, Math.raya + stdlib, VM dispatch, e2e tests
@@ -170,7 +156,7 @@
   - 96 total runtime e2e tests
 - Remaining: documentation (Phase 9)
 
-**Tests:** 1,731 total (831 engine lib, 883 runtime, 17 stdlib) — 2 ignored (path CallMethod)
+**Tests:** 1,714 total (843 engine lib, 854 runtime, 17 stdlib) — 2 ignored (path CallMethod)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -214,7 +200,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 | [plans/milestone-4.5.md](plans/milestone-4.5.md) | std:vm (compile, execute, isolation, permissions) |
 | [plans/milestone-4.6.md](plans/milestone-4.6.md) | std:crypto (hashing, HMAC, random, encoding) |
 | [plans/milestone-4.7.md](plans/milestone-4.7.md) | std:time (clocks, sleep, duration utilities) |
-| [plans/milestone-4.8.md](plans/milestone-4.8.md) | std:path & std:codec (path manipulation, UTF-8, MessagePack, CBOR, Protobuf) |
+| [plans/milestone-4.8.md](plans/milestone-4.8.md) | std:path (path manipulation) |
 | [plans/milestone-4.9.md](plans/milestone-4.9.md) | Native ABI Refactor (unified interface, full VM context) |
 | [design/ABI.md](design/ABI.md) | Native ABI design specification |
 
@@ -244,16 +230,11 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (1,731+)
-cargo test -p raya-engine      # Engine tests only (831)
-cargo test -p raya-runtime     # Runtime + e2e tests (883)
+cargo test                     # Run all tests (1,714+)
+cargo test -p raya-engine      # Engine tests only (843)
+cargo test -p raya-runtime     # Runtime + e2e tests (854)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests
-```
-
-**Important:** Runtime tests that spawn child VMs (std:runtime Phase 3+) are sensitive to thread contention. When running runtime tests, limit parallelism to 2:
-```bash
-cargo test -p raya-runtime runtime -- --test-threads=2
 ```
 
 ---

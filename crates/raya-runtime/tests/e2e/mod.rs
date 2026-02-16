@@ -27,6 +27,6 @@ mod runtime;
 mod crypto;
 mod time;
 mod path;
-mod codec;
+
 
 pub use harness::*;

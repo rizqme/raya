@@ -243,6 +243,7 @@ mod tests {
             exports: vec![],
             imports: vec![],
             checksum: [0; 32],
+            native_functions: vec![],
             reflection: None,
             debug_info: None,
         }

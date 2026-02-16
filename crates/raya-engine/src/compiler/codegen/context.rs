@@ -213,6 +213,12 @@ impl IrCodeGenerator {
             bytecode_module.reflection = Some(reflection);
         }
 
+        // Add native function table if present
+        if !module.native_functions.is_empty() {
+            bytecode_module.flags |= flags::HAS_NATIVE_FUNCTIONS;
+            bytecode_module.native_functions = module.native_functions.clone();
+        }
+
         Ok(bytecode_module)
     }
 
@@ -403,6 +409,24 @@ impl IrCodeGenerator {
                     self.emit_store_local(ctx, slot);
                 } else {
                     // Pop the result that NativeCall pushes since we don't need it
+                    ctx.emit(Opcode::Pop);
+                }
+            }
+
+            IrInstr::ModuleNativeCall { dest, local_idx, args } => {
+                // Push arguments onto stack
+                for arg in args {
+                    self.emit_load_register(ctx, arg);
+                }
+                // Emit ModuleNativeCall opcode: u16 localIdx + u8 argCount
+                ctx.emit(Opcode::ModuleNativeCall);
+                ctx.emit_u16(*local_idx);
+                ctx.emit_u8(args.len() as u8);
+                // Store result if needed, or pop if not used
+                if let Some(dest) = dest {
+                    let slot = ctx.get_or_alloc_slot(dest);
+                    self.emit_store_local(ctx, slot);
+                } else {
                     ctx.emit(Opcode::Pop);
                 }
             }

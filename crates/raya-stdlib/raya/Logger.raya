@@ -1,27 +1,21 @@
 // Logger - Standard logging module
 // Usage: import logger from "std:logger";
 
-// Native call IDs (must match raya-engine/src/compiler/native_id.rs)
-const LOGGER_DEBUG: number = 0x1000;
-const LOGGER_INFO: number = 0x1001;
-const LOGGER_WARN: number = 0x1002;
-const LOGGER_ERROR: number = 0x1003;
-
 class Logger {
     debug(message: string): void {
-        __NATIVE_CALL(LOGGER_DEBUG, message);
+        __NATIVE_CALL("logger.debug", message);
     }
 
     info(message: string): void {
-        __NATIVE_CALL(LOGGER_INFO, message);
+        __NATIVE_CALL("logger.info", message);
     }
 
     warn(message: string): void {
-        __NATIVE_CALL(LOGGER_WARN, message);
+        __NATIVE_CALL("logger.warn", message);
     }
 
     error(message: string): void {
-        __NATIVE_CALL(LOGGER_ERROR, message);
+        __NATIVE_CALL("logger.error", message);
     }
 }
 

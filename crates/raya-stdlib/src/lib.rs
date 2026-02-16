@@ -10,7 +10,8 @@ pub mod handler;
 pub mod logger;
 pub mod math;
 pub mod crypto;
-pub mod codec;
 pub mod path;
+pub mod registry;
 
 pub use handler::StdNativeHandler;
+pub use registry::register_stdlib;

@@ -71,9 +71,6 @@ fn get_std_sources() -> &'static str {
         // Path (std:path)
         include_str!("../../../raya-stdlib/raya/path.raya"),
         "\n",
-        // Codec (std:codec)
-        include_str!("../../../raya-stdlib/raya/codec.raya"),
-        "\n",
     )
 }
 
@@ -198,6 +195,13 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
 
     // Use single worker with StdNativeHandler for stdlib support (logger, etc.)
     let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+
+    // Register symbolic native functions for ModuleNativeCall dispatch
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+    }
+
     vm.execute(&module).map_err(E2EError::Vm)
 }
 

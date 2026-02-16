@@ -388,6 +388,11 @@ pub enum Opcode {
     /// Call native function by ID (operand: u16 nativeId, u8 argCount)
     /// Stack: [args...] -> [result]
     NativeCall = 0xFD,
+    /// Call module-local native function (operand: u16 localIdx, u8 argCount)
+    /// The localIdx indexes into the module's native_functions table,
+    /// which is resolved to a handler at load time.
+    /// Stack: [args...] -> [result]
+    ModuleNativeCall = 0xFE,
 }
 
 impl Opcode {
@@ -587,6 +592,7 @@ impl Opcode {
             0xFB => Some(Self::Rethrow),
             0xFC => Some(Self::Trap),
             0xFD => Some(Self::NativeCall),
+            0xFE => Some(Self::ModuleNativeCall),
 
             // Invalid opcodes
             _ => None,
@@ -754,6 +760,7 @@ impl Opcode {
             Self::Rethrow => "RETHROW",
             Self::Trap => "TRAP",
             Self::NativeCall => "NATIVE_CALL",
+            Self::ModuleNativeCall => "MODULE_NATIVE_CALL",
         }
     }
 
@@ -848,7 +855,7 @@ mod tests {
     #[test]
     fn test_invalid_opcode() {
         // Test that unassigned opcodes return None
-        assert_eq!(Opcode::from_u8(0xFE), None); // Unassigned
+        assert_eq!(Opcode::from_u8(0xFE), Some(Opcode::ModuleNativeCall));
         assert_eq!(Opcode::from_u8(0xFF), None); // Unassigned
         // Test that assigned opcodes return correct values
         assert_eq!(Opcode::from_u8(Opcode::NewChannel.to_u8()), Some(Opcode::NewChannel));
@@ -957,6 +964,7 @@ mod tests {
             Opcode::MakeClosure, Opcode::CloseVar, Opcode::LoadCaptured, Opcode::StoreCaptured,
             Opcode::LoadModule, Opcode::LoadGlobal, Opcode::StoreGlobal, Opcode::SetClosureCapture,
             Opcode::Throw, Opcode::Try, Opcode::EndTry, Opcode::Rethrow, Opcode::Trap, Opcode::NativeCall,
+            Opcode::ModuleNativeCall,
         ];
 
         for opcode in &all_opcodes {

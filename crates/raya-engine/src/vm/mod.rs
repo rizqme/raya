@@ -34,6 +34,7 @@ pub mod gc;
 pub mod json;
 pub mod module;
 pub mod native_handler;
+pub mod native_registry;
 pub mod object;
 pub mod reflect;
 pub mod scheduler;
@@ -52,6 +53,7 @@ pub use abi::{
 };
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_handler::{NativeCallResult, NativeHandler, NoopNativeHandler};
+pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
 pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};

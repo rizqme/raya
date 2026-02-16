@@ -295,6 +295,11 @@ pub struct Lowerer<'a> {
     /// Object field layout for local variables holding decoded objects
     /// Maps variable name → Vec<(field_name, field_index)>
     variable_object_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
+    /// Native function name table for ModuleNativeCall.
+    /// Accumulates symbolic names during lowering; each name gets a module-local index.
+    native_function_table: Vec<String>,
+    /// Reverse lookup: name → local index (for deduplication)
+    native_function_map: FxHashMap<String, u16>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -351,7 +356,26 @@ impl<'a> Lowerer<'a> {
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
+            native_function_table: Vec::new(),
+            native_function_map: FxHashMap::default(),
         }
+    }
+
+    /// Resolve a native function name to a module-local index.
+    /// Adds the name to the table if not already present.
+    fn resolve_native_name(&mut self, name: &str) -> u16 {
+        if let Some(&idx) = self.native_function_map.get(name) {
+            return idx;
+        }
+        let idx = self.native_function_table.len() as u16;
+        self.native_function_table.push(name.to_string());
+        self.native_function_map.insert(name.to_string(), idx);
+        idx
+    }
+
+    /// Get the native function table (consumed after lowering)
+    pub fn take_native_function_table(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.native_function_table)
     }
 
     /// Try to evaluate an expression as a compile-time constant
@@ -746,6 +770,9 @@ impl<'a> Lowerer<'a> {
         for (_id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
         }
+
+        // Transfer native function table to the IR module
+        ir_module.native_functions = self.take_native_function_table();
 
         ir_module
     }
@@ -2041,291 +2068,6 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    // ========================================================================
-    // Codec (Msgpack/CBOR) lowering — reuses //@@json field info
-    // ========================================================================
-
-    /// Emit specialized codec encode for an object type with known fields.
-    /// Used by Msgpack.encode<T>() and Cbor.encode<T>().
-    /// Args passed to VM: [obj, field_count, key_1, key_2, ...]
-    fn emit_codec_encode_with_fields(
-        &mut self,
-        dest: Register,
-        args: Vec<Register>,
-        fields: Vec<JsonFieldInfo>,
-        native_id: u16,
-    ) -> Register {
-        let mut encode_args = args.clone();
-
-        // Add field count as i32
-        let count_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: count_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(fields.len() as i32)),
-        });
-        encode_args.push(count_reg);
-
-        // Add field keys (json_key as string for each field)
-        for field in &fields {
-            let key_reg = self.alloc_register(TypeId::new(1));
-            self.emit(IrInstr::Assign {
-                dest: key_reg.clone(),
-                value: IrValue::Constant(IrConstant::String(field.json_key.clone())),
-            });
-            encode_args.push(key_reg);
-        }
-
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dest.clone()),
-            native_id,
-            args: encode_args,
-        });
-
-        dest
-    }
-
-    /// Emit specialized codec decode for an object type with known fields.
-    /// Used by Msgpack.decode<T>() and Cbor.decode<T>().
-    /// Args passed to VM: [buffer, field_count, key_1, key_2, ...]
-    fn emit_codec_decode_with_fields(
-        &mut self,
-        dest: Register,
-        args: Vec<Register>,
-        fields: Vec<JsonFieldInfo>,
-        native_id: u16,
-    ) -> Register {
-        let mut decode_args = args.clone();
-
-        // Add field count as i32
-        let count_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: count_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(fields.len() as i32)),
-        });
-        decode_args.push(count_reg);
-
-        // Add field keys (json_key as string for each field)
-        for field in &fields {
-            let key_reg = self.alloc_register(TypeId::new(1));
-            self.emit(IrInstr::Assign {
-                dest: key_reg.clone(),
-                value: IrValue::Constant(IrConstant::String(field.json_key.clone())),
-            });
-            decode_args.push(key_reg);
-        }
-
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dest.clone()),
-            native_id,
-            args: decode_args,
-        });
-
-        // Track field layout for property access resolution on the decoded object
-        let field_layout: Vec<(String, usize)> = fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.field_name.clone(), i))
-            .collect();
-        self.register_object_fields.insert(dest.id, field_layout);
-
-        dest
-    }
-
-    // ========================================================================
-    // Protobuf lowering — uses //@@proto field info
-    // ========================================================================
-
-    /// Get protobuf field information from a type for specialized encode/decode.
-    /// Reads //@@proto annotations for field numbers and wire type hints.
-    fn get_proto_field_info(&self, ty: &ast::Type) -> Option<Vec<ProtoFieldInfo>> {
-        match ty {
-            ast::Type::Object(obj_type) => {
-                let mut fields = Vec::new();
-                for member in &obj_type.members {
-                    if let ast::ObjectTypeMember::Property(prop) = member {
-                        let field_name = self.interner.resolve(prop.name.name).to_string();
-
-                        let mut proto_field_number: Option<u32> = None;
-                        let mut wire_hint: Option<String> = None;
-                        let mut skip = false;
-
-                        for annotation in &prop.annotations {
-                            if annotation.tag == "proto" {
-                                if annotation.is_skip() {
-                                    skip = true;
-                                } else if let Some(num) = annotation.proto_field_number() {
-                                    proto_field_number = Some(num);
-                                    if let Some(hint) = annotation.proto_wire_hint() {
-                                        wire_hint = Some(hint.to_string());
-                                    }
-                                }
-                            }
-                        }
-
-                        if skip {
-                            continue;
-                        }
-
-                        // Require //@@proto annotation for protobuf
-                        let field_number = match proto_field_number {
-                            Some(n) => n,
-                            None => continue, // Skip fields without //@@proto annotation
-                        };
-
-                        // Determine proto type from Raya type + optional hint
-                        let type_id = self.resolve_type_annotation(&prop.ty);
-                        let proto_type = Self::infer_proto_type(type_id, wire_hint.as_deref());
-
-                        fields.push(ProtoFieldInfo {
-                            field_number,
-                            field_name,
-                            proto_type,
-                            type_id,
-                            optional: prop.optional,
-                        });
-                    }
-                }
-
-                // Sort by field number for canonical encoding
-                fields.sort_by_key(|f| f.field_number);
-                Some(fields)
-            }
-            _ => None,
-        }
-    }
-
-    /// Infer protobuf type from Raya TypeId and optional wire hint
-    fn infer_proto_type(type_id: TypeId, hint: Option<&str>) -> i32 {
-        // Proto type codes (must match handler constants)
-        const PROTO_TYPE_DOUBLE: i32 = 0;
-        const PROTO_TYPE_FLOAT: i32 = 1;
-        const PROTO_TYPE_INT32: i32 = 2;
-        const PROTO_TYPE_INT64: i32 = 3;
-        const PROTO_TYPE_BOOL: i32 = 4;
-        const PROTO_TYPE_STRING: i32 = 5;
-        const PROTO_TYPE_BYTES: i32 = 6;
-
-        if let Some(hint) = hint {
-            return match hint {
-                "int32" => PROTO_TYPE_INT32,
-                "int64" => PROTO_TYPE_INT64,
-                "float" => PROTO_TYPE_FLOAT,
-                "double" => PROTO_TYPE_DOUBLE,
-                "bool" => PROTO_TYPE_BOOL,
-                "string" => PROTO_TYPE_STRING,
-                "bytes" => PROTO_TYPE_BYTES,
-                _ => PROTO_TYPE_DOUBLE, // fallback
-            };
-        }
-
-        // Infer from TypeId
-        let id = type_id.as_u32();
-        match id {
-            0 => PROTO_TYPE_DOUBLE,  // number -> double
-            1 => PROTO_TYPE_STRING,  // string
-            2 => PROTO_TYPE_BOOL,    // boolean
-            _ => PROTO_TYPE_DOUBLE,  // fallback
-        }
-    }
-
-    /// Emit specialized protobuf encode with field metadata.
-    /// Args passed to VM: [obj, field_count, field_num_1, proto_type_1, field_num_2, proto_type_2, ...]
-    fn emit_proto_encode_with_fields(
-        &mut self,
-        dest: Register,
-        args: Vec<Register>,
-        fields: Vec<ProtoFieldInfo>,
-        native_id: u16,
-    ) -> Register {
-        let mut encode_args = args.clone();
-
-        // Add field count as i32
-        let count_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: count_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(fields.len() as i32)),
-        });
-        encode_args.push(count_reg);
-
-        // Add field_number and proto_type pairs
-        for field in &fields {
-            let num_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::Assign {
-                dest: num_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(field.field_number as i32)),
-            });
-            encode_args.push(num_reg);
-
-            let type_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::Assign {
-                dest: type_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(field.proto_type)),
-            });
-            encode_args.push(type_reg);
-        }
-
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dest.clone()),
-            native_id,
-            args: encode_args,
-        });
-
-        dest
-    }
-
-    /// Emit specialized protobuf decode with field metadata.
-    /// Args passed to VM: [buffer, field_count, field_num_1, proto_type_1, field_num_2, proto_type_2, ...]
-    fn emit_proto_decode_with_fields(
-        &mut self,
-        dest: Register,
-        args: Vec<Register>,
-        fields: Vec<ProtoFieldInfo>,
-        native_id: u16,
-    ) -> Register {
-        let mut decode_args = args.clone();
-
-        // Add field count as i32
-        let count_reg = self.alloc_register(TypeId::new(0));
-        self.emit(IrInstr::Assign {
-            dest: count_reg.clone(),
-            value: IrValue::Constant(IrConstant::I32(fields.len() as i32)),
-        });
-        decode_args.push(count_reg);
-
-        // Add field_number and proto_type pairs
-        for field in &fields {
-            let num_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::Assign {
-                dest: num_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(field.field_number as i32)),
-            });
-            decode_args.push(num_reg);
-
-            let type_reg = self.alloc_register(TypeId::new(0));
-            self.emit(IrInstr::Assign {
-                dest: type_reg.clone(),
-                value: IrValue::Constant(IrConstant::I32(field.proto_type)),
-            });
-            decode_args.push(type_reg);
-        }
-
-        self.emit(IrInstr::NativeCall {
-            dest: Some(dest.clone()),
-            native_id,
-            args: decode_args,
-        });
-
-        // Track field layout for property access resolution on the decoded object
-        // Proto fields are sorted by field_number, so the decode output uses that order
-        let field_layout: Vec<(String, usize)> = fields
-            .iter()
-            .enumerate()
-            .map(|(i, f)| (f.field_name.clone(), i))
-            .collect();
-        self.register_object_fields.insert(dest.id, field_layout);
-
-        dest
-    }
 }
 
 /// Information about a JSON field for specialized decode
@@ -2336,21 +2078,6 @@ pub struct JsonFieldInfo {
     /// The field name in the target type
     pub field_name: String,
     /// The type of the field
-    pub type_id: TypeId,
-    /// Whether the field is optional
-    pub optional: bool,
-}
-
-/// Information about a Protobuf field for specialized encode/decode
-#[derive(Debug, Clone)]
-pub struct ProtoFieldInfo {
-    /// The proto field number (from //@@proto annotation)
-    pub field_number: u32,
-    /// The Raya field name (for object field access)
-    pub field_name: String,
-    /// The proto type code (0=double, 1=float, 2=int32, 3=int64, 4=bool, 5=string, 6=bytes)
-    pub proto_type: i32,
-    /// The Raya type of the field
     pub type_id: TypeId,
     /// Whether the field is optional
     pub optional: bool,

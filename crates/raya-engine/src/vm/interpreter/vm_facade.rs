@@ -102,6 +102,11 @@ impl Vm {
         &mut self.scheduler
     }
 
+    /// Get the native function registry for registering native handlers
+    pub fn native_registry(&self) -> &parking_lot::RwLock<crate::vm::NativeFunctionRegistry> {
+        &self.scheduler.shared_state().native_registry
+    }
+
     /// Get the safepoint coordinator
     pub fn safepoint(&self) -> &Arc<SafepointCoordinator> {
         self.scheduler.safepoint()
@@ -162,6 +167,10 @@ impl Vm {
         // Register classes with the shared VM state (from module)
         self.scheduler.shared_state().register_classes(module);
 
+        // Link module's native function table (for ModuleNativeCall dispatch)
+        self.scheduler.shared_state().link_module_natives(module)
+            .map_err(|e| VmError::RuntimeError(format!("Native link error: {}", e)))?;
+
         // Find main function
         let main_fn_id = module
             .functions
@@ -178,62 +187,56 @@ impl Vm {
             return Err(VmError::RuntimeError("Failed to spawn main task".to_string()));
         }
 
-        // Wait for main task to complete (with a long timeout)
-        let timeout = std::time::Duration::from_secs(3600); // 1 hour timeout
-        let start = std::time::Instant::now();
+        // Block until main task completes using condvar (no busy-waiting)
+        let final_state = main_task.wait_completion();
 
-        loop {
-            // Check task state
-            match main_task.state() {
-                TaskState::Completed => {
-                    // Return the result
-                    return Ok(main_task.result().unwrap_or(Value::null()));
-                }
-                TaskState::Failed => {
-                    // Get the actual exception message if available
-                    let msg = if let Some(exc) = main_task.current_exception() {
-                        if exc.is_ptr() {
-                            // Try to get string content from exception
-                            if let Some(s) = unsafe { exc.as_ptr::<RayaString>() } {
-                                format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data)
-                            } else if let Some(obj) = unsafe { exc.as_ptr::<Object>() } {
-                                // Check if it's an Error object with a message field
-                                if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
-                                    if msg_val.is_ptr() {
-                                        if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
-                                            format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data)
-                                        } else {
-                                            "Main task failed".to_string()
-                                        }
-                                    } else {
-                                        "Main task failed".to_string()
-                                    }
-                                } else {
-                                    "Main task failed".to_string()
-                                }
-                            } else {
-                                "Main task failed".to_string()
-                            }
-                        } else if exc.is_null() {
-                            "Main task failed".to_string()
-                        } else {
-                            format!("Main task failed: {:?}", exc)
-                        }
-                    } else {
-                        "Main task failed".to_string()
-                    };
-                    return Err(VmError::RuntimeError(msg));
-                }
-                _ => {
-                    // Still running, check timeout
-                    if start.elapsed() > timeout {
-                        return Err(VmError::RuntimeError("Main task timed out".to_string()));
+        match final_state {
+            TaskState::Completed => {
+                Ok(main_task.result().unwrap_or(Value::null()))
+            }
+            TaskState::Failed => {
+                let msg = Self::extract_exception_message(&main_task);
+                Err(VmError::RuntimeError(msg))
+            }
+            other => {
+                Err(VmError::RuntimeError(format!(
+                    "Main task ended in unexpected state: {:?}", other
+                )))
+            }
+        }
+    }
+
+    /// Extract a human-readable error message from a failed task's exception
+    fn extract_exception_message(task: &Task) -> String {
+        let Some(exc) = task.current_exception() else {
+            return "Main task failed".to_string();
+        };
+
+        if exc.is_null() {
+            return "Main task failed".to_string();
+        }
+
+        if !exc.is_ptr() {
+            return format!("Main task failed: {:?}", exc);
+        }
+
+        // Try string
+        if let Some(s) = unsafe { exc.as_ptr::<RayaString>() } {
+            return format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data);
+        }
+
+        // Try Error object (message is field 0)
+        if let Some(obj) = unsafe { exc.as_ptr::<Object>() } {
+            if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
+                if msg_val.is_ptr() {
+                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
+                        return format!("Main task failed: {}", unsafe { &*s.as_ptr() }.data);
                     }
-                    // Brief sleep to avoid busy waiting
-                    std::thread::sleep(std::time::Duration::from_micros(100));
                 }
             }
         }
+
+        "Main task failed".to_string()
     }
 }
 impl Default for Vm {

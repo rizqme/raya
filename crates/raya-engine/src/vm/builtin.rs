@@ -961,50 +961,6 @@ pub fn is_path_method(method_id: u16) -> bool {
     (0x6000..=0x60FF).contains(&method_id)
 }
 
-/// Built-in method IDs for Codec (std:codec)
-pub mod codec {
-    // ── Utf8 (0x7000-0x7003) ──
-    /// `Utf8.encode(text)` - String to UTF-8 bytes
-    pub const UTF8_ENCODE: u16 = 0x7000;
-    /// `Utf8.decode(bytes)` - UTF-8 bytes to string
-    pub const UTF8_DECODE: u16 = 0x7001;
-    /// `Utf8.isValid(bytes)` - Check if bytes are valid UTF-8
-    pub const UTF8_IS_VALID: u16 = 0x7002;
-    /// `Utf8.byteLength(text)` - Byte length of string as UTF-8
-    pub const UTF8_BYTE_LENGTH: u16 = 0x7003;
-
-    // ── Msgpack (0x7010-0x7012) ──
-    /// `Msgpack.encode<T>(obj)` - Typed encode to MessagePack
-    pub const MSGPACK_ENCODE_OBJECT: u16 = 0x7010;
-    /// `Msgpack.decode<T>(bytes)` - Typed decode from MessagePack
-    pub const MSGPACK_DECODE_OBJECT: u16 = 0x7011;
-    /// `Msgpack.encodedSize(bytes)` - Byte size of buffer
-    pub const MSGPACK_ENCODED_SIZE: u16 = 0x7012;
-
-    // ── CBOR (0x7020-0x7022) ──
-    /// `Cbor.encode<T>(obj)` - Typed encode to CBOR
-    pub const CBOR_ENCODE_OBJECT: u16 = 0x7020;
-    /// `Cbor.decode<T>(bytes)` - Typed decode from CBOR
-    pub const CBOR_DECODE_OBJECT: u16 = 0x7021;
-    /// `Cbor.diagnostic(bytes)` - CBOR diagnostic notation
-    pub const CBOR_DIAGNOSTIC: u16 = 0x7022;
-
-    // ── Protobuf (0x7030-0x7031) ──
-    /// `Protobuf.encode<T>(obj)` - Typed encode to Protobuf wire format
-    pub const PROTO_ENCODE_OBJECT: u16 = 0x7030;
-    /// `Protobuf.decode<T>(bytes)` - Typed decode from Protobuf wire format
-    pub const PROTO_DECODE_OBJECT: u16 = 0x7031;
-
-    // ── TypeSchema (0x7100) ──
-    /// Create a TypeSchema from compile-time field metadata
-    pub const TYPE_SCHEMA_CREATE: u16 = 0x7100;
-}
-
-/// Check if a method ID is a codec method (std:codec)
-pub fn is_codec_method(method_id: u16) -> bool {
-    (0x7000..=0x71FF).contains(&method_id)
-}
-
 /// Built-in method IDs for Date
 pub mod date {
     /// `Date.now()` - Get current timestamp

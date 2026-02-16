@@ -5,6 +5,7 @@
 
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
+use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::object::{Array, Closure, Object, RayaString};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{ExceptionHandler, Task, TaskId, TaskState, TimerThread};
@@ -74,6 +75,12 @@ pub struct SharedVmState {
 
     /// External native call handler (stdlib implementation)
     pub native_handler: Arc<dyn NativeHandler>,
+
+    /// Resolved native functions for ModuleNativeCall dispatch
+    pub resolved_natives: RwLock<ResolvedNatives>,
+
+    /// Native function registry for linking module native calls at load time
+    pub native_registry: RwLock<NativeFunctionRegistry>,
 }
 
 impl SharedVmState {
@@ -110,7 +117,21 @@ impl SharedVmState {
             metadata: Mutex::new(MetadataStore::new()),
             class_metadata: RwLock::new(ClassMetadataRegistry::new()),
             native_handler,
+            resolved_natives: RwLock::new(ResolvedNatives::empty()),
+            native_registry: RwLock::new(NativeFunctionRegistry::new()),
         }
+    }
+
+    /// Link a module's native function table against the registry.
+    /// Must be called before executing a module that uses ModuleNativeCall.
+    pub fn link_module_natives(&self, module: &Module) -> Result<(), String> {
+        if module.native_functions.is_empty() {
+            return Ok(());
+        }
+        let registry = self.native_registry.read();
+        let resolved = ResolvedNatives::link(&module.native_functions, &registry)?;
+        *self.resolved_natives.write() = resolved;
+        Ok(())
     }
 
     /// Register classes from a module

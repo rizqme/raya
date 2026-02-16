@@ -196,6 +196,7 @@ mod tests {
                 name: "test".to_string(),
                 source_file: None,
             },
+            native_functions: vec![],
             reflection: None,
             debug_info: None,
         }

@@ -24,6 +24,9 @@ pub struct IrModule {
     class_map: FxHashMap<String, ClassId>,
     /// Type alias lookup by name
     type_alias_map: FxHashMap<String, TypeAliasId>,
+    /// Native function name table for ModuleNativeCall.
+    /// Maps module-local index → symbolic name (e.g., "math.abs", "time.now").
+    pub native_functions: Vec<String>,
 }
 
 impl IrModule {
@@ -37,6 +40,7 @@ impl IrModule {
             function_map: FxHashMap::default(),
             class_map: FxHashMap::default(),
             type_alias_map: FxHashMap::default(),
+            native_functions: Vec::new(),
         }
     }
 

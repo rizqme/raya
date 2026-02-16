@@ -106,10 +106,18 @@ pub enum IrInstr {
     },
 
     /// Native function call: dest = native_call(native_id, args)
-    /// Used for primitive type methods (string, Array, RegExp)
+    /// Used for engine-internal methods (reflect, runtime, built-in types)
     NativeCall {
         dest: Option<Register>,
         native_id: u16,
+        args: Vec<Register>,
+    },
+
+    /// Module-local native function call: dest = module_native_call(local_idx, args)
+    /// Used for stdlib native calls resolved via NativeFunctionRegistry at load time.
+    ModuleNativeCall {
+        dest: Option<Register>,
+        local_idx: u16,
         args: Vec<Register>,
     },
 
@@ -456,6 +464,7 @@ impl IrInstr {
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
             | IrInstr::NativeCall { dest, .. }
+            | IrInstr::ModuleNativeCall { dest, .. }
             | IrInstr::CallClosure { dest, .. } => dest.as_ref(),
             IrInstr::StoreLocal { .. }
             | IrInstr::StoreGlobal { .. }
@@ -484,6 +493,7 @@ impl IrInstr {
             IrInstr::Call { .. }
                 | IrInstr::CallMethod { .. }
                 | IrInstr::NativeCall { .. }
+                | IrInstr::ModuleNativeCall { .. }
                 | IrInstr::CallClosure { .. }
                 | IrInstr::StoreLocal { .. }
                 | IrInstr::PopToLocal { .. }

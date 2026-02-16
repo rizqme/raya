@@ -338,6 +338,9 @@ fn get_operand_size(opcode: Opcode) -> usize {
 
         // NativeCall has 3-byte operand (u16 nativeId + u8 argCount)
         Opcode::NativeCall => 3,
+
+        // ModuleNativeCall has 3-byte operand (u16 localIdx + u8 argCount)
+        Opcode::ModuleNativeCall => 3,
     }
 }
 
@@ -515,6 +518,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 
         // Native call
         Opcode::NativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
+
+        // Module native call
+        Opcode::ModuleNativeCall => (0, 1), // Simplified - pops args (dynamic), pushes result
     }
 }
 
@@ -633,7 +639,7 @@ mod tests {
             name: "test".to_string(),
             param_count: 0,
             local_count: 0,
-            code: vec![0xFE], // Invalid opcode (unassigned)
+            code: vec![0xFF], // Invalid opcode (unassigned)
         });
 
         let result = verify_module(&module);

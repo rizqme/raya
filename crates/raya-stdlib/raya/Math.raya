@@ -1,130 +1,105 @@
 // Math - Standard math module
 // Usage: import math from "std:math";
 
-// Native call IDs (must match raya-engine/src/compiler/native_id.rs)
-const MATH_ABS: number = 0x2000;
-const MATH_SIGN: number = 0x2001;
-const MATH_FLOOR: number = 0x2002;
-const MATH_CEIL: number = 0x2003;
-const MATH_ROUND: number = 0x2004;
-const MATH_TRUNC: number = 0x2005;
-const MATH_MIN: number = 0x2006;
-const MATH_MAX: number = 0x2007;
-const MATH_POW: number = 0x2008;
-const MATH_SQRT: number = 0x2009;
-const MATH_SIN: number = 0x200A;
-const MATH_COS: number = 0x200B;
-const MATH_TAN: number = 0x200C;
-const MATH_ASIN: number = 0x200D;
-const MATH_ACOS: number = 0x200E;
-const MATH_ATAN: number = 0x200F;
-const MATH_ATAN2: number = 0x2010;
-const MATH_EXP: number = 0x2011;
-const MATH_LOG: number = 0x2012;
-const MATH_LOG10: number = 0x2013;
-const MATH_RANDOM: number = 0x2014;
-const MATH_PI: number = 0x2015;
-const MATH_E: number = 0x2016;
-
 class Math {
     // Constants
     PI(): number {
-        return __NATIVE_CALL<number>(MATH_PI);
+        return __NATIVE_CALL<number>("math.PI");
     }
 
     E(): number {
-        return __NATIVE_CALL<number>(MATH_E);
+        return __NATIVE_CALL<number>("math.E");
     }
 
     // Basic
     abs(x: number): number {
-        return __NATIVE_CALL<number>(MATH_ABS, x);
+        return __NATIVE_CALL<number>("math.abs", x);
     }
 
     sign(x: number): number {
-        return __NATIVE_CALL<number>(MATH_SIGN, x);
+        return __NATIVE_CALL<number>("math.sign", x);
     }
 
     // Rounding
     floor(x: number): number {
-        return __NATIVE_CALL<number>(MATH_FLOOR, x);
+        return __NATIVE_CALL<number>("math.floor", x);
     }
 
     ceil(x: number): number {
-        return __NATIVE_CALL<number>(MATH_CEIL, x);
+        return __NATIVE_CALL<number>("math.ceil", x);
     }
 
     round(x: number): number {
-        return __NATIVE_CALL<number>(MATH_ROUND, x);
+        return __NATIVE_CALL<number>("math.round", x);
     }
 
     trunc(x: number): number {
-        return __NATIVE_CALL<number>(MATH_TRUNC, x);
+        return __NATIVE_CALL<number>("math.trunc", x);
     }
 
     // Min/Max
     min(a: number, b: number): number {
-        return __NATIVE_CALL<number>(MATH_MIN, a, b);
+        return __NATIVE_CALL<number>("math.min", a, b);
     }
 
     max(a: number, b: number): number {
-        return __NATIVE_CALL<number>(MATH_MAX, a, b);
+        return __NATIVE_CALL<number>("math.max", a, b);
     }
 
     // Power
     pow(base: number, exp: number): number {
-        return __NATIVE_CALL<number>(MATH_POW, base, exp);
+        return __NATIVE_CALL<number>("math.pow", base, exp);
     }
 
     sqrt(x: number): number {
-        return __NATIVE_CALL<number>(MATH_SQRT, x);
+        return __NATIVE_CALL<number>("math.sqrt", x);
     }
 
     // Trigonometry
     sin(x: number): number {
-        return __NATIVE_CALL<number>(MATH_SIN, x);
+        return __NATIVE_CALL<number>("math.sin", x);
     }
 
     cos(x: number): number {
-        return __NATIVE_CALL<number>(MATH_COS, x);
+        return __NATIVE_CALL<number>("math.cos", x);
     }
 
     tan(x: number): number {
-        return __NATIVE_CALL<number>(MATH_TAN, x);
+        return __NATIVE_CALL<number>("math.tan", x);
     }
 
     asin(x: number): number {
-        return __NATIVE_CALL<number>(MATH_ASIN, x);
+        return __NATIVE_CALL<number>("math.asin", x);
     }
 
     acos(x: number): number {
-        return __NATIVE_CALL<number>(MATH_ACOS, x);
+        return __NATIVE_CALL<number>("math.acos", x);
     }
 
     atan(x: number): number {
-        return __NATIVE_CALL<number>(MATH_ATAN, x);
+        return __NATIVE_CALL<number>("math.atan", x);
     }
 
     atan2(y: number, x: number): number {
-        return __NATIVE_CALL<number>(MATH_ATAN2, y, x);
+        return __NATIVE_CALL<number>("math.atan2", y, x);
     }
 
     // Exponential/Logarithmic
     exp(x: number): number {
-        return __NATIVE_CALL<number>(MATH_EXP, x);
+        return __NATIVE_CALL<number>("math.exp", x);
     }
 
     log(x: number): number {
-        return __NATIVE_CALL<number>(MATH_LOG, x);
+        return __NATIVE_CALL<number>("math.log", x);
     }
 
     log10(x: number): number {
-        return __NATIVE_CALL<number>(MATH_LOG10, x);
+        return __NATIVE_CALL<number>("math.log10", x);
     }
 
     // Random
     random(): number {
-        return __NATIVE_CALL<number>(MATH_RANDOM);
+        return __NATIVE_CALL<number>("math.random");
     }
 }
 

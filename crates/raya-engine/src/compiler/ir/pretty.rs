@@ -165,6 +165,27 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
+        IrInstr::ModuleNativeCall {
+            dest,
+            local_idx,
+            args,
+        } => {
+            let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            if let Some(d) = dest {
+                format!(
+                    "{} = module_native_call [{}]({})",
+                    d,
+                    local_idx,
+                    args_str.join(", ")
+                )
+            } else {
+                format!(
+                    "module_native_call [{}]({})",
+                    local_idx,
+                    args_str.join(", ")
+                )
+            }
+        }
         IrInstr::InstanceOf { dest, object, class_id } => {
             format!("{} = {} instanceof class{}", dest, object, class_id.as_u32())
         }

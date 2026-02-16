@@ -115,9 +115,19 @@ impl PreemptMonitor {
         self.shutdown.store(true, Ordering::Release);
 
         if let Some(handle) = self.handle.take() {
-            handle
-                .join()
-                .expect("Failed to join preemption monitor thread");
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(2);
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    return;
+                }
+                if start.elapsed() > timeout {
+                    drop(handle);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
 
