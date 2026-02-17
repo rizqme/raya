@@ -1186,3 +1186,832 @@ fn test_float_precision() {
     // 0.1 + 0.2 is close to 0.3 but not exact
     expect_bool("return 0.1 + 0.2 == 0.3;", false);
 }
+
+// ============================================================================
+// 13. Feature Interactions — Closures + Try/Catch/Finally
+// ============================================================================
+
+#[test]
+fn test_interaction_closure_in_catch() {
+    expect_i32("
+        function test(): number {
+            let result: number = 0;
+            try {
+                throw new Error(\"oops\");
+            } catch (e) {
+                let getter = (): number => 42;
+                result = getter();
+            }
+            return result;
+        }
+        return test();
+    ", 42);
+}
+
+#[test]
+fn test_interaction_closure_in_finally() {
+    expect_i32("
+        function test(): number {
+            let x: number = 0;
+            try {
+                x = 10;
+            } finally {
+                let add = (n: number): number => x + n;
+                x = add(5);
+            }
+            return x;
+        }
+        return test();
+    ", 15);
+}
+
+#[test]
+fn test_interaction_closure_survives_exception() {
+    expect_i32("
+        function test(): number {
+            let x: number = 10;
+            let getter = (): number => x;
+            try {
+                x = 20;
+                throw new Error(\"boom\");
+            } catch (e) {
+                // getter should see x = 20
+            }
+            return getter();
+        }
+        return test();
+    ", 20);
+}
+
+#[test]
+fn test_interaction_closure_modifies_across_try() {
+    expect_i32("
+        function test(): number {
+            let count: number = 0;
+            let inc = (): void => { count = count + 1; };
+            try {
+                inc();
+                inc();
+            } finally {
+                inc();
+            }
+            return count;
+        }
+        return test();
+    ", 3);
+}
+
+#[test]
+fn test_interaction_closure_rethrow_finally() {
+    expect_i32("
+        function test(): number {
+            let x: number = 0;
+            let setX = (v: number): void => { x = v; };
+            try {
+                try {
+                    throw new Error(\"inner\");
+                } finally {
+                    setX(42);
+                }
+            } catch (e) {
+                // swallow
+            }
+            return x;
+        }
+        return test();
+    ", 42);
+}
+
+// ============================================================================
+// 14. Advanced Switch Statements
+// ============================================================================
+
+#[test]
+fn test_switch_multiple_cases() {
+    expect_i32("
+        function classify(x: number): number {
+            switch (x) {
+                case 1: return 10;
+                case 2: return 20;
+                case 3: return 30;
+                default: return 0;
+            }
+        }
+        return classify(1) + classify(2) + classify(3);
+    ", 60);
+}
+
+#[test]
+fn test_switch_string_cases() {
+    expect_string("
+        function greet(lang: string): string {
+            switch (lang) {
+                case \"en\": return \"hello\";
+                case \"es\": return \"hola\";
+                case \"fr\": return \"bonjour\";
+                default: return \"hi\";
+            }
+        }
+        return greet(\"es\");
+    ", "hola");
+}
+
+#[test]
+fn test_switch_nested() {
+    expect_i32("
+        function classify(a: number, b: number): number {
+            switch (a) {
+                case 1:
+                    switch (b) {
+                        case 10: return 110;
+                        case 20: return 120;
+                        default: return 100;
+                    }
+                case 2: return 200;
+                default: return 0;
+            }
+        }
+        return classify(1, 20);
+    ", 120);
+}
+
+#[test]
+fn test_switch_in_loop() {
+    expect_i32("
+        let sum: number = 0;
+        let items: number[] = [1, 2, 3, 2, 1];
+        for (const item of items) {
+            switch (item) {
+                case 1: sum = sum + 10; break;
+                case 2: sum = sum + 20; break;
+                case 3: sum = sum + 30; break;
+            }
+        }
+        return sum;
+    ", 90);
+}
+
+#[test]
+fn test_switch_with_return() {
+    // Each case returns directly (no block scoping needed)
+    expect_i32("
+        function test(x: number): number {
+            switch (x) {
+                case 1: return 100;
+                case 2: return 200;
+                default: return 0;
+            }
+        }
+        return test(2);
+    ", 200);
+}
+
+// ============================================================================
+// 15. Typeof Edge Cases
+// ============================================================================
+
+#[test]
+fn test_typeof_number() {
+    expect_bool("
+        let x: number = 42;
+        return typeof x == \"number\";
+    ", true);
+}
+
+#[test]
+fn test_typeof_string() {
+    expect_bool("
+        let s: string = \"hello\";
+        return typeof s == \"string\";
+    ", true);
+}
+
+#[test]
+fn test_typeof_boolean() {
+    expect_bool("
+        let b: boolean = true;
+        return typeof b == \"boolean\";
+    ", true);
+}
+
+#[test]
+fn test_typeof_null() {
+    expect_bool("
+        let x: number | null = null;
+        return typeof x == \"null\";
+    ", true);
+}
+
+#[test]
+fn test_typeof_float() {
+    expect_bool("
+        let f: number = 3.14;
+        return typeof f == \"number\";
+    ", true);
+}
+
+#[test]
+fn test_typeof_in_ternary() {
+    expect_i32("
+        let x: number = 5;
+        let result: number = typeof x == \"number\" ? 1 : 0;
+        return result;
+    ", 1);
+}
+
+// ============================================================================
+// 16. Advanced Class Patterns
+// ============================================================================
+
+#[test]
+fn test_class_four_level_inheritance() {
+    expect_i32("
+        class A {
+            value(): number { return 1; }
+        }
+        class B extends A {
+            value(): number { return super.value() + 10; }
+        }
+        class C extends B {
+            value(): number { return super.value() + 100; }
+        }
+        class D extends C {
+            value(): number { return super.value() + 1000; }
+        }
+        return new D().value();
+    ", 1111);
+}
+
+#[test]
+fn test_class_constructor_chain_three_levels() {
+    expect_i32("
+        class Base {
+            x: number;
+            constructor(x: number) { this.x = x; }
+        }
+        class Mid extends Base {
+            y: number;
+            constructor(x: number, y: number) {
+                super(x);
+                this.y = y;
+            }
+        }
+        class Top extends Mid {
+            z: number;
+            constructor(x: number, y: number, z: number) {
+                super(x, y);
+                this.z = z;
+            }
+        }
+        let t = new Top(1, 2, 3);
+        return t.x + t.y + t.z;
+    ", 6);
+}
+
+#[test]
+fn test_class_static_calls_static() {
+    expect_i32("
+        class MathUtil {
+            static double(x: number): number { return x * 2; }
+            static quadruple(x: number): number {
+                return MathUtil.double(MathUtil.double(x));
+            }
+        }
+        return MathUtil.quadruple(5);
+    ", 20);
+}
+
+#[test]
+fn test_class_method_chain_three() {
+    expect_i32("
+        class Builder {
+            a: number = 0;
+            b: number = 0;
+            c: number = 0;
+            setA(v: number): Builder { this.a = v; return this; }
+            setB(v: number): Builder { this.b = v; return this; }
+            setC(v: number): Builder { this.c = v; return this; }
+            sum(): number { return this.a + this.b + this.c; }
+        }
+        return new Builder().setA(10).setB(20).setC(12).sum();
+    ", 42);
+}
+
+#[test]
+fn test_class_closure_field() {
+    expect_i32("
+        class Handler {
+            action: (x: number) => number;
+            constructor(multiplier: number) {
+                this.action = (x: number): number => x * multiplier;
+            }
+        }
+        let h = new Handler(3);
+        return h.action(14);
+    ", 42);
+}
+
+#[test]
+fn test_class_instanceof_deep_chain() {
+    expect_i32("
+        class A {}
+        class B extends A {}
+        class C extends B {}
+        class D extends C {}
+        let d = new D();
+        let r1: number = d instanceof A ? 1 : 0;
+        let r2: number = d instanceof B ? 10 : 0;
+        let r3: number = d instanceof C ? 100 : 0;
+        let r4: number = d instanceof D ? 1000 : 0;
+        return r1 + r2 + r3 + r4;
+    ", 1111);
+}
+
+#[test]
+fn test_class_method_with_closure_this() {
+    expect_i32("
+        class Acc {
+            total: number = 0;
+            addAll(items: number[]): number {
+                let adder = (x: number): void => {
+                    this.total = this.total + x;
+                };
+                for (const item of items) {
+                    adder(item);
+                }
+                return this.total;
+            }
+        }
+        let a = new Acc();
+        return a.addAll([10, 20, 12]);
+    ", 42);
+}
+
+// ============================================================================
+// 17. Advanced Closure Patterns
+// ============================================================================
+
+#[test]
+fn test_closure_factory_three_levels() {
+    expect_i32("
+        function make(a: number): (b: number) => (c: number) => number {
+            return (b: number): (c: number) => number => {
+                return (c: number): number => a + b + c;
+            };
+        }
+        return make(10)(20)(12);
+    ", 42);
+}
+
+#[test]
+fn test_closure_mutable_capture_in_for_of() {
+    expect_i32("
+        let fns: (() => number)[] = [];
+        let data: number[] = [10, 20, 30];
+        for (const d of data) {
+            fns.push((): number => d);
+        }
+        return fns[0]() + fns[1]() + fns[2]();
+    ", 60);
+}
+
+#[test]
+fn test_closure_recursive_via_captured_var() {
+    expect_i32("
+        let fib: (n: number) => number = (n: number): number => 0;
+        fib = (n: number): number => {
+            if (n <= 1) { return n; }
+            return fib(n - 1) + fib(n - 2);
+        };
+        return fib(10);
+    ", 55);
+}
+
+#[test]
+fn test_closure_counter_pair() {
+    expect_i32("
+        function makePair(): number {
+            let val: number = 10;
+            let inc = (): void => { val = val + 1; };
+            let dec = (): void => { val = val - 1; };
+            inc();
+            inc();
+            inc();
+            dec();
+            return val;
+        }
+        return makePair();
+    ", 12);
+}
+
+#[test]
+fn test_closure_compose_chain() {
+    expect_i32("
+        function pipe(a: (x: number) => number, b: (x: number) => number): (x: number) => number {
+            return (x: number): number => b(a(x));
+        }
+        let addOne = (x: number): number => x + 1;
+        let double = (x: number): number => x * 2;
+        let transform = pipe(addOne, double);
+        return transform(20);
+    ", 42);
+}
+
+#[test]
+fn test_closure_over_loop_variable_mutation() {
+    expect_i32("
+        let getter: () => number = (): number => 0;
+        let i: number = 0;
+        while (i < 5) {
+            getter = (): number => i;
+            i = i + 1;
+        }
+        return getter();
+    ", 5);
+}
+
+// ============================================================================
+// 18. Destructuring + Feature Interactions
+// ============================================================================
+
+#[test]
+fn test_destructure_array_in_closure() {
+    expect_i32("
+        function test(): number {
+            let arr: number[] = [10, 20, 12];
+            let compute = (): number => {
+                let [a, b, c] = arr;
+                return a + b + c;
+            };
+            return compute();
+        }
+        return test();
+    ", 42);
+}
+
+#[test]
+fn test_destructure_rest_sum() {
+    expect_i32("
+        let arr: number[] = [1, 2, 3, 4, 5];
+        let [first, second, ...rest] = arr;
+        let sum: number = first + second;
+        for (const r of rest) {
+            sum = sum + r;
+        }
+        return sum;
+    ", 15);
+}
+
+#[test]
+fn test_destructure_nested_array() {
+    expect_i32("
+        let matrix: number[][] = [[1, 2], [3, 4]];
+        let [row0, row1] = matrix;
+        return row0[0] + row0[1] + row1[0] + row1[1];
+    ", 10);
+}
+
+#[test]
+fn test_destructure_object_in_for_of_with_closure() {
+    expect_i32("
+        class Item {
+            name: string;
+            value: number;
+            constructor(name: string, value: number) {
+                this.name = name;
+                this.value = value;
+            }
+        }
+        let items: Item[] = [new Item(\"a\", 10), new Item(\"b\", 20), new Item(\"c\", 12)];
+        let fns: (() => number)[] = [];
+        for (const item of items) {
+            fns.push((): number => item.value);
+        }
+        return fns[0]() + fns[1]() + fns[2]();
+    ", 42);
+}
+
+#[test]
+fn test_destructure_skip_multiple() {
+    expect_i32("
+        let arr: number[] = [1, 2, 3, 4, 5];
+        let [, , third, , fifth] = arr;
+        return third + fifth;
+    ", 8);
+}
+
+// ============================================================================
+// 19. Advanced Control Flow
+// ============================================================================
+
+#[test]
+fn test_control_break_while_inside_for_of() {
+    expect_i32("
+        let result: number = 0;
+        let items: number[] = [1, 2, 3];
+        for (const item of items) {
+            let j: number = 0;
+            while (j < 10) {
+                if (j >= item) { break; }
+                j = j + 1;
+            }
+            result = result + j;
+        }
+        return result;
+    ", 6);
+}
+
+#[test]
+fn test_control_continue_in_nested_for() {
+    expect_i32("
+        let sum: number = 0;
+        for (let i: number = 0; i < 3; i = i + 1) {
+            let items: number[] = [1, 2, 3, 4, 5];
+            for (const item of items) {
+                if (item % 2 == 0) { continue; }
+                sum = sum + item;
+            }
+        }
+        return sum;
+    ", 27);
+}
+
+#[test]
+fn test_control_return_from_nested_loops() {
+    expect_i32("
+        function findFirst(matrix: number[][]): number {
+            for (const row of matrix) {
+                for (const val of row) {
+                    if (val > 10) {
+                        return val;
+                    }
+                }
+            }
+            return -1;
+        }
+        let m: number[][] = [[1, 2, 3], [4, 5, 15], [7, 8, 9]];
+        return findFirst(m);
+    ", 15);
+}
+
+#[test]
+fn test_control_guard_clause_pattern() {
+    expect_i32("
+        function process(x: number): number {
+            if (x < 0) { return -1; }
+            if (x == 0) { return 0; }
+            if (x > 100) { return 100; }
+            return x * 2;
+        }
+        return process(-5) + process(0) + process(21) + process(200);
+    ", 141);
+}
+
+#[test]
+fn test_control_do_while_break() {
+    expect_i32("
+        let count: number = 0;
+        do {
+            count = count + 1;
+            if (count == 5) { break; }
+        } while (count < 100);
+        return count;
+    ", 5);
+}
+
+// ============================================================================
+// 20. Async Edge Cases
+// ============================================================================
+
+#[test]
+fn test_async_await_in_try_catch() {
+    expect_i32("
+        async function mayFail(fail: boolean): Task<number> {
+            if (fail) { throw new Error(\"async error\"); }
+            return 42;
+        }
+        async function test(): Task<number> {
+            try {
+                return await mayFail(false);
+            } catch (e) {
+                return -1;
+            }
+        }
+        return await test();
+    ", 42);
+}
+
+#[test]
+fn test_async_exception_caught() {
+    expect_i32("
+        async function boom(): Task<number> {
+            throw new Error(\"async boom\");
+        }
+        async function test(): Task<number> {
+            try {
+                return await boom();
+            } catch (e) {
+                return 99;
+            }
+        }
+        return await test();
+    ", 99);
+}
+
+#[test]
+fn test_async_sequential_awaits() {
+    expect_i32("
+        async function step(x: number): Task<number> {
+            return x + 1;
+        }
+        async function pipeline(): Task<number> {
+            let a = await step(0);
+            let b = await step(a);
+            let c = await step(b);
+            let d = await step(c);
+            return d;
+        }
+        return await pipeline();
+    ", 4);
+}
+
+#[test]
+fn test_async_returns_string() {
+    expect_string("
+        async function greet(name: string): Task<string> {
+            return \"hello \" + name;
+        }
+        return await greet(\"world\");
+    ", "hello world");
+}
+
+#[test]
+fn test_async_returns_bool() {
+    expect_bool("
+        async function isPositive(x: number): Task<boolean> {
+            return x > 0;
+        }
+        return await isPositive(42);
+    ", true);
+}
+
+// ============================================================================
+// 21. Generic Edge Cases
+// ============================================================================
+
+#[test]
+fn test_generic_function_identity() {
+    expect_i32("
+        function identity<T>(x: T): T {
+            return x;
+        }
+        return identity<number>(42);
+    ", 42);
+}
+
+#[test]
+fn test_generic_function_pair() {
+    expect_i32("
+        function first<A, B>(a: A, b: B): A {
+            return a;
+        }
+        function second<A, B>(a: A, b: B): B {
+            return b;
+        }
+        return first<number, number>(10, 20) + second<number, number>(30, 32);
+    ", 42);
+}
+
+#[test]
+fn test_generic_class_basic() {
+    expect_i32("
+        class Box<T> {
+            value: T;
+            constructor(v: T) { this.value = v; }
+            get(): T { return this.value; }
+        }
+        let b = new Box<number>(42);
+        return b.get();
+    ", 42);
+}
+
+#[test]
+fn test_generic_class_string() {
+    expect_string("
+        class Wrapper<T> {
+            item: T;
+            constructor(item: T) { this.item = item; }
+            unwrap(): T { return this.item; }
+        }
+        let w = new Wrapper<string>(\"hello\");
+        return w.unwrap();
+    ", "hello");
+}
+
+#[test]
+fn test_generic_with_array() {
+    expect_i32("
+        function firstElement<T>(arr: T[]): T {
+            return arr[0];
+        }
+        let nums: number[] = [42, 10, 20];
+        return firstElement<number>(nums);
+    ", 42);
+}
+
+// ============================================================================
+// 22. Map/Set Edge Cases
+// ============================================================================
+
+#[test]
+fn test_map_overwrite_key() {
+    expect_i32_with_builtins("
+        let m = new Map<string, number>();
+        m.set(\"key\", 10);
+        m.set(\"key\", 42);
+        let v = m.get(\"key\");
+        if (v != null) { return v; }
+        return 0;
+    ", 42);
+}
+
+#[test]
+fn test_map_get_missing_returns_null() {
+    expect_bool_with_builtins("
+        let m = new Map<string, number>();
+        m.set(\"a\", 1);
+        let v = m.get(\"b\");
+        return v == null;
+    ", true);
+}
+
+#[test]
+fn test_set_duplicate_add() {
+    expect_i32_with_builtins("
+        let s = new Set<number>();
+        s.add(1);
+        s.add(1);
+        s.add(1);
+        return s.size();
+    ", 1);
+}
+
+#[test]
+fn test_set_has_after_delete() {
+    expect_bool_with_builtins("
+        let s = new Set<number>();
+        s.add(42);
+        s.delete(42);
+        return s.has(42);
+    ", false);
+}
+
+#[test]
+fn test_map_size_after_operations() {
+    expect_i32_with_builtins("
+        let m = new Map<string, number>();
+        m.set(\"a\", 1);
+        m.set(\"b\", 2);
+        m.set(\"c\", 3);
+        m.delete(\"b\");
+        return m.size();
+    ", 2);
+}
+
+// ============================================================================
+// 23. Template Literal Edge Cases
+// ============================================================================
+
+#[test]
+fn test_template_with_method_call() {
+    expect_string("
+        function double(x: number): number { return x * 2; }
+        return `result: ${double(21)}`;
+    ", "result: 42");
+}
+
+#[test]
+fn test_template_with_ternary() {
+    expect_string("
+        let x: number = 5;
+        return `${x > 3 ? \"big\" : \"small\"}`;
+    ", "big");
+}
+
+#[test]
+fn test_template_empty_expression() {
+    expect_string("
+        let s: string = \"\";
+        return `[${s}]`;
+    ", "[]");
+}
+
+#[test]
+fn test_template_multiple_expressions() {
+    expect_string("
+        let a: number = 1;
+        let b: number = 2;
+        let c: number = 3;
+        return `${a}+${b}+${c}=${a + b + c}`;
+    ", "1+2+3=6");
+}

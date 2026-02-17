@@ -745,11 +745,23 @@ impl<'a> Lowerer<'a> {
                     .get(&local_idx)
                     .map(|r| r.ty)
                     .unwrap_or(TypeId::new(0));
-                let closure = self.alloc_register(closure_ty);
+                let closure_raw = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadLocal {
-                    dest: closure.clone(),
+                    dest: closure_raw.clone(),
                     index: local_idx,
                 });
+
+                // Unwrap RefCell if the variable is captured and externally modified
+                let closure = if self.refcell_registers.contains_key(&local_idx) {
+                    let val = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: val.clone(),
+                        refcell: closure_raw,
+                    });
+                    val
+                } else {
+                    closure_raw
+                };
 
                 // Check if this is an async closure (spawns a Task)
                 if let Some(&func_id) = self.closure_locals.get(&local_idx) {
@@ -952,6 +964,35 @@ impl<'a> Lowerer<'a> {
 
             // Check if this is a user-defined class method (including inherited methods)
             if let Some(class_id) = class_id {
+                // Check if this is a function-typed FIELD (not a method)
+                // Fields should be loaded via GetField + CallClosure, not CallMethod
+                let all_fields = self.get_all_fields(class_id);
+                let is_field = all_fields
+                    .iter()
+                    .any(|f| self.interner.resolve(f.name) == method_name);
+                let is_method = self.find_method(class_id, method_name_symbol).is_some();
+
+                if is_field && !is_method {
+                    // Function-typed field: emit GetField + CallClosure
+                    let object = self.lower_expr(&member.object);
+                    let field_info = all_fields
+                        .iter()
+                        .find(|f| self.interner.resolve(f.name) == method_name)
+                        .unwrap();
+                    let field_reg = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::LoadField {
+                        dest: field_reg.clone(),
+                        object,
+                        field: field_info.index,
+                    });
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure: field_reg,
+                        args,
+                    });
+                    return dest;
+                }
+
                 if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
                     // Lower the object (receiver) first
                     let object = self.lower_expr(&member.object);
@@ -3031,6 +3072,7 @@ impl<'a> Lowerer<'a> {
         self.next_block = 0;
         self.local_map.clear();
         self.local_registers.clear();
+        self.refcell_registers.clear();
         self.next_local = 0;
 
         // Create parameter registers
@@ -3637,7 +3679,7 @@ impl<'a> Lowerer<'a> {
 
     /// Get all fields for a class, including inherited fields from parent classes.
     /// Returns fields in order: parent fields first, then child fields.
-    fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
+    pub(super) fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
         let mut all_fields = Vec::new();
 
         // First, get parent fields (recursively)

@@ -3,7 +3,10 @@
 //! Converts AST statements to IR instructions.
 
 use super::Lowerer;
-use crate::compiler::ir::{BinaryOp, IrConstant, IrInstr, IrValue, Register, Terminator};
+use crate::compiler::ir::{
+    BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
+};
+use crate::compiler::ir::block::BasicBlockId;
 use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
 
@@ -209,7 +212,52 @@ impl<'a> Lowerer<'a> {
             index: body_idx,
         });
 
+        // Determine loop variable name and check if captured
+        let loop_var_name = match &for_of.left {
+            ast::ForOfLeft::VariableDecl(decl) => {
+                if let ast::Pattern::Identifier(ident) = &decl.pattern {
+                    Some(ident.name)
+                } else { None }
+            }
+            ast::ForOfLeft::Pattern(ast::Pattern::Identifier(ident)) => Some(ident.name),
+            _ => None,
+        };
+
+        let is_captured = loop_var_name
+            .map(|n| self.loop_captured_vars.contains(&n))
+            .unwrap_or(false);
+
+        // If captured, mark for RefCell treatment
+        if is_captured {
+            if let Some(name) = loop_var_name {
+                self.refcell_vars.insert(name);
+            }
+        }
+
+        // Infer element class type from the iterable for field access resolution
+        if let Some(var_name) = loop_var_name {
+            // Check if iterable is a variable with known array element class type
+            if let ast::Expression::Identifier(iter_ident) = &for_of.right {
+                if let Some(&elem_class_id) = self.array_element_class_map.get(&iter_ident.name) {
+                    self.variable_class_map.insert(var_name, elem_class_id);
+                }
+            }
+            // Also check if the for-of variable has a type annotation
+            if let ast::ForOfLeft::VariableDecl(decl) = &for_of.left {
+                if let Some(type_ann) = &decl.type_annotation {
+                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(var_name, class_id);
+                        }
+                    }
+                }
+            }
+        }
+
         // Bind the loop variable (supports destructuring patterns)
+        // Clone elem_reg before binding so we can use it for RefCell wrapping
+        let elem_for_refcell = if is_captured { Some(elem_reg.clone()) } else { None };
+
         match &for_of.left {
             ast::ForOfLeft::VariableDecl(decl) => {
                 self.bind_pattern(&decl.pattern, elem_reg);
@@ -227,6 +275,26 @@ impl<'a> Lowerer<'a> {
                     _ => {
                         self.bind_pattern(pattern, elem_reg);
                     }
+                }
+            }
+        }
+
+        // Per-iteration RefCell binding for captured loop variables
+        if is_captured {
+            if let Some(var_name) = loop_var_name {
+                if let (Some(&local_idx), Some(value_reg)) = (self.local_map.get(&var_name), elem_for_refcell) {
+                    let refcell_ty = TypeId::new(0);
+                    let refcell_reg = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::NewRefCell {
+                        dest: refcell_reg.clone(),
+                        initial_value: value_reg,
+                    });
+                    self.local_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: refcell_reg,
+                    });
                 }
             }
         }
@@ -583,6 +651,14 @@ impl<'a> Lowerer<'a> {
                 if let ast::Type::Reference(type_ref) = &type_ann.ty {
                     if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
                         self.variable_class_map.insert(name, class_id);
+                    }
+                }
+                // Track array element class type (e.g., `let items: Item[] = [...]`)
+                if let ast::Type::Array(arr_ty) = &type_ann.ty {
+                    if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
+                        if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
+                            self.array_element_class_map.insert(name, class_id);
+                        }
                     }
                 }
             }
@@ -1019,6 +1095,11 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_break(&mut self, _brk: &ast::BreakStatement) {
+        // If inside a switch statement, break targets the switch exit block
+        if let Some(&switch_exit) = self.switch_stack.last() {
+            self.set_terminator(Terminator::Jump(switch_exit));
+            return;
+        }
         if let Some(loop_ctx) = self.loop_stack.last().cloned() {
             // Inline finally blocks between here and the loop.
             // Drain entries to prevent recursive re-inlining.
@@ -1203,17 +1284,27 @@ impl<'a> Lowerer<'a> {
         let entry_block = self.current_block;
         let exit_block = self.alloc_block();
 
-        // Collect case blocks and values
-        let mut cases = Vec::new();
+        // Push switch exit so break inside case bodies targets this switch
+        self.switch_stack.push(exit_block);
+
+        // Collect case blocks and values, separating int cases from string cases
+        let mut int_cases = Vec::new();
+        let mut string_cases: Vec<(String, BasicBlockId)> = Vec::new();
         let mut default_block = None;
 
         for case in &switch.cases {
             let case_block = self.alloc_block();
 
             if let Some(test) = &case.test {
-                // Extract integer value from test expression
-                if let ast::Expression::IntLiteral(lit) = test {
-                    cases.push((lit.value as i32, case_block));
+                match test {
+                    ast::Expression::IntLiteral(lit) => {
+                        int_cases.push((lit.value as i32, case_block));
+                    }
+                    ast::Expression::StringLiteral(lit) => {
+                        let resolved = self.interner.resolve(lit.value).to_string();
+                        string_cases.push((resolved, case_block));
+                    }
+                    _ => {}
                 }
             } else {
                 // Default case
@@ -1233,14 +1324,48 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Set switch terminator on the entry block
+        self.switch_stack.pop();
+
         let default = default_block.unwrap_or(exit_block);
-        self.current_block = entry_block;
-        self.set_terminator(Terminator::Switch {
-            value: discriminant,
-            cases,
-            default,
-        });
+
+        if !string_cases.is_empty() {
+            // String switch: emit if-else chain of string equality comparisons
+            self.current_block = entry_block;
+            for (string_val, target_block) in &string_cases {
+                let const_reg = self.alloc_register(TypeId::new(1));
+                self.emit(IrInstr::Assign {
+                    dest: const_reg.clone(),
+                    value: IrValue::Constant(IrConstant::String(string_val.clone())),
+                });
+                let eq_reg = self.alloc_register(TypeId::new(2));
+                self.emit(IrInstr::StringCompare {
+                    dest: eq_reg.clone(),
+                    left: discriminant.clone(),
+                    right: const_reg,
+                    mode: StringCompareMode::Full,
+                    negate: false,
+                });
+                let next_check = self.alloc_block();
+                self.set_terminator(Terminator::Branch {
+                    cond: eq_reg,
+                    then_block: *target_block,
+                    else_block: next_check,
+                });
+                self.current_function_mut()
+                    .add_block(crate::ir::BasicBlock::new(next_check));
+                self.current_block = next_check;
+            }
+            // After all string checks, jump to default
+            self.set_terminator(Terminator::Jump(default));
+        } else {
+            // Integer switch: use Switch terminator
+            self.current_block = entry_block;
+            self.set_terminator(Terminator::Switch {
+                value: discriminant,
+                cases: int_cases,
+                default,
+            });
+        }
 
         // Continue at exit block
         self.current_function_mut()

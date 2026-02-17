@@ -259,6 +259,8 @@ pub struct Lowerer<'a> {
     next_type_alias_id: u32,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext>,
+    /// Stack of switch exit blocks (break inside switch targets the switch exit, not the enclosing loop)
+    switch_stack: Vec<BasicBlockId>,
     /// Stack of try-finally contexts for inlining finally blocks at return/break/continue
     try_finally_stack: Vec<TryFinallyEntry>,
     /// Pending arrow functions to be added to module (with their assigned func_id)
@@ -281,6 +283,8 @@ pub struct Lowerer<'a> {
     loop_captured_vars: FxHashSet<Symbol>,
     /// Map from variable name to its class type (for field access resolution)
     variable_class_map: FxHashMap<Symbol, ClassId>,
+    /// Map from array variable name to its element's class type (for for-of loop type inference)
+    array_element_class_map: FxHashMap<Symbol, ClassId>,
     /// Current class being processed (for method lowering)
     current_class: Option<ClassId>,
     /// Register holding `this` in current method
@@ -353,6 +357,7 @@ impl<'a> Lowerer<'a> {
             type_alias_map: FxHashMap::default(),
             next_type_alias_id: 0,
             loop_stack: Vec::new(),
+            switch_stack: Vec::new(),
             try_finally_stack: Vec::new(),
             pending_arrow_functions: Vec::new(),
             arrow_counter: 0,
@@ -363,6 +368,7 @@ impl<'a> Lowerer<'a> {
             refcell_registers: FxHashMap::default(),
             loop_captured_vars: FxHashSet::default(),
             variable_class_map: FxHashMap::default(),
+            array_element_class_map: FxHashMap::default(),
             current_class: None,
             this_register: None,
             this_ancestor_info: None,
@@ -485,13 +491,9 @@ impl<'a> Lowerer<'a> {
                     let mut fields = Vec::new();
                     let mut static_fields = Vec::new();
 
-                    // Start field index after parent's fields (if any)
+                    // Start field index after ALL ancestor fields (not just immediate parent)
                     let mut field_index = if let Some(parent_id) = parent_class {
-                        // Get parent's field count to offset child field indices
-                        self.class_info_map
-                            .get(&parent_id)
-                            .map(|info| info.fields.len() as u16)
-                            .unwrap_or(0)
+                        self.get_all_fields(parent_id).len() as u16
                     } else {
                         0u16
                     };
@@ -819,6 +821,146 @@ impl<'a> Lowerer<'a> {
         for stmt in stmts {
             self.scan_stmt_for_captures(stmt, locals);
         }
+
+        // After scanning closures, check if any captured (read-only) variables are
+        // assigned anywhere in the enclosing scope. If so, they need RefCell wrapping
+        // to ensure closures see the live value, not a stale copy.
+        if !self.loop_captured_vars.is_empty() {
+            let mut assigned = FxHashSet::default();
+            self.collect_scope_assignments(stmts, &mut assigned);
+            for var in self.loop_captured_vars.clone() {
+                if assigned.contains(&var) {
+                    self.refcell_vars.insert(var);
+                }
+            }
+        }
+    }
+
+    /// Collect all variable names that are assigned in the given statements.
+    /// Does NOT descend into arrow function bodies (those are separate scopes).
+    fn collect_scope_assignments(&self, stmts: &[ast::Statement], assigned: &mut FxHashSet<Symbol>) {
+        use crate::parser::ast::*;
+        for stmt in stmts {
+            self.collect_assignments_in_stmt(stmt, assigned);
+        }
+    }
+
+    fn collect_assignments_in_stmt(&self, stmt: &ast::Statement, assigned: &mut FxHashSet<Symbol>) {
+        use crate::parser::ast::*;
+        match stmt {
+            Statement::Expression(expr) => {
+                self.collect_assignments_in_expr(&expr.expression, assigned);
+            }
+            Statement::VariableDecl(_) => {}
+            Statement::If(if_stmt) => {
+                self.collect_assignments_in_expr(&if_stmt.condition, assigned);
+                self.collect_assignments_in_stmt(&if_stmt.then_branch, assigned);
+                if let Some(else_br) = &if_stmt.else_branch {
+                    self.collect_assignments_in_stmt(else_br, assigned);
+                }
+            }
+            Statement::While(w) => {
+                self.collect_assignments_in_expr(&w.condition, assigned);
+                self.collect_assignments_in_stmt(&w.body, assigned);
+            }
+            Statement::DoWhile(dw) => {
+                self.collect_assignments_in_expr(&dw.condition, assigned);
+                self.collect_assignments_in_stmt(&dw.body, assigned);
+            }
+            Statement::For(f) => {
+                if let Some(ForInit::Expression(e)) = &f.init {
+                    self.collect_assignments_in_expr(e, assigned);
+                }
+                if let Some(test) = &f.test {
+                    self.collect_assignments_in_expr(test, assigned);
+                }
+                if let Some(update) = &f.update {
+                    self.collect_assignments_in_expr(update, assigned);
+                }
+                self.collect_assignments_in_stmt(&f.body, assigned);
+            }
+            Statement::ForOf(fo) => {
+                self.collect_assignments_in_expr(&fo.right, assigned);
+                self.collect_assignments_in_stmt(&fo.body, assigned);
+            }
+            Statement::Block(block) => {
+                for s in &block.statements {
+                    self.collect_assignments_in_stmt(s, assigned);
+                }
+            }
+            Statement::Return(ret) => {
+                if let Some(e) = &ret.value {
+                    self.collect_assignments_in_expr(e, assigned);
+                }
+            }
+            Statement::Try(try_stmt) => {
+                for s in &try_stmt.body.statements {
+                    self.collect_assignments_in_stmt(s, assigned);
+                }
+                if let Some(catch) = &try_stmt.catch_clause {
+                    for s in &catch.body.statements {
+                        self.collect_assignments_in_stmt(s, assigned);
+                    }
+                }
+                if let Some(finally) = &try_stmt.finally_clause {
+                    for s in &finally.statements {
+                        self.collect_assignments_in_stmt(s, assigned);
+                    }
+                }
+            }
+            Statement::Switch(sw) => {
+                self.collect_assignments_in_expr(&sw.discriminant, assigned);
+                for case in &sw.cases {
+                    for s in &case.consequent {
+                        self.collect_assignments_in_stmt(s, assigned);
+                    }
+                }
+            }
+            Statement::Throw(t) => {
+                self.collect_assignments_in_expr(&t.value, assigned);
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_assignments_in_expr(&self, expr: &ast::Expression, assigned: &mut FxHashSet<Symbol>) {
+        use crate::parser::ast::*;
+        match expr {
+            Expression::Assignment(a) => {
+                if let Expression::Identifier(ident) = &*a.left {
+                    assigned.insert(ident.name);
+                }
+                self.collect_assignments_in_expr(&a.left, assigned);
+                self.collect_assignments_in_expr(&a.right, assigned);
+            }
+            Expression::Binary(b) => {
+                self.collect_assignments_in_expr(&b.left, assigned);
+                self.collect_assignments_in_expr(&b.right, assigned);
+            }
+            Expression::Unary(u) => {
+                self.collect_assignments_in_expr(&u.operand, assigned);
+            }
+            Expression::Call(c) => {
+                self.collect_assignments_in_expr(&c.callee, assigned);
+                for arg in &c.arguments {
+                    self.collect_assignments_in_expr(arg, assigned);
+                }
+            }
+            Expression::Member(m) => {
+                self.collect_assignments_in_expr(&m.object, assigned);
+            }
+            Expression::Parenthesized(p) => {
+                self.collect_assignments_in_expr(&p.expression, assigned);
+            }
+            Expression::Conditional(c) => {
+                self.collect_assignments_in_expr(&c.test, assigned);
+                self.collect_assignments_in_expr(&c.consequent, assigned);
+                self.collect_assignments_in_expr(&c.alternate, assigned);
+            }
+            // Do NOT descend into arrow functions - they are separate scopes
+            Expression::Arrow(_) => {}
+            _ => {}
+        }
     }
 
     /// Scan a single statement for arrow functions that capture outer variables
@@ -869,6 +1011,59 @@ impl<'a> Lowerer<'a> {
                 for s in &block.statements {
                     self.scan_stmt_for_captures(s, locals);
                 }
+            }
+            Statement::ForOf(for_of) => {
+                let mut inner_locals = locals.clone();
+                match &for_of.left {
+                    ast::ForOfLeft::VariableDecl(var) => {
+                        if let Pattern::Identifier(ident) = &var.pattern {
+                            inner_locals.insert(ident.name);
+                        }
+                    }
+                    ast::ForOfLeft::Pattern(Pattern::Identifier(ident)) => {
+                        inner_locals.insert(ident.name);
+                    }
+                    _ => {}
+                }
+                self.scan_expr_for_captures(&for_of.right, locals);
+                self.scan_stmt_for_captures(&for_of.body, &inner_locals);
+            }
+            Statement::DoWhile(do_while) => {
+                self.scan_expr_for_captures(&do_while.condition, locals);
+                self.scan_stmt_for_captures(&do_while.body, locals);
+            }
+            Statement::Switch(switch_stmt) => {
+                self.scan_expr_for_captures(&switch_stmt.discriminant, locals);
+                for case in &switch_stmt.cases {
+                    if let Some(test) = &case.test {
+                        self.scan_expr_for_captures(test, locals);
+                    }
+                    for s in &case.consequent {
+                        self.scan_stmt_for_captures(s, locals);
+                    }
+                }
+            }
+            Statement::Try(try_stmt) => {
+                for s in &try_stmt.body.statements {
+                    self.scan_stmt_for_captures(s, locals);
+                }
+                if let Some(catch_clause) = &try_stmt.catch_clause {
+                    let mut catch_locals = locals.clone();
+                    if let Some(Pattern::Identifier(ident)) = &catch_clause.param {
+                        catch_locals.insert(ident.name);
+                    }
+                    for s in &catch_clause.body.statements {
+                        self.scan_stmt_for_captures(s, &catch_locals);
+                    }
+                }
+                if let Some(finally_clause) = &try_stmt.finally_clause {
+                    for s in &finally_clause.statements {
+                        self.scan_stmt_for_captures(s, locals);
+                    }
+                }
+            }
+            Statement::Throw(throw_stmt) => {
+                self.scan_expr_for_captures(&throw_stmt.value, locals);
             }
             _ => {}
         }
@@ -1041,6 +1236,57 @@ impl<'a> Lowerer<'a> {
                 for s in &block.statements {
                     self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
                 }
+            }
+            Statement::ForOf(for_of) => {
+                self.find_captured_refs(&for_of.right, outer_locals, arrow_locals);
+                self.find_captured_refs_in_stmt(&for_of.body, outer_locals, arrow_locals);
+            }
+            Statement::DoWhile(do_while) => {
+                self.find_captured_refs(&do_while.condition, outer_locals, arrow_locals);
+                self.find_captured_refs_in_stmt(&do_while.body, outer_locals, arrow_locals);
+            }
+            Statement::Switch(switch_stmt) => {
+                self.find_captured_refs(&switch_stmt.discriminant, outer_locals, arrow_locals);
+                for case in &switch_stmt.cases {
+                    if let Some(test) = &case.test {
+                        self.find_captured_refs(test, outer_locals, arrow_locals);
+                    }
+                    for s in &case.consequent {
+                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
+                    }
+                }
+            }
+            Statement::Try(try_stmt) => {
+                for s in &try_stmt.body.statements {
+                    self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
+                }
+                if let Some(catch_clause) = &try_stmt.catch_clause {
+                    for s in &catch_clause.body.statements {
+                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
+                    }
+                }
+                if let Some(finally_clause) = &try_stmt.finally_clause {
+                    for s in &finally_clause.statements {
+                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
+                    }
+                }
+            }
+            Statement::Throw(throw_stmt) => {
+                self.find_captured_refs(&throw_stmt.value, outer_locals, arrow_locals);
+            }
+            Statement::For(for_stmt) => {
+                if let Some(init) = &for_stmt.init {
+                    if let ast::ForInit::Expression(e) = init {
+                        self.find_captured_refs(e, outer_locals, arrow_locals);
+                    }
+                }
+                if let Some(cond) = &for_stmt.test {
+                    self.find_captured_refs(cond, outer_locals, arrow_locals);
+                }
+                if let Some(update) = &for_stmt.update {
+                    self.find_captured_refs(update, outer_locals, arrow_locals);
+                }
+                self.find_captured_refs_in_stmt(&for_stmt.body, outer_locals, arrow_locals);
             }
             _ => {}
         }
