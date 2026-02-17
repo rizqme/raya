@@ -127,11 +127,11 @@ crates/
 
 | Module | Import | Methods | Milestone |
 |--------|--------|---------|-----------|
-| Logger | `import Logger from "std:logger"` | debug, info, warn, error | M4.2 |
-| Math | `import { Math } from "std:math"` | 22 functions + PI, E | M4.3 |
-| Crypto | `import { Crypto } from "std:crypto"` | 12 methods | M4.6 |
-| Time | `import { Time } from "std:time"` | 12 methods | M4.7 |
-| Path | `import { Path } from "std:path"` | 14 methods | M4.8 |
+| Logger | `import logger from "std:logger"` | debug, info, warn, error | M4.2 |
+| Math | `import math from "std:math"` | 22 functions + PI, E | M4.3 |
+| Crypto | `import crypto from "std:crypto"` | 12 methods | M4.6 |
+| Time | `import time from "std:time"` | 12 methods | M4.7 |
+| Path | `import path from "std:path"` | 14 methods | M4.8 |
 | Runtime | `import { Compiler, Vm, ... } from "std:runtime"` | 9 exports | M4.5 |
 | Reflect | `import * as Reflect from "std:reflect"` | 149+ handlers | M3.8 |
 

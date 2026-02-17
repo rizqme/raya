@@ -779,7 +779,7 @@ class ArrayBuffer {
 ## 9. std:math - Math Operations Module ✅
 
 ```ts
-import { Math } from "std:math";
+import math from "std:math";
 ```
 
 **Class:** `Math` (singleton, default export)
@@ -817,7 +817,7 @@ import { Math } from "std:math";
 ## 10. std:crypto - Cryptographic Operations Module ✅
 
 ```ts
-import { Crypto } from "std:crypto";
+import crypto from "std:crypto";
 ```
 
 **Class:** `Crypto` (singleton, default export)
@@ -846,7 +846,7 @@ import { Crypto } from "std:crypto";
 ## 11. std:time - Time and Duration Module ✅
 
 ```ts
-import { Time } from "std:time";
+import time from "std:time";
 ```
 
 **Class:** `Time` (singleton, default export)
@@ -873,7 +873,7 @@ import { Time } from "std:time";
 ## 12. std:path - Path Manipulation Module ✅
 
 ```ts
-import { Path } from "std:path";
+import path from "std:path";
 ```
 
 **Class:** `Path` (singleton, default export)

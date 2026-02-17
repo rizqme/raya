@@ -21,8 +21,8 @@
 ## Quick Example
 
 ```typescript
-import Logger from "std:logger";
-import { Time } from "std:time";
+import logger from "std:logger";
+import time from "std:time";
 
 type Result<T> =
   | { status: "ok"; value: T }
@@ -33,17 +33,17 @@ async function fetchData(): Task<Result<number>> {
 }
 
 function main(): void {
-  const start = Time.monotonic();
+  const start = time.monotonic();
   const task = fetchData();  // Task starts immediately
   const result = await task; // Suspend until complete
 
   if (result.status == "ok") {
-    Logger.info("Success:", result.value);
+    logger.info("Success:", result.value);
   } else {
-    Logger.error("Error:", result.error);
+    logger.error("Error:", result.error);
   }
 
-  Logger.info("Elapsed:", Time.elapsed(start), "ns");
+  logger.info("Elapsed:", time.elapsed(start), "ns");
 }
 ```
 

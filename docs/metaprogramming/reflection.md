@@ -621,7 +621,7 @@ let enhanced = Reflect.createAspect(service, [
     {
         pointcut: /.*/,
         onError(target, method, error) {
-            Logger.error("Error in " + method + ": " + error.message);
+            logger.error("Error in " + method + ": " + error.message);
         }
     }
 ]);

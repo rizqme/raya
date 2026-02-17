@@ -1045,7 +1045,7 @@ class Point {
   }
 
   distance(): number {
-    return Math.sqrt(this.x * this.x + this.y * this.y);
+    return math.sqrt(this.x * this.x + this.y * this.y);
   }
 }
 ```

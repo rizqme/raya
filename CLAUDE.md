@@ -50,7 +50,7 @@
   - `std:` module registry with source embedding
   - `NativeHandler` trait for stdlib decoupling
   - `raya-runtime` crate binds engine + stdlib
-  - Logger.raya with debug/info/warn/error methods
+  - logger.raya with debug/info/warn/error methods
 - ✅ Phase 2: Console global removed
   - design/STDLIB.md updated (console → logger reference)
   - Reflect bootstrap: CONSOLE_LOG → LOGGER_INFO

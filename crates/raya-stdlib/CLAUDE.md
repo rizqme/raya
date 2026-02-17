@@ -30,7 +30,7 @@ src/
 └── stream.rs        # Stream: reactive stream implementation
 
 raya/                # .raya source files and type definitions
-├── Logger.raya      # std:logger source (default export)
+├── logger.raya      # std:logger source (default export)
 ├── logger.d.raya    # Logger type definitions
 ├── math.raya        # std:math source
 ├── math.d.raya      # Math type definitions
@@ -105,7 +105,7 @@ Both route to the same Rust implementations.
 - **Architecture**: Engine defines `NativeHandler` trait, stdlib implements it, runtime re-exports
 - **No direct coupling**: `raya-engine` does NOT depend on `raya-stdlib`
 - **Native IDs** must match across `builtin.rs`, `.raya` sources, and `StdNativeHandler`
-- **std: prefix**: Standard library modules use `std:` namespace (e.g., `import { Math } from "std:math"`)
+- **std: prefix**: Standard library modules use `std:` namespace with default exports (e.g., `import math from "std:math"`)
 - `NativeContext` provides GC allocation, class registry, and scheduler access
 - `NativeValue` is type-safe (not string-based) — use `.as_f64()`, `.as_i32()`, `.as_string()`, etc.
 - Keep native implementations simple — complex logic should be in Raya

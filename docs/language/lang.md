@@ -351,7 +351,7 @@ let f2: float = 3.14;
 let i2: int = f2;  // ERROR: No implicit float → int conversion
 
 // Explicit conversion with built-in functions
-let i3: int = Math.floor(f2);     // floor/ceil/round/trunc
+let i3: int = math.floor(f2);     // floor/ceil/round/trunc
 let f3: float = float(i);          // Explicit cast
 ```
 
@@ -800,7 +800,7 @@ let num: number = str;  // ERROR
 
 // ❌ ERROR: float → int (precision loss)
 let f: float = 3.14;
-let i: int = f;  // ERROR: Use Math.floor/ceil/round instead
+let i: int = f;  // ERROR: Use math.floor/ceil/round instead
 
 // ❌ ERROR: Unrelated class types
 class Cat { }
@@ -816,7 +816,7 @@ let dog: Dog = cat;  // ERROR: Incompatible nominal types
 | `number` | `string` | ✅ Yes | Automatic conversion |
 | `int` | `float` | ✅ Yes | Safe widening |
 | `string` | `number` | ❌ No | Use `parseFloat()` |
-| `float` | `int` | ❌ No | Use `Math.floor()` |
+| `float` | `int` | ❌ No | Use `math.floor()` |
 | `T` | `T \| U` | ✅ Yes | Widening to union |
 | `Dog` | `Animal` | ✅ Yes | Subtype to supertype |
 | `RaceCar` | `Car` | ✅ Yes | Structural subtyping |
@@ -899,7 +899,7 @@ type Shape =
 function area(shape: Shape): number {
   switch (shape.kind) {
     case "circle":
-      return Math.PI * shape.radius * shape.radius;
+      return math.PI * shape.radius * shape.radius;
     case "rectangle":
       return shape.width * shape.height;
   }
@@ -1264,7 +1264,7 @@ type Shape =
 function area(shape: Shape): number {
   switch (shape.kind) {  // Check discriminant, not typeof
     case "circle":
-      return Math.PI * shape.radius ** 2;
+      return math.PI * shape.radius ** 2;
     case "rectangle":
       return shape.width * shape.height;
   }
@@ -1557,7 +1557,7 @@ class Point {
   }
 
   distance(): number {
-    return Math.sqrt(this.x * this.x + this.y * this.y);
+    return math.sqrt(this.x * this.x + this.y * this.y);
   }
 }
 ```
@@ -1711,11 +1711,11 @@ class Circle extends Shape {
   }
 
   area(): number {
-    return Math.PI * this.radius ** 2;
+    return math.PI * this.radius ** 2;
   }
 
   perimeter(): number {
-    return 2 * Math.PI * this.radius;
+    return 2 * math.PI * this.radius;
   }
 }
 
@@ -3137,16 +3137,16 @@ logger.error(...values: any[]): void;
 ### 17.2 Math
 
 ```ts
-Math.abs(x: number): number;
-Math.floor(x: number): number;
-Math.ceil(x: number): number;
-Math.round(x: number): number;
-Math.sqrt(x: number): number;
-Math.pow(base: number, exp: number): number;
-Math.random(): number;  // [0, 1)
+math.abs(x: number): number;
+math.floor(x: number): number;
+math.ceil(x: number): number;
+math.round(x: number): number;
+math.sqrt(x: number): number;
+math.pow(base: number, exp: number): number;
+math.random(): number;  // [0, 1)
 
-Math.PI: number;
-Math.E: number;
+math.PI: number;
+math.E: number;
 ```
 
 ### 17.3 String Methods
@@ -4198,7 +4198,7 @@ async function outer(): Task<void> {
 ```ts
 async function example(): Task<void> {
   try {
-    if (Math.random() > 0.5) {
+    if (math.random() > 0.5) {
       return;  // Finally still runs
     }
     throw new Error("error");  // Finally still runs

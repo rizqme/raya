@@ -174,10 +174,10 @@ Use built-in functions for explicit conversions:
 let f: float = 3.14;
 
 // float → int (various rounding strategies)
-let i1: int = Math.floor(f);    // 3 (round down)
-let i2: int = Math.ceil(f);     // 4 (round up)
-let i3: int = Math.round(f);    // 3 (round to nearest)
-let i4: int = Math.trunc(f);    // 3 (truncate towards zero)
+let i1: int = math.floor(f);    // 3 (round down)
+let i2: int = math.ceil(f);     // 4 (round up)
+let i3: int = math.round(f);    // 3 (round to nearest)
+let i4: int = math.trunc(f);    // 3 (truncate towards zero)
 
 // int → float (explicit cast)
 let i: int = 42;
