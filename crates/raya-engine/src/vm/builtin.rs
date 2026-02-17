@@ -328,6 +328,9 @@ pub mod regexp {
     pub const REPLACE_WITH: u16 = 0x0A05;
     /// `regex.split(str, limit?)` - Split string by pattern
     pub const SPLIT: u16 = 0x0A06;
+    /// Get match data for replaceWith (compiler intrinsic support)
+    /// Returns array of [matched_text, start_index] arrays, respecting 'g' flag
+    pub const REPLACE_MATCHES: u16 = 0x0A07;
 }
 
 /// Built-in method IDs for Reflect operations

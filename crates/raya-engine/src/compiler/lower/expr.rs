@@ -83,6 +83,7 @@ mod builtin_regexp {
     pub const REPLACE: u16 = 0x0A04;
     pub const REPLACE_WITH: u16 = 0x0A05;
     pub const SPLIT: u16 = 0x0A06;
+    pub const REPLACE_MATCHES: u16 = 0x0A07;
 }
 
 /// Look up built-in method ID by method name and object type
@@ -1037,6 +1038,16 @@ impl<'a> Lowerer<'a> {
             ];
             if ARRAY_CALLBACK_METHODS.contains(&method_id) {
                 return self.lower_array_intrinsic(dest, method_id, object, args);
+            }
+
+            // String/RegExp replaceWith methods are inlined as compiler intrinsics
+            // instead of emitting CallMethod (which would need nested execution)
+            const REPLACE_WITH_METHODS: &[u16] = &[
+                builtin_string::REPLACE_WITH_REGEXP, // str.replaceWith(regexp, callback)
+                builtin_regexp::REPLACE_WITH,         // regexp.replaceWith(str, callback)
+            ];
+            if REPLACE_WITH_METHODS.contains(&method_id) {
+                return self.lower_replace_with_intrinsic(dest, method_id, object, args);
             }
 
             self.emit(IrInstr::CallMethod {
@@ -2093,6 +2104,248 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
             value: IrValue::Register(array),
+        });
+        dest
+    }
+
+    /// Lower replaceWith(regexp, callback) as an inline loop (compiler intrinsic).
+    ///
+    /// Instead of emitting CallMethod that requires nested execution in the VM,
+    /// we emit an inline for-loop with CallClosure for the callback. The callback
+    /// executes on the main interpreter stack via normal frame push/pop.
+    ///
+    /// Generated IR equivalent:
+    /// ```text
+    /// matches = NativeCall(REGEXP_REPLACE_MATCHES, [regexp, input])
+    /// result = ""
+    /// last_end = 0
+    /// i = 0
+    /// len = ArrayLen(matches)
+    /// loop:
+    ///   match_arr = matches[i]
+    ///   match_text = match_arr[0]
+    ///   start_idx = match_arr[1]
+    ///   before = input.slice(last_end, start_idx)
+    ///   result = result ++ before
+    ///   replacement = callback(match_arr)
+    ///   result = result ++ replacement
+    ///   match_len = StringLen(match_text)
+    ///   last_end = start_idx + match_len
+    ///   i = i + 1
+    /// end loop
+    /// remaining = input.slice(last_end, StringLen(input))
+    /// result = result ++ remaining
+    /// ```
+    fn lower_replace_with_intrinsic(
+        &mut self,
+        dest: Register,
+        method_id: u16,
+        object: Register,
+        args: Vec<Register>,
+    ) -> Register {
+        // Determine input string, regexp, and callback based on call variant
+        let (input, regexp, callback) = if method_id == builtin_string::REPLACE_WITH_REGEXP {
+            // str.replaceWith(regexp, callback)
+            let mut args_iter = args.into_iter();
+            let regexp = args_iter.next().expect("replaceWith requires regexp argument");
+            let callback = args_iter.next().expect("replaceWith requires callback argument");
+            (object, regexp, callback)
+        } else {
+            // regexp.replaceWith(str, callback)
+            let mut args_iter = args.into_iter();
+            let input = args_iter.next().expect("replaceWith requires string argument");
+            let callback = args_iter.next().expect("replaceWith requires callback argument");
+            (input, object, callback)
+        };
+
+        // Step 1: Get all matches via NativeCall(REGEXP_REPLACE_MATCHES, [regexp, input])
+        // Returns array of [matched_text, start_index] arrays, respecting 'g' flag
+        let matches = self.alloc_register(TypeId::new(0)); // array of match arrays
+        self.emit(IrInstr::NativeCall {
+            dest: Some(matches.clone()),
+            native_id: builtin_regexp::REPLACE_MATCHES,
+            args: vec![regexp, input.clone()],
+        });
+
+        // Step 2: Initialize loop variables
+        // result = "" (empty string)
+        let result = self.alloc_register(TypeId::new(1)); // string type
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Constant(IrConstant::String(String::new())),
+        });
+
+        // last_end = 0
+        let last_end = self.emit_i32_const(0);
+
+        // i = 0
+        let i = self.emit_i32_const(0);
+
+        // len = ArrayLen(matches)
+        let len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: matches.clone(),
+        });
+
+        // Allocate blocks
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        // Jump to header
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Header: if i < len → body, else → exit
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "replaceWith.header"));
+        self.current_block = header_block;
+        let cond = self.alloc_register(TypeId::new(2)); // boolean
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: i.clone(),
+            right: len.clone(),
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body: process each match
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "replaceWith.body"));
+        self.current_block = body_block;
+
+        // match_arr = matches[i]
+        let match_arr = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: match_arr.clone(),
+            array: matches.clone(),
+            index: i.clone(),
+        });
+
+        // match_text = match_arr[0]
+        let zero = self.emit_i32_const(0);
+        let match_text = self.alloc_register(TypeId::new(1)); // string
+        self.emit(IrInstr::LoadElement {
+            dest: match_text.clone(),
+            array: match_arr.clone(),
+            index: zero,
+        });
+
+        // start_idx = match_arr[1]
+        let one_idx = self.emit_i32_const(1);
+        let start_idx = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::LoadElement {
+            dest: start_idx.clone(),
+            array: match_arr.clone(),
+            index: one_idx,
+        });
+
+        // before = input.slice(last_end, start_idx)
+        let before = self.alloc_register(TypeId::new(1)); // string
+        self.emit(IrInstr::CallMethod {
+            dest: Some(before.clone()),
+            object: input.clone(),
+            method: builtin_string::SUBSTRING,
+            args: vec![last_end.clone(), start_idx.clone()],
+        });
+
+        // result = result ++ before
+        let result_with_before = self.alloc_register(TypeId::new(1));
+        self.emit(IrInstr::BinaryOp {
+            dest: result_with_before.clone(),
+            op: BinaryOp::Concat,
+            left: result.clone(),
+            right: before,
+        });
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Register(result_with_before),
+        });
+
+        // replacement = callback(match_arr) — frame-based, can suspend
+        let replacement = self.alloc_register(TypeId::new(1)); // string
+        self.emit(IrInstr::CallClosure {
+            dest: Some(replacement.clone()),
+            closure: callback.clone(),
+            args: vec![match_arr],
+        });
+
+        // result = result ++ replacement
+        let result_with_replacement = self.alloc_register(TypeId::new(1));
+        self.emit(IrInstr::BinaryOp {
+            dest: result_with_replacement.clone(),
+            op: BinaryOp::Concat,
+            left: result.clone(),
+            right: replacement,
+        });
+        self.emit(IrInstr::Assign {
+            dest: result.clone(),
+            value: IrValue::Register(result_with_replacement),
+        });
+
+        // match_len = StringLen(match_text)
+        let match_len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::StringLen {
+            dest: match_len.clone(),
+            string: match_text,
+        });
+
+        // last_end = start_idx + match_len
+        self.emit(IrInstr::BinaryOp {
+            dest: last_end.clone(),
+            op: BinaryOp::Add,
+            left: start_idx,
+            right: match_len,
+        });
+
+        // i = i + 1
+        let one = self.emit_i32_const(1);
+        self.emit(IrInstr::BinaryOp {
+            dest: i.clone(),
+            op: BinaryOp::Add,
+            left: i.clone(),
+            right: one,
+        });
+        self.set_terminator(crate::compiler::ir::Terminator::Jump(header_block));
+
+        // Exit block: append remaining text after last match
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "replaceWith.exit"));
+        self.current_block = exit_block;
+
+        // input_len = StringLen(input)
+        let input_len = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::StringLen {
+            dest: input_len.clone(),
+            string: input.clone(),
+        });
+
+        // remaining = input.slice(last_end, input_len)
+        let remaining = self.alloc_register(TypeId::new(1)); // string
+        self.emit(IrInstr::CallMethod {
+            dest: Some(remaining.clone()),
+            object: input,
+            method: builtin_string::SUBSTRING,
+            args: vec![last_end, input_len],
+        });
+
+        // result = result ++ remaining
+        let final_result = self.alloc_register(TypeId::new(1));
+        self.emit(IrInstr::BinaryOp {
+            dest: final_result.clone(),
+            op: BinaryOp::Concat,
+            left: result,
+            right: remaining,
+        });
+
+        // dest = final_result
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Register(final_result),
         });
         dest
     }

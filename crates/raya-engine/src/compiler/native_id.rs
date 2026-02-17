@@ -160,6 +160,7 @@ pub const REGEXP_EXEC_ALL: u16 = 0x0A03;
 pub const REGEXP_REPLACE: u16 = 0x0A04;
 pub const REGEXP_REPLACE_WITH: u16 = 0x0A05;
 pub const REGEXP_SPLIT: u16 = 0x0A06;
+pub const REGEXP_REPLACE_MATCHES: u16 = 0x0A07;
 
 // ============================================================================
 // Date (0x0Bxx)
@@ -530,6 +531,7 @@ pub fn native_name(id: u16) -> &'static str {
         REGEXP_REPLACE => "RegExp.replace",
         REGEXP_REPLACE_WITH => "RegExp.replaceWith",
         REGEXP_SPLIT => "RegExp.split",
+        REGEXP_REPLACE_MATCHES => "RegExp.replaceMatches",
 
         // JSON
         JSON_STRINGIFY => "JSON.stringify",

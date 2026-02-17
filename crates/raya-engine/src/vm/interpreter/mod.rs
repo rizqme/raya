@@ -4,13 +4,13 @@ mod capabilities;
 mod class_registry;
 mod context;
 mod core;
-mod exec_context;
 pub(crate) mod execution;
+mod handlers;
+mod opcodes;
 mod lifecycle;
 mod marshal;
 mod module_registry;
 mod native_module_registry;
-pub mod opcodes;
 mod safepoint;
 mod shared_state;
 mod vm_facade;
@@ -22,7 +22,6 @@ pub use context::{
     ContextRegistry, ResourceCounters, ResourceLimits, VmContext, VmContextId, VmOptions,
 };
 pub use core::Interpreter;
-pub use exec_context::{AsyncContext, ExecutionContext, SyncContext};
 pub use execution::{ControlFlow, ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 pub use lifecycle::{
     ContextSnapshot, FrameSnapshot, TaskSnapshot, Vm as InnerVm, VmError, VmSnapshot, VmStats,
@@ -31,5 +30,5 @@ pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, Marsha
 pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
-pub use shared_state::{SharedVmState, TaskExecutor};
+pub use shared_state::SharedVmState;
 pub use vm_facade::Vm;
