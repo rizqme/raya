@@ -1,0 +1,785 @@
+---
+title: "VM Architecture"
+---
+
+# Raya VM High-Level Architecture
+
+> **Status:** Implemented
+> **Related:** [Language Spec](../language/lang.md), [Opcodes](../compiler/opcode.md), [Modules](./modules.md)
+
+A multi-threaded, task-based virtual machine for the Raya language.
+
+---
+
+## 1. Goals & Constraints
+
+* **Execute Raya bytecode** (Raya is a strict, safe subset of TypeScript).
+* **Support goroutine-style Tasks** (green threads) scheduled over multiple OS threads.
+* **Provide async/await semantics** where:
+  * `async` functions always run in their own Task.
+  * Calling an async function starts a Task immediately and returns a `Task<T>` handle.
+  * `await` blocks the current Task until the awaited Task completes.
+* **Guarantee atomic single-variable reads/writes** (no torn values).
+* **Provide Mutex** for multi-operation atomicity, with a simple, Go-like memory model.
+* **Use static type information** from Raya to optimize execution (typed opcodes, unboxed locals, specialized layouts).
+
+---
+
+## 2. Top-Level Architecture
+
+The Raya VM has three major layers:
+
+### 2.1 Frontend / Compiler
+
+* Parses Raya (TypeScript-subset syntax)
+* Type checks according to Raya rules
+* Produces a typed IR/AST
+* Emits typed bytecode + metadata (types, classes, methods, modules)
+
+### 2.2 Runtime / VM Core
+
+* Executes bytecode
+* Manages Tasks, Workers, Scheduler
+* Manages Heap, GC, Mutexes, and built-in types
+
+### 2.3 Host Integration / FFI Layer
+
+* Provides system I/O, timers, networking, etc.
+* Adapts host async operations into `Task<T>` handles
+
+This document focuses on the **VM Core**.
+
+---
+
+## 3. Core Execution Model
+
+### 3.1 Task (Green Thread)
+
+A **Task** is the fundamental unit of execution in Raya, analogous to a goroutine.
+
+Each Task has:
+
+* A unique `TaskId`
+* A call stack of frames
+* A program counter (IP) into a function's bytecode
+* A status: `NEW`, `READY`, `RUNNING`, `BLOCKED`, `COMPLETED`, `FAILED`
+* Storage for its result or error
+* Lists of waiting Tasks and then-callbacks (for Promise-like behavior)
+
+Conceptual structure:
+
+```rust
+Task {
+  id: TaskId
+  status: TaskStatus
+
+  stack: CallFrame[]
+  sp: int           // stack pointer
+  ip: IP            // instruction pointer
+
+  result: Value
+  error: Value | null
+
+  waitingTasks: List<TaskId>          // tasks blocked on await this Task
+  thenCallbacks: List<Continuation>   // registered via .then
+
+  ownerWorker: WorkerId | null        // for locality (optional)
+}
+```
+
+### 3.2 Call Frame
+
+Each call frame represents one function activation:
+
+```rust
+CallFrame {
+  func: FunctionHandle
+  ip: IP             // return IP
+
+  locals: Slot[]     // local variables (typed slots)
+  args: Slot[]       // arguments, may share storage with locals
+}
+```
+
+Slot representation can be optimized using static types (unboxed where possible).
+
+### 3.3 Unified Execution Model ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 4.10
+
+The VM uses a **single bytecode executor**: `Interpreter::run()` in `core.rs` (~784 lines). All function calls — including closures, constructors, and callbacks — use frame-based execution (`OpcodeResult::PushFrame`). There is no nested execution or secondary interpreter.
+
+```
+Interpreter::run(task) → ExecutionResult
+  ├─ OpcodeResult::Continue    → next instruction
+  ├─ OpcodeResult::PushFrame   → push frame, continue loop (calls, closures, callbacks)
+  ├─ OpcodeResult::Return(v)   → pop frame or complete task
+  ├─ OpcodeResult::Suspend(r)  → yield to scheduler (await, sleep, mutex)
+  └─ OpcodeResult::Error(e)    → exception handling
+```
+
+**Opcode dispatch** is modular — 15 categorized modules in `interpreter/opcodes/` (arithmetic, arrays, calls, closures, comparison, concurrency, constants, control_flow, exceptions, native, objects, stack, strings, types, variables).
+
+**Native call dispatch** in `opcodes/native.rs` routes by ID range to 4 handler modules in `interpreter/handlers/` (array, string, regexp, reflect).
+
+**Compiler intrinsics** for callback-taking methods (array.map/filter/reduce, string.replaceWith) emit inline for-loops with `CallClosure` at IR level, so callbacks execute as normal frames — no nested execution needed.
+
+---
+
+## 4. Multi-Threaded Scheduler
+
+### 4.0 Scheduler Overview
+
+Like Go's runtime, the Raya VM is designed to **maximize CPU core utilization** by default:
+
+* The VM automatically spawns **N worker threads**, where N = number of available CPU cores (via `std::thread::hardware_concurrency()` or equivalent)
+* Tasks are distributed across all workers using work-stealing for load balancing
+* This ensures that compute-intensive workloads automatically scale to use all available parallelism
+* The number of workers can be configured via environment variable or API (e.g., `RAYA_NUM_THREADS`)
+
+This design philosophy means:
+* **No manual thread pool configuration required** — the VM handles parallelism automatically
+* **Tasks run concurrently by default** — calling an async function immediately starts a Task that may run on any core
+* **Efficient CPU utilization** — idle workers steal work from busy workers, minimizing thread idle time
+
+### 4.1 Workers (OS Threads)
+
+The Raya VM runs on N OS threads (typically N = CPU cores), each running a Worker loop.
+
+```rust
+Worker {
+  id: WorkerId
+  localQueue: Deque<TaskId>   // work-stealing deque
+}
+```
+
+### 4.2 Global VM State
+
+```rust
+VM {
+  tasks: ConcurrentMap<TaskId, Task>
+
+  globalQueue: Deque<TaskId>  // shared fallback queue
+  workers: Worker[]
+
+  nextTaskId: AtomicCounter
+  shutdownFlag: AtomicBool
+}
+```
+
+### 4.3 Worker Loop
+
+Each Worker thread executes a loop:
+
+```rust
+workerLoop(worker):
+  while not vm.shutdownFlag:
+    taskId = popFromLocalOrStealOrGlobal(worker)
+
+    if taskId == NONE:
+      parkThreadUntilWork()
+      continue
+
+    runTask(taskId)
+```
+
+* `popFromLocalOrStealOrGlobal` tries:
+  * local queue first
+  * then steals from other workers
+  * then falls back to global queue
+
+### 4.4 Task Execution
+
+```rust
+runTask(taskId):
+  task = vm.tasks[taskId]
+  task.status = RUNNING
+  task.start_time = now()  // For preemption monitoring
+
+  while true:
+    // Check for asynchronous preemption (Go-style)
+    if task.preempt_requested:
+      rescheduleTask(task)
+      return
+
+    // Poll safepoint for GC/snapshot coordination
+    safepoint.poll()
+
+    instr = fetchInstruction(task)
+
+    switch instr.opcode:
+      case ... normal ops ...
+      case SPAWN:
+        newTask = createTask(instr.funcIndex)
+        scheduler.spawn(newTask)
+        push(newTask.id)
+      case AWAIT:
+        handleAwait(task)
+        return       // Task is now BLOCKED or completed
+      case MUTEX_LOCK:
+        if handleMutexLock(task, instr.mutexRef) == BLOCKED:
+          return
+      case YIELD:
+        rescheduleTask(task)
+        return
+      case RETURN:
+        completeTask(task, returnValue)
+        return
+```
+
+The interpreter runs until the Task:
+
+* blocks (on `AWAIT`, `MUTEX_LOCK`, I/O)
+* is preempted (running >10ms)
+* yields voluntarily
+* returns or fails
+
+### 4.5 Go-Style Asynchronous Preemption ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+To prevent long-running tasks from starving other tasks, Raya implements **Go-style asynchronous preemption** similar to Go 1.14+'s preemptive scheduling:
+
+#### Preemption Monitor (like Go's sysmon)
+
+A dedicated background thread monitors task execution times:
+
+```rust
+PreemptMonitor {
+  tasks: Arc<RwLock<HashMap<TaskId, Arc<Task>>>>
+  threshold: Duration  // Default: 10ms
+  shutdown: AtomicBool
+}
+
+fn monitor_loop():
+  loop every 1ms:
+    if shutdown: break
+
+    for task in tasks:
+      if task.state == RUNNING:
+        elapsed = now() - task.start_time
+        if elapsed >= threshold:
+          task.preempt_requested.store(true)  // Async signal
+```
+
+#### Preemption Points
+
+Tasks check for preemption at safe points:
+- **Safepoint polls** (every N instructions)
+- **Backward jumps** (loop headers)
+- **Function calls**
+
+```rust
+// At backward jump (loop header)
+if task.preempt_requested:
+  task.clear_preempt()
+  rescheduleTask(task)  // Yield to scheduler
+  return
+```
+
+**Key Benefits:**
+- Prevents task monopolization (fairness)
+- Maintains responsiveness under load
+- Works with cooperative scheduling (no signals/interrupts)
+- Allows nested task spawning without deadlock
+
+**Implementation Details:**
+- Monitor thread polls every 1ms
+- Default threshold: 10ms (configurable via `DEFAULT_PREEMPT_THRESHOLD`)
+- Preemption is **asynchronous** - set flag, task checks at safe points
+- No signals or forced context switches (pure cooperative + hints)
+
+### 4.6 Resource Limits for Inner VMs ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+Sub-schedulers (for inner VMs) support resource limits:
+
+```rust
+SchedulerLimits {
+  max_workers: Option<usize>,           // Limit worker threads
+  max_concurrent_tasks: Option<usize>,  // Limit running tasks
+  max_stack_size: Option<usize>,        // Per-task stack limit (bytes)
+  max_heap_size: Option<usize>,         // Total heap limit (bytes)
+}
+
+// Example: Restricted inner VM
+let limits = SchedulerLimits::restricted();
+// Returns: { max_workers: 1, max_concurrent_tasks: 10,
+//           max_stack_size: 1MB, max_heap_size: 10MB }
+
+let scheduler = Scheduler::with_limits(worker_count, limits);
+```
+
+When `spawn()` is called with limits:
+- Returns `None` if max_concurrent_tasks reached
+- Inner VM cannot exceed resource caps
+- Prevents resource exhaustion from untrusted code
+
+### 4.7 Nested Task Spawning ✅ **[IMPLEMENTED]**
+
+**Status:** Fully implemented in Milestone 1.10
+
+Tasks can spawn other tasks arbitrarily:
+
+```rust
+// Worker executor handles SPAWN opcode
+case SPAWN:
+  newTask = Task::new(func_index, module, Some(current_task.id))
+  tasks.write().insert(newTask.id, newTask.clone())
+  injector.push(newTask)  // Add to global queue
+  stack.push(Value::u64(newTask.id))
+```
+
+**Key Features:**
+- Parent task reference tracked (`parent: Option<TaskId>`)
+- Nested tasks execute on any available worker
+- Full AWAIT support in worker executors
+- Tested with 3-level nesting (VM → task → task → task)
+
+---
+
+## 5. Heap, GC & VmContext Model
+
+### 5.1 Per-Context Heap Architecture
+
+Raya uses **one heap per VmContext** for strong isolation, snapshot-ability, and resource control:
+
+```rust
+VmContext {
+  id: VmContextId
+  heap: Heap {
+    context_id: VmContextId
+    allocations: Vec<*mut GcHeader>
+    allocated_bytes: usize
+    max_heap_bytes: Option<usize>
+    type_registry: Arc<TypeRegistry>
+  }
+  globals: HashMap<String, Value>
+  resource_limits: ResourceLimits
+  resource_counters: ResourceCounters
+  gc_threshold: usize
+  gc_stats: GcStats
+}
+```
+
+**Design Benefits:**
+- Strong isolation for inner VMs
+- Snapshot entire context independently
+- Resource accounting is trivial
+- Security boundaries are clear
+- Per-context GC doesn't pause other contexts
+
+### 5.2 Value Representation (Tagged Pointers)
+
+Raya uses 64-bit tagged pointers for efficient value storage:
+
+```rust
+#[repr(transparent)]
+pub struct Value(u64);
+
+// Encoding:
+// Pointer:  pppppppppppppppppppppppppppppppppppppppppppppppppppppppppp000
+// i32:      000000000000000000000000000000iiiiiiiiiiiiiiiiiiiiiiiiiiii001
+// bool:     000000000000000000000000000000000000000000000000000000000b010
+// null:     0000000000000000000000000000000000000000000000000000000000110
+```
+
+**Benefits:**
+- 8-byte values (single word)
+- Inline i32, bool, null without allocation
+- Fast type checking (bit mask)
+- Heap pointers 8-byte aligned
+
+### 5.3 Type Metadata & Pointer Maps
+
+Precise GC requires type metadata for each allocated object:
+
+```rust
+TypeInfo {
+  type_id: TypeId
+  name: &'static str
+  size: usize
+  align: usize
+  pointer_map: PointerMap
+  drop_fn: Option<DropFn>
+}
+
+enum PointerMap {
+  None,                    // No pointers (primitives)
+  All(usize),              // All fields are pointers
+  Offsets(Vec<usize>),     // Specific field offsets
+  Array(Box<PointerMap>),  // Array elements
+}
+```
+
+**Pointer Maps Enable:**
+- Precise marking (no conservative scanning)
+- Faster GC (skip non-pointer data)
+- Accurate heap snapshots
+- Type-safe object traversal
+
+### 5.4 Object Layout in Memory
+
+Every heap allocation has a GC header:
+
+```
+┌─────────────────────────────────────────┐
+│ GcHeader (16 bytes, 8-byte aligned)     │
+│  - marked: bool                         │
+│  - context_id: VmContextId              │
+│  - type_id: TypeId                      │
+│  - size: usize                          │
+├─────────────────────────────────────────┤  ← GcPtr<T> points here
+│ Object data (variable size)             │
+│  - For objects: fields[N]               │
+│  - For arrays: length + elements[]      │
+│  - For strings: length + UTF-8 bytes[]  │
+└─────────────────────────────────────────┘
+```
+
+**Object Types:**
+
+```rust
+RayaString {
+  len: usize
+  data: [u8]  // UTF-8 bytes
+}
+
+RayaArray<T> {
+  len: usize
+  capacity: usize
+  elements: [T]
+}
+
+RayaObject {
+  class_id: ClassId
+  vtable_ptr: *VTable
+  fields: [Value]  // Determined by class
+}
+
+RayaClosure {
+  function_id: FunctionId
+  captures: [Value]  // Captured variables
+}
+```
+
+### 5.5 Garbage Collection (Phase 1: Mark-Sweep)
+
+**Per-Context Precise Mark-Sweep:**
+
+1. **Mark Phase:**
+   - Clear all mark bits in this context's heap
+   - Start from roots (tasks, globals in this context)
+   - Recursively mark reachable objects using pointer maps
+   - Type metadata guides precise traversal
+
+2. **Sweep Phase:**
+   - Iterate allocations in this context's heap
+   - Free unmarked objects (proper deallocation)
+   - Update heap statistics
+   - Adjust GC threshold
+
+**GC Triggering:**
+- Automatic: when `allocated_bytes > gc_threshold`
+- Manual: explicit `collect()` call
+- Threshold adjustment: `new_threshold = current_usage * 2`
+
+**Coordination:**
+- Stop-the-world within context only
+- Other contexts continue running
+- Safepoints at: function calls, loops, allocations
+
+**Complexity:** O(live objects in context)
+
+### 5.6 Safepoint Infrastructure
+
+Shared mechanism for GC and snapshotting:
+
+```rust
+SafepointCoordinator {
+  gc_pending: AtomicBool
+  snapshot_pending: AtomicBool
+  workers_at_safepoint: AtomicUsize
+  barrier: Barrier
+}
+```
+
+**Safepoint Locations:**
+- Function calls (prologue)
+- Loop back-edges
+- Allocations
+- Await points
+
+**Safepoint Poll (inlined):**
+```rust
+#[inline(always)]
+fn safepoint_poll() {
+    if gc_pending || snapshot_pending {
+        enter_safepoint()  // Stop and wait
+    }
+}
+```
+
+### 5.7 VM Snapshotting Integration
+
+Snapshots use the same safepoint mechanism as GC:
+
+**Snapshot Protocol:**
+1. Set `snapshot_pending` flag
+2. All workers reach safepoint (stop-the-world)
+3. Serialize heap state using pointer maps
+4. Serialize task state, globals, metadata
+5. Clear flag, resume workers
+
+**Snapshot-GC Coordination:**
+- Snapshot only when no GC in progress
+- GC only when no snapshot in progress
+- Shared safepoint ensures mutual exclusion
+
+**Snapshot Format:**
+```rust
+Snapshot {
+  magic: [u8; 4]  // "SNAP"
+  version: u32
+  context_id: VmContextId
+  heap_snapshot: HeapSnapshot {
+    allocations: Vec<AllocationSnapshot>
+    pointer_graph: PointerGraph
+  }
+  metadata: ContextMetadata
+  checksum: u32
+}
+```
+
+### 5.8 Inner VMs & Resource Isolation
+
+Each VmContext is fully isolated:
+
+**Resource Limits (per context):**
+```rust
+ResourceLimits {
+  max_heap_bytes: Option<usize>
+  max_tasks: Option<usize>
+  max_step_budget: Option<usize>
+}
+```
+
+**Resource Counters (atomic):**
+```rust
+ResourceCounters {
+  heap_bytes_used: AtomicUsize
+  task_count: AtomicUsize
+  steps_executed: AtomicUsize
+}
+```
+
+**Enforcement:**
+- Heap allocation checks `max_heap_bytes` before allocating
+- Task creation checks `max_tasks` before spawning
+- Instruction execution decrements `max_step_budget` (fuel)
+
+**Data Marshalling:**
+
+Values crossing context boundaries are marshalled:
+
+```rust
+enum MarshalledValue {
+  Null,
+  Bool(bool),
+  I32(i32),
+  String(String),  // Deep copy
+  Array(Vec<MarshalledValue>),  // Deep copy
+  Object(HashMap<String, MarshalledValue>),  // Deep copy
+  Foreign(ForeignHandle),  // Opaque handle
+}
+```
+
+No shared references across contexts (prevents interference).
+
+### 5.9 Future GC Phases
+
+**Phase 2: Generational GC** (Milestone 7)
+- Young generation (copying collector)
+- Old generation (mark-sweep)
+- Write barriers for inter-generational pointers
+- 2-5x throughput improvement expected
+
+**Phase 3: Incremental/Concurrent GC** (If needed)
+- Tri-color marking
+- Incremental STW slices
+- Sub-millisecond pause times
+
+**Current Phase 1 provides:**
+- Good enough performance
+- Simple, correct implementation
+- Stable foundation for optimization
+
+---
+
+## 6. Async/Task Semantics
+
+### 6.1 Task Lifecycle
+
+#### Creation
+
+* Via `SPAWN` instruction
+* New Task created with initial frame for entry function
+* Task status = `READY` and enqueued on a Worker queue
+
+#### Running
+
+* Worker picks Task, sets status = `RUNNING`
+
+#### Blocking
+
+* On `AWAIT`, contended `MUTEX_LOCK`, or I/O wait
+* Task status = `BLOCKED`
+* Worker picks another Task
+
+#### Completion
+
+* On `RETURN` or unhandled error
+* Task status = `COMPLETED` or `FAILED`
+* Result/error stored
+* All `waitingTasks` are moved to `READY` and enqueued
+* `.then` continuations scheduled as Tasks if present
+
+### 6.2 Await Behavior
+
+`AWAIT` implementation:
+
+* Pop `TaskHandle` → target Task
+* If `target.status` is `COMPLETED` or `FAILED`:
+  * Push `target.result` or throw `target.error`
+  * Continue execution
+* Else:
+  * Append current `TaskId` to `target.waitingTasks`
+  * Set current Task status = `BLOCKED`
+  * Return to Worker loop
+
+When target completes:
+
+* For each waiter in `waitingTasks`:
+  * Set `waiter.status = READY`
+  * Enqueue waiter on some Worker queue
+
+---
+
+## 7. Memory Model & Atomicity
+
+### 7.1 Single Access Atomicity
+
+The Raya VM guarantees:
+
+* All single reads/writes of word-sized values are atomic:
+  * No torn reads or writes
+
+Implementation:
+
+* Use aligned memory and appropriate atomic operations for variable storage
+
+### 7.2 Synchronization via Tasks and Mutexes
+
+* **Task completion and await** act as synchronization points:
+  * All writes before a Task's completion are visible after an `await` on that Task
+* **Mutex operations**:
+  * `lock()` uses an acquire fence when taking the lock
+  * `unlock()` uses a release fence when releasing
+
+This defines a clear happens-before relation across Tasks.
+
+---
+
+## 8. Mutex Design
+
+### 8.1 Mutex Structure
+
+```rust
+Mutex {
+  state: UNLOCKED | LOCKED
+  owner: TaskId | null
+  waitQueue: Queue<TaskId>
+}
+```
+
+### 8.2 lock()
+
+* If `state == UNLOCKED`, atomically set to `LOCKED` and set `owner = currentTask`
+* If `state == LOCKED`, append current Task to `waitQueue`, set Task status `BLOCKED`, yield
+
+### 8.3 unlock()
+
+* Only the owning Task may unlock
+* If `waitQueue` is empty:
+  * Set `state = UNLOCKED`, `owner = null`
+* Else:
+  * Pop next `TaskId`
+  * Set `owner = nextTask`
+  * Keep `state = LOCKED`
+  * Set next Task status = `READY`, enqueue it
+
+### 8.4 Await in Critical Sections
+
+* Raya compiler and runtime forbid `await` while holding a `Mutex`
+* Prevents deadlocks where a Task suspends with the lock held
+
+---
+
+## 9. Type-Aware Optimizations
+
+### 9.1 Typed Opcodes
+
+* Use static type information from Raya to emit:
+  * `IADD` instead of generic `ADD`
+  * `SCONCAT` instead of dynamic `+` on unions
+  * Reduces runtime type checks and tagging overhead
+
+### 9.2 Unboxed Locals & Stack
+
+* For monomorphic functions, represent locals and stack slots using unboxed primitives
+* Box only when storing into generic containers or crossing type-erased boundaries
+
+### 9.3 Object & Array Layout
+
+* Use type metadata to:
+  * Store numeric arrays as raw numeric buffers
+  * Store object arrays as raw pointer buffers
+
+### 9.4 GC Pointer Maps
+
+* Use class and type metadata to know which fields/slots are pointers
+* Avoid scanning non-pointer data
+* Speeds up GC traversal
+
+---
+
+## 10. Error Handling
+
+* Runtime errors (e.g., invalid unlock, out-of-bounds, null access) terminate the current Task
+* Awaiters receive the error when awaiting that Task
+* The VM may provide hooks to log or propagate errors to the host
+
+---
+
+## 11. FFI Integration (High-Level)
+
+* Host functions can be exposed as builtins
+* Async host operations return `Task<T>` handles
+* The VM treats external Tasks similarly to internal ones, with adapted completion callbacks
+
+---
+
+## 12. Future Extensions
+
+Potential evolution paths:
+
+* **JIT compilation** for hot functions
+* **Channels** (Go-style) built on top of Tasks + Mutexes
+* **Preemption** based on instruction or time quotas
+* **More advanced type-based optimizations** (e.g., escape analysis)
+* **Distributed Task scheduling** across processes or nodes
+
+---
+
+Raya VM provides a clear foundation for running Raya programs with goroutine-like concurrency, type-driven performance, and predictable semantics on modern multi-core systems.

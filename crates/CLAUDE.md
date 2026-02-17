@@ -42,7 +42,7 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 |-------|---------|--------|
 | `raya-engine` | Full language engine: parser, compiler, VM | Active development |
 | `raya-runtime` | Binds engine + stdlib via `NativeHandler` trait; hosts e2e tests | ✅ Active (M4.2+) |
-| `raya-stdlib` | Native stdlib implementations (logger) + type defs (reflect, json) | ✅ Logger complete |
+| `raya-stdlib` | Native stdlib implementations + type defs | ✅ Logger, Math, Crypto, Time, Path complete |
 | `raya-cli` | `raya` CLI tool (run, build, test, etc.) | Scaffolded |
 | `raya-lsp` | Language server for IDE support | Placeholder |
 | `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
@@ -65,7 +65,7 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 
 When working on Raya:
 - **Most changes** go in `raya-engine` - it's the core of everything
-- **Stdlib implementations** go in `raya-stdlib`, routed via `raya-runtime`'s `StdNativeHandler`
+- **Stdlib implementations** go in `raya-stdlib` (contains `StdNativeHandler`), re-exported by `raya-runtime`
 - **E2E tests** live in `raya-runtime` (moved from engine in M4.2)
 - **CLI commands** go in `raya-cli` (currently stubs)
 - **Native module development** uses `raya-sdk` + `raya-native`

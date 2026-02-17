@@ -127,6 +127,31 @@ if self.refcell_vars.contains(&name) {
 }
 ```
 
+## Compiler Intrinsics (`expr.rs`)
+
+Certain method calls that take callbacks are lowered to **inline loops** instead of `CallMethod`. This avoids nested execution — callbacks execute as normal frames on the main interpreter stack.
+
+### Array Callback Intrinsics (expr.rs:1028-1040)
+
+Detected by `ARRAY_CALLBACK_METHODS` list, handled by `lower_array_intrinsic()` (expr.rs:1078):
+
+- `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`, `some`, `every`, `sort`
+
+Pattern: array length → for-loop → `CallClosure(callback, [element, index])` → accumulate result.
+
+### replaceWith Intrinsic (expr.rs:1045-1050)
+
+Detected by `REPLACE_WITH_METHODS` list, handled by `lower_replace_with_intrinsic()` (expr.rs:2139):
+
+- `string.replaceWith(regexp, callback)` (native ID 0x0217)
+- `regexp.replaceWith(string, callback)` (native ID 0x0A05)
+
+Pattern: `NativeCall(REGEXP_REPLACE_MATCHES)` → get match array → for-loop → `CallClosure(callback, [match])` → string concatenation.
+
+### Why Intrinsics
+
+These methods take callback closures. Without intrinsics, they would require a nested executor loop (the deleted `execute_nested_function`). By inlining the loop at IR level, `CallClosure` compiles to `OpcodeResult::PushFrame` — the callback runs as a normal frame in `Interpreter::run()`, with full suspend/await/exception support.
+
 ## For AI Assistants
 
 - Lowering produces IR with explicit control flow (basic blocks)
@@ -135,3 +160,6 @@ if self.refcell_vars.contains(&name) {
 - Async functions are marked, become `Spawn` at call sites
 - Loop variables captured by closures get per-iteration RefCells
 - Method calls are lowered to `CallMethod` with receiver
+- **Array callback methods** (map/filter/reduce/forEach/find/findIndex/some/every/sort) are compiler intrinsics — NOT runtime CallMethod
+- **replaceWith** is also a compiler intrinsic — uses REGEXP_REPLACE_MATCHES + inline loop
+- When adding new callback-taking methods, follow the intrinsic pattern in `lower_array_intrinsic()`

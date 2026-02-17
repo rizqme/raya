@@ -32,11 +32,15 @@ src/
 - **module/**: Multi-module compilation, std: module registry
 
 ### `vm/` - Runtime
-- **vm/**: Core interpreter, context management
+- **interpreter/**: Single-executor bytecode interpreter (opcodes/ + handlers/ modules)
 - **scheduler/**: Work-stealing task scheduler
-- **gc/**: Garbage collector (currently placeholder)
+- **gc/**: Garbage collector
 - **stack.rs**: Call frames, operand stack
-- **object.rs**: Object model (Class, Array, String)
+- **object.rs**: Object model (Class, Array, String, Closure, Buffer, Map, Set)
+- **builtin.rs**: Native ID constants (all ranges: 0x01xx-0x6000+)
+- **native_handler.rs**: NativeHandler trait, NativeCallResult
+- **native_registry.rs**: NativeFunctionRegistry, ResolvedNatives
+- **abi.rs**: Internal ABI (NativeContext, NativeValue)
 - **sync/**: Mutex, synchronization primitives
 - **snapshot/**: VM state serialization
 - **ffi/**: Native module interface
@@ -109,14 +113,14 @@ Vm::execute(&Module) -> VmResult<Value>
 ### Adding a New Opcode
 1. Add to `compiler/bytecode/opcode.rs`
 2. Add encoding in `compiler/codegen/emit.rs`
-3. Add execution in `vm/vm/interpreter.rs`
-4. Update `design/OPCODE.md`
+3. Add handler in appropriate `vm/interpreter/opcodes/*.rs` module
+4. Update `docs/compiler/opcode.md`
 
 ### Adding a Builtin Method
 1. Add signature to `builtins/*.raya`
 2. Add native ID in `compiler/native_id.rs`
 3. Add lowering in `compiler/lower/expr.rs`
-4. Add execution in `vm/vm/interpreter.rs` (NativeCall dispatch)
+4. Add handler in `vm/interpreter/opcodes/native.rs` or `vm/interpreter/handlers/`
 
 ### Adding a New AST Node
 1. Define in `parser/ast/` (statement.rs or expression.rs)
@@ -126,22 +130,21 @@ Vm::execute(&Module) -> VmResult<Value>
 
 ### Adding a Reflect API Method
 1. Add native ID in `vm/builtin.rs` (0x0Dxx range)
-2. Add handler in `vm/vm/handlers/reflect.rs`
-3. Add type declaration in `raya-stdlib/reflect.d.raya`
-4. Update milestone-3.8.md
+2. Add handler in `vm/interpreter/handlers/reflect.rs`
+3. Add type declaration in `raya-stdlib/raya/reflect.d.raya`
 
 ### Adding a New Stdlib Module
-1. Create `.raya` source in `crates/raya-stdlib/` (e.g., `Math.raya`)
+1. Create `.raya` + `.d.raya` in `crates/raya-stdlib/raya/`
 2. Define native IDs in `vm/builtin.rs`
 3. Add to std registry in `compiler/module/std_modules.rs`
 4. Implement Rust functions in `crates/raya-stdlib/src/`
-5. Route in `StdNativeHandler` in `raya-runtime/src/lib.rs`
+5. Route in `StdNativeHandler` in `raya-stdlib/src/handler.rs`
 
 ## Test Files
 
-- **Engine unit tests** (827): Colocated `#[cfg(test)]` blocks in each module
-- **Engine integration tests** (897): `tests/*.rs` files (codegen, IR, concurrency, etc.)
-- **E2E tests** (594): Moved to `raya-runtime/tests/` in M4.2 (require `StdNativeHandler`)
+- **Engine unit tests** (835): Colocated `#[cfg(test)]` blocks in each module
+- **Engine integration tests** (920+): `tests/*.rs` files (codegen, IR, concurrency, etc.)
+- **E2E tests** (883+): In `raya-runtime/tests/` (require `StdNativeHandler`)
 - `tests/reflect_phase8_tests.rs`: Reflect API integration tests
 - `tests/opcode_tests.rs`: Individual opcode tests
 

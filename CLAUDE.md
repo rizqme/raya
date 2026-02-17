@@ -11,7 +11,7 @@
 1. **Milestone files** (`plans/milestone-*.md`) - Mark tasks `[x]`, update status
 2. **PLAN.md** (`plans/PLAN.md`) - Update overall progress and current focus
 3. **Hierarchical CLAUDE.md** (`crates/**/CLAUDE.md`) - Keep concise, key info only
-4. **Design docs** (`design/*.md`) - If behavior/API changes
+4. **Design docs** (`docs/`) - If behavior/API changes
 5. **This file** - Update status section if milestone progress changes
 
 ---
@@ -110,7 +110,7 @@
 - Phase 1: Core ABI infrastructure complete (331 lines)
 - Phase 2: Interface refactor complete (NativeHandler trait updated)
 - Remaining: VM dispatcher migration, stdlib handler migration, crypto migration
-- Design doc: [design/ABI.md](design/ABI.md)
+- Design doc: [docs/native/abi.md](docs/native/abi.md)
 
 **Milestone 4.5 (std:runtime):** In Progress (Phases 1-8 Complete)
 - `import { Compiler, Bytecode, Vm, Parser, TypeChecker, VmInstance, BytecodeBuilder, ClassBuilder, DynamicModule } from "std:runtime"` — 9 exports, named
@@ -140,12 +140,12 @@
 - ✅ Phase 6: Bytecode Builder complete
   - BytecodeBuilder class wrapping reflect handlers 0x0DF0-0x0DFD
   - 16 methods: emit, emitWithArg, emitWithArgs, emitPush, defineLabel, markLabel, emitJump, emitJumpIf, declareLocal, emitLoadLocal, emitStoreLocal, emitCall, emitReturn, emitReturnVoid, validate, build
-  - Added 14 bytecode builder match arms to task_interpreter.rs call_reflect_method
+  - Added 14 bytecode builder match arms to core.rs call_reflect_method
   - 5 new e2e tests (66 total runtime tests)
 - ✅ Phase 7: Dynamic Modules & Runtime Types complete
   - ClassBuilder class wrapping reflect handlers 0x0DE0-0x0DE6 (addField, addMethod, setConstructor, setParent, addInterface, build)
   - DynamicModule class wrapping reflect handlers 0x0E10-0x0E15 (addFunction, addClass, addGlobal, seal, link)
-  - Added 13 dispatch match arms to task_interpreter.rs (7 ClassBuilder + 6 DynamicModule)
+  - Added 13 dispatch match arms to core.rs (7 ClassBuilder + 6 DynamicModule)
   - 10 new e2e tests (76 total runtime tests)
 - ✅ Phase 8: E2E Tests complete
   - 20 new gap/integration tests covering all phases
@@ -156,7 +156,15 @@
   - 96 total runtime e2e tests
 - Remaining: documentation (Phase 9)
 
-**Tests:** 1,714 total (843 engine lib, 854 runtime, 17 stdlib) — 2 ignored (path CallMethod)
+**Milestone 4.10 (VM Unification):** Complete
+- Unified 3 duplicate executors into single `Interpreter::run()`
+- Extracted opcodes to 15 categorized modules (`interpreter/opcodes/`)
+- Extracted native handlers to 4 modules (`interpreter/handlers/`)
+- Added compiler intrinsics for replaceWith (inline loop + CallClosure)
+- Deleted TaskExecutor + execute_nested_function (~3,400 lines)
+- Net ~9,500 lines removed across 35 files
+
+**Tests:** 1,832 total (932 engine, 883 runtime, 17 stdlib) — 2 ignored (path CallMethod)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -186,10 +194,10 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 
 | Document | Purpose |
 |----------|---------|
-| [design/LANG.md](design/LANG.md) | Language specification |
-| [design/ARCHITECTURE.md](design/ARCHITECTURE.md) | VM architecture |
-| [design/OPCODE.md](design/OPCODE.md) | Bytecode instructions |
-| [design/MAPPING.md](design/MAPPING.md) | Compilation patterns |
+| [docs/language/lang.md](docs/language/lang.md) | Language specification |
+| [docs/runtime/architecture.md](docs/runtime/architecture.md) | VM architecture |
+| [docs/compiler/opcode.md](docs/compiler/opcode.md) | Bytecode instructions |
+| [docs/compiler/mapping.md](docs/compiler/mapping.md) | Compilation patterns |
 | [plans/milestone-3.7.md](plans/milestone-3.7.md) | Module system |
 | [plans/milestone-3.8.md](plans/milestone-3.8.md) | Reflection API |
 | [plans/milestone-3.9.md](plans/milestone-3.9.md) | Decorators (uses Reflection) |
@@ -202,7 +210,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 | [plans/milestone-4.7.md](plans/milestone-4.7.md) | std:time (clocks, sleep, duration utilities) |
 | [plans/milestone-4.8.md](plans/milestone-4.8.md) | std:path (path manipulation) |
 | [plans/milestone-4.9.md](plans/milestone-4.9.md) | Native ABI Refactor (unified interface, full VM context) |
-| [design/ABI.md](design/ABI.md) | Native ABI design specification |
+| [docs/native/abi.md](docs/native/abi.md) | Native ABI design specification |
 
 ---
 
@@ -218,7 +226,7 @@ crates/
 ├── raya-sdk/        # Native module FFI types
 └── raya-native/     # Proc-macros for native modules
 
-design/              # Specifications
+docs/                # Design documentation (VitePress site)
 plans/               # Implementation roadmap
 ```
 

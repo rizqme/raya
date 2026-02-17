@@ -4,113 +4,108 @@ Native implementations for Raya's standard library.
 
 ## Overview
 
-This crate contains native (Rust) implementations of standard library functions that can't be efficiently implemented in pure Raya. **Decoupled from raya-engine via the `NativeHandler` trait** — the runtime layer (`raya-runtime`) binds them together.
+This crate contains native (Rust) implementations of standard library functions that can't be efficiently implemented in pure Raya. Contains `StdNativeHandler` which implements the `NativeHandler` trait, plus a `register_stdlib()` function for name-based dispatch via `NativeFunctionRegistry`.
 
-## Architecture (Post-M4.2)
+## Architecture
 
 ```
-raya-engine (defines NativeHandler trait)
+raya-engine (defines NativeHandler trait, NativeContext, NativeValue)
     ↓
-raya-stdlib (implements logger, future std modules)
+raya-stdlib (implements StdNativeHandler + all stdlib modules)
     ↓
-raya-runtime (StdNativeHandler routes calls)
+raya-runtime (re-exports StdNativeHandler, hosts e2e tests)
 ```
 
 ## Module Structure
 
 ```
 src/
-├── lib.rs          # Crate entry point
-└── logger.rs       # Logger implementations (debug, info, warn, error)
+├── lib.rs           # Crate entry, re-exports StdNativeHandler + register_stdlib
+├── handler.rs       # StdNativeHandler (NativeHandler trait impl, ID-based dispatch)
+├── registry.rs      # register_stdlib() (name-based handler registration)
+├── logger.rs        # Logger: debug, info, warn, error
+├── math.rs          # Math: abs, floor, ceil, sin, cos, sqrt, random, etc.
+├── crypto.rs        # Crypto: hash, hmac, randomBytes, toHex, toBase64, etc.
+├── path.rs          # Path: join, normalize, dirname, basename, resolve, etc.
+└── stream.rs        # Stream: reactive stream implementation
 
-# Type definition & source files (.d.raya, .raya)
-├── Logger.raya     # std:logger source (default export)
-├── json.d.raya     # Type definitions for std:json
-└── reflect.d.raya  # Type definitions for std:reflect
+raya/                # .raya source files and type definitions
+├── Logger.raya      # std:logger source (default export)
+├── logger.d.raya    # Logger type definitions
+├── math.raya        # std:math source
+├── math.d.raya      # Math type definitions
+├── crypto.raya      # std:crypto source
+├── crypto.d.raya    # Crypto type definitions
+├── time.raya        # std:time source (pure Raya + native calls)
+├── time.d.raya      # Time type definitions
+├── path.raya        # std:path source
+├── path.d.raya      # Path type definitions
+├── stream.raya      # std:stream source
+├── stream.d.raya    # Stream type definitions
+├── runtime.raya     # std:runtime source
+├── runtime.d.raya   # Runtime type definitions
+├── reflect.raya     # std:reflect source
+└── reflect.d.raya   # Reflect type definitions
 ```
 
-## Current Implementations
+## Key Types
 
-### Logger (`logger.rs`, `Logger.raya`)
-- `logger.debug(msg)` - Print debug to stdout with `[DEBUG]` prefix
-- `logger.info(msg)` - Print to stdout (no prefix)
-- `logger.warn(msg)` - Print to stderr with `[WARN]` prefix
-- `logger.error(msg)` - Print to stderr with `[ERROR]` prefix
-
-**Usage:**
-```typescript
-import logger from "std:logger";
-
-logger.info("Server started");
-logger.error("Connection failed");
-```
-
-**Native IDs:** 0x1000-0x1003 (defined in `raya-engine/src/vm/builtin.rs`)
-
-### JSON (Type defs only)
-Type definitions in `json.d.raya` — implementation pending migration to new architecture.
-
-### Reflect (`reflect.d.raya`)
-Type definitions for the Reflection API (implementation in raya-engine):
-- **Metadata**: `defineMetadata`, `getMetadata`, `hasMetadata`, `deleteMetadata`
-- **Introspection**: `getClass`, `getFields`, `getMethods`, `getTypeInfo`
-- **Dynamic access**: `get`, `set`, `invoke`, `construct`
-- **Proxies**: `createProxy`, `isProxy`, `getProxyTarget`
-- **Dynamic classes**: `createSubclass`, `defineClass`, `newClassBuilder`
-- **Bytecode generation**: `newBytecodeBuilder`, `bcEmit*`, `bcBuild`
-- **Permissions**: `setPermissions`, `getPermissions`, `sealPermissions`
-- **Dynamic modules**: `createModule`, `moduleAddFunction`, `moduleSeal`
-- **Bootstrap**: `bootstrap`, `isBootstrapped`, `getObjectClass`
-
-Note: Reflect implementations use native call IDs (0x0Dxx-0x0Exx) handled in `raya-engine/src/vm/vm/handlers/reflect.rs`
-
-## Integration with VM
-
-**Post-M4.2:** Native functions are routed via the `NativeHandler` trait in `raya-runtime`:
+### StdNativeHandler
 
 ```rust
-// raya-runtime/src/lib.rs
+// raya-stdlib/src/handler.rs
+pub struct StdNativeHandler;
+
 impl NativeHandler for StdNativeHandler {
-    fn call(&self, id: u16, args: &[String]) -> NativeCallResult {
+    fn call(&self, ctx: &NativeContext, id: u16, args: &[NativeValue]) -> NativeCallResult {
         match id {
-            0x1001 => {
-                let msg = args.join(" ");
-                raya_stdlib::logger::info(&msg);
-                NativeCallResult::Void
-            }
-            // ...
+            0x1000..=0x1003 => /* Logger dispatch */,
+            0x2000..=0x2016 => /* Math dispatch */,
+            0x4000..=0x40FF => crate::crypto::call_crypto_method(ctx, id, args),
+            0x5000..=0x5004 => /* Time dispatch */,
+            0x6000..=0x60FF => crate::path::call_path_method(ctx, id, args),
+            _ => NativeCallResult::Unhandled,
         }
     }
 }
 ```
 
-The VM (`raya-engine`) remains decoupled from specific stdlib implementations.
+## Implementation Status
+
+| Module | Status | Native IDs | Notes |
+|--------|--------|------------|-------|
+| logger | Complete | 0x1000-0x1003 | Via NativeHandler (M4.2) |
+| math | Complete | 0x2000-0x2016 | 22 functions + PI, E (M4.3) |
+| crypto | Complete | 0x4000-0x400B | 12 methods (M4.6) |
+| time | Complete | 0x5000-0x5004 | 5 native + 7 pure Raya (M4.7) |
+| path | Complete | 0x6000-0x600C | 14 methods (M4.8) |
+| stream | In Progress | — | Reactive streams |
+| runtime | Complete | 0x3000-0x30FF | Handlers in raya-engine (M4.5) |
+| reflect | Type defs | 0x0D00-0x0E2F | Handlers in raya-engine |
+
+## Dual Dispatch
+
+Two dispatch mechanisms exist:
+1. **ID-based** (`handler.rs`): `StdNativeHandler::call(id)` — used by `NativeCall` opcode
+2. **Name-based** (`registry.rs`): `register_stdlib()` → `NativeFunctionRegistry` — used by `ModuleNativeCall` opcode
+
+Both route to the same Rust implementations.
 
 ## Adding New Stdlib Modules
 
-1. **Create `.raya` source** in `crates/raya-stdlib/` (e.g., `Math.raya`)
+1. **Create `.raya` + `.d.raya`** in `crates/raya-stdlib/raya/`
 2. **Define native IDs** in `raya-engine/src/vm/builtin.rs`
 3. **Add to std registry** in `raya-engine/src/compiler/module/std_modules.rs`
-4. **Implement Rust functions** in `crates/raya-stdlib/src/` (e.g., `math.rs`)
-5. **Route in StdNativeHandler** in `raya-runtime/src/lib.rs`
-
-## Implementation Status
-
-| Module | Status | Notes |
-|--------|--------|-------|
-| logger | ✅ Complete | Via NativeHandler (M4.2) |
-| JSON | Type defs only | Migration pending |
-| reflect | ✅ Type defs complete | Handlers in raya-engine |
-| math | Planned (M4.3) | abs, floor, ceil, PI, E, etc. |
-| fs | Not started | |
-| net | Not started | |
-| crypto | Not started | |
-| os | Not started | |
+4. **Implement Rust functions** in `crates/raya-stdlib/src/` (e.g., `mymodule.rs`)
+5. **Route in `handler.rs`** — add match arm in `StdNativeHandler::call()`
+6. **Register in `registry.rs`** — add name-based registration in `register_stdlib()`
 
 ## For AI Assistants
 
-- **Architecture**: Engine defines `NativeHandler` trait, stdlib implements functions, runtime binds them
+- **Architecture**: Engine defines `NativeHandler` trait, stdlib implements it, runtime re-exports
 - **No direct coupling**: `raya-engine` does NOT depend on `raya-stdlib`
 - **Native IDs** must match across `builtin.rs`, `.raya` sources, and `StdNativeHandler`
-- **std: prefix**: Standard library modules use `std:` namespace (e.g., `import logger from "std:logger"`)
-- Keep implementations simple - complex logic should be in Raya
+- **std: prefix**: Standard library modules use `std:` namespace (e.g., `import { Math } from "std:math"`)
+- `NativeContext` provides GC allocation, class registry, and scheduler access
+- `NativeValue` is type-safe (not string-based) — use `.as_f64()`, `.as_i32()`, `.as_string()`, etc.
+- Keep native implementations simple — complex logic should be in Raya

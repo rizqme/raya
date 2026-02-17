@@ -81,6 +81,6 @@ raya add logging
 ## For AI Assistants
 
 - All commands are currently stubs - implementation needed
-- Reference `design/CLI.md` for complete specification
+- Reference `docs/tooling/cli.md` for complete specification
 - Use `raya-engine` for actual compilation/execution
 - Use `raya-pm` for package management operations

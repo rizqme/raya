@@ -24,3 +24,8 @@ criterion/
 
 # Logs
 *.log
+
+# Docs (VitePress)
+node_modules/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
