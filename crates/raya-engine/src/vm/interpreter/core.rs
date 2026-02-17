@@ -251,6 +251,16 @@ impl<'a> Interpreter<'a> {
             // Check for preemption
             if task.is_preempt_requested() {
                 task.clear_preempt();
+                let count = task.increment_preempt_count();
+                // Infinite loop detection: kill task after 100 consecutive
+                // preemptions (~1s of busy-wait) without voluntary suspension
+                if count >= 100 {
+                    save_frame_state!();
+                    drop(stack_guard);
+                    return ExecutionResult::Failed(VmError::RuntimeError(
+                        format!("Maximum execution time exceeded (task preempted {} times)", count),
+                    ));
+                }
                 save_frame_state!();
                 drop(stack_guard);
                 return ExecutionResult::Suspended(SuspendReason::Sleep {
@@ -313,6 +323,7 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 OpcodeResult::Suspend(reason) => {
+                    task.reset_preempt_count();
                     save_frame_state!();
                     drop(stack_guard);
                     return ExecutionResult::Suspended(reason);

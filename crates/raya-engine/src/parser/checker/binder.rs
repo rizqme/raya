@@ -320,6 +320,7 @@ impl<'a> Binder<'a> {
             static_methods,
             extends: None,
             implements: vec![],
+            is_abstract: false,
         };
 
         let json_ty = self.type_ctx.intern(Type::Class(json_class));
@@ -379,6 +380,7 @@ impl<'a> Binder<'a> {
             static_methods: vec![],
             extends: None,
             implements: vec![],
+            is_abstract: false,
         };
         let class_ty = self.type_ctx.intern(Type::Class(class_interface));
         let class_symbol = Symbol {
@@ -552,6 +554,7 @@ impl<'a> Binder<'a> {
             static_methods,
             extends: None,
             implements: vec![],
+            is_abstract: false,
         };
 
         let class_ty = self.type_ctx.intern(Type::Class(class_type));
@@ -746,6 +749,7 @@ impl<'a> Binder<'a> {
             static_methods: vec![],
             extends: None,
             implements: vec![],
+            is_abstract: class.is_abstract,
         };
         let class_ty = self.type_ctx.intern(Type::Class(placeholder));
 
@@ -918,6 +922,80 @@ impl<'a> Binder<'a> {
         }
     }
 
+    /// Recursively register all identifiers in a pattern as variable symbols.
+    fn bind_pattern_names(
+        &mut self,
+        pattern: &Pattern,
+        ty: TypeId,
+        is_const: bool,
+    ) -> Result<(), BindError> {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                let symbol = Symbol {
+                    name,
+                    kind: SymbolKind::Variable,
+                    ty,
+                    flags: SymbolFlags {
+                        is_exported: false,
+                        is_const,
+                        is_async: false,
+                        is_readonly: false,
+                    },
+                    scope_id: self.symbols.current_scope_id(),
+                    span: ident.span,
+                };
+                self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
+            }
+            Pattern::Array(array_pat) => {
+                let elem_ty = self.type_ctx.unknown_type();
+                for elem_opt in &array_pat.elements {
+                    if let Some(elem) = elem_opt {
+                        self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
+                    }
+                }
+                if let Some(rest) = &array_pat.rest {
+                    self.bind_pattern_names(rest, ty, is_const)?;
+                }
+            }
+            Pattern::Object(obj_pat) => {
+                let prop_ty = self.type_ctx.unknown_type();
+                for prop in &obj_pat.properties {
+                    self.bind_pattern_names(&prop.value, prop_ty, is_const)?;
+                }
+                if let Some(rest_ident) = &obj_pat.rest {
+                    let name = self.resolve(rest_ident.name);
+                    let symbol = Symbol {
+                        name,
+                        kind: SymbolKind::Variable,
+                        ty,
+                        flags: SymbolFlags {
+                            is_exported: false,
+                            is_const,
+                            is_async: false,
+                            is_readonly: false,
+                        },
+                        scope_id: self.symbols.current_scope_id(),
+                        span: rest_ident.span,
+                    };
+                    self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
+                }
+            }
+            Pattern::Rest(rest_pat) => {
+                self.bind_pattern_names(&rest_pat.argument, ty, is_const)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Bind variable declaration
     fn bind_var_decl(&mut self, decl: &VariableDecl) -> Result<(), BindError> {
         // Resolve type annotation or use unknown
@@ -926,34 +1004,8 @@ impl<'a> Binder<'a> {
             None => self.type_ctx.unknown_type(),
         };
 
-        // Extract identifier from pattern (simplified - only handles Identifier pattern)
-        let (name, span) = match &decl.pattern {
-            Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
-            _ => {
-                // TODO: Handle destructuring patterns
-                return Ok(());
-            }
-        };
-
-        let symbol = Symbol {
-            name,
-            kind: SymbolKind::Variable,
-            ty,
-            flags: SymbolFlags {
-                is_exported: false,
-                is_const: matches!(decl.kind, VariableKind::Const),
-                is_async: false,
-                is_readonly: false,
-            },
-            scope_id: self.symbols.current_scope_id(),
-            span,
-        };
-
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })
+        let is_const = matches!(decl.kind, VariableKind::Const);
+        self.bind_pattern_names(&decl.pattern, ty, is_const)
     }
 
     /// Bind function declaration
@@ -1093,6 +1145,7 @@ impl<'a> Binder<'a> {
             static_methods: vec![],
             extends: None,
             implements: vec![],
+            is_abstract: class.is_abstract,
         };
         let class_ty = self.type_ctx.intern(Type::Class(placeholder_type));
 
@@ -1268,6 +1321,7 @@ impl<'a> Binder<'a> {
             static_methods: static_method_sigs,
             extends: extends_ty,
             implements: vec![],
+            is_abstract: class.is_abstract,
         };
         let full_class_ty = self.type_ctx.intern(Type::Class(full_class_type));
 

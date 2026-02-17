@@ -139,6 +139,7 @@ pub enum Token {
     // Other
     Question,
     QuestionQuestion,
+    QuestionQuestionEqual,
     QuestionDot,
     DotDotDot, // ... for spread/rest
     Dot,
@@ -309,6 +310,7 @@ impl fmt::Display for Token {
             Token::GreaterGreaterGreaterEqual => write!(f, ">>>="),
             Token::Question => write!(f, "?"),
             Token::QuestionQuestion => write!(f, "??"),
+            Token::QuestionQuestionEqual => write!(f, "??="),
             Token::QuestionDot => write!(f, "?."),
             Token::DotDotDot => write!(f, "..."),
             Token::Dot => write!(f, "."),

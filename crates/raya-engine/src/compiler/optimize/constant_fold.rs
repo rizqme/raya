@@ -114,17 +114,17 @@ impl ConstantFolder {
                 Some(IrConstant::I32(a.wrapping_mul(*b)))
             }
             (BinaryOp::Div, IrConstant::I32(a), IrConstant::I32(b)) if *b != 0 => {
-                Some(IrConstant::I32(a / b))
+                Some(IrConstant::I32(a.wrapping_div(*b)))
             }
             (BinaryOp::Mod, IrConstant::I32(a), IrConstant::I32(b)) if *b != 0 => {
-                Some(IrConstant::I32(a % b))
+                Some(IrConstant::I32(a.wrapping_rem(*b)))
             }
             (BinaryOp::Pow, IrConstant::I32(a), IrConstant::I32(b)) if *b >= 0 => {
                 Some(IrConstant::I32(a.wrapping_pow(*b as u32)))
             }
-            (BinaryOp::Pow, IrConstant::I32(a), IrConstant::I32(b)) if *b < 0 => {
-                // Negative exponent with integer base returns float
-                Some(IrConstant::F64((*a as f64).powi(*b)))
+            (BinaryOp::Pow, IrConstant::I32(_a), IrConstant::I32(b)) if *b < 0 => {
+                // Negative exponent with integer base: result < 1, truncates to 0
+                Some(IrConstant::I32(0))
             }
 
             // Float arithmetic
@@ -171,7 +171,10 @@ impl ConstantFolder {
 
             // Float comparisons
             (BinaryOp::Equal, IrConstant::F64(a), IrConstant::F64(b)) => {
-                Some(IrConstant::Boolean((a - b).abs() < f64::EPSILON))
+                Some(IrConstant::Boolean(a == b))
+            }
+            (BinaryOp::NotEqual, IrConstant::F64(a), IrConstant::F64(b)) => {
+                Some(IrConstant::Boolean(a != b))
             }
             (BinaryOp::Less, IrConstant::F64(a), IrConstant::F64(b)) => {
                 Some(IrConstant::Boolean(a < b))
@@ -223,7 +226,7 @@ impl ConstantFolder {
     /// Evaluate a unary operation on a constant
     fn eval_unary(&self, op: UnaryOp, operand: &IrConstant) -> Option<IrConstant> {
         match (op, operand) {
-            (UnaryOp::Neg, IrConstant::I32(v)) => Some(IrConstant::I32(-v)),
+            (UnaryOp::Neg, IrConstant::I32(v)) => Some(IrConstant::I32(v.wrapping_neg())),
             (UnaryOp::Neg, IrConstant::F64(v)) => Some(IrConstant::F64(-v)),
             (UnaryOp::Not, IrConstant::Boolean(v)) => Some(IrConstant::Boolean(!v)),
             (UnaryOp::BitNot, IrConstant::I32(v)) => Some(IrConstant::I32(!v)),

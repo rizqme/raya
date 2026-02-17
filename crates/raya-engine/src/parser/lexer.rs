@@ -259,6 +259,9 @@ enum LogosToken {
     #[token("?.")]
     QuestionDot,
 
+    #[token("??=")]
+    QuestionQuestionEqual,
+
     #[token("??")]
     QuestionQuestion,
 
@@ -830,6 +833,7 @@ impl<'a> Lexer<'a> {
             LogosToken::GreaterGreaterEqual => Token::GreaterGreaterEqual,
             LogosToken::QuestionDot => Token::QuestionDot,
             LogosToken::QuestionQuestion => Token::QuestionQuestion,
+            LogosToken::QuestionQuestionEqual => Token::QuestionQuestionEqual,
             LogosToken::Arrow => Token::Arrow,
             LogosToken::PlusEqual => Token::PlusEqual,
             LogosToken::MinusEqual => Token::MinusEqual,

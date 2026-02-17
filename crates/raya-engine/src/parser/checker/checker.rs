@@ -252,30 +252,100 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref init) = decl.initializer {
             let init_ty = self.check_expr(init);
 
-            if let Pattern::Identifier(ident) = &decl.pattern {
-                let name = self.resolve(ident.name);
+            match &decl.pattern {
+                Pattern::Identifier(ident) => {
+                    let name = self.resolve(ident.name);
 
-                // Determine the variable's type
-                let var_ty = if decl.type_annotation.is_some() {
-                    // Get the declared type from symbol table
-                    if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
-                        self.check_assignable(init_ty, symbol.ty, *init.span());
-                        symbol.ty
+                    // Determine the variable's type
+                    let var_ty = if decl.type_annotation.is_some() {
+                        // Get the declared type from symbol table
+                        if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                            self.check_assignable(init_ty, symbol.ty, *init.span());
+                            symbol.ty
+                        } else {
+                            init_ty
+                        }
                     } else {
+                        // No type annotation - infer type from initializer
+                        // Store the inferred type for later lookups
+                        self.inferred_var_types.insert(
+                            (self.current_scope.0, name.clone()),
+                            init_ty
+                        );
                         init_ty
-                    }
+                    };
+
+                    // Also add to type_env so nested arrow functions can see it
+                    self.type_env.set(name, var_ty);
+                }
+                Pattern::Array(_) | Pattern::Object(_) => {
+                    // For destructuring, infer element/property types from the
+                    // initializer and register them for each binding.
+                    self.check_destructure_pattern(&decl.pattern, init_ty);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Infer types for variables bound in a destructuring pattern.
+    fn check_destructure_pattern(&mut self, pattern: &Pattern, value_ty: TypeId) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                self.inferred_var_types.insert(
+                    (self.current_scope.0, name.clone()),
+                    value_ty,
+                );
+                self.type_env.set(name, value_ty);
+            }
+            Pattern::Array(array_pat) => {
+                // Extract element type from the array type
+                let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(value_ty).cloned() {
+                    arr.element
                 } else {
-                    // No type annotation - infer type from initializer
-                    // Store the inferred type for later lookups
-                    self.inferred_var_types.insert(
-                        (self.current_scope.0, name.clone()),
-                        init_ty
-                    );
-                    init_ty
+                    self.type_ctx.unknown_type()
                 };
 
-                // Also add to type_env so nested arrow functions can see it
-                self.type_env.set(name, var_ty);
+                for elem_opt in &array_pat.elements {
+                    if let Some(elem) = elem_opt {
+                        self.check_destructure_pattern(&elem.pattern, elem_ty);
+                    }
+                }
+                if let Some(rest) = &array_pat.rest {
+                    // Rest element gets the same array type
+                    self.check_destructure_pattern(rest, value_ty);
+                }
+            }
+            Pattern::Object(obj_pat) => {
+                // Look up class fields from value type
+                let class_props: Option<Vec<crate::parser::types::ty::PropertySignature>> =
+                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(value_ty).cloned() {
+                        Some(class.properties.clone())
+                    } else {
+                        None
+                    };
+
+                for prop in &obj_pat.properties {
+                    let prop_name = self.resolve(prop.key.name);
+                    let prop_ty = class_props.as_ref()
+                        .and_then(|props| props.iter().find(|p| p.name == prop_name))
+                        .map(|p| p.ty)
+                        .unwrap_or_else(|| self.type_ctx.unknown_type());
+                    self.check_destructure_pattern(&prop.value, prop_ty);
+                }
+                if let Some(rest_ident) = &obj_pat.rest {
+                    let unknown = self.type_ctx.unknown_type();
+                    let name = self.resolve(rest_ident.name);
+                    self.inferred_var_types.insert(
+                        (self.current_scope.0, name.clone()),
+                        unknown,
+                    );
+                    self.type_env.set(name, unknown);
+                }
+            }
+            Pattern::Rest(rest_pat) => {
+                self.check_destructure_pattern(&rest_pat.argument, value_ty);
             }
         }
     }
@@ -709,13 +779,19 @@ impl<'a> TypeChecker<'a> {
             ForOfLeft::VariableDecl(decl) => {
                 // Variable declared in the for-of: `for (let x of arr)`
                 // The type should be the element type of the array
-                if let Pattern::Identifier(ident) = &decl.pattern {
-                    let name = self.resolve(ident.name);
-                    // Store inferred type for the loop variable
-                    self.inferred_var_types.insert(
-                        (self.current_scope.0, name),
-                        elem_ty
-                    );
+                match &decl.pattern {
+                    Pattern::Identifier(ident) => {
+                        let name = self.resolve(ident.name);
+                        // Store inferred type for the loop variable
+                        self.inferred_var_types.insert(
+                            (self.current_scope.0, name),
+                            elem_ty
+                        );
+                    }
+                    Pattern::Array(_) | Pattern::Object(_) => {
+                        self.check_destructure_pattern(&decl.pattern, elem_ty);
+                    }
+                    _ => {}
                 }
             }
             ForOfLeft::Pattern(_) => {
@@ -1078,8 +1154,8 @@ impl<'a> TypeChecker<'a> {
         // Check if callee is a function type
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
-                // Check argument count
-                if arg_types.len() != func.params.len() {
+                // Check argument count (allow fewer args for optional params)
+                if arg_types.len() > func.params.len() {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
                         actual: arg_types.len(),
@@ -1534,6 +1610,16 @@ impl<'a> TypeChecker<'a> {
             // Look up the class symbol to get its type
             if let Some(symbol) = self.symbols.resolve(&name) {
                 if symbol.kind == SymbolKind::Class {
+                    // Check if the class is abstract (cannot be instantiated)
+                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                        if class.is_abstract {
+                            self.errors.push(CheckError::AbstractClassInstantiation {
+                                name: name.clone(),
+                                span: new_expr.span,
+                            });
+                        }
+                    }
+
                     // Check constructor arguments (for now, just check them)
                     for arg in &new_expr.arguments {
                         self.check_expr(arg);
@@ -1893,6 +1979,7 @@ impl<'a> TypeChecker<'a> {
             static_methods: class.static_methods.clone(),
             extends: class.extends,
             implements: class.implements.clone(),
+            is_abstract: class.is_abstract,
         };
 
         self.type_ctx.intern(crate::parser::types::Type::Class(instantiated))
@@ -2333,10 +2420,13 @@ impl<'a> TypeChecker<'a> {
                 elem_opt.as_ref().map(|elem| match elem {
                     ArrayElement::Expression(expr) => self.check_expr(expr),
                     ArrayElement::Spread(expr) => {
-                        // For spread, the type should be element type of the array
+                        // For spread, extract element type from the array type
                         let spread_ty = self.check_expr(expr);
-                        // TODO: Extract element type from array type
-                        spread_ty
+                        if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
+                            arr_ty.element
+                        } else {
+                            spread_ty
+                        }
                     }
                 })
             })
@@ -2347,7 +2437,15 @@ impl<'a> TypeChecker<'a> {
             if let Some(elem) = elem_opt {
                 let (elem_ty, elem_span) = match elem {
                     ArrayElement::Expression(expr) => (self.check_expr(expr), *expr.span()),
-                    ArrayElement::Spread(expr) => (self.check_expr(expr), *expr.span()),
+                    ArrayElement::Spread(expr) => {
+                        let spread_ty = self.check_expr(expr);
+                        let resolved = if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
+                            arr_ty.element
+                        } else {
+                            spread_ty
+                        };
+                        (resolved, *expr.span())
+                    }
                 };
                 // TODO: Compute union type instead of requiring exact match
                 self.check_assignable(elem_ty, first_ty, elem_span);

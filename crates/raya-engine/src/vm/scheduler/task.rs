@@ -6,7 +6,7 @@ use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -144,6 +144,9 @@ pub struct Task {
     /// Asynchronous preemption flag (like Go's preemption)
     preempt_requested: AtomicBool,
 
+    /// Consecutive preemption count (for infinite loop detection)
+    preempt_count: AtomicU32,
+
     /// When this task started executing (for preemption monitoring)
     start_time: Mutex<Option<Instant>>,
 
@@ -225,6 +228,7 @@ impl Task {
             waiters: Mutex::new(Vec::new()),
             parent,
             preempt_requested: AtomicBool::new(false),
+            preempt_count: AtomicU32::new(0),
             start_time: Mutex::new(None),
             exception_handlers: Mutex::new(Vec::new()),
             current_exception: Mutex::new(None),
@@ -305,6 +309,20 @@ impl Task {
         self.signal_completion();
     }
 
+    /// Mark this task as failed with an error message stored as exception
+    pub fn fail_with_error(&self, error: &crate::vm::VmError) {
+        // Store the error message as a string in current_exception
+        // so extract_exception_message can find it
+        let msg = error.to_string();
+        let raya_str = crate::vm::RayaString::new(msg);
+        // Use GC-bypass: allocate on heap directly (this is a fatal error path)
+        let boxed = Box::new(raya_str);
+        let ptr = Box::into_raw(boxed);
+        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr).unwrap()) };
+        self.set_exception(val);
+        self.fail();
+    }
+
     /// Signal that the task has completed (either success or failure)
     fn signal_completion(&self) {
         let mut done = self.completion_lock.lock();
@@ -375,6 +393,16 @@ impl Task {
     /// Clear preemption flag
     pub fn clear_preempt(&self) {
         self.preempt_requested.store(false, Ordering::Release);
+    }
+
+    /// Increment consecutive preemption counter, returns new count
+    pub fn increment_preempt_count(&self) -> u32 {
+        self.preempt_count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Reset consecutive preemption counter (called on voluntary suspend/completion)
+    pub fn reset_preempt_count(&self) {
+        self.preempt_count.store(0, Ordering::Relaxed);
     }
 
     /// Cancel this task

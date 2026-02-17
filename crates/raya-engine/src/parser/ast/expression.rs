@@ -364,6 +364,7 @@ pub enum AssignmentOperator {
     LeftShiftAssign,          // <<=
     RightShiftAssign,         // >>=
     UnsignedRightShiftAssign, // >>>=
+    NullCoalesceAssign,       // ??=
 }
 
 // ============================================================================

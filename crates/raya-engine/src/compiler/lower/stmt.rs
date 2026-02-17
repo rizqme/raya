@@ -3,7 +3,7 @@
 //! Converts AST statements to IR instructions.
 
 use super::Lowerer;
-use crate::compiler::ir::{BinaryOp, IrInstr, Register, Terminator};
+use crate::compiler::ir::{BinaryOp, IrConstant, IrInstr, IrValue, Register, Terminator};
 use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
 
@@ -64,6 +64,7 @@ impl<'a> Lowerer<'a> {
         self.loop_stack.push(super::LoopContext {
             break_target: exit_block,
             continue_target: cond_block,
+            try_finally_depth: self.try_finally_stack.len(),
         });
 
         // Body block
@@ -172,6 +173,7 @@ impl<'a> Lowerer<'a> {
         self.loop_stack.push(super::LoopContext {
             break_target: exit_block,
             continue_target: update_block,
+            try_finally_depth: self.try_finally_stack.len(),
         });
 
         // Body block
@@ -203,26 +205,23 @@ impl<'a> Lowerer<'a> {
             index: body_idx,
         });
 
-        // Bind the loop variable
+        // Bind the loop variable (supports destructuring patterns)
         match &for_of.left {
             ast::ForOfLeft::VariableDecl(decl) => {
-                if let ast::Pattern::Identifier(ident) = &decl.pattern {
-                    let local_idx = self.allocate_local(ident.name);
-                    self.local_registers.insert(local_idx, elem_reg.clone());
-                    self.emit(IrInstr::StoreLocal {
-                        index: local_idx,
-                        value: elem_reg,
-                    });
-                }
+                self.bind_pattern(&decl.pattern, elem_reg);
             }
             ast::ForOfLeft::Pattern(pattern) => {
-                // For existing variable pattern
-                if let ast::Pattern::Identifier(ident) = pattern {
-                    if let Some(local_idx) = self.lookup_local(ident.name) {
-                        self.emit(IrInstr::StoreLocal {
-                            index: local_idx,
-                            value: elem_reg,
-                        });
+                match pattern {
+                    ast::Pattern::Identifier(ident) => {
+                        if let Some(local_idx) = self.lookup_local(ident.name) {
+                            self.emit(IrInstr::StoreLocal {
+                                index: local_idx,
+                                value: elem_reg,
+                            });
+                        }
+                    }
+                    _ => {
+                        self.bind_pattern(pattern, elem_reg);
                     }
                 }
             }
@@ -281,16 +280,275 @@ impl<'a> Lowerer<'a> {
         self.current_block = exit_block;
     }
 
+    /// Bind a destructuring pattern to a value register.
+    /// Recursively handles nested array/object patterns.
+    fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
+        match pattern {
+            ast::Pattern::Identifier(ident) => {
+                let local_idx = self.allocate_local(ident.name);
+                self.local_registers.insert(local_idx, value_reg.clone());
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: value_reg,
+                });
+            }
+            ast::Pattern::Array(array_pat) => {
+                for (i, elem_opt) in array_pat.elements.iter().enumerate() {
+                    if let Some(elem) = elem_opt {
+                        if let Some(default_expr) = &elem.default {
+                            // With default: check bounds first, use default if OOB or null
+                            let idx_reg = self.emit_i32_const(i as i32);
+                            let len_reg = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::ArrayLen {
+                                dest: len_reg.clone(),
+                                array: value_reg.clone(),
+                            });
+
+                            let in_bounds = self.alloc_register(TypeId::new(2));
+                            self.emit(IrInstr::BinaryOp {
+                                dest: in_bounds.clone(),
+                                op: BinaryOp::Less,
+                                left: idx_reg.clone(),
+                                right: len_reg,
+                            });
+
+                            let load_block = self.alloc_block();
+                            let default_block = self.alloc_block();
+                            let merge_block = self.alloc_block();
+                            let final_val = self.alloc_register(TypeId::new(0));
+
+                            self.set_terminator(Terminator::Branch {
+                                cond: in_bounds,
+                                then_block: load_block,
+                                else_block: default_block,
+                            });
+
+                            // In-bounds path: load element, then check for null
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(load_block, "destr.load"));
+                            self.current_block = load_block;
+                            let elem_reg = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::LoadElement {
+                                dest: elem_reg.clone(),
+                                array: value_reg.clone(),
+                                index: idx_reg,
+                            });
+
+                            // Also check if the loaded value is null
+                            let not_null_block = self.alloc_block();
+                            self.set_terminator(Terminator::BranchIfNull {
+                                value: elem_reg.clone(),
+                                null_block: default_block,
+                                not_null_block,
+                            });
+
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(not_null_block, "destr.hasval"));
+                            self.current_block = not_null_block;
+                            self.emit(IrInstr::Assign {
+                                dest: final_val.clone(),
+                                value: IrValue::Register(elem_reg),
+                            });
+                            self.set_terminator(Terminator::Jump(merge_block));
+
+                            // Default path: evaluate default expression
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(default_block, "destr.default"));
+                            self.current_block = default_block;
+                            let default_val = self.lower_expr(default_expr);
+                            self.emit(IrInstr::Assign {
+                                dest: final_val.clone(),
+                                value: IrValue::Register(default_val),
+                            });
+                            self.set_terminator(Terminator::Jump(merge_block));
+
+                            // Merge
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(merge_block, "destr.merge"));
+                            self.current_block = merge_block;
+
+                            self.bind_pattern(&elem.pattern, final_val);
+                        } else {
+                            // No default: just load element directly
+                            let idx_reg = self.emit_i32_const(i as i32);
+                            let elem_reg = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::LoadElement {
+                                dest: elem_reg.clone(),
+                                array: value_reg.clone(),
+                                index: idx_reg,
+                            });
+                            self.bind_pattern(&elem.pattern, elem_reg);
+                        }
+                    }
+                }
+
+                // Handle rest pattern: ...rest = arr.slice(elements.len())
+                if let Some(rest_pat) = &array_pat.rest {
+                    let start_idx = self.emit_i32_const(array_pat.elements.len() as i32);
+                    let len_reg = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::ArrayLen {
+                        dest: len_reg.clone(),
+                        array: value_reg.clone(),
+                    });
+
+                    // Build rest array: for i in start..len { rest.push(arr[i]) }
+                    let zero = self.emit_i32_const(0);
+                    let rest_arr = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::NewArray {
+                        dest: rest_arr.clone(),
+                        len: zero,
+                        elem_ty: TypeId::new(0),
+                    });
+
+                    let i = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::Assign {
+                        dest: i.clone(),
+                        value: IrValue::Register(start_idx),
+                    });
+
+                    let header = self.alloc_block();
+                    let body = self.alloc_block();
+                    let exit = self.alloc_block();
+
+                    self.set_terminator(Terminator::Jump(header));
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(header, "rest.hdr"));
+                    self.current_block = header;
+                    let cond = self.alloc_register(TypeId::new(2));
+                    self.emit(IrInstr::BinaryOp {
+                        dest: cond.clone(),
+                        op: BinaryOp::Less,
+                        left: i.clone(),
+                        right: len_reg,
+                    });
+                    self.set_terminator(Terminator::Branch {
+                        cond,
+                        then_block: body,
+                        else_block: exit,
+                    });
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(body, "rest.body"));
+                    self.current_block = body;
+                    let elem = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::LoadElement {
+                        dest: elem.clone(),
+                        array: value_reg.clone(),
+                        index: i.clone(),
+                    });
+                    self.emit(IrInstr::ArrayPush {
+                        array: rest_arr.clone(),
+                        element: elem,
+                    });
+                    let one = self.emit_i32_const(1);
+                    self.emit(IrInstr::BinaryOp {
+                        dest: i.clone(),
+                        op: BinaryOp::Add,
+                        left: i.clone(),
+                        right: one,
+                    });
+                    self.set_terminator(Terminator::Jump(header));
+
+                    self.current_function_mut()
+                        .add_block(crate::ir::BasicBlock::with_label(exit, "rest.exit"));
+                    self.current_block = exit;
+
+                    self.bind_pattern(rest_pat, rest_arr);
+                }
+            }
+            ast::Pattern::Object(obj_pat) => {
+                // Object destructuring: field indices are positional (0, 1, 2, ...)
+                // Look up field layout from register_object_fields or variable_object_fields
+                let field_layout: Option<Vec<(String, usize)>> =
+                    self.register_object_fields.get(&value_reg.id).cloned();
+
+                for property in &obj_pat.properties {
+                    let prop_name = self.interner.resolve(property.key.name).to_string();
+
+                    // Find field index by name from the field layout, or use positional fallback
+                    let field_index = if let Some(ref layout) = field_layout {
+                        layout.iter()
+                            .find(|(name, _)| name == &prop_name)
+                            .map(|(_, idx)| *idx as u16)
+                            .unwrap_or(0)
+                    } else {
+                        // Fallback: check if we have a class_id for this register
+                        // Use obj_pat property order as positional index
+                        obj_pat.properties.iter()
+                            .position(|p| p.key.name == property.key.name)
+                            .unwrap_or(0) as u16
+                    };
+
+                    let field_reg = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::LoadField {
+                        dest: field_reg.clone(),
+                        object: value_reg.clone(),
+                        field: field_index,
+                    });
+
+                    // Handle default values
+                    if let Some(default_expr) = &property.default {
+                        let not_null_block = self.alloc_block();
+                        let default_block = self.alloc_block();
+                        let merge_block = self.alloc_block();
+                        let final_val = self.alloc_register(TypeId::new(0));
+
+                        self.set_terminator(Terminator::BranchIfNull {
+                            value: field_reg.clone(),
+                            null_block: default_block,
+                            not_null_block,
+                        });
+
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(not_null_block, "objd.hasval"));
+                        self.current_block = not_null_block;
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Register(field_reg),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
+
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(default_block, "objd.default"));
+                        self.current_block = default_block;
+                        let default_val = self.lower_expr(default_expr);
+                        self.emit(IrInstr::Assign {
+                            dest: final_val.clone(),
+                            value: IrValue::Register(default_val),
+                        });
+                        self.set_terminator(Terminator::Jump(merge_block));
+
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(merge_block, "objd.merge"));
+                        self.current_block = merge_block;
+
+                        self.bind_pattern(&property.value, final_val);
+                    } else {
+                        self.bind_pattern(&property.value, field_reg);
+                    }
+                }
+            }
+            ast::Pattern::Rest(rest_pat) => {
+                // Rest pattern at top level — just bind the value
+                self.bind_pattern(&rest_pat.argument, value_reg);
+            }
+        }
+    }
+
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
-        // Extract the variable name from the pattern
-        // For now, only handle simple identifier patterns
+        // Handle destructuring patterns
         let name = match &decl.pattern {
             ast::Pattern::Identifier(ident) => ident.name,
-            _ => {
-                // For complex patterns (destructuring), we'd need more sophisticated handling
-                // For now, just skip
+            ast::Pattern::Array(_) | ast::Pattern::Object(_) => {
+                // Destructuring: evaluate initializer, then bind pattern
+                if let Some(init) = &decl.initializer {
+                    let value = self.lower_expr(init);
+                    self.bind_pattern(&decl.pattern, value);
+                }
                 return;
             }
+            ast::Pattern::Rest(_) => return,
         };
 
         // Check for compile-time constant: const with literal initializer
@@ -441,6 +699,23 @@ impl<'a> Lowerer<'a> {
 
     fn lower_return(&mut self, ret: &ast::ReturnStatement) {
         let value = ret.value.as_ref().map(|e| self.lower_expr(e));
+
+        // Inline finally blocks from innermost to outermost
+        if !self.try_finally_stack.is_empty() {
+            let entries: Vec<super::TryFinallyEntry> =
+                self.try_finally_stack.iter().rev().cloned().collect();
+            for entry in &entries {
+                if entry.in_try_body {
+                    self.emit(IrInstr::EndTry);
+                }
+                self.lower_block(&entry.finally_body);
+                if self.current_block_is_terminated() {
+                    // Finally body contained its own return/throw — it takes precedence
+                    return;
+                }
+            }
+        }
+
         self.set_terminator(Terminator::Return(value));
     }
 
@@ -513,6 +788,7 @@ impl<'a> Lowerer<'a> {
         self.loop_stack.push(super::LoopContext {
             break_target: exit_block,
             continue_target: header_block,
+            try_finally_depth: self.try_finally_stack.len(),
         });
 
         // Body block
@@ -599,6 +875,7 @@ impl<'a> Lowerer<'a> {
         self.loop_stack.push(super::LoopContext {
             break_target: exit_block,
             continue_target: update_block,
+            try_finally_depth: self.try_finally_stack.len(),
         });
 
         // Body block
@@ -713,19 +990,47 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_break(&mut self, _brk: &ast::BreakStatement) {
-        if let Some(loop_ctx) = self.loop_stack.last() {
+        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+            // Inline finally blocks between here and the loop
+            let depth = loop_ctx.try_finally_depth;
+            if depth < self.try_finally_stack.len() {
+                let entries: Vec<super::TryFinallyEntry> =
+                    self.try_finally_stack[depth..].iter().rev().cloned().collect();
+                for entry in &entries {
+                    if entry.in_try_body {
+                        self.emit(IrInstr::EndTry);
+                    }
+                    self.lower_block(&entry.finally_body);
+                    if self.current_block_is_terminated() {
+                        return;
+                    }
+                }
+            }
             self.set_terminator(Terminator::Jump(loop_ctx.break_target));
         } else {
-            // Break outside of loop - should be caught by type checker
             self.set_terminator(Terminator::Unreachable);
         }
     }
 
     fn lower_continue(&mut self, _cont: &ast::ContinueStatement) {
-        if let Some(loop_ctx) = self.loop_stack.last() {
+        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+            // Inline finally blocks between here and the loop
+            let depth = loop_ctx.try_finally_depth;
+            if depth < self.try_finally_stack.len() {
+                let entries: Vec<super::TryFinallyEntry> =
+                    self.try_finally_stack[depth..].iter().rev().cloned().collect();
+                for entry in &entries {
+                    if entry.in_try_body {
+                        self.emit(IrInstr::EndTry);
+                    }
+                    self.lower_block(&entry.finally_body);
+                    if self.current_block_is_terminated() {
+                        return;
+                    }
+                }
+            }
             self.set_terminator(Terminator::Jump(loop_ctx.continue_target));
         } else {
-            // Continue outside of loop - should be caught by type checker
             self.set_terminator(Terminator::Unreachable);
         }
     }
@@ -762,6 +1067,15 @@ impl<'a> Lowerer<'a> {
             finally_block,
         });
 
+        // Push finally context so return/break/continue in try/catch bodies
+        // will inline the finally block before exiting
+        if let Some(finally_clause) = &try_stmt.finally_clause {
+            self.try_finally_stack.push(super::TryFinallyEntry {
+                finally_body: finally_clause.clone(),
+                in_try_body: true,
+            });
+        }
+
         // Lower try body
         self.lower_block(&try_stmt.body);
 
@@ -774,6 +1088,13 @@ impl<'a> Lowerer<'a> {
                 self.set_terminator(Terminator::Jump(finally));
             } else {
                 self.set_terminator(Terminator::Jump(exit_block));
+            }
+        }
+
+        // Mark that we're now in the catch body (handler already consumed, no EndTry needed)
+        if has_finally {
+            if let Some(entry) = self.try_finally_stack.last_mut() {
+                entry.in_try_body = false;
             }
         }
 
@@ -820,6 +1141,12 @@ impl<'a> Lowerer<'a> {
             } else {
                 self.set_terminator(Terminator::Jump(exit_block));
             }
+        }
+
+        // Pop the finally context before lowering the actual finally block
+        // (the finally block should not see itself on the stack)
+        if has_finally {
+            self.try_finally_stack.pop();
         }
 
         // Create finally block if present

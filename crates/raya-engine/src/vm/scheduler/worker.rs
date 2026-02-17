@@ -68,6 +68,16 @@ impl Worker {
     pub fn stop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
 
+        // Cancel all running/suspended tasks so the interpreter's cancellation
+        // check will trigger, preventing infinite preempt-yield-resume cycles
+        // on detached workers.
+        {
+            let tasks = self.state.tasks.read();
+            for task in tasks.values() {
+                task.cancel();
+            }
+        }
+
         if let Some(handle) = self.handle.take() {
             // Wait up to 2 seconds for the worker to finish gracefully
             let start = Instant::now();
@@ -213,8 +223,9 @@ impl Worker {
                     }
                 }
                 ExecutionResult::Failed(e) => {
+                    #[cfg(debug_assertions)]
                     eprintln!("Worker {}: Task {} failed: {:?}", id, task.id().as_u64(), e);
-                    task.fail();
+                    task.fail_with_error(&e);
 
                     // Resume waiting tasks even on failure (they need to see the failure)
                     Self::wake_waiters(&state, &task);

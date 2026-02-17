@@ -45,7 +45,8 @@ pub fn get_precedence(token: &Token) -> Precedence {
         | Token::CaretEqual
         | Token::LessLessEqual
         | Token::GreaterGreaterEqual
-        | Token::GreaterGreaterGreaterEqual => Precedence::Assignment,
+        | Token::GreaterGreaterGreaterEqual
+        | Token::QuestionQuestionEqual => Precedence::Assignment,
 
         // Conditional
         Token::Question => Precedence::Conditional,
@@ -110,6 +111,7 @@ pub fn is_right_associative(token: &Token) -> bool {
             | Token::LessLessEqual
             | Token::GreaterGreaterEqual
             | Token::GreaterGreaterGreaterEqual
+            | Token::QuestionQuestionEqual
             | Token::StarStar // ** is right-associative
             | Token::Question // ?: is right-associative
     )

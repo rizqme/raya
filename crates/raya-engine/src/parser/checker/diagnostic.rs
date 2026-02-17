@@ -229,6 +229,13 @@ impl Diagnostic {
                 .with_help(format!("Use typeof instead: typeof x === \"string\""))
             }
 
+            AbstractClassInstantiation { name, span } => {
+                Diagnostic::error(format!("Cannot create an instance of abstract class '{}'", name))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "abstract class")
+                    .with_help("Extend this class with a concrete subclass instead")
+            }
+
             UndefinedMember { member, span } => {
                 Diagnostic::error(format!("Property '{}' does not exist", member))
                     .with_code(error_code(error))
@@ -419,6 +426,7 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         GenericInstantiationError { .. } => ErrorCode("E2014"),
         ConstraintViolation { .. } => ErrorCode("E2015"),
         UndefinedMember { .. } => ErrorCode("E2016"),
+        AbstractClassInstantiation { .. } => ErrorCode("E2017"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

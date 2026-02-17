@@ -164,7 +164,7 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 1,832 total (932 engine, 883 runtime, 17 stdlib) — 2 ignored (path CallMethod)
+**Tests:** 2,785 total (1,697 engine, 1,071 runtime, 17 stdlib) — 10 ignored (edge cases)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -238,9 +238,9 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (1,714+)
-cargo test -p raya-engine      # Engine tests only (843)
-cargo test -p raya-runtime     # Runtime + e2e tests (854)
+cargo test                     # Run all tests (2,785+)
+cargo test -p raya-engine      # Engine tests only (1,697)
+cargo test -p raya-runtime     # Runtime + e2e tests (1,071)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests
 ```

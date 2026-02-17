@@ -3,7 +3,7 @@
 //! Converts AST expressions to IR instructions.
 
 use super::{ClassFieldInfo, ConstantValue, Lowerer};
-use crate::compiler::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, UnaryOp};
+use crate::compiler::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp};
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
 use crate::parser::TypeId;
@@ -1097,7 +1097,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Helper: emit integer constant into a register
-    fn emit_i32_const(&mut self, value: i32) -> Register {
+    pub(super) fn emit_i32_const(&mut self, value: i32) -> Register {
         let reg = self.alloc_register(TypeId::new(0)); // number type
         self.emit(IrInstr::Assign {
             dest: reg.clone(),
@@ -2489,34 +2489,120 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_array(&mut self, array: &ast::ArrayExpression, full_expr: &Expression) -> Register {
-        // ArrayExpression.elements is Vec<Option<ArrayElement>>
-        // ArrayElement can be Expression or Spread
-        let mut elements = Vec::new();
-        for elem_opt in &array.elements {
-            if let Some(elem) = elem_opt {
-                match elem {
-                    ast::ArrayElement::Expression(expr) => {
-                        elements.push(self.lower_expr(expr));
-                    }
-                    ast::ArrayElement::Spread(spread_expr) => {
-                        // For now, just lower the spread expression as a single element
-                        // A full implementation would need to handle spread at runtime
-                        elements.push(self.lower_expr(spread_expr));
+        // Check if any element is a spread
+        let has_spread = array.elements.iter().any(|elem_opt| {
+            matches!(elem_opt, Some(ast::ArrayElement::Spread(_)))
+        });
+
+        let array_ty = self.get_expr_type(full_expr);
+
+        if has_spread {
+            // Spread present: build array imperatively with NewArray + push/loop
+            let zero = self.emit_i32_const(0);
+            let dest = self.alloc_register(array_ty);
+            self.emit(IrInstr::NewArray {
+                dest: dest.clone(),
+                len: zero,
+                elem_ty: TypeId::new(0),
+            });
+
+            for elem_opt in &array.elements {
+                if let Some(elem) = elem_opt {
+                    match elem {
+                        ast::ArrayElement::Expression(expr) => {
+                            let val = self.lower_expr(expr);
+                            self.emit(IrInstr::ArrayPush {
+                                array: dest.clone(),
+                                element: val,
+                            });
+                        }
+                        ast::ArrayElement::Spread(spread_expr) => {
+                            let src_arr = self.lower_expr(spread_expr);
+                            // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
+                            let len = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::ArrayLen {
+                                dest: len.clone(),
+                                array: src_arr.clone(),
+                            });
+                            let i = self.emit_i32_const(0);
+
+                            let header = self.alloc_block();
+                            let body = self.alloc_block();
+                            let exit = self.alloc_block();
+
+                            self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+
+                            // Header: i < len?
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(header, "spread.hdr"));
+                            self.current_block = header;
+                            let cond = self.alloc_register(TypeId::new(2));
+                            self.emit(IrInstr::BinaryOp {
+                                dest: cond.clone(),
+                                op: BinaryOp::Less,
+                                left: i.clone(),
+                                right: len.clone(),
+                            });
+                            self.set_terminator(crate::compiler::ir::Terminator::Branch {
+                                cond,
+                                then_block: body,
+                                else_block: exit,
+                            });
+
+                            // Body: elem = src_arr[i]; dest.push(elem); i++
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(body, "spread.body"));
+                            self.current_block = body;
+                            let elem = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::LoadElement {
+                                dest: elem.clone(),
+                                array: src_arr.clone(),
+                                index: i.clone(),
+                            });
+                            self.emit(IrInstr::ArrayPush {
+                                array: dest.clone(),
+                                element: elem,
+                            });
+                            let one = self.emit_i32_const(1);
+                            self.emit(IrInstr::BinaryOp {
+                                dest: i.clone(),
+                                op: BinaryOp::Add,
+                                left: i.clone(),
+                                right: one,
+                            });
+                            self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+
+                            // Exit
+                            self.current_function_mut()
+                                .add_block(crate::ir::BasicBlock::with_label(exit, "spread.exit"));
+                            self.current_block = exit;
+                        }
                     }
                 }
             }
+            dest
+        } else {
+            // No spread: use efficient ArrayLiteral path
+            let mut elements = Vec::new();
+            for elem_opt in &array.elements {
+                if let Some(elem) = elem_opt {
+                    match elem {
+                        ast::ArrayElement::Expression(expr) => {
+                            elements.push(self.lower_expr(expr));
+                        }
+                        ast::ArrayElement::Spread(_) => unreachable!(),
+                    }
+                }
+            }
+            let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(0));
+            let dest = self.alloc_register(array_ty);
+            self.emit(IrInstr::ArrayLiteral {
+                dest: dest.clone(),
+                elements,
+                elem_ty,
+            });
+            dest
         }
-        let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(0));
-        // Get the array type from the type checker, or use a default array TypeId
-        let array_ty = self.get_expr_type(full_expr);
-        let dest = self.alloc_register(array_ty);
-
-        self.emit(IrInstr::ArrayLiteral {
-            dest: dest.clone(),
-            elements,
-            elem_ty,
-        });
-        dest
     }
 
     fn lower_object(&mut self, object: &ast::ObjectExpression) -> Register {
@@ -2545,6 +2631,54 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_assignment(&mut self, assign: &ast::AssignmentExpression) -> Register {
+        // ??= is short-circuiting: only evaluate and assign RHS if LHS is null
+        if assign.operator == AssignmentOperator::NullCoalesceAssign {
+            let current = self.lower_expr(&assign.left);
+            let assign_block = self.alloc_block();
+            let merge_block = self.alloc_block();
+
+            self.set_terminator(Terminator::BranchIfNull {
+                value: current.clone(),
+                null_block: assign_block,
+                not_null_block: merge_block,
+            });
+
+            // Null path: evaluate RHS and assign to LHS
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(assign_block, "nca.assign"));
+            self.current_block = assign_block;
+            let rhs = self.lower_expr(&assign.right);
+            // Store to LHS (identifier case)
+            if let Expression::Identifier(ident) = &*assign.left {
+                if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                    if self.refcell_registers.contains_key(&local_idx) {
+                        let refcell_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::LoadLocal {
+                            dest: refcell_reg.clone(),
+                            index: local_idx,
+                        });
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value: rhs,
+                        });
+                    } else {
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: rhs,
+                        });
+                    }
+                }
+            }
+            self.set_terminator(Terminator::Jump(merge_block));
+
+            // Merge
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(merge_block, "nca.merge"));
+            self.current_block = merge_block;
+
+            return current;
+        }
+
         // For compound assignment, we need to load the current value first
         let binary_op = match assign.operator {
             AssignmentOperator::Assign => None,
@@ -2559,6 +2693,7 @@ impl<'a> Lowerer<'a> {
             AssignmentOperator::LeftShiftAssign => Some(BinaryOp::ShiftLeft),
             AssignmentOperator::RightShiftAssign => Some(BinaryOp::ShiftRight),
             AssignmentOperator::UnsignedRightShiftAssign => Some(BinaryOp::UnsignedShiftRight),
+            AssignmentOperator::NullCoalesceAssign => unreachable!(),
         };
 
         let rhs = self.lower_expr(&assign.right);

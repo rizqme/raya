@@ -158,11 +158,25 @@ struct ClassInfo {
 }
 
 /// Loop context for break/continue handling
+#[derive(Clone)]
 struct LoopContext {
     /// Block to jump to for break
     break_target: BasicBlockId,
     /// Block to jump to for continue
     continue_target: BasicBlockId,
+    /// Depth of try_finally_stack when this loop started
+    /// (used to know which finally blocks to inline on break/continue)
+    try_finally_depth: usize,
+}
+
+/// Entry on the try-finally stack for inline finally duplication
+#[derive(Clone)]
+struct TryFinallyEntry {
+    /// Cloned AST of the finally block (inlined at return/break/continue sites)
+    finally_body: crate::parser::ast::BlockStatement,
+    /// True when we're inside the try body (exception handler is active, need EndTry)
+    /// False when we're inside the catch body (handler already consumed)
+    in_try_body: bool,
 }
 
 /// Source of an ancestor variable (for closure capture tracking)
@@ -243,6 +257,8 @@ pub struct Lowerer<'a> {
     next_type_alias_id: u32,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext>,
+    /// Stack of try-finally contexts for inlining finally blocks at return/break/continue
+    try_finally_stack: Vec<TryFinallyEntry>,
     /// Pending arrow functions to be added to module (with their assigned func_id)
     pending_arrow_functions: Vec<(u32, IrFunction)>,
     /// Counter for generating unique arrow function names
@@ -333,6 +349,7 @@ impl<'a> Lowerer<'a> {
             type_alias_map: FxHashMap::default(),
             next_type_alias_id: 0,
             loop_stack: Vec::new(),
+            try_finally_stack: Vec::new(),
             pending_arrow_functions: Vec::new(),
             arrow_counter: 0,
             ancestor_variables: None,

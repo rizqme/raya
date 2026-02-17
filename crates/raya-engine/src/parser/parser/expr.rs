@@ -499,6 +499,7 @@ fn parse_infix(
             | Token::LessLessEqual
             | Token::GreaterGreaterEqual
             | Token::GreaterGreaterGreaterEqual
+            | Token::QuestionQuestionEqual
     ) {
         let op_token = parser.advance();
         let operator = match op_token {
@@ -514,6 +515,7 @@ fn parse_infix(
             Token::LessLessEqual => AssignmentOperator::LeftShiftAssign,
             Token::GreaterGreaterEqual => AssignmentOperator::RightShiftAssign,
             Token::GreaterGreaterGreaterEqual => AssignmentOperator::UnsignedRightShiftAssign,
+            Token::QuestionQuestionEqual => AssignmentOperator::NullCoalesceAssign,
             _ => unreachable!(),
         };
 

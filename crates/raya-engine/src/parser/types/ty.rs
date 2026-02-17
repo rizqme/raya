@@ -211,6 +211,8 @@ pub struct ClassType {
     pub extends: Option<TypeId>,
     /// Implemented interfaces
     pub implements: Vec<TypeId>,
+    /// Whether this is an abstract class (cannot be instantiated directly)
+    pub is_abstract: bool,
 }
 
 /// Interface type (structural typing for object shapes)

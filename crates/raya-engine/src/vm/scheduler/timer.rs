@@ -96,7 +96,19 @@ impl TimerThread {
         self.notify.notify_one();
 
         if let Some(handle) = self.handle.lock().take() {
-            let _ = handle.join();
+            let start = Instant::now();
+            let timeout = std::time::Duration::from_secs(2);
+            loop {
+                if handle.is_finished() {
+                    let _ = handle.join();
+                    return;
+                }
+                if start.elapsed() > timeout {
+                    drop(handle);
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
 
@@ -123,6 +135,13 @@ impl TimerThread {
             }
 
             let mut state = self.state.lock();
+
+            // Re-check shutdown after acquiring lock to close race window:
+            // stop() may set shutdown + notify_one between our first check
+            // and acquiring the lock, causing the notification to be lost.
+            if self.shutdown.load(AtomicOrdering::Acquire) {
+                break;
+            }
 
             // Process all tasks that should wake up now
             let now = Instant::now();

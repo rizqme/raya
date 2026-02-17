@@ -30,6 +30,7 @@ mod time;
 mod path;
 mod stream;
 mod fundamentals;
+mod edge_cases;
 mod env;
 mod os;
 mod io;

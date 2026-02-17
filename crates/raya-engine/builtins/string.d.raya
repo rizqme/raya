@@ -51,7 +51,7 @@ export class string {
     endsWith(suffix: string): boolean;
 
     /** Split the string by a separator into an array */
-    split(separator: string, limit: number): string[];
+    split(separator: string, limit?: number): string[];
 
     /** Replace the first occurrence of search with replacement */
     replace(search: string, replacement: string): string;

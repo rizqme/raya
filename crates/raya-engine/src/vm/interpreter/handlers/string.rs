@@ -524,6 +524,45 @@ impl<'a> Interpreter<'a> {
                     "String.replaceWith is handled by compiler intrinsic, should not reach VM handler".to_string()
                 ))
             }
+            string::REPLACE => {
+                // replace(search: string, replacement: string): string
+                if arg_count != 2 {
+                    return Err(VmError::RuntimeError(format!(
+                        "String.replace expects 2 arguments, got {}", arg_count
+                    )));
+                }
+                let search_str = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
+                    unsafe { &*ptr.as_ptr() }.data.clone()
+                } else {
+                    String::new()
+                };
+                let replacement_str = if let Some(ptr) = unsafe { args[1].as_ptr::<RayaString>() } {
+                    unsafe { &*ptr.as_ptr() }.data.clone()
+                } else {
+                    String::new()
+                };
+                let result = s.replacen(&search_str, &replacement_str, 1);
+                let raya_string = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(raya_string);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
+            string::REPEAT => {
+                // repeat(count: number): string
+                if arg_count != 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "String.repeat expects 1 argument, got {}", arg_count
+                    )));
+                }
+                let count = args[0].as_i32().unwrap_or(0).max(0) as usize;
+                let result = s.repeat(count);
+                let raya_string = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(raya_string);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
             _ => Err(VmError::RuntimeError(format!(
                 "String method {:#06x} not yet implemented in Interpreter",
                 method_id

@@ -209,6 +209,15 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// Cannot instantiate an abstract class
+    #[error("Cannot instantiate abstract class '{name}'")]
+    AbstractClassInstantiation {
+        /// Class name
+        name: String,
+        /// Location of new expression
+        span: Span,
+    },
+
     /// Undefined member on a type (static or instance)
     #[error("'{member}' does not exist")]
     UndefinedMember {
@@ -275,6 +284,7 @@ impl CheckError {
             CheckError::GenericInstantiationError { span, .. } => *span,
             CheckError::ConstraintViolation { span, .. } => *span,
             CheckError::ForbiddenFieldAccess { span, .. } => *span,
+            CheckError::AbstractClassInstantiation { span, .. } => *span,
             CheckError::UndefinedMember { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,

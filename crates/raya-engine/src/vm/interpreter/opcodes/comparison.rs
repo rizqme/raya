@@ -254,7 +254,15 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a == b)) {
+                // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a.as_f64().unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b.as_f64().unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa == fb
+                } else {
+                    a == b
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -269,7 +277,15 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::bool(a != b)) {
+                // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
+                let result = if a.is_f64() || b.is_f64() {
+                    let fa = a.as_f64().unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b.as_f64().unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    fa != fb
+                } else {
+                    a != b
+                };
+                if let Err(e) = stack.push(Value::bool(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

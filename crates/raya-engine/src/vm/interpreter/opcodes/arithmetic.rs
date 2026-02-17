@@ -72,10 +72,10 @@ impl<'a> Interpreter<'a> {
                 };
                 if b == 0 {
                     return OpcodeResult::Error(VmError::RuntimeError(
-                        "Division by zero".to_string(),
+                        "division by zero".to_string(),
                     ));
                 }
-                if let Err(e) = stack.push(Value::i32(a / b)) {
+                if let Err(e) = stack.push(Value::i32(a.wrapping_div(b))) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -92,10 +92,10 @@ impl<'a> Interpreter<'a> {
                 };
                 if b == 0 {
                     return OpcodeResult::Error(VmError::RuntimeError(
-                        "Division by zero".to_string(),
+                        "division by zero".to_string(),
                     ));
                 }
-                if let Err(e) = stack.push(Value::i32(a % b)) {
+                if let Err(e) = stack.push(Value::i32(a.wrapping_rem(b))) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -106,7 +106,7 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v.as_i32().unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::i32(-a)) {
+                if let Err(e) = stack.push(Value::i32(a.wrapping_neg())) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -121,7 +121,12 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v.as_i32().unwrap_or(0),
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                if let Err(e) = stack.push(Value::i32(a.pow(b as u32))) {
+                let result = if b < 0 {
+                    0
+                } else {
+                    a.wrapping_pow(b as u32)
+                };
+                if let Err(e) = stack.push(Value::i32(result)) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
@@ -466,7 +471,7 @@ impl<'a> Interpreter<'a> {
                         let result = if is_float(&a_val) {
                             Value::f64(-value_to_number(a_val))
                         } else {
-                            Value::i32(-a_val.as_i32().unwrap_or(0))
+                            Value::i32(a_val.as_i32().unwrap_or(0).wrapping_neg())
                         };
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
@@ -486,7 +491,7 @@ impl<'a> Interpreter<'a> {
                         } else {
                             let a = a_val.as_i32().unwrap_or(0);
                             let b = b_val.as_i32().unwrap_or(0);
-                            Value::i32(a.pow(b as u32))
+                            Value::i32(if b < 0 { 0 } else { a.wrapping_pow(b as u32) })
                         };
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);

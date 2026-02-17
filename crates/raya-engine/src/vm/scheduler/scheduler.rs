@@ -255,6 +255,9 @@ impl Scheduler {
         // Stop preemption monitor first
         self.preempt_monitor.stop();
 
+        // Stop timer thread before workers so suspended tasks can't be re-queued
+        self.shared_state.timer.stop();
+
         // Stop all workers
         for worker in &mut self.workers {
             worker.stop();
