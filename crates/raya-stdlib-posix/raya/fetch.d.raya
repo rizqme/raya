@@ -1,0 +1,39 @@
+/**
+ * std:fetch - HTTP Client Module
+ *
+ * Usage:
+ *   import fetch from "std:fetch";
+ *   const resp: Response = fetch.get("http://example.com");
+ */
+
+export class Response {
+    constructor(handle: number);
+    /** HTTP status code */
+    status(): number;
+    /** Status text (e.g., "OK") */
+    statusText(): string;
+    /** Get response header */
+    header(name: string): string;
+    /** All headers as [key, value, ...] pairs */
+    headers(): string[];
+    /** Response body as text */
+    text(): string;
+    /** Response body as bytes */
+    bytes(): Buffer;
+}
+
+export class Fetch {
+    /** HTTP GET */
+    get(url: string): Response;
+    /** HTTP POST */
+    post(url: string, body: string): Response;
+    /** HTTP PUT */
+    put(url: string, body: string): Response;
+    /** HTTP DELETE */
+    del(url: string): Response;
+    /** Custom HTTP request */
+    request(method: string, url: string, body: string, headers: string): Response;
+}
+
+declare const fetch: Fetch;
+export default fetch;

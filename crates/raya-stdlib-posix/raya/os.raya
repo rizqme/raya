@@ -1,0 +1,43 @@
+// Os - Standard OS information module
+// Usage: import os from "std:os";
+
+class Os {
+    platform(): string {
+        return __NATIVE_CALL<string>("os.platform");
+    }
+
+    arch(): string {
+        return __NATIVE_CALL<string>("os.arch");
+    }
+
+    hostname(): string {
+        return __NATIVE_CALL<string>("os.hostname");
+    }
+
+    cpus(): number {
+        return __NATIVE_CALL<number>("os.cpus");
+    }
+
+    totalMemory(): number {
+        return __NATIVE_CALL<number>("os.totalMemory");
+    }
+
+    freeMemory(): number {
+        return __NATIVE_CALL<number>("os.freeMemory");
+    }
+
+    uptime(): number {
+        return __NATIVE_CALL<number>("os.uptime");
+    }
+
+    eol(): string {
+        return __NATIVE_CALL<string>("os.eol");
+    }
+
+    tmpdir(): string {
+        return __NATIVE_CALL<string>("os.tmpdir");
+    }
+}
+
+const os = new Os();
+export default os;

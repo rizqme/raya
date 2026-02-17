@@ -1,0 +1,73 @@
+// Http - Standard HTTP server module
+// Usage: import { HttpServer, HttpRequest } from "std:http";
+
+class HttpRequest {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    method(): string {
+        return __NATIVE_CALL<string>("http.reqMethod", this._handle);
+    }
+
+    path(): string {
+        return __NATIVE_CALL<string>("http.reqPath", this._handle);
+    }
+
+    query(): string {
+        return __NATIVE_CALL<string>("http.reqQuery", this._handle);
+    }
+
+    header(name: string): string {
+        return __NATIVE_CALL<string>("http.reqHeader", this._handle, name);
+    }
+
+    headers(): string[] {
+        return __NATIVE_CALL<string[]>("http.reqHeaders", this._handle);
+    }
+
+    body(): string {
+        return __NATIVE_CALL<string>("http.reqBody", this._handle);
+    }
+
+    bodyBytes(): Buffer {
+        return __NATIVE_CALL<Buffer>("http.reqBodyBytes", this._handle);
+    }
+}
+
+class HttpServer {
+    _handle: number;
+
+    constructor(host: string, port: number) {
+        this._handle = __NATIVE_CALL<number>("http.serverCreate", host, port);
+    }
+
+    accept(): HttpRequest {
+        const h: number = __NATIVE_CALL<number>("http.serverAccept", this._handle);
+        return new HttpRequest(h);
+    }
+
+    respond(reqHandle: number, status: number, body: string): void {
+        __NATIVE_CALL("http.serverRespond", this._handle, reqHandle, status, body);
+    }
+
+    respondBytes(reqHandle: number, status: number, body: Buffer): void {
+        __NATIVE_CALL("http.serverRespondBytes", this._handle, reqHandle, status, body);
+    }
+
+    respondWithHeaders(reqHandle: number, status: number, headers: string[], body: string): void {
+        __NATIVE_CALL("http.serverRespondHeaders", this._handle, reqHandle, status, headers, body);
+    }
+
+    close(): void {
+        __NATIVE_CALL("http.serverClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("http.serverAddr", this._handle);
+    }
+}
+
+export { HttpServer, HttpRequest };

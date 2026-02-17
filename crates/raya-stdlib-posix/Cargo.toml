@@ -1,14 +1,15 @@
 [package]
-name = "raya-runtime"
+name = "raya-stdlib-posix"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Raya runtime that binds the engine with standard library"
+description = "POSIX standard library for Raya (fs, net, http, fetch, env, process, os, io)"
 
 [dependencies]
 raya-engine = { workspace = true }
-raya-stdlib = { path = "../raya-stdlib" }
-raya-stdlib-posix = { path = "../raya-stdlib-posix" }
+parking_lot = { workspace = true }
+dashmap = { workspace = true }
+libc = { workspace = true }

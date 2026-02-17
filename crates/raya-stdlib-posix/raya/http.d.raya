@@ -1,0 +1,41 @@
+/**
+ * std:http - HTTP Server Module
+ *
+ * Usage:
+ *   import { HttpServer } from "std:http";
+ *   const server = new HttpServer("0.0.0.0", 8080);
+ */
+
+export class HttpRequest {
+    constructor(handle: number);
+    /** HTTP method (GET, POST, etc.) */
+    method(): string;
+    /** Request path */
+    path(): string;
+    /** Query string */
+    query(): string;
+    /** Get header value */
+    header(name: string): string;
+    /** All headers as [key, value, ...] pairs */
+    headers(): string[];
+    /** Request body as text */
+    body(): string;
+    /** Request body as bytes */
+    bodyBytes(): Buffer;
+}
+
+export class HttpServer {
+    constructor(host: string, port: number);
+    /** Accept next request (blocking) */
+    accept(): HttpRequest;
+    /** Send text response */
+    respond(reqHandle: number, status: number, body: string): void;
+    /** Send binary response */
+    respondBytes(reqHandle: number, status: number, body: Buffer): void;
+    /** Send response with custom headers */
+    respondWithHeaders(reqHandle: number, status: number, headers: string[], body: string): void;
+    /** Close server */
+    close(): void;
+    /** Server address */
+    localAddr(): string;
+}

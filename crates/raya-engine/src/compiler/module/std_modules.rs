@@ -54,6 +54,40 @@ impl StdModuleRegistry {
             "stream",
             include_str!("../../../../raya-stdlib/raya/stream.raya"),
         );
+
+        // POSIX stdlib modules (raya-stdlib-posix)
+        modules.insert(
+            "fs",
+            include_str!("../../../../raya-stdlib-posix/raya/fs.raya"),
+        );
+        modules.insert(
+            "net",
+            include_str!("../../../../raya-stdlib-posix/raya/net.raya"),
+        );
+        modules.insert(
+            "http",
+            include_str!("../../../../raya-stdlib-posix/raya/http.raya"),
+        );
+        modules.insert(
+            "fetch",
+            include_str!("../../../../raya-stdlib-posix/raya/fetch.raya"),
+        );
+        modules.insert(
+            "env",
+            include_str!("../../../../raya-stdlib-posix/raya/env.raya"),
+        );
+        modules.insert(
+            "process",
+            include_str!("../../../../raya-stdlib-posix/raya/process.raya"),
+        );
+        modules.insert(
+            "os",
+            include_str!("../../../../raya-stdlib-posix/raya/os.raya"),
+        );
+        modules.insert(
+            "io",
+            include_str!("../../../../raya-stdlib-posix/raya/io.raya"),
+        );
         Self { modules }
     }
 

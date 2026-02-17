@@ -1,0 +1,31 @@
+/**
+ * std:os - OS Information Module
+ *
+ * Usage:
+ *   import os from "std:os";
+ *   const plat: string = os.platform();
+ */
+
+export class Os {
+    /** OS name: "darwin", "linux", "windows" */
+    platform(): string;
+    /** CPU architecture: "x86_64", "aarch64" */
+    arch(): string;
+    /** Machine hostname */
+    hostname(): string;
+    /** Number of logical CPUs */
+    cpus(): number;
+    /** Total system memory in bytes */
+    totalMemory(): number;
+    /** Available system memory in bytes */
+    freeMemory(): number;
+    /** System uptime in seconds */
+    uptime(): number;
+    /** Line ending: "\n" or "\r\n" */
+    eol(): string;
+    /** OS temp directory */
+    tmpdir(): string;
+}
+
+declare const os: Os;
+export default os;

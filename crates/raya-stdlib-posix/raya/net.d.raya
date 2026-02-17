@@ -1,0 +1,63 @@
+/**
+ * std:net - TCP/UDP Sockets Module
+ *
+ * Usage:
+ *   import net from "std:net";
+ *   import { TcpListener, TcpStream } from "std:net";
+ */
+
+export class TcpListener {
+    constructor(handle: number);
+    /** Accept connection (blocking) */
+    accept(): TcpStream;
+    /** Close listener */
+    close(): void;
+    /** Local address (host:port) */
+    localAddr(): string;
+}
+
+export class TcpStream {
+    constructor(handle: number);
+    /** Read up to N bytes */
+    read(size: number): Buffer;
+    /** Read until EOF */
+    readAll(): Buffer;
+    /** Read line (until \n) */
+    readLine(): string;
+    /** Write bytes, return count */
+    write(data: Buffer): number;
+    /** Write string, return byte count */
+    writeText(data: string): number;
+    /** Close stream */
+    close(): void;
+    /** Remote address */
+    remoteAddr(): string;
+    /** Local address */
+    localAddr(): string;
+}
+
+export class UdpSocket {
+    constructor(handle: number);
+    /** Send bytes to address */
+    sendTo(data: Buffer, addr: string): number;
+    /** Send string to address */
+    sendText(data: string, addr: string): number;
+    /** Receive up to N bytes */
+    receive(size: number): Buffer;
+    /** Close socket */
+    close(): void;
+    /** Local address */
+    localAddr(): string;
+}
+
+export class Net {
+    /** Bind TCP listener */
+    listen(host: string, port: number): TcpListener;
+    /** Connect to TCP server */
+    connect(host: string, port: number): TcpStream;
+    /** Bind UDP socket */
+    bindUdp(host: string, port: number): UdpSocket;
+}
+
+declare const net: Net;
+export default net;

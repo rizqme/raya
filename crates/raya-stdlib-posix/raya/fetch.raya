@@ -1,0 +1,66 @@
+// Fetch - Standard HTTP client module
+// Usage: import fetch from "std:fetch";
+// Usage: import { Response } from "std:fetch";
+
+class Response {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    status(): number {
+        return __NATIVE_CALL<number>("fetch.resStatus", this._handle);
+    }
+
+    statusText(): string {
+        return __NATIVE_CALL<string>("fetch.resStatusText", this._handle);
+    }
+
+    header(name: string): string {
+        return __NATIVE_CALL<string>("fetch.resHeader", this._handle, name);
+    }
+
+    headers(): string[] {
+        return __NATIVE_CALL<string[]>("fetch.resHeaders", this._handle);
+    }
+
+    text(): string {
+        return __NATIVE_CALL<string>("fetch.resText", this._handle);
+    }
+
+    bytes(): Buffer {
+        return __NATIVE_CALL<Buffer>("fetch.resBytes", this._handle);
+    }
+}
+
+class Fetch {
+    get(url: string): Response {
+        const h: number = __NATIVE_CALL<number>("fetch.request", "GET", url, "", "");
+        return new Response(h);
+    }
+
+    post(url: string, body: string): Response {
+        const h: number = __NATIVE_CALL<number>("fetch.request", "POST", url, body, "");
+        return new Response(h);
+    }
+
+    put(url: string, body: string): Response {
+        const h: number = __NATIVE_CALL<number>("fetch.request", "PUT", url, body, "");
+        return new Response(h);
+    }
+
+    del(url: string): Response {
+        const h: number = __NATIVE_CALL<number>("fetch.request", "DELETE", url, "", "");
+        return new Response(h);
+    }
+
+    request(method: string, url: string, body: string, headers: string): Response {
+        const h: number = __NATIVE_CALL<number>("fetch.request", method, url, body, headers);
+        return new Response(h);
+    }
+}
+
+const fetch = new Fetch();
+export { Response };
+export default fetch;

@@ -1,0 +1,121 @@
+// Fs - Standard filesystem module
+// Usage: import fs from "std:fs";
+
+class Fs {
+    // ── Read ──
+
+    readFile(path: string): Buffer {
+        return __NATIVE_CALL<Buffer>("fs.readFile", path);
+    }
+
+    readTextFile(path: string): string {
+        return __NATIVE_CALL<string>("fs.readTextFile", path);
+    }
+
+    // ── Write ──
+
+    writeFile(path: string, data: Buffer): void {
+        __NATIVE_CALL("fs.writeFile", path, data);
+    }
+
+    writeTextFile(path: string, data: string): void {
+        __NATIVE_CALL("fs.writeTextFile", path, data);
+    }
+
+    appendFile(path: string, data: string): void {
+        __NATIVE_CALL("fs.appendFile", path, data);
+    }
+
+    // ── Query ──
+
+    exists(path: string): boolean {
+        return __NATIVE_CALL<boolean>("fs.exists", path);
+    }
+
+    isFile(path: string): boolean {
+        return __NATIVE_CALL<boolean>("fs.isFile", path);
+    }
+
+    isDir(path: string): boolean {
+        return __NATIVE_CALL<boolean>("fs.isDir", path);
+    }
+
+    isSymlink(path: string): boolean {
+        return __NATIVE_CALL<boolean>("fs.isSymlink", path);
+    }
+
+    fileSize(path: string): number {
+        return __NATIVE_CALL<number>("fs.fileSize", path);
+    }
+
+    lastModified(path: string): number {
+        return __NATIVE_CALL<number>("fs.lastModified", path);
+    }
+
+    stat(path: string): number[] {
+        return __NATIVE_CALL<number[]>("fs.stat", path);
+    }
+
+    // ── Directory ──
+
+    mkdir(path: string): void {
+        __NATIVE_CALL("fs.mkdir", path);
+    }
+
+    mkdirRecursive(path: string): void {
+        __NATIVE_CALL("fs.mkdirRecursive", path);
+    }
+
+    readDir(path: string): string[] {
+        return __NATIVE_CALL<string[]>("fs.readDir", path);
+    }
+
+    rmdir(path: string): void {
+        __NATIVE_CALL("fs.rmdir", path);
+    }
+
+    // ── Modify ──
+
+    remove(path: string): void {
+        __NATIVE_CALL("fs.remove", path);
+    }
+
+    rename(src: string, dest: string): void {
+        __NATIVE_CALL("fs.rename", src, dest);
+    }
+
+    copy(src: string, dest: string): void {
+        __NATIVE_CALL("fs.copy", src, dest);
+    }
+
+    chmod(path: string, mode: number): void {
+        __NATIVE_CALL("fs.chmod", path, mode);
+    }
+
+    // ── Links ──
+
+    symlink(target: string, path: string): void {
+        __NATIVE_CALL("fs.symlink", target, path);
+    }
+
+    readlink(path: string): string {
+        return __NATIVE_CALL<string>("fs.readlink", path);
+    }
+
+    realpath(path: string): string {
+        return __NATIVE_CALL<string>("fs.realpath", path);
+    }
+
+    // ── Temp ──
+
+    tempDir(): string {
+        return __NATIVE_CALL<string>("fs.tempDir");
+    }
+
+    tempFile(prefix: string): string {
+        return __NATIVE_CALL<string>("fs.tempFile", prefix);
+    }
+}
+
+const fs = new Fs();
+export default fs;

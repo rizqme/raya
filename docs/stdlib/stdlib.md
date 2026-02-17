@@ -4,7 +4,7 @@ title: "Standard Library"
 
 # Raya Standard Library API Specification
 
-> **Status:** Implemented (8 modules)
+> **Status:** Implemented (16 modules: 8 core + 8 system)
 > **Related:** [Language Spec](../language/lang.md), [Native ABI](../native/abi.md), [Modules](../runtime/modules.md)
 
 This document defines the complete API for Raya's standard library modules.
@@ -13,14 +13,29 @@ This document defines the complete API for Raya's standard library modules.
 
 ## Table of Contents
 
+### Core
 1. [Core Types](#1-core-types)
 2. [raya:std - Standard Utilities](#2-rayastd---standard-utilities)
 3. [raya:json - JSON Support](#3-rayajson---json-support)
 4. [raya:json/internal - Internal JSON Utilities](#4-rayajsoninternal---internal-json-utilities)
 5. [raya:reflect - Reflection API](#5-rayareflect---reflection-api-optional)
 6. [std:logger - Logging Module](#6-stdlogger---logging-module)
-7. [std:vm - VM Operations Module](#7-stdvm---vm-operations-module)
+7. [std:runtime - Runtime Operations Module](#7-stdruntime---runtime-operations-module)
 8. [Built-in Types](#8-built-in-types)
+9. [std:math](#9-stdmath---math-operations-module-)
+10. [std:crypto](#10-stdcrypto---cryptographic-operations-module-)
+11. [std:time](#11-stdtime---time-and-duration-module-)
+12. [std:path](#12-stdpath---path-manipulation-module-)
+
+### System (POSIX)
+13. [std:fs - Filesystem](#13-stdfs---filesystem-module)
+14. [std:net - TCP/UDP Sockets](#14-stdnet---tcpudp-sockets-module)
+15. [std:http - HTTP Server](#15-stdhttp---http-server-module)
+16. [std:fetch - HTTP Client](#16-stdfetch---http-client-module)
+17. [std:env - Environment Variables](#17-stdenv---environment-variables-module)
+18. [std:process - Process Management](#18-stdprocess---process-management-module)
+19. [std:os - OS Information](#19-stdos---os-information-module)
+20. [std:io - Standard I/O](#20-stdio---standard-io-module)
 
 ---
 
@@ -899,6 +914,247 @@ import path from "std:path";
 
 ---
 
+---
+
+## System Modules (`raya-stdlib-posix`)
+
+All system I/O is synchronous. Async is achieved at the call site via goroutines: `async fs.readFile(path)`.
+
+---
+
+## 13. std:fs - Filesystem Module
+
+```ts
+import fs from "std:fs";
+```
+
+**Class:** `Fs` (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `readFile` | `(path: string): Buffer` | Read file as binary |
+| `readTextFile` | `(path: string): string` | Read file as UTF-8 text |
+| `writeFile` | `(path: string, data: Buffer): void` | Write binary to file |
+| `writeTextFile` | `(path: string, data: string): void` | Write text to file |
+| `appendFile` | `(path: string, data: string): void` | Append text to file |
+| `exists` | `(path: string): boolean` | Check if path exists |
+| `isFile` | `(path: string): boolean` | Check if path is a file |
+| `isDir` | `(path: string): boolean` | Check if path is a directory |
+| `isSymlink` | `(path: string): boolean` | Check if path is a symlink |
+| `fileSize` | `(path: string): number` | File size in bytes |
+| `lastModified` | `(path: string): number` | Last modified time (ms since epoch) |
+| `stat` | `(path: string): number[]` | Packed stat: [size, isFile, isDir, isSymlink, modifiedMs, createdMs, mode] |
+| `mkdir` | `(path: string): void` | Create directory |
+| `mkdirRecursive` | `(path: string): void` | Create directory tree |
+| `readDir` | `(path: string): string[]` | List directory entries |
+| `rmdir` | `(path: string): void` | Remove empty directory |
+| `remove` | `(path: string): void` | Remove file |
+| `rename` | `(from: string, to: string): void` | Rename/move file |
+| `copy` | `(from: string, to: string): void` | Copy file |
+| `chmod` | `(path: string, mode: number): void` | Change permissions |
+| `symlink` | `(target: string, path: string): void` | Create symbolic link |
+| `readlink` | `(path: string): string` | Read symlink target |
+| `realpath` | `(path: string): string` | Resolve to absolute path |
+| `tempDir` | `(): string` | OS temp directory |
+| `tempFile` | `(prefix: string): string` | Create temp file, return path |
+
+---
+
+## 14. std:net - TCP/UDP Sockets Module
+
+```ts
+import { TcpListener, TcpStream, UdpSocket } from "std:net";
+import net from "std:net";
+```
+
+### Net (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `listen` | `(host: string, port: number): TcpListener` | Bind TCP listener |
+| `connect` | `(host: string, port: number): TcpStream` | Connect TCP stream |
+| `bindUdp` | `(host: string, port: number): UdpSocket` | Bind UDP socket |
+
+### TcpListener
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `accept` | `(): TcpStream` | Accept connection (blocking) |
+| `close` | `(): void` | Close listener |
+| `localAddr` | `(): string` | Local address (host:port) |
+
+### TcpStream
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `read` | `(size: number): Buffer` | Read up to N bytes |
+| `readAll` | `(): Buffer` | Read until EOF |
+| `readLine` | `(): string` | Read line (until \n) |
+| `write` | `(data: Buffer): number` | Write bytes, return count |
+| `writeText` | `(data: string): number` | Write string, return bytes |
+| `close` | `(): void` | Close stream |
+| `remoteAddr` | `(): string` | Remote address |
+| `localAddr` | `(): string` | Local address |
+
+### UdpSocket
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `sendTo` | `(data: Buffer, addr: string): number` | Send to address |
+| `sendText` | `(data: string, addr: string): number` | Send string to address |
+| `receive` | `(size: number): Buffer` | Receive up to N bytes |
+| `close` | `(): void` | Close socket |
+| `localAddr` | `(): string` | Local address |
+
+---
+
+## 15. std:http - HTTP Server Module
+
+```ts
+import { HttpServer, HttpRequest } from "std:http";
+```
+
+### HttpServer
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `constructor` | `(host: string, port: number)` | Create and bind server |
+| `accept` | `(): HttpRequest` | Accept next request (blocking) |
+| `respond` | `(reqHandle: number, status: number, body: string): void` | Send text response |
+| `respondBytes` | `(reqHandle: number, status: number, body: Buffer): void` | Send binary response |
+| `respondWithHeaders` | `(reqHandle: number, status: number, headers: string[], body: string): void` | Send response with custom headers |
+| `close` | `(): void` | Close server |
+| `localAddr` | `(): string` | Server address |
+
+### HttpRequest
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `method` | `(): string` | HTTP method (GET, POST, etc.) |
+| `path` | `(): string` | Request path |
+| `query` | `(): string` | Query string |
+| `header` | `(name: string): string` | Get header value |
+| `headers` | `(): string[]` | All headers as [key, value, ...] pairs |
+| `body` | `(): string` | Request body as text |
+| `bodyBytes` | `(): Buffer` | Request body as bytes |
+
+---
+
+## 16. std:fetch - HTTP Client Module
+
+```ts
+import fetch from "std:fetch";
+import { Response } from "std:fetch";
+```
+
+### Fetch (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `get` | `(url: string): Response` | HTTP GET |
+| `post` | `(url: string, body: string): Response` | HTTP POST |
+| `put` | `(url: string, body: string): Response` | HTTP PUT |
+| `delete` | `(url: string): Response` | HTTP DELETE |
+| `request` | `(method: string, url: string, body: string, headers: string): Response` | Custom request |
+
+### Response
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `status` | `(): number` | HTTP status code |
+| `statusText` | `(): string` | Status text (e.g., "OK") |
+| `header` | `(name: string): string` | Get response header |
+| `headers` | `(): string[]` | All headers as [key, value, ...] pairs |
+| `text` | `(): string` | Response body as text |
+| `bytes` | `(): Buffer` | Response body as bytes |
+
+---
+
+## 17. std:env - Environment Variables Module
+
+```ts
+import env from "std:env";
+```
+
+**Class:** `Env` (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `get` | `(key: string): string` | Get env var (empty string if unset) |
+| `set` | `(key: string, value: string): void` | Set env var |
+| `remove` | `(key: string): void` | Remove env var |
+| `has` | `(key: string): boolean` | Check if env var exists |
+| `all` | `(): string[]` | All vars as [key, value, ...] pairs |
+| `cwd` | `(): string` | Current working directory |
+| `home` | `(): string` | Home directory |
+
+---
+
+## 18. std:process - Process Management Module
+
+```ts
+import process from "std:process";
+```
+
+**Class:** `Process` (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `exit` | `(code: number): void` | Exit process |
+| `pid` | `(): number` | Current process ID |
+| `argv` | `(): string[]` | Command-line arguments |
+| `execPath` | `(): string` | Path to executable |
+| `exec` | `(command: string): number` | Execute shell command, return handle |
+| `execGetCode` | `(handle: number): number` | Get exit code from exec handle |
+| `execGetStdout` | `(handle: number): string` | Get stdout from exec handle |
+| `execGetStderr` | `(handle: number): string` | Get stderr from exec handle |
+| `execRelease` | `(handle: number): void` | Release exec handle |
+| `run` | `(command: string): number` | Execute and return exit code (pure Raya convenience) |
+
+---
+
+## 19. std:os - OS Information Module
+
+```ts
+import os from "std:os";
+```
+
+**Class:** `Os` (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `platform` | `(): string` | OS name (darwin, linux, windows) |
+| `arch` | `(): string` | CPU architecture (x86_64, aarch64) |
+| `hostname` | `(): string` | Machine hostname |
+| `cpus` | `(): number` | Number of logical CPUs |
+| `totalMemory` | `(): number` | Total RAM in bytes |
+| `freeMemory` | `(): number` | Available RAM in bytes |
+| `uptime` | `(): number` | System uptime in seconds |
+| `eol` | `(): string` | Line ending (\n or \r\n) |
+| `tmpdir` | `(): string` | OS temp directory |
+
+---
+
+## 20. std:io - Standard I/O Module
+
+```ts
+import io from "std:io";
+```
+
+**Class:** `Io` (singleton, default export)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `readLine` | `(): string` | Read line from stdin |
+| `readAll` | `(): string` | Read all stdin |
+| `write` | `(data: string): void` | Write to stdout |
+| `writeln` | `(data: string): void` | Write line to stdout |
+| `writeErr` | `(data: string): void` | Write to stderr |
+| `writeErrln` | `(data: string): void` | Write line to stderr |
+| `flush` | `(): void` | Flush stdout |
+
+---
+
 ## Notes on Implementation
 
 1. **Code Generation:** `JSON.encode()` and `JSON.decode()` use compile-time code generation, not reflection.
@@ -911,10 +1167,14 @@ import path from "std:path";
 
 5. **Immutability:** String methods return new strings. Array mutation methods modify in place.
 
-6. **Module Resolution:** All standard library modules use the `raya:` prefix and are resolved before user modules.
+6. **Module Resolution:** All standard library modules use the `std:` prefix and are resolved before user modules.
+
+7. **System I/O Model:** All POSIX modules use synchronous I/O. Async is achieved at the call site using Raya's goroutine model: `async fs.readFile(path)` spawns a Task that runs the blocking read on a worker thread.
+
+8. **Handle-Based Resources:** Stateful resources (sockets, HTTP connections, process results) use numeric handles. Handles are stored in thread-safe registries and must be explicitly closed/released.
 
 ---
 
-**Version:** v0.6 (Specification)
+**Version:** v0.7 (Specification)
 
 **Status:** This specification is complete but subject to minor refinements based on implementation experience.

@@ -30,6 +30,11 @@ mod time;
 mod path;
 mod stream;
 mod fundamentals;
+mod env;
+mod os;
+mod io;
+mod fs;
+mod process;
 
 
 pub use harness::*;

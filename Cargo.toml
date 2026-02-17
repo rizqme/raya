@@ -4,6 +4,7 @@ members = [
     "crates/raya-engine",
     "crates/raya-sdk",
     "crates/raya-stdlib",
+    "crates/raya-stdlib-posix",
     "crates/raya-runtime",
     "crates/raya-cli",
     "crates/raya-lsp",
@@ -67,7 +68,9 @@ raya-engine = { path = "crates/raya-engine" }
 raya-sdk = { path = "crates/raya-sdk" }
 raya-stdlib = { path = "crates/raya-stdlib" }
 raya-runtime = { path = "crates/raya-runtime" }
+raya-stdlib-posix = { path = "crates/raya-stdlib-posix" }
 raya-native = { path = "crates/raya-native" }
+libc = "0.2"
 
 [profile.release]
 lto = true

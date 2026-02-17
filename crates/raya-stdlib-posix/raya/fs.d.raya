@@ -1,0 +1,63 @@
+/**
+ * std:fs - Filesystem Module
+ *
+ * Usage:
+ *   import fs from "std:fs";
+ *   const data: string = fs.readTextFile("config.json");
+ */
+
+export class Fs {
+    /** Read file as binary */
+    readFile(path: string): Buffer;
+    /** Read file as UTF-8 text */
+    readTextFile(path: string): string;
+    /** Write binary to file */
+    writeFile(path: string, data: Buffer): void;
+    /** Write text to file */
+    writeTextFile(path: string, data: string): void;
+    /** Append text to file */
+    appendFile(path: string, data: string): void;
+    /** Check if path exists */
+    exists(path: string): boolean;
+    /** Check if path is a file */
+    isFile(path: string): boolean;
+    /** Check if path is a directory */
+    isDir(path: string): boolean;
+    /** Check if path is a symlink */
+    isSymlink(path: string): boolean;
+    /** File size in bytes */
+    fileSize(path: string): number;
+    /** Last modified time (ms since epoch) */
+    lastModified(path: string): number;
+    /** Packed stat: [size, isFile, isDir, isSymlink, modifiedMs, createdMs, mode] */
+    stat(path: string): number[];
+    /** Create directory */
+    mkdir(path: string): void;
+    /** Create directory tree */
+    mkdirRecursive(path: string): void;
+    /** List directory entries */
+    readDir(path: string): string[];
+    /** Remove empty directory */
+    rmdir(path: string): void;
+    /** Remove file */
+    remove(path: string): void;
+    /** Rename/move file */
+    rename(src: string, dest: string): void;
+    /** Copy file */
+    copy(src: string, dest: string): void;
+    /** Change permissions (unix only) */
+    chmod(path: string, mode: number): void;
+    /** Create symbolic link */
+    symlink(target: string, path: string): void;
+    /** Read symlink target */
+    readlink(path: string): string;
+    /** Resolve to absolute path */
+    realpath(path: string): string;
+    /** OS temp directory */
+    tempDir(): string;
+    /** Create temp file, return path */
+    tempFile(prefix: string): string;
+}
+
+declare const fs: Fs;
+export default fs;

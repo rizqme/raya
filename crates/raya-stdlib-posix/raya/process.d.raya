@@ -1,0 +1,33 @@
+/**
+ * std:process - Process Management Module
+ *
+ * Usage:
+ *   import process from "std:process";
+ *   const code: number = process.run("echo hello");
+ */
+
+export class Process {
+    /** Exit the process */
+    exit(code: number): void;
+    /** Current process ID */
+    pid(): number;
+    /** Command-line arguments */
+    argv(): string[];
+    /** Path to current executable */
+    execPath(): string;
+    /** Execute shell command, return handle */
+    exec(command: string): number;
+    /** Get exit code from exec handle */
+    execGetCode(handle: number): number;
+    /** Get stdout from exec handle */
+    execGetStdout(handle: number): string;
+    /** Get stderr from exec handle */
+    execGetStderr(handle: number): string;
+    /** Release exec handle */
+    execRelease(handle: number): void;
+    /** Execute and return exit code (convenience) */
+    run(command: string): number;
+}
+
+declare const process: Process;
+export default process;

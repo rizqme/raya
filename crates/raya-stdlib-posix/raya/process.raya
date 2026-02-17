@@ -1,0 +1,50 @@
+// Process - Standard process management module
+// Usage: import process from "std:process";
+
+class Process {
+    exit(code: number): void {
+        __NATIVE_CALL("process.exit", code);
+    }
+
+    pid(): number {
+        return __NATIVE_CALL<number>("process.pid");
+    }
+
+    argv(): string[] {
+        return __NATIVE_CALL<string[]>("process.argv");
+    }
+
+    execPath(): string {
+        return __NATIVE_CALL<string>("process.execPath");
+    }
+
+    exec(command: string): number {
+        return __NATIVE_CALL<number>("process.exec", command);
+    }
+
+    execGetCode(handle: number): number {
+        return __NATIVE_CALL<number>("process.execGetCode", handle);
+    }
+
+    execGetStdout(handle: number): string {
+        return __NATIVE_CALL<string>("process.execGetStdout", handle);
+    }
+
+    execGetStderr(handle: number): string {
+        return __NATIVE_CALL<string>("process.execGetStderr", handle);
+    }
+
+    execRelease(handle: number): void {
+        __NATIVE_CALL("process.execRelease", handle);
+    }
+
+    run(command: string): number {
+        const handle: number = this.exec(command);
+        const code: number = this.execGetCode(handle);
+        this.execRelease(handle);
+        return code;
+    }
+}
+
+const process = new Process();
+export default process;

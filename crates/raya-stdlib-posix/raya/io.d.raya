@@ -1,0 +1,27 @@
+/**
+ * std:io - Standard I/O Module
+ *
+ * Usage:
+ *   import io from "std:io";
+ *   io.writeln("Hello, world!");
+ */
+
+export class Io {
+    /** Read a line from stdin (blocking) */
+    readLine(): string;
+    /** Read all of stdin until EOF */
+    readAll(): string;
+    /** Write to stdout */
+    write(data: string): void;
+    /** Write line to stdout */
+    writeln(data: string): void;
+    /** Write to stderr */
+    writeErr(data: string): void;
+    /** Write line to stderr */
+    writeErrln(data: string): void;
+    /** Flush stdout */
+    flush(): void;
+}
+
+declare const io: Io;
+export default io;

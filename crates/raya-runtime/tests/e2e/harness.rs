@@ -74,6 +74,31 @@ fn get_std_sources() -> &'static str {
         // Stream (std:stream)
         include_str!("../../../raya-stdlib/raya/stream.raya"),
         "\n",
+        // POSIX stdlib modules
+        // Fs (std:fs)
+        include_str!("../../../raya-stdlib-posix/raya/fs.raya"),
+        "\n",
+        // Net (std:net)
+        include_str!("../../../raya-stdlib-posix/raya/net.raya"),
+        "\n",
+        // Http (std:http)
+        include_str!("../../../raya-stdlib-posix/raya/http.raya"),
+        "\n",
+        // Fetch (std:fetch)
+        include_str!("../../../raya-stdlib-posix/raya/fetch.raya"),
+        "\n",
+        // Env (std:env)
+        include_str!("../../../raya-stdlib-posix/raya/env.raya"),
+        "\n",
+        // Process (std:process)
+        include_str!("../../../raya-stdlib-posix/raya/process.raya"),
+        "\n",
+        // Os (std:os)
+        include_str!("../../../raya-stdlib-posix/raya/os.raya"),
+        "\n",
+        // Io (std:io)
+        include_str!("../../../raya-stdlib-posix/raya/io.raya"),
+        "\n",
     )
 }
 
@@ -203,6 +228,7 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     {
         let mut registry = vm.native_registry().write();
         raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
     }
 
     vm.execute(&module).map_err(E2EError::Vm)

@@ -1,0 +1,113 @@
+// Net - Standard networking module
+// Usage: import net from "std:net";
+// Usage: import { TcpListener, TcpStream, UdpSocket } from "std:net";
+
+class TcpListener {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    accept(): TcpStream {
+        const h: number = __NATIVE_CALL<number>("net.tcpAccept", this._handle);
+        return new TcpStream(h);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tcpListenerClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpListenerAddr", this._handle);
+    }
+}
+
+class TcpStream {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    read(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tcpRead", this._handle, size);
+    }
+
+    readAll(): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tcpReadAll", this._handle);
+    }
+
+    readLine(): string {
+        return __NATIVE_CALL<string>("net.tcpReadLine", this._handle);
+    }
+
+    write(data: Buffer): number {
+        return __NATIVE_CALL<number>("net.tcpWrite", this._handle, data);
+    }
+
+    writeText(data: string): number {
+        return __NATIVE_CALL<number>("net.tcpWriteText", this._handle, data);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tcpStreamClose", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpRemoteAddr", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tcpLocalAddr", this._handle);
+    }
+}
+
+class UdpSocket {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    sendTo(data: Buffer, addr: string): number {
+        return __NATIVE_CALL<number>("net.udpSendTo", this._handle, data, addr);
+    }
+
+    sendText(data: string, addr: string): number {
+        return __NATIVE_CALL<number>("net.udpSendText", this._handle, data, addr);
+    }
+
+    receive(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.udpReceive", this._handle, size);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.udpClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.udpLocalAddr", this._handle);
+    }
+}
+
+class Net {
+    listen(host: string, port: number): TcpListener {
+        const h: number = __NATIVE_CALL<number>("net.tcpListen", host, port);
+        return new TcpListener(h);
+    }
+
+    connect(host: string, port: number): TcpStream {
+        const h: number = __NATIVE_CALL<number>("net.tcpConnect", host, port);
+        return new TcpStream(h);
+    }
+
+    bindUdp(host: string, port: number): UdpSocket {
+        const h: number = __NATIVE_CALL<number>("net.udpBind", host, port);
+        return new UdpSocket(h);
+    }
+}
+
+const net = new Net();
+export { TcpListener, TcpStream, UdpSocket };
+export default net;

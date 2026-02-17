@@ -23,7 +23,7 @@ title: Overview
 | [VM Architecture](./runtime/architecture.md) | Implemented | Runtime |
 | [Module System](./runtime/modules.md) | Implemented | Runtime |
 | [Built-in Classes](./runtime/builtin-classes.md) | Implemented | Runtime |
-| [Standard Library](./stdlib/stdlib.md) | Implemented (8 modules) | Stdlib |
+| [Standard Library](./stdlib/stdlib.md) | Implemented (16 modules) | Stdlib |
 | [Reflection API](./metaprogramming/reflection.md) | Implemented (149+ handlers) | Metaprogramming |
 | [Reflect Security](./metaprogramming/reflect-security.md) | Implemented | Metaprogramming |
 | [Decorators](./metaprogramming/decorators.md) | Implemented (41 e2e tests) | Metaprogramming |
@@ -110,20 +110,21 @@ title: Overview
 
 ```
 crates/
-├── raya-engine/     # Parser, compiler, VM (932 tests)
-├── raya-runtime/    # Binds engine + stdlib via NativeHandler trait (883 tests)
-├── raya-stdlib/     # Native stdlib implementations (17 tests)
-├── raya-cli/        # CLI tool
-├── raya-pm/         # Package manager
-├── raya-sdk/        # Native module FFI types
-└── raya-native/     # Proc-macros for native modules
+├── raya-engine/        # Parser, compiler, VM
+├── raya-runtime/       # Binds engine + stdlib (e2e tests)
+├── raya-stdlib/        # Core stdlib (logger, math, crypto, time, path, stream)
+├── raya-stdlib-posix/  # System stdlib (fs, net, http, fetch, env, process, os, io)
+├── raya-cli/           # CLI tool
+├── raya-pm/            # Package manager
+├── raya-sdk/           # Native module FFI types
+└── raya-native/        # Proc-macros for native modules
 ```
-
-**Total: 1,832 tests** (932 engine + 883 runtime + 17 stdlib)
 
 ---
 
 ## Standard Library Modules
+
+### Core Modules (`raya-stdlib`)
 
 | Module | Import | Methods | Milestone |
 |--------|--------|---------|-----------|
@@ -132,7 +133,21 @@ crates/
 | Crypto | `import crypto from "std:crypto"` | 12 methods | M4.6 |
 | Time | `import time from "std:time"` | 12 methods | M4.7 |
 | Path | `import path from "std:path"` | 14 methods | M4.8 |
+| Stream | `import stream from "std:stream"` | forward, collect, send, receive | M4.2 |
 | Runtime | `import { Compiler, Vm, ... } from "std:runtime"` | 9 exports | M4.5 |
 | Reflect | `import * as Reflect from "std:reflect"` | 149+ handlers | M3.8 |
+
+### System Modules (`raya-stdlib-posix`)
+
+| Module | Import | Description |
+|--------|--------|-------------|
+| Fs | `import fs from "std:fs"` | File I/O, directory ops, stat, symlinks (~25 methods) |
+| Net | `import { TcpListener, TcpStream } from "std:net"` | TCP/UDP sockets (~15 methods) |
+| HTTP | `import { HttpServer } from "std:http"` | HTTP/1.1 server (~10 methods) |
+| Fetch | `import fetch from "std:fetch"` | HTTP client (~10 methods) |
+| Env | `import env from "std:env"` | Environment variables (~7 methods) |
+| Process | `import process from "std:process"` | Process management, exec (~8 methods) |
+| OS | `import os from "std:os"` | Platform info (arch, cpus, memory) (~9 methods) |
+| IO | `import io from "std:io"` | stdin/stdout/stderr (~7 methods) |
 
 See [stdlib/stdlib.md](./stdlib/stdlib.md) for full API signatures.
