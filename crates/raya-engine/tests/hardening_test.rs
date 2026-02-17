@@ -3,6 +3,12 @@
 //! These tests verify that the parser can handle malformed, incomplete,
 //! or pathological source code without hanging, crashing, or consuming
 //! excessive resources.
+//!
+//! Run with: cargo test -p raya-engine --test hardening_test -- --include-ignored
+//! These tests are excluded from normal CI runs because deep-nesting tests
+//! can overflow the default thread stack on GitHub Actions runners.
+
+#![cfg(feature = "hardening-tests")]
 
 use raya_engine::parser::Parser;
 use raya_engine::parser::parser::ParseErrorKind;
@@ -74,7 +80,6 @@ fn test_deeply_nested_jsx() {
 // ============================================================================
 
 #[test]
-#[ignore] // Stack overflow aborts on CI (smaller default stack)
 fn test_max_nesting_depth_arrays() {
     // Create deeply nested array: [[[[...41 levels...]]]]]
     // This exceeds MAX_PARSE_DEPTH (50) and should be rejected
@@ -98,7 +103,6 @@ fn test_max_nesting_depth_arrays() {
 }
 
 #[test]
-#[ignore] // Stack overflow aborts on CI (smaller default stack)
 fn test_max_nesting_depth_objects() {
     // Create deeply nested object expression in a let statement
     // let x = {a: {a: {a: ...38 levels...}}}
@@ -114,7 +118,6 @@ fn test_max_nesting_depth_objects() {
 }
 
 #[test]
-#[ignore] // Stack overflow aborts on CI (smaller default stack)
 fn test_max_nesting_depth_expressions() {
     // Create deeply nested parentheses: (((((...41 levels...))))
     let depth = 41;
@@ -474,7 +477,6 @@ fn test_object_depth_at_limit() {
     assert!(result.is_ok(), "Should handle 28 levels of object nesting (at limit)");
 }
 #[test]
-#[ignore] // Stack overflow aborts on CI (smaller default stack)
 fn test_obj_38() {
     use raya_engine::parser::Parser;
     let source = "let x = ".to_string() + &"{a:".repeat(38) + "1" + &"}".repeat(38) + ";";
@@ -483,7 +485,6 @@ fn test_obj_38() {
     println!("Depth 38 result: {:?}", result.is_ok());
 }
 #[test]
-#[ignore] // Stack overflow aborts on CI (smaller default stack)
 fn test_obj_39() {
     use raya_engine::parser::Parser;
     let source = "let x = ".to_string() + &"{a:".repeat(39) + "1" + &"}".repeat(39) + ";";
@@ -519,7 +520,6 @@ fn test_obj_well_over_limit() {
     assert!(result.is_err(), "32 levels should be rejected");
 }
 #[test]
-#[ignore] // Stack overflow aborts the process on CI (smaller default stack)
 fn test_depth_over_limit() {
     use raya_engine::parser::Parser;
     // 29 levels of nesting + 2 (statement + expression) = 31 total depth > 30 limit
