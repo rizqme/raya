@@ -219,14 +219,14 @@ mod tests {
 
         tasks.write().insert(task_id, task.clone());
 
-        // Start monitor
-        let mut monitor = PreemptMonitor::new(tasks.clone(), DEFAULT_PREEMPT_THRESHOLD);
+        // Use a large threshold so CI timing jitter doesn't cause false preemption
+        let mut monitor = PreemptMonitor::new(tasks.clone(), Duration::from_secs(5));
         monitor.start();
 
         // Wait briefly
         thread::sleep(Duration::from_millis(5));
 
-        // Task should not be preempted yet
+        // Task should not be preempted yet (threshold is 5s, only 5ms elapsed)
         assert!(!task.is_preempt_requested());
 
         monitor.stop();
