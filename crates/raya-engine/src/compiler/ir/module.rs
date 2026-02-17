@@ -186,6 +186,8 @@ pub struct IrClass {
     pub fields: Vec<IrField>,
     /// Method function IDs
     pub methods: Vec<FunctionId>,
+    /// Vtable slot indices (parallel to methods)
+    pub method_slots: Vec<u16>,
     /// Constructor function ID (if any)
     pub constructor: Option<FunctionId>,
     /// Parent class ID (if any)
@@ -201,6 +203,7 @@ impl IrClass {
             name: name.into(),
             fields: Vec::new(),
             methods: Vec::new(),
+            method_slots: Vec::new(),
             constructor: None,
             parent: None,
             json_serializable: false,
@@ -216,7 +219,15 @@ impl IrClass {
 
     /// Add a method to this class
     pub fn add_method(&mut self, method_id: FunctionId) {
+        let slot = self.methods.len() as u16;
         self.methods.push(method_id);
+        self.method_slots.push(slot);
+    }
+
+    /// Add a method with explicit vtable slot
+    pub fn add_method_with_slot(&mut self, method_id: FunctionId, slot: u16) {
+        self.methods.push(method_id);
+        self.method_slots.push(slot);
     }
 
     /// Get a field by name

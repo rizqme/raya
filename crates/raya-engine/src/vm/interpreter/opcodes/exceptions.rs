@@ -123,8 +123,35 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
+                // Extract error message for the VmError if it's an Error object
+                let error_msg = if exception.is_ptr() {
+                    if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
+                        let obj = unsafe { &*obj_ptr.as_ptr() };
+                        if obj.fields.len() >= 1 {
+                            if let Some(msg_ptr) =
+                                unsafe { obj.fields[0].as_ptr::<RayaString>() }
+                            {
+                                let msg = unsafe { &*msg_ptr.as_ptr() }.data.clone();
+                                if msg.is_empty() {
+                                    "throw".to_string()
+                                } else {
+                                    msg
+                                }
+                            } else {
+                                "throw".to_string()
+                            }
+                        } else {
+                            "throw".to_string()
+                        }
+                    } else {
+                        "throw".to_string()
+                    }
+                } else {
+                    "throw".to_string()
+                };
+
                 task.set_exception(exception);
-                OpcodeResult::Error(VmError::RuntimeError("throw".to_string()))
+                OpcodeResult::Error(VmError::RuntimeError(error_msg))
             }
 
             Opcode::Rethrow => {

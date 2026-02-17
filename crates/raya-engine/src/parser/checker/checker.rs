@@ -2072,8 +2072,8 @@ impl<'a> TypeChecker<'a> {
                 let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
                 Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
             }
-            // length() -> number
-            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // length -> number (property, not method)
+            "length" => Some(number_ty),
             // lastIndexOf(value: T) -> number
             "lastIndexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // sort(compareFn?: (a: T, b: T) => number) -> Array<T>

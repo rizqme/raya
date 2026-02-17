@@ -192,11 +192,13 @@ impl IrCodeGenerator {
         // Generate class definitions with method vtable entries
         for class in module.classes() {
             let methods: Vec<crate::compiler::bytecode::Method> = class.methods.iter()
-                .filter_map(|&method_id| {
+                .zip(class.method_slots.iter())
+                .filter_map(|(&method_id, &slot)| {
                     module.get_function(method_id).map(|func| {
                         crate::compiler::bytecode::Method {
                             name: func.name.clone(),
                             function_id: method_id.as_u32() as usize,
+                            slot: slot as usize,
                         }
                     })
                 })
@@ -1097,13 +1099,12 @@ impl IrCodeGenerator {
             // For non-equality operations with union/generic types, use number opcodes
             // (handles both i32 and f64 values that may come from union types)
             self.get_number_opcode(op)
-        } else if is_number && is_comparison {
-            // For comparisons on number types, use number opcodes
-            // (these handle both i32 and f64 correctly)
+        } else if is_number {
+            // For all operations on number types, use number opcodes
+            // (these handle both i32 and f64 correctly, including NaN propagation)
             self.get_number_opcode(op)
         } else {
-            // Default to integer for arithmetic on numbers, booleans, and other types
-            // This gives integer division semantics (n/10 truncates)
+            // Default to integer for arithmetic on int, boolean, and other types
             self.get_integer_opcode(op)
         };
         ctx.emit(opcode);

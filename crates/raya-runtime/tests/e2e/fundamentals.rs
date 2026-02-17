@@ -780,7 +780,7 @@ fn test_pipethrough_manual_inline() {
          let result = output.collect();
          let sum = 0;
          let i = 0;
-         while (i < result.length()) {
+         while (i < result.length) {
              sum = sum + result[i];
              i = i + 1;
          }
@@ -810,7 +810,7 @@ fn test_pipethrough_method_call() {
          let result = output.collect();
          let sum = 0;
          let i = 0;
-         while (i < result.length()) {
+         while (i < result.length) {
              sum = sum + result[i];
              i = i + 1;
          }

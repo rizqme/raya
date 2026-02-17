@@ -693,6 +693,8 @@ pub struct Method {
     pub name: String,
     /// Function ID in the module
     pub function_id: usize,
+    /// Vtable slot index for virtual dispatch
+    pub slot: usize,
 }
 
 impl Method {
@@ -704,6 +706,9 @@ impl Method {
 
         // Write function ID
         writer.emit_u32(self.function_id as u32);
+
+        // Write slot index
+        writer.emit_u32(self.slot as u32);
     }
 
     /// Decode method from binary
@@ -714,7 +719,10 @@ impl Method {
         // Read function ID
         let function_id = reader.read_u32()? as usize;
 
-        Ok(Self { name, function_id })
+        // Read slot index
+        let slot = reader.read_u32()? as usize;
+
+        Ok(Self { name, function_id, slot })
     }
 }
 
@@ -1264,10 +1272,12 @@ mod tests {
                 Method {
                     name: "constructor".to_string(),
                     function_id: 0,
+                    slot: 0,
                 },
                 Method {
                     name: "doSomething".to_string(),
                     function_id: 1,
+                    slot: 1,
                 },
             ],
         });
@@ -1373,6 +1383,7 @@ mod tests {
             methods: vec![Method {
                 name: "add42".to_string(),
                 function_id: 0,
+                slot: 0,
             }],
         });
 

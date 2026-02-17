@@ -425,7 +425,6 @@ impl<'a> Interpreter<'a> {
                         }
                     }
                     Opcode::Ndiv => {
-                        // Division always returns f64
                         let b_val = match stack.pop() {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
@@ -434,11 +433,24 @@ impl<'a> Interpreter<'a> {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
                         };
-                        let a = value_to_number(a_val);
-                        let b = value_to_number(b_val);
-                        let result = if b != 0.0 { a / b } else { f64::NAN };
-                        if let Err(e) = stack.push(Value::f64(result)) {
-                            return OpcodeResult::Error(e);
+                        // Preserve integer division-by-zero semantics; use float for f64 operands
+                        if a_val.is_f64() || b_val.is_f64() {
+                            let a = value_to_number(a_val);
+                            let b = value_to_number(b_val);
+                            if let Err(e) = stack.push(Value::f64(a / b)) {
+                                return OpcodeResult::Error(e);
+                            }
+                        } else {
+                            let a = a_val.as_i32().unwrap_or(0);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            if b == 0 {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "division by zero".to_string(),
+                                ));
+                            }
+                            if let Err(e) = stack.push(Value::i32(a.wrapping_div(b))) {
+                                return OpcodeResult::Error(e);
+                            }
                         }
                     }
                     Opcode::Nmod => {
@@ -450,17 +462,23 @@ impl<'a> Interpreter<'a> {
                             Ok(v) => v,
                             Err(e) => return OpcodeResult::Error(e),
                         };
-                        let result = if is_float(&a_val) || is_float(&b_val) {
+                        if is_float(&a_val) || is_float(&b_val) {
                             let a = value_to_number(a_val);
                             let b = value_to_number(b_val);
-                            Value::f64(if b != 0.0 { a % b } else { f64::NAN })
+                            if let Err(e) = stack.push(Value::f64(if b != 0.0 { a % b } else { f64::NAN })) {
+                                return OpcodeResult::Error(e);
+                            }
                         } else {
                             let a = a_val.as_i32().unwrap_or(0);
-                            let b = b_val.as_i32().unwrap_or(1);
-                            Value::i32(if b != 0 { a % b } else { 0 })
-                        };
-                        if let Err(e) = stack.push(result) {
-                            return OpcodeResult::Error(e);
+                            let b = b_val.as_i32().unwrap_or(0);
+                            if b == 0 {
+                                return OpcodeResult::Error(VmError::RuntimeError(
+                                    "division by zero".to_string(),
+                                ));
+                            }
+                            if let Err(e) = stack.push(Value::i32(a % b)) {
+                                return OpcodeResult::Error(e);
+                            }
                         }
                     }
                     Opcode::Nneg => {

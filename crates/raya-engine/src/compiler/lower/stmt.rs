@@ -28,8 +28,12 @@ impl<'a> Lowerer<'a> {
             Statement::Throw(throw) => self.lower_throw(throw),
             Statement::Try(try_stmt) => self.lower_try(try_stmt),
             Statement::Switch(switch) => self.lower_switch(switch),
-            Statement::FunctionDecl(_) => {
-                // Handled at module level
+            Statement::FunctionDecl(func_decl) => {
+                if !self.function_map.contains_key(&func_decl.name.name) {
+                    // Nested function declaration — treat as closure with captures
+                    self.lower_nested_function_decl(func_decl);
+                }
+                // Module-level declarations handled in lower_module first pass
             }
             Statement::ClassDecl(_) => {
                 // Handled at module level
@@ -697,22 +701,47 @@ impl<'a> Lowerer<'a> {
         self.lower_expr(&stmt.expression);
     }
 
+    fn lower_nested_function_decl(&mut self, func_decl: &ast::FunctionDecl) {
+        use crate::parser::ast::{ArrowBody, ArrowFunction};
+        use crate::parser::token::Span;
+
+        // Build a synthetic ArrowFunction from the FunctionDecl
+        let arrow = ArrowFunction {
+            params: func_decl.params.clone(),
+            body: ArrowBody::Block(func_decl.body.clone()),
+            return_type: func_decl.return_type.clone(),
+            is_async: func_decl.is_async,
+            span: Span::new(0, 0, 0, 0),
+        };
+
+        // Lower as arrow (handles capture analysis, MakeClosure, etc.)
+        let closure_reg = self.lower_arrow(&arrow);
+
+        // Assign to a local variable with the function's name
+        let local_idx = self.allocate_local(func_decl.name.name);
+        self.local_registers.insert(local_idx, closure_reg.clone());
+        self.emit(IrInstr::StoreLocal {
+            index: local_idx,
+            value: closure_reg,
+        });
+    }
+
     fn lower_return(&mut self, ret: &ast::ReturnStatement) {
         let value = ret.value.as_ref().map(|e| self.lower_expr(e));
 
-        // Inline finally blocks from innermost to outermost
-        if !self.try_finally_stack.is_empty() {
-            let entries: Vec<super::TryFinallyEntry> =
-                self.try_finally_stack.iter().rev().cloned().collect();
-            for entry in &entries {
-                if entry.in_try_body {
-                    self.emit(IrInstr::EndTry);
-                }
-                self.lower_block(&entry.finally_body);
-                if self.current_block_is_terminated() {
-                    // Finally body contained its own return/throw — it takes precedence
-                    return;
-                }
+        // Inline finally blocks from innermost to outermost.
+        // Drain the stack to prevent recursive re-inlining: if a finally block
+        // itself contains a return, that nested lower_return sees an empty stack.
+        let entries: Vec<super::TryFinallyEntry> =
+            self.try_finally_stack.drain(..).rev().collect();
+        for entry in &entries {
+            if entry.in_try_body {
+                self.emit(IrInstr::EndTry);
+            }
+            self.lower_block(&entry.finally_body);
+            if self.current_block_is_terminated() {
+                // Finally body contained its own return/throw — it takes precedence
+                return;
             }
         }
 
@@ -991,19 +1020,18 @@ impl<'a> Lowerer<'a> {
 
     fn lower_break(&mut self, _brk: &ast::BreakStatement) {
         if let Some(loop_ctx) = self.loop_stack.last().cloned() {
-            // Inline finally blocks between here and the loop
+            // Inline finally blocks between here and the loop.
+            // Drain entries to prevent recursive re-inlining.
             let depth = loop_ctx.try_finally_depth;
-            if depth < self.try_finally_stack.len() {
-                let entries: Vec<super::TryFinallyEntry> =
-                    self.try_finally_stack[depth..].iter().rev().cloned().collect();
-                for entry in &entries {
-                    if entry.in_try_body {
-                        self.emit(IrInstr::EndTry);
-                    }
-                    self.lower_block(&entry.finally_body);
-                    if self.current_block_is_terminated() {
-                        return;
-                    }
+            let entries: Vec<super::TryFinallyEntry> =
+                self.try_finally_stack.drain(depth..).rev().collect();
+            for entry in &entries {
+                if entry.in_try_body {
+                    self.emit(IrInstr::EndTry);
+                }
+                self.lower_block(&entry.finally_body);
+                if self.current_block_is_terminated() {
+                    return;
                 }
             }
             self.set_terminator(Terminator::Jump(loop_ctx.break_target));
@@ -1014,19 +1042,18 @@ impl<'a> Lowerer<'a> {
 
     fn lower_continue(&mut self, _cont: &ast::ContinueStatement) {
         if let Some(loop_ctx) = self.loop_stack.last().cloned() {
-            // Inline finally blocks between here and the loop
+            // Inline finally blocks between here and the loop.
+            // Drain entries to prevent recursive re-inlining.
             let depth = loop_ctx.try_finally_depth;
-            if depth < self.try_finally_stack.len() {
-                let entries: Vec<super::TryFinallyEntry> =
-                    self.try_finally_stack[depth..].iter().rev().cloned().collect();
-                for entry in &entries {
-                    if entry.in_try_body {
-                        self.emit(IrInstr::EndTry);
-                    }
-                    self.lower_block(&entry.finally_body);
-                    if self.current_block_is_terminated() {
-                        return;
-                    }
+            let entries: Vec<super::TryFinallyEntry> =
+                self.try_finally_stack.drain(depth..).rev().collect();
+            for entry in &entries {
+                if entry.in_try_body {
+                    self.emit(IrInstr::EndTry);
+                }
+                self.lower_block(&entry.finally_body);
+                if self.current_block_is_terminated() {
+                    return;
                 }
             }
             self.set_terminator(Terminator::Jump(loop_ctx.continue_target));
@@ -1173,6 +1200,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_switch(&mut self, switch: &ast::SwitchStatement) {
         let discriminant = self.lower_expr(&switch.discriminant);
+        let entry_block = self.current_block;
         let exit_block = self.alloc_block();
 
         // Collect case blocks and values
@@ -1183,8 +1211,7 @@ impl<'a> Lowerer<'a> {
             let case_block = self.alloc_block();
 
             if let Some(test) = &case.test {
-                // Extract integer value from test expression (simplified)
-                // In a real implementation, we'd need to handle more complex patterns
+                // Extract integer value from test expression
                 if let ast::Expression::IntLiteral(lit) = test {
                     cases.push((lit.value as i32, case_block));
                 }
@@ -1201,14 +1228,19 @@ impl<'a> Lowerer<'a> {
                 self.lower_stmt(stmt);
             }
             if !self.current_block_is_terminated() {
-                // Fall through to next case or exit
+                // Fall through to exit
                 self.set_terminator(Terminator::Jump(exit_block));
             }
         }
 
-        // Set switch terminator at the original block
-        // Note: This is simplified and would need proper block management
+        // Set switch terminator on the entry block
         let default = default_block.unwrap_or(exit_block);
+        self.current_block = entry_block;
+        self.set_terminator(Terminator::Switch {
+            value: discriminant,
+            cases,
+            default,
+        });
 
         // Continue at exit block
         self.current_function_mut()

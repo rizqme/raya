@@ -631,7 +631,7 @@ mod number_arithmetic {
             Opcode::Ndiv as u8,
             Opcode::Return as u8,
         ]);
-        assert_eq!(result, Value::f64(42.0));
+        assert_eq!(result, Value::i32(42));
     }
 }
 

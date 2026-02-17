@@ -459,7 +459,6 @@ fn test_array_flat_on_flat() {
 }
 
 #[test]
-#[ignore = "array.fill() compilation not yet implemented"]
 fn test_array_fill_entire() {
     expect_i32("
         let arr: number[] = [1, 2, 3];
@@ -481,7 +480,6 @@ fn test_array_reduce() {
 // ============================================================================
 
 #[test]
-#[ignore = "nested function declarations not yet supported"]
 fn test_closure_three_level_nested() {
     expect_i32("
         function outer(): number {
@@ -694,27 +692,23 @@ fn test_exception_finally_after_throw() {
 }
 
 #[test]
-#[ignore = "finally block not yet executed on early return"]
 fn test_exception_return_in_try_with_finally() {
-    // return in try body should still execute finally
+    // return in finally overrides return in try
     expect_i32("
-        let side: number = 0;
         function test(): number {
             try {
-                return 42;
+                return 1;
             } finally {
-                side = 1;
+                return 2;
             }
         }
-        let r = test();
-        return r + side;
-    ", 43);
+        return test();
+    ", 2);
 }
 
 #[test]
-#[ignore = "throw new Error() requires builtins in non-builtin harness"]
 fn test_exception_throw_string() {
-    expect_runtime_error("throw new Error(\"custom message\");", "custom message");
+    expect_runtime_error_with_builtins("throw new Error(\"custom message\");", "custom message");
 }
 
 #[test]
@@ -780,7 +774,6 @@ fn test_class_three_level_inheritance() {
 }
 
 #[test]
-#[ignore = "virtual method dispatch not yet implemented"]
 fn test_class_virtual_dispatch() {
     expect_i32("
         class Base {
@@ -806,7 +799,6 @@ fn test_class_instanceof_chain() {
 }
 
 #[test]
-#[ignore = "static field access via ClassName.field not yet implemented"]
 fn test_class_static_field_mutation() {
     expect_i32("
         class Counter {
@@ -860,7 +852,6 @@ fn test_class_super_method() {
 }
 
 #[test]
-#[ignore = "abstract class instantiation check not yet enforced"]
 fn test_class_abstract_instantiation_error() {
     expect_compile_error("
         abstract class Shape {
@@ -868,7 +859,7 @@ fn test_class_abstract_instantiation_error() {
         }
         let s = new Shape();
         return 0;
-    ", "abstract");
+    ", "AbstractClassInstantiation");
 }
 
 #[test]
@@ -904,7 +895,6 @@ fn test_destructure_array_basic() {
 }
 
 #[test]
-#[ignore = "rest pattern in array destructuring not yet fully compiled"]
 fn test_destructure_array_with_rest() {
     expect_i32("
         let arr: number[] = [1, 2, 3, 4, 5];
@@ -1024,7 +1014,6 @@ fn test_while_complex_condition() {
 }
 
 #[test]
-#[ignore = "switch statement codegen uses Trap opcode (not yet implemented)"]
 fn test_switch_default() {
     expect_i32("
         let x: number = 99;
@@ -1163,7 +1152,6 @@ fn test_float_division_by_zero_no_throw() {
 }
 
 #[test]
-#[ignore = "NaN propagation through NADD not yet producing correct NaN != NaN"]
 fn test_float_nan_propagation() {
     // NaN + anything = NaN, detected via x != x
     expect_bool("

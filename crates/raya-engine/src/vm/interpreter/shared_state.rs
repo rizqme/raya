@@ -123,19 +123,32 @@ impl SharedVmState {
         let mut classes = self.classes.write();
         for (i, class_def) in module.classes.iter().enumerate() {
             let mut class = if let Some(parent_id) = class_def.parent_id {
-                crate::vm::object::Class::with_parent(
+                let mut c = crate::vm::object::Class::with_parent(
                     i,
                     class_def.name.clone(),
                     class_def.field_count,
                     parent_id as usize,
-                )
+                );
+                // Inherit parent vtable entries
+                if let Some(parent) = classes.get_class(parent_id as usize) {
+                    for &method_id in &parent.vtable.methods {
+                        c.add_method(method_id);
+                    }
+                }
+                c
             } else {
                 crate::vm::object::Class::new(i, class_def.name.clone(), class_def.field_count)
             };
 
-            // Populate vtable from method definitions
+            // Add/override methods by vtable slot index
             for method in &class_def.methods {
-                class.add_method(method.function_id);
+                if method.slot < class.vtable.methods.len() {
+                    // Override inherited method at same slot
+                    class.vtable.methods[method.slot] = method.function_id;
+                } else {
+                    // New method, append to vtable
+                    class.add_method(method.function_id);
+                }
             }
 
             classes.register_class(class);

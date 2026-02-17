@@ -18,7 +18,7 @@ fn test_readable_stream_from_array() {
              ctrl.close();
          }, 16);
          let result = stream.collect();
-         return result.length();",
+         return result.length;",
         3,
     );
 }
@@ -72,7 +72,7 @@ fn test_readable_stream_producer() {
          let result = stream.collect();
          let sum = 0;
          let i = 0;
-         while (i < result.length()) {
+         while (i < result.length) {
              sum = sum + result[i];
              i = i + 1;
          }
@@ -105,7 +105,7 @@ fn test_writable_stream_consumer() {
          __NATIVE_CALL<number>(\"time.sleep\", 50);
          let total = 0;
          let i = 0;
-         while (i < acc.length()) {
+         while (i < acc.length) {
              total = total + acc[i];
              i = i + 1;
          }
@@ -143,7 +143,7 @@ fn test_readable_pipe_to_writable() {
          __NATIVE_CALL<number>(\"time.sleep\", 50);
          let total = 0;
          let i = 0;
-         while (i < acc.length()) {
+         while (i < acc.length) {
              total = total + acc[i];
              i = i + 1;
          }
@@ -177,7 +177,7 @@ fn test_transform_stream_map() {
          let result = output.collect();
          let sum = 0;
          let i = 0;
-         while (i < result.length()) {
+         while (i < result.length) {
              sum = sum + result[i];
              i = i + 1;
          }
@@ -210,7 +210,7 @@ fn test_transform_stream_filter() {
 
          let output = source.pipeThrough<number>(evens);
          let result = output.collect();
-         return result.length();",
+         return result.length;",
         3,  // 2, 4, 6
     );
 }
@@ -242,7 +242,7 @@ fn test_pipe_basic() {
          __NATIVE_CALL<number>(\"time.sleep\", 50);
          let total = 0;
          let i = 0;
-         while (i < acc.length()) {
+         while (i < acc.length) {
              total = total + acc[i];
              i = i + 1;
          }
@@ -283,7 +283,7 @@ fn test_diag_array_push_loop() {
          arr.push(10);
          arr.push(20);
          arr.push(30);
-         return arr.length();",
+         return arr.length;",
         3,
     );
 }
@@ -324,7 +324,7 @@ fn test_diag_channel_collect_manual() {
              if (val != null) { result.push(val); }
              val = ch.tryReceive();
          }
-         return result.length();",
+         return result.length;",
         3,
     );
 }
@@ -353,7 +353,7 @@ fn test_diag_async_channel_collect() {
                  val = ch.receive();
              }
          }
-         return result.length();",
+         return result.length;",
         3,
     );
 }

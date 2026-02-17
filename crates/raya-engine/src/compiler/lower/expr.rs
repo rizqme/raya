@@ -956,12 +956,10 @@ impl<'a> Lowerer<'a> {
                     // Lower the object (receiver) first
                     let object = self.lower_expr(&member.object);
 
-                    // Build args with 'this' as first argument
-                    let mut method_args = vec![object];
-                    method_args.extend(args);
-
-                    // Check if async method - emit Spawn instead of Call
+                    // Check if async method - emit Spawn (stays static, no vtable)
                     if self.async_functions.contains(&func_id) {
+                        let mut method_args = vec![object];
+                        method_args.extend(args);
                         let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
                         let task_dest = self.alloc_register(task_ty);
                         self.emit(IrInstr::Spawn {
@@ -970,8 +968,20 @@ impl<'a> Lowerer<'a> {
                             args: method_args,
                         });
                         return task_dest;
+                    }
+
+                    // Use virtual dispatch via vtable slot
+                    if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name_symbol)) {
+                        self.emit(IrInstr::CallMethod {
+                            dest: Some(dest.clone()),
+                            object,
+                            method: slot,
+                            args,
+                        });
                     } else {
-                        // Call the method function
+                        // Fallback: static call (shouldn't happen for instance methods)
+                        let mut method_args = vec![object];
+                        method_args.extend(args);
                         self.emit(IrInstr::Call {
                             dest: Some(dest.clone()),
                             func: func_id,
@@ -2818,17 +2828,35 @@ impl<'a> Lowerer<'a> {
             Expression::Member(member) => {
                 let prop_name = self.interner.resolve(member.property.name);
 
-                // Try to determine the class type of the object for field resolution
+                // Check for static field write: ClassName.staticField = value
+                if let Expression::Identifier(ident) = &*member.object {
+                    if let Some(&class_id) = self.class_map.get(&ident.name) {
+                        let global_index =
+                            self.class_info_map.get(&class_id).and_then(|info| {
+                                info.static_fields
+                                    .iter()
+                                    .find(|f| self.interner.resolve(f.name) == prop_name)
+                                    .map(|sf| sf.global_index)
+                            });
+                        if let Some(index) = global_index {
+                            self.emit(IrInstr::StoreGlobal {
+                                index,
+                                value: value.clone(),
+                            });
+                            return value;
+                        }
+                    }
+                }
+
+                // Instance field write
                 let class_id = match &*member.object {
-                    // Handle 'this.field' - use current class context
                     Expression::This(_) => self.current_class,
-                    // Handle 'obj.field' where obj is a variable
-                    Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+                    Expression::Identifier(ident) => {
+                        self.variable_class_map.get(&ident.name).copied()
+                    }
                     _ => None,
                 };
 
-                // Look up field index by name if we know the class type
-                // Use get_all_fields to include inherited fields from parent classes
                 let field_index = if let Some(class_id) = class_id {
                     self.get_all_fields(class_id)
                         .iter()
@@ -2909,7 +2937,7 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_arrow(&mut self, arrow: &ast::ArrowFunction) -> Register {
+    pub(super) fn lower_arrow(&mut self, arrow: &ast::ArrowFunction) -> Register {
         // Generate unique name for the arrow function
         let arrow_name = format!("__arrow_{}", self.arrow_counter);
         self.arrow_counter += 1;

@@ -511,6 +511,32 @@ pub fn expect_runtime_error(source: &str, error_pattern: &str) {
     }
 }
 
+/// Compile and execute with builtins, expecting a runtime error
+pub fn expect_runtime_error_with_builtins(source: &str, error_pattern: &str) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            panic!(
+                "Expected runtime error containing '{}', but got {:?}\nSource:\n{}",
+                error_pattern, value, source
+            );
+        }
+        Err(E2EError::Vm(e)) => {
+            let error_msg = e.to_string();
+            assert!(
+                error_msg.contains(error_pattern),
+                "Expected runtime error containing '{}', got: {}\nSource:\n{}",
+                error_pattern, error_msg, source
+            );
+        }
+        Err(e) => {
+            panic!(
+                "Expected runtime error, got compile error: {}\nSource:\n{}",
+                e, source
+            );
+        }
+    }
+}
+
 /// Compile and execute with multiple worker threads
 ///
 /// Use this for tests that need to stress-test true parallel execution.

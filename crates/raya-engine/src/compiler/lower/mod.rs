@@ -147,6 +147,8 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
     parent_class: Option<ClassId>,
+    /// Number of vtable method slots (including inherited)
+    method_slot_count: u16,
     /// Class-level decorators (applied bottom-to-top)
     class_decorators: Vec<DecoratorInfo>,
     /// Method decorators (keyed by method name)
@@ -289,6 +291,8 @@ pub struct Lowerer<'a> {
     this_captured_idx: Option<u16>,
     /// Method name to function ID mapping (for method calls)
     method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
+    /// Method name to vtable slot index (for virtual dispatch)
+    method_slot_map: FxHashMap<(ClassId, Symbol), u16>,
     /// Static method name to function ID mapping
     static_method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
     /// Method return type class mapping (for chained method call resolution)
@@ -364,6 +368,7 @@ impl<'a> Lowerer<'a> {
             this_ancestor_info: None,
             this_captured_idx: None,
             method_map: FxHashMap::default(),
+            method_slot_map: FxHashMap::default(),
             static_method_map: FxHashMap::default(),
             method_return_class_map: FxHashMap::default(),
             next_global_index: 0,
@@ -585,6 +590,19 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
+                    // Assign vtable method slots for virtual dispatch
+                    let parent_slot_count = parent_class
+                        .and_then(|pid| self.class_info_map.get(&pid))
+                        .map_or(0, |info| info.method_slot_count);
+                    let mut next_slot = parent_slot_count;
+                    for method_info in &methods {
+                        // Check if parent already has a slot for this method name (override)
+                        let slot = self.find_parent_method_slot(parent_class, method_info.name)
+                            .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
+                        self.method_slot_map.insert((class_id, method_info.name), slot);
+                    }
+                    let method_slot_count = next_slot;
+
                     // Check for constructor and assign function ID, collect parameter defaults
                     let mut constructor = None;
                     let mut constructor_params = Vec::new();
@@ -704,6 +722,7 @@ impl<'a> Lowerer<'a> {
                             static_fields,
                             static_methods,
                             parent_class,
+                            method_slot_count,
                             class_decorators,
                             method_decorators,
                             field_decorators,
@@ -1428,9 +1447,13 @@ impl<'a> Lowerer<'a> {
                     let ir_func = self.current_function.take().unwrap();
                     self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
 
-                    // Add instance methods to the IR class vtable
+                    // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
-                        ir_class.add_method(func_id);
+                        if let Some(&slot) = self.method_slot_map.get(&(class_id, method.name.name)) {
+                            ir_class.add_method_with_slot(func_id, slot);
+                        } else {
+                            ir_class.add_method(func_id);
+                        }
                     }
 
                     // Clear method context
@@ -1571,6 +1594,18 @@ impl<'a> Lowerer<'a> {
         let id = RegisterId::new(self.next_register);
         self.next_register += 1;
         Register::new(id, ty)
+    }
+
+    /// Find a method's vtable slot in parent class hierarchy
+    fn find_parent_method_slot(&self, parent_class: Option<ClassId>, method_name: Symbol) -> Option<u16> {
+        let mut current = parent_class;
+        while let Some(class_id) = current {
+            if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name)) {
+                return Some(slot);
+            }
+            current = self.class_info_map.get(&class_id).and_then(|info| info.parent_class);
+        }
+        None
     }
 
     /// Allocate a new basic block ID
