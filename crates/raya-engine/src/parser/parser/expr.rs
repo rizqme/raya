@@ -195,8 +195,36 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         // async - can be:
         // 1. async call expression: async foo()
         // 2. async arrow function: async () => expr or async x => expr
+        // 3. async block expression: async { statements }
         Token::Async => {
             parser.advance();
+
+            // async { ... } block expression — fire-and-forget task
+            // Desugars to: async (() => { body })()
+            if parser.check(&Token::LeftBrace) {
+                parser.advance(); // consume {
+                let block = parse_block_statement(parser)?;
+                let block_span = block.span;
+
+                // Create arrow: () => { body }
+                let arrow = ArrowFunction {
+                    params: vec![],
+                    return_type: None,
+                    body: crate::parser::ast::ArrowBody::Block(block),
+                    is_async: false,
+                    span: block_span,
+                };
+
+                let span = parser.combine_spans(&start_span, &block_span);
+
+                // Desugar to: async (() => { body })()
+                return Ok(Expression::AsyncCall(AsyncCallExpression {
+                    callee: Box::new(Expression::Arrow(arrow)),
+                    type_args: None,
+                    arguments: vec![],
+                    span,
+                }));
+            }
 
             // Check if this is an async arrow function
             // Pattern: async () => ... or async (params) => ... or async x => ...

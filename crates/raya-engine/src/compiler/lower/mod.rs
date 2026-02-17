@@ -1135,6 +1135,16 @@ impl<'a> Lowerer<'a> {
             if let Pattern::Identifier(ident) = &param.pattern {
                 let local_idx = self.allocate_local(ident.name);
                 self.local_registers.insert(local_idx, reg.clone());
+
+                // Track class type for parameters with class type annotations
+                // so method calls can be statically resolved
+                if let Some(type_ann) = &param.type_annotation {
+                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(ident.name, class_id);
+                        }
+                    }
+                }
             }
             params.push(reg);
         }
@@ -1352,6 +1362,15 @@ impl<'a> Lowerer<'a> {
                         if let Pattern::Identifier(ident) = &param.pattern {
                             let local_idx = self.allocate_local(ident.name);
                             self.local_registers.insert(local_idx, reg.clone());
+
+                            // Track class type for parameters with class type annotations
+                            if let Some(type_ann) = &param.type_annotation {
+                                if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                                    if let Some(&param_class_id) = self.class_map.get(&type_ref.name.name) {
+                                        self.variable_class_map.insert(ident.name, param_class_id);
+                                    }
+                                }
+                            }
                         }
                         params.push(reg);
                     }
@@ -1385,12 +1404,17 @@ impl<'a> Lowerer<'a> {
 
                     // Get the function ID and add to pending methods
                     let func_id = if method.is_static {
-                        self.static_method_map.get(&(class_id, method.name.name)).unwrap()
+                        *self.static_method_map.get(&(class_id, method.name.name)).unwrap()
                     } else {
-                        self.method_map.get(&(class_id, method.name.name)).unwrap()
+                        *self.method_map.get(&(class_id, method.name.name)).unwrap()
                     };
                     let ir_func = self.current_function.take().unwrap();
                     self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
+
+                    // Add instance methods to the IR class vtable
+                    if !method.is_static {
+                        ir_class.add_method(func_id);
+                    }
 
                     // Clear method context
                     self.current_class = None;

@@ -27,6 +27,7 @@ pub fn register_stdlib(registry: &mut NativeFunctionRegistry) {
     register_crypto(registry);
     register_path(registry);
     register_time(registry);
+    register_stream(registry);
 }
 
 /// Register logger native functions
@@ -225,4 +226,13 @@ fn register_time(registry: &mut NativeFunctionRegistry) {
         }
         NativeCallResult::null()
     });
+}
+
+/// Register stream native functions
+fn register_stream(registry: &mut NativeFunctionRegistry) {
+    registry.register("stream.forward", |ctx, args| crate::stream::forward(ctx, args));
+    registry.register("stream.collect", |ctx, args| crate::stream::collect(ctx, args));
+    registry.register("stream.count", |ctx, args| crate::stream::count(ctx, args));
+    registry.register("stream.receive", |ctx, args| crate::stream::receive(ctx, args));
+    registry.register("stream.send", |ctx, args| crate::stream::send(ctx, args));
 }

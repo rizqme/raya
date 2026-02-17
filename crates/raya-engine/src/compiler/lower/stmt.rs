@@ -314,23 +314,33 @@ impl<'a> Lowerer<'a> {
         // If there's an initializer, evaluate and store
         // The register from lowering the expression will have the correct inferred type
         if let Some(init) = &decl.initializer {
-            // Track class type for field access resolution
-            if let ast::Expression::New(new_expr) = init {
-                if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                    if let Some(&class_id) = self.class_map.get(&ident.name) {
+            // Track class type from explicit type annotation FIRST (highest priority).
+            // This must come before other inference to override stale entries from other scopes
+            // (variable_class_map is a flat map without scope tracking).
+            if let Some(type_ann) = &decl.type_annotation {
+                if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                    if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
                         self.variable_class_map.insert(name, class_id);
                     }
                 }
             }
 
-            // Also track class type from explicit type annotation (e.g., `let x: MyClass = someCall()`)
+            // Track class type from New expression (e.g., `let x = new MyClass()`)
             if !self.variable_class_map.contains_key(&name) {
-                if let Some(type_ann) = &decl.type_annotation {
-                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                if let ast::Expression::New(new_expr) = init {
+                    if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                        if let Some(&class_id) = self.class_map.get(&ident.name) {
                             self.variable_class_map.insert(name, class_id);
                         }
                     }
+                }
+            }
+
+            // Infer class type from method call return types
+            // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
+            if !self.variable_class_map.contains_key(&name) {
+                if let Some(class_id) = self.infer_class_id(init) {
+                    self.variable_class_map.insert(name, class_id);
                 }
             }
 

@@ -15,7 +15,7 @@
 //! ```
 
 use raya_engine::vm::scheduler::{Scheduler, TaskId};
-use raya_engine::vm::vm::VmContext;
+use raya_engine::vm::interpreter::VmContext;
 use std::sync::Arc;
 
 // ===== Basic Task Execution Tests =====
@@ -157,7 +157,7 @@ fn test_scheduler_task_count() {
 
 #[test]
 fn test_task_limit_enforcement() {
-    use raya_engine::vm::vm::{ResourceLimits, VmOptions};
+    use raya_engine::vm::interpreter::{ResourceLimits, VmOptions};
 
     // Create context with task limit
     let options = VmOptions {
@@ -184,7 +184,7 @@ fn test_task_limit_enforcement() {
 
 #[test]
 fn test_task_limit_independence() {
-    use raya_engine::vm::vm::{ResourceLimits, VmOptions};
+    use raya_engine::vm::interpreter::{ResourceLimits, VmOptions};
 
     // Context 1: limit of 3 tasks
     let options1 = VmOptions {

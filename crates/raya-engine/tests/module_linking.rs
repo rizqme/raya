@@ -23,6 +23,7 @@ fn create_module(name: &str) -> Module {
         checksum: [0; 32],
         reflection: None,
         debug_info: None,
+        native_functions: vec![],
     }
 }
 

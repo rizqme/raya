@@ -8,8 +8,8 @@
 use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::{marshal, unmarshal, MarshalledValue};
-use raya_engine::vm::vm::{
+use raya_engine::vm::interpreter::{marshal, unmarshal, MarshalledValue};
+use raya_engine::vm::interpreter::{
     Capability, CapabilityError, CapabilityRegistry, ContextRegistry, InnerVm, ResourceLimits,
     VmContext, VmContextId, VmError, VmOptions,
 };

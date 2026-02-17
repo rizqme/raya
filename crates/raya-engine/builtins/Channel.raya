@@ -26,9 +26,9 @@ class Channel<T> {
         __NATIVE_CALL(CHANNEL_SEND, this.channelId, value);
     }
 
-    // Receive a value from the channel (blocks if empty)
+    // Receive a value from the channel (suspends task if empty, returns null if closed)
     receive(): T {
-        return __NATIVE_CALL(CHANNEL_TRY_RECEIVE, this.channelId);
+        return __NATIVE_CALL(CHANNEL_RECEIVE, this.channelId);
     }
 
     // Try to send without blocking (returns true if sent)

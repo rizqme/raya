@@ -20,7 +20,7 @@
 use raya_engine::vm::scheduler::{Scheduler, TaskId};
 use raya_engine::vm::snapshot::{SerializedTask, SnapshotReader, SnapshotWriter};
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::{ResourceLimits, VmContext, VmOptions};
+use raya_engine::vm::interpreter::{ResourceLimits, VmContext, VmOptions};
 use std::io::Cursor;
 
 // ===== VmContext Snapshot/Restore Tests =====
@@ -726,7 +726,7 @@ fn test_byteswap_round_trip() {
 
 #[test]
 fn test_safepoint_snapshot_coordination() {
-    use raya_engine::vm::vm::{SafepointCoordinator, StopReason};
+    use raya_engine::vm::interpreter::{SafepointCoordinator, StopReason};
 
     let coord = SafepointCoordinator::new(4);
 
@@ -879,7 +879,7 @@ fn test_snapshot_with_max_values() {
 
 // #[test]
 // fn test_vm_snapshot_and_restore() {
-//     use raya_engine::vm::vm::lifecycle::Vm;
+//     use raya_engine::vm::interpreter::lifecycle::Vm;
 //
 //     let vm = Vm::new(VmOptions::default()).unwrap();
 //

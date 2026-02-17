@@ -80,6 +80,48 @@ pub enum OpcodeResult {
 
     /// An error occurred
     Error(VmError),
+
+    /// Push a new call frame (frame-based interpreter)
+    ///
+    /// The main loop handles this by saving the current state into a
+    /// `ExecutionFrame`, then setting up execution of the new function.
+    PushFrame {
+        func_id: usize,
+        arg_count: usize,
+        is_closure: bool,
+        closure_val: Option<Value>,
+        return_action: ReturnAction,
+    },
+}
+
+/// What to do with the return value when popping a call frame
+#[derive(Debug, Clone, Copy)]
+pub enum ReturnAction {
+    /// Push the callee's return value onto the caller's stack (normal calls)
+    PushReturnValue,
+    /// Push a specific object value (constructor calls - push the constructed object)
+    PushObject(Value),
+    /// Discard the return value (super() calls)
+    Discard,
+}
+
+/// Saved state of a call frame for the frame-based interpreter
+///
+/// When a function is called, the current state is saved into an
+/// `ExecutionFrame` and pushed onto the frame stack. When the function
+/// returns, the frame is popped and execution resumes in the caller.
+#[derive(Debug, Clone)]
+pub struct ExecutionFrame {
+    /// Function index of the caller (to restore code reference)
+    pub func_id: usize,
+    /// Saved instruction pointer (points past the Call instruction)
+    pub ip: usize,
+    /// Caller's locals base offset in the stack
+    pub locals_base: usize,
+    /// Whether the callee pushed a closure onto the closure stack
+    pub is_closure: bool,
+    /// What to push on the caller's stack when the callee returns
+    pub return_action: ReturnAction,
 }
 
 impl OpcodeResult {

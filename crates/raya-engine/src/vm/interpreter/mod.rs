@@ -5,7 +5,7 @@ mod class_registry;
 mod context;
 mod core;
 mod exec_context;
-mod execution;
+pub(crate) mod execution;
 mod lifecycle;
 mod marshal;
 mod module_registry;
@@ -23,7 +23,7 @@ pub use context::{
 };
 pub use core::Interpreter;
 pub use exec_context::{AsyncContext, ExecutionContext, SyncContext};
-pub use execution::{ControlFlow, ExecutionResult, OpcodeResult};
+pub use execution::{ControlFlow, ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 pub use lifecycle::{
     ContextSnapshot, FrameSnapshot, TaskSnapshot, Vm as InnerVm, VmError, VmSnapshot, VmStats,
 };

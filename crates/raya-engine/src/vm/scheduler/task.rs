@@ -1,5 +1,6 @@
 //! Task structure and execution state
 
+use crate::vm::interpreter::execution::ExecutionFrame;
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
@@ -185,6 +186,15 @@ pub struct Task {
 
     /// Condvar for blocking until task completes
     completion_condvar: ParkingCondvar,
+
+    /// Current function being executed (may differ from function_id during nested calls)
+    current_func_id: AtomicUsize,
+
+    /// Current locals base offset in the stack
+    current_locals_base: AtomicUsize,
+
+    /// Execution frame stack for frame-based interpreter (saved across suspend/resume)
+    execution_frames: Mutex<Vec<ExecutionFrame>>,
 }
 
 impl Task {
@@ -229,6 +239,9 @@ impl Task {
             cancelled: AtomicBool::new(false),
             completion_lock: ParkingMutex::new(false),
             completion_condvar: ParkingCondvar::new(),
+            current_func_id: AtomicUsize::new(function_id),
+            current_locals_base: AtomicUsize::new(0),
+            execution_frames: Mutex::new(Vec::new()),
         }
     }
 
@@ -506,6 +519,40 @@ impl Task {
         }
 
         trace
+    }
+
+    // =========================================================================
+    // Execution Frames (frame-based interpreter)
+    // =========================================================================
+
+    /// Get the current function ID being executed
+    pub fn current_func_id(&self) -> usize {
+        self.current_func_id.load(Ordering::Relaxed)
+    }
+
+    /// Set the current function ID being executed
+    pub fn set_current_func_id(&self, func_id: usize) {
+        self.current_func_id.store(func_id, Ordering::Relaxed);
+    }
+
+    /// Get the current locals base offset
+    pub fn current_locals_base(&self) -> usize {
+        self.current_locals_base.load(Ordering::Relaxed)
+    }
+
+    /// Set the current locals base offset
+    pub fn set_current_locals_base(&self, base: usize) {
+        self.current_locals_base.store(base, Ordering::Relaxed);
+    }
+
+    /// Take the execution frames (drains them from the task)
+    pub fn take_execution_frames(&self) -> Vec<ExecutionFrame> {
+        std::mem::take(&mut *self.execution_frames.lock().unwrap())
+    }
+
+    /// Save execution frames (for suspend)
+    pub fn save_execution_frames(&self, frames: Vec<ExecutionFrame>) {
+        *self.execution_frames.lock().unwrap() = frames;
     }
 
     // =========================================================================

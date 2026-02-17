@@ -71,6 +71,9 @@ fn get_std_sources() -> &'static str {
         // Path (std:path)
         include_str!("../../../raya-stdlib/raya/path.raya"),
         "\n",
+        // Stream (std:stream)
+        include_str!("../../../raya-stdlib/raya/stream.raya"),
+        "\n",
     )
 }
 

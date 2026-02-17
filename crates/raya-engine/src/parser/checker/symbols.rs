@@ -132,6 +132,11 @@ impl SymbolTable {
         }
     }
 
+    /// Get the number of scopes in the symbol table
+    pub fn scope_count(&self) -> usize {
+        self.scopes.len()
+    }
+
     /// Push a new scope as a child of the current scope
     ///
     /// Returns the ID of the new scope and makes it current.
@@ -209,8 +214,16 @@ impl SymbolTable {
     ///
     /// Searches from the given scope to global scope, returning the first match.
     pub fn resolve_from_scope(&self, name: &str, mut scope_id: ScopeId) -> Option<&Symbol> {
+        // If scope ID is out of bounds (checker/binder scope mismatch),
+        // fall back to searching from the last valid scope in the chain.
+        if (scope_id.0 as usize) >= self.scopes.len() && !self.scopes.is_empty() {
+            scope_id = ScopeId((self.scopes.len() - 1) as u32);
+        }
         loop {
-            let scope = &self.scopes[scope_id.0 as usize];
+            let scope = match self.scopes.get(scope_id.0 as usize) {
+                Some(s) => s,
+                None => return None,
+            };
 
             // Check if symbol exists in this scope
             if let Some(symbol) = scope.symbols.get(name) {

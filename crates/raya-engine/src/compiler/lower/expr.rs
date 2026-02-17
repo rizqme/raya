@@ -114,8 +114,10 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
     }
 
     // Array types (TypeId >= 7, but skip known non-array types) or unknown (TypeId 6)
-    // Note: This is a heuristic - array types are interned dynamically
-    if obj_type_id >= 7 || obj_type_id == 6 {
+    // Also include TypeId 0 because monomorphized generic functions create new AST nodes
+    // whose pointer addresses don't match the type checker's expr_types map, defaulting
+    // to TypeId 0. Array methods (push, pop, etc.) don't overlap with number methods.
+    if obj_type_id >= 7 || obj_type_id == 6 || obj_type_id == 0 {
         match method_name {
             "push" => return Some(builtin_array::PUSH),
             "pop" => return Some(builtin_array::POP),
@@ -390,7 +392,9 @@ impl<'a> Lowerer<'a> {
                 // Variable is from an enclosing scope - capture it
                 let ty = ancestor_var.ty;
                 let is_refcell = ancestor_var.is_refcell;
-                let capture_idx = self.captures.len() as u16;
+                // Offset by 1 if `this` is captured (this is always at index 0)
+                let this_offset = if self.this_captured_idx.is_some() { 1 } else { 0 };
+                let capture_idx = self.captures.len() as u16 + this_offset;
                 self.captures.push(super::CaptureInfo {
                     symbol: ident.name,
                     source: ancestor_var.source,
@@ -980,6 +984,27 @@ impl<'a> Lowerer<'a> {
             // Fall back to builtin method handling
             let object = self.lower_expr(&member.object);
             let obj_type_id = object.ty.as_u32();
+
+            // Handle length() on arrays and strings as property access (not method call)
+            if method_name == "length" && args.is_empty() {
+                if obj_type_id == 1 {
+                    // String length
+                    let len_dest = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::StringLen {
+                        dest: len_dest.clone(),
+                        string: object,
+                    });
+                    return len_dest;
+                } else {
+                    // Array length (obj_type_id > 6, or 0 for unknown/number — same heuristic as property access)
+                    let len_dest = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::ArrayLen {
+                        dest: len_dest.clone(),
+                        array: object,
+                    });
+                    return len_dest;
+                }
+            }
 
             // Note: Channel methods are NOT handled here via NativeCall.
             // Channel methods go through normal vtable dispatch to Channel class methods,
@@ -2368,7 +2393,9 @@ impl<'a> Lowerer<'a> {
                     if let Some(ancestor_var) = ancestors.get(&ident.name) {
                         let ty = ancestor_var.ty;
                         let is_refcell = ancestor_var.is_refcell;
-                        let capture_idx = self.captures.len() as u16;
+                        // Offset by 1 if `this` is captured (this is always at index 0)
+                        let this_offset = if self.this_captured_idx.is_some() { 1 } else { 0 };
+                        let capture_idx = self.captures.len() as u16 + this_offset;
                         self.captures.push(super::CaptureInfo {
                             symbol: ident.name,
                             source: ancestor_var.source,
@@ -2603,6 +2630,16 @@ impl<'a> Lowerer<'a> {
             if let ast::Pattern::Identifier(ident) = &param.pattern {
                 let local_idx = self.allocate_local(ident.name);
                 self.local_registers.insert(local_idx, reg.clone());
+
+                // Track class type for parameters with class type annotations
+                // so method calls can be statically resolved
+                if let Some(type_ann) = &param.type_annotation {
+                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(ident.name, class_id);
+                        }
+                    }
+                }
             }
             params.push(reg);
         }
@@ -2669,7 +2706,46 @@ impl<'a> Lowerer<'a> {
         self.this_captured_idx = saved_this_captured_idx;
 
         // Load captured variables and build captures list for MakeClosure
+        // If `this` is captured, it goes at index 0 (prepended before regular captures)
         let mut capture_regs = Vec::new();
+        if child_this_captured_idx.is_some() {
+            let this_reg = self.alloc_register(TypeId::new(0)); // Object type
+
+            // Check where `this` comes from
+            if let Some(ref _parent_this) = self.this_register {
+                // Parent is a method - load `this` from parent's register
+                // In methods, `this` is passed as local slot 0
+                self.emit(IrInstr::LoadLocal {
+                    dest: this_reg.clone(),
+                    index: 0,
+                });
+            } else if let Some(ref ancestor_info) = child_this_ancestor_info {
+                // Parent was also an arrow that had access to `this`
+                match ancestor_info.source {
+                    super::AncestorSource::ImmediateParentLocal(local_idx) => {
+                        self.emit(IrInstr::LoadLocal {
+                            dest: this_reg.clone(),
+                            index: local_idx,
+                        });
+                    }
+                    super::AncestorSource::Ancestor => {
+                        if let Some(parent_this_capture) = self.this_captured_idx {
+                            self.emit(IrInstr::LoadCaptured {
+                                dest: this_reg.clone(),
+                                index: parent_this_capture,
+                            });
+                        } else {
+                            self.emit(IrInstr::LoadLocal {
+                                dest: this_reg.clone(),
+                                index: 0,
+                            });
+                        }
+                    }
+                }
+            }
+
+            capture_regs.push(this_reg); // index 0
+        }
         for cap in &captured_vars {
             let ty = cap.ty;
             let cap_reg = self.alloc_register(ty);
@@ -2750,51 +2826,7 @@ impl<'a> Lowerer<'a> {
             capture_regs.push(cap_reg);
         }
 
-        // Handle `this` capture if the arrow function used `this`
-        if child_this_captured_idx.is_some() {
-            let this_reg = self.alloc_register(TypeId::new(0)); // Object type
-
-            // Check where `this` comes from
-            if let Some(ref parent_this) = self.this_register {
-                // Parent is a method - load `this` from parent's register
-                // In methods, `this` is passed as local slot 0
-                self.emit(IrInstr::LoadLocal {
-                    dest: this_reg.clone(),
-                    index: 0,
-                });
-            } else if let Some(ref ancestor_info) = child_this_ancestor_info {
-                // Parent was also an arrow that had access to `this`
-                match ancestor_info.source {
-                    super::AncestorSource::ImmediateParentLocal(local_idx) => {
-                        // `this` was in immediate parent's locals
-                        self.emit(IrInstr::LoadLocal {
-                            dest: this_reg.clone(),
-                            index: local_idx,
-                        });
-                    }
-                    super::AncestorSource::Ancestor => {
-                        // `this` is from further ancestor - we need to capture it too
-                        // Check if parent already captured `this`
-                        if let Some(parent_this_capture) = self.this_captured_idx {
-                            self.emit(IrInstr::LoadCaptured {
-                                dest: this_reg.clone(),
-                                index: parent_this_capture,
-                            });
-                        } else {
-                            // Parent needs to capture `this` now
-                            // (This case shouldn't normally happen if we're tracking correctly)
-                            // Fall back to loading from local 0
-                            self.emit(IrInstr::LoadLocal {
-                                dest: this_reg.clone(),
-                                index: 0,
-                            });
-                        }
-                    }
-                }
-            }
-
-            capture_regs.push(this_reg);
-        }
+        // (`this` capture was already prepended at index 0 above)
 
         // Create closure: emit MakeClosure instruction with captures
         let closure_ty = TypeId::new(0); // Generic function type
@@ -3040,19 +3072,30 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Instance method - need to find the method and spawn with 'this'
-            // For now, we'll look up the method in the class hierarchy
-            // This is a simplified version - in practice we'd need proper method resolution
-            let mut method_args = vec![object];
-            method_args.extend(args);
-
-            // Try to find the method - for now emit a placeholder
-            // In a full implementation, we'd resolve the method like in lower_call
-            // and emit Spawn with the method's function ID
+            // Instance method - find the method and spawn with 'this'
+            let mut class_id = self.infer_class_id(&member.object);
+            if let Some(class_id) = class_id {
+                if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
+                    let mut method_args = vec![object];
+                    method_args.extend(args);
+                    self.emit(IrInstr::Spawn {
+                        dest: dest.clone(),
+                        func: func_id,
+                        args: method_args,
+                    });
+                    return dest;
+                }
+            }
         }
 
-        // Fallback: return null for unhandled cases
-        self.lower_null_literal()
+        // Fallback: treat callee as a closure/expression and spawn it
+        let callee_reg = self.lower_expr(&async_call.callee);
+        self.emit(IrInstr::SpawnClosure {
+            dest: dest.clone(),
+            closure: callee_reg,
+            args,
+        });
+        dest
     }
 
     fn lower_this(&mut self) -> Register {
@@ -3074,14 +3117,13 @@ impl<'a> Lowerer<'a> {
         // Check if `this` is available from ancestor scope (we're inside an arrow in a method)
         if let Some(ref _ancestor_info) = self.this_ancestor_info {
             // Record that we need to capture `this`
-            // The capture index will be after all regular captures
-            let capture_idx = self.captures.len() as u16;
-            self.this_captured_idx = Some(capture_idx);
+            // `this` is always at capture index 0 (prepended before regular captures)
+            self.this_captured_idx = Some(0);
 
             let dest = self.alloc_register(TypeId::new(0));
             self.emit(IrInstr::LoadCaptured {
                 dest: dest.clone(),
-                index: capture_idx,
+                index: 0,
             });
             return dest;
         }
@@ -3195,7 +3237,7 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Infer the class ID of an expression (for method call resolution)
-    fn infer_class_id(&self, expr: &Expression) -> Option<ClassId> {
+    pub(super) fn infer_class_id(&self, expr: &Expression) -> Option<ClassId> {
         match expr {
             // 'this' uses current class context
             Expression::This(_) => self.current_class,

@@ -1,0 +1,104 @@
+/**
+ * Stream - Standard streaming API
+ *
+ * Typed streaming primitives with backpressure support.
+ * Built on Channel<T> for bounded queuing.
+ *
+ * Usage:
+ *   import { ReadableStream, WritableStream, TransformStream } from "std:stream";
+ */
+
+/** Controller for pushing values into a ReadableStream */
+export class ReadableController<T> {
+    constructor(ch: Channel<T>);
+
+    /** Push a value into the stream (blocks if channel full) */
+    push(value: T): void;
+
+    /** Close the stream (no more values) */
+    close(): void;
+}
+
+/** Controller for pulling values from a WritableStream */
+export class WritableController<T> {
+    constructor(ch: Channel<T>);
+
+    /** Pull the next value (blocks until available, null when done) */
+    pull(): T | null;
+}
+
+/** Controller for pushing transformed values */
+export class TransformController<O> {
+    constructor(ctrl: ReadableController<O>);
+
+    /** Push a transformed value */
+    push(value: O): void;
+}
+
+/** Readable stream - produces values from an async source */
+export class ReadableStream<T> {
+    /**
+     * Create a readable stream from a producer function.
+     * The producer receives a controller to push values.
+     * @param producer Function that pushes values via controller
+     * @param capacity Channel buffer size (default 16)
+     */
+    constructor(producer: (ctrl: ReadableController<T>) => void, capacity: number);
+
+    /** Read next value (blocks until available, null when stream ends) */
+    read(): T | null;
+
+    /** Check if the stream is closed */
+    isClosed(): boolean;
+
+    /** Get the underlying channel */
+    getChannel(): Channel<T>;
+
+    /** Pipe all values to a writable stream */
+    pipe(writable: WritableStream<T>): void;
+
+    /** Pipe through a transform stream, returning the transformed readable */
+    pipeThrough<O>(transform: TransformStream<T, O>): ReadableStream<O>;
+
+    /** Collect all values into an array */
+    collect(): T[];
+}
+
+/** Writable stream - consumes values via an async sink */
+export class WritableStream<T> {
+    /**
+     * Create a writable stream from a consumer function.
+     * The consumer receives a controller to pull values.
+     * @param consumer Function that pulls values via controller
+     * @param capacity Channel buffer size (default 16)
+     */
+    constructor(consumer: (ctrl: WritableController<T>) => void, capacity: number);
+
+    /** Write a value (blocks if channel full - backpressure) */
+    write(value: T): void;
+
+    /** Close the stream (no more writes) */
+    close(): void;
+
+    /** Check if the stream is closed */
+    isClosed(): boolean;
+
+    /** Get the underlying channel */
+    getChannel(): Channel<T>;
+}
+
+/** Transform stream - transforms values from input type to output type */
+export class TransformStream<I, O> {
+    /**
+     * Create a transform stream.
+     * @param transformer Function called for each input value
+     * @param capacity Channel buffer size
+     */
+    constructor(transformer: (input: I, ctrl: TransformController<O>) => void, capacity: number);
+
+    /** Get the readable (output) side */
+    getReadable(): ReadableStream<O>;
+
+    /** Get the writable (input) side */
+    getWritable(): WritableStream<I>;
+}

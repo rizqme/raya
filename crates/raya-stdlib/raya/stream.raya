@@ -1,0 +1,222 @@
+// Stream - Standard streaming API
+// Usage: import { ReadableStream, WritableStream, TransformStream } from "std:stream";
+
+// Channel native IDs (must match builtin.rs)
+const STREAM_CH_SEND: number = 0x0401;
+const STREAM_CH_RECV: number = 0x0402;
+const STREAM_CH_TRY_RECV: number = 0x0404;
+
+// ============================================================================
+// Controllers
+// ============================================================================
+
+class ReadableController<T> {
+    private ch: Channel<T>;
+    private _closed: boolean;
+
+    constructor(ch: Channel<T>) {
+        this.ch = ch;
+        this._closed = false;
+    }
+
+    push(value: T): void {
+        this.ch.send(value);
+    }
+
+    close(): void {
+        if (!this._closed) {
+            this._closed = true;
+            this.ch.close();
+        }
+    }
+}
+
+class WritableController<T> {
+    private ch: Channel<T>;
+
+    constructor(ch: Channel<T>) {
+        this.ch = ch;
+    }
+
+    pull(): T | null {
+        if (this.ch.isClosed()) {
+            let last = this.ch.tryReceive();
+            return last;
+        }
+        return this.ch.receive();
+    }
+}
+
+class TransformController<O> {
+    private ctrl: ReadableController<O>;
+
+    constructor(ctrl: ReadableController<O>) {
+        this.ctrl = ctrl;
+    }
+
+    push(value: O): void {
+        this.ctrl.push(value);
+    }
+}
+
+// ============================================================================
+// ReadableStream
+// ============================================================================
+
+class ReadableStream<T> {
+    private ch: Channel<T>;
+
+    constructor(producer: (ctrl: ReadableController<T>) => void, capacity: number) {
+        this.ch = new Channel<T>(capacity);
+        let ctrl = new ReadableController<T>(this.ch);
+        let ch = this.ch;
+        async {
+            producer(ctrl);
+            if (!ch.isClosed()) {
+                ch.close();
+            }
+        };
+    }
+
+    read(): T | null {
+        if (this.ch.isClosed()) {
+            return this.ch.tryReceive();
+        }
+        return this.ch.receive();
+    }
+
+    isClosed(): boolean {
+        return this.ch.isClosed();
+    }
+
+    getChannel(): Channel<T> {
+        return this.ch;
+    }
+
+    pipe(writable: WritableStream<T>): void {
+        let src = this.ch;
+        let dst = writable.getChannel();
+        // Forward all values from src to dst
+        let val = src.tryReceive();
+        if (val == null && !src.isClosed()) {
+            val = src.receive();
+        }
+        while (val != null) {
+            dst.send(val);
+            val = src.tryReceive();
+            if (val == null && !src.isClosed()) {
+                val = src.receive();
+            }
+        }
+        dst.close();
+    }
+
+    pipeThrough<O>(transform: TransformStream<T, O>): ReadableStream<O> {
+        let readable = this;
+        let w = transform.getWritable();
+        async {
+            readable.pipe(w);
+        };
+        return transform.getReadable();
+    }
+
+    collect(): T[] {
+        let result: T[] = [];
+        let val = this.ch.tryReceive();
+        if (val == null && !this.ch.isClosed()) {
+            val = this.ch.receive();
+        }
+        while (val != null) {
+            result.push(val);
+            val = this.ch.tryReceive();
+            if (val == null && !this.ch.isClosed()) {
+                val = this.ch.receive();
+            }
+        }
+        return result;
+    }
+}
+
+// ============================================================================
+// WritableStream
+// ============================================================================
+
+class WritableStream<T> {
+    private ch: Channel<T>;
+    private _closed: boolean;
+
+    constructor(consumer: (ctrl: WritableController<T>) => void, capacity: number) {
+        this.ch = new Channel<T>(capacity);
+        this._closed = false;
+        let ctrl = new WritableController<T>(this.ch);
+        async consumer(ctrl);
+    }
+
+    write(value: T): void {
+        this.ch.send(value);
+    }
+
+    close(): void {
+        if (!this._closed) {
+            this._closed = true;
+            this.ch.close();
+        }
+    }
+
+    isClosed(): boolean {
+        return this._closed;
+    }
+
+    getChannel(): Channel<T> {
+        return this.ch;
+    }
+}
+
+// ============================================================================
+// TransformStream
+// ============================================================================
+
+class TransformStream<I, O> {
+    private _readable: ReadableStream<O>;
+    private _writable: WritableStream<I>;
+
+    constructor(transformer: (input: I, ctrl: TransformController<O>) => void, capacity: number) {
+        let inputCh = new Channel<I>(capacity);
+
+        // Readable side: reads from inputCh, applies transform, pushes output
+        this._readable = new ReadableStream<O>((ctrl: ReadableController<O>): void => {
+            let tc = new TransformController<O>(ctrl);
+            let val = inputCh.tryReceive();
+            if (val == null && !inputCh.isClosed()) {
+                val = inputCh.receive();
+            }
+            while (val != null) {
+                transformer(val, tc);
+                val = inputCh.tryReceive();
+                if (val == null && !inputCh.isClosed()) {
+                    val = inputCh.receive();
+                }
+            }
+        }, capacity);
+
+        // Writable side: feeds inputCh
+        this._writable = new WritableStream<I>((wctrl: WritableController<I>): void => {
+            let val = wctrl.pull();
+            while (val != null) {
+                inputCh.send(val);
+                val = wctrl.pull();
+            }
+            inputCh.close();
+        }, capacity);
+    }
+
+    getReadable(): ReadableStream<O> {
+        return this._readable;
+    }
+
+    getWritable(): WritableStream<I> {
+        return this._writable;
+    }
+}
+
+export { ReadableStream, WritableStream, TransformStream, ReadableController, WritableController, TransformController };

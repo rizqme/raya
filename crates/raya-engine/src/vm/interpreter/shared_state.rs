@@ -138,7 +138,7 @@ impl SharedVmState {
     pub fn register_classes(&self, module: &Module) {
         let mut classes = self.classes.write();
         for (i, class_def) in module.classes.iter().enumerate() {
-            let class = if let Some(parent_id) = class_def.parent_id {
+            let mut class = if let Some(parent_id) = class_def.parent_id {
                 crate::vm::object::Class::with_parent(
                     i,
                     class_def.name.clone(),
@@ -148,6 +148,12 @@ impl SharedVmState {
             } else {
                 crate::vm::object::Class::new(i, class_def.name.clone(), class_def.field_count)
             };
+
+            // Populate vtable from method definitions
+            for method in &class_def.methods {
+                class.add_method(method.function_id);
+            }
+
             classes.register_class(class);
         }
     }
@@ -1718,6 +1724,38 @@ impl<'a> TaskExecutor<'a> {
                     if cond.is_truthy() {
                         ip = (ip as isize + offset as isize) as usize;
                     }
+                }
+                Opcode::SpawnClosure => {
+                    let arg_count = Self::read_u16(code, &mut ip)? as usize;
+
+                    let closure_val = call_stack.pop()?;
+                    if !closure_val.is_ptr() {
+                        return Err(VmError::TypeError("Expected closure".to_string()));
+                    }
+
+                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(call_stack.pop()?);
+                    }
+
+                    let mut task_args = closure.captures.clone();
+                    task_args.extend(args);
+
+                    let new_task = Arc::new(Task::with_args(
+                        closure.func_id(),
+                        self.task.module().clone(),
+                        Some(self.task.id()),
+                        task_args,
+                    ));
+
+                    let task_id = new_task.id();
+                    self.state.tasks.write().insert(task_id, new_task.clone());
+                    self.state.injector.push(new_task);
+
+                    call_stack.push(Value::u64(task_id.as_u64()))?;
                 }
                 _ => {
                     return Err(VmError::RuntimeError(format!(

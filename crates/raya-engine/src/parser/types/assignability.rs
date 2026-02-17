@@ -50,6 +50,12 @@ impl<'a> AssignabilityContext<'a> {
         };
 
         match (source_ty, target_ty) {
+            // TypeVar (unresolved generic) is compatible with any type
+            // Raya uses monomorphization, so generics are resolved at compile time.
+            // The checker runs before monomorphization and shouldn't reject
+            // assignments involving unresolved type parameters.
+            (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+
             // number ~> string
             (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => true,
 

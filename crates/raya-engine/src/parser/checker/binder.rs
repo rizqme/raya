@@ -679,10 +679,21 @@ impl<'a> Binder<'a> {
 
     /// Bind a module (entry point)
     ///
-    /// Walks all top-level statements and builds the symbol table.
+    /// Uses a two-pass approach like TypeScript:
+    /// 1. Pre-pass: register all top-level class/function names as placeholder symbols
+    ///    so forward references between classes work (e.g., ReadableStream referencing WritableStream)
+    /// 2. Main pass: full binding with type resolution
     pub fn bind_module(mut self, module: &Module) -> Result<SymbolTable, Vec<BindError>> {
         let mut errors = Vec::new();
 
+        // Pre-pass: collect all top-level declarations for forward references
+        for stmt in &module.statements {
+            if let Err(err) = self.prepass_stmt(stmt) {
+                errors.push(err);
+            }
+        }
+
+        // Main pass: full binding
         for stmt in &module.statements {
             if let Err(err) = self.bind_stmt(stmt) {
                 errors.push(err);
@@ -694,6 +705,100 @@ impl<'a> Binder<'a> {
         } else {
             Err(errors)
         }
+    }
+
+    /// Pre-pass: register top-level class and function names as placeholder symbols.
+    /// This enables forward references between declarations.
+    fn prepass_stmt(&mut self, stmt: &Statement) -> Result<(), BindError> {
+        match stmt {
+            Statement::ClassDecl(class) => self.prepass_class(class),
+            Statement::FunctionDecl(func) => self.prepass_function(func),
+            Statement::ExportDecl(export) => {
+                match export {
+                    ExportDecl::Declaration(inner_stmt) => self.prepass_stmt(inner_stmt),
+                    _ => Ok(()),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Pre-pass: register a class name with a placeholder type
+    fn prepass_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
+        let class_name = self.resolve(class.name.name);
+
+        // Skip if already defined (e.g., from builtin signatures)
+        if self.symbols.resolve(&class_name).is_some() {
+            return Ok(());
+        }
+
+        let type_param_names: Vec<String> = class.type_params
+            .as_ref()
+            .map(|params| params.iter().map(|p| self.resolve(p.name.name)).collect())
+            .unwrap_or_default();
+
+        let placeholder = ClassType {
+            name: class_name.clone(),
+            type_params: type_param_names,
+            properties: vec![],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+        };
+        let class_ty = self.type_ctx.intern(Type::Class(placeholder));
+
+        let symbol = Symbol {
+            name: class_name.clone(),
+            kind: SymbolKind::Class,
+            ty: class_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: class.name.span,
+        };
+
+        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+            name: err.name,
+            original: err.original,
+            duplicate: err.duplicate,
+        })
+    }
+
+    /// Pre-pass: register a function name with a placeholder type
+    fn prepass_function(&mut self, func: &FunctionDecl) -> Result<(), BindError> {
+        let func_name = self.resolve(func.name.name);
+
+        // Skip if already defined
+        if self.symbols.resolve(&func_name).is_some() {
+            return Ok(());
+        }
+
+        let unknown_ty = self.type_ctx.unknown_type();
+        let symbol = Symbol {
+            name: func_name.clone(),
+            kind: SymbolKind::Function,
+            ty: unknown_ty,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: func.is_async,
+                is_readonly: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: func.name.span,
+        };
+
+        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+            name: err.name,
+            original: err.original,
+            duplicate: err.duplicate,
+        })
     }
 
     /// Bind a statement
@@ -902,25 +1007,30 @@ impl<'a> Binder<'a> {
         let func_ty = self.type_ctx.function_type(param_types.clone(), return_ty, func.is_async);
 
         // Define function symbol in parent scope (so it can be called recursively)
-        let symbol = Symbol {
-            name: self.resolve(func.name.name),
-            kind: SymbolKind::Function,
-            ty: func_ty,
-            flags: SymbolFlags {
-                is_exported: false,
-                is_const: true,
-                is_async: func.is_async,
-                is_readonly: false,
-            },
-            scope_id: parent_scope_id,  // Define in parent scope
-            span: func.name.span,
-        };
-
-        self.symbols.define_in_scope(parent_scope_id, symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })?;
+        // If pre-registered by the pre-pass, update the type instead of re-defining
+        let func_name = self.resolve(func.name.name);
+        if self.symbols.resolve(&func_name).is_some() {
+            self.symbols.update_type(parent_scope_id, &func_name, func_ty);
+        } else {
+            let symbol = Symbol {
+                name: func_name,
+                kind: SymbolKind::Function,
+                ty: func_ty,
+                flags: SymbolFlags {
+                    is_exported: false,
+                    is_const: true,
+                    is_async: func.is_async,
+                    is_readonly: false,
+                },
+                scope_id: parent_scope_id,
+                span: func.name.span,
+            };
+            self.symbols.define_in_scope(parent_scope_id, symbol).map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })?;
+        }
 
         // Bind parameters in the function scope
         // Note: param types are already resolved above, we use param_types[i]
@@ -973,8 +1083,7 @@ impl<'a> Binder<'a> {
             .map(|params| params.iter().map(|p| self.resolve(p.name.name)).collect())
             .unwrap_or_default();
 
-        // First, create a placeholder class type and define the symbol
-        // This allows the class name to be used as a return type in methods
+        // Create a placeholder class type for self-references in methods
         let placeholder_type = ClassType {
             name: class_name.clone(),
             type_params: type_param_names.clone(),
@@ -987,28 +1096,33 @@ impl<'a> Binder<'a> {
         };
         let class_ty = self.type_ctx.intern(Type::Class(placeholder_type));
 
-        let symbol = Symbol {
-            name: class_name.clone(),
-            kind: SymbolKind::Class,
-            ty: class_ty,
-            flags: SymbolFlags {
-                is_exported: false,
-                is_const: true,
-                is_async: false,
-                is_readonly: false,
-            },
-            scope_id: self.symbols.current_scope_id(),
-            span: class.name.span,
-        };
-
         // Store the scope ID where the class is defined (for later update)
         let class_definition_scope = self.symbols.current_scope_id();
 
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })?;
+        // If the class was already registered by the pre-pass, update its type;
+        // otherwise define it now (handles non-top-level classes)
+        if self.symbols.resolve(&class_name).is_some() {
+            self.symbols.update_type(class_definition_scope, &class_name, class_ty);
+        } else {
+            let symbol = Symbol {
+                name: class_name.clone(),
+                kind: SymbolKind::Class,
+                ty: class_ty,
+                flags: SymbolFlags {
+                    is_exported: false,
+                    is_const: true,
+                    is_async: false,
+                    is_readonly: false,
+                },
+                scope_id: class_definition_scope,
+                span: class.name.span,
+            };
+            self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })?;
+        }
 
         // Enter class scope for type parameters
         self.symbols.push_scope(ScopeKind::Class);

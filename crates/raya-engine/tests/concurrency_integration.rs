@@ -4,7 +4,7 @@
 
 use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::Vm;
+use raya_engine::vm::interpreter::Vm;
 
 /// Create a module with a simple task function that returns a value
 fn create_module_with_task(task_result: i32) -> Module {

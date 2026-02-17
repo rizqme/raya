@@ -5,7 +5,7 @@
 
 use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::{SafepointCoordinator, StopReason, Vm};
+use raya_engine::vm::interpreter::{SafepointCoordinator, StopReason, Vm};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::Duration;

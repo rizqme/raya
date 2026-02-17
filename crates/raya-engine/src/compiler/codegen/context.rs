@@ -189,13 +189,23 @@ impl IrCodeGenerator {
         // Always generate reflection data for runtime introspection
         let reflection_data = Some(self.generate_reflection_data(module));
 
-        // Generate class definitions
+        // Generate class definitions with method vtable entries
         for class in module.classes() {
+            let methods: Vec<crate::compiler::bytecode::Method> = class.methods.iter()
+                .filter_map(|&method_id| {
+                    module.get_function(method_id).map(|func| {
+                        crate::compiler::bytecode::Method {
+                            name: func.name.clone(),
+                            function_id: method_id.as_u32() as usize,
+                        }
+                    })
+                })
+                .collect();
             let class_def = crate::compiler::bytecode::ClassDef {
                 name: class.name.clone(),
                 field_count: class.field_count(),
                 parent_id: class.parent.map(|id| id.as_u32()),
-                methods: Vec::new(), // TODO: Add method mapping when methods are fully implemented
+                methods,
             };
             self.module_builder.add_class(class_def);
         }
@@ -286,11 +296,27 @@ impl IrCodeGenerator {
             ctx.register_slots.insert(param.id.as_u32(), i as u16);
         }
 
-        // First pass: record block positions (for forward jumps)
-        // We do a quick estimate based on block ordering
-        // Actual positions will be recorded during emission
+        // Scan IR to find all StoreLocal/LoadLocal with explicit indices and
+        // bump next_slot past them to prevent temp registers from overlapping
+        // named local slots.
+        let mut max_fixed_index: u16 = param_count as u16;
+        for block in func.blocks() {
+            for instr in &block.instructions {
+                match instr {
+                    IrInstr::StoreLocal { index, .. } | IrInstr::LoadLocal { index, .. } => {
+                        if *index >= max_fixed_index {
+                            max_fixed_index = *index + 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if max_fixed_index > ctx.next_slot {
+            ctx.next_slot = max_fixed_index;
+        }
 
-        // Second pass: emit bytecode for each block
+        // Emit bytecode for each block
         for block in func.blocks() {
             ctx.record_block_position(block.id);
             self.generate_block(&mut ctx, block)?;

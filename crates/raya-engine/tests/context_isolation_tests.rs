@@ -18,7 +18,7 @@
 
 use raya_engine::vm::scheduler::TaskId;
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::{
+use raya_engine::vm::interpreter::{
     CapabilityRegistry, ContextRegistry, HttpCapability, LogCapability, ResourceLimits, VmContext,
     VmOptions,
 };
@@ -300,7 +300,7 @@ fn test_parent_child_relationship() {
 
 #[test]
 fn test_marshalling_across_contexts() {
-    use raya_engine::vm::vm::marshal;
+    use raya_engine::vm::interpreter::marshal;
 
     // Create two contexts
     let ctx1 = VmContext::new();
@@ -313,7 +313,7 @@ fn test_marshalling_across_contexts() {
     let marshalled = marshal(&value, &ctx1).unwrap();
 
     // Unmarshal in context 2
-    let unmarshalled = raya_engine::vm::vm::unmarshal(marshalled, &mut ctx2).unwrap();
+    let unmarshalled = raya_engine::vm::interpreter::unmarshal(marshalled, &mut ctx2).unwrap();
 
     // Verify value is preserved
     assert_eq!(unmarshalled, Value::i32(42));

@@ -4,11 +4,11 @@
 //! Unlike the synchronous `Vm`, this interpreter returns control to the scheduler
 //! when the task needs to wait for something.
 
-use super::execution::{ExecutionResult, OpcodeResult};
+use super::execution::{ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 use super::{ClassRegistry, SafepointCoordinator};
 use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GarbageCollector;
-use crate::compiler::native_id::{CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_CAPACITY};
+use crate::compiler::native_id::{CHANNEL_NEW, CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND, CHANNEL_TRY_RECEIVE, CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_CAPACITY};
 use crate::vm::builtin::{set, regexp, buffer};
 use crate::vm::builtins::handlers::{
     ArrayHandlerContext, RegExpHandlerContext, ReflectHandlerContext, StringHandlerContext,
@@ -17,7 +17,7 @@ use crate::vm::builtins::handlers::{
     call_reflect_method as reflect_handler, call_string_method as string_handler,
     call_runtime_method as runtime_handler,
 };
-use crate::vm::object::{Array, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString, RegExpObject, SetObject};
+use crate::vm::object::{Array, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString, RegExpObject, SendResult, ReceiveResult, SetObject};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::{ExceptionHandler, SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -112,33 +112,47 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    /// Wake a suspended task by setting its resume value and pushing it to the scheduler.
+    fn wake_task(&self, task_id: u64, resume_value: Value) {
+        let tasks = self.tasks.read();
+        let target_id = TaskId::from_u64(task_id);
+        if let Some(target_task) = tasks.get(&target_id) {
+            target_task.set_resume_value(resume_value);
+            target_task.set_state(TaskState::Resumed);
+            target_task.clear_suspend_reason();
+            self.injector.push(target_task.clone());
+        }
+    }
+
     /// Execute a task until completion, suspension, or failure
     ///
-    /// This is the main entry point for running a task. The task's state
-    /// (stack, IP, exception handlers, etc.) is stored in the Task itself.
+    /// This is the main entry point for running a task. Uses frame-based execution:
+    /// function calls push a CallFrame and continue in the same loop. This allows
+    /// suspension (channel operations, await, sleep) to work at any call depth.
     pub fn run(&mut self, task: &Arc<Task>) -> ExecutionResult {
-        // Get the module and function
         let module = task.module();
-        let function_id = task.function_id();
 
-        let function = match module.functions.get(function_id) {
+        // Restore execution state (supports suspend/resume)
+        let mut current_func_id = task.current_func_id();
+        let mut frames: Vec<ExecutionFrame> = task.take_execution_frames();
+
+        let function = match module.functions.get(current_func_id) {
             Some(f) => f,
             None => {
                 return ExecutionResult::Failed(VmError::RuntimeError(format!(
                     "Function {} not found",
-                    function_id
+                    current_func_id
                 )));
             }
         };
 
-        // Get task's execution state
         let mut stack_guard = task.stack().lock().unwrap();
         let mut ip = task.ip();
-        let code = &function.code;
+        let mut code: &[u8] = &function.code;
+        let mut locals_base = task.current_locals_base();
 
         // Check if we're resuming from suspension
         if let Some(resume_value) = task.take_resume_value() {
-            // Push the resume value onto the stack
             if let Err(e) = stack_guard.push(resume_value) {
                 return ExecutionResult::Failed(e);
             }
@@ -146,13 +160,9 @@ impl<'a> Interpreter<'a> {
 
         // Check if there's a pending exception (e.g., from awaited task failure)
         if task.has_exception() {
-            // Handle the propagated exception
             match self.handle_exception(task, &mut stack_guard, &mut ip) {
-                Ok(()) => {
-                    // Exception was handled, continue execution from the handler
-                }
+                Ok(()) => {}
                 Err(()) => {
-                    // No handler found, propagate error
                     let exc = task.current_exception().unwrap_or_else(|| Value::null());
                     task.set_ip(ip);
                     drop(stack_guard);
@@ -165,18 +175,15 @@ impl<'a> Interpreter<'a> {
         }
 
         // Initialize the task if this is a fresh start
-        if ip == 0 && stack_guard.depth() == 0 {
-            // Push initial call frame for stack traces
-            task.push_call_frame(function_id);
+        if ip == 0 && stack_guard.depth() == 0 && frames.is_empty() {
+            task.push_call_frame(current_func_id);
 
-            // Allocate space for local variables
             for _ in 0..function.local_count {
                 if let Err(e) = stack_guard.push(Value::null()) {
                     return ExecutionResult::Failed(e);
                 }
             }
 
-            // Set initial arguments as the first N locals
             let initial_args = task.take_initial_args();
             for (i, arg) in initial_args.into_iter().enumerate() {
                 if i < function.local_count as usize {
@@ -187,7 +194,59 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        let locals_base = 0;
+        // Macro to save all frame state before leaving run()
+        macro_rules! save_frame_state {
+            () => {
+                task.set_ip(ip);
+                task.set_current_func_id(current_func_id);
+                task.set_current_locals_base(locals_base);
+                task.save_execution_frames(frames);
+            };
+        }
+
+        // Helper: handle return from current function (frame pop)
+        // Returns None if frame popped successfully (continue execution),
+        // or Some(ExecutionResult) if this was the top-level return.
+        macro_rules! handle_frame_return {
+            ($return_value:expr) => {{
+                let return_value = $return_value;
+                // Clean up current frame's locals and operand stack
+                while stack_guard.depth() > locals_base {
+                    let _ = stack_guard.pop();
+                }
+
+                if let Some(frame) = frames.pop() {
+                    task.pop_call_frame();
+                    if frame.is_closure {
+                        task.pop_closure();
+                    }
+
+                    // Restore caller's state
+                    current_func_id = frame.func_id;
+                    code = &module.functions[frame.func_id].code;
+                    ip = frame.ip;
+                    locals_base = frame.locals_base;
+
+                    // Push appropriate value onto caller's stack
+                    if !matches!(frame.return_action, ReturnAction::Discard) {
+                        let push_val = match frame.return_action {
+                            ReturnAction::PushReturnValue => return_value,
+                            ReturnAction::PushObject(obj) => obj,
+                            ReturnAction::Discard => unreachable!(),
+                        };
+                        match stack_guard.push(push_val) {
+                            Ok(()) => None,
+                            Err(e) => Some(ExecutionResult::Failed(e)),
+                        }
+                    } else {
+                        None // Discard return value (super() call)
+                    }
+                } else {
+                    // Top-level return - task is complete
+                    Some(ExecutionResult::Completed(return_value))
+                }
+            }};
+        }
 
         // Main execution loop
         loop {
@@ -197,32 +256,35 @@ impl<'a> Interpreter<'a> {
             // Check for preemption
             if task.is_preempt_requested() {
                 task.clear_preempt();
-                // Save state and yield
-                task.set_ip(ip);
+                save_frame_state!();
                 drop(stack_guard);
                 return ExecutionResult::Suspended(SuspendReason::Sleep {
-                    wake_at: Instant::now(), // Immediate reschedule
+                    wake_at: Instant::now(),
                 });
             }
 
             // Check for cancellation
             if task.is_cancelled() {
-                task.set_ip(ip);
+                save_frame_state!();
                 drop(stack_guard);
                 return ExecutionResult::Failed(VmError::RuntimeError(
                     "Task cancelled".to_string(),
                 ));
             }
 
-            // Bounds check
+            // Bounds check - implicit return at end of function
             if ip >= code.len() {
-                // Implicit return at end of function
-                let return_value = if stack_guard.depth() > function.local_count as usize {
+                let local_count = module.functions[current_func_id].local_count as usize;
+                let return_value = if stack_guard.depth() > locals_base + local_count {
                     stack_guard.pop().unwrap_or(Value::null())
                 } else {
                     Value::null()
                 };
-                return ExecutionResult::Completed(return_value);
+
+                if let Some(result) = handle_frame_return!(return_value) {
+                    return result;
+                }
+                continue;
             }
 
             // Fetch and decode opcode
@@ -245,23 +307,83 @@ impl<'a> Interpreter<'a> {
                 module,
                 opcode,
                 locals_base,
+                frames.len(),
             ) {
                 OpcodeResult::Continue => {
                     // Continue to next instruction
                 }
                 OpcodeResult::Return(value) => {
-                    return ExecutionResult::Completed(value);
+                    if let Some(result) = handle_frame_return!(value) {
+                        return result;
+                    }
                 }
                 OpcodeResult::Suspend(reason) => {
-                    // Save state and return
-                    task.set_ip(ip);
+                    save_frame_state!();
                     drop(stack_guard);
                     return ExecutionResult::Suspended(reason);
+                }
+                OpcodeResult::PushFrame {
+                    func_id,
+                    arg_count,
+                    is_closure,
+                    closure_val,
+                    return_action,
+                } => {
+                    // Validate function index
+                    let new_func = match module.functions.get(func_id) {
+                        Some(f) => f,
+                        None => {
+                            return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                                "Invalid function index: {}",
+                                func_id
+                            )));
+                        }
+                    };
+                    let new_local_count = new_func.local_count as usize;
+
+                    // Save caller's frame
+                    frames.push(ExecutionFrame {
+                        func_id: current_func_id,
+                        ip,
+                        locals_base,
+                        is_closure,
+                        return_action,
+                    });
+
+                    // Push call frame for stack traces
+                    task.push_call_frame(func_id);
+
+                    // Push closure onto closure stack if needed
+                    if let Some(cv) = closure_val {
+                        task.push_closure(cv);
+                    }
+
+                    // Set up callee's frame on the same stack
+                    // Args are already on the stack from the caller
+                    if arg_count > new_local_count {
+                        // More args than locals - discard extras
+                        for _ in 0..(arg_count - new_local_count) {
+                            let _ = stack_guard.pop();
+                        }
+                        locals_base = stack_guard.depth() - new_local_count;
+                    } else {
+                        locals_base = stack_guard.depth() - arg_count;
+                        // Allocate remaining locals (initialized to null)
+                        for _ in 0..(new_local_count - arg_count) {
+                            if let Err(e) = stack_guard.push(Value::null()) {
+                                return ExecutionResult::Failed(e);
+                            }
+                        }
+                    }
+
+                    // Switch to callee's code
+                    current_func_id = func_id;
+                    code = &module.functions[func_id].code;
+                    ip = 0;
                 }
                 OpcodeResult::Error(e) => {
                     // Set exception on task if not already set
                     if !task.has_exception() {
-                        // Convert VmError to exception value
                         let error_msg = e.to_string();
                         let raya_string = RayaString::new(error_msg);
                         let gc_ptr = self.gc.lock().allocate(raya_string);
@@ -270,17 +392,68 @@ impl<'a> Interpreter<'a> {
                         task.set_exception(exc_val);
                     }
 
-                    // Try to handle exception
-                    match self.handle_exception(task, &mut stack_guard, &mut ip) {
-                        Ok(()) => {
-                            // Exception was handled, continue execution
+                    let exception = task.current_exception().unwrap_or_else(|| Value::null());
+
+                    // Frame-aware exception handling: search for handlers,
+                    // unwinding frames as needed to find a catch/finally block.
+                    let mut handled = false;
+                    'exception_search: loop {
+                        // Process handlers that belong to the current frame depth
+                        while let Some(handler) = task.peek_exception_handler() {
+                            if handler.frame_count != frames.len() {
+                                // This handler belongs to a different frame, stop
+                                break;
+                            }
+
+                            // Unwind stack to handler's saved state
+                            while stack_guard.depth() > handler.stack_size {
+                                let _ = stack_guard.pop();
+                            }
+
+                            if handler.catch_offset != -1 {
+                                task.pop_exception_handler();
+                                task.set_caught_exception(exception);
+                                task.clear_exception();
+                                let _ = stack_guard.push(exception);
+                                ip = handler.catch_offset as usize;
+                                handled = true;
+                                break 'exception_search;
+                            }
+
+                            if handler.finally_offset != -1 {
+                                task.pop_exception_handler();
+                                ip = handler.finally_offset as usize;
+                                handled = true;
+                                break 'exception_search;
+                            }
+
+                            // No catch or finally, pop and continue
+                            task.pop_exception_handler();
                         }
-                        Err(()) => {
-                            // No handler found, propagate error
-                            task.set_ip(ip);
-                            drop(stack_guard);
-                            return ExecutionResult::Failed(e);
+
+                        // No handler in current frame — pop frame and try parent
+                        if let Some(frame) = frames.pop() {
+                            task.pop_call_frame();
+                            if frame.is_closure {
+                                task.pop_closure();
+                            }
+                            // Restore caller's context — don't clean stack here,
+                            // the exception handler's stack_size will handle unwinding
+                            current_func_id = frame.func_id;
+                            code = &module.functions[frame.func_id].code;
+                            ip = frame.ip;
+                            locals_base = frame.locals_base;
+                            // Continue searching in parent frame
+                        } else {
+                            // No more frames — unhandled exception
+                            break;
                         }
+                    }
+
+                    if !handled {
+                        task.set_ip(ip);
+                        drop(stack_guard);
+                        return ExecutionResult::Failed(e);
                     }
                 }
             }
@@ -349,6 +522,7 @@ impl<'a> Interpreter<'a> {
         module: &Module,
         opcode: Opcode,
         locals_base: usize,
+        frame_depth: usize,
     ) -> OpcodeResult {
         match opcode {
             // =========================================================
@@ -1434,7 +1608,7 @@ impl<'a> Interpreter<'a> {
                     catch_offset: catch_abs,
                     finally_offset: finally_abs,
                     stack_size: stack.depth(),
-                    frame_count: 0,
+                    frame_count: frame_depth,
                     mutex_count: task.held_mutex_count(),
                 };
                 task.push_exception_handler(handler);
@@ -1540,34 +1714,53 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-
                 if func_index == 0xFFFFFFFF {
-                    // Closure call
-                    match self.call_closure(task, stack, arg_count, module, locals_base) {
-                        Ok(result) => {
-                            if let Err(e) = stack.push(result) {
-                                return OpcodeResult::Error(e);
-                            }
+                    // Closure call - extract closure from under the args
+                    // Stack layout: [..., closure, arg0, arg1, ..., argN]
+                    let mut args_tmp = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        match stack.pop() {
+                            Ok(v) => args_tmp.push(v),
+                            Err(e) => return OpcodeResult::Error(e),
                         }
-                        Err(e) => {
+                    }
+                    let closure_val = match stack.pop() {
+                        Ok(v) => v,
+                        Err(e) => return OpcodeResult::Error(e),
+                    };
+                    // Push args back (they become the callee's locals)
+                    for arg in args_tmp.into_iter().rev() {
+                        if let Err(e) = stack.push(arg) {
                             return OpcodeResult::Error(e);
                         }
+                    }
+
+                    if !closure_val.is_ptr() {
+                        return OpcodeResult::Error(VmError::TypeError(
+                            "Expected closure".to_string(),
+                        ));
+                    }
+                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+                    let closure_func_id = closure.func_id();
+
+                    OpcodeResult::PushFrame {
+                        func_id: closure_func_id,
+                        arg_count,
+                        is_closure: true,
+                        closure_val: Some(closure_val),
+                        return_action: ReturnAction::PushReturnValue,
                     }
                 } else {
-                    // Regular function call
-                    match self.call_function(task, stack, func_index, arg_count, module, locals_base)
-                    {
-                        Ok(result) => {
-                            if let Err(e) = stack.push(result) {
-                                return OpcodeResult::Error(e);
-                            }
-                        }
-                        Err(e) => {
-                            return OpcodeResult::Error(e);
-                        }
+                    // Regular function call - args are already on the stack
+                    OpcodeResult::PushFrame {
+                        func_id: func_index,
+                        arg_count,
+                        is_closure: false,
+                        closure_val: None,
+                        return_action: ReturnAction::PushReturnValue,
                     }
                 }
-                OpcodeResult::Continue
             }
 
             // =========================================================
@@ -1629,8 +1822,8 @@ impl<'a> Interpreter<'a> {
                     Some(v) => v,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Field offset {} out of bounds",
-                            field_offset
+                            "Field offset {} out of bounds (class_id={})",
+                            field_offset, obj.class_id
                         )));
                     }
                 };
@@ -2458,16 +2651,18 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                // Prepend captures to args
-                let mut task_args = closure.captures.clone();
-                task_args.extend(args);
-
+                // Don't prepend captures to args - the closure body uses LoadCaptured
+                // which reads from the Closure object via task.current_closure()
                 let new_task = Arc::new(Task::with_args(
                     closure.func_id,
                     task.module().clone(),
                     Some(task.id()),
-                    task_args,
+                    args,
                 ));
+
+                // Push the closure onto the spawned task's closure stack
+                // so LoadCaptured can find it when the task starts executing
+                new_task.push_closure(closure_val);
 
                 let task_id = new_task.id();
                 self.tasks.write().insert(task_id, new_task.clone());
@@ -2803,7 +2998,7 @@ impl<'a> Interpreter<'a> {
             // Native Calls and Builtins
             // =========================================================
             Opcode::NativeCall => {
-                use crate::vm::builtin::{buffer, map, set, date, regexp};
+                use crate::vm::builtin::{buffer, channel, map, mutex, set, date, regexp};
 
                 let native_id = match Self::read_u16(code, ip) {
                     Ok(v) => v,
@@ -2813,7 +3008,6 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-
 
                 // Pop arguments
                 let mut args = Vec::with_capacity(arg_count);
@@ -2827,53 +3021,54 @@ impl<'a> Interpreter<'a> {
 
                 // Execute native call - handle channel operations specially for suspension
                 match native_id {
+                    CHANNEL_NEW => {
+                        // Create a new channel with given capacity
+                        let capacity = args[0].as_i32().unwrap_or(0) as usize;
+                        let ch = ChannelObject::new(capacity);
+                        let gc_ptr = self.gc.lock().allocate(ch);
+                        let handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(handle)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
                     CHANNEL_SEND => {
-                        // args: [channel, value]
+                        // args: [channel_handle, value]
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "CHANNEL_SEND requires 2 arguments".to_string()
                             ));
                         }
-                        let channel_val = args[0];
+                        let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
-
-                        if !channel_val.is_ptr() {
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
+                        let channel = unsafe { &*ch_ptr };
                         let task_id_u64 = task.id().as_u64();
 
                         match channel.send_or_suspend(value, task_id_u64) {
-                            Ok(None) => {
-                                // Send succeeded, push null result
+                            Ok(SendResult::Sent) => {
                                 if let Err(e) = stack.push(Value::null()) {
                                     return OpcodeResult::Error(e);
                                 }
                                 OpcodeResult::Continue
                             }
-                            Ok(Some(wake_id)) if wake_id != task_id_u64 => {
-                                // Send succeeded and we need to wake a receiver
-                                // Push null result first
+                            Ok(SendResult::HandoffToReceiver { receiver_id, value: val }) => {
+                                // Wake the waiting receiver with the value
+                                self.wake_task(receiver_id, val);
                                 if let Err(e) = stack.push(Value::null()) {
                                     return OpcodeResult::Error(e);
                                 }
-                                // TODO: Wake the receiver task
                                 OpcodeResult::Continue
                             }
-                            Ok(Some(_)) => {
-                                // Channel is full, need to suspend
-                                let channel_id = channel_ptr.unwrap().as_ptr() as u64;
+                            Ok(SendResult::SenderMustSuspend) => {
                                 return OpcodeResult::Suspend(SuspendReason::ChannelSend {
-                                    channel_id,
+                                    channel_id: handle,
                                     value,
                                 });
                             }
@@ -2886,75 +3081,67 @@ impl<'a> Interpreter<'a> {
                     }
 
                     CHANNEL_RECEIVE => {
-                        // args: [channel]
+                        // args: [channel_handle]
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "CHANNEL_RECEIVE requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
+                        let channel = unsafe { &*ch_ptr };
                         let task_id_u64 = task.id().as_u64();
 
                         match channel.receive_or_suspend(task_id_u64) {
-                            Ok(Some(value)) => {
-                                // Receive succeeded
+                            Ok(ReceiveResult::Received(value)) => {
                                 if let Err(e) = stack.push(value) {
                                     return OpcodeResult::Error(e);
                                 }
                                 OpcodeResult::Continue
                             }
-                            Ok(None) => {
-                                // Channel is empty, need to suspend
-                                let channel_id = channel_ptr.unwrap().as_ptr() as u64;
+                            Ok(ReceiveResult::ReceivedAndWakeSender { value, sender_id }) => {
+                                // Wake the sender that was blocked
+                                self.wake_task(sender_id, Value::null());
+                                if let Err(e) = stack.push(value) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                OpcodeResult::Continue
+                            }
+                            Ok(ReceiveResult::ReceiverMustSuspend) => {
                                 return OpcodeResult::Suspend(SuspendReason::ChannelReceive {
-                                    channel_id,
+                                    channel_id: handle,
                                 });
                             }
                             Err(_) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(
-                                    "Channel closed".to_string()
-                                ));
+                                // Channel closed — return null
+                                if let Err(e) = stack.push(Value::null()) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                OpcodeResult::Continue
                             }
                         }
                     }
 
                     CHANNEL_TRY_SEND => {
-                        // Non-blocking send - returns boolean
                         if args.len() != 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "CHANNEL_TRY_SEND requires 2 arguments".to_string()
                             ));
                         }
-                        let channel_val = args[0];
+                        let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
-
-                        if !channel_val.is_ptr() {
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
+                        let channel = unsafe { &*ch_ptr };
                         let result = channel.try_send(value);
                         if let Err(e) = stack.push(Value::bool(result)) {
                             return OpcodeResult::Error(e);
@@ -2963,27 +3150,19 @@ impl<'a> Interpreter<'a> {
                     }
 
                     CHANNEL_TRY_RECEIVE => {
-                        // Non-blocking receive - returns value or null
                         if args.len() != 1 {
                             return OpcodeResult::Error(VmError::RuntimeError(
                                 "CHANNEL_TRY_RECEIVE requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
+                        let channel = unsafe { &*ch_ptr };
                         let result = channel.try_receive().unwrap_or(Value::null());
                         if let Err(e) = stack.push(result) {
                             return OpcodeResult::Error(e);
@@ -2997,22 +3176,23 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_CLOSE requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
+                        let channel = unsafe { &*ch_ptr };
+                        let (waiting_receivers, waiting_senders) = channel.close();
+                        // Wake all waiting receivers with null (channel closed)
+                        for receiver_id in waiting_receivers {
+                            self.wake_task(receiver_id, Value::null());
                         }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
-                        channel.close();
+                        // Wake all waiting senders with null (they'll see closed error on retry)
+                        for sender_id in waiting_senders {
+                            self.wake_task(sender_id, Value::null());
+                        }
                         if let Err(e) = stack.push(Value::null()) {
                             return OpcodeResult::Error(e);
                         }
@@ -3025,23 +3205,15 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_IS_CLOSED requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
-                        let result = channel.is_closed();
-                        if let Err(e) = stack.push(Value::bool(result)) {
+                        let channel = unsafe { &*ch_ptr };
+                        if let Err(e) = stack.push(Value::bool(channel.is_closed())) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -3053,23 +3225,15 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_LENGTH requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
-                        let result = channel.length() as i32;
-                        if let Err(e) = stack.push(Value::i32(result)) {
+                        let channel = unsafe { &*ch_ptr };
+                        if let Err(e) = stack.push(Value::i32(channel.length() as i32)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -3081,23 +3245,15 @@ impl<'a> Interpreter<'a> {
                                 "CHANNEL_CAPACITY requires 1 argument".to_string()
                             ));
                         }
-                        let channel_val = args[0];
-
-                        if !channel_val.is_ptr() {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let ch_ptr = handle as *const ChannelObject;
+                        if ch_ptr.is_null() {
                             return OpcodeResult::Error(VmError::TypeError(
                                 "Expected channel object".to_string()
                             ));
                         }
-
-                        let channel_ptr = unsafe { channel_val.as_ptr::<ChannelObject>() };
-                        if channel_ptr.is_none() {
-                            return OpcodeResult::Error(VmError::TypeError(
-                                "Expected channel object".to_string()
-                            ));
-                        }
-                        let channel = unsafe { &*channel_ptr.unwrap().as_ptr() };
-                        let result = channel.capacity() as i32;
-                        if let Err(e) = stack.push(Value::i32(result)) {
+                        let channel = unsafe { &*ch_ptr };
+                        if let Err(e) = stack.push(Value::i32(channel.capacity() as i32)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
@@ -3154,6 +3310,106 @@ impl<'a> Interpreter<'a> {
                         }
                         if let Err(e) = stack.push(Value::null()) {
                             return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::GET_INT32 as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let buf_ptr = handle as *const Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &*buf_ptr };
+                        let value = buf.get_int32(index).unwrap_or(0);
+                        if let Err(e) = stack.push(Value::i32(value)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::SET_INT32 as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let value = args[2].as_i32().unwrap_or(0);
+                        let buf_ptr = handle as *mut Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &mut *buf_ptr };
+                        if let Err(msg) = buf.set_int32(index, value) {
+                            return OpcodeResult::Error(VmError::RuntimeError(msg));
+                        }
+                        if let Err(e) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::GET_FLOAT64 as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let buf_ptr = handle as *const Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &*buf_ptr };
+                        let value = buf.get_float64(index).unwrap_or(0.0);
+                        if let Err(e) = stack.push(Value::f64(value)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::SET_FLOAT64 as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let index = args[1].as_i32().unwrap_or(0) as usize;
+                        let value = args[2].as_f64().unwrap_or(0.0);
+                        let buf_ptr = handle as *mut Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &mut *buf_ptr };
+                        if let Err(msg) = buf.set_float64(index, value) {
+                            return OpcodeResult::Error(VmError::RuntimeError(msg));
+                        }
+                        if let Err(e) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    // Mutex native calls
+                    id if id == mutex::TRY_LOCK as u16 => {
+                        let mutex_id = MutexId::from_u64(args[0].as_i64().unwrap_or(0) as u64);
+                        if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                            match mutex.try_lock(task.id()) {
+                                Ok(()) => {
+                                    task.add_held_mutex(mutex_id);
+                                    if let Err(e) = stack.push(Value::bool(true)) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                }
+                                Err(_) => {
+                                    if let Err(e) = stack.push(Value::bool(false)) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                }
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Mutex {:?} not found", mutex_id
+                            )));
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == mutex::IS_LOCKED as u16 => {
+                        let mutex_id = MutexId::from_u64(args[0].as_i64().unwrap_or(0) as u64);
+                        if let Some(mutex) = self.mutex_registry.get(mutex_id) {
+                            let is_locked = mutex.is_locked();
+                            if let Err(e) = stack.push(Value::bool(is_locked)) {
+                                return OpcodeResult::Error(e);
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Mutex {:?} not found", mutex_id
+                            )));
                         }
                         OpcodeResult::Continue
                     }
@@ -4545,23 +4801,21 @@ impl<'a> Interpreter<'a> {
                     Some(id) => id,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Method index {} not found in vtable",
-                            method_index
+                            "Method index {} not found in vtable for class '{}' (id={}, vtable_size={})",
+                            method_index, class.name, obj.class_id, class.vtable.method_count()
                         )));
                     }
                 };
                 drop(classes);
 
-                // Execute the method
-                match self.call_function(task, stack, function_id, arg_count + 1, module, locals_base) {
-                    Ok(result) => {
-                        if let Err(e) = stack.push(result) {
-                            return OpcodeResult::Error(e);
-                        }
-                    }
-                    Err(e) => return OpcodeResult::Error(e),
+                // Frame-based method call: receiver + args are already on the stack
+                OpcodeResult::PushFrame {
+                    func_id: function_id,
+                    arg_count: arg_count + 1, // +1 for receiver (this)
+                    is_closure: false,
+                    closure_val: None,
+                    return_action: ReturnAction::PushReturnValue,
                 }
-                OpcodeResult::Continue
             }
 
             Opcode::CallConstructor => {
@@ -4575,7 +4829,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                // Pop arguments (they're pushed in reverse order)
+                // Pop arguments temporarily
                 let mut args = Vec::with_capacity(arg_count);
                 for _ in 0..arg_count {
                     match stack.pop() {
@@ -4607,7 +4861,7 @@ impl<'a> Interpreter<'a> {
                     Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
                 };
 
-                // If no constructor, just return the object
+                // If no constructor, just push the object
                 let constructor_id = match constructor_id {
                     Some(id) => id,
                     None => {
@@ -4618,7 +4872,7 @@ impl<'a> Interpreter<'a> {
                     }
                 };
 
-                // Push object (as receiver) and args for constructor call
+                // Push object (receiver) and args back onto stack for frame-based call
                 if let Err(e) = stack.push(obj_val) {
                     return OpcodeResult::Error(e);
                 }
@@ -4628,17 +4882,14 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
-                // Execute constructor
-                match self.call_function(task, stack, constructor_id, arg_count + 1, module, locals_base) {
-                    Ok(_) => {
-                        // Constructor doesn't return a value, push the object
-                        if let Err(e) = stack.push(obj_val) {
-                            return OpcodeResult::Error(e);
-                        }
-                    }
-                    Err(e) => return OpcodeResult::Error(e),
+                // Frame-based constructor call: push obj on return (not constructor's return value)
+                OpcodeResult::PushFrame {
+                    func_id: constructor_id,
+                    arg_count: arg_count + 1, // +1 for receiver (this)
+                    is_closure: false,
+                    closure_val: None,
+                    return_action: ReturnAction::PushObject(obj_val),
                 }
-                OpcodeResult::Continue
             }
 
             Opcode::CallSuper => {
@@ -4690,11 +4941,14 @@ impl<'a> Interpreter<'a> {
                 };
                 drop(classes);
 
-                match self.call_function(task, stack, constructor_id, arg_count + 1, module, locals_base) {
-                    Ok(_) => {}
-                    Err(e) => return OpcodeResult::Error(e),
+                // Frame-based super call: discard return value (constructor void)
+                OpcodeResult::PushFrame {
+                    func_id: constructor_id,
+                    arg_count: arg_count + 1, // +1 for receiver (this)
+                    is_closure: false,
+                    closure_val: None,
+                    return_action: ReturnAction::Discard,
                 }
-                OpcodeResult::Continue
             }
 
             // =========================================================
@@ -6591,6 +6845,39 @@ impl<'a> Interpreter<'a> {
                             return Err(VmError::RuntimeError(msg));
                         }
                     }
+                }
+                Opcode::SpawnClosure => {
+                    let arg_count = Self::read_u16(code, &mut ip)? as usize;
+
+                    let closure_val = call_stack.pop()?;
+                    if !closure_val.is_ptr() {
+                        return Err(VmError::TypeError("Expected closure".to_string()));
+                    }
+
+                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+
+                    let mut args = Vec::with_capacity(arg_count);
+                    for _ in 0..arg_count {
+                        args.push(call_stack.pop()?);
+                    }
+
+                    // Don't prepend captures - closure body uses LoadCaptured
+                    let new_task = Arc::new(Task::with_args(
+                        closure.func_id(),
+                        task.module().clone(),
+                        Some(task.id()),
+                        args,
+                    ));
+
+                    // Push closure onto spawned task's closure stack
+                    new_task.push_closure(closure_val);
+
+                    let task_id = new_task.id();
+                    self.tasks.write().insert(task_id, new_task.clone());
+                    self.injector.push(new_task);
+
+                    call_stack.push(Value::u64(task_id.as_u64()))?;
                 }
                 _ => {
                     return Err(VmError::RuntimeError(format!(

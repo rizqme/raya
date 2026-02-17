@@ -5,7 +5,7 @@
 use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::object::Object;
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::{ResourceLimits, VmContext, VmContextId};
+use raya_engine::vm::interpreter::{ResourceLimits, VmContext, VmContextId};
 use std::ptr::NonNull;
 
 #[test]

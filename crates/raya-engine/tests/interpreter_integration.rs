@@ -9,7 +9,7 @@
 
 use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::Vm;
+use raya_engine::vm::interpreter::Vm;
 
 #[test]
 fn test_simple_arithmetic() {

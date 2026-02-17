@@ -131,6 +131,11 @@ pub struct TypeChecker<'a> {
 
     /// Current class type for checking `this` expressions
     current_class_type: Option<TypeId>,
+
+    /// Depth counter for arrow function bodies
+    /// When > 0, scope enter/exit are no-ops because the binder never visits
+    /// inside expressions, so arrow body scopes don't exist in the symbol table.
+    arrow_depth: u32,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -150,6 +155,7 @@ impl<'a> TypeChecker<'a> {
             inferred_var_types: FxHashMap::default(),
             capture_info: ModuleCaptureInfo::new(),
             current_class_type: None,
+            arrow_depth: 0,
         }
     }
 
@@ -160,8 +166,14 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Enter a new scope (like entering a block or function)
-    /// Mirrors what the binder does when it pushes a scope
+    /// Mirrors what the binder does when it pushes a scope.
+    /// No-op when inside arrow function bodies (arrow_depth > 0) because
+    /// the binder never visits inside expressions, so those scopes don't
+    /// exist in the symbol table.
     fn enter_scope(&mut self) {
+        if self.arrow_depth > 0 {
+            return;
+        }
         self.scope_stack.push(self.current_scope);
         let scope_id = super::symbols::ScopeId(self.next_scope_id);
         self.next_scope_id += 1;
@@ -170,9 +182,9 @@ impl<'a> TypeChecker<'a> {
 
     /// Exit the current scope, returning to parent
     fn exit_scope(&mut self) {
-        // Use our own stack instead of querying symbol table
-        // This handles cases where we're inside expressions (arrow functions)
-        // that the binder didn't create scopes for
+        if self.arrow_depth > 0 {
+            return;
+        }
         if let Some(parent) = self.scope_stack.pop() {
             self.current_scope = parent;
         }
@@ -516,6 +528,33 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Get the declared type of a variable, bypassing narrowing.
+    /// Used for assignment targets where the original type (not narrowed) should be checked.
+    fn get_var_declared_type(&self, name: &str) -> Option<TypeId> {
+        if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
+            let scope_id = symbol.scope_id.0;
+            if let Some(&inferred_ty) = self.inferred_var_types.get(&(scope_id, name.to_string())) {
+                return Some(inferred_ty);
+            }
+            return Some(symbol.ty);
+        }
+        // Fallback: search inferred_var_types directly for variables declared inside
+        // arrow bodies that the binder never visited (no symbol table entries)
+        if self.arrow_depth > 0 {
+            // Check inferred type at current scope (arrow bodies store at outer scope)
+            if let Some(&ty) = self.inferred_var_types.get(&(self.current_scope.0, name.to_string())) {
+                return Some(ty);
+            }
+            // Walk up the scope stack
+            for scope_id in self.scope_stack.iter().rev() {
+                if let Some(&ty) = self.inferred_var_types.get(&(scope_id.0, name.to_string())) {
+                    return Some(ty);
+                }
+            }
+        }
+        None
+    }
+
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
         // Check condition is boolean
@@ -832,6 +871,18 @@ impl<'a> TypeChecker<'a> {
                 symbol.ty
             }
             None => {
+                // Inside arrow bodies, variables may be declared in this body
+                // but not in the binder's symbol table. Check inferred_var_types.
+                if self.arrow_depth > 0 {
+                    if let Some(&ty) = self.inferred_var_types.get(&(self.current_scope.0, name.clone())) {
+                        return ty;
+                    }
+                    for scope_id in self.scope_stack.iter().rev() {
+                        if let Some(&ty) = self.inferred_var_types.get(&(scope_id.0, name.clone())) {
+                            return ty;
+                        }
+                    }
+                }
                 self.errors.push(CheckError::UndefinedVariable {
                     name,
                     span: ident.span,
@@ -1376,6 +1427,11 @@ impl<'a> TypeChecker<'a> {
             .as_ref()
             .map(|t| self.resolve_type_annotation(t));
 
+        // Arrow bodies may contain scope-creating constructs (while loops, blocks)
+        // that the binder never visited. Increment arrow_depth to make enter_scope/
+        // exit_scope no-ops, keeping the checker's scope IDs in sync with the binder.
+        self.arrow_depth += 1;
+
         let return_ty = match &arrow.body {
             crate::parser::ast::ArrowBody::Expression(expr) => {
                 // For expression body, the return type is the expression's type
@@ -1399,6 +1455,8 @@ impl<'a> TypeChecker<'a> {
                 declared_return_ty.unwrap_or_else(|| self.type_ctx.void_type())
             }
         };
+
+        self.arrow_depth -= 1;
 
         // Restore type environment
         self.type_env = saved_env;
@@ -1480,6 +1538,17 @@ impl<'a> TypeChecker<'a> {
                     for arg in &new_expr.arguments {
                         self.check_expr(arg);
                     }
+
+                    // If the class has type parameters and we have type arguments,
+                    // create an instantiated class type with type vars substituted
+                    if !resolved_type_args.is_empty() {
+                        if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                            if class.type_params.len() == resolved_type_args.len() {
+                                return self.instantiate_class_type(&class, &resolved_type_args);
+                            }
+                        }
+                    }
+
                     return symbol.ty;
                 }
             }
@@ -1790,6 +1859,45 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Look up a property or method in a class hierarchy, including parent classes
+    /// Create an instantiated class type by substituting type parameters with concrete types.
+    /// E.g., ReadableStream<T> with [number] → ReadableStream<number> with T→number in all methods.
+    fn instantiate_class_type(&mut self, class: &crate::parser::types::ty::ClassType, type_args: &[TypeId]) -> TypeId {
+        use crate::parser::types::GenericContext;
+        use crate::parser::types::ty::{PropertySignature, MethodSignature};
+
+        // Build substitution map: type_param_name → concrete type
+        let mut gen_ctx = GenericContext::new(self.type_ctx);
+        for (param_name, &arg_ty) in class.type_params.iter().zip(type_args.iter()) {
+            gen_ctx.add_substitution(param_name.clone(), arg_ty);
+        }
+
+        // Substitute in properties
+        let properties: Vec<PropertySignature> = class.properties.iter().map(|prop| {
+            let ty = gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty);
+            PropertySignature { name: prop.name.clone(), ty, optional: prop.optional, readonly: prop.readonly }
+        }).collect();
+
+        // Substitute in methods
+        let methods: Vec<MethodSignature> = class.methods.iter().map(|method| {
+            let ty = gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty);
+            MethodSignature { name: method.name.clone(), ty, type_params: method.type_params.clone() }
+        }).collect();
+
+        // Create the instantiated class type (clear type_params since they're resolved)
+        let instantiated = crate::parser::types::ty::ClassType {
+            name: class.name.clone(),
+            type_params: vec![],
+            properties,
+            methods,
+            static_properties: class.static_properties.clone(),
+            static_methods: class.static_methods.clone(),
+            extends: class.extends,
+            implements: class.implements.clone(),
+        };
+
+        self.type_ctx.intern(crate::parser::types::Type::Class(instantiated))
+    }
+
     fn lookup_class_member(&self, class: &crate::parser::types::ty::ClassType, property_name: &str) -> Option<TypeId> {
         // Check own properties first
         for prop in &class.properties {
@@ -1877,8 +1985,8 @@ impl<'a> TypeChecker<'a> {
                 let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
                 Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
             }
-            // length property (not a method, but handled here for convenience)
-            "length" => Some(number_ty),
+            // length() -> number
+            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
             // lastIndexOf(value: T) -> number
             "lastIndexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // sort(compareFn?: (a: T, b: T) => number) -> Array<T>
@@ -2272,7 +2380,20 @@ impl<'a> TypeChecker<'a> {
 
     /// Check assignment expression
     fn check_assignment(&mut self, assign: &AssignmentExpression) -> TypeId {
-        let left_ty = self.check_expr(&assign.left);
+        // For simple identifier assignments, use the declared type (not narrowed)
+        // so that reassignment back to the original wider type is allowed.
+        // e.g., inside `while (val != null)`, `val = ch.tryReceive()` should work
+        // even though `val` was narrowed from `T | null` to `T`.
+        let left_ty = if let Expression::Identifier(ident) = &*assign.left {
+            let name = self.resolve(ident.name);
+            let declared_ty = self.get_var_declared_type(&name)
+                .unwrap_or_else(|| self.check_expr(&assign.left));
+            // Clear narrowing for this variable since it's being reassigned
+            self.type_env.remove(&name);
+            declared_ty
+        } else {
+            self.check_expr(&assign.left)
+        };
         let right_ty = self.check_expr(&assign.right);
 
         self.check_assignable(right_ty, left_ty, *assign.right.span());
@@ -2363,6 +2484,19 @@ impl<'a> TypeChecker<'a> {
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                    // If this is a generic class with type arguments, instantiate it
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if !type_args.is_empty() {
+                            let resolved_args: Vec<TypeId> = type_args.iter()
+                                .map(|arg| self.resolve_type_annotation(arg))
+                                .collect();
+                            if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                                if class.type_params.len() == resolved_args.len() {
+                                    return self.instantiate_class_type(&class, &resolved_args);
+                                }
+                            }
+                        }
+                    }
                     symbol.ty
                 } else {
                     // Type not found - return unknown

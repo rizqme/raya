@@ -1209,13 +1209,16 @@ impl ChannelObject {
     }
 
     /// Close the channel
-    /// Wakes all waiting senders and receivers
-    pub fn close(&self) {
+    /// Returns (waiting_receivers, waiting_senders) task IDs that need to be woken
+    pub fn close(&self) -> (Vec<u64>, Vec<u64>) {
         let mut inner = self.inner.lock();
         inner.closed = true;
-        // Wake all waiters
+        let receivers: Vec<u64> = inner.waiting_receivers.drain(..).collect();
+        let senders: Vec<u64> = inner.waiting_senders.drain(..).map(|(id, _)| id).collect();
+        // Also wake any threads blocked on condvars (blocking API)
         self.not_full.notify_all();
         self.not_empty.notify_all();
+        (receivers, senders)
     }
 
     /// Try to send a value (non-blocking)
@@ -1296,52 +1299,48 @@ impl ChannelObject {
 
     // ===== Task-aware operations for cooperative scheduling =====
 
-    /// Try to send, returning whether the task should suspend
-    /// If Ok(None), send succeeded. If Ok(Some(task_id)), task should suspend.
-    /// If Err, channel is closed.
-    pub fn send_or_suspend(&self, value: Value, task_id: u64) -> Result<Option<u64>, ChannelError> {
+    /// Try to send a value cooperatively.
+    /// Returns SendResult indicating what happened.
+    pub fn send_or_suspend(&self, value: Value, task_id: u64) -> Result<SendResult, ChannelError> {
         let mut inner = self.inner.lock();
         if inner.closed {
             return Err(ChannelError::Closed);
         }
+        // Check if there's a waiting receiver — hand off directly (skip queue)
+        if let Some(receiver_id) = inner.waiting_receivers.pop_front() {
+            return Ok(SendResult::HandoffToReceiver { receiver_id, value });
+        }
         if inner.queue.len() < inner.capacity {
-            // Space available, send immediately
+            // Space available, enqueue
             inner.queue.push_back(value);
             self.not_empty.notify_one();
-            // Wake a waiting receiver if any
-            if let Some(receiver_id) = inner.waiting_receivers.pop_front() {
-                return Ok(Some(receiver_id)); // Return receiver to wake
-            }
-            Ok(None)
+            Ok(SendResult::Sent)
         } else {
-            // Full, must suspend - store task and value
+            // Full, must suspend
             inner.waiting_senders.push_back((task_id, value));
-            Ok(Some(task_id)) // Signal that this task should suspend
+            Ok(SendResult::SenderMustSuspend)
         }
     }
 
-    /// Try to receive, returning whether the task should suspend
-    /// If Ok(Some(value)), receive succeeded. If Ok(None), task should suspend.
-    /// If Err, channel is closed and empty.
-    pub fn receive_or_suspend(&self, task_id: u64) -> Result<Option<Value>, ChannelError> {
+    /// Try to receive a value cooperatively.
+    /// Returns ReceiveResult indicating what happened.
+    pub fn receive_or_suspend(&self, task_id: u64) -> Result<ReceiveResult, ChannelError> {
         let mut inner = self.inner.lock();
         if let Some(value) = inner.queue.pop_front() {
             self.not_full.notify_one();
             // Check if there's a waiting sender we can now accept
             if let Some((sender_id, sender_value)) = inner.waiting_senders.pop_front() {
-                // Accept the sender's value
+                // Accept the sender's value into the queue
                 inner.queue.push_back(sender_value);
-                // Return the sender_id as a wake signal (we return it via the wake list)
-                // For now, just let the value through
-                // The sender will be woken by the caller checking waiting_senders
+                return Ok(ReceiveResult::ReceivedAndWakeSender { value, sender_id });
             }
-            Ok(Some(value))
+            Ok(ReceiveResult::Received(value))
         } else if inner.closed {
             Err(ChannelError::Closed)
         } else {
             // Empty, must suspend
             inner.waiting_receivers.push_back(task_id);
-            Ok(None)
+            Ok(ReceiveResult::ReceiverMustSuspend)
         }
     }
 
@@ -1380,6 +1379,30 @@ impl ChannelObject {
         let inner = self.inner.lock();
         !inner.waiting_receivers.is_empty()
     }
+}
+
+/// Result of a cooperative send operation
+#[derive(Debug)]
+pub enum SendResult {
+    /// Value was enqueued successfully (no waiters)
+    Sent,
+    /// Value handed off directly to a waiting receiver (not enqueued)
+    /// The caller must wake the receiver task with this value as resume_value.
+    HandoffToReceiver { receiver_id: u64, value: Value },
+    /// Channel is full, sender must suspend
+    SenderMustSuspend,
+}
+
+/// Result of a cooperative receive operation
+#[derive(Debug)]
+pub enum ReceiveResult {
+    /// Value was received from the queue
+    Received(Value),
+    /// Value was received, and a waiting sender was unblocked
+    /// The caller must wake the sender task.
+    ReceivedAndWakeSender { value: Value, sender_id: u64 },
+    /// Channel is empty, receiver must suspend
+    ReceiverMustSuspend,
 }
 
 /// Channel operation errors

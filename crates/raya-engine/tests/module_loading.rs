@@ -4,7 +4,7 @@
 
 use raya_engine::compiler::{Function, Module};
 use raya_engine::compiler::Opcode;
-use raya_engine::vm::vm::{InnerVm, VmOptions};
+use raya_engine::vm::interpreter::{InnerVm, VmOptions};
 
 /// Helper to create a simple test module
 fn create_test_module(name: &str) -> Module {

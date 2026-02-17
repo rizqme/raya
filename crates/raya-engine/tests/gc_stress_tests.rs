@@ -25,7 +25,7 @@
 
 use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::value::Value;
-use raya_engine::vm::vm::VmContextId;
+use raya_engine::vm::interpreter::VmContextId;
 use std::sync::Arc;
 
 /// Helper to create a GC with a specific threshold

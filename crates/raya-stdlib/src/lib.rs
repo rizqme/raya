@@ -11,6 +11,7 @@ pub mod logger;
 pub mod math;
 pub mod crypto;
 pub mod path;
+pub mod stream;
 pub mod registry;
 
 pub use handler::StdNativeHandler;

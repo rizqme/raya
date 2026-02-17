@@ -16,6 +16,7 @@ mod classes;
 mod decorators;
 mod async_await;
 mod closures;
+mod closure_captures;
 mod concurrency;
 mod exceptions;
 mod builtins;
@@ -27,6 +28,8 @@ mod runtime;
 mod crypto;
 mod time;
 mod path;
+mod stream;
+mod fundamentals;
 
 
 pub use harness::*;

@@ -50,6 +50,10 @@ impl StdModuleRegistry {
             "path",
             include_str!("../../../../raya-stdlib/raya/path.raya"),
         );
+        modules.insert(
+            "stream",
+            include_str!("../../../../raya-stdlib/raya/stream.raya"),
+        );
         Self { modules }
     }
 
