@@ -105,9 +105,14 @@ impl Value {
     /// Create an f64 value
     #[inline]
     pub fn f64(f: f64) -> Self {
-        // Store f64 as IEEE 754 double directly (not NaN-boxed)
-        // Valid f64 values won't have 0xFFF8 in upper 16 bits
-        Value(f.to_bits())
+        let bits = f.to_bits();
+        // Canonicalize NaN: on x86, 0.0/0.0 produces negative QNaN (0xFFF8...)
+        // which collides with our NaN-boxing tag. Replace with positive QNaN.
+        if (bits & 0xFFF8_0000_0000_0000) == Self::NAN_BOX_BASE {
+            Value(0x7FF8_0000_0000_0000) // canonical positive QNaN
+        } else {
+            Value(bits)
+        }
     }
 
     /// Create a u32 value
