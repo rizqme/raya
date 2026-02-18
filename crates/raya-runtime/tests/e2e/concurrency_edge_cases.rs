@@ -1085,7 +1085,7 @@ fn test_finally_with_cleanup_after_async_error() {
 
 #[test]
 fn test_multiworker_mutex_counter() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Mutex-protected counter with 4 workers — verifies correctness under true parallelism
     expect_i32_multiworker_with_builtins("
         class Counter {
@@ -1117,7 +1117,7 @@ fn test_multiworker_mutex_counter() {
 
 #[test]
 fn test_multiworker_channel_producer_consumer() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Channel producer-consumer with 4 workers
     expect_i32_multiworker_with_builtins("
         async function producer(ch: Channel<number>): Task<void> {
@@ -1144,7 +1144,7 @@ fn test_multiworker_channel_producer_consumer() {
 
 #[test]
 fn test_multiworker_mutex_multiple_tasks() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Multiple tasks with mutex-protected shared state, 4 workers
     expect_i32_multiworker_with_builtins("
         class State {
@@ -1182,7 +1182,7 @@ fn test_multiworker_mutex_multiple_tasks() {
 
 #[test]
 fn test_multiworker_channel_fifo() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Channel FIFO ordering preserved under 4 workers
     expect_i32_multiworker_with_builtins("
         async function main(): Task<number> {
@@ -1201,7 +1201,7 @@ fn test_multiworker_channel_fifo() {
 
 #[test]
 fn test_multiworker_parallel_with_mutex() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Parallel tasks with varying work and mutex, 4 workers
     expect_i32_multiworker_with_builtins("
         class Acc {
@@ -1237,7 +1237,7 @@ fn test_multiworker_parallel_with_mutex() {
 
 #[test]
 fn test_multiworker_rapid_channel() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Rapid channel send/receive under 4 workers
     expect_i32_multiworker_with_builtins("
         async function main(): Task<number> {
@@ -1261,7 +1261,7 @@ fn test_multiworker_rapid_channel() {
 
 #[test]
 fn test_multiworker_mixed_mutex_channel() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Mixed mutex + channel with 4 workers
     expect_i32_multiworker_with_builtins("
         class State {
@@ -1292,7 +1292,7 @@ fn test_multiworker_mixed_mutex_channel() {
 
 #[test]
 fn test_multiworker_try_lock_contention() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // tryLock contention under 4 workers — at least one tryLock call works
     expect_bool_multiworker_with_builtins("
         async function main(): Task<boolean> {
@@ -1533,7 +1533,7 @@ fn test_parallel_pipeline_stages() {
 
 #[test]
 fn test_parallel_faster_than_sequential() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     // Sequential: unoptimized (full triple-nested loop, redundant k-loop)
     let seq_source = "
@@ -1743,7 +1743,7 @@ fn test_closure_captures_parallel_await_results() {
 
 #[test]
 fn test_mutex_prevents_lost_updates_heavy() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 4 tasks each increment 100 times with mutex protection — must be exactly 400
     expect_i32_multiworker_with_builtins("
         class Counter {
@@ -1777,7 +1777,7 @@ fn test_mutex_prevents_lost_updates_heavy() {
 
 #[test]
 fn test_mutex_protects_compound_read_modify_write() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Each task reads, computes, writes — compound operation must be atomic
     // 4 tasks each add 1+2+...+10 = 55 → total 220
     expect_i32_multiworker_with_builtins("
@@ -1814,7 +1814,7 @@ fn test_mutex_protects_compound_read_modify_write() {
 
 #[test]
 fn test_mutex_bank_transfer_atomicity() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Two accounts, 4 workers each transfer 10 times — total must be preserved
     // A=1000, B=1000. Each task transfers 1 from A to B, 10 times.
     // After: A=960, B=1040. A+B must still be 2000.
@@ -1852,7 +1852,7 @@ fn test_mutex_bank_transfer_atomicity() {
 
 #[test]
 fn test_mutex_protects_running_max() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 4 tasks update a shared max value concurrently — result must be 50
     expect_i32_multiworker_with_builtins("
         class MaxTracker {
@@ -1888,7 +1888,7 @@ fn test_mutex_protects_running_max() {
 
 #[test]
 fn test_mutex_producer_consumer_with_shared_buffer() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 2 producers each add 1+2+3+4+5=15, 2 consumers each subtract 1+2+3=6
     // Final: 30 - 12 = 18
     // Uses `class Buffer` to verify user classes can shadow builtin names

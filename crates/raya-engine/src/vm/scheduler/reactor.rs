@@ -652,38 +652,43 @@ impl Reactor {
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
             }
             ExecutionResult::Suspended(reason) => {
-                vr.task.suspend(reason.clone());
-                match reason {
-                    SuspendReason::AwaitTask(_) => {
-                        // Waiter registration already done by Interpreter
-                    }
-                    SuspendReason::Sleep { wake_at } => {
-                        timer_heap.push(SleepEntry {
-                            wake_at,
-                            task: vr.task,
-                        });
-                    }
-                    SuspendReason::MutexLock { .. } => {
-                        // Handled by mutex unlock waking the waiter
-                    }
-                    SuspendReason::ChannelSend { channel_id, value } => {
-                        channel_waiters.push(ChannelWaiter {
-                            task_id: vr.task.id(),
-                            channel_handle: channel_id,
-                            is_send: true,
-                            value: Some(value),
-                        });
-                    }
-                    SuspendReason::ChannelReceive { channel_id } => {
-                        channel_waiters.push(ChannelWaiter {
-                            task_id: vr.task.id(),
-                            channel_handle: channel_id,
-                            is_send: false,
-                            value: None,
-                        });
-                    }
-                    SuspendReason::IoWait => {
-                        // IoRequest was already sent via io_submit_tx by the VM worker
+                if matches!(reason, SuspendReason::MutexLock { .. }) {
+                    // MutexLock wakeup is handled by the MutexUnlock opcode on
+                    // VM workers (not by the reactor). Use try_suspend to avoid
+                    // overwriting a Resumed state if unlock already woke the task.
+                    vr.task.try_suspend(reason);
+                } else {
+                    vr.task.suspend(reason.clone());
+                    match reason {
+                        SuspendReason::AwaitTask(_) => {
+                            // Waiter registration already done by Interpreter
+                        }
+                        SuspendReason::Sleep { wake_at } => {
+                            timer_heap.push(SleepEntry {
+                                wake_at,
+                                task: vr.task,
+                            });
+                        }
+                        SuspendReason::MutexLock { .. } => unreachable!(),
+                        SuspendReason::ChannelSend { channel_id, value } => {
+                            channel_waiters.push(ChannelWaiter {
+                                task_id: vr.task.id(),
+                                channel_handle: channel_id,
+                                is_send: true,
+                                value: Some(value),
+                            });
+                        }
+                        SuspendReason::ChannelReceive { channel_id } => {
+                            channel_waiters.push(ChannelWaiter {
+                                task_id: vr.task.id(),
+                                channel_handle: channel_id,
+                                is_send: false,
+                                value: None,
+                            });
+                        }
+                        SuspendReason::IoWait => {
+                            // IoRequest was already sent via io_submit_tx by the VM worker
+                        }
                     }
                 }
             }

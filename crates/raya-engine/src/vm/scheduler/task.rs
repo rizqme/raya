@@ -596,6 +596,23 @@ impl Task {
         *self.suspend_reason.lock().unwrap() = Some(reason);
     }
 
+    /// Conditionally suspend only if the task is still Running.
+    ///
+    /// Returns true if suspended, false if the state was already changed
+    /// (e.g., by a MutexUnlock on another VM worker that already woke this task).
+    /// This prevents the reactor from overwriting a Resumed state back to Suspended.
+    pub fn try_suspend(&self, reason: SuspendReason) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if *state == TaskState::Running {
+            *state = TaskState::Suspended;
+            drop(state);
+            *self.suspend_reason.lock().unwrap() = Some(reason);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Get the suspension reason
     pub fn suspend_reason(&self) -> Option<SuspendReason> {
         self.suspend_reason.lock().unwrap().clone()
