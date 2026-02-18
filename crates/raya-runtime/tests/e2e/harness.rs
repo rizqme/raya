@@ -3,7 +3,7 @@
 //! Provides utilities for compiling Raya source code and executing it in the VM.
 
 use raya_engine::compiler::{Compiler, Module};
-use raya_engine::vm::{Value, Vm, VmError, RayaString};
+use raya_engine::vm::{Array, Object, Value, Vm, VmError, RayaString};
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::parser::checker::{Binder, TypeChecker};
 use raya_runtime::StdNativeHandler;
@@ -628,6 +628,229 @@ pub fn expect_bool_multiworker_with_builtins(source: &str, expected: bool, worke
                 value, source
             ));
             assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Extract array of i32 values from a VM Value
+fn extract_array_i32(value: &Value, source: &str) -> Vec<i32> {
+    assert!(
+        value.is_ptr(),
+        "Expected array (pointer), got {:?}\nSource:\n{}",
+        value, source
+    );
+    let arr_ptr = unsafe { value.as_ptr::<Array>() };
+    let ptr = arr_ptr.unwrap_or_else(|| {
+        panic!(
+            "Failed to extract array pointer from {:?}\nSource:\n{}",
+            value, source
+        )
+    });
+    let array = unsafe { &*ptr.as_ptr() };
+    let mut result = Vec::with_capacity(array.len());
+    for i in 0..array.len() {
+        let elem = array.get(i).unwrap_or_else(|| {
+            panic!("Missing array element at index {}\nSource:\n{}", i, source)
+        });
+        // Try i32 first, then f64 whole number
+        if let Some(v) = elem.as_i32() {
+            result.push(v);
+        } else if let Some(v) = elem.as_f64() {
+            assert!(
+                v.fract() == 0.0,
+                "Array element {} is f64 {} (not whole number)\nSource:\n{}",
+                i, v, source
+            );
+            result.push(v as i32);
+        } else {
+            panic!(
+                "Array element {} is not numeric: {:?}\nSource:\n{}",
+                i, elem, source
+            );
+        }
+    }
+    result
+}
+
+/// Compile and execute, expecting an array of i32 results
+#[allow(dead_code)]
+pub fn expect_array_i32(source: &str, expected: &[i32]) {
+    match compile_and_run(source) {
+        Ok(value) => {
+            let actual = extract_array_i32(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Array length mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with builtins, expecting an array of i32 results
+#[allow(dead_code)]
+pub fn expect_array_i32_with_builtins(source: &str, expected: &[i32]) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            let actual = extract_array_i32(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Array length mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with multiple workers and builtins, expecting an array of i32 results
+#[allow(dead_code)]
+pub fn expect_array_i32_multiworker_with_builtins(source: &str, expected: &[i32], worker_count: usize) {
+    match compile_and_run_multiworker_with_builtins(source, worker_count) {
+        Ok(value) => {
+            let actual = extract_array_i32(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Array length mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Extract object fields as i32 values from a VM Value
+fn extract_object_i32_fields(value: &Value, source: &str) -> Vec<i32> {
+    assert!(
+        value.is_ptr(),
+        "Expected object (pointer), got {:?}\nSource:\n{}",
+        value, source
+    );
+    let obj_ptr = unsafe { value.as_ptr::<Object>() };
+    let ptr = obj_ptr.unwrap_or_else(|| {
+        panic!(
+            "Failed to extract object pointer from {:?}\nSource:\n{}",
+            value, source
+        )
+    });
+    let object = unsafe { &*ptr.as_ptr() };
+    let mut result = Vec::with_capacity(object.field_count());
+    for i in 0..object.field_count() {
+        let field = object.get_field(i).unwrap_or_else(|| {
+            panic!("Missing object field at index {}\nSource:\n{}", i, source)
+        });
+        if let Some(v) = field.as_i32() {
+            result.push(v);
+        } else if let Some(v) = field.as_f64() {
+            assert!(
+                v.fract() == 0.0,
+                "Object field {} is f64 {} (not whole number)\nSource:\n{}",
+                i, v, source
+            );
+            result.push(v as i32);
+        } else {
+            panic!(
+                "Object field {} is not numeric: {:?}\nSource:\n{}",
+                i, field, source
+            );
+        }
+    }
+    result
+}
+
+/// Compile and execute, expecting an object whose numeric fields match expected values (by index order)
+#[allow(dead_code)]
+pub fn expect_object_i32_fields(source: &str, expected: &[i32]) {
+    match compile_and_run(source) {
+        Ok(value) => {
+            let actual = extract_object_i32_fields(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Object field count mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with builtins, expecting an object whose numeric fields match expected values
+#[allow(dead_code)]
+pub fn expect_object_i32_fields_with_builtins(source: &str, expected: &[i32]) {
+    match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            let actual = extract_object_i32_fields(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Object field count mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with multiple workers and builtins, expecting an object whose numeric fields match
+#[allow(dead_code)]
+pub fn expect_object_i32_fields_multiworker_with_builtins(source: &str, expected: &[i32], worker_count: usize) {
+    match compile_and_run_multiworker_with_builtins(source, worker_count) {
+        Ok(value) => {
+            let actual = extract_object_i32_fields(&value, source);
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "Object field count mismatch: expected {}, got {}\nSource:\n{}",
+                expected.len(),
+                actual.len(),
+                source
+            );
+            for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+            }
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);

@@ -1306,3 +1306,629 @@ fn test_multiworker_try_lock_contention() {
         return await main();
     ", true, 4);
 }
+
+// ============================================================================
+// 13. Async Recursive Algorithms
+// ============================================================================
+
+#[test]
+fn test_async_recursive_fibonacci_parallel() {
+    // Parallel recursive fibonacci: spawns ~177 tasks
+    // Each level spawns fib(n-1) and fib(n-2) as separate tasks, awaits both
+    // Uses braceless if body: `if (n <= 1) return n;`
+    expect_i32("
+        async function fib(n: number): Task<number> {
+            if (n <= 1) return n;
+            let t1 = fib(n - 1);
+            let t2 = fib(n - 2);
+            let results = await [t1, t2];
+            return results[0] + results[1];
+        }
+        return await fib(10);
+    ", 55);
+}
+
+#[test]
+fn test_async_recursive_fibonacci_sequence() {
+    // Compute fib(0)..fib(7) in parallel, verify all values via weighted sum
+    // Weights: 1, 2, 4, 8, 16, 32, 64, 128
+    // Expected: 0*1 + 1*2 + 1*4 + 2*8 + 3*16 + 5*32 + 8*64 + 13*128 = 2406
+    expect_i32("
+        async function fib(n: number): Task<number> {
+            if (n <= 1) { return n; }
+            let t1 = fib(n - 1);
+            let t2 = fib(n - 2);
+            let results = await [t1, t2];
+            return results[0] + results[1];
+        }
+        async function main(): Task<number> {
+            let f0 = fib(0);
+            let f1 = fib(1);
+            let f2 = fib(2);
+            let f3 = fib(3);
+            let f4 = fib(4);
+            let f5 = fib(5);
+            let f6 = fib(6);
+            let f7 = fib(7);
+            let r = await [f0, f1, f2, f3, f4, f5, f6, f7];
+            return r[0] * 1 + r[1] * 2 + r[2] * 4 + r[3] * 8
+                 + r[4] * 16 + r[5] * 32 + r[6] * 64 + r[7] * 128;
+        }
+        return await main();
+    ", 2406);
+}
+
+#[test]
+fn test_async_recursive_sum_divide_and_conquer() {
+    // Parallel divide-and-conquer sum of 1..100
+    // Splits range in half, recurses, combines via parallel await
+    expect_i32("
+        async function rangeSum(lo: number, hi: number): Task<number> {
+            if (hi - lo <= 1) {
+                if (lo < hi) { return lo; }
+                return 0;
+            }
+            let mid: number = lo + (hi - lo) / 2;
+            let left = rangeSum(lo, mid);
+            let right = rangeSum(mid, hi);
+            let results = await [left, right];
+            return results[0] + results[1];
+        }
+        return await rangeSum(1, 101);
+    ", 5050);
+}
+
+#[test]
+fn test_async_recursive_power() {
+    // Fast exponentiation via repeated squaring: pow(2, 10) = 1024
+    // Each level spawns a task for the half-power, then squares
+    expect_i32("
+        async function power(base: number, exp: number): Task<number> {
+            if (exp == 0) { return 1; }
+            if (exp == 1) { return base; }
+            let half: number = exp / 2;
+            let t = power(base, half);
+            let halfResult = await t;
+            let isEven: boolean = half * 2 == exp;
+            if (isEven) {
+                return halfResult * halfResult;
+            }
+            return halfResult * halfResult * base;
+        }
+        return await power(2, 10);
+    ", 1024);
+}
+
+// ============================================================================
+// 14. Async Parallel Computation Patterns
+// ============================================================================
+
+#[test]
+fn test_parallel_matrix_multiply_16x16() {
+    // Parallel 16x16 matrix multiply with parallel reduction tree for sum
+    // A[i][j] = i + 1, B[i][j] = j + 1
+    // C[i][j] = 16 * (i+1) * (j+1)
+    // Row i sum = 16 * (i+1) * 136
+    // Total = 16 * 136 * 136 = 295936
+    expect_i32("
+        function a(i: number, j: number): number { return i + 1; }
+        function b(i: number, j: number): number { return j + 1; }
+
+        async function computeRow(row: number): Task<number> {
+            let sum: number = 0;
+            let j: number = 0;
+            while (j < 16) {
+                let dot: number = 0;
+                let k: number = 0;
+                while (k < 16) {
+                    dot = dot + a(row, k) * b(k, j);
+                    k = k + 1;
+                }
+                sum = sum + dot;
+                j = j + 1;
+            }
+            return sum;
+        }
+
+        async function add(x: number, y: number): Task<number> { return x + y; }
+
+        async function main(): Task<number> {
+            let rows = await [
+                computeRow(0), computeRow(1), computeRow(2), computeRow(3),
+                computeRow(4), computeRow(5), computeRow(6), computeRow(7),
+                computeRow(8), computeRow(9), computeRow(10), computeRow(11),
+                computeRow(12), computeRow(13), computeRow(14), computeRow(15)
+            ];
+            let s8 = await [
+                add(rows[0], rows[1]), add(rows[2], rows[3]),
+                add(rows[4], rows[5]), add(rows[6], rows[7]),
+                add(rows[8], rows[9]), add(rows[10], rows[11]),
+                add(rows[12], rows[13]), add(rows[14], rows[15])
+            ];
+            let s4 = await [
+                add(s8[0], s8[1]), add(s8[2], s8[3]),
+                add(s8[4], s8[5]), add(s8[6], s8[7])
+            ];
+            let s2 = await [add(s4[0], s4[1]), add(s4[2], s4[3])];
+            let s1 = await [add(s2[0], s2[1])];
+            return s1[0];
+        }
+        return await main();
+    ", 295936);
+}
+
+#[test]
+fn test_parallel_vector_dot_product() {
+    // Parallel dot product: [1,2,3,4,5] · [6,7,8,9,10]
+    // Each element-wise product computed as a separate task
+    // = 6 + 14 + 24 + 36 + 50 = 130
+    expect_i32("
+        async function mul(a: number, b: number): Task<number> {
+            return a * b;
+        }
+        async function main(): Task<number> {
+            let t1 = mul(1, 6);
+            let t2 = mul(2, 7);
+            let t3 = mul(3, 8);
+            let t4 = mul(4, 9);
+            let t5 = mul(5, 10);
+            let r = await [t1, t2, t3, t4, t5];
+            return r[0] + r[1] + r[2] + r[3] + r[4];
+        }
+        return await main();
+    ", 130);
+}
+
+#[test]
+fn test_parallel_map_reduce_sum() {
+    // Parallel map (square) then reduce (sum)
+    // map: [1,2,3,4,5] → [1,4,9,16,25]
+    // reduce: 1+4+9+16+25 = 55
+    expect_i32("
+        async function square(x: number): Task<number> {
+            return x * x;
+        }
+        async function main(): Task<number> {
+            let t1 = square(1);
+            let t2 = square(2);
+            let t3 = square(3);
+            let t4 = square(4);
+            let t5 = square(5);
+            let r = await [t1, t2, t3, t4, t5];
+            return r[0] + r[1] + r[2] + r[3] + r[4];
+        }
+        return await main();
+    ", 55);
+}
+
+#[test]
+fn test_parallel_pipeline_stages() {
+    // 4 parallel pipelines, each going through 3 async stages
+    // pipeline(x) = ((x + 10) * 2) - 5
+    // pipeline(1)=17, pipeline(2)=19, pipeline(3)=21, pipeline(4)=23
+    // sum = 80
+    expect_i32("
+        async function stage1(x: number): Task<number> { return x + 10; }
+        async function stage2(x: number): Task<number> { return x * 2; }
+        async function stage3(x: number): Task<number> { return x - 5; }
+
+        async function pipeline(input: number): Task<number> {
+            let s1 = await stage1(input);
+            let s2 = await stage2(s1);
+            let s3 = await stage3(s2);
+            return s3;
+        }
+
+        async function main(): Task<number> {
+            let p1 = pipeline(1);
+            let p2 = pipeline(2);
+            let p3 = pipeline(3);
+            let p4 = pipeline(4);
+            let r = await [p1, p2, p3, p4];
+            return r[0] + r[1] + r[2] + r[3];
+        }
+        return await main();
+    ", 80);
+}
+
+#[test]
+fn test_parallel_faster_than_sequential() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+
+    // Sequential: unoptimized (full triple-nested loop, redundant k-loop)
+    let seq_source = "
+        let result: number = 0;
+        let i: number = 0;
+        while (i < 16) {
+            let sum: number = 0;
+            let rep: number = 0;
+            while (rep < 50) {
+                let j: number = 0;
+                while (j < 16) {
+                    let dot: number = 0;
+                    let k: number = 0;
+                    while (k < 16) {
+                        dot = dot + (i + 1) * (j + 1);
+                        k = k + 1;
+                    }
+                    sum = sum + dot;
+                    j = j + 1;
+                }
+                rep = rep + 1;
+            }
+            result = result + sum;
+            i = i + 1;
+        }
+        return result;
+    ";
+
+    // Parallel: optimized (inlined formula, no function calls, no inner k-loop)
+    let par_source = "
+        async function computeRow(row: number): Task<number> {
+            let sum: number = 0;
+            let r: number = row + 1;
+            let rep: number = 0;
+            while (rep < 50) {
+                let j: number = 0;
+                while (j < 16) {
+                    sum = sum + 16 * r * (j + 1);
+                    j = j + 1;
+                }
+                rep = rep + 1;
+            }
+            return sum;
+        }
+
+        async function add(x: number, y: number): Task<number> { return x + y; }
+
+        async function main(): Task<number> {
+            let rows = await [
+                computeRow(0), computeRow(1), computeRow(2), computeRow(3),
+                computeRow(4), computeRow(5), computeRow(6), computeRow(7),
+                computeRow(8), computeRow(9), computeRow(10), computeRow(11),
+                computeRow(12), computeRow(13), computeRow(14), computeRow(15)
+            ];
+            let s8 = await [
+                add(rows[0], rows[1]), add(rows[2], rows[3]),
+                add(rows[4], rows[5]), add(rows[6], rows[7]),
+                add(rows[8], rows[9]), add(rows[10], rows[11]),
+                add(rows[12], rows[13]), add(rows[14], rows[15])
+            ];
+            let s4 = await [
+                add(s8[0], s8[1]), add(s8[2], s8[3]),
+                add(s8[4], s8[5]), add(s8[6], s8[7])
+            ];
+            let s2 = await [add(s4[0], s4[1]), add(s4[2], s4[3])];
+            let s1 = await [add(s2[0], s2[1])];
+            return s1[0];
+        }
+        return await main();
+    ";
+
+    // Both should produce the same result: 50 * 16 * 136 * 136 = 14,796,800
+    let seq_start = std::time::Instant::now();
+    let seq_result = compile_and_run_with_builtins(seq_source).unwrap();
+    let seq_time = seq_start.elapsed();
+
+    let par_start = std::time::Instant::now();
+    let par_result = compile_and_run_multiworker_with_builtins(par_source, 4).unwrap();
+    let par_time = par_start.elapsed();
+
+    let seq_val = seq_result.as_i32().or_else(|| seq_result.as_f64().map(|f| f as i32)).unwrap();
+    let par_val = par_result.as_i32().or_else(|| par_result.as_f64().map(|f| f as i32)).unwrap();
+
+    assert_eq!(seq_val, par_val,
+        "Both should produce same result: seq={}, par={}", seq_val, par_val);
+    assert_eq!(seq_val, 14_796_800,
+        "Expected 14,796,800, got {}", seq_val);
+    let speedup = seq_time.as_nanos() as f64 / par_time.as_nanos() as f64;
+    eprintln!("Sequential: {:?}, Parallel: {:?}, Speedup: {:.2}x", seq_time, par_time, speedup);
+    assert!(par_time < seq_time,
+        "Parallel ({:?}) should be faster than sequential ({:?})",
+        par_time, seq_time);
+}
+
+// ============================================================================
+// 15. Nested Closures with Captured Tasks
+// ============================================================================
+
+#[test]
+fn test_closure_captures_task_and_awaits() {
+    // Async closure captures a task variable and awaits it
+    expect_i32("
+        async function compute(): Task<number> {
+            return 42;
+        }
+        async function main(): Task<number> {
+            let t = compute();
+            let getResult = async (): Task<number> => {
+                return await t;
+            };
+            return await getResult();
+        }
+        return await main();
+    ", 42);
+}
+
+#[test]
+fn test_nested_closure_captures_outer_task() {
+    // Two levels of async closure nesting, inner awaits outer's captured task
+    expect_i32("
+        async function compute(): Task<number> {
+            return 100;
+        }
+        async function main(): Task<number> {
+            let t = compute();
+            let outer = async (): Task<number> => {
+                let inner = async (): Task<number> => {
+                    return await t;
+                };
+                return await inner();
+            };
+            return await outer();
+        }
+        return await main();
+    ", 100);
+}
+
+#[test]
+fn test_closure_factory_with_task_spawning() {
+    // Closure captures base value, spawns tasks internally, combines results
+    expect_i32("
+        async function compute(x: number): Task<number> {
+            return x * 10;
+        }
+        async function main(): Task<number> {
+            let base: number = 5;
+            let addBase = async (x: number): Task<number> => {
+                let result = await compute(x);
+                return result + base;
+            };
+            let t1 = addBase(3);
+            let t2 = addBase(7);
+            let r = await [t1, t2];
+            return r[0] + r[1];
+        }
+        return await main();
+    ", 110); // (30+5) + (70+5) = 110
+}
+
+#[test]
+fn test_multiple_closures_share_captured_task() {
+    // Two async closures both capture and await the same task
+    expect_i32("
+        async function compute(): Task<number> {
+            return 42;
+        }
+        async function main(): Task<number> {
+            let t = compute();
+            let a = async (): Task<number> => {
+                let v = await t;
+                return v + 1;
+            };
+            let b = async (): Task<number> => {
+                let v = await t;
+                return v + 2;
+            };
+            let r = await [a(), b()];
+            return r[0] + r[1];
+        }
+        return await main();
+    ", 87); // 43 + 44 = 87
+}
+
+#[test]
+fn test_closure_captures_parallel_await_results() {
+    // Closure created after parallel await, uses captured results
+    expect_i32("
+        async function work(x: number): Task<number> {
+            return x * x;
+        }
+        async function main(): Task<number> {
+            let t1 = work(3);
+            let t2 = work(4);
+            let t3 = work(5);
+            let results = await [t1, t2, t3];
+            let sum: number = results[0] + results[1] + results[2];
+            let doubler = (x: number): number => x * 2;
+            return doubler(sum);
+        }
+        return await main();
+    ", 100); // (9 + 16 + 25) * 2 = 100
+}
+
+// ============================================================================
+// 16. Complex Mutex Scenarios (4 workers)
+// ============================================================================
+
+#[test]
+fn test_mutex_prevents_lost_updates_heavy() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    // 4 tasks each increment 100 times with mutex protection — must be exactly 400
+    expect_i32_multiworker_with_builtins("
+        class Counter {
+            value: number = 0;
+            mu: Mutex = new Mutex();
+        }
+        async function incrementMany(c: Counter, n: number): Task<void> {
+            let i: number = 0;
+            while (i < n) {
+                c.mu.lock();
+                c.value = c.value + 1;
+                c.mu.unlock();
+                i = i + 1;
+            }
+        }
+        async function main(): Task<number> {
+            let c = new Counter();
+            let t1 = incrementMany(c, 100);
+            let t2 = incrementMany(c, 100);
+            let t3 = incrementMany(c, 100);
+            let t4 = incrementMany(c, 100);
+            await t1;
+            await t2;
+            await t3;
+            await t4;
+            return c.value;
+        }
+        return await main();
+    ", 400, 4);
+}
+
+#[test]
+fn test_mutex_protects_compound_read_modify_write() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    // Each task reads, computes, writes — compound operation must be atomic
+    // 4 tasks each add 1+2+...+10 = 55 → total 220
+    expect_i32_multiworker_with_builtins("
+        class State {
+            total: number = 0;
+            mu: Mutex = new Mutex();
+        }
+        async function accumulate(s: State): Task<void> {
+            let i: number = 1;
+            while (i < 11) {
+                s.mu.lock();
+                let current: number = s.total;
+                let next: number = current + i;
+                s.total = next;
+                s.mu.unlock();
+                i = i + 1;
+            }
+        }
+        async function main(): Task<number> {
+            let s = new State();
+            let t1 = accumulate(s);
+            let t2 = accumulate(s);
+            let t3 = accumulate(s);
+            let t4 = accumulate(s);
+            await t1;
+            await t2;
+            await t3;
+            await t4;
+            return s.total;
+        }
+        return await main();
+    ", 220, 4);
+}
+
+#[test]
+fn test_mutex_bank_transfer_atomicity() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    // Two accounts, 4 workers each transfer 10 times — total must be preserved
+    // A=1000, B=1000. Each task transfers 1 from A to B, 10 times.
+    // After: A=960, B=1040. A+B must still be 2000.
+    expect_i32_multiworker_with_builtins("
+        class Bank {
+            a: number = 1000;
+            b: number = 1000;
+            mu: Mutex = new Mutex();
+        }
+        async function transfer(bank: Bank, amount: number): Task<void> {
+            let i: number = 0;
+            while (i < 10) {
+                bank.mu.lock();
+                bank.a = bank.a - amount;
+                bank.b = bank.b + amount;
+                bank.mu.unlock();
+                i = i + 1;
+            }
+        }
+        async function main(): Task<number> {
+            let bank = new Bank();
+            let t1 = transfer(bank, 1);
+            let t2 = transfer(bank, 1);
+            let t3 = transfer(bank, 1);
+            let t4 = transfer(bank, 1);
+            await t1;
+            await t2;
+            await t3;
+            await t4;
+            return bank.a + bank.b;
+        }
+        return await main();
+    ", 2000, 4);
+}
+
+#[test]
+fn test_mutex_protects_running_max() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    // 4 tasks update a shared max value concurrently — result must be 50
+    expect_i32_multiworker_with_builtins("
+        class MaxTracker {
+            max: number = 0;
+            mu: Mutex = new Mutex();
+        }
+        async function updateMax(t: MaxTracker, v1: number, v2: number, v3: number): Task<void> {
+            t.mu.lock();
+            if (v1 > t.max) t.max = v1;
+            t.mu.unlock();
+            t.mu.lock();
+            if (v2 > t.max) t.max = v2;
+            t.mu.unlock();
+            t.mu.lock();
+            if (v3 > t.max) t.max = v3;
+            t.mu.unlock();
+        }
+        async function main(): Task<number> {
+            let t = new MaxTracker();
+            let w1 = updateMax(t, 10, 20, 30);
+            let w2 = updateMax(t, 5, 25, 35);
+            let w3 = updateMax(t, 15, 45, 40);
+            let w4 = updateMax(t, 50, 8, 12);
+            await w1;
+            await w2;
+            await w3;
+            await w4;
+            return t.max;
+        }
+        return await main();
+    ", 50, 4);
+}
+
+#[test]
+fn test_mutex_producer_consumer_with_shared_buffer() {
+    let _guard = MULTIWORKER_LOCK.lock().unwrap();
+    // 2 producers each add 1+2+3+4+5=15, 2 consumers each subtract 1+2+3=6
+    // Final: 30 - 12 = 18
+    // Uses `class Buffer` to verify user classes can shadow builtin names
+    expect_i32_multiworker_with_builtins("
+        class Buffer {
+            value: number = 0;
+            mu: Mutex = new Mutex();
+        }
+        async function produce(buf: Buffer, count: number): Task<void> {
+            let bound: number = count + 1;
+            let i: number = 1;
+            while (i < bound) {
+                buf.mu.lock();
+                buf.value = buf.value + i;
+                buf.mu.unlock();
+                i = i + 1;
+            }
+        }
+        async function consume(buf: Buffer, count: number): Task<void> {
+            let bound: number = count + 1;
+            let i: number = 1;
+            while (i < bound) {
+                buf.mu.lock();
+                buf.value = buf.value - i;
+                buf.mu.unlock();
+                i = i + 1;
+            }
+        }
+        async function main(): Task<number> {
+            let buf = new Buffer();
+            let p1 = produce(buf, 5);
+            let p2 = produce(buf, 5);
+            let c1 = consume(buf, 3);
+            let c2 = consume(buf, 3);
+            await p1;
+            await p2;
+            await c1;
+            await c2;
+            return buf.value;
+        }
+        return await main();
+    ", 18, 4);
+}

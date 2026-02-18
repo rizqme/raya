@@ -405,6 +405,18 @@ fn parse_block_statement(parser: &mut Parser) -> Result<BlockStatement, ParseErr
 // Control Flow Statements
 // ============================================================================
 
+/// Parse a block or a single statement for use as a control flow body.
+/// Supports both `if (x) { ... }` and `if (x) return y;` syntax.
+fn parse_block_or_statement(parser: &mut Parser) -> Result<Box<Statement>, ParseError> {
+    if parser.check(&Token::LeftBrace) {
+        parser.advance(); // consume '{'
+        let block = parse_block_statement(parser)?;
+        Ok(Box::new(Statement::Block(block)))
+    } else {
+        Ok(Box::new(parse_statement(parser)?))
+    }
+}
+
 /// Parse if statement
 fn parse_if_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
@@ -415,10 +427,8 @@ fn parse_if_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let condition = super::expr::parse_expression(parser)?;
     parser.expect(Token::RightParen)?;
 
-    // Parse then branch (must be a block statement in Raya)
-    parser.expect(Token::LeftBrace)?;
-    let then_block = parse_block_statement(parser)?;
-    let then_branch = Box::new(Statement::Block(then_block));
+    // Parse then branch (block or single statement)
+    let then_branch = parse_block_or_statement(parser)?;
 
     // Optional else branch
     let else_branch = if parser.check(&Token::Else) {
@@ -427,10 +437,8 @@ fn parse_if_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
             // else if - parse as nested if statement
             Some(Box::new(parse_if_statement(parser)?))
         } else {
-            // else block
-            parser.expect(Token::LeftBrace)?;
-            let else_block = parse_block_statement(parser)?;
-            Some(Box::new(Statement::Block(else_block)))
+            // else block or single statement
+            Some(parse_block_or_statement(parser)?)
         }
     } else {
         None
@@ -460,10 +468,8 @@ fn parse_while_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let condition = super::expr::parse_expression(parser)?;
     parser.expect(Token::RightParen)?;
 
-    // Parse body (must be a block statement)
-    parser.expect(Token::LeftBrace)?;
-    let body_block = parse_block_statement(parser)?;
-    let body = Box::new(Statement::Block(body_block));
+    // Parse body (block or single statement)
+    let body = parse_block_or_statement(parser)?;
 
     let span = parser.combine_spans(&start_span, body.span());
 
@@ -670,10 +676,8 @@ fn parse_traditional_for(
     };
     parser.expect(Token::RightParen)?;
 
-    // Parse body (must be a block statement)
-    parser.expect(Token::LeftBrace)?;
-    let body_block = parse_block_statement(parser)?;
-    let body = Box::new(Statement::Block(body_block));
+    // Parse body (block or single statement)
+    let body = parse_block_or_statement(parser)?;
 
     let span = parser.combine_spans(&start_span, body.span());
 
@@ -696,10 +700,8 @@ fn parse_for_of(
     let right = super::expr::parse_expression(parser)?;
     parser.expect(Token::RightParen)?;
 
-    // Parse body (must be a block statement)
-    parser.expect(Token::LeftBrace)?;
-    let body_block = parse_block_statement(parser)?;
-    let body = Box::new(Statement::Block(body_block));
+    // Parse body (block or single statement)
+    let body = parse_block_or_statement(parser)?;
 
     let span = parser.combine_spans(&start_span, body.span());
 

@@ -245,10 +245,12 @@ pub struct Lowerer<'a> {
     function_map: FxHashMap<Symbol, FunctionId>,
     /// Set of async function IDs (functions that should be spawned as Tasks)
     async_functions: FxHashSet<FunctionId>,
-    /// Class name to ID mapping
+    /// Class name to ID mapping (last class registered with a given name wins)
     class_map: FxHashMap<Symbol, ClassId>,
     /// Class info (fields, initializers) for lowering `new` expressions
     class_info_map: FxHashMap<ClassId, ClassInfo>,
+    /// Per-declaration class ID (keyed by span start position, survives name collisions)
+    class_decl_ids: FxHashMap<usize, ClassId>,
     /// Next function ID
     next_function_id: u32,
     /// Next class ID
@@ -356,6 +358,7 @@ impl<'a> Lowerer<'a> {
             async_functions: FxHashSet::default(),
             class_map: FxHashMap::default(),
             class_info_map: FxHashMap::default(),
+            class_decl_ids: FxHashMap::default(),
             next_function_id: 0,
             next_class_id: 0,
             type_alias_map: FxHashMap::default(),
@@ -1137,6 +1140,11 @@ impl<'a> Lowerer<'a> {
     fn register_class(&mut self, class: &ast::ClassDecl) {
         let class_id = ClassId::new(self.next_class_id);
         self.next_class_id += 1;
+
+        // Track per-declaration class ID (survives name collisions)
+        self.class_decl_ids.insert(class.span.start, class_id);
+
+        // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
 
         // Resolve parent class if extends clause is present
@@ -1510,8 +1518,10 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Get class ID and class info
-        let class_id = *self.class_map.get(&class.name.name).unwrap();
+        // Get class ID from per-declaration map (safe even when names collide)
+        let class_id = self.class_decl_ids.get(&class.span.start)
+            .copied()
+            .unwrap_or_else(|| *self.class_map.get(&class.name.name).unwrap());
         let class_info = self.class_info_map.get(&class_id).cloned();
 
         // Set parent class if this class extends another
@@ -1677,10 +1687,19 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Get the function ID and add to pending methods
+                    let method_name_str = self.interner.resolve(method.name.name);
                     let func_id = if method.is_static {
-                        *self.static_method_map.get(&(class_id, method.name.name)).unwrap()
+                        *self.static_method_map.get(&(class_id, method.name.name))
+                            .unwrap_or_else(|| panic!(
+                                "ICE: static method '{}::{}' not found in static_method_map (class_id={})",
+                                name, method_name_str, class_id.as_u32()
+                            ))
                     } else {
-                        *self.method_map.get(&(class_id, method.name.name)).unwrap()
+                        *self.method_map.get(&(class_id, method.name.name))
+                            .unwrap_or_else(|| panic!(
+                                "ICE: method '{}::{}' not found in method_map (class_id={})",
+                                name, method_name_str, class_id.as_u32()
+                            ))
                     };
                     let ir_func = self.current_function.take().unwrap();
                     self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
