@@ -2312,6 +2312,7 @@ impl<'a> Lowerer<'a> {
                 // PrimitiveType is an enum, match on it directly
                 match prim {
                     ast::PrimitiveType::Number => TypeId::new(0),
+                    ast::PrimitiveType::Int => TypeId::new(16),
                     ast::PrimitiveType::String => TypeId::new(1),
                     ast::PrimitiveType::Boolean => TypeId::new(2),
                     ast::PrimitiveType::Null => TypeId::new(3),

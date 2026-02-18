@@ -200,13 +200,6 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::Fneg
         | Opcode::Fpow
         | Opcode::Fmod
-        | Opcode::Nadd
-        | Opcode::Nsub
-        | Opcode::Nmul
-        | Opcode::Ndiv
-        | Opcode::Nmod
-        | Opcode::Nneg
-        | Opcode::Npow
         | Opcode::Ieq
         | Opcode::Ine
         | Opcode::Ilt
@@ -417,9 +410,8 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::StoreLocal | Opcode::StoreLocal0 | Opcode::StoreLocal1 => (1, 0),
         Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => (2, 1),
         Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => (2, 1),
-        Opcode::Ineg | Opcode::Fneg | Opcode::Nneg | Opcode::Inot => (1, 1),
+        Opcode::Ineg | Opcode::Fneg | Opcode::Inot => (1, 1),
         Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow | Opcode::Fmod => (2, 1),
-        Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv | Opcode::Nmod | Opcode::Npow => (2, 1),
         Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => (2, 1),
         Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => (2, 1),
         Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => (2, 1),

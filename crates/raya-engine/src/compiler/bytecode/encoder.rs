@@ -250,38 +250,6 @@ impl BytecodeWriter {
         self.emit_opcode(Opcode::Fneg);
     }
 
-    // ===== Number Arithmetic =====
-
-    /// Emit NADD instruction
-    pub fn emit_nadd(&mut self) {
-        self.emit_opcode(Opcode::Nadd);
-    }
-
-    /// Emit NSUB instruction
-    pub fn emit_nsub(&mut self) {
-        self.emit_opcode(Opcode::Nsub);
-    }
-
-    /// Emit NMUL instruction
-    pub fn emit_nmul(&mut self) {
-        self.emit_opcode(Opcode::Nmul);
-    }
-
-    /// Emit NDIV instruction
-    pub fn emit_ndiv(&mut self) {
-        self.emit_opcode(Opcode::Ndiv);
-    }
-
-    /// Emit NMOD instruction
-    pub fn emit_nmod(&mut self) {
-        self.emit_opcode(Opcode::Nmod);
-    }
-
-    /// Emit NNEG instruction
-    pub fn emit_nneg(&mut self) {
-        self.emit_opcode(Opcode::Nneg);
-    }
-
     // ===== Control Flow =====
 
     /// Emit JMP instruction

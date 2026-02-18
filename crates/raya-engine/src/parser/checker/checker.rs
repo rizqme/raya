@@ -2730,6 +2730,7 @@ impl<'a> TypeChecker<'a> {
 
         match prim {
             AstPrim::Number => self.type_ctx.number_type(),
+            AstPrim::Int => self.type_ctx.int_type(),
             AstPrim::String => self.type_ctx.string_type(),
             AstPrim::Boolean => self.type_ctx.boolean_type(),
             AstPrim::Null => self.type_ctx.null_type(),

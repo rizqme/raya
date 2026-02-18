@@ -236,14 +236,26 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
 }
 
 /// Compile and execute with builtins, expecting a specific i32 result
+/// Also accepts f64 values that represent whole numbers (since Number type is f64)
 pub fn expect_i32_with_builtins(source: &str, expected: i32) {
     match compile_and_run_with_builtins(source) {
         Ok(value) => {
-            let actual = value.as_i32().expect(&format!(
-                "Expected i32 result, got {:?}\nSource:\n{}",
-                value, source
-            ));
-            assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+            // Try i32 first
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return;
+            }
+            // Also accept f64 that represents a whole number
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected, actual, source
+                );
+                return;
+            }
+            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);

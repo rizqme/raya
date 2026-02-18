@@ -296,7 +296,7 @@ STORE_LOCAL 2
 
 ---
 
-### 3.3 Generic Number Arithmetic (Union Type)
+### 3.3 Float Arithmetic (number type)
 
 **Raya:**
 ```ts
@@ -309,11 +309,32 @@ function add(a: number, b: number): number {
 ```
 LOAD_LOCAL 0
 LOAD_LOCAL 1
-NADD           // Generic number add (checks types at runtime)
+FADD           // number + number uses float addition
 RETURN
 ```
 
-**Explanation:** Use `NADD` when static type is just `number` without more specific info.
+**Explanation:** `number` is 64-bit floating point (f64), so `number + number` always uses `FADD`.
+
+---
+
+### 3.3a Mixed Arithmetic (int + number promotion)
+
+**Raya:**
+```ts
+function addMixed(a: int, b: number): number {
+  return a + b;
+}
+```
+
+**Bytecode:**
+```
+LOAD_LOCAL 0
+LOAD_LOCAL 1
+FADD           // int promoted to number, uses float addition
+RETURN
+```
+
+**Explanation:** When mixing `int` and `number` operands, the compiler promotes the `int` to `number` (f64) and emits `FADD`. The result type is `number`.
 
 ---
 
@@ -816,7 +837,7 @@ function add(a: number, b: number): number {
 ```
 LOAD_LOCAL 0          // a
 LOAD_LOCAL 1          // b
-NADD
+FADD                  // number + number uses float addition
 RETURN
 ```
 
@@ -1071,13 +1092,13 @@ LOAD_LOCAL 0          // this
 LOAD_FIELD 0          // this.x
 LOAD_LOCAL 0
 LOAD_FIELD 0
-NMUL
+FMUL                  // number * number = number
 LOAD_LOCAL 0
 LOAD_FIELD 1          // this.y
 LOAD_LOCAL 0
 LOAD_FIELD 1
-NMUL
-NADD
+FMUL                  // number * number = number
+FADD                  // number + number = number
 CALL <Math.sqrt>, 1
 RETURN
 ```
@@ -2587,18 +2608,20 @@ Raya is a **fully statically typed language** with **zero runtime type checks**:
 
 ### Type-Specialized Opcodes
 
-The compiler should emit specialized opcodes based on static type information:
+The compiler emits specialized opcodes based on static type information:
 
-| Generic | Integer | Float | String |
-|---------|---------|-------|--------|
-| `NADD`  | `IADD`  | `FADD` | `SCONCAT` |
-| `NSUB`  | `ISUB`  | `FSUB` | - |
-| `NMUL`  | `IMUL`  | `FMUL` | - |
-| `NDIV`  | `IDIV`  | `FDIV` | - |
-| `NMOD`  | `IMOD`  | -      | - |
-| `NNEG`  | `INEG`  | `FNEG` | - |
-| `EQ`    | `IEQ`   | `FEQ`  | `SEQ` |
-| `LT`    | `ILT`   | `FLT`  | `SLT` |
+| Operation | Integer (`int`) | Float (`number`/`float`) | String |
+|-----------|-----------------|--------------------------|--------|
+| Add       | `IADD`          | `FADD`                   | `SCONCAT` |
+| Subtract  | `ISUB`          | `FSUB`                   | - |
+| Multiply  | `IMUL`          | `FMUL`                   | - |
+| Divide    | `IDIV`          | `FDIV`                   | - |
+| Modulo    | `IMOD`          | -                        | - |
+| Negate    | `INEG`          | `FNEG`                   | - |
+| Equal     | `IEQ`           | `FEQ`                    | `SEQ` |
+| Less Than | `ILT`           | `FLT`                    | `SLT` |
+
+**Mixed operands (`int + number`):** The `int` operand is promoted to `number` (f64) and the `F*` opcode is used.
 
 **Benefits:**
 - Avoids runtime type checking

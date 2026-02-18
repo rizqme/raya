@@ -114,21 +114,7 @@ pub enum Opcode {
     /// Float modulo: pop b, pop a, push a % b
     Fmod = 0x36,
 
-    // ===== Number Arithmetic - Generic (0x40-0x4F) =====
-    /// Number addition: pop b, pop a, push a + b (dynamic)
-    Nadd = 0x40,
-    /// Number subtraction: pop b, pop a, push a - b (dynamic)
-    Nsub = 0x41,
-    /// Number multiplication: pop b, pop a, push a * b (dynamic)
-    Nmul = 0x42,
-    /// Number division: pop b, pop a, push a / b (dynamic)
-    Ndiv = 0x43,
-    /// Number modulo: pop b, pop a, push a % b (dynamic)
-    Nmod = 0x44,
-    /// Number negation: pop a, push -a (dynamic)
-    Nneg = 0x45,
-    /// Number power: pop b, pop a, push a ** b (dynamic)
-    Npow = 0x46,
+    // ===== 0x40-0x4F: Reserved =====
 
     // ===== Integer Comparison (0x50-0x5F) =====
     /// Integer equality: pop b, pop a, push a == b
@@ -447,15 +433,6 @@ impl Opcode {
             0x35 => Some(Self::Fpow),
             0x36 => Some(Self::Fmod),
 
-            // Number arithmetic
-            0x40 => Some(Self::Nadd),
-            0x41 => Some(Self::Nsub),
-            0x42 => Some(Self::Nmul),
-            0x43 => Some(Self::Ndiv),
-            0x44 => Some(Self::Nmod),
-            0x45 => Some(Self::Nneg),
-            0x46 => Some(Self::Npow),
-
             // Integer comparison
             0x50 => Some(Self::Ieq),
             0x51 => Some(Self::Ine),
@@ -646,13 +623,6 @@ impl Opcode {
             Self::Fneg => "FNEG",
             Self::Fpow => "FPOW",
             Self::Fmod => "FMOD",
-            Self::Nadd => "NADD",
-            Self::Nsub => "NSUB",
-            Self::Nmul => "NMUL",
-            Self::Ndiv => "NDIV",
-            Self::Nmod => "NMOD",
-            Self::Nneg => "NNEG",
-            Self::Npow => "NPOW",
             Self::Ieq => "IEQ",
             Self::Ine => "INE",
             Self::Ilt => "ILT",
@@ -832,12 +802,6 @@ mod tests {
             Opcode::Fmul,
             Opcode::Fdiv,
             Opcode::Fneg,
-            Opcode::Nadd,
-            Opcode::Nsub,
-            Opcode::Nmul,
-            Opcode::Ndiv,
-            Opcode::Nmod,
-            Opcode::Nneg,
             Opcode::Spawn,
             Opcode::Await,
             Opcode::Yield,
@@ -938,7 +902,6 @@ mod tests {
             Opcode::Ineg, Opcode::Ipow, Opcode::Ishl, Opcode::Ishr, Opcode::Iushr,
             Opcode::Iand, Opcode::Ior, Opcode::Ixor, Opcode::Inot,
             Opcode::Fadd, Opcode::Fsub, Opcode::Fmul, Opcode::Fdiv, Opcode::Fneg, Opcode::Fpow,
-            Opcode::Nadd, Opcode::Nsub, Opcode::Nmul, Opcode::Ndiv, Opcode::Nmod, Opcode::Nneg, Opcode::Npow,
             Opcode::Ieq, Opcode::Ine, Opcode::Ilt, Opcode::Ile, Opcode::Igt, Opcode::Ige,
             Opcode::Feq, Opcode::Fne, Opcode::Flt, Opcode::Fle, Opcode::Fgt, Opcode::Fge,
             Opcode::Eq, Opcode::Ne, Opcode::StrictEq, Opcode::StrictNe, Opcode::Not, Opcode::And, Opcode::Or, Opcode::Typeof,

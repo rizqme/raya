@@ -223,78 +223,78 @@ fn test_time_sleep_micros_basic() {
 
 #[test]
 fn test_time_seconds() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.seconds(3);
     "#,
-        3000,
+        3000.0,
     );
 }
 
 #[test]
 fn test_time_minutes() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.minutes(2);
     "#,
-        120000,
+        120000.0,
     );
 }
 
 #[test]
 fn test_time_hours() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.hours(1);
     "#,
-        3600000,
+        3600000.0,
     );
 }
 
 #[test]
 fn test_time_to_seconds() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.toSeconds(5000);
     "#,
-        5,
+        5.0,
     );
 }
 
 #[test]
 fn test_time_to_minutes() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.toMinutes(120000);
     "#,
-        2,
+        2.0,
     );
 }
 
 #[test]
 fn test_time_to_hours() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.toHours(7200000);
     "#,
-        2,
+        2.0,
     );
 }
 
 #[test]
 fn test_time_roundtrip() {
-    expect_i32_with_builtins(
+    expect_f64_with_builtins(
         r#"
         import time from "std:time";
         return time.toSeconds(time.seconds(42));
     "#,
-        42,
+        42.0,
     );
 }
 

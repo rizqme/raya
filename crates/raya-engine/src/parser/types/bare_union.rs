@@ -171,6 +171,7 @@ impl<'a> BareUnionTransform<'a> {
         // Create primitive type for $value field
         let value_type = match prim {
             PrimitiveType::Number => self.type_ctx.number_type(),
+            PrimitiveType::Int => self.type_ctx.int_type(),
             PrimitiveType::String => self.type_ctx.string_type(),
             PrimitiveType::Boolean => self.type_ctx.boolean_type(),
             PrimitiveType::Null => self.type_ctx.null_type(),

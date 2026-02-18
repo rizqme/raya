@@ -66,14 +66,6 @@ pub mod opcode {
     pub const FDIV: u8 = 0x33;
     pub const FNEG: u8 = 0x34;
 
-    // Number arithmetic (dynamic)
-    pub const NADD: u8 = 0x40;
-    pub const NSUB: u8 = 0x41;
-    pub const NMUL: u8 = 0x42;
-    pub const NDIV: u8 = 0x43;
-    pub const NMOD: u8 = 0x44;
-    pub const NNEG: u8 = 0x45;
-
     // Integer comparison
     pub const IEQ: u8 = 0x50;
     pub const INE: u8 = 0x51;
@@ -575,22 +567,6 @@ impl BytecodeBuilder {
         self.pop_type();
         self.push_type(StackType::Float);
         self.emit(opcode::FSUB, &[])
-    }
-
-    /// Emit number addition (dynamic)
-    pub fn emit_nadd(&mut self) -> Result<(), VmError> {
-        self.pop_type();
-        self.pop_type();
-        self.push_type(StackType::Number);
-        self.emit(opcode::NADD, &[])
-    }
-
-    /// Emit number subtraction (dynamic)
-    pub fn emit_nsub(&mut self) -> Result<(), VmError> {
-        self.pop_type();
-        self.pop_type();
-        self.push_type(StackType::Number);
-        self.emit(opcode::NSUB, &[])
     }
 
     // ===== Comparison Operations =====

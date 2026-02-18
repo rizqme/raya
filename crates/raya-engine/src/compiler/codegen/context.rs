@@ -284,6 +284,7 @@ impl IrCodeGenerator {
             4 => "void".to_string(),
             5 => "never".to_string(),
             6 => "unknown".to_string(),
+            16 => "int".to_string(),
             id => format!("type#{}", id), // Unknown type, use ID as fallback
         }
     }
@@ -354,22 +355,10 @@ impl IrCodeGenerator {
                 self.emit_load_register(ctx, left);
                 // Load right operand
                 self.emit_load_register(ctx, right);
-                // Emit operation - check operand types
-                // Pre-interned TypeIds:
-                // 0 = Number (f64)
-                // 1 = String
-                // 2 = Boolean
-                // 3 = Null
-                // 4 = Void
-                // 5 = Never
-                // 6 = Unknown
+                // Emit typed operation based on operand TypeIds
                 let left_ty = left.ty.as_u32();
                 let right_ty = right.ty.as_u32();
-                let is_string_op = left_ty == 1 || right_ty == 1;
-                let is_number_op = left_ty == 0 || right_ty == 0;
-                // Use generic comparison for null (3), unknown (6), or non-primitive types (>6)
-                let use_generic = left_ty == 3 || right_ty == 3 || left_ty == 6 || right_ty == 6 || left_ty > 6 || right_ty > 6;
-                self.emit_binary_op_typed_v2(ctx, *op, is_string_op, is_number_op, use_generic);
+                self.emit_binary_op_typed_v2(ctx, *op, left_ty, right_ty);
                 // Store result
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
@@ -377,7 +366,7 @@ impl IrCodeGenerator {
 
             IrInstr::UnaryOp { dest, op, operand } => {
                 self.emit_load_register(ctx, operand);
-                self.emit_unary_op(ctx, *op);
+                self.emit_unary_op(ctx, *op, operand.ty.as_u32());
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }
@@ -1070,13 +1059,29 @@ impl IrCodeGenerator {
     }
 
     /// Emit binary operation (type-aware version) - v2 with proper null/union support
-    fn emit_binary_op_typed_v2(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, is_number: bool, use_generic: bool) {
-        // Check if this is a comparison operation
-        let is_comparison = matches!(op,
-            BinaryOp::Equal | BinaryOp::NotEqual |
-            BinaryOp::Less | BinaryOp::LessEqual |
-            BinaryOp::Greater | BinaryOp::GreaterEqual
-        );
+    ///
+    /// Pre-interned TypeIds:
+    /// 0 = Number (f64), also `float`
+    /// 1 = String
+    /// 2 = Boolean
+    /// 3 = Null
+    /// 4 = Void
+    /// 5 = Never
+    /// 6 = Unknown
+    /// 16 = Int (i32)
+    fn emit_binary_op_typed_v2(&self, ctx: &mut FunctionContext, op: BinaryOp, left_ty: u32, right_ty: u32) {
+        const INT_TYPE_ID: u32 = 16;
+
+        let is_string = left_ty == 1 || right_ty == 1;
+        // Generic: null (3), unknown (6), or non-primitive types (>6 except Int)
+        let use_generic = left_ty == 3 || right_ty == 3
+            || left_ty == 6 || right_ty == 6
+            || (left_ty > 6 && left_ty != INT_TYPE_ID)
+            || (right_ty > 6 && right_ty != INT_TYPE_ID);
+        // Float: either operand is number/float (TypeId 0)
+        let is_float = left_ty == 0 || right_ty == 0;
+        // Int: both operands are int (TypeId 16)
+        let is_int = left_ty == INT_TYPE_ID && right_ty == INT_TYPE_ID;
 
         let opcode = if is_string {
             // String operations
@@ -1088,26 +1093,28 @@ impl IrCodeGenerator {
                 BinaryOp::LessEqual => Opcode::Sle,
                 BinaryOp::Greater => Opcode::Sgt,
                 BinaryOp::GreaterEqual => Opcode::Sge,
-                // Other ops fall back to integer (shouldn't happen for strings)
                 _ => self.get_integer_opcode(op),
             }
         } else if use_generic && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-            // Use generic comparison opcodes ONLY for equality with null/unknown types
+            // Use generic comparison opcodes for equality with null/unknown types
             match op {
                 BinaryOp::Equal => Opcode::Eq,
                 BinaryOp::NotEqual => Opcode::Ne,
                 _ => unreachable!(),
             }
         } else if use_generic {
-            // For non-equality operations with union/generic types, use number opcodes
-            // (handles both i32 and f64 values that may come from union types)
-            self.get_number_opcode(op)
-        } else if is_number {
-            // For all operations on number types, use number opcodes
-            // (these handle both i32 and f64 correctly, including NaN propagation)
-            self.get_number_opcode(op)
+            // For non-equality operations with union/generic types, use float opcodes
+            // (F* opcodes auto-convert i32 via value_to_f64)
+            self.get_float_opcode(op)
+        } else if is_float {
+            // Either operand is float/number → use F* opcodes
+            // (F* opcodes auto-convert i32 via value_to_f64)
+            self.get_float_opcode(op)
+        } else if is_int {
+            // Both operands are int → use I* opcodes
+            self.get_integer_opcode(op)
         } else {
-            // Default to integer for arithmetic on int, boolean, and other types
+            // Default to integer for boolean, and other primitive types
             self.get_integer_opcode(op)
         };
         ctx.emit(opcode);
@@ -1199,39 +1206,17 @@ impl IrCodeGenerator {
         }
     }
 
-    /// Get number opcode for a binary operation (preserves integer type when both operands are i32)
-    fn get_number_opcode(&self, op: BinaryOp) -> Opcode {
-        match op {
-            BinaryOp::Add => Opcode::Nadd,
-            BinaryOp::Sub => Opcode::Nsub,
-            BinaryOp::Mul => Opcode::Nmul,
-            BinaryOp::Div => Opcode::Ndiv,
-            BinaryOp::Mod => Opcode::Nmod,
-            BinaryOp::Pow => Opcode::Npow,
-            // For comparisons, use float opcodes (they handle both i32 and f64)
-            BinaryOp::Equal => Opcode::Feq,
-            BinaryOp::NotEqual => Opcode::Fne,
-            BinaryOp::Less => Opcode::Flt,
-            BinaryOp::LessEqual => Opcode::Fle,
-            BinaryOp::Greater => Opcode::Fgt,
-            BinaryOp::GreaterEqual => Opcode::Fge,
-            // Logical/bitwise operations use integer opcodes
-            BinaryOp::And => Opcode::And,
-            BinaryOp::Or => Opcode::Or,
-            BinaryOp::BitAnd => Opcode::Iand,
-            BinaryOp::BitOr => Opcode::Ior,
-            BinaryOp::BitXor => Opcode::Ixor,
-            BinaryOp::ShiftLeft => Opcode::Ishl,
-            BinaryOp::ShiftRight => Opcode::Ishr,
-            BinaryOp::UnsignedShiftRight => Opcode::Iushr,
-            BinaryOp::Concat => Opcode::Sconcat,
-        }
-    }
-
-    /// Emit unary operation
-    fn emit_unary_op(&self, ctx: &mut FunctionContext, op: UnaryOp) {
+    /// Emit unary operation with type awareness
+    fn emit_unary_op(&self, ctx: &mut FunctionContext, op: UnaryOp, operand_ty: u32) {
         let opcode = match op {
-            UnaryOp::Neg => Opcode::Ineg,
+            UnaryOp::Neg => {
+                // Use Fneg for float/number type, Ineg for int and other types
+                if operand_ty == 0 {
+                    Opcode::Fneg
+                } else {
+                    Opcode::Ineg
+                }
+            }
             UnaryOp::Not => Opcode::Not,
             UnaryOp::BitNot => Opcode::Inot,
         };

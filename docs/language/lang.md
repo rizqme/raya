@@ -172,16 +172,16 @@ null
 #### Number Literals
 
 ```ts
-42              // decimal integer
-3.14            // decimal float
-0x1A            // hexadecimal
-0o755           // octal
-0b1010          // binary
-1e6             // scientific notation
-1_000_000       // numeric separator (for readability)
+42              // decimal integer (type: int)
+3.14            // decimal float (type: number)
+0x1A            // hexadecimal (type: int)
+0o755           // octal (type: int)
+0b1010          // binary (type: int)
+1e6             // scientific notation (type: number)
+1_000_000       // numeric separator (type: int)
 ```
 
-All numbers are 64-bit floating point (IEEE 754 double).
+Integer literals (no decimal point, no exponent) have type `int` (32-bit signed integer). Float literals (with decimal point or exponent) have type `number` (64-bit floating point, IEEE 754 double).
 
 #### String Literals
 
@@ -284,10 +284,12 @@ Raya has six primitive types:
 
 #### `int`
 
-* 32-bit signed integer
+* 32-bit signed integer (i32)
 * Range: -2,147,483,648 to 2,147,483,647
 * Stored unboxed in VM (efficient)
 * Used for counters, indices, and whole numbers
+* Integer literals like `42` have type `int`
+* `typeof 42` returns `"int"`
 
 ```ts
 let count: int = 42;
@@ -295,64 +297,68 @@ let index: int = 0;
 let offset: int = -100;
 ```
 
-#### `float`
-
-* 64-bit IEEE 754 floating point
-* Full double precision
-* Special values: `Infinity`, `-Infinity`, `NaN`
-* Used for decimal numbers and large integers
-
-```ts
-let pi: float = 3.14159;
-let huge: float = 1e100;
-let temperature: float = 98.6;
-```
-
 #### `number`
 
-* Type alias for `int | float`
-* Accepts both integers and floats
-* Provides TypeScript/JavaScript compatibility
-* The compiler infers the specific type when possible
+* 64-bit IEEE 754 floating point (f64)
+* Full double precision
+* Special values: `Infinity`, `-Infinity`, `NaN`
+* Used for decimal numbers, scientific notation, and large values
+* Float literals like `3.14` have type `number`
+* `typeof 3.14` returns `"number"`
 
 ```ts
-let value: number = 42;        // Inferred as int
-let ratio: number = 3.14;      // Inferred as float
-let result: number = getValue(); // Could be either
+let pi: number = 3.14159;
+let huge: number = 1e100;
+let temperature: number = 98.6;
+```
 
-// Type narrowing with typeof
-function double(x: number): number {
-  if (typeof x === "int") {
-    return x * 2;  // x is int, result is int
-  } else {
-    return x * 2;  // x is float, result is float
-  }
-}
+#### `float`
+
+* Alias for `number` (64-bit IEEE 754 floating point)
+* `float` and `number` are interchangeable
+* Provides an explicit name for the floating-point type
+
+```ts
+let pi: float = 3.14159;       // Same as number
+let ratio: float = 0.5;        // Same as number
 ```
 
 **Numeric Literal Inference:**
 
 ```ts
-42          // Inferred as int
-3.14        // Inferred as float
-1e6         // Inferred as float
-0x1A        // Inferred as int
-2_147_483_647   // Inferred as int (max i32)
-2_147_483_648   // Inferred as float (exceeds i32)
+42          // type: int (i32)
+3.14        // type: number (f64)
+1e6         // type: number (f64)
+0x1A        // type: int (i32)
+0b1010      // type: int (i32)
+2_147_483_647   // type: int (max i32)
+2_147_483_648   // type: number (exceeds i32 range)
+```
+
+**Mixed Arithmetic (int + number promotion):**
+
+When `int` and `number` operands are mixed in arithmetic, the `int` is promoted to `number` (f64) and the result is `number`:
+
+```ts
+let i: int = 10;
+let f: number = 3.14;
+let result = i + f;  // result is number (f64), uses FADD
+let sum = i + i;     // sum is int (i32), uses IADD
+let prod = f * f;    // prod is number (f64), uses FMUL
 ```
 
 **Type Conversions:**
 
 ```ts
 let i: int = 42;
-let f: float = i;  // Implicit conversion: int → float
+let f: number = i;  // Implicit conversion: int -> number
 
-let f2: float = 3.14;
-let i2: int = f2;  // ERROR: No implicit float → int conversion
+let f2: number = 3.14;
+let i2: int = f2;  // ERROR: No implicit number -> int conversion
 
 // Explicit conversion with built-in functions
 let i3: int = math.floor(f2);     // floor/ceil/round/trunc
-let f3: float = float(i);          // Explicit cast
+let f3: number = number(i);       // Explicit cast
 ```
 
 #### `boolean`
@@ -442,7 +448,7 @@ Raya supports two patterns for union types:
 
 #### Bare Primitive Unions (typeof Operator)
 
-For **primitive types only** (`int`, `float`, `number`, `string`, `boolean`, `null`), you can write bare unions and use `typeof` for type narrowing:
+For **primitive types only** (`int`, `number`/`float`, `string`, `boolean`, `null`), you can write bare unions and use `typeof` for type narrowing:
 
 ```ts
 type ID = string | int;
@@ -466,13 +472,12 @@ if (typeof id === "int") {
 4. Exhaustiveness checking ensures all cases are handled
 
 **Supported bare unions:**
-- `int | float` (equivalent to `number`)
+- `int | number` (integer or float)
 - `string | int`
-- `string | float`
 - `string | number`
 - `int | boolean`
-- `float | boolean`
-- Any combination with `null` (e.g., `int | null`, `string | null`)
+- `number | boolean`
+- Any combination with `null` (e.g., `int | null`, `string | null`, `number | null`)
 
 **Limitations:**
 - Only primitive types (no objects, arrays, or classes)
@@ -491,7 +496,7 @@ The `typeof` operator returns a string indicating the type:
 
 ```ts
 typeof 42           // "int"
-typeof 3.14         // "float"
+typeof 3.14         // "number"
 typeof "hello"      // "string"
 typeof true         // "boolean"
 typeof null         // "null"
@@ -503,24 +508,24 @@ typeof (() => {})   // "function"
 **Type Narrowing Examples:**
 
 ```ts
-// Simple if/else with number union
-function process(value: string | number): string {
+// Simple if/else with union
+function process(value: string | int | number): string {
   if (typeof value === "int") {
     return value.toString();  // value is int
-  } else if (typeof value === "float") {
-    return value.toFixed(2);  // value is float
+  } else if (typeof value === "number") {
+    return value.toFixed(2);  // value is number (f64)
   } else {
     return value.toUpperCase();  // value is string
   }
 }
 
 // Switch statement with all primitives
-function describe(v: int | float | string | boolean): string {
+function describe(v: int | number | string | boolean): string {
   switch (typeof v) {
     case "int":
       return `Int: ${v}`;
-    case "float":
-      return `Float: ${v.toFixed(2)}`;
+    case "number":
+      return `Number: ${v.toFixed(2)}`;
     case "string":
       return `String: "${v}"`;
     case "boolean":
@@ -537,24 +542,18 @@ function greet(name: string | null): string {
   return "Hello, stranger!";
 }
 
-// Early return pattern with number
-function processNumber(input: string | number): float {
+// Early return pattern
+function processInput(input: string | int): number {
   if (typeof input === "int") {
-    return float(input);  // Convert int to float
-  } else if (typeof input === "float") {
-    return input;
+    return number(input);  // Convert int to number (f64)
   }
   // input is narrowed to string here
   return parseFloat(input);
 }
 
-// Working with int | float (number type)
-function double(x: number): number {
-  if (typeof x === "int") {
-    return x * 2;  // int * int = int
-  } else {
-    return x * 2.0;  // float * float = float
-  }
+// Mixed int and number arithmetic
+function compute(x: int, y: number): number {
+  return x + y;  // int + number promotes to number, uses FADD
 }
 ```
 
@@ -2294,7 +2293,7 @@ let r: Result<number> = { status: "ok", value: 42 };
 1. **Type checking pass** — Verifies all operations are type-safe
 2. **Type inference** — Deduces types where not explicitly stated
 3. **Monomorphization** — Specializes generic code for each concrete type
-4. **Bytecode emission** — Generates typed opcodes (IADD vs FADD vs NADD)
+4. **Bytecode emission** — Generates typed opcodes (IADD for int, FADD for float/number)
 
 **Runtime:**
 1. **No type checks** — VM assumes compiler verified everything

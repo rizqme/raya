@@ -173,7 +173,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 ## Critical Design Rules
 
 ### Type System
-- `typeof` for primitive unions (`string | number | boolean | null`)
+- `typeof` for primitive unions (`string | int | number | boolean | null`)
 - `instanceof` for class type checking
 - Discriminated unions for complex types (required discriminant field)
 - **BANNED:** `any` type, runtime type tags/RTTI
@@ -185,7 +185,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 
 ### Compilation
 - Monomorphization (generics specialized at compile time)
-- Typed opcodes: `IADD` (int), `FADD` (float), `NADD` (number)
+- Typed opcodes: `IADD` (int), `FADD` (float/number)
 - No runtime type checking overhead
 
 ---

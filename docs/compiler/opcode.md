@@ -125,16 +125,16 @@ The Raya VM uses a **stack-based** bytecode model:
 | `FDIV` | — | Pop two floats, push quotient |
 | `FNEG` | — | Pop float, push negation |
 
-#### Number Operations (Generic)
+#### Mixed Arithmetic (int + float promotion)
 
-| Opcode | Operands | Description |
-|--------|----------|-------------|
-| `NADD` | — | Pop two numbers, push sum |
-| `NSUB` | — | Pop two numbers, push difference |
-| `NMUL` | — | Pop two numbers, push product |
-| `NDIV` | — | Pop two numbers, push quotient |
-| `NMOD` | — | Pop two numbers, push remainder |
-| `NNEG` | — | Pop number, push negation |
+When operands have mixed types (`int + float` or `float + int`), the compiler promotes the `int` operand to `float` and emits the corresponding `F*` opcode. There are no separate N* opcodes; all arithmetic is either integer (`I*`) or float (`F*`).
+
+| Expression | Opcode | Description |
+|------------|--------|-------------|
+| `int + int` | `IADD` | Integer addition |
+| `float + float` | `FADD` | Float addition |
+| `int + float` | `FADD` | Promotes int to float, then float add |
+| `float + int` | `FADD` | Promotes int to float, then float add |
 
 ---
 
@@ -168,7 +168,7 @@ The Raya VM uses a **stack-based** bytecode model:
 | `NOT` | — | Logical NOT |
 | `AND` | — | Logical AND (short-circuit via jumps) |
 | `OR` | — | Logical OR (short-circuit via jumps) |
-| `TYPEOF` | — | Pop value, push type string ("null", "boolean", "number", "string", "object", "function") |
+| `TYPEOF` | — | Pop value, push type string ("null", "boolean", "int", "number", "string", "object", "function") |
 
 **TYPEOF Details:**
 - Returns a string indicating the runtime type of a value
@@ -176,7 +176,8 @@ The Raya VM uses a **stack-based** bytecode model:
 - Return values:
   - `null` → `"null"`
   - `true`/`false` → `"boolean"`
-  - `42`/`3.14` → `"number"`
+  - `42` → `"int"`
+  - `3.14` → `"number"`
   - `"hello"` → `"string"`
   - `{x:1}` / `[1,2]` → `"object"`
   - `() => {}` → `"function"`
@@ -499,9 +500,11 @@ Opcodes are numbered sequentially:
 0x02: DUP
 0x03: SWAP
 ...
-0x40: SPAWN
-0x41: AWAIT
-0x42: YIELD
+0x10-0x1F: Integer arithmetic (IADD, ISUB, IMUL, IDIV, IMOD, INEG, ...)
+0x20-0x2F: Float arithmetic (FADD, FSUB, FMUL, FDIV, FNEG, ...)
+0x30-0x3F: Comparison operations
+0x40-0x4F: Reserved (formerly N* number opcodes, now unused)
+0x50-0x5F: SPAWN, AWAIT, YIELD, ...
 ...
 ```
 
@@ -526,7 +529,8 @@ This allows 256 base opcodes + 256 extended opcodes.
 
 ### 5.2 Type-Specific Operations
 
-* Emit `IADD` / `FADD` based on static type analysis
+* Emit `IADD` for `int` operands, `FADD` for `float` operands based on static type analysis
+* Mixed `int + float` promotes to `float` and uses `FADD`
 * Reduces need for dynamic dispatch and type checking
 
 ### 5.3 Constant Folding
@@ -560,7 +564,7 @@ Before execution, the VM verifies:
 Raya source:
 
 ```ts
-function add(a: number, b: number): number {
+function add(a: float, b: float): float {
   return a + b;
 }
 ```
@@ -570,7 +574,7 @@ Bytecode:
 ```
 LOAD_LOCAL_0        // load a
 LOAD_LOCAL_1        // load b
-NADD                // a + b
+FADD                // a + b (float addition)
 RETURN              // return result
 ```
 

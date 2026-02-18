@@ -1368,7 +1368,8 @@ fn test_async_recursive_sum_divide_and_conquer() {
                 if (lo < hi) { return lo; }
                 return 0;
             }
-            let mid: number = lo + (hi - lo) / 2;
+            let half: number = (hi - lo) / 2;
+            let mid: number = lo + half - half % 1;
             let left = rangeSum(lo, mid);
             let right = rangeSum(mid, hi);
             let results = await [left, right];
@@ -1386,10 +1387,10 @@ fn test_async_recursive_power() {
         async function power(base: number, exp: number): Task<number> {
             if (exp == 0) { return 1; }
             if (exp == 1) { return base; }
-            let half: number = exp / 2;
+            let half: number = exp / 2 - (exp / 2) % 1;
             let t = power(base, half);
             let halfResult = await t;
-            let isEven: boolean = half * 2 == exp;
+            let isEven: boolean = exp % 2 == 0;
             if (isEven) {
                 return halfResult * halfResult;
             }

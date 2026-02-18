@@ -768,9 +768,22 @@ impl<'a> Lowerer<'a> {
                     value: refcell_reg,
                 });
             } else {
-                // Use the type from the initializer expression (already inferred during lowering)
-                // This correctly handles cases like `let x = 42;` where x should be number
-                self.local_registers.insert(local_idx, value.clone());
+                // If there's a type annotation for a numeric type, use it for the register type
+                // so that operations on this variable use the correct opcodes.
+                // This handles cases like `let result: number = 1` where `1` infers as int
+                // but the variable should be typed as number for correct codegen (Fadd vs Iadd).
+                let typed_value = if let Some(type_ann) = &decl.type_annotation {
+                    let ann_ty = self.resolve_type_annotation(type_ann);
+                    if ann_ty != value.ty {
+                        use crate::compiler::ir::Register;
+                        Register { id: value.id, ty: ann_ty }
+                    } else {
+                        value.clone()
+                    }
+                } else {
+                    value.clone()
+                };
+                self.local_registers.insert(local_idx, typed_value);
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
                     value,

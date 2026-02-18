@@ -91,8 +91,8 @@ mod builtin_regexp {
 /// 7=Mutex, 8=RegExp, 9=Date, 10=Buffer, etc.
 /// Array types are interned dynamically (TypeId >= 15 typically)
 fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
-    // Number type (TypeId 0)
-    if obj_type_id == 0 {
+    // Number type (TypeId 0) and Int type (TypeId 16)
+    if obj_type_id == 0 || obj_type_id == 16 {
         match method_name {
             "toFixed" => return Some(builtin_number::TO_FIXED),
             "toPrecision" => return Some(builtin_number::TO_PRECISION),
@@ -217,8 +217,8 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        let ty = TypeId::new(0); // Number type (integers are numbers in Raya)
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, ..., 16=Int
+        let ty = TypeId::new(16); // Int type (i32)
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -1045,7 +1045,7 @@ impl<'a> Lowerer<'a> {
             if method_name == "length" && args.is_empty() {
                 if obj_type_id == 1 {
                     // String length
-                    let len_dest = self.alloc_register(TypeId::new(0));
+                    let len_dest = self.alloc_register(TypeId::new(16));
                     self.emit(IrInstr::StringLen {
                         dest: len_dest.clone(),
                         string: object,
@@ -1053,7 +1053,7 @@ impl<'a> Lowerer<'a> {
                     return len_dest;
                 } else {
                     // Array length (obj_type_id > 6, or 0 for unknown/number — same heuristic as property access)
-                    let len_dest = self.alloc_register(TypeId::new(0));
+                    let len_dest = self.alloc_register(TypeId::new(16));
                     self.emit(IrInstr::ArrayLen {
                         dest: len_dest.clone(),
                         array: object,
@@ -1153,7 +1153,7 @@ impl<'a> Lowerer<'a> {
 
     /// Helper: emit integer constant into a register
     pub(super) fn emit_i32_const(&mut self, value: i32) -> Register {
-        let reg = self.alloc_register(TypeId::new(0)); // number type
+        let reg = self.alloc_register(TypeId::new(16)); // int type
         self.emit(IrInstr::Assign {
             dest: reg.clone(),
             value: IrValue::Constant(IrConstant::I32(value)),
@@ -1200,7 +1200,7 @@ impl<'a> Lowerer<'a> {
         let callback = args.into_iter().next().expect("map requires a callback argument");
 
         // Get array length
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1298,7 +1298,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("filter requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1406,7 +1406,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("forEach requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1482,7 +1482,7 @@ impl<'a> Lowerer<'a> {
         let callback = args_iter.next().expect("reduce requires a callback argument");
         let initial = args_iter.next();
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1490,7 +1490,7 @@ impl<'a> Lowerer<'a> {
 
         // Set up accumulator and start index based on whether initial value provided
         let acc = self.alloc_register(TypeId::new(0));
-        let i = self.alloc_register(TypeId::new(0));
+        let i = self.alloc_register(TypeId::new(16));
 
         if let Some(init_val) = initial {
             // acc = initial, i = 0
@@ -1587,7 +1587,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("find requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1689,7 +1689,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("findIndex requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1791,7 +1791,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("some requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1893,7 +1893,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let callback = args.into_iter().next().expect("every requires a callback argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -1996,7 +1996,7 @@ impl<'a> Lowerer<'a> {
     ) -> Register {
         let compare_fn = args.into_iter().next().expect("sort requires a compareFn argument");
 
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: array.clone(),
@@ -2010,7 +2010,7 @@ impl<'a> Lowerer<'a> {
         });
 
         // limit = len - 1
-        let limit = self.alloc_register(TypeId::new(0));
+        let limit = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::BinaryOp {
             dest: limit.clone(),
             op: BinaryOp::Sub,
@@ -2067,7 +2067,7 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(inner_body, "sort.inner.body"));
         self.current_block = inner_body;
 
-        let j = self.alloc_register(TypeId::new(0));
+        let j = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::BinaryOp {
             dest: j.clone(),
             op: BinaryOp::Add,
@@ -2237,7 +2237,7 @@ impl<'a> Lowerer<'a> {
         let i = self.emit_i32_const(0);
 
         // len = ArrayLen(matches)
-        let len = self.alloc_register(TypeId::new(0));
+        let len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
             array: matches.clone(),
@@ -2292,7 +2292,7 @@ impl<'a> Lowerer<'a> {
 
         // start_idx = match_arr[1]
         let one_idx = self.emit_i32_const(1);
-        let start_idx = self.alloc_register(TypeId::new(0));
+        let start_idx = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::LoadElement {
             dest: start_idx.clone(),
             array: match_arr.clone(),
@@ -2343,7 +2343,7 @@ impl<'a> Lowerer<'a> {
         });
 
         // match_len = StringLen(match_text)
-        let match_len = self.alloc_register(TypeId::new(0));
+        let match_len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::StringLen {
             dest: match_len.clone(),
             string: match_text,
@@ -2373,7 +2373,7 @@ impl<'a> Lowerer<'a> {
         self.current_block = exit_block;
 
         // input_len = StringLen(input)
-        let input_len = self.alloc_register(TypeId::new(0));
+        let input_len = self.alloc_register(TypeId::new(16));
         self.emit(IrInstr::StringLen {
             dest: input_len.clone(),
             string: input.clone(),
@@ -2574,7 +2574,7 @@ impl<'a> Lowerer<'a> {
                         ast::ArrayElement::Spread(spread_expr) => {
                             let src_arr = self.lower_expr(spread_expr);
                             // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
-                            let len = self.alloc_register(TypeId::new(0));
+                            let len = self.alloc_register(TypeId::new(16));
                             self.emit(IrInstr::ArrayLen {
                                 dest: len.clone(),
                                 array: src_arr.clone(),
@@ -3962,12 +3962,19 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Infer result type for binary operation
-    fn infer_binary_result_type(&self, op: &BinaryOp, left: &Register, _right: &Register) -> TypeId {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+    fn infer_binary_result_type(&self, op: &BinaryOp, left: &Register, right: &Register) -> TypeId {
+        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown, 16=Int
         if op.is_comparison() || op.is_logical() {
             TypeId::new(2) // Boolean type
         } else {
-            left.ty // Same as left operand for arithmetic
+            // Mixed int+number promotes to number (f64)
+            let l = left.ty.as_u32();
+            let r = right.ty.as_u32();
+            if l == 0 || r == 0 {
+                TypeId::new(0) // number (f64)
+            } else {
+                left.ty
+            }
         }
     }
 }

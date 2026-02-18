@@ -153,7 +153,7 @@ Vm::execute(&Module) -> VmResult<Value>
 - **No runtime type checks**: All types verified at compile time
 - **Monomorphization**: Generics are specialized per concrete type
 - **Task-based concurrency**: `async` creates Tasks, `await` suspends
-- **Typed opcodes**: `IADD` (int), `FADD` (float), `NADD` (number)
+- **Typed opcodes**: `IADD` (int), `FADD` (float/number)
 - **NativeHandler trait**: Engine defines this trait for stdlib decoupling; `raya-runtime` binds implementations
 - **Reflection always enabled**: No compiler flag needed, metadata always emitted
 

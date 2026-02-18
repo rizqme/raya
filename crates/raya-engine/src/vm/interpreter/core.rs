@@ -567,16 +567,14 @@ impl<'a> Interpreter<'a> {
             }
 
             // =========================================================
-            // Integer, Float, and Number Arithmetic
+            // Integer and Float Arithmetic
             // =========================================================
             Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv |
             Opcode::Imod | Opcode::Ineg | Opcode::Ipow |
             Opcode::Ishl | Opcode::Ishr | Opcode::Iushr |
             Opcode::Iand | Opcode::Ior | Opcode::Ixor | Opcode::Inot |
             Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv |
-            Opcode::Fneg | Opcode::Fpow | Opcode::Fmod |
-            Opcode::Nadd | Opcode::Nsub | Opcode::Nmul | Opcode::Ndiv |
-            Opcode::Nmod | Opcode::Nneg | Opcode::Npow => {
+            Opcode::Fneg | Opcode::Fpow | Opcode::Fmod => {
                 self.exec_arithmetic_ops(stack, opcode)
             }
 

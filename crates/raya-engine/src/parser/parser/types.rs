@@ -82,8 +82,12 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
             parser.advance();
 
             match parser.resolve(name_sym) {
-                "number" => TypeAnnotation {
+                "number" | "float" => TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
+                    span: start_span,
+                },
+                "int" => TypeAnnotation {
+                    ty: Type::Primitive(PrimitiveType::Int),
                     span: start_span,
                 },
                 "string" => TypeAnnotation {

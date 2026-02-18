@@ -657,7 +657,8 @@ impl<'a> Binder<'a> {
 
         // Primitive types
         match ty_str {
-            "number" => self.type_ctx.number_type(),
+            "number" | "float" => self.type_ctx.number_type(),
+            "int" => self.type_ctx.int_type(),
             "string" => self.type_ctx.string_type(),
             "boolean" => self.type_ctx.boolean_type(),
             "void" => self.type_ctx.void_type(),
@@ -1737,6 +1738,7 @@ impl<'a> Binder<'a> {
 
         match prim {
             AstPrim::Number => self.type_ctx.number_type(),
+            AstPrim::Int => self.type_ctx.int_type(),
             AstPrim::String => self.type_ctx.string_type(),
             AstPrim::Boolean => self.type_ctx.boolean_type(),
             AstPrim::Null => self.type_ctx.null_type(),

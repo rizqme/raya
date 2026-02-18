@@ -251,7 +251,7 @@ fn test_function_count_digits() {
     expect_i32(
         "function countDigits(n: number): number {
              let count = 0;
-             while (n > 0) {
+             while (n >= 1) {
                  count = count + 1;
                  n = n / 10;
              }

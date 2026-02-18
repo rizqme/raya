@@ -24,7 +24,15 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let len = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0) as usize,
+                    Ok(v) => {
+                        if let Some(i) = v.as_i32() {
+                            i as usize
+                        } else if let Some(f) = v.as_f64() {
+                            f as usize
+                        } else {
+                            0
+                        }
+                    }
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
@@ -40,7 +48,15 @@ impl<'a> Interpreter<'a> {
 
             Opcode::LoadElem => {
                 let index = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0) as usize,
+                    Ok(v) => {
+                        if let Some(i) = v.as_i32() {
+                            i as usize
+                        } else if let Some(f) = v.as_f64() {
+                            f as usize
+                        } else {
+                            0
+                        }
+                    }
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let arr_val = match stack.pop() {
@@ -77,7 +93,15 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let index = match stack.pop() {
-                    Ok(v) => v.as_i32().unwrap_or(0) as usize,
+                    Ok(v) => {
+                        if let Some(i) = v.as_i32() {
+                            i as usize
+                        } else if let Some(f) = v.as_f64() {
+                            f as usize
+                        } else {
+                            0
+                        }
+                    }
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let arr_val = match stack.pop() {

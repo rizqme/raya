@@ -109,8 +109,7 @@ emit_store_local(writer, idx)
 
 // Arithmetic (type-specific)
 emit_iadd(writer)  // Integer add
-emit_fadd(writer)  // Float add
-emit_nadd(writer)  // Number add (runtime dispatch)
+emit_fadd(writer)  // Float/number add
 
 // Control flow
 emit_jump(writer, offset)
@@ -129,8 +128,7 @@ The codegen chooses opcodes based on operand types:
 fn emit_binary_op(writer: &mut BytecodeWriter, op: BinaryOp, ty: TypeId) {
     match (op, ty) {
         (Add, TypeId::INT) => writer.emit_iadd(),
-        (Add, TypeId::FLOAT) => writer.emit_fadd(),
-        (Add, TypeId::NUMBER) => writer.emit_nadd(),
+        (Add, TypeId::FLOAT | TypeId::NUMBER) => writer.emit_fadd(),
         (Add, TypeId::STRING) => writer.emit_sconcat(),
         // ...
     }

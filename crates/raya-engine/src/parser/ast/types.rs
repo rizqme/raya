@@ -91,7 +91,8 @@ impl Type {
 /// Primitive type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimitiveType {
-    Number,  // number
+    Number,  // number (f64), also `float`
+    Int,     // int (i32)
     String,  // string
     Boolean, // boolean
     Null,    // null
@@ -103,6 +104,7 @@ impl PrimitiveType {
     pub fn name(&self) -> &'static str {
         match self {
             PrimitiveType::Number => "number",
+            PrimitiveType::Int => "int",
             PrimitiveType::String => "string",
             PrimitiveType::Boolean => "boolean",
             PrimitiveType::Null => "null",

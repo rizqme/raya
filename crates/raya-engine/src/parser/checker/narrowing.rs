@@ -134,6 +134,7 @@ fn apply_typeof_guard(
     let target_ty = match type_name {
         "string" => ctx.string_type(),
         "number" => ctx.number_type(),
+        "int" => ctx.int_type(),
         "boolean" => ctx.boolean_type(),
         "function" => return Some(ty), // TODO: filter to function types only
         "object" => return Some(ty),   // TODO: filter to object types only
@@ -161,6 +162,7 @@ fn apply_typeof_guard_bare_union(
     // Map type name to PrimitiveType
     let target_prim = match type_name {
         "number" => PrimitiveType::Number,
+        "int" => PrimitiveType::Int,
         "string" => PrimitiveType::String,
         "boolean" => PrimitiveType::Boolean,
         "null" => PrimitiveType::Null,

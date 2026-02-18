@@ -40,13 +40,6 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::Fneg
         | Opcode::Fpow
         | Opcode::Fmod
-        | Opcode::Nadd
-        | Opcode::Nsub
-        | Opcode::Nmul
-        | Opcode::Ndiv
-        | Opcode::Nmod
-        | Opcode::Nneg
-        | Opcode::Npow
         | Opcode::Ieq
         | Opcode::Ine
         | Opcode::Ilt

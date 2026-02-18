@@ -22,7 +22,7 @@ interpreter/
 │
 ├── opcodes/                  # 15 categorized opcode handler modules
 │   ├── mod.rs                # Module index
-│   ├── arithmetic.rs         # IAdd/ISub/IMul/IDiv/IMod, FAdd/FSub/FMul/FDiv/FMod, NAdd/NSub/NMul/NDiv/NPow, INeg/FNeg
+│   ├── arithmetic.rs         # IAdd/ISub/IMul/IDiv/IMod, FAdd/FSub/FMul/FDiv/FMod, INeg/FNeg
 │   ├── arrays.rs             # NewArray, LoadElem, StoreElem, ArrayLen, ArrayPush/Pop, ArrayLiteral, InitArray
 │   ├── calls.rs              # Call, CallClosure, CallMethod, CallConstructor, CallSuper
 │   ├── closures.rs           # MakeClosure, LoadCaptured, StoreCaptured, SetClosureCapture, NewRefCell, Load/StoreRefCell

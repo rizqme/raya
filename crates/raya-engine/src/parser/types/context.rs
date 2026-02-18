@@ -63,8 +63,14 @@ impl TypeContext {
         // Pre-intern Json type for JSON.parse return values
         ctx.intern(Type::Json);
 
+        // Pre-intern Int primitive type (TypeId 16)
+        ctx.intern(Type::Primitive(PrimitiveType::Int));
+
         ctx
     }
+
+    /// Well-known TypeId for Int primitive type
+    pub const INT_TYPE_ID: u32 = 16;
 
     /// Intern a type, returning its TypeId
     ///
@@ -131,9 +137,14 @@ impl TypeContext {
 
     // Convenience methods for creating common types
 
-    /// Get the number type
+    /// Get the number type (f64)
     pub fn number_type(&mut self) -> TypeId {
         self.intern(Type::Primitive(super::ty::PrimitiveType::Number))
+    }
+
+    /// Get the int type (i32)
+    pub fn int_type(&mut self) -> TypeId {
+        self.intern(Type::Primitive(super::ty::PrimitiveType::Int))
     }
 
     /// Get the string type

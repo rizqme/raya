@@ -31,8 +31,10 @@ impl fmt::Display for TypeId {
 /// Primitive types in Raya
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PrimitiveType {
-    /// The `number` type (IEEE 754 double precision)
+    /// The `number` type (IEEE 754 double precision, f64). `float` is an alias.
     Number,
+    /// The `int` type (32-bit signed integer, i32)
+    Int,
     /// The `string` type
     String,
     /// The `boolean` type
@@ -47,6 +49,7 @@ impl fmt::Display for PrimitiveType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PrimitiveType::Number => write!(f, "number"),
+            PrimitiveType::Int => write!(f, "int"),
             PrimitiveType::String => write!(f, "string"),
             PrimitiveType::Boolean => write!(f, "boolean"),
             PrimitiveType::Null => write!(f, "null"),
@@ -60,6 +63,7 @@ impl PrimitiveType {
     pub fn type_name(&self) -> &'static str {
         match self {
             PrimitiveType::Number => "number",
+            PrimitiveType::Int => "int",
             PrimitiveType::String => "string",
             PrimitiveType::Boolean => "boolean",
             PrimitiveType::Null => "null",
@@ -75,6 +79,7 @@ impl PrimitiveType {
         matches!(
             self,
             PrimitiveType::Number
+                | PrimitiveType::Int
                 | PrimitiveType::String
                 | PrimitiveType::Boolean
                 | PrimitiveType::Null
@@ -602,6 +607,7 @@ mod tests {
     #[test]
     fn test_primitive_display() {
         assert_eq!(format!("{}", PrimitiveType::Number), "number");
+        assert_eq!(format!("{}", PrimitiveType::Int), "int");
         assert_eq!(format!("{}", PrimitiveType::String), "string");
         assert_eq!(format!("{}", PrimitiveType::Boolean), "boolean");
         assert_eq!(format!("{}", PrimitiveType::Null), "null");
