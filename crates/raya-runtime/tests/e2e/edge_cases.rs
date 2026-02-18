@@ -1058,7 +1058,7 @@ fn test_for_loop_boundary() {
 fn test_infinite_loop_detected() {
     // i++ in for-loop update doesn't increment, causing infinite loop
     // The VM detects this via consecutive preemption counting and kills the task
-    expect_runtime_error("
+    expect_runtime_error_fast_preempt("
         let sum: number = 0;
         for (let i: number = 0; i < 5; i++) {
             sum = sum + i;
@@ -1069,7 +1069,7 @@ fn test_infinite_loop_detected() {
 
 #[test]
 fn test_infinite_while_loop_detected() {
-    expect_runtime_error("
+    expect_runtime_error_fast_preempt("
         while (true) {
             let x: number = 1;
         }

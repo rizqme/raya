@@ -4,7 +4,7 @@
 //! "logger.info") into a `NativeFunctionRegistry`. At module load time,
 //! the VM resolves these names to handler functions for zero-cost dispatch.
 
-use raya_engine::vm::{NativeCallResult, NativeFunctionRegistry, NativeValue, string_read};
+use raya_sdk::{NativeCallResult, NativeFunctionRegistry, NativeValue};
 
 /// Helper to extract f64 from a NativeValue, handling both i32 and f64
 fn get_f64(val: &NativeValue) -> f64 {
@@ -32,33 +32,33 @@ pub fn register_stdlib(registry: &mut NativeFunctionRegistry) {
 
 /// Register logger native functions
 fn register_logger(registry: &mut NativeFunctionRegistry) {
-    registry.register("logger.debug", |_ctx, args| {
+    registry.register("logger.debug", |ctx, args| {
         let parts: Vec<String> = args.iter()
-            .filter_map(|v| string_read(*v).ok())
+            .filter_map(|v| ctx.read_string(*v).ok())
             .collect();
         crate::logger::debug(&parts.join(" "));
         NativeCallResult::null()
     });
 
-    registry.register("logger.info", |_ctx, args| {
+    registry.register("logger.info", |ctx, args| {
         let parts: Vec<String> = args.iter()
-            .filter_map(|v| string_read(*v).ok())
+            .filter_map(|v| ctx.read_string(*v).ok())
             .collect();
         crate::logger::info(&parts.join(" "));
         NativeCallResult::null()
     });
 
-    registry.register("logger.warn", |_ctx, args| {
+    registry.register("logger.warn", |ctx, args| {
         let parts: Vec<String> = args.iter()
-            .filter_map(|v| string_read(*v).ok())
+            .filter_map(|v| ctx.read_string(*v).ok())
             .collect();
         crate::logger::warn(&parts.join(" "));
         NativeCallResult::null()
     });
 
-    registry.register("logger.error", |_ctx, args| {
+    registry.register("logger.error", |ctx, args| {
         let parts: Vec<String> = args.iter()
-            .filter_map(|v| string_read(*v).ok())
+            .filter_map(|v| ctx.read_string(*v).ok())
             .collect();
         crate::logger::error(&parts.join(" "));
         NativeCallResult::null()
@@ -180,10 +180,6 @@ fn register_path(registry: &mut NativeFunctionRegistry) {
 }
 
 /// Register time native functions
-///
-/// Time handlers use the NativeContext/NativeValue API (same as other stdlib modules).
-/// The time handler in raya-engine uses Stack directly, but this registry version
-/// works through the ModuleNativeCall path.
 fn register_time(registry: &mut NativeFunctionRegistry) {
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
     use std::sync::LazyLock;

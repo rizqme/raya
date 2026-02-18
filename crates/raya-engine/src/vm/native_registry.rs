@@ -1,69 +1,10 @@
 //! Native function registry
 //!
-//! Provides a name→handler map for native functions. Stdlib modules register
-//! their native functions by name (e.g., "math.abs", "time.now"). At module
-//! load time, the VM resolves module-local native indices to handler functions
-//! via this registry.
+//! Re-exports `NativeFunctionRegistry` from raya-sdk and provides
+//! `ResolvedNatives` — the engine-side dispatch table built at load time.
 
-use crate::vm::abi::{NativeContext, NativeValue};
-use crate::vm::native_handler::NativeCallResult;
-use std::collections::HashMap;
-use std::sync::Arc;
-
-/// A native function handler
-pub type NativeFn = Arc<dyn Fn(&NativeContext, &[NativeValue]) -> NativeCallResult + Send + Sync>;
-
-/// Registry of native functions indexed by symbolic name.
-///
-/// Used at module load time to resolve symbolic native call names
-/// (stored in bytecode) to handler functions.
-pub struct NativeFunctionRegistry {
-    handlers: HashMap<String, NativeFn>,
-}
-
-impl NativeFunctionRegistry {
-    /// Create a new empty registry
-    pub fn new() -> Self {
-        Self {
-            handlers: HashMap::new(),
-        }
-    }
-
-    /// Register a native function by name
-    pub fn register(
-        &mut self,
-        name: &str,
-        handler: impl Fn(&NativeContext, &[NativeValue]) -> NativeCallResult + Send + Sync + 'static,
-    ) {
-        self.handlers.insert(name.to_string(), Arc::new(handler));
-    }
-
-    /// Get a handler by name (used at link time)
-    pub fn get(&self, name: &str) -> Option<NativeFn> {
-        self.handlers.get(name).cloned()
-    }
-
-    /// Check if a handler is registered
-    pub fn contains(&self, name: &str) -> bool {
-        self.handlers.contains_key(name)
-    }
-
-    /// Get the number of registered handlers
-    pub fn len(&self) -> usize {
-        self.handlers.len()
-    }
-
-    /// Check if the registry is empty
-    pub fn is_empty(&self) -> bool {
-        self.handlers.is_empty()
-    }
-}
-
-impl Default for NativeFunctionRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use raya_sdk::{NativeHandlerFn as NativeFn, NativeFunctionRegistry};
+use raya_sdk::{NativeContext, NativeValue, NativeCallResult};
 
 /// Resolved native function table for a loaded module.
 ///
@@ -113,7 +54,7 @@ impl ResolvedNatives {
     pub fn call(
         &self,
         local_idx: u16,
-        ctx: &NativeContext,
+        ctx: &dyn NativeContext,
         args: &[NativeValue],
     ) -> NativeCallResult {
         if let Some(handler) = self.handlers.get(local_idx as usize) {

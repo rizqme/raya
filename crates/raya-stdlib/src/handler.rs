@@ -3,7 +3,7 @@
 //! Routes native call IDs in the stdlib range to the corresponding
 //! Rust implementations.
 
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeHandler, NativeValue, string_read};
+use raya_sdk::{NativeCallResult, NativeContext, NativeHandler, NativeValue};
 
 /// Standard library native call handler
 ///
@@ -25,7 +25,7 @@ impl StdNativeHandler {
 }
 
 impl NativeHandler for StdNativeHandler {
-    fn call(&self, ctx: &NativeContext, id: u16, args: &[NativeValue]) -> NativeCallResult {
+    fn call(&self, ctx: &dyn NativeContext, id: u16, args: &[NativeValue]) -> NativeCallResult {
         // Delegate to specialized modules
         if (0x4000..=0x40FF).contains(&id) {
             // Crypto methods (0x4000-0x400B)
@@ -40,7 +40,7 @@ impl NativeHandler for StdNativeHandler {
             0x1000 => {
                 // LOGGER_DEBUG
                 let parts: Vec<String> = args.iter()
-                    .filter_map(|v| string_read(*v).ok())
+                    .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
                 crate::logger::debug(&msg);
@@ -49,7 +49,7 @@ impl NativeHandler for StdNativeHandler {
             0x1001 => {
                 // LOGGER_INFO
                 let parts: Vec<String> = args.iter()
-                    .filter_map(|v| string_read(*v).ok())
+                    .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
                 crate::logger::info(&msg);
@@ -58,7 +58,7 @@ impl NativeHandler for StdNativeHandler {
             0x1002 => {
                 // LOGGER_WARN
                 let parts: Vec<String> = args.iter()
-                    .filter_map(|v| string_read(*v).ok())
+                    .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
                 crate::logger::warn(&msg);
@@ -67,7 +67,7 @@ impl NativeHandler for StdNativeHandler {
             0x1003 => {
                 // LOGGER_ERROR
                 let parts: Vec<String> = args.iter()
-                    .filter_map(|v| string_read(*v).ok())
+                    .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
                 crate::logger::error(&msg);
@@ -177,30 +177,32 @@ impl NativeHandler for StdNativeHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use raya_engine::vm::abi::EngineContext;
     use raya_engine::vm::gc::GarbageCollector as Gc;
-    use raya_engine::vm::scheduler::{Scheduler, TaskId};
-    use raya_engine::vm::types::TypeRegistry;
+    use raya_engine::vm::scheduler::TaskId;
     use raya_engine::vm::interpreter::{ClassRegistry, VmContextId};
+    use raya_engine::vm::reflect::ClassMetadataRegistry;
+    use raya_engine::vm::types::TypeRegistry;
     use parking_lot::{Mutex, RwLock};
     use std::sync::Arc;
 
-    fn create_test_context() -> (Mutex<Gc>, RwLock<ClassRegistry>, Arc<Scheduler>) {
+    fn create_test_context() -> (Mutex<Gc>, RwLock<ClassRegistry>, RwLock<ClassMetadataRegistry>) {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(TypeRegistry::new());
         let gc = Mutex::new(Gc::new(context_id, type_registry));
         let classes = RwLock::new(ClassRegistry::new());
-        let scheduler = Arc::new(Scheduler::new(1));
-        (gc, classes, scheduler)
+        let class_metadata = RwLock::new(ClassMetadataRegistry::new());
+        (gc, classes, class_metadata)
     }
 
     #[test]
     fn test_logger_info() {
-        let (gc, classes, scheduler) = create_test_context();
-        let ctx = NativeContext::new(&gc, &classes, &scheduler, TaskId::from_u64(1));
+        let (gc, classes, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
 
-        // Allocate string arguments using the ABI
-        let hello = raya_engine::vm::string_allocate(&ctx, "hello".to_string());
-        let world = raya_engine::vm::string_allocate(&ctx, "world".to_string());
+        // Allocate string arguments using the context
+        let hello = ctx.create_string("hello");
+        let world = ctx.create_string("world");
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x1001, &[hello, world]);
@@ -209,8 +211,8 @@ mod tests {
 
     #[test]
     fn test_math_abs() {
-        let (gc, classes, scheduler) = create_test_context();
-        let ctx = NativeContext::new(&gc, &classes, &scheduler, TaskId::from_u64(1));
+        let (gc, classes, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2000, &[NativeValue::f64(-5.0)]);
@@ -224,8 +226,8 @@ mod tests {
 
     #[test]
     fn test_math_pi() {
-        let (gc, classes, scheduler) = create_test_context();
-        let ctx = NativeContext::new(&gc, &classes, &scheduler, TaskId::from_u64(1));
+        let (gc, classes, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0x2015, &[]);
@@ -240,8 +242,8 @@ mod tests {
 
     #[test]
     fn test_unhandled() {
-        let (gc, classes, scheduler) = create_test_context();
-        let ctx = NativeContext::new(&gc, &classes, &scheduler, TaskId::from_u64(1));
+        let (gc, classes, class_metadata) = create_test_context();
+        let ctx = EngineContext::new(&gc, &classes, TaskId::from_u64(1), &class_metadata);
 
         let handler = StdNativeHandler;
         let result = handler.call(&ctx, 0xFFFF, &[]);

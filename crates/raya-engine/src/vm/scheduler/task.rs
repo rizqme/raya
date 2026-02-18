@@ -45,6 +45,9 @@ pub enum SuspendReason {
         /// Channel handle
         channel_id: u64,
     },
+
+    /// Waiting for IO completion from the event loop (NativeCallResult::Suspend)
+    IoWait,
 }
 
 /// Unique identifier for a Task

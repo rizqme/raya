@@ -45,14 +45,24 @@ pub mod types;
 pub mod value;
 pub mod interpreter;
 
+// Re-export SDK types (canonical definitions live in raya-sdk)
+pub use raya_sdk::{
+    NativeValue, NativeContext, NativeHandler, NativeCallResult, NoopNativeHandler,
+    NativeArray, NativeObject, ObjectSchema, NativeClass, NativeFunction, NativeMethod, NativeTask,
+    AbiResult, ClassInfo, NativeError, FromNativeObject, ToNativeObject,
+};
+
+// Re-export engine-specific ABI types
 pub use abi::{
+    EngineContext,
+    value_to_native, native_to_value,
+    // Backward-compatible free functions
     array_allocate, array_get, array_length, buffer_allocate, buffer_read_bytes, class_get_info,
     object_allocate, object_class_id, object_get_field, object_set_field, string_allocate,
-    string_read, task_cancel, task_is_done, task_spawn, AbiResult, ClassInfo, NativeContext,
-    NativeValue,
+    string_read, task_cancel, task_is_done, task_spawn,
 };
+
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
-pub use native_handler::{NativeCallResult, NativeHandler, NoopNativeHandler};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
 pub use object::{Array, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;

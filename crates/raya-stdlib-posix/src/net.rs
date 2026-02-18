@@ -13,7 +13,7 @@ static UDP_SOCKETS: LazyLock<HandleRegistry<net::UdpSocket>> = LazyLock::new(Han
 // ── TCP Listener ──
 
 /// Bind a TCP listener
-pub fn tcp_listen(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_listen(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let host = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tcpListen: {}", e)),
@@ -32,7 +32,7 @@ pub fn tcp_listen(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Accept a TCP connection (blocking)
-pub fn tcp_accept(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -49,7 +49,7 @@ pub fn tcp_accept(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Close TCP listener
-pub fn tcp_listener_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_listener_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -58,7 +58,7 @@ pub fn tcp_listener_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeC
 }
 
 /// Get TCP listener local address
-pub fn tcp_listener_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_listener_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -74,7 +74,7 @@ pub fn tcp_listener_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCal
 // ── TCP Stream ──
 
 /// Connect to TCP server
-pub fn tcp_connect(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_connect(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let host = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tcpConnect: {}", e)),
@@ -93,7 +93,7 @@ pub fn tcp_connect(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Read up to N bytes from TCP stream
-pub fn tcp_read(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_read(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -116,7 +116,7 @@ pub fn tcp_read(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Read all bytes from TCP stream until EOF
-pub fn tcp_read_all(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_read_all(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -133,7 +133,7 @@ pub fn tcp_read_all(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Read a line from TCP stream
-pub fn tcp_read_line(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_read_line(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -161,7 +161,7 @@ pub fn tcp_read_line(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRes
 }
 
 /// Write bytes to TCP stream
-pub fn tcp_write(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_write(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -179,7 +179,7 @@ pub fn tcp_write(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Write string to TCP stream
-pub fn tcp_write_text(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_write_text(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -197,7 +197,7 @@ pub fn tcp_write_text(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallR
 }
 
 /// Close TCP stream
-pub fn tcp_stream_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_stream_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -206,7 +206,7 @@ pub fn tcp_stream_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCal
 }
 
 /// Get remote address of TCP stream
-pub fn tcp_remote_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -220,7 +220,7 @@ pub fn tcp_remote_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallR
 }
 
 /// Get local address of TCP stream
-pub fn tcp_local_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn tcp_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -236,7 +236,7 @@ pub fn tcp_local_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRe
 // ── UDP Socket ──
 
 /// Bind UDP socket
-pub fn udp_bind(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_bind(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let host = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.udpBind: {}", e)),
@@ -255,7 +255,7 @@ pub fn udp_bind(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult 
 }
 
 /// Send data to UDP address
-pub fn udp_send_to(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_send_to(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -277,7 +277,7 @@ pub fn udp_send_to(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Send text to UDP address
-pub fn udp_send_text(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_send_text(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -299,7 +299,7 @@ pub fn udp_send_text(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRe
 }
 
 /// Receive data from UDP socket
-pub fn udp_receive(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_receive(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -322,7 +322,7 @@ pub fn udp_receive(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Close UDP socket
-pub fn udp_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -331,7 +331,7 @@ pub fn udp_close(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Get local address of UDP socket
-pub fn udp_local_addr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn udp_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;

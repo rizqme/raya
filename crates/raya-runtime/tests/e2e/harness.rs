@@ -4,6 +4,7 @@
 
 use raya_engine::compiler::{Compiler, Module};
 use raya_engine::vm::{Array, Object, Value, Vm, VmError, RayaString};
+use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::parser::checker::{Binder, TypeChecker};
 use raya_runtime::StdNativeHandler;
@@ -506,6 +507,33 @@ pub fn expect_runtime_error(source: &str, error_pattern: &str) {
             panic!(
                 "Expected runtime error, got compile error: {}\nSource:\n{}",
                 e, source
+            );
+        }
+    }
+}
+
+/// Compile and execute with a low preemption limit, expecting a runtime error.
+/// Used for infinite loop detection tests that need fast failure (100 preemptions instead of 1000).
+pub fn expect_runtime_error_fast_preempt(source: &str, error_pattern: &str) {
+    let (module, _interner) = compile(source).expect("compile failed");
+    let limits = SchedulerLimits {
+        max_preemptions: 100,
+        ..Default::default()
+    };
+    let mut vm = Vm::with_scheduler_limits(1, limits);
+    match vm.execute(&module) {
+        Ok(value) => {
+            panic!(
+                "Expected runtime error containing '{}', but got {:?}\nSource:\n{}",
+                error_pattern, value, source
+            );
+        }
+        Err(e) => {
+            let error_msg = e.to_string();
+            assert!(
+                error_msg.contains(error_pattern),
+                "Expected runtime error containing '{}', got: {}\nSource:\n{}",
+                error_pattern, error_msg, source
             );
         }
     }

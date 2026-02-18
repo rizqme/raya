@@ -1137,19 +1137,13 @@ impl DateObject {
 /// Channel builtin - inter-task communication primitive
 /// Native IDs: 0x0400-0x0408
 ///
-/// This is a thread-safe, blocking channel implementation using parking_lot
-/// for synchronization. The channel supports:
-/// - Buffered channels (capacity > 0): can hold up to `capacity` values
-/// - Blocking send: waits if buffer is full
-/// - Blocking receive: waits if buffer is empty
-/// - Non-blocking try_send/try_receive variants
+/// Simple bounded queue. All waiter tracking and waking is managed by the
+/// reactor's channel_waiters + pair matching. The interpreter uses try_send/
+/// try_receive and suspends on failure; the reactor retries and matches
+/// sender-receiver pairs (critical for unbuffered channels).
 pub struct ChannelObject {
     /// Internal state protected by a mutex
     inner: parking_lot::Mutex<ChannelInner>,
-    /// Condition variable for senders waiting on full channel
-    not_full: parking_lot::Condvar,
-    /// Condition variable for receivers waiting on empty channel
-    not_empty: parking_lot::Condvar,
 }
 
 /// Internal channel state
@@ -1160,10 +1154,6 @@ struct ChannelInner {
     queue: VecDeque<Value>,
     /// Whether channel is closed
     closed: bool,
-    /// Tasks waiting to send (task_id, value to send)
-    waiting_senders: VecDeque<(u64, Value)>,
-    /// Tasks waiting to receive
-    waiting_receivers: VecDeque<u64>,
 }
 
 impl std::fmt::Debug for ChannelObject {
@@ -1185,11 +1175,7 @@ impl ChannelObject {
                 capacity,
                 queue: VecDeque::with_capacity(capacity),
                 closed: false,
-                waiting_senders: VecDeque::new(),
-                waiting_receivers: VecDeque::new(),
             }),
-            not_full: parking_lot::Condvar::new(),
-            not_empty: parking_lot::Condvar::new(),
         }
     }
 
@@ -1208,17 +1194,9 @@ impl ChannelObject {
         self.inner.lock().closed
     }
 
-    /// Close the channel
-    /// Returns (waiting_receivers, waiting_senders) task IDs that need to be woken
-    pub fn close(&self) -> (Vec<u64>, Vec<u64>) {
-        let mut inner = self.inner.lock();
-        inner.closed = true;
-        let receivers: Vec<u64> = inner.waiting_receivers.drain(..).collect();
-        let senders: Vec<u64> = inner.waiting_senders.drain(..).map(|(id, _)| id).collect();
-        // Also wake any threads blocked on condvars (blocking API)
-        self.not_full.notify_all();
-        self.not_empty.notify_all();
-        (receivers, senders)
+    /// Close the channel. Reactor handles waking any waiting tasks.
+    pub fn close(&self) {
+        self.inner.lock().closed = true;
     }
 
     /// Try to send a value (non-blocking)
@@ -1230,8 +1208,6 @@ impl ChannelObject {
         }
         if inner.queue.len() < inner.capacity {
             inner.queue.push_back(value);
-            // Wake one waiting receiver
-            self.not_empty.notify_one();
             true
         } else {
             false
@@ -1241,175 +1217,8 @@ impl ChannelObject {
     /// Try to receive a value (non-blocking)
     /// Returns Some(value) if available, None if empty
     pub fn try_receive(&self) -> Option<Value> {
-        let mut inner = self.inner.lock();
-        let result = inner.queue.pop_front();
-        if result.is_some() {
-            // Wake one waiting sender
-            self.not_full.notify_one();
-        }
-        result
+        self.inner.lock().queue.pop_front()
     }
-
-    /// Send a value, blocking until space is available
-    /// Returns Ok(()) if sent, Err if channel is closed
-    pub fn send(&self, value: Value) -> Result<(), ChannelError> {
-        let mut inner = self.inner.lock();
-        loop {
-            if inner.closed {
-                return Err(ChannelError::Closed);
-            }
-            if inner.queue.len() < inner.capacity {
-                inner.queue.push_back(value);
-                self.not_empty.notify_one();
-                return Ok(());
-            }
-            // Wait for space
-            self.not_full.wait(&mut inner);
-        }
-    }
-
-    /// Receive a value, blocking until one is available
-    /// Returns Ok(value) if received, Err if channel is closed and empty
-    pub fn receive(&self) -> Result<Value, ChannelError> {
-        let mut inner = self.inner.lock();
-        loop {
-            if let Some(value) = inner.queue.pop_front() {
-                self.not_full.notify_one();
-                return Ok(value);
-            }
-            if inner.closed {
-                return Err(ChannelError::Closed);
-            }
-            // Wait for data
-            self.not_empty.wait(&mut inner);
-        }
-    }
-
-    /// Check if channel can send without blocking
-    pub fn can_send(&self) -> bool {
-        let inner = self.inner.lock();
-        !inner.closed && inner.queue.len() < inner.capacity
-    }
-
-    /// Check if channel can receive without blocking
-    pub fn can_receive(&self) -> bool {
-        let inner = self.inner.lock();
-        !inner.queue.is_empty()
-    }
-
-    // ===== Task-aware operations for cooperative scheduling =====
-
-    /// Try to send a value cooperatively.
-    /// Returns SendResult indicating what happened.
-    pub fn send_or_suspend(&self, value: Value, task_id: u64) -> Result<SendResult, ChannelError> {
-        let mut inner = self.inner.lock();
-        if inner.closed {
-            return Err(ChannelError::Closed);
-        }
-        // Check if there's a waiting receiver — hand off directly (skip queue)
-        if let Some(receiver_id) = inner.waiting_receivers.pop_front() {
-            return Ok(SendResult::HandoffToReceiver { receiver_id, value });
-        }
-        if inner.queue.len() < inner.capacity {
-            // Space available, enqueue
-            inner.queue.push_back(value);
-            self.not_empty.notify_one();
-            Ok(SendResult::Sent)
-        } else {
-            // Full, must suspend
-            inner.waiting_senders.push_back((task_id, value));
-            Ok(SendResult::SenderMustSuspend)
-        }
-    }
-
-    /// Try to receive a value cooperatively.
-    /// Returns ReceiveResult indicating what happened.
-    pub fn receive_or_suspend(&self, task_id: u64) -> Result<ReceiveResult, ChannelError> {
-        let mut inner = self.inner.lock();
-        if let Some(value) = inner.queue.pop_front() {
-            self.not_full.notify_one();
-            // Check if there's a waiting sender we can now accept
-            if let Some((sender_id, sender_value)) = inner.waiting_senders.pop_front() {
-                // Accept the sender's value into the queue
-                inner.queue.push_back(sender_value);
-                return Ok(ReceiveResult::ReceivedAndWakeSender { value, sender_id });
-            }
-            Ok(ReceiveResult::Received(value))
-        } else if inner.closed {
-            Err(ChannelError::Closed)
-        } else {
-            // Empty, must suspend
-            inner.waiting_receivers.push_back(task_id);
-            Ok(ReceiveResult::ReceiverMustSuspend)
-        }
-    }
-
-    /// Complete a suspended send operation (called when task resumes)
-    /// Returns true if send completed, false if channel closed
-    pub fn complete_send(&self, value: Value) -> Result<(), ChannelError> {
-        let mut inner = self.inner.lock();
-        if inner.closed {
-            return Err(ChannelError::Closed);
-        }
-        inner.queue.push_back(value);
-        self.not_empty.notify_one();
-        Ok(())
-    }
-
-    /// Get and remove the next waiting sender (returns task_id and value)
-    pub fn pop_waiting_sender(&self) -> Option<(u64, Value)> {
-        let mut inner = self.inner.lock();
-        inner.waiting_senders.pop_front()
-    }
-
-    /// Get and remove the next waiting receiver (returns task_id)
-    pub fn pop_waiting_receiver(&self) -> Option<u64> {
-        let mut inner = self.inner.lock();
-        inner.waiting_receivers.pop_front()
-    }
-
-    /// Check if there are waiting senders
-    pub fn has_waiting_senders(&self) -> bool {
-        let inner = self.inner.lock();
-        !inner.waiting_senders.is_empty()
-    }
-
-    /// Check if there are waiting receivers
-    pub fn has_waiting_receivers(&self) -> bool {
-        let inner = self.inner.lock();
-        !inner.waiting_receivers.is_empty()
-    }
-}
-
-/// Result of a cooperative send operation
-#[derive(Debug)]
-pub enum SendResult {
-    /// Value was enqueued successfully (no waiters)
-    Sent,
-    /// Value handed off directly to a waiting receiver (not enqueued)
-    /// The caller must wake the receiver task with this value as resume_value.
-    HandoffToReceiver { receiver_id: u64, value: Value },
-    /// Channel is full, sender must suspend
-    SenderMustSuspend,
-}
-
-/// Result of a cooperative receive operation
-#[derive(Debug)]
-pub enum ReceiveResult {
-    /// Value was received from the queue
-    Received(Value),
-    /// Value was received, and a waiting sender was unblocked
-    /// The caller must wake the sender task.
-    ReceivedAndWakeSender { value: Value, sender_id: u64 },
-    /// Channel is empty, receiver must suspend
-    ReceiverMustSuspend,
-}
-
-/// Channel operation errors
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelError {
-    /// Channel is closed
-    Closed,
 }
 
 // ============================================================================
@@ -1471,11 +1280,7 @@ impl Clone for ChannelObject {
                 capacity: inner.capacity,
                 queue: inner.queue.clone(),
                 closed: inner.closed,
-                waiting_senders: VecDeque::new(), // Don't clone waiting tasks
-                waiting_receivers: VecDeque::new(),
             }),
-            not_full: parking_lot::Condvar::new(),
-            not_empty: parking_lot::Condvar::new(),
         }
     }
 }

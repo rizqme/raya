@@ -14,7 +14,7 @@ struct ExecResult {
 static EXEC_HANDLES: LazyLock<HandleRegistry<ExecResult>> = LazyLock::new(HandleRegistry::new);
 
 /// Exit the process
-pub fn exit(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exit(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let code = args.first()
         .and_then(|v| v.as_i32().or_else(|| v.as_f64().map(|f| f as i32)))
         .unwrap_or(0);
@@ -22,12 +22,12 @@ pub fn exit(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get current process ID
-pub fn pid(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn pid(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::f64(std::process::id() as f64)
 }
 
 /// Get command-line arguments
-pub fn argv(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn argv(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let args: Vec<NativeValue> = std::env::args()
         .map(|a| string_allocate(ctx, a))
         .collect();
@@ -35,7 +35,7 @@ pub fn argv(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get path to current executable
-pub fn exec_path(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn exec_path(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     match std::env::current_exe() {
         Ok(path) => NativeCallResult::Value(string_allocate(ctx, path.to_string_lossy().into_owned())),
         Err(e) => NativeCallResult::Error(format!("process.execPath: {}", e)),
@@ -43,7 +43,7 @@ pub fn exec_path(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Execute shell command, return handle to read results
-pub fn exec(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exec(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let command = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("process.exec: {}", e)),
@@ -70,7 +70,7 @@ pub fn exec(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get exit code from exec handle
-pub fn exec_get_code(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exec_get_code(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -81,7 +81,7 @@ pub fn exec_get_code(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRe
 }
 
 /// Get stdout from exec handle
-pub fn exec_get_stdout(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exec_get_stdout(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -92,7 +92,7 @@ pub fn exec_get_stdout(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallR
 }
 
 /// Get stderr from exec handle
-pub fn exec_get_stderr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exec_get_stderr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -103,7 +103,7 @@ pub fn exec_get_stderr(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallR
 }
 
 /// Release exec handle
-pub fn exec_release(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exec_release(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;

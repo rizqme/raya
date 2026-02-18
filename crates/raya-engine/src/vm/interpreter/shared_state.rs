@@ -7,10 +7,11 @@ use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
-use crate::vm::scheduler::{Task, TaskId, TimerThread};
+use crate::vm::scheduler::{IoSubmission, Task, TaskId};
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
 use crate::vm::interpreter::{ClassRegistry, SafepointCoordinator};
+use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
 use crate::compiler::Module;
@@ -47,8 +48,8 @@ pub struct SharedVmState {
     /// Mutex registry for task synchronization
     pub mutex_registry: MutexRegistry,
 
-    /// Timer thread for efficient sleep handling
-    pub timer: Arc<TimerThread>,
+    /// IO submission sender (set by reactor on start, used by Interpreter for NativeCallResult::Suspend)
+    pub io_submit_tx: Mutex<Option<Sender<IoSubmission>>>,
 
     /// Metadata store for Reflect API (WeakMap-style storage)
     pub metadata: Mutex<MetadataStore>,
@@ -65,6 +66,14 @@ pub struct SharedVmState {
 
     /// Native function registry for linking module native calls at load time
     pub native_registry: RwLock<NativeFunctionRegistry>,
+
+    /// Maximum consecutive preemptions before killing a task (infinite loop detection).
+    /// Default: 1000. Set lower (e.g. 100) for faster infinite loop detection in tests.
+    pub max_preemptions: u32,
+
+    /// Preemption threshold in milliseconds (how long a task runs before being preempted).
+    /// Default: 10ms.
+    pub preempt_threshold_ms: u64,
 }
 
 impl SharedVmState {
@@ -84,10 +93,6 @@ impl SharedVmState {
         injector: Arc<Injector<Arc<Task>>>,
         native_handler: Arc<dyn NativeHandler>,
     ) -> Self {
-        let timer = TimerThread::new();
-        // Start timer thread immediately
-        timer.start(injector.clone());
-
         Self {
             gc: Mutex::new(GarbageCollector::default()),
             classes: RwLock::new(ClassRegistry::new()),
@@ -97,12 +102,14 @@ impl SharedVmState {
             tasks,
             injector,
             mutex_registry: MutexRegistry::new(),
-            timer,
+            io_submit_tx: Mutex::new(None),
             metadata: Mutex::new(MetadataStore::new()),
             class_metadata: RwLock::new(ClassMetadataRegistry::new()),
             native_handler,
             resolved_natives: RwLock::new(ResolvedNatives::empty()),
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
+            max_preemptions: 1000,
+            preempt_threshold_ms: 10,
         }
     }
 

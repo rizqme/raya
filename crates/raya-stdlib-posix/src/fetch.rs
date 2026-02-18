@@ -18,7 +18,7 @@ struct HttpResponseData {
 }
 
 /// Make HTTP request, return response handle
-pub fn request(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn request(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let method = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fetch.request: {}", e)),
@@ -48,7 +48,7 @@ pub fn request(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 // ── Response accessors ──
 
 /// Get response status code
-pub fn res_status(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_status(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -59,7 +59,7 @@ pub fn res_status(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Get response status text
-pub fn res_status_text(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_status_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -70,7 +70,7 @@ pub fn res_status_text(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallR
 }
 
 /// Get specific response header
-pub fn res_header(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_header(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -88,7 +88,7 @@ pub fn res_header(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Get all response headers as flat [key, value, ...] array
-pub fn res_headers(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -106,7 +106,7 @@ pub fn res_headers(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Get response body as text
-pub fn res_text(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -120,7 +120,7 @@ pub fn res_text(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get response body as bytes
-pub fn res_bytes(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn res_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;

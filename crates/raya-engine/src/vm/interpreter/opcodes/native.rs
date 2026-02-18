@@ -12,7 +12,7 @@ use crate::compiler::native_id::{
 use crate::vm::builtin::{buffer, channel, map, mutex, set, date, regexp};
 use crate::vm::object::{
     Array, Buffer, ChannelObject, DateObject, MapObject, Object, RayaString, RegExpObject,
-    SendResult, ReceiveResult, SetObject,
+    SetObject,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -83,35 +83,23 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let channel = unsafe { &*ch_ptr };
-                        let task_id_u64 = task.id().as_u64();
 
-                        match channel.send_or_suspend(value, task_id_u64) {
-                            Ok(SendResult::Sent) => {
-                                if let Err(e) = stack.push(Value::null()) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
+                        if channel.is_closed() {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "Channel closed".to_string()
+                            ));
+                        }
+                        if channel.try_send(value) {
+                            if let Err(e) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(e);
                             }
-                            Ok(SendResult::HandoffToReceiver { receiver_id, value: val }) => {
-                                // Wake the waiting receiver with the value
-                                self.wake_task(receiver_id, val);
-                                if let Err(e) = stack.push(Value::null()) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
-                            }
-                            Ok(SendResult::SenderMustSuspend) => {
-                                use crate::vm::scheduler::SuspendReason;
-                                return OpcodeResult::Suspend(SuspendReason::ChannelSend {
-                                    channel_id: handle,
-                                    value,
-                                });
-                            }
-                            Err(_) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(
-                                    "Channel closed".to_string()
-                                ));
-                            }
+                            OpcodeResult::Continue
+                        } else {
+                            use crate::vm::scheduler::SuspendReason;
+                            OpcodeResult::Suspend(SuspendReason::ChannelSend {
+                                channel_id: handle,
+                                value,
+                            })
                         }
                     }
 
@@ -130,36 +118,22 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let channel = unsafe { &*ch_ptr };
-                        let task_id_u64 = task.id().as_u64();
 
-                        match channel.receive_or_suspend(task_id_u64) {
-                            Ok(ReceiveResult::Received(value)) => {
-                                if let Err(e) = stack.push(value) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
+                        if let Some(val) = channel.try_receive() {
+                            if let Err(e) = stack.push(val) {
+                                return OpcodeResult::Error(e);
                             }
-                            Ok(ReceiveResult::ReceivedAndWakeSender { value, sender_id }) => {
-                                // Wake the sender that was blocked
-                                self.wake_task(sender_id, Value::null());
-                                if let Err(e) = stack.push(value) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
+                            OpcodeResult::Continue
+                        } else if channel.is_closed() {
+                            if let Err(e) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(e);
                             }
-                            Ok(ReceiveResult::ReceiverMustSuspend) => {
-                                use crate::vm::scheduler::SuspendReason;
-                                return OpcodeResult::Suspend(SuspendReason::ChannelReceive {
-                                    channel_id: handle,
-                                });
-                            }
-                            Err(_) => {
-                                // Channel closed -- return null
-                                if let Err(e) = stack.push(Value::null()) {
-                                    return OpcodeResult::Error(e);
-                                }
-                                OpcodeResult::Continue
-                            }
+                            OpcodeResult::Continue
+                        } else {
+                            use crate::vm::scheduler::SuspendReason;
+                            OpcodeResult::Suspend(SuspendReason::ChannelReceive {
+                                channel_id: handle,
+                            })
                         }
                     }
 
@@ -220,15 +194,8 @@ impl<'a> Interpreter<'a> {
                             ));
                         }
                         let channel = unsafe { &*ch_ptr };
-                        let (waiting_receivers, waiting_senders) = channel.close();
-                        // Wake all waiting receivers with null (channel closed)
-                        for receiver_id in waiting_receivers {
-                            self.wake_task(receiver_id, Value::null());
-                        }
-                        // Wake all waiting senders with null (they'll see closed error on retry)
-                        for sender_id in waiting_senders {
-                            self.wake_task(sender_id, Value::null());
-                        }
+                        channel.close();
+                        // Reactor will wake any waiting tasks on next iteration
                         if let Err(e) = stack.push(Value::null()) {
                             return OpcodeResult::Error(e);
                         }
@@ -1422,7 +1389,8 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::ModuleNativeCall => {
-                use crate::vm::{NativeCallResult, NativeContext, NativeValue, Scheduler};
+                use crate::vm::abi::{EngineContext, value_to_native, native_to_value};
+                use raya_sdk::NativeCallResult;
 
                 let local_idx = match Self::read_u16(code, ip) {
                     Ok(v) => v,
@@ -1443,28 +1411,37 @@ impl<'a> Interpreter<'a> {
                 }
                 args.reverse();
 
-                // Create NativeContext for handler
-                let placeholder_scheduler = Arc::new(Scheduler::new(1));
-                let ctx = NativeContext::new(
+                // Create EngineContext for handler
+                let ctx = EngineContext::new(
                     self.gc,
                     self.classes,
-                    &placeholder_scheduler,
                     task.id(),
+                    self.class_metadata,
                 );
 
-                // Convert arguments to NativeValue
-                let native_args: Vec<NativeValue> = args.iter()
-                    .map(|v| NativeValue::from_value(*v))
+                // Convert arguments to NativeValue (zero-cost)
+                let native_args: Vec<raya_sdk::NativeValue> = args.iter()
+                    .map(|v| value_to_native(*v))
                     .collect();
 
                 // Dispatch via resolved natives table (read lock - uncontended, nearly free)
                 let resolved = self.resolved_natives.read();
                 match resolved.call(local_idx, &ctx, &native_args) {
                     NativeCallResult::Value(val) => {
-                        if let Err(e) = stack.push(val.into_value()) {
+                        if let Err(e) = stack.push(native_to_value(val)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
+                    }
+                    NativeCallResult::Suspend(io_request) => {
+                        use crate::vm::scheduler::{IoSubmission, SuspendReason};
+                        if let Some(tx) = self.io_submit_tx {
+                            let _ = tx.send(IoSubmission {
+                                task_id: task.id(),
+                                request: io_request,
+                            });
+                        }
+                        return OpcodeResult::Suspend(SuspendReason::IoWait);
                     }
                     NativeCallResult::Unhandled => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(

@@ -6,7 +6,7 @@ use std::io::Write;
 use std::time::UNIX_EPOCH;
 
 /// Read file as binary Buffer
-pub fn read_file(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn read_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.readFile: {}", e)),
@@ -18,7 +18,7 @@ pub fn read_file(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult 
 }
 
 /// Read file as UTF-8 string
-pub fn read_text_file(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn read_text_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.readTextFile: {}", e)),
@@ -30,7 +30,7 @@ pub fn read_text_file(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRe
 }
 
 /// Write binary Buffer to file
-pub fn write_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn write_file(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.writeFile: {}", e)),
@@ -46,7 +46,7 @@ pub fn write_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Write string to file
-pub fn write_text_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn write_text_file(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.writeTextFile: {}", e)),
@@ -62,7 +62,7 @@ pub fn write_text_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCall
 }
 
 /// Append string to file
-pub fn append_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn append_file(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.appendFile: {}", e)),
@@ -81,7 +81,7 @@ pub fn append_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Check if path exists
-pub fn exists(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn exists(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.exists: {}", e)),
@@ -90,7 +90,7 @@ pub fn exists(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Check if path is a file
-pub fn is_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn is_file(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.isFile: {}", e)),
@@ -99,7 +99,7 @@ pub fn is_file(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Check if path is a directory
-pub fn is_dir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn is_dir(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.isDir: {}", e)),
@@ -108,7 +108,7 @@ pub fn is_dir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Check if path is a symlink
-pub fn is_symlink(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn is_symlink(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.isSymlink: {}", e)),
@@ -117,7 +117,7 @@ pub fn is_symlink(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Get file size in bytes
-pub fn file_size(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn file_size(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.fileSize: {}", e)),
@@ -129,7 +129,7 @@ pub fn file_size(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Get last modified time (ms since epoch)
-pub fn last_modified(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn last_modified(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.lastModified: {}", e)),
@@ -148,7 +148,7 @@ pub fn last_modified(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallRe
 }
 
 /// Packed stat: [size, isFile(0/1), isDir(0/1), isSymlink(0/1), modifiedMs, createdMs, mode]
-pub fn stat(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn stat(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.stat: {}", e)),
@@ -193,7 +193,7 @@ pub fn stat(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Create directory
-pub fn mkdir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn mkdir(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.mkdir: {}", e)),
@@ -205,7 +205,7 @@ pub fn mkdir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Create directory tree (recursive)
-pub fn mkdir_recursive(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn mkdir_recursive(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.mkdirRecursive: {}", e)),
@@ -217,7 +217,7 @@ pub fn mkdir_recursive(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCall
 }
 
 /// List directory entries
-pub fn read_dir(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn read_dir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.readDir: {}", e)),
@@ -238,7 +238,7 @@ pub fn read_dir(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Remove empty directory
-pub fn rmdir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn rmdir(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.rmdir: {}", e)),
@@ -250,7 +250,7 @@ pub fn rmdir(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Remove file
-pub fn remove(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn remove(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.remove: {}", e)),
@@ -262,7 +262,7 @@ pub fn remove(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Rename/move file
-pub fn rename(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn rename(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let from = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.rename: {}", e)),
@@ -278,7 +278,7 @@ pub fn rename(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Copy file
-pub fn copy(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn copy(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let from = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.copy: {}", e)),
@@ -295,7 +295,7 @@ pub fn copy(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 
 /// Change file permissions
 #[cfg(unix)]
-pub fn chmod(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn chmod(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     use std::os::unix::fs::PermissionsExt;
     let path = match string_read(args[0]) {
         Ok(s) => s,
@@ -312,13 +312,13 @@ pub fn chmod(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 #[cfg(not(unix))]
-pub fn chmod(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn chmod(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::Error("fs.chmod: not supported on this platform".to_string())
 }
 
 /// Create symbolic link
 #[cfg(unix)]
-pub fn symlink(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn symlink(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let target = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.symlink: {}", e)),
@@ -334,12 +334,12 @@ pub fn symlink(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 #[cfg(not(unix))]
-pub fn symlink(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn symlink(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::Error("fs.symlink: not supported on this platform".to_string())
 }
 
 /// Read symlink target
-pub fn readlink(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn readlink(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.readlink: {}", e)),
@@ -351,7 +351,7 @@ pub fn readlink(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Resolve to canonical absolute path
-pub fn realpath(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn realpath(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let path = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.realpath: {}", e)),
@@ -363,13 +363,13 @@ pub fn realpath(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get OS temp directory
-pub fn temp_dir(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn temp_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let dir = std::env::temp_dir();
     NativeCallResult::Value(string_allocate(ctx, dir.to_string_lossy().into_owned()))
 }
 
 /// Create a temp file and return its path
-pub fn temp_file(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn temp_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let prefix = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.tempFile: {}", e)),

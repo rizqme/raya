@@ -3,7 +3,7 @@
 use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_allocate};
 
 /// Get OS platform name
-pub fn platform(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn platform(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let name = if cfg!(target_os = "macos") {
         "darwin"
     } else if cfg!(target_os = "linux") {
@@ -19,7 +19,7 @@ pub fn platform(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult 
 }
 
 /// Get CPU architecture
-pub fn arch(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn arch(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let name = if cfg!(target_arch = "x86_64") {
         "x86_64"
     } else if cfg!(target_arch = "aarch64") {
@@ -35,14 +35,14 @@ pub fn arch(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get machine hostname
-pub fn hostname(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn hostname(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     // Use gethostname via libc-compatible approach
     let name = get_hostname().unwrap_or_else(|| "unknown".to_string());
     NativeCallResult::Value(string_allocate(ctx, name))
 }
 
 /// Get number of logical CPUs
-pub fn cpus(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn cpus(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -50,28 +50,28 @@ pub fn cpus(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Get total system memory in bytes
-pub fn total_memory(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn total_memory(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::f64(get_total_memory() as f64)
 }
 
 /// Get free system memory in bytes
-pub fn free_memory(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn free_memory(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::f64(get_free_memory() as f64)
 }
 
 /// Get system uptime in seconds
-pub fn uptime(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn uptime(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::f64(get_uptime() as f64)
 }
 
 /// Get OS line ending
-pub fn eol(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn eol(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let ending = if cfg!(target_os = "windows") { "\r\n" } else { "\n" };
     NativeCallResult::Value(string_allocate(ctx, ending.to_string()))
 }
 
 /// Get OS temp directory
-pub fn tmpdir(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn tmpdir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let dir = std::env::temp_dir();
     NativeCallResult::Value(string_allocate(ctx, dir.to_string_lossy().into_owned()))
 }

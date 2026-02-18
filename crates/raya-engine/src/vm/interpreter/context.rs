@@ -54,6 +54,14 @@ pub struct ResourceLimits {
 
     /// Maximum CPU step budget (None = unlimited)
     pub max_step_budget: Option<u64>,
+
+    /// Maximum consecutive preemptions before killing a task (infinite loop detection).
+    /// Default: 1000.
+    pub max_preemptions: u32,
+
+    /// Preemption time slice in milliseconds (how long a task runs before preemption).
+    /// Default: 10ms.
+    pub preempt_threshold_ms: u64,
 }
 
 impl Default for ResourceLimits {
@@ -62,6 +70,8 @@ impl Default for ResourceLimits {
             max_heap_bytes: None,
             max_tasks: None,
             max_step_budget: None,
+            max_preemptions: 1000,
+            preempt_threshold_ms: 10,
         }
     }
 }

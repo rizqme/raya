@@ -10,7 +10,7 @@ description = "Standard library native implementations for Raya"
 
 [dependencies]
 rand = "0.8"
-raya-engine = { workspace = true }
+raya-sdk = { workspace = true }
 parking_lot = { workspace = true }
 
 # Crypto dependencies
@@ -25,3 +25,6 @@ uuid = { version = "1.6", features = ["v4"] }
 
 # Path dependencies
 pathdiff = "0.2"
+
+[dev-dependencies]
+raya-engine = { workspace = true }

@@ -1,19 +1,13 @@
-//! Task Scheduler - Work-Stealing Concurrency
+//! Task Scheduler — Unified Reactor Architecture
 //!
-//! This module implements the goroutine-style work-stealing task scheduler
-//! for Raya's async/await concurrency model with Go-style asynchronous preemption.
+//! Single reactor thread handles scheduling + event loop. Two worker pools
+//! (VM workers for task execution, IO workers for blocking work) do the actual work.
 
-mod deque;
-mod preempt;
+mod reactor;
 #[allow(clippy::module_inception)]
 mod scheduler;
 mod task;
-mod timer;
-mod worker;
 
-pub use deque::WorkerDeque;
-pub use preempt::{PreemptMonitor, DEFAULT_PREEMPT_THRESHOLD};
+pub use reactor::{IoSubmission, Reactor};
 pub use scheduler::{Scheduler, SchedulerLimits, SchedulerStats};
 pub use task::{ExceptionHandler, SuspendReason, Task, TaskHandle, TaskId, TaskState};
-pub use timer::TimerThread;
-pub use worker::Worker;

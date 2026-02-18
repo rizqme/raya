@@ -1,11 +1,9 @@
 //! Path module implementation (std:path)
 //!
-//! Native implementation using the ABI for path manipulation,
+//! Native implementation using the SDK for path manipulation,
 //! resolution, and OS-specific constants.
 
-use raya_engine::vm::{
-    string_allocate, string_read, NativeCallResult, NativeContext, NativeValue,
-};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue};
 
 use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
 
@@ -15,7 +13,7 @@ use std::path::{Path, PathBuf, MAIN_SEPARATOR_STR};
 
 /// Handle path method calls
 pub fn call_path_method(
-    ctx: &NativeContext,
+    ctx: &dyn NativeContext,
     method_id: u16,
     args: &[NativeValue],
 ) -> NativeCallResult {
@@ -25,7 +23,7 @@ pub fn call_path_method(
         0x6002 => dirname(ctx, args),        // DIRNAME
         0x6003 => basename(ctx, args),       // BASENAME
         0x6004 => extname(ctx, args),        // EXTNAME
-        0x6005 => is_absolute(args),         // IS_ABSOLUTE
+        0x6005 => is_absolute(ctx, args),    // IS_ABSOLUTE
         0x6006 => resolve(ctx, args),        // RESOLVE
         0x6007 => relative(ctx, args),       // RELATIVE
         0x6008 => cwd(ctx, args),            // CWD
@@ -42,32 +40,32 @@ pub fn call_path_method(
 // ============================================================================
 
 /// path.join(a, b): string
-fn join(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn join(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
         return NativeCallResult::Error("path.join requires 2 arguments".to_string());
     }
 
-    let a = match string_read(args[0]) {
+    let a = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path a: {}", e)),
     };
 
-    let b = match string_read(args[1]) {
+    let b = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path b: {}", e)),
     };
 
     let joined = PathBuf::from(&a).join(&b).to_string_lossy().to_string();
-    NativeCallResult::Value(string_allocate(ctx, joined))
+    NativeCallResult::Value(ctx.create_string(&joined))
 }
 
 /// path.normalize(p): string
-fn normalize(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn normalize(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.normalize requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -88,16 +86,16 @@ fn normalize(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
         .collect::<PathBuf>()
         .to_string_lossy()
         .to_string();
-    NativeCallResult::Value(string_allocate(ctx, normalized))
+    NativeCallResult::Value(ctx.create_string(&normalized))
 }
 
 /// path.dirname(p): string
-fn dirname(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn dirname(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.dirname requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -106,16 +104,16 @@ fn dirname(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
         .parent()
         .map_or(".", |p| p.to_str().unwrap_or("."))
         .to_string();
-    NativeCallResult::Value(string_allocate(ctx, dir))
+    NativeCallResult::Value(ctx.create_string(&dir))
 }
 
 /// path.basename(p): string
-fn basename(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn basename(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.basename requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -124,16 +122,16 @@ fn basename(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
         .file_name()
         .map_or("", |n| n.to_str().unwrap_or(""))
         .to_string();
-    NativeCallResult::Value(string_allocate(ctx, base))
+    NativeCallResult::Value(ctx.create_string(&base))
 }
 
 /// path.extname(p): string
-fn extname(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn extname(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.extname requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -141,16 +139,16 @@ fn extname(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let ext = Path::new(&p)
         .extension()
         .map_or(String::new(), |e| format!(".{}", e.to_string_lossy()));
-    NativeCallResult::Value(string_allocate(ctx, ext))
+    NativeCallResult::Value(ctx.create_string(&ext))
 }
 
 /// path.isAbsolute(p): boolean
-fn is_absolute(args: &[NativeValue]) -> NativeCallResult {
+fn is_absolute(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.isAbsolute requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -159,17 +157,17 @@ fn is_absolute(args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// path.resolve(from, to): string
-fn resolve(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn resolve(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
         return NativeCallResult::Error("path.resolve requires 2 arguments".to_string());
     }
 
-    let from = match string_read(args[0]) {
+    let from = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid from path: {}", e)),
     };
 
-    let to = match string_read(args[1]) {
+    let to = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid to path: {}", e)),
     };
@@ -180,57 +178,57 @@ fn resolve(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
         std::env::current_dir().unwrap_or_default().join(&from)
     };
     let resolved = base.join(&to).to_string_lossy().to_string();
-    NativeCallResult::Value(string_allocate(ctx, resolved))
+    NativeCallResult::Value(ctx.create_string(&resolved))
 }
 
 /// path.relative(from, to): string
-fn relative(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn relative(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
         return NativeCallResult::Error("path.relative requires 2 arguments".to_string());
     }
 
-    let from = match string_read(args[0]) {
+    let from = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid from path: {}", e)),
     };
 
-    let to = match string_read(args[1]) {
+    let to = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid to path: {}", e)),
     };
 
     let rel = pathdiff::diff_paths(&to, &from)
         .map_or(to.clone(), |p| p.to_string_lossy().to_string());
-    NativeCallResult::Value(string_allocate(ctx, rel))
+    NativeCallResult::Value(ctx.create_string(&rel))
 }
 
 /// path.cwd(): string
-fn cwd(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+fn cwd(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let cwd = std::env::current_dir()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
-    NativeCallResult::Value(string_allocate(ctx, cwd))
+    NativeCallResult::Value(ctx.create_string(&cwd))
 }
 
 /// path.sep(): string
-fn sep(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    NativeCallResult::Value(string_allocate(ctx, MAIN_SEPARATOR_STR.to_string()))
+fn sep(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+    NativeCallResult::Value(ctx.create_string(MAIN_SEPARATOR_STR))
 }
 
 /// path.delimiter(): string
-fn delimiter(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+fn delimiter(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let delim = if cfg!(windows) { ";" } else { ":" };
-    NativeCallResult::Value(string_allocate(ctx, delim.to_string()))
+    NativeCallResult::Value(ctx.create_string(delim))
 }
 
 /// path.stripExt(p): string
-fn strip_ext(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn strip_ext(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
         return NativeCallResult::Error("path.stripExt requires 1 argument".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
@@ -246,24 +244,24 @@ fn strip_ext(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
             .strip_suffix(&format!(".{}", ext_str))
             .unwrap_or(&base)
             .to_string();
-        NativeCallResult::Value(string_allocate(ctx, result))
+        NativeCallResult::Value(ctx.create_string(&result))
     } else {
-        NativeCallResult::Value(string_allocate(ctx, base))
+        NativeCallResult::Value(ctx.create_string(&base))
     }
 }
 
 /// path.withExt(p, ext): string
-fn with_ext(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+fn with_ext(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
         return NativeCallResult::Error("path.withExt requires 2 arguments".to_string());
     }
 
-    let p = match string_read(args[0]) {
+    let p = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid path: {}", e)),
     };
 
-    let new_ext = match string_read(args[1]) {
+    let new_ext = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("Invalid extension: {}", e)),
     };
@@ -275,8 +273,8 @@ fn with_ext(ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
             .strip_suffix(&old_ext_str)
             .map(|s| format!("{}{}", s, new_ext))
             .unwrap_or_else(|| format!("{}{}", p, new_ext));
-        NativeCallResult::Value(string_allocate(ctx, result))
+        NativeCallResult::Value(ctx.create_string(&result))
     } else {
-        NativeCallResult::Value(string_allocate(ctx, format!("{}{}", p, new_ext)))
+        NativeCallResult::Value(ctx.create_string(&format!("{}{}", p, new_ext)))
     }
 }

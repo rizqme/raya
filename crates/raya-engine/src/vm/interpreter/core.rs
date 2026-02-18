@@ -75,6 +75,12 @@ pub struct Interpreter<'a> {
 
     /// Resolved native functions for ModuleNativeCall dispatch
     pub(in crate::vm::interpreter) resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
+
+    /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
+    pub(in crate::vm::interpreter) io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
+
+    /// Maximum consecutive preemptions before killing a task
+    pub(in crate::vm::interpreter) max_preemptions: u32,
 }
 
 impl<'a> Interpreter<'a> {
@@ -91,6 +97,8 @@ impl<'a> Interpreter<'a> {
         class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
         native_handler: &'a Arc<dyn NativeHandler>,
         resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
+        io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
+        max_preemptions: u32,
     ) -> Self {
         Self {
             gc,
@@ -104,6 +112,8 @@ impl<'a> Interpreter<'a> {
             class_metadata,
             native_handler,
             resolved_natives,
+            io_submit_tx,
+            max_preemptions,
         }
     }
 
@@ -252,9 +262,9 @@ impl<'a> Interpreter<'a> {
             if task.is_preempt_requested() {
                 task.clear_preempt();
                 let count = task.increment_preempt_count();
-                // Infinite loop detection: kill task after 100 consecutive
-                // preemptions (~1s of busy-wait) without voluntary suspension
-                if count >= 100 {
+                // Infinite loop detection: kill task after max_preemptions consecutive
+                // preemptions without voluntary suspension
+                if count >= self.max_preemptions {
                     save_frame_state!();
                     drop(stack_guard);
                     return ExecutionResult::Failed(VmError::RuntimeError(

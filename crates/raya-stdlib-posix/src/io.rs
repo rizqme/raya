@@ -4,7 +4,7 @@ use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_read,
 use std::io::{self, BufRead, Read, Write};
 
 /// Read a line from stdin (blocking)
-pub fn read_line(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn read_line(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let stdin = io::stdin();
     let mut line = String::new();
     match stdin.lock().read_line(&mut line) {
@@ -23,7 +23,7 @@ pub fn read_line(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Read all of stdin (blocking until EOF)
-pub fn read_all(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn read_all(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let mut buf = String::new();
     match io::stdin().lock().read_to_string(&mut buf) {
         Ok(_) => NativeCallResult::Value(string_allocate(ctx, buf)),
@@ -32,7 +32,7 @@ pub fn read_all(ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult 
 }
 
 /// Write string to stdout
-pub fn write(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn write(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let data = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.write: {}", e)),
@@ -44,7 +44,7 @@ pub fn write(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Write string + newline to stdout
-pub fn writeln(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn writeln(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let data = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeln: {}", e)),
@@ -58,7 +58,7 @@ pub fn writeln(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Write string to stderr
-pub fn write_err(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn write_err(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let data = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeErr: {}", e)),
@@ -70,7 +70,7 @@ pub fn write_err(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Write string + newline to stderr
-pub fn write_errln(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn write_errln(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let data = match string_read(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeErrln: {}", e)),
@@ -84,7 +84,7 @@ pub fn write_errln(_ctx: &NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Flush stdout
-pub fn flush(_ctx: &NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+pub fn flush(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     match io::stdout().flush() {
         Ok(_) => NativeCallResult::null(),
         Err(e) => NativeCallResult::Error(format!("io.flush: {}", e)),
