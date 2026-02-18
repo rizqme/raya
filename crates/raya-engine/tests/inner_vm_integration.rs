@@ -26,6 +26,7 @@ fn test_create_vm_with_options() {
             max_heap_bytes: Some(16 * 1024 * 1024),
             max_tasks: Some(10),
             max_step_budget: Some(1_000_000),
+            ..Default::default()
         },
         ..Default::default()
     };

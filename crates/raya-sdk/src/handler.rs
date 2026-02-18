@@ -58,6 +58,11 @@ pub enum IoRequest {
         /// Address to connect to (host:port)
         addr: String,
     },
+    /// Sleep for a duration — reactor routes to timer heap (no IO pool dispatch)
+    Sleep {
+        /// Duration in nanoseconds (supports both ms and μs precision)
+        duration_nanos: u64,
+    },
 }
 
 /// Result of a completed IO operation from a pool thread.
@@ -71,6 +76,8 @@ pub enum IoCompletion {
     String(String),
     /// Primitive value (i32, f64, bool, null) — no allocation needed
     Primitive(NativeValue),
+    /// String array — event loop allocates as Array of RayaString
+    StringArray(Vec<String>),
     /// Error — event loop sets exception on task
     Error(String),
 }

@@ -560,6 +560,7 @@ fn test_context_limits_preservation() {
             max_heap_bytes: Some(16 * 1024 * 1024),
             max_tasks: Some(100),
             max_step_budget: Some(1_000_000),
+            ..Default::default()
         },
         gc_threshold: 8 * 1024 * 1024,
         ..Default::default()

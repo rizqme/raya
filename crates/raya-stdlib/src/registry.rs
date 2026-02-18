@@ -207,20 +207,30 @@ fn register_time(registry: &mut NativeFunctionRegistry) {
         let ms = args.first()
             .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
             .unwrap_or(0.0) as u64;
-        if ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
+        if ms == 0 {
+            return NativeCallResult::null();
         }
-        NativeCallResult::null()
+        NativeCallResult::Suspend(raya_sdk::IoRequest::BlockingWork {
+            work: Box::new(move || {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+                raya_sdk::IoCompletion::Primitive(raya_sdk::NativeValue::null())
+            }),
+        })
     });
 
     registry.register("time.sleepMicros", |_ctx, args| {
         let us = args.first()
             .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
             .unwrap_or(0.0) as u64;
-        if us > 0 {
-            std::thread::sleep(std::time::Duration::from_micros(us));
+        if us == 0 {
+            return NativeCallResult::null();
         }
-        NativeCallResult::null()
+        NativeCallResult::Suspend(raya_sdk::IoRequest::BlockingWork {
+            work: Box::new(move || {
+                std::thread::sleep(std::time::Duration::from_micros(us));
+                raya_sdk::IoCompletion::Primitive(raya_sdk::NativeValue::null())
+            }),
+        })
     });
 }
 

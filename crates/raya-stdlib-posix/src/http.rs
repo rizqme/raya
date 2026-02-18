@@ -1,7 +1,7 @@
 //! std:http — HTTP/1.1 server (minimal, built on std::net)
 
 use crate::handles::HandleRegistry;
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_read, string_allocate, buffer_allocate, buffer_read_bytes, array_allocate};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
@@ -21,9 +21,9 @@ struct HttpRequestData {
     stream: net::TcpStream,
 }
 
-/// Create HTTP server (bind to host:port)
-pub fn server_create(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let host = match string_read(args[0]) {
+/// Create HTTP server (bind to host:port — fast syscall, stays sync)
+pub fn server_create(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let host = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("http.serverCreate: {}", e)),
     };
@@ -40,28 +40,32 @@ pub fn server_create(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
     }
 }
 
-/// Accept next HTTP request (blocking). Parses request, returns handle.
+/// Accept next HTTP request (blocking → IO pool). Parses request, returns handle.
 pub fn server_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    match HTTP_SERVERS.get(handle) {
-        Some(listener) => match listener.accept() {
-            Ok((stream, _addr)) => match parse_http_request(stream) {
-                Ok(req) => {
-                    let req_handle = HTTP_REQUESTS.insert(req);
-                    NativeCallResult::f64(req_handle as f64)
-                }
-                Err(e) => NativeCallResult::Error(format!("http.serverAccept: {}", e)),
-            },
-            Err(e) => NativeCallResult::Error(format!("http.serverAccept: {}", e)),
-        },
-        None => NativeCallResult::Error(format!("http.serverAccept: invalid handle {}", handle)),
-    }
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match HTTP_SERVERS.get(handle) {
+                Some(listener) => match listener.accept() {
+                    Ok((stream, _addr)) => match parse_http_request(stream) {
+                        Ok(req) => {
+                            let req_handle = HTTP_REQUESTS.insert(req);
+                            IoCompletion::Primitive(NativeValue::f64(req_handle as f64))
+                        }
+                        Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
+                    },
+                    Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
+                },
+                None => IoCompletion::Error(format!("http.serverAccept: invalid handle {}", handle)),
+            }
+        }),
+    })
 }
 
 /// Send text response
-pub fn server_respond(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn server_respond(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let _server_handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -71,7 +75,7 @@ pub fn server_respond(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
     let status = args.get(2)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(200.0) as u16;
-    let body = match string_read(args[3]) {
+    let body = match ctx.read_string(args[3]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("http.serverRespond: {}", e)),
     };
@@ -91,7 +95,7 @@ pub fn server_respond(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
 }
 
 /// Send binary response
-pub fn server_respond_bytes(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn server_respond_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let _server_handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -101,7 +105,7 @@ pub fn server_respond_bytes(_ctx: &dyn NativeContext, args: &[NativeValue]) -> N
     let status = args.get(2)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(200.0) as u16;
-    let body = match buffer_read_bytes(args[3]) {
+    let body = match ctx.read_buffer(args[3]) {
         Ok(d) => d,
         Err(e) => return NativeCallResult::Error(format!("http.serverRespondBytes: {}", e)),
     };
@@ -122,7 +126,7 @@ pub fn server_respond_bytes(_ctx: &dyn NativeContext, args: &[NativeValue]) -> N
 }
 
 /// Send response with custom headers
-pub fn server_respond_headers(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+pub fn server_respond_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let _server_handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
@@ -133,19 +137,19 @@ pub fn server_respond_headers(_ctx: &dyn NativeContext, args: &[NativeValue]) ->
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(200.0) as u16;
     // headers is a string[] of alternating key-value pairs
-    let header_count = raya_engine::vm::array_length(args[3]).unwrap_or(0);
+    let header_count = ctx.array_len(args[3]).unwrap_or(0);
     let mut custom_headers = Vec::new();
     let mut i = 0;
     while i + 1 < header_count {
         if let (Ok(k), Ok(v)) = (
-            raya_engine::vm::array_get(args[3], i).and_then(|v| string_read(v).map_err(|e| e)),
-            raya_engine::vm::array_get(args[3], i + 1).and_then(|v| string_read(v).map_err(|e| e)),
+            ctx.array_get(args[3], i).and_then(|v| ctx.read_string(v)),
+            ctx.array_get(args[3], i + 1).and_then(|v| ctx.read_string(v)),
         ) {
             custom_headers.push((k, v));
         }
         i += 2;
     }
-    let body = match string_read(args[4]) {
+    let body = match ctx.read_string(args[4]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("http.serverRespondHeaders: {}", e)),
     };
@@ -183,7 +187,7 @@ pub fn server_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         .unwrap_or(0.0) as u64;
     match HTTP_SERVERS.get(handle) {
         Some(listener) => match listener.local_addr() {
-            Ok(addr) => NativeCallResult::Value(string_allocate(ctx, addr.to_string())),
+            Ok(addr) => NativeCallResult::Value(ctx.create_string(&addr.to_string())),
             Err(e) => NativeCallResult::Error(format!("http.serverAddr: {}", e)),
         },
         None => NativeCallResult::Error(format!("http.serverAddr: invalid handle {}", handle)),
@@ -198,7 +202,7 @@ pub fn req_method(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match HTTP_REQUESTS.get(handle) {
-        Some(req) => NativeCallResult::Value(string_allocate(ctx, req.method.clone())),
+        Some(req) => NativeCallResult::Value(ctx.create_string(&req.method)),
         None => NativeCallResult::Error(format!("http.reqMethod: invalid handle {}", handle)),
     }
 }
@@ -209,7 +213,7 @@ pub fn req_path(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match HTTP_REQUESTS.get(handle) {
-        Some(req) => NativeCallResult::Value(string_allocate(ctx, req.path.clone())),
+        Some(req) => NativeCallResult::Value(ctx.create_string(&req.path)),
         None => NativeCallResult::Error(format!("http.reqPath: invalid handle {}", handle)),
     }
 }
@@ -220,7 +224,7 @@ pub fn req_query(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match HTTP_REQUESTS.get(handle) {
-        Some(req) => NativeCallResult::Value(string_allocate(ctx, req.query.clone())),
+        Some(req) => NativeCallResult::Value(ctx.create_string(&req.query)),
         None => NativeCallResult::Error(format!("http.reqQuery: invalid handle {}", handle)),
     }
 }
@@ -230,14 +234,14 @@ pub fn req_header(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    let name = match string_read(args[1]) {
+    let name = match ctx.read_string(args[1]) {
         Ok(s) => s.to_lowercase(),
         Err(e) => return NativeCallResult::Error(format!("http.reqHeader: {}", e)),
     };
     match HTTP_REQUESTS.get(handle) {
         Some(req) => {
             let val = req.headers.get(&name).cloned().unwrap_or_default();
-            NativeCallResult::Value(string_allocate(ctx, val))
+            NativeCallResult::Value(ctx.create_string(&val))
         }
         None => NativeCallResult::Error(format!("http.reqHeader: invalid handle {}", handle)),
     }
@@ -252,10 +256,10 @@ pub fn req_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         Some(req) => {
             let mut items = Vec::new();
             for (k, v) in &req.headers {
-                items.push(string_allocate(ctx, k.clone()));
-                items.push(string_allocate(ctx, v.clone()));
+                items.push(ctx.create_string(k));
+                items.push(ctx.create_string(v));
             }
-            NativeCallResult::Value(array_allocate(ctx, &items))
+            NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error(format!("http.reqHeaders: invalid handle {}", handle)),
     }
@@ -269,7 +273,7 @@ pub fn req_body(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
     match HTTP_REQUESTS.get(handle) {
         Some(req) => {
             let body = String::from_utf8_lossy(&req.body).into_owned();
-            NativeCallResult::Value(string_allocate(ctx, body))
+            NativeCallResult::Value(ctx.create_string(&body))
         }
         None => NativeCallResult::Error(format!("http.reqBody: invalid handle {}", handle)),
     }
@@ -281,7 +285,7 @@ pub fn req_body_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match HTTP_REQUESTS.get(handle) {
-        Some(req) => NativeCallResult::Value(buffer_allocate(ctx, &req.body)),
+        Some(req) => NativeCallResult::Value(ctx.create_buffer(&req.body)),
         None => NativeCallResult::Error(format!("http.reqBodyBytes: invalid handle {}", handle)),
     }
 }

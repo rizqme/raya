@@ -781,6 +781,9 @@ impl Reactor {
                     }),
                 });
             }
+            // Sleep is dispatched as BlockingWork (thread::sleep on IO pool).
+            // No special reactor handling needed — the IO pool returns the completion.
+            IoRequest::Sleep { .. } => unreachable!("Sleep should be dispatched as BlockingWork"),
         }
     }
 
@@ -801,6 +804,25 @@ impl Reactor {
             IoCompletion::String(s) => {
                 let raya_str = RayaString::new(s);
                 let gc_ptr = shared_state.gc.lock().allocate(raya_str);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+            }
+            IoCompletion::StringArray(strings) => {
+                use crate::vm::object::{Array, RayaString as RS};
+                let mut gc = shared_state.gc.lock();
+                let mut string_values: Vec<Value> = Vec::with_capacity(strings.len());
+                for s in strings {
+                    let raya_str = RS::new(s);
+                    let gc_ptr = gc.allocate(raya_str);
+                    let val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    string_values.push(val);
+                }
+                let mut arr = Array::new(0, string_values.len());
+                for (i, v) in string_values.iter().enumerate() {
+                    let _ = arr.set(i, *v);
+                }
+                let gc_ptr = gc.allocate(arr);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
             }
             IoCompletion::Primitive(native_val) => native_to_value(native_val),

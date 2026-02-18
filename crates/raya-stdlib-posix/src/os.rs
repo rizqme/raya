@@ -1,6 +1,6 @@
 //! std:os — OS information
 
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_allocate};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue};
 
 /// Get OS platform name
 pub fn platform(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
@@ -15,7 +15,7 @@ pub fn platform(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRes
     } else {
         "unknown"
     };
-    NativeCallResult::Value(string_allocate(ctx, name.to_string()))
+    NativeCallResult::Value(ctx.create_string(name))
 }
 
 /// Get CPU architecture
@@ -31,14 +31,14 @@ pub fn arch(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult 
     } else {
         "unknown"
     };
-    NativeCallResult::Value(string_allocate(ctx, name.to_string()))
+    NativeCallResult::Value(ctx.create_string(name))
 }
 
 /// Get machine hostname
 pub fn hostname(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     // Use gethostname via libc-compatible approach
     let name = get_hostname().unwrap_or_else(|| "unknown".to_string());
-    NativeCallResult::Value(string_allocate(ctx, name))
+    NativeCallResult::Value(ctx.create_string(&name))
 }
 
 /// Get number of logical CPUs
@@ -67,13 +67,13 @@ pub fn uptime(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResu
 /// Get OS line ending
 pub fn eol(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let ending = if cfg!(target_os = "windows") { "\r\n" } else { "\n" };
-    NativeCallResult::Value(string_allocate(ctx, ending.to_string()))
+    NativeCallResult::Value(ctx.create_string(ending))
 }
 
 /// Get OS temp directory
 pub fn tmpdir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let dir = std::env::temp_dir();
-    NativeCallResult::Value(string_allocate(ctx, dir.to_string_lossy().into_owned()))
+    NativeCallResult::Value(ctx.create_string(&dir.to_string_lossy()))
 }
 
 // ── Platform-specific helpers ──

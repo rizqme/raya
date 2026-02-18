@@ -1,39 +1,46 @@
 //! std:io — Standard I/O (stdin/stdout/stderr)
 
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_read, string_allocate};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
 use std::io::{self, BufRead, Read, Write};
 
-/// Read a line from stdin (blocking)
-pub fn read_line(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let stdin = io::stdin();
-    let mut line = String::new();
-    match stdin.lock().read_line(&mut line) {
-        Ok(_) => {
-            // Remove trailing newline
-            if line.ends_with('\n') {
-                line.pop();
-                if line.ends_with('\r') {
-                    line.pop();
+/// Read a line from stdin (blocking → IO pool)
+pub fn read_line(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(|| {
+            let stdin = io::stdin();
+            let mut line = String::new();
+            match stdin.lock().read_line(&mut line) {
+                Ok(_) => {
+                    if line.ends_with('\n') {
+                        line.pop();
+                        if line.ends_with('\r') {
+                            line.pop();
+                        }
+                    }
+                    IoCompletion::String(line)
                 }
+                Err(e) => IoCompletion::Error(format!("io.readLine: {}", e)),
             }
-            NativeCallResult::Value(string_allocate(ctx, line))
-        }
-        Err(e) => NativeCallResult::Error(format!("io.readLine: {}", e)),
-    }
+        }),
+    })
 }
 
-/// Read all of stdin (blocking until EOF)
-pub fn read_all(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let mut buf = String::new();
-    match io::stdin().lock().read_to_string(&mut buf) {
-        Ok(_) => NativeCallResult::Value(string_allocate(ctx, buf)),
-        Err(e) => NativeCallResult::Error(format!("io.readAll: {}", e)),
-    }
+/// Read all of stdin (blocking → IO pool)
+pub fn read_all(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(|| {
+            let mut buf = String::new();
+            match io::stdin().lock().read_to_string(&mut buf) {
+                Ok(_) => IoCompletion::String(buf),
+                Err(e) => IoCompletion::Error(format!("io.readAll: {}", e)),
+            }
+        }),
+    })
 }
 
 /// Write string to stdout
-pub fn write(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let data = match string_read(args[0]) {
+pub fn write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let data = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.write: {}", e)),
     };
@@ -44,8 +51,8 @@ pub fn write(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
 }
 
 /// Write string + newline to stdout
-pub fn writeln(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let data = match string_read(args[0]) {
+pub fn writeln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let data = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeln: {}", e)),
     };
@@ -58,8 +65,8 @@ pub fn writeln(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
 }
 
 /// Write string to stderr
-pub fn write_err(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let data = match string_read(args[0]) {
+pub fn write_err(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let data = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeErr: {}", e)),
     };
@@ -70,8 +77,8 @@ pub fn write_err(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 }
 
 /// Write string + newline to stderr
-pub fn write_errln(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let data = match string_read(args[0]) {
+pub fn write_errln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let data = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("io.writeErrln: {}", e)),
     };

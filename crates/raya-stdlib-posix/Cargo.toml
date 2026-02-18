@@ -9,7 +9,7 @@ rust-version.workspace = true
 description = "POSIX standard library for Raya (fs, net, http, fetch, env, process, os, io)"
 
 [dependencies]
-raya-engine = { workspace = true }
+raya-sdk = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 libc = { workspace = true }

@@ -1,24 +1,24 @@
 //! std:env — Environment variables
 
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_read, string_allocate, array_allocate};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue};
 
 /// Get environment variable (empty string if unset)
 pub fn get(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let key = match string_read(args[0]) {
+    let key = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("env.get: {}", e)),
     };
     let val = std::env::var(&key).unwrap_or_default();
-    NativeCallResult::Value(string_allocate(ctx, val))
+    NativeCallResult::Value(ctx.create_string(&val))
 }
 
 /// Set environment variable
-pub fn set(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let key = match string_read(args[0]) {
+pub fn set(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let key = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("env.set: {}", e)),
     };
-    let val = match string_read(args[1]) {
+    let val = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("env.set: {}", e)),
     };
@@ -28,8 +28,8 @@ pub fn set(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 }
 
 /// Remove environment variable
-pub fn remove(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let key = match string_read(args[0]) {
+pub fn remove(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let key = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("env.remove: {}", e)),
     };
@@ -39,8 +39,8 @@ pub fn remove(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
 }
 
 /// Check if environment variable exists
-pub fn has(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let key = match string_read(args[0]) {
+pub fn has(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let key = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("env.has: {}", e)),
     };
@@ -51,16 +51,16 @@ pub fn has(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 pub fn all(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     let mut items = Vec::new();
     for (key, val) in std::env::vars() {
-        items.push(string_allocate(ctx, key));
-        items.push(string_allocate(ctx, val));
+        items.push(ctx.create_string(&key));
+        items.push(ctx.create_string(&val));
     }
-    NativeCallResult::Value(array_allocate(ctx, &items))
+    NativeCallResult::Value(ctx.create_array(&items))
 }
 
 /// Get current working directory
 pub fn cwd(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     match std::env::current_dir() {
-        Ok(path) => NativeCallResult::Value(string_allocate(ctx, path.to_string_lossy().into_owned())),
+        Ok(path) => NativeCallResult::Value(ctx.create_string(&path.to_string_lossy())),
         Err(e) => NativeCallResult::Error(format!("env.cwd: {}", e)),
     }
 }
@@ -70,5 +70,5 @@ pub fn home(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult 
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_default();
-    NativeCallResult::Value(string_allocate(ctx, home))
+    NativeCallResult::Value(ctx.create_string(&home))
 }

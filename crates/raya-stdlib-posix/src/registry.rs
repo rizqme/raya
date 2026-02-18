@@ -3,7 +3,7 @@
 //! Registers all POSIX stdlib native functions by symbolic name
 //! (e.g., "fs.readFile", "net.tcpListen") into a `NativeFunctionRegistry`.
 
-use raya_engine::vm::NativeFunctionRegistry;
+use raya_sdk::NativeFunctionRegistry;
 
 /// Register all POSIX stdlib native functions into the given registry.
 pub fn register_posix(registry: &mut NativeFunctionRegistry) {

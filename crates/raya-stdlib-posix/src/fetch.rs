@@ -1,7 +1,7 @@
 //! std:fetch — HTTP/1.1 client (minimal, built on std::net)
 
 use crate::handles::HandleRegistry;
-use raya_engine::vm::{NativeCallResult, NativeContext, NativeValue, string_read, string_allocate, buffer_allocate, array_allocate};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
@@ -17,35 +17,33 @@ struct HttpResponseData {
     body: Vec<u8>,
 }
 
-/// Make HTTP request, return response handle
-pub fn request(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let method = match string_read(args[0]) {
+/// Make HTTP request, return response handle (blocking → IO pool)
+pub fn request(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let method = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fetch.request: {}", e)),
     };
-    let url = match string_read(args[1]) {
+    let url = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fetch.request: {}", e)),
     };
-    let body = match string_read(args[2]) {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
-    let extra_headers = match string_read(args[3]) {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
+    let body = ctx.read_string(args[2]).unwrap_or_default();
+    let extra_headers = ctx.read_string(args[3]).unwrap_or_default();
 
-    match do_http_request(&method, &url, &body, &extra_headers) {
-        Ok(resp) => {
-            let handle = RESPONSES.insert(resp);
-            NativeCallResult::f64(handle as f64)
-        }
-        Err(e) => NativeCallResult::Error(format!("fetch.request: {}", e)),
-    }
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match do_http_request(&method, &url, &body, &extra_headers) {
+                Ok(resp) => {
+                    let handle = RESPONSES.insert(resp);
+                    IoCompletion::Primitive(NativeValue::f64(handle as f64))
+                }
+                Err(e) => IoCompletion::Error(format!("fetch.request: {}", e)),
+            }
+        }),
+    })
 }
 
-// ── Response accessors ──
+// ── Response accessors (sync — data already in memory) ──
 
 /// Get response status code
 pub fn res_status(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
@@ -64,7 +62,7 @@ pub fn res_status_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
-        Some(resp) => NativeCallResult::Value(string_allocate(ctx, resp.status_text.clone())),
+        Some(resp) => NativeCallResult::Value(ctx.create_string(&resp.status_text)),
         None => NativeCallResult::Error(format!("fetch.resStatusText: invalid handle {}", handle)),
     }
 }
@@ -74,14 +72,14 @@ pub fn res_header(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
     let handle = args.first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    let name = match string_read(args[1]) {
+    let name = match ctx.read_string(args[1]) {
         Ok(s) => s.to_lowercase(),
         Err(e) => return NativeCallResult::Error(format!("fetch.resHeader: {}", e)),
     };
     match RESPONSES.get(handle) {
         Some(resp) => {
             let val = resp.headers.get(&name).cloned().unwrap_or_default();
-            NativeCallResult::Value(string_allocate(ctx, val))
+            NativeCallResult::Value(ctx.create_string(&val))
         }
         None => NativeCallResult::Error(format!("fetch.resHeader: invalid handle {}", handle)),
     }
@@ -96,10 +94,10 @@ pub fn res_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         Some(resp) => {
             let mut items = Vec::new();
             for (k, v) in &resp.headers {
-                items.push(string_allocate(ctx, k.clone()));
-                items.push(string_allocate(ctx, v.clone()));
+                items.push(ctx.create_string(k));
+                items.push(ctx.create_string(v));
             }
-            NativeCallResult::Value(array_allocate(ctx, &items))
+            NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error(format!("fetch.resHeaders: invalid handle {}", handle)),
     }
@@ -113,7 +111,7 @@ pub fn res_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
     match RESPONSES.get(handle) {
         Some(resp) => {
             let text = String::from_utf8_lossy(&resp.body).into_owned();
-            NativeCallResult::Value(string_allocate(ctx, text))
+            NativeCallResult::Value(ctx.create_string(&text))
         }
         None => NativeCallResult::Error(format!("fetch.resText: invalid handle {}", handle)),
     }
@@ -125,7 +123,7 @@ pub fn res_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
-        Some(resp) => NativeCallResult::Value(buffer_allocate(ctx, &resp.body)),
+        Some(resp) => NativeCallResult::Value(ctx.create_buffer(&resp.body)),
         None => NativeCallResult::Error(format!("fetch.resBytes: invalid handle {}", handle)),
     }
 }
