@@ -38,8 +38,42 @@ impl<'a> Lowerer<'a> {
                 }
                 // Module-level declarations handled in lower_module first pass
             }
-            Statement::ClassDecl(_) => {
-                // Handled at module level
+            Statement::ClassDecl(class) => {
+                if !self.class_map.contains_key(&class.name.name) {
+                    // Nested class declaration — register and lower inline.
+                    // lower_class resets per-function state (registers, blocks, locals)
+                    // for each method/constructor, so we must save and restore the
+                    // enclosing function's state around it.
+                    self.register_class(class);
+
+                    // Save per-function state
+                    let saved_register = self.next_register;
+                    let saved_block = self.next_block;
+                    let saved_local_map = self.local_map.clone();
+                    let saved_local_registers = self.local_registers.clone();
+                    let saved_refcell_registers = self.refcell_registers.clone();
+                    let saved_next_local = self.next_local;
+                    let saved_function = self.current_function.take();
+                    let saved_current_block = self.current_block;
+                    let saved_current_class = self.current_class.take();
+                    let saved_this_register = self.this_register.take();
+
+                    let ir_class = self.lower_class(class);
+                    self.pending_classes.push(ir_class);
+
+                    // Restore per-function state
+                    self.next_register = saved_register;
+                    self.next_block = saved_block;
+                    self.local_map = saved_local_map;
+                    self.local_registers = saved_local_registers;
+                    self.refcell_registers = saved_refcell_registers;
+                    self.next_local = saved_next_local;
+                    self.current_function = saved_function;
+                    self.current_block = saved_current_block;
+                    self.current_class = saved_current_class;
+                    self.this_register = saved_this_register;
+                }
+                // Module-level declarations handled in lower_module first pass
             }
             Statement::TypeAliasDecl(_) => {
                 // Type-only, no runtime code
@@ -538,25 +572,36 @@ impl<'a> Lowerer<'a> {
                 for property in &obj_pat.properties {
                     let prop_name = self.interner.resolve(property.key.name).to_string();
 
-                    // Find field index by name from the field layout, or use positional fallback
+                    // Find field index by name from the field layout
                     let field_index = if let Some(ref layout) = field_layout {
                         layout.iter()
                             .find(|(name, _)| name == &prop_name)
                             .map(|(_, idx)| *idx as u16)
-                            .unwrap_or(0)
                     } else {
-                        // Fallback: check if we have a class_id for this register
-                        // Use obj_pat property order as positional index
-                        obj_pat.properties.iter()
+                        // Fallback: use positional index (no layout available)
+                        Some(obj_pat.properties.iter()
                             .position(|p| p.key.name == property.key.name)
-                            .unwrap_or(0) as u16
+                            .unwrap_or(0) as u16)
                     };
+
+                    // If the field doesn't exist in the layout and there's a default,
+                    // use the default directly without trying to load the field
+                    if field_index.is_none() {
+                        if let Some(default_expr) = &property.default {
+                            let default_val = self.lower_expr(default_expr);
+                            self.bind_pattern(&property.value, default_val);
+                        } else {
+                            let null_reg = self.lower_null_literal();
+                            self.bind_pattern(&property.value, null_reg);
+                        }
+                        continue;
+                    }
 
                     let field_reg = self.alloc_register(TypeId::new(0));
                     self.emit(IrInstr::LoadField {
                         dest: field_reg.clone(),
                         object: value_reg.clone(),
-                        field: field_index,
+                        field: field_index.unwrap(),
                     });
 
                     // Handle default values
@@ -698,14 +743,11 @@ impl<'a> Lowerer<'a> {
             }
 
             // Track closure locals for async closure detection
-            // After lowering an arrow, last_closure_info has the function ID
+            // Use last_arrow_func_id which is set by lower_arrow (reliable even with nested closures)
             if is_async_arrow {
-                if let Some((_, _)) = &self.last_closure_info {
-                    // Find the function ID from async_closures that was just created
-                    // The most recently added function ID is the one we just created
-                    let last_func_id = crate::ir::FunctionId::new(self.next_function_id.saturating_sub(1));
-                    if self.async_closures.contains(&last_func_id) {
-                        self.closure_locals.insert(local_idx, last_func_id);
+                if let Some(func_id) = self.last_arrow_func_id.take() {
+                    if self.async_closures.contains(&func_id) {
+                        self.closure_locals.insert(local_idx, func_id);
                     }
                 }
             }

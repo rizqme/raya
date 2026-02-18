@@ -353,6 +353,10 @@ impl<'a> Lowerer<'a> {
                 dest: dest.clone(),
                 index: local_idx,
             });
+            // Propagate object field layout so destructuring can resolve field names
+            if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
+                self.register_object_fields.insert(dest.id, fields);
+            }
             return dest;
         }
 
@@ -2659,12 +2663,24 @@ impl<'a> Lowerer<'a> {
     fn lower_object(&mut self, object: &ast::ObjectExpression) -> Register {
         let dest = self.alloc_register(TypeId::new(0));
         let mut fields = Vec::new();
+        let mut field_layout = Vec::new();
 
         for (idx, prop) in object.properties.iter().enumerate() {
             match prop {
                 ast::ObjectProperty::Property(p) => {
                     let value = self.lower_expr(&p.value);
                     fields.push((idx as u16, value));
+                    // Track field layout for destructuring
+                    let name = match &p.key {
+                        ast::PropertyKey::Identifier(ident) => {
+                            self.interner.resolve(ident.name).to_string()
+                        }
+                        ast::PropertyKey::StringLiteral(lit) => {
+                            self.interner.resolve(lit.value).to_string()
+                        }
+                        _ => idx.to_string(),
+                    };
+                    field_layout.push((name, idx));
                 }
                 ast::ObjectProperty::Spread(_spread) => {
                     // Spread properties would need runtime handling
@@ -2678,6 +2694,10 @@ impl<'a> Lowerer<'a> {
             class: crate::ir::ClassId::new(0),
             fields,
         });
+
+        // Register field layout so object destructuring can resolve field names to indices
+        self.register_object_fields.insert(dest.id, field_layout);
+
         dest
     }
 
@@ -3119,6 +3139,9 @@ impl<'a> Lowerer<'a> {
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
 
+        // Emit null-check + default-value for parameters with defaults
+        self.emit_default_params(&arrow.params);
+
         // Lower arrow body
         match &arrow.body {
             ast::ArrowBody::Expression(expr) => {
@@ -3302,6 +3325,7 @@ impl<'a> Lowerer<'a> {
             .map(|(i, cap)| (cap.symbol, i as u16))
             .collect();
         self.last_closure_info = Some((dest.clone(), capture_info));
+        self.last_arrow_func_id = Some(func_id);
 
         dest
     }

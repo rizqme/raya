@@ -588,13 +588,16 @@ impl IrCodeGenerator {
             }
 
             IrInstr::ObjectLiteral { dest, class, fields } => {
-                // Push all field values
-                for (_, value) in fields {
-                    self.emit_load_register(ctx, value);
-                }
+                // Create the object first (pushes it on the stack)
                 ctx.emit(Opcode::ObjectLiteral);
-                ctx.emit_u32(class.as_u32());
+                ctx.emit_u16(class.as_u32() as u16);
                 ctx.emit_u16(fields.len() as u16);
+                // Initialize each field: push value, then InitObject pops value and peeks object
+                for (field_idx, value) in fields {
+                    self.emit_load_register(ctx, value);
+                    ctx.emit(Opcode::InitObject);
+                    ctx.emit_u16(*field_idx);
+                }
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);
             }

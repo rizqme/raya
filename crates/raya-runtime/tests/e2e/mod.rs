@@ -31,6 +31,8 @@ mod path;
 mod stream;
 mod fundamentals;
 mod edge_cases;
+mod concurrency_edge_cases;
+mod syntax_edge_cases;
 mod env;
 mod os;
 mod io;

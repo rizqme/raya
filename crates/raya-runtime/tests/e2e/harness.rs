@@ -574,6 +574,67 @@ pub fn expect_i32_multiworker(source: &str, expected: i32, worker_count: usize) 
     }
 }
 
+/// Compile and execute with multiple worker threads and builtins
+///
+/// Use this for tests that need to stress-test true parallel execution with Mutex/Channel.
+pub fn compile_and_run_multiworker_with_builtins(source: &str, worker_count: usize) -> E2EResult<Value> {
+    let (module, _interner) = compile_with_builtins(source)?;
+
+    let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+
+    // Register symbolic native functions for ModuleNativeCall dispatch
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
+    }
+
+    vm.execute(&module).map_err(E2EError::Vm)
+}
+
+/// Compile and execute with multiple workers and builtins, expecting a specific i32 result
+#[allow(dead_code)]
+pub fn expect_i32_multiworker_with_builtins(source: &str, expected: i32, worker_count: usize) {
+    match compile_and_run_multiworker_with_builtins(source, worker_count) {
+        Ok(value) => {
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return;
+            }
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected, actual, source
+                );
+                return;
+            }
+            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+/// Compile and execute with multiple workers and builtins, expecting a specific bool result
+#[allow(dead_code)]
+pub fn expect_bool_multiworker_with_builtins(source: &str, expected: bool, worker_count: usize) {
+    match compile_and_run_multiworker_with_builtins(source, worker_count) {
+        Ok(value) => {
+            let actual = value.as_bool().expect(&format!(
+                "Expected bool result, got {:?}\nSource:\n{}",
+                value, source
+            ));
+            assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
 /// Compile source and dump debug info (useful for debugging failed tests)
 pub fn debug_compile(source: &str) -> String {
     let parser = match Parser::new(source) {

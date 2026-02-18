@@ -52,7 +52,15 @@ tests/
     ├── stream.rs        # std:stream
     ├── strings.rs       # String operations
     ├── time.rs          # std:time
-    └── variables.rs     # Variable semantics
+    ├── variables.rs     # Variable semantics
+    ├── edge_cases.rs    # Edge case tests
+    ├── concurrency_edge_cases.rs # Concurrency edge cases (66 tests)
+    ├── syntax_edge_cases.rs     # Syntax edge cases (73 tests)
+    ├── env.rs           # std:env
+    ├── os.rs            # std:os
+    ├── io.rs            # std:io
+    ├── fs.rs            # std:fs
+    └── process.rs       # std:process
 ```
 
 ## Native ID Routing
@@ -69,10 +77,10 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 
 ## Tests
 
-- **E2E tests** (883+): Full compilation + execution tests using `StdNativeHandler`
-- **2 ignored**: Path tests using CallMethod in nested call context
+- **E2E tests** (1,278): Full compilation + execution tests using `StdNativeHandler`
+- **0 ignored**: All tests passing
 - Tests moved from `raya-engine` in M4.2 to ensure stdlib integration
-- Runtime tests (VM instance/spawn) need `--test-threads=2` due to thread contention
+- Test modules include: syntax_edge_cases (73 tests), concurrency_edge_cases (66 tests), edge_cases, and 30+ feature modules
 
 ## For AI Assistants
 
@@ -80,4 +88,4 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 - E2E tests live here, NOT in raya-engine
 - `StdNativeHandler` implementation lives in `raya-stdlib/src/handler.rs`, re-exported here
 - When adding new stdlib modules, implement in `raya-stdlib`, route in `handler.rs`
-- Run runtime tests with: `cargo test -p raya-runtime runtime -- --test-threads=2`
+- Run runtime tests with: `cargo test -p raya-runtime`

@@ -164,7 +164,7 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 2,785 total (1,697 engine, 1,071 runtime, 17 stdlib) — 10 ignored (edge cases)
+**Tests:** 2,930+ total (1,697 engine, 1,278 runtime, 17 stdlib) — 0 ignored
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 

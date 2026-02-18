@@ -152,6 +152,21 @@ Pattern: `NativeCall(REGEXP_REPLACE_MATCHES)` → get match array → for-loop �
 
 These methods take callback closures. Without intrinsics, they would require a nested executor loop (the deleted `execute_nested_function`). By inlining the loop at IR level, `CallClosure` compiles to `OpcodeResult::PushFrame` — the callback runs as a normal frame in `Interpreter::run()`, with full suspend/await/exception support.
 
+## Nested Classes
+
+Classes declared inside function bodies are handled via:
+1. `register_class()` — extracted method for class registration (ID assignment, field/method/vtable setup)
+2. `pending_classes: Vec<IrClass>` — stores lowered nested classes, drained in `lower_module`
+3. Save/restore of all per-function state around `lower_class()` call (same pattern as `lower_arrow`)
+
+## Default Parameters
+
+`emit_default_params()` emits null-check + default-value assignment at function entry for params with defaults. Called from `lower_function`, method/constructor lowering in `lower_class`, and `lower_arrow`.
+
+## Object Literals
+
+`lower_object()` registers field layout in `register_object_fields` so object destructuring can resolve field names to indices. `lower_identifier()` propagates `variable_object_fields` to the loaded register.
+
 ## For AI Assistants
 
 - Lowering produces IR with explicit control flow (basic blocks)
@@ -160,6 +175,9 @@ These methods take callback closures. Without intrinsics, they would require a n
 - Async functions are marked, become `Spawn` at call sites
 - Loop variables captured by closures get per-iteration RefCells
 - Method calls are lowered to `CallMethod` with receiver
+- **Nested classes** in function bodies: save/restore function state around `lower_class()`, use `register_class()` + `pending_classes`
+- **Default params**: null-check at function entry via `emit_default_params()`
+- **Object literals**: field layout tracked in `register_object_fields` for destructuring
 - **Array callback methods** (map/filter/reduce/forEach/find/findIndex/some/every/sort) are compiler intrinsics — NOT runtime CallMethod
 - **replaceWith** is also a compiler intrinsic — uses REGEXP_REPLACE_MATCHES + inline loop
 - When adding new callback-taking methods, follow the intrinsic pattern in `lower_array_intrinsic()`

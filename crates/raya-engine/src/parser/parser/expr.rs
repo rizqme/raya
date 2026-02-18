@@ -255,6 +255,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                     // Parse body - could be expression or block
                     let (body, body_span) = if parser.check(&Token::LeftBrace) {
+                        parser.advance(); // consume {
                         let block = parse_block_statement(parser)?;
                         let span = block.span;
                         (crate::parser::ast::ArrowBody::Block(block), span)
@@ -317,6 +318,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                     // Parse body
                     let (body, body_span) = if parser.check(&Token::LeftBrace) {
+                        parser.advance(); // consume {
                         let block = parse_block_statement(parser)?;
                         let span = block.span;
                         (crate::parser::ast::ArrowBody::Block(block), span)

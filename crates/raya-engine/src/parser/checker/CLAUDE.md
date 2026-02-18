@@ -115,6 +115,12 @@ Pre-defined signatures for:
 - Global objects: `JSON`
 - Decorator type aliases: `ClassDecorator<T>`, `MethodDecorator<F>`, `ParameterDecorator<T>`, etc.
 
+## Scope Resolution
+
+- `check_new()`, `check_member()` use `self.symbols.resolve_from_scope(&name, self.current_scope)` (NOT `self.symbols.resolve()`) to find classes/functions in nested scopes (e.g., classes inside functions)
+- `check_object()` builds a `Type::Class` from object literal properties (not `unknown_type()`)
+- Object destructuring defaults: when property not found, uses default expression type
+
 ## For AI Assistants
 
 - Type checking is bidirectional (inference + checking)
@@ -123,3 +129,4 @@ Pre-defined signatures for:
 - No `any` type - system is fully sound
 - Errors include span for precise location
 - `expr_types` maps expression pointers to their inferred types
+- **Scope resolution**: Always use `resolve_from_scope` with `self.current_scope` when resolving names during type checking (not bare `resolve` which uses scope 0)

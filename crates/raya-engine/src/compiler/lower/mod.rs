@@ -265,6 +265,8 @@ pub struct Lowerer<'a> {
     try_finally_stack: Vec<TryFinallyEntry>,
     /// Pending arrow functions to be added to module (with their assigned func_id)
     pending_arrow_functions: Vec<(u32, IrFunction)>,
+    /// Pending classes from nested declarations (inside function bodies)
+    pending_classes: Vec<IrClass>,
     /// Counter for generating unique arrow function names
     arrow_counter: u32,
     /// All variables from ancestor scopes (when inside an arrow function)
@@ -275,6 +277,8 @@ pub struct Lowerer<'a> {
     /// Info about the last created closure (for self-recursive closure detection)
     /// Contains (closure_register, Vec<(symbol, capture_index)>)
     last_closure_info: Option<(Register, Vec<(Symbol, u16)>)>,
+    /// Function ID of the last lowered arrow (for async closure tracking in var decls)
+    last_arrow_func_id: Option<FunctionId>,
     /// Variables that need RefCell wrapping (captured and potentially modified)
     refcell_vars: FxHashSet<Symbol>,
     /// Map from local variable to its RefCell register (for variables stored in RefCells)
@@ -360,10 +364,12 @@ impl<'a> Lowerer<'a> {
             switch_stack: Vec::new(),
             try_finally_stack: Vec::new(),
             pending_arrow_functions: Vec::new(),
+            pending_classes: Vec::new(),
             arrow_counter: 0,
             ancestor_variables: None,
             captures: Vec::new(),
             last_closure_info: None,
+            last_arrow_func_id: None,
             refcell_vars: FxHashSet::default(),
             refcell_registers: FxHashMap::default(),
             loop_captured_vars: FxHashSet::default(),
@@ -472,265 +478,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
                 Statement::ClassDecl(class) => {
-                    let class_id = ClassId::new(self.next_class_id);
-                    self.next_class_id += 1;
-                    self.class_map.insert(class.name.name, class_id);
-
-                    // Resolve parent class if extends clause is present
-                    let parent_class = if let Some(ref extends) = class.extends {
-                        if let ast::Type::Reference(type_ref) = &extends.ty {
-                            self.class_map.get(&type_ref.name.name).copied()
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
-                    // Collect instance and static field information
-                    let mut fields = Vec::new();
-                    let mut static_fields = Vec::new();
-
-                    // Start field index after ALL ancestor fields (not just immediate parent)
-                    let mut field_index = if let Some(parent_id) = parent_class {
-                        self.get_all_fields(parent_id).len() as u16
-                    } else {
-                        0u16
-                    };
-
-                    for member in &class.members {
-                        if let ast::ClassMember::Field(field) = member {
-                            let ty = field
-                                .type_annotation
-                                .as_ref()
-                                .map(|t| self.resolve_type_annotation(t))
-                                .unwrap_or(TypeId::new(0));
-
-                            // Extract type name for class lookup (e.g., "Mutex" from "mutex: Mutex")
-                            let type_name = field.type_annotation.as_ref().and_then(|t| {
-                                if let ast::Type::Reference(type_ref) = &t.ty {
-                                    Some(self.interner.resolve(type_ref.name.name).to_string())
-                                } else {
-                                    None
-                                }
-                            });
-
-                            // Look up class type by name if available
-                            let class_type = type_name.as_ref().and_then(|name| {
-                                for (&sym, &cid) in &self.class_map {
-                                    if self.interner.resolve(sym) == name {
-                                        return Some(cid);
-                                    }
-                                }
-                                None
-                            });
-
-                            if field.is_static {
-                                // Static field: allocate a global index
-                                let global_index = self.next_global_index;
-                                self.next_global_index += 1;
-                                static_fields.push(StaticFieldInfo {
-                                    name: field.name.name,
-                                    global_index,
-                                    initializer: field.initializer.clone(),
-                                });
-                            } else {
-                                // Instance field
-                                fields.push(ClassFieldInfo {
-                                    name: field.name.name,
-                                    index: field_index,
-                                    ty,
-                                    initializer: field.initializer.clone(),
-                                    class_type,
-                                    type_name,
-                                });
-                                field_index += 1;
-                            }
-                        }
-                    }
-
-                    // Collect instance and static method information
-                    let mut methods = Vec::new();
-                    let mut static_methods = Vec::new();
-                    for member in &class.members {
-                        if let ast::ClassMember::Method(method) = member {
-                            if method.body.is_some() {
-                                let func_id = FunctionId::new(self.next_function_id);
-                                self.next_function_id += 1;
-
-                                // Track async methods
-                                if method.is_async {
-                                    self.async_functions.insert(func_id);
-                                }
-
-                                if method.is_static {
-                                    // Static method
-                                    static_methods.push(StaticMethodInfo {
-                                        name: method.name.name,
-                                        func_id,
-                                    });
-                                    self.static_method_map
-                                        .insert((class_id, method.name.name), func_id);
-                                } else {
-                                    // Instance method
-                                    methods.push(ClassMethodInfo {
-                                        name: method.name.name,
-                                        func_id,
-                                    });
-                                    self.method_map.insert((class_id, method.name.name), func_id);
-                                }
-
-                                // Track method return class type for chained call resolution
-                                if let Some(ret_type) = &method.return_type {
-                                    if let ast::Type::Reference(type_ref) = &ret_type.ty {
-                                        if let Some(&ret_class_id) = self.class_map.get(&type_ref.name.name) {
-                                            self.method_return_class_map.insert((class_id, method.name.name), ret_class_id);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Assign vtable method slots for virtual dispatch
-                    let parent_slot_count = parent_class
-                        .and_then(|pid| self.class_info_map.get(&pid))
-                        .map_or(0, |info| info.method_slot_count);
-                    let mut next_slot = parent_slot_count;
-                    for method_info in &methods {
-                        // Check if parent already has a slot for this method name (override)
-                        let slot = self.find_parent_method_slot(parent_class, method_info.name)
-                            .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
-                        self.method_slot_map.insert((class_id, method_info.name), slot);
-                    }
-                    let method_slot_count = next_slot;
-
-                    // Check for constructor and assign function ID, collect parameter defaults
-                    let mut constructor = None;
-                    let mut constructor_params = Vec::new();
-                    for member in &class.members {
-                        if let ast::ClassMember::Constructor(ctor) = member {
-                            let func_id = FunctionId::new(self.next_function_id);
-                            self.next_function_id += 1;
-                            constructor = Some(func_id);
-
-                            // Collect constructor parameter defaults
-                            for param in &ctor.params {
-                                constructor_params.push(ConstructorParamInfo {
-                                    default_value: param.default_value.clone(),
-                                });
-                            }
-                            break; // Only one constructor allowed
-                        }
-                    }
-
-                    // Collect class-level decorators
-                    let class_decorators: Vec<DecoratorInfo> = class
-                        .decorators
-                        .iter()
-                        .map(|d| DecoratorInfo {
-                            expression: d.expression.clone(),
-                        })
-                        .collect();
-
-                    // Collect method decorators
-                    let mut method_decorators = Vec::new();
-                    for member in &class.members {
-                        if let ast::ClassMember::Method(method) = member {
-                            if !method.decorators.is_empty() {
-                                method_decorators.push(MethodDecoratorInfo {
-                                    method_name: method.name.name,
-                                    decorators: method
-                                        .decorators
-                                        .iter()
-                                        .map(|d| DecoratorInfo {
-                                            expression: d.expression.clone(),
-                                        })
-                                        .collect(),
-                                });
-                            }
-                        }
-                    }
-
-                    // Collect field decorators
-                    let mut field_decorators = Vec::new();
-                    for member in &class.members {
-                        if let ast::ClassMember::Field(field) = member {
-                            if !field.decorators.is_empty() {
-                                field_decorators.push(FieldDecoratorInfo {
-                                    field_name: field.name.name,
-                                    decorators: field
-                                        .decorators
-                                        .iter()
-                                        .map(|d| DecoratorInfo {
-                                            expression: d.expression.clone(),
-                                        })
-                                        .collect(),
-                                });
-                            }
-                        }
-                    }
-
-                    // Collect parameter decorators from methods and constructor
-                    let mut parameter_decorators = Vec::new();
-                    for member in &class.members {
-                        match member {
-                            ast::ClassMember::Method(method) => {
-                                let method_name = self.interner.resolve(method.name.name).to_string();
-                                for (index, param) in method.params.iter().enumerate() {
-                                    if !param.decorators.is_empty() {
-                                        parameter_decorators.push(ParameterDecoratorInfo {
-                                            method_name: method_name.clone(),
-                                            param_index: index as u32,
-                                            decorators: param
-                                                .decorators
-                                                .iter()
-                                                .map(|d| DecoratorInfo {
-                                                    expression: d.expression.clone(),
-                                                })
-                                                .collect(),
-                                        });
-                                    }
-                                }
-                            }
-                            ast::ClassMember::Constructor(ctor) => {
-                                for (index, param) in ctor.params.iter().enumerate() {
-                                    if !param.decorators.is_empty() {
-                                        parameter_decorators.push(ParameterDecoratorInfo {
-                                            method_name: "constructor".to_string(),
-                                            param_index: index as u32,
-                                            decorators: param
-                                                .decorators
-                                                .iter()
-                                                .map(|d| DecoratorInfo {
-                                                    expression: d.expression.clone(),
-                                                })
-                                                .collect(),
-                                        });
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    self.class_info_map.insert(
-                        class_id,
-                        ClassInfo {
-                            fields,
-                            methods,
-                            constructor,
-                            constructor_params,
-                            static_fields,
-                            static_methods,
-                            parent_class,
-                            method_slot_count,
-                            class_decorators,
-                            method_decorators,
-                            field_decorators,
-                            parameter_decorators,
-                        },
-                    );
+                    self.register_class(class);
                 }
                 Statement::TypeAliasDecl(type_alias) => {
                     // Register type alias for JSON decode support
@@ -800,6 +548,11 @@ impl<'a> Lowerer<'a> {
             let main_func = self.lower_top_level_statements(&top_level_stmts);
             // Add main to pending_arrow_functions with its ID, so it gets sorted correctly
             self.pending_arrow_functions.push((main_id, main_func));
+        }
+
+        // Add pending classes from nested declarations (inside function bodies)
+        for ir_class in self.pending_classes.drain(..) {
+            ir_module.add_class(ir_class);
         }
 
         // Add ALL pending functions (including main and class methods) sorted by func_id
@@ -1378,6 +1131,239 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    /// Register a class declaration (first-pass registration).
+    /// Assigns class ID, collects fields/methods/constructor info, builds ClassInfo.
+    /// Must be called before `lower_class` for the same class.
+    fn register_class(&mut self, class: &ast::ClassDecl) {
+        let class_id = ClassId::new(self.next_class_id);
+        self.next_class_id += 1;
+        self.class_map.insert(class.name.name, class_id);
+
+        // Resolve parent class if extends clause is present
+        let parent_class = if let Some(ref extends) = class.extends {
+            if let ast::Type::Reference(type_ref) = &extends.ty {
+                self.class_map.get(&type_ref.name.name).copied()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Collect instance and static field information
+        let mut fields = Vec::new();
+        let mut static_fields = Vec::new();
+
+        // Start field index after ALL ancestor fields (not just immediate parent)
+        let mut field_index = if let Some(parent_id) = parent_class {
+            self.get_all_fields(parent_id).len() as u16
+        } else {
+            0u16
+        };
+
+        for member in &class.members {
+            if let ast::ClassMember::Field(field) = member {
+                let ty = field
+                    .type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or(TypeId::new(0));
+
+                let type_name = field.type_annotation.as_ref().and_then(|t| {
+                    if let ast::Type::Reference(type_ref) = &t.ty {
+                        Some(self.interner.resolve(type_ref.name.name).to_string())
+                    } else {
+                        None
+                    }
+                });
+
+                let class_type = type_name.as_ref().and_then(|name| {
+                    for (&sym, &cid) in &self.class_map {
+                        if self.interner.resolve(sym) == name {
+                            return Some(cid);
+                        }
+                    }
+                    None
+                });
+
+                if field.is_static {
+                    let global_index = self.next_global_index;
+                    self.next_global_index += 1;
+                    static_fields.push(StaticFieldInfo {
+                        name: field.name.name,
+                        global_index,
+                        initializer: field.initializer.clone(),
+                    });
+                } else {
+                    fields.push(ClassFieldInfo {
+                        name: field.name.name,
+                        index: field_index,
+                        ty,
+                        initializer: field.initializer.clone(),
+                        class_type,
+                        type_name,
+                    });
+                    field_index += 1;
+                }
+            }
+        }
+
+        // Collect instance and static method information
+        let mut methods = Vec::new();
+        let mut static_methods_vec = Vec::new();
+        for member in &class.members {
+            if let ast::ClassMember::Method(method) = member {
+                if method.body.is_some() {
+                    let func_id = FunctionId::new(self.next_function_id);
+                    self.next_function_id += 1;
+
+                    if method.is_async {
+                        self.async_functions.insert(func_id);
+                    }
+
+                    if method.is_static {
+                        static_methods_vec.push(StaticMethodInfo {
+                            name: method.name.name,
+                            func_id,
+                        });
+                        self.static_method_map
+                            .insert((class_id, method.name.name), func_id);
+                    } else {
+                        methods.push(ClassMethodInfo {
+                            name: method.name.name,
+                            func_id,
+                        });
+                        self.method_map.insert((class_id, method.name.name), func_id);
+                    }
+
+                    if let Some(ret_type) = &method.return_type {
+                        if let ast::Type::Reference(type_ref) = &ret_type.ty {
+                            if let Some(&ret_class_id) = self.class_map.get(&type_ref.name.name) {
+                                self.method_return_class_map.insert((class_id, method.name.name), ret_class_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Assign vtable method slots
+        let parent_slot_count = parent_class
+            .and_then(|pid| self.class_info_map.get(&pid))
+            .map_or(0, |info| info.method_slot_count);
+        let mut next_slot = parent_slot_count;
+        for method_info in &methods {
+            let slot = self.find_parent_method_slot(parent_class, method_info.name)
+                .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
+            self.method_slot_map.insert((class_id, method_info.name), slot);
+        }
+        let method_slot_count = next_slot;
+
+        // Constructor
+        let mut constructor = None;
+        let mut constructor_params = Vec::new();
+        for member in &class.members {
+            if let ast::ClassMember::Constructor(ctor) = member {
+                let func_id = FunctionId::new(self.next_function_id);
+                self.next_function_id += 1;
+                constructor = Some(func_id);
+                for param in &ctor.params {
+                    constructor_params.push(ConstructorParamInfo {
+                        default_value: param.default_value.clone(),
+                    });
+                }
+                break;
+            }
+        }
+
+        // Decorators
+        let class_decorators: Vec<DecoratorInfo> = class
+            .decorators
+            .iter()
+            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+            .collect();
+
+        let mut method_decorators = Vec::new();
+        for member in &class.members {
+            if let ast::ClassMember::Method(method) = member {
+                if !method.decorators.is_empty() {
+                    method_decorators.push(MethodDecoratorInfo {
+                        method_name: method.name.name,
+                        decorators: method.decorators.iter()
+                            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                            .collect(),
+                    });
+                }
+            }
+        }
+
+        let mut field_decorators = Vec::new();
+        for member in &class.members {
+            if let ast::ClassMember::Field(field) = member {
+                if !field.decorators.is_empty() {
+                    field_decorators.push(FieldDecoratorInfo {
+                        field_name: field.name.name,
+                        decorators: field.decorators.iter()
+                            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                            .collect(),
+                    });
+                }
+            }
+        }
+
+        let mut parameter_decorators = Vec::new();
+        for member in &class.members {
+            match member {
+                ast::ClassMember::Method(method) => {
+                    let method_name = self.interner.resolve(method.name.name).to_string();
+                    for (index, param) in method.params.iter().enumerate() {
+                        if !param.decorators.is_empty() {
+                            parameter_decorators.push(ParameterDecoratorInfo {
+                                method_name: method_name.clone(),
+                                param_index: index as u32,
+                                decorators: param.decorators.iter()
+                                    .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+                ast::ClassMember::Constructor(ctor) => {
+                    for (index, param) in ctor.params.iter().enumerate() {
+                        if !param.decorators.is_empty() {
+                            parameter_decorators.push(ParameterDecoratorInfo {
+                                method_name: "constructor".to_string(),
+                                param_index: index as u32,
+                                decorators: param.decorators.iter()
+                                    .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                                    .collect(),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        self.class_info_map.insert(
+            class_id,
+            ClassInfo {
+                fields,
+                methods,
+                constructor,
+                constructor_params,
+                static_fields,
+                static_methods: static_methods_vec,
+                parent_class,
+                method_slot_count,
+                class_decorators,
+                method_decorators,
+                field_decorators,
+                parameter_decorators,
+            },
+        );
+    }
+
     /// Lower a function declaration
     fn lower_function(&mut self, func: &ast::FunctionDecl) -> IrFunction {
         // Reset per-function state
@@ -1447,6 +1433,9 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+        // Emit null-check + default-value for parameters with defaults
+        self.emit_default_params(&func.params);
 
         // Lower function body
         for stmt in &func.body.statements {
@@ -1674,6 +1663,9 @@ impl<'a> Lowerer<'a> {
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(entry_block, "entry"));
 
+                    // Emit null-check + default-value for parameters with defaults
+                    self.emit_default_params(&method.params);
+
                     // Lower method body
                     for stmt in &body.statements {
                         self.lower_stmt(stmt);
@@ -1763,6 +1755,9 @@ impl<'a> Lowerer<'a> {
                 self.current_function_mut()
                     .add_block(BasicBlock::with_label(entry_block, "entry"));
 
+                // Emit null-check + default-value for constructor parameters with defaults
+                self.emit_default_params(&ctor.params);
+
                 // Lower constructor body
                 for stmt in &ctor.body.statements {
                     self.lower_stmt(stmt);
@@ -1840,6 +1835,52 @@ impl<'a> Lowerer<'a> {
         let id = RegisterId::new(self.next_register);
         self.next_register += 1;
         Register::new(id, ty)
+    }
+
+    /// Emit null-check and default-value assignment for function parameters with defaults.
+    /// Must be called after entry block creation and parameter registration,
+    /// before lowering the function body.
+    fn emit_default_params(&mut self, params: &[ast::Parameter]) {
+        for param in params {
+            if let Some(ref default_expr) = param.default_value {
+                if let Pattern::Identifier(ident) = &param.pattern {
+                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                        // Load the parameter value
+                        let param_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::LoadLocal {
+                            dest: param_reg.clone(),
+                            index: local_idx,
+                        });
+
+                        // Branch on null
+                        let default_block = self.alloc_block();
+                        let continue_block = self.alloc_block();
+                        self.set_terminator(Terminator::BranchIfNull {
+                            value: param_reg,
+                            null_block: default_block,
+                            not_null_block: continue_block,
+                        });
+
+                        // Default block: evaluate default expression and store
+                        self.current_function_mut()
+                            .add_block(BasicBlock::with_label(default_block, "param.default"));
+                        self.current_block = default_block;
+                        let default_val = self.lower_expr(default_expr);
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: default_val.clone(),
+                        });
+                        self.local_registers.insert(local_idx, default_val);
+                        self.set_terminator(Terminator::Jump(continue_block));
+
+                        // Continue block
+                        self.current_function_mut()
+                            .add_block(BasicBlock::with_label(continue_block, "param.cont"));
+                        self.current_block = continue_block;
+                    }
+                }
+            }
+        }
     }
 
     /// Find a method's vtable slot in parent class hierarchy

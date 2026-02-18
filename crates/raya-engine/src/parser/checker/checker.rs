@@ -330,9 +330,15 @@ impl<'a> TypeChecker<'a> {
                     let prop_name = self.resolve(prop.key.name);
                     let prop_ty = class_props.as_ref()
                         .and_then(|props| props.iter().find(|p| p.name == prop_name))
-                        .map(|p| p.ty)
-                        .unwrap_or_else(|| self.type_ctx.unknown_type());
-                    self.check_destructure_pattern(&prop.value, prop_ty);
+                        .map(|p| p.ty);
+                    // If there's a default expression, use its type when property is missing
+                    let final_ty = if let Some(ref default_expr) = prop.default {
+                        let default_ty = self.check_expr(default_expr);
+                        prop_ty.unwrap_or(default_ty)
+                    } else {
+                        prop_ty.unwrap_or_else(|| self.type_ctx.unknown_type())
+                    };
+                    self.check_destructure_pattern(&prop.value, final_ty);
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
                     let unknown = self.type_ctx.unknown_type();
@@ -1517,7 +1523,24 @@ impl<'a> TypeChecker<'a> {
             crate::parser::ast::ArrowBody::Block(block) => {
                 // Save and set return type for return statement checking
                 let prev_return_ty = self.current_function_return_type;
-                self.current_function_return_type = declared_return_ty;
+
+                // For async arrows, unwrap Task<T> → T so return statements
+                // are checked against T (same logic as check_function)
+                let effective_return_ty = if arrow.is_async {
+                    declared_return_ty.and_then(|ty| {
+                        if let Some(crate::parser::types::Type::Task(task_ty)) =
+                            self.type_ctx.get(ty)
+                        {
+                            Some(task_ty.result)
+                        } else {
+                            Some(ty)
+                        }
+                    })
+                } else {
+                    declared_return_ty
+                };
+
+                self.current_function_return_type = effective_return_ty;
 
                 // Check block statements
                 for stmt in &block.statements {
@@ -1527,8 +1550,8 @@ impl<'a> TypeChecker<'a> {
                 // Restore previous return type
                 self.current_function_return_type = prev_return_ty;
 
-                // Use the return type annotation or infer void
-                declared_return_ty.unwrap_or_else(|| self.type_ctx.void_type())
+                // Use the effective return type or infer void
+                effective_return_ty.unwrap_or_else(|| self.type_ctx.void_type())
             }
         };
 
@@ -1608,7 +1631,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             // Look up the class symbol to get its type
-            if let Some(symbol) = self.symbols.resolve(&name) {
+            if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                 if symbol.kind == SymbolKind::Class {
                     // Check if the class is abstract (cannot be instantiated)
                     if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
@@ -1815,7 +1838,7 @@ impl<'a> TypeChecker<'a> {
         // This happens when the object is an identifier that resolves to a class symbol
         if let Expression::Identifier(ident) = &*member.object {
             let class_name = self.resolve(ident.name);
-            if let Some(symbol) = self.symbols.resolve(&class_name) {
+            if let Some(symbol) = self.symbols.resolve_from_scope(&class_name, self.current_scope) {
                 if symbol.kind == SymbolKind::Class {
                     // This is static member access (e.g., Date.now())
                     if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty) {
@@ -1912,7 +1935,7 @@ impl<'a> TypeChecker<'a> {
             // If this is a placeholder class type (empty methods), look up the symbol to get the full type
             let actual_class = if class.methods.is_empty() && class.properties.is_empty() {
                 // Look up class by name in symbol table
-                if let Some(symbol) = self.symbols.resolve(&class.name) {
+                if let Some(symbol) = self.symbols.resolve_from_scope(&class.name, self.current_scope) {
                     if symbol.kind == SymbolKind::Class {
                         self.type_ctx.get(symbol.ty).and_then(|t| {
                             if let crate::parser::types::Type::Class(c) = t {
@@ -2456,9 +2479,45 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check object literal
-    fn check_object(&mut self, _obj: &ObjectExpression) -> TypeId {
-        // TODO: Build object type from properties
-        self.type_ctx.unknown_type()
+    fn check_object(&mut self, obj: &ObjectExpression) -> TypeId {
+        use crate::parser::types::ty::{PropertySignature, ClassType};
+
+        let mut properties = Vec::new();
+        for prop in &obj.properties {
+            match prop {
+                ObjectProperty::Property(p) => {
+                    let name = match &p.key {
+                        PropertyKey::Identifier(ident) => self.resolve(ident.name),
+                        PropertyKey::StringLiteral(lit) => self.resolve(lit.value),
+                        PropertyKey::IntLiteral(lit) => lit.value.to_string(),
+                        PropertyKey::Computed(_) => continue, // Skip computed keys
+                    };
+                    let value_ty = self.check_expr(&p.value);
+                    properties.push(PropertySignature {
+                        name,
+                        ty: value_ty,
+                        optional: false,
+                        readonly: false,
+                    });
+                }
+                ObjectProperty::Spread(_) => {
+                    // Spread properties are complex — skip for now
+                }
+            }
+        }
+
+        let class_type = ClassType {
+            name: "<anonymous>".to_string(),
+            type_params: vec![],
+            properties,
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        };
+        self.type_ctx.intern(crate::parser::types::Type::Class(class_type))
     }
 
     /// Check conditional (ternary) expression
