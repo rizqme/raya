@@ -85,7 +85,7 @@ impl Mutex {
             }
         }
 
-        // Try to acquire the lock using compare-and-swap
+        // Fast path: try CAS without queue lock (uncontended case)
         match self.owner.compare_exchange(None, Some(task_id)) {
             Ok(_) => {
                 // Successfully acquired the lock
@@ -93,10 +93,20 @@ impl Mutex {
                 Ok(())
             }
             Err(_) => {
-                // Lock is held by another task, must block
-                // Add this task to wait queue
-                self.wait_queue.lock().push_back(task_id);
-                Err(BlockReason::AwaitingMutex(self.id))
+                // Slow path: acquire queue lock and re-check CAS to prevent
+                // lost wakeup when unlock clears owner between our CAS and
+                // queue insertion.
+                let mut queue = self.wait_queue.lock();
+                match self.owner.compare_exchange(None, Some(task_id)) {
+                    Ok(_) => {
+                        self.lock_count.store(1, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(_) => {
+                        queue.push_back(task_id);
+                        Err(BlockReason::AwaitingMutex(self.id))
+                    }
+                }
             }
         }
     }
@@ -165,21 +175,23 @@ impl Mutex {
         // Verify the caller owns the mutex
         match self.owner.load() {
             Some(owner) if owner == task_id => {
-                // Clear owner and lock count
-                self.lock_count.store(0, Ordering::Release);
-                self.owner.store(None);
-
-                // Check if there are waiting tasks
+                // Acquire queue lock FIRST to prevent race with try_lock.
+                // This ensures no other task can CAS owner to None→Some(X)
+                // between our clear and a potential ownership transfer.
                 let mut queue = self.wait_queue.lock();
                 if let Some(next_task) = queue.pop_front() {
-                    // Transfer ownership to the next waiting task
+                    // Transfer ownership directly — never goes through None
+                    // state, so no other task can steal the lock via CAS.
                     self.owner.store(Some(next_task));
-                    self.lock_count.store(1, Ordering::Release);
-                    // Notify waiters that ownership may have changed
+                    // lock_count stays at 1
+                    // Notify any blocking lock() callers
                     self.available_condvar.notify_all();
                     Ok(Some(next_task))
                 } else {
-                    // No waiting tasks - notify any blocking threads
+                    // No waiting tasks - clear the lock
+                    self.lock_count.store(0, Ordering::Release);
+                    self.owner.store(None);
+                    // Notify any blocking lock() callers
                     self.available_condvar.notify_all();
                     Ok(None)
                 }
