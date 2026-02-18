@@ -9,9 +9,9 @@ This crate contains native (Rust) implementations of standard library functions 
 ## Architecture
 
 ```
-raya-engine (defines NativeHandler trait, NativeContext, NativeValue)
+raya-sdk (defines NativeHandler trait, NativeContext, NativeValue, IoRequest/IoCompletion)
     ↓
-raya-stdlib (implements StdNativeHandler + all stdlib modules)
+raya-stdlib (implements StdNativeHandler + register_stdlib, depends on raya-sdk)
     ↓
 raya-runtime (re-exports StdNativeHandler, hosts e2e tests)
 ```
@@ -77,7 +77,7 @@ impl NativeHandler for StdNativeHandler {
 | logger | Complete | 0x1000-0x1003 | Via NativeHandler (M4.2) |
 | math | Complete | 0x2000-0x2016 | 22 functions + PI, E (M4.3) |
 | crypto | Complete | 0x4000-0x400B | 12 methods (M4.6) |
-| time | Complete | 0x5000-0x5004 | 5 native + 7 pure Raya (M4.7) |
+| time | Complete | 0x5000-0x5004 | 5 native + 7 pure Raya; sleep via Suspend(BlockingWork) |
 | path | Complete | 0x6000-0x600C | 14 methods (M4.8) |
 | stream | In Progress | — | Reactive streams |
 | runtime | Complete | 0x3000-0x30FF | Handlers in raya-engine (M4.5) |
@@ -102,8 +102,9 @@ Both route to the same Rust implementations.
 
 ## For AI Assistants
 
-- **Architecture**: Engine defines `NativeHandler` trait, stdlib implements it, runtime re-exports
+- **Architecture**: `raya-sdk` defines `NativeHandler` trait + IO types, stdlib implements it, runtime re-exports
 - **No direct coupling**: `raya-engine` does NOT depend on `raya-stdlib`
+- `time.sleep`/`time.sleepMicros` use `Suspend(BlockingWork)` — sleep runs on IO pool, not VM worker
 - **Native IDs** must match across `builtin.rs`, `.raya` sources, and `StdNativeHandler`
 - **std: prefix**: Standard library modules use `std:` namespace with default exports (e.g., `import math from "std:math"`)
 - `NativeContext` provides GC allocation, class registry, and scheduler access

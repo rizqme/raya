@@ -95,11 +95,11 @@ See [interpreter/CLAUDE.md](interpreter/CLAUDE.md).
 - 15 opcode modules, 4 native handler modules
 - Frame-based execution (no nesting)
 
-### `scheduler/` - Task Scheduler
+### `scheduler/` - Unified Reactor + Worker Pools
 See [scheduler/CLAUDE.md](scheduler/CLAUDE.md).
-- Work-stealing scheduler
+- Single-threaded reactor (control loop) + VM worker pool + IO worker pool
 - Task preemption (Go-style async)
-- Multi-threaded execution
+- Blocking IO offloaded to IO pool via `Suspend(BlockingWork)`
 
 ### `gc/` - Garbage Collector
 See [gc/CLAUDE.md](gc/CLAUDE.md).
