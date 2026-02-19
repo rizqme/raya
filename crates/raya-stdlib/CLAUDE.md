@@ -13,7 +13,9 @@ raya-sdk (defines NativeHandler trait, NativeContext, NativeValue, IoRequest/IoC
     ↓
 raya-stdlib (implements StdNativeHandler + register_stdlib, depends on raya-sdk)
     ↓
-raya-runtime (re-exports StdNativeHandler, hosts e2e tests)
+raya-runtime (Runtime API: compile/load/execute/eval, uses StdNativeHandler, hosts e2e tests)
+    ↓
+raya-cli (CLI commands wired through Runtime)
 ```
 
 ## Module Structure

@@ -16,10 +16,10 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 
 | Command | Alias | Description | Status |
 |---------|-------|-------------|--------|
-| `raya run <target>` | `r` | Run script or file (dual-mode) | Scaffolded (script resolution works, execution pipeline TODO) |
-| `raya build` | `b` | Compile to .ryb binary | Stub |
+| `raya run <target>` | `r` | Run script or file (dual-mode) | **Implemented** — compiles+executes .raya, loads .ryb, resolves deps |
+| `raya build` | `b` | Compile to .ryb binary | **Implemented** — compiles .raya files to .ryb bytecode |
 | `raya check` | `c` | Type-check without building | Stub |
-| `raya eval <code>` | — | Evaluate inline expression | Stub |
+| `raya eval <code>` | — | Evaluate inline expression | **Implemented** — evaluates expressions, wraps bare exprs automatically |
 | `raya test` | `t` | Run tests | Stub |
 | `raya bench` | — | Run benchmarks | Stub |
 | `raya fmt` | — | Format source files | Stub |
@@ -84,17 +84,32 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 
 ## Dependencies
 
-- `raya-engine`: Compilation and execution
-- `rpkg` (raya-pm): Package management
+- `raya-runtime`: High-level Runtime API (compile, execute, eval, dependency resolution)
+- `raya-engine`: Compilation and execution (used transitively via runtime)
+- `rpkg` (raya-pm): Package management, manifest parsing
 - `clap`: CLI argument parsing (derive)
 - `anyhow`: Error handling
 - `toml`: Config file parsing
 - `dirs`: Platform-specific directories (~/.raya)
 
+## Integration Tests
+
+19 tests in `tests/cli_integration.rs` covering:
+- Run .raya file, compile .raya file, run .ryb file, bytecode roundtrip
+- Run with manifest (raya.toml), local path dependencies, URL deps (cached + error)
+- Package dep resolution, mixed deps (ryb + source), .ryb with separate library
+- Eval expressions, eval functions, eval complex expressions
+- Script manifest parsing, script file targets
+- Build to .ryb, runtime with options, runtime defaults
+
 ## For AI Assistants
 
-- Most commands are stubs — execution pipeline in `run.rs` needs wiring (Parse → Check → Compile → `Vm::execute`)
+- `run`, `build`, `eval` are fully wired through `raya-runtime::Runtime`
+- Most other commands are still stubs
 - `pkg` subcommands (login/logout/set-url/whoami) are fully implemented
 - `clean` and `info` are functional
-- Use `StdNativeHandler` from raya-stdlib when wiring execution
+- `run.rs` uses `Runtime::run_file()` which auto-detects .raya/.ryb and resolves deps from raya.toml
+- `eval.rs` auto-wraps bare expressions in `return ...;`
+- `build.rs` uses `Runtime::compile_file()` + `CompiledModule::encode()`
 - JIT is default-on at the CLI level; `--no-jit` flag disables it
+- Run CLI tests with: `cargo test -p raya-cli`

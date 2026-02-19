@@ -1,0 +1,9 @@
+[package]
+name = "scripts-project"
+version = "0.1.0"
+main = "src/main.raya"
+
+[scripts]
+dev = "src/main.raya"
+start = "src/main.raya"
+greet = "echo hello"

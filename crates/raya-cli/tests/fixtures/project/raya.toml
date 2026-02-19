@@ -1,0 +1,4 @@
+[package]
+name = "test-project"
+version = "0.1.0"
+main = "src/app.raya"

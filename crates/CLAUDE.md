@@ -7,7 +7,7 @@ This directory contains all Rust crates that make up the Raya language implement
 ```
 crates/
 ├── raya-engine/     # Core language engine (parser, compiler, VM)
-├── raya-runtime/    # Binds engine + stdlib via NativeHandler trait
+├── raya-runtime/    # High-level Runtime API (compile, load, execute, eval, deps)
 ├── raya-stdlib/     # Standard library native implementations
 ├── raya-cli/        # Command-line interface
 ├── raya-lsp/        # Language Server Protocol (LSP) server
@@ -24,7 +24,9 @@ raya-cli ──────────────────┬─> raya-runt
                            └─> raya-lsp (LSP server)
 
 raya-runtime ─────────────┬─> raya-engine (core engine)
-                           └─> raya-stdlib (native implementations)
+                           ├─> raya-stdlib (native implementations)
+                           ├─> raya-stdlib-posix (POSIX natives)
+                           └─> rpkg (manifest parsing, URL cache)
 
 raya-engine ───────────────┬─> (defines NativeHandler trait)
                            ├─> (no dependency on stdlib)
@@ -42,9 +44,9 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 | Crate | Purpose | Status |
 |-------|---------|--------|
 | `raya-engine` | Full language engine: parser, compiler, VM, JIT (feature-gated) | Active development |
-| `raya-runtime` | Binds engine + stdlib via `NativeHandler` trait; hosts e2e tests | ✅ Active (M4.2+) |
+| `raya-runtime` | High-level Runtime API: compile, load, execute, eval, dependency resolution; hosts e2e tests | ✅ Complete (Runtime struct, 1,297 e2e tests) |
 | `raya-stdlib` | Native stdlib implementations + type defs | ✅ Logger, Math, Crypto, Time, Path complete |
-| `raya-cli` | `raya` CLI tool (run, build, test, pkg, etc.) | ✅ Scaffolded (pkg/clean/info functional) |
+| `raya-cli` | `raya` CLI tool (run, build, eval, pkg, etc.) | ✅ run/build/eval implemented (19 integration tests) |
 | `raya-lsp` | Language server for IDE support | Placeholder |
 | `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
 | `raya-sdk` | Minimal types for native module FFI | ✅ Complete |
@@ -54,7 +56,7 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 
 1. **Consolidated Engine**: Parser, compiler, and VM are in one crate (`raya-engine`) for easier development and internal API changes.
 
-2. **Engine/Stdlib Decoupling** (M4.2): `raya-engine` defines a `NativeHandler` trait but does NOT depend on `raya-stdlib`. The `raya-runtime` crate binds them together via `StdNativeHandler`.
+2. **Engine/Stdlib Decoupling** (M4.2): `raya-engine` defines a `NativeHandler` trait but does NOT depend on `raya-stdlib`. The `raya-runtime` crate binds them together via `StdNativeHandler` and exposes a high-level `Runtime` API for compile/load/execute/eval.
 
 3. **Minimal SDK**: `raya-sdk` contains only FFI types (`NativeValue`, `NativeModule`, traits). Third-party native modules only depend on this crate.
 
@@ -68,7 +70,7 @@ When working on Raya:
 - **Most changes** go in `raya-engine` - it's the core of everything
 - **Stdlib implementations** go in `raya-stdlib` (contains `StdNativeHandler`), re-exported by `raya-runtime`
 - **E2E tests** live in `raya-runtime` (moved from engine in M4.2)
-- **CLI commands** go in `raya-cli/src/commands/` (pkg/clean/info functional, others are stubs)
+- **CLI commands** go in `raya-cli/src/commands/` — run/build/eval are wired through `raya-runtime::Runtime`, pkg/clean/info also functional
 - **Native module development** uses `raya-sdk` + `raya-native`
 - **Package resolution** logic is in `raya-pm`
 

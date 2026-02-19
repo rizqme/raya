@@ -1,67 +1,92 @@
 # raya-runtime
 
-Binds the Raya engine with the standard library via the `NativeHandler` trait. Hosts all e2e tests.
+High-level runtime API for compiling and executing Raya programs. Hosts all e2e tests.
 
 ## Overview
 
-This crate is a thin integration layer. `StdNativeHandler` is implemented in `raya-stdlib` and re-exported here for backward compatibility. All end-to-end tests live here since they require stdlib integration.
+This crate provides the `Runtime` struct — the main entry point for compiling `.raya` source files, loading `.ryb` bytecode, resolving dependencies, and executing programs. It integrates the engine, stdlib, and package manager into a clean API used by `raya-cli` and embedders.
 
 ## Architecture
 
 ```
-raya-engine (defines NativeHandler trait, NativeContext, NativeValue)
+raya-engine (parser, compiler, VM, bytecode format)
     ↓
-raya-stdlib (implements StdNativeHandler + all stdlib modules)
+raya-stdlib (StdNativeHandler + all stdlib modules)
+raya-stdlib-posix (POSIX natives: fs, net, http, process, os, env, io)
+rpkg (PackageManifest, DependencyResolver, UrlCache)
     ↓
-raya-runtime (re-exports StdNativeHandler, hosts e2e tests)
+raya-runtime (Runtime API: compile, load, execute, eval, dependency resolution)
+    ↓
+raya-cli (CLI commands use Runtime)
 ```
+
+## Public API
+
+### `Runtime`
+- `Runtime::new()` — default options
+- `Runtime::with_options(RuntimeOptions)` — custom threads, heap, timeout, JIT settings
+- `compile(source: &str) -> Result<CompiledModule>` — compile source code
+- `compile_file(path: &Path) -> Result<CompiledModule>` — compile a .raya file
+- `load_bytecode(path: &Path) -> Result<CompiledModule>` — load a .ryb file
+- `load_bytecode_bytes(bytes: &[u8]) -> Result<CompiledModule>` — load .ryb from memory
+- `execute(module: &CompiledModule) -> Result<i32>` — run, returns exit code
+- `execute_with_deps(module: &CompiledModule, deps: &[CompiledModule]) -> Result<i32>` — run with linked dependencies
+- `eval(source: &str) -> Result<NativeValue>` — evaluate expression, returns value
+- `run_file(path: &Path) -> Result<i32>` — auto-detect .raya/.ryb, resolve deps from manifest
+- `run_file_with_deps(path: &Path, deps: Vec<CompiledModule>) -> Result<i32>` — run with explicit deps
+
+### `CompiledModule`
+- Wraps `Module` + optional `Interner`
+- `encode(&self) -> Vec<u8>` — serialize to .ryb bytes
+
+### `RuntimeOptions`
+- `threads: usize` — worker threads (0 = auto-detect via num_cpus)
+- `heap_limit: usize` — bytes (0 = unlimited)
+- `timeout: u64` — milliseconds (0 = unlimited)
+- `no_jit: bool` — disable JIT
+- `jit_threshold: u32` — invocations before JIT kicks in
+
+### `RuntimeError`
+- `Io`, `Lex`, `Parse`, `TypeCheck`, `Compile`, `Bytecode`, `Vm`, `Dependency`
 
 ## Module Structure
 
 ```
 src/
-└── lib.rs              # Re-exports StdNativeHandler from raya-stdlib (7 lines)
+├── lib.rs              # Runtime struct, CompiledModule, RuntimeOptions, public API
+├── error.rs            # RuntimeError enum (thiserror)
+├── builtins.rs         # builtin_sources() + std_sources() via include_str!
+├── compile.rs          # compile_source(): parser → binder → checker → compiler
+├── vm_setup.rs         # create_vm(): VM with StdNativeHandler + stdlib + posix
+├── loader.rs           # load_bytecode_file(), resolve_ryb_deps(), find_library()
+└── deps.rs             # load_dependencies() from raya.toml manifest
 
 tests/
 ├── e2e_tests.rs        # E2E test entry point
-└── e2e/                # 27 test modules (883+ tests)
-    ├── mod.rs           # Module declarations
+└── e2e/                # 27+ test modules (1,297+ tests)
     ├── harness.rs       # Test harness (compile + execute)
-    ├── arrays.rs        # Array operations
-    ├── async_await.rs   # Async/await concurrency
-    ├── builtins.rs      # Built-in type methods
-    ├── classes.rs       # Class features
-    ├── closures.rs      # Closure semantics
-    ├── closure_captures.rs # Capture-by-reference
-    ├── concurrency.rs   # Task scheduling
-    ├── conditionals.rs  # If/switch
-    ├── crypto.rs        # std:crypto
-    ├── decorators.rs    # Decorator system
-    ├── exceptions.rs    # Try/catch/throw
-    ├── fundamentals.rs  # Basic operations
-    ├── functions.rs     # Function features
-    ├── json.rs          # JSON operations
-    ├── literals.rs      # Literal types
-    ├── logger.rs        # std:logger
-    ├── loops.rs         # Loop constructs
-    ├── math.rs          # std:math
-    ├── operators.rs     # Operator semantics
-    ├── path.rs          # std:path
-    ├── reflect.rs       # Reflect API
-    ├── runtime.rs       # std:runtime (VM instances, compiler)
-    ├── stream.rs        # std:stream
-    ├── strings.rs       # String operations
-    ├── time.rs          # std:time
-    ├── variables.rs     # Variable semantics
-    ├── edge_cases.rs    # Edge case tests
-    ├── concurrency_edge_cases.rs # Concurrency edge cases (66 tests)
-    ├── syntax_edge_cases.rs     # Syntax edge cases (73 tests)
-    ├── env.rs           # std:env
-    ├── os.rs            # std:os
-    ├── io.rs            # std:io
-    ├── fs.rs            # std:fs
-    └── process.rs       # std:process
+    └── *.rs             # Feature modules (arrays, classes, closures, concurrency, etc.)
 ```
+
+## Compilation Pipeline
+
+```
+builtin_sources() + std_sources() + user source
+    → Parser::new() → parse()
+    → Binder (empty native sigs — builtins are in source)
+    → TypeChecker
+    → Compiler::compile_via_ir()
+    → Module (bytecode)
+```
+
+## Dependency Resolution (`deps.rs`)
+
+Resolves `[dependencies]` from `raya.toml`:
+- **Local path** (`path = "../lib"`) — canonicalize + load entry point
+- **URL/git** (`git = "https://..."`) — check rpkg UrlCache, fallback to `~/.raya/cache/urls/`
+- **Registry** (`version = "1.0"`) — check `raya_packages/`, fallback to `~/.raya/packages/`
+
+Entry point discovery for package dirs: `raya.toml → [package].main` → fallback to `src/lib.raya`, `src/main.raya`, `lib.raya`, `index.raya`, `main.raya`.
 
 ## Native ID Routing
 
@@ -77,15 +102,15 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 
 ## Tests
 
-- **E2E tests** (1,278): Full compilation + execution tests using `StdNativeHandler`
+- **E2E tests** (1,297+): Full compilation + execution tests using `StdNativeHandler`
 - **0 ignored**: All tests passing
-- Tests moved from `raya-engine` in M4.2 to ensure stdlib integration
-- Test modules include: syntax_edge_cases (73 tests), concurrency_edge_cases (66 tests), edge_cases, and 30+ feature modules
+- Test modules include: syntax_edge_cases, concurrency_edge_cases, edge_cases, and 30+ feature modules
 
 ## For AI Assistants
 
-- This is the primary crate for running Raya programs (engine + stdlib)
+- `Runtime` is the primary API — use it instead of manually wiring engine components
 - E2E tests live here, NOT in raya-engine
-- `StdNativeHandler` implementation lives in `raya-stdlib/src/handler.rs`, re-exported here
+- `StdNativeHandler` implementation lives in `raya-stdlib/src/handler.rs`, re-exported here for backward compat
 - When adding new stdlib modules, implement in `raya-stdlib`, route in `handler.rs`
+- The `builtins.rs` file uses `include_str!` to embed builtin + std `.raya` source at compile time
 - Run runtime tests with: `cargo test -p raya-runtime`

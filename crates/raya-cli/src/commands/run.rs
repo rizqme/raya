@@ -1,6 +1,7 @@
 //! `raya run` — dual-mode: run scripts from raya.toml or execute files directly.
 
 use anyhow::{anyhow, Context};
+use raya_runtime::{Runtime, RuntimeOptions};
 use rpkg::PackageManifest;
 use std::path::Path;
 use std::process::Command;
@@ -21,59 +22,74 @@ pub struct RunArgs {
     pub list: bool,
 }
 
+impl RunArgs {
+    fn to_runtime_options(&self) -> RuntimeOptions {
+        RuntimeOptions {
+            threads: self.threads,
+            heap_limit: self.heap_limit * 1024 * 1024, // MB → bytes
+            timeout: self.timeout,
+            no_jit: self.no_jit,
+            jit_threshold: self.jit_threshold,
+        }
+    }
+}
+
 pub fn execute(args: RunArgs) -> anyhow::Result<()> {
     if args.list {
         return list_scripts();
     }
 
+    let rt = Runtime::with_options(args.to_runtime_options());
+
     match &args.target {
-        None => run_default(&args),
-        Some(target) if looks_like_file(target) => execute_file(target, &args.args),
-        Some(script_name) => run_script(script_name, &args),
+        None => run_default(&rt, &args),
+        Some(target) if looks_like_file(target) => run_file(&rt, target),
+        Some(script_name) => run_script(script_name, &rt),
     }
 }
 
 /// Called from main.rs for implicit run: `raya ./file.raya`
-pub fn execute_file(path: &str, extra_args: &[String]) -> anyhow::Result<()> {
+pub fn execute_file(path: &str, _extra_args: &[String]) -> anyhow::Result<()> {
+    let rt = Runtime::new();
+    run_file(&rt, path)
+}
+
+/// Run a .raya or .ryb file through the runtime.
+fn run_file(rt: &Runtime, path: &str) -> anyhow::Result<()> {
     if !Path::new(path).exists() {
         anyhow::bail!("File not found: {}", path);
     }
 
-    println!("Running: {}", path);
-    if !extra_args.is_empty() {
-        println!("Arguments: {:?}", extra_args);
-    }
+    let exit_code = rt
+        .run_file(Path::new(path))
+        .map_err(|e| anyhow!("{}", e))?;
 
-    // TODO: Wire up actual compilation + execution pipeline:
-    // 1. Parse source
-    // 2. Type-check
-    // 3. Compile to bytecode
-    // 4. Execute via Vm with StdNativeHandler
-    // JIT is enabled by default.
-    eprintln!("(Execution pipeline not yet wired — coming in Phase 1)");
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
 
     Ok(())
 }
 
-fn run_default(args: &RunArgs) -> anyhow::Result<()> {
+fn run_default(rt: &Runtime, _args: &RunArgs) -> anyhow::Result<()> {
     let manifest = load_manifest_optional();
 
     // Try [scripts].start first
     if let Some(ref manifest) = manifest {
         if let Some(cmd) = manifest.scripts.get("start") {
             println!("Running script: start → {}", cmd);
-            return run_script_cmd(cmd);
+            return run_script_cmd(cmd, rt);
         }
 
         // Fall back to [package].main
         if let Some(ref main_file) = manifest.package.main {
-            return execute_file(main_file, &args.args);
+            return run_file(rt, main_file);
         }
     }
 
     // No manifest at all — try src/main.raya
     if Path::new("src/main.raya").exists() {
-        return execute_file("src/main.raya", &args.args);
+        return run_file(rt, "src/main.raya");
     }
 
     Err(anyhow!(
@@ -82,7 +98,7 @@ fn run_default(args: &RunArgs) -> anyhow::Result<()> {
     ))
 }
 
-fn run_script(name: &str, _args: &RunArgs) -> anyhow::Result<()> {
+fn run_script(name: &str, rt: &Runtime) -> anyhow::Result<()> {
     let manifest = load_manifest()
         .context("Cannot run scripts without a raya.toml in the project")?;
 
@@ -103,18 +119,17 @@ fn run_script(name: &str, _args: &RunArgs) -> anyhow::Result<()> {
         })?;
 
     println!("Running script: {} → {}", name, cmd);
-    run_script_cmd(cmd)
+    run_script_cmd(cmd, rt)
 }
 
-fn run_script_cmd(cmd: &str) -> anyhow::Result<()> {
+fn run_script_cmd(cmd: &str, rt: &Runtime) -> anyhow::Result<()> {
     let first_word = cmd.split_whitespace().next().unwrap_or("");
 
     // If the command points to a .raya/.ryb file, run it directly
     if looks_like_file(first_word) {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         let file = parts[0];
-        let extra: Vec<String> = parts[1..].iter().map(|s| s.to_string()).collect();
-        return execute_file(file, &extra);
+        return run_file(rt, file);
     }
 
     // Otherwise, run as shell command

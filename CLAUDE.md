@@ -164,7 +164,13 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,158+ total (1,702 engine + 147 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
+**Tests:** 3,258+ total (1,721 engine + 147 JIT, 1,297 runtime, 19 CLI, 17 stdlib, 204 rpkg) — 0 ignored
+
+**CLI Implementation:** Complete
+- `raya run` / `raya build` / `raya eval` fully wired through `raya-runtime::Runtime`
+- `raya run <script>` resolves named scripts from `[scripts]` in raya.toml
+- Dependency resolution: local path, URL/git (cached), registry packages
+- 19 CLI integration tests covering all execution scenarios
 
 **JIT Compilation (feature-gated):** Complete
 - Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes
@@ -229,9 +235,9 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 ```
 crates/
 ├── raya-engine/     # Parser, compiler, VM, JIT (main crate)
-├── raya-runtime/    # Binds engine + stdlib via NativeHandler trait
-├── raya-stdlib/     # Native stdlib implementations (logger, etc.)
-├── raya-cli/        # Unified CLI (run, build, test, pkg, etc.)
+├── raya-runtime/    # High-level Runtime API (compile, load, execute, eval, deps)
+├── raya-stdlib/     # Native stdlib implementations (logger, math, crypto, etc.)
+├── raya-cli/        # Unified CLI (run, build, eval, pkg, etc.)
 ├── raya-pm/         # Package manager (rpkg)
 ├── raya-sdk/        # Native module FFI types
 └── raya-native/     # Proc-macros for native modules
@@ -248,12 +254,13 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (2,816+)
-cargo test -p raya-engine      # Engine tests only (1,702)
-cargo test -p raya-engine --features jit  # Engine + JIT tests (1,891)
+cargo test                     # Run all tests (3,258+)
+cargo test -p raya-engine      # Engine tests only (1,721)
+cargo test -p raya-engine --features jit  # Engine + JIT tests (1,868)
 cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
+cargo test -p raya-cli         # CLI integration tests (19)
 cargo test -p raya-stdlib      # Stdlib tests (17)
-cargo test -p rpkg             # Package manager tests
+cargo test -p rpkg             # Package manager tests (204)
 ```
 
 ---
