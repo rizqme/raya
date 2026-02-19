@@ -24,8 +24,11 @@ pub use context::{
 pub use core::Interpreter;
 pub use execution::{ControlFlow, ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 pub use lifecycle::{
-    ContextSnapshot, FrameSnapshot, TaskSnapshot, Vm as InnerVm, VmError, VmSnapshot, VmStats,
+    ContextSnapshot, FrameSnapshot, TaskSnapshot, VmError, VmSnapshot, VmStats,
 };
+/// Deprecated: Use `vm::Vm` (the facade) instead. InnerVm will be removed in a future release.
+#[deprecated(note = "Use vm::Vm instead — it now supports both execution and module loading")]
+pub type InnerVm = lifecycle::Vm;
 pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, MarshalledValue};
 pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};

@@ -3,44 +3,21 @@
 
 use super::{ClassRegistry, SafepointCoordinator};
 use crate::vm::{
-    builtin,
-    gc::GarbageCollector,
-    object::{Array, Closure, Object, RayaString},
-    scheduler::{ExceptionHandler, Scheduler, Task, TaskId, TaskState},
-    stack::Stack,
-    sync::MutexRegistry,
+    object::{Object, RayaString},
+    scheduler::{Scheduler, Task, TaskState},
     value::Value,
     VmError, VmResult,
 };
 use crate::compiler::{Module, Opcode};
+use std::path::Path;
 use std::sync::Arc;
 
 /// Raya virtual machine
 pub struct Vm {
-    /// Garbage collector
-    gc: GarbageCollector,
-    /// Operand stack
-    stack: Stack,
-    /// Global variables (string-keyed)
-    globals: rustc_hash::FxHashMap<String, Value>,
-    /// Global variables (index-based, for static fields)
-    globals_by_index: Vec<Value>,
-    /// Class registry
+    /// Class registry (used by tests that register classes directly via `vm.classes`)
     pub classes: ClassRegistry,
-    /// Task scheduler
+    /// Task scheduler (owns SharedVmState — the canonical runtime state)
     scheduler: Scheduler,
-    /// Stack of currently executing closures (for LoadCaptured access)
-    closure_stack: Vec<Value>,
-    /// Exception handler stack (shared across all function calls)
-    exception_handlers: Vec<ExceptionHandler>,
-    /// Current exception being processed (for propagation detection)
-    current_exception: Option<Value>,
-    /// Caught exception (for Rethrow - preserved even after catch entry clears current_exception)
-    caught_exception: Option<Value>,
-    /// Held mutexes for exception unwinding
-    held_mutexes: Vec<crate::vm::sync::MutexId>,
-    /// Mutex registry for managing all mutexes
-    mutex_registry: MutexRegistry,
     /// JIT engine for pre-warming and native code compilation
     #[cfg(feature = "jit")]
     jit_engine: Option<crate::jit::JitEngine>,
@@ -59,18 +36,8 @@ impl Vm {
         scheduler.start();
 
         Self {
-            gc: GarbageCollector::default(),
-            stack: Stack::new(),
-            globals: rustc_hash::FxHashMap::default(),
-            globals_by_index: Vec::new(),
             classes: ClassRegistry::new(),
             scheduler,
-            closure_stack: Vec::new(),
-            exception_handlers: Vec::new(),
-            current_exception: None,
-            caught_exception: None,
-            held_mutexes: Vec::new(),
-            mutex_registry: MutexRegistry::new(),
             #[cfg(feature = "jit")]
             jit_engine: None,
         }
@@ -82,18 +49,8 @@ impl Vm {
         scheduler.start();
 
         Self {
-            gc: GarbageCollector::default(),
-            stack: Stack::new(),
-            globals: rustc_hash::FxHashMap::default(),
-            globals_by_index: Vec::new(),
             classes: ClassRegistry::new(),
             scheduler,
-            closure_stack: Vec::new(),
-            exception_handlers: Vec::new(),
-            current_exception: None,
-            caught_exception: None,
-            held_mutexes: Vec::new(),
-            mutex_registry: MutexRegistry::new(),
             #[cfg(feature = "jit")]
             jit_engine: None,
         }
@@ -105,21 +62,23 @@ impl Vm {
         scheduler.start();
 
         Self {
-            gc: GarbageCollector::default(),
-            stack: Stack::new(),
-            globals: rustc_hash::FxHashMap::default(),
-            globals_by_index: Vec::new(),
             classes: ClassRegistry::new(),
             scheduler,
-            closure_stack: Vec::new(),
-            exception_handlers: Vec::new(),
-            current_exception: None,
-            caught_exception: None,
-            held_mutexes: Vec::new(),
-            mutex_registry: MutexRegistry::new(),
             #[cfg(feature = "jit")]
             jit_engine: None,
         }
+    }
+
+    /// Create a new VM from VmOptions (resource limits, capabilities, etc.)
+    pub fn with_options(options: super::VmOptions) -> Self {
+        let limits = crate::vm::scheduler::SchedulerLimits {
+            max_heap_size: options.limits.max_heap_bytes,
+            max_concurrent_tasks: options.limits.max_tasks,
+            max_preemptions: options.limits.max_preemptions,
+            preempt_threshold_ms: options.limits.preempt_threshold_ms,
+            ..Default::default()
+        };
+        Self::with_scheduler_limits(1, limits)
     }
 
     /// Get the scheduler
@@ -142,45 +101,41 @@ impl Vm {
         self.scheduler.safepoint()
     }
 
-    /// Collect GC roots from the stack
-    fn collect_roots(&mut self) {
-        self.gc.clear_stack_roots();
-
-        // Add all values from the operand stack
-        for i in 0..self.stack.depth() {
-            if let Ok(value) = self.stack.peek_at(i) {
-                if value.is_heap_allocated() {
-                    self.gc.add_root(value);
-                }
-            }
-        }
-
-        // Add values from all call frames' local variables
-        for frame in self.stack.frames() {
-            let locals_start = frame.locals_start();
-            let locals_count = frame.locals_count();
-
-            for i in 0..locals_count {
-                if let Ok(value) = self.stack.peek_at(locals_start + i) {
-                    if value.is_heap_allocated() {
-                        self.gc.add_root(value);
-                    }
-                }
-            }
-        }
-
-        // Add global variables as roots
-        for value in self.globals.values() {
-            if value.is_heap_allocated() {
-                self.gc.add_root(*value);
-            }
-        }
+    /// Get the shared VM state
+    pub fn shared_state(&self) -> &super::SharedVmState {
+        self.scheduler.shared_state()
     }
 
-    /// Trigger garbage collection
+    /// Load a .ryb file into this VM
+    ///
+    /// Reads the file and delegates to `load_rbin_bytes`.
+    pub fn load_rbin(&mut self, path: &Path) -> VmResult<()> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| VmError::IoError(format!("{}: {}", path.display(), e)))?;
+        self.load_rbin_bytes(&bytes)
+    }
+
+    /// Load a .ryb module from bytes
+    ///
+    /// Decodes the binary module (verifying magic, version, checksums),
+    /// then registers it in the shared module registry along with its
+    /// classes and native function table.
+    pub fn load_rbin_bytes(&mut self, bytes: &[u8]) -> VmResult<()> {
+        let module = Module::decode(bytes)
+            .map_err(|e| VmError::InvalidBinaryFormat(format!("{}", e)))?;
+
+        self.scheduler
+            .shared_state()
+            .register_module(Arc::new(module))
+            .map_err(|e| VmError::RuntimeError(e))?;
+
+        Ok(())
+    }
+
+    /// Trigger garbage collection on the shared GC
     pub fn collect_garbage(&mut self) {
-        self.collect_roots();
-        self.gc.collect();
+        let mut gc = self.scheduler.shared_state().gc.lock();
+        gc.collect();
     }
 
     /// Enable JIT compilation with default configuration.
@@ -211,15 +166,12 @@ impl Vm {
         // Validate module
         module.validate().map_err(|e| VmError::RuntimeError(e))?;
 
-        // Copy classes from VM's class registry to shared state (for tests that register classes directly)
+        // Copy test-registered classes to shared state (tests register via vm.classes directly)
         self.scheduler.shared_state().copy_classes_from(&self.classes);
 
-        // Register classes with the shared VM state (from module)
-        self.scheduler.shared_state().register_classes(module);
-
-        // Link module's native function table (for ModuleNativeCall dispatch)
-        self.scheduler.shared_state().link_module_natives(module)
-            .map_err(|e| VmError::RuntimeError(format!("Native link error: {}", e)))?;
+        // Register module: classes, native linkage, and module registry
+        self.scheduler.shared_state().register_module(Arc::new(module.clone()))
+            .map_err(|e| VmError::RuntimeError(e))?;
 
         // JIT pre-warming: analyze and compile CPU-intensive functions before execution
         #[cfg(feature = "jit")]

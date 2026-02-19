@@ -10,7 +10,7 @@ use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{IoSubmission, Task, TaskId};
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
-use crate::vm::interpreter::{ClassRegistry, SafepointCoordinator};
+use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
 use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
@@ -67,6 +67,9 @@ pub struct SharedVmState {
     /// Native function registry for linking module native calls at load time
     pub native_registry: RwLock<NativeFunctionRegistry>,
 
+    /// Module registry for loaded bytecode modules
+    pub module_registry: RwLock<ModuleRegistry>,
+
     /// Maximum consecutive preemptions before killing a task (infinite loop detection).
     /// Default: 1000. Set lower (e.g. 100) for faster infinite loop detection in tests.
     pub max_preemptions: u32,
@@ -108,6 +111,7 @@ impl SharedVmState {
             native_handler,
             resolved_natives: RwLock::new(ResolvedNatives::empty()),
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
+            module_registry: RwLock::new(ModuleRegistry::new()),
             max_preemptions: 1000,
             preempt_threshold_ms: 10,
         }
@@ -160,6 +164,22 @@ impl SharedVmState {
 
             classes.register_class(class);
         }
+    }
+
+    /// Register a module: add to module registry, register classes, link natives.
+    ///
+    /// This is the canonical way to make a module available for execution.
+    pub fn register_module(&self, module: Arc<Module>) -> Result<(), String> {
+        // Register in module registry (deduplicates by checksum)
+        self.module_registry.write().register(module.clone())?;
+
+        // Register classes from the module
+        self.register_classes(&module);
+
+        // Link native function table
+        self.link_module_natives(&module)?;
+
+        Ok(())
     }
 
     /// Copy classes from a ClassRegistry (for VM-level class registration)

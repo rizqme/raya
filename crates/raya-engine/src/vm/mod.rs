@@ -107,6 +107,23 @@ pub enum VmError {
     #[error("Snapshot error: {0}")]
     SnapshotError(String),
 
+    /// IO error (file not found, permission denied, etc.)
+    #[error("IO error: {0}")]
+    IoError(String),
+
+    /// Invalid binary format
+    #[error("Invalid binary format: {0}")]
+    InvalidBinaryFormat(String),
+
+    /// Checksum mismatch (module integrity verification failed)
+    #[error("Checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch {
+        /// Expected checksum value
+        expected: String,
+        /// Actual checksum value
+        actual: String,
+    },
+
     /// Task preempted (should be rescheduled, not failed)
     #[error("Task preempted")]
     TaskPreempted,

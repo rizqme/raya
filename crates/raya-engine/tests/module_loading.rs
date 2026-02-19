@@ -4,7 +4,7 @@
 
 use raya_engine::compiler::{Function, Module};
 use raya_engine::compiler::Opcode;
-use raya_engine::vm::interpreter::{InnerVm, VmOptions};
+use raya_engine::vm::Vm;
 
 /// Helper to create a simple test module
 fn create_test_module(name: &str) -> Module {
@@ -25,7 +25,7 @@ fn create_test_module(name: &str) -> Module {
 #[test]
 fn test_load_simple_module() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create and encode a module
     let module = create_test_module("test_module");
@@ -39,7 +39,7 @@ fn test_load_simple_module() {
 #[test]
 fn test_module_checksum_verification() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create and encode a module
     let module = create_test_module("test_module");
@@ -71,7 +71,7 @@ fn test_module_checksum_verification() {
 #[test]
 fn test_duplicate_module_loading() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create and encode a module
     let module = create_test_module("test_module");
@@ -92,7 +92,7 @@ fn test_duplicate_module_loading() {
 #[test]
 fn test_load_multiple_modules() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create and load multiple modules
     for i in 0..5 {
@@ -107,7 +107,7 @@ fn test_load_multiple_modules() {
 #[test]
 fn test_invalid_magic_number() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create a module with invalid magic
     let mut module = create_test_module("test_module");
@@ -136,7 +136,7 @@ fn test_module_with_exports() {
     use raya_engine::compiler::{Export, SymbolType};
 
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create a module with exports
     let mut module = create_test_module("exported_module");
@@ -164,7 +164,7 @@ fn test_module_with_imports() {
     use raya_engine::compiler::Import;
 
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create a module with imports
     let mut module = create_test_module("importing_module");
@@ -191,7 +191,7 @@ fn test_module_with_imports() {
 #[test]
 fn test_empty_rbin_file() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Try to load empty bytes
     let result = vm.load_rbin_bytes(&[]);
@@ -201,7 +201,7 @@ fn test_empty_rbin_file() {
 #[test]
 fn test_truncated_rbin_file() {
     // Create a VM
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::new();
 
     // Create a valid module but only take first few bytes
     let module = create_test_module("test_module");
