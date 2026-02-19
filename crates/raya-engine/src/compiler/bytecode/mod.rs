@@ -7,6 +7,7 @@ pub mod constants;
 pub mod encoder;
 pub mod module;
 pub mod opcode;
+pub mod reg_opcode;
 pub mod verify;
 
 pub use constants::ConstantPool;
@@ -17,4 +18,5 @@ pub use module::{
     ReflectionData, SymbolType,
 };
 pub use opcode::Opcode;
+pub use reg_opcode::{InstrFormat, RegBytecodeWriter, RegInstr, RegOpcode};
 pub use verify::{verify_module, VerifyError};

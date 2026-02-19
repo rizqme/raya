@@ -41,6 +41,8 @@ fn execute_bytecode(code: Vec<u8>) -> Value {
         param_count: 0,
         local_count: 4, // Reserve locals for most tests
         code,
+        register_count: 0,
+        reg_code: Vec::new(),
     };
     module.functions.push(main_fn);
 

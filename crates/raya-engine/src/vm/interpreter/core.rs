@@ -5,7 +5,9 @@
 //! when the task needs to wait for something.
 
 use super::execution::{ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
+use super::reg_execution::{RegExecutionFrame, RegOpcodeResult};
 use super::{ClassRegistry, SafepointCoordinator};
+use crate::compiler::bytecode::reg_opcode::{RegInstr, RegOpcode};
 use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GarbageCollector;
 use crate::vm::builtins::handlers::{
@@ -13,6 +15,7 @@ use crate::vm::builtins::handlers::{
     call_runtime_method as runtime_handler,
 };
 use crate::vm::object::RayaString;
+use crate::vm::register_file::RegisterFile;
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
@@ -136,6 +139,14 @@ impl<'a> Interpreter<'a> {
     /// suspension (channel operations, await, sleep) to work at any call depth.
     pub fn run(&mut self, task: &Arc<Task>) -> ExecutionResult {
         let module = task.module();
+
+        // Auto-detect register-based execution: if the entry function has reg_code, use it
+        let current_func_id_peek = task.current_func_id();
+        if let Some(func) = module.functions.get(current_func_id_peek) {
+            if !func.reg_code.is_empty() {
+                return self.run_register(task);
+            }
+        }
 
         // Restore execution state (supports suspend/resume)
         let mut current_func_id = task.current_func_id();
@@ -798,6 +809,755 @@ impl<'a> Interpreter<'a> {
         }
 
         runtime_handler(&ctx, stack, method_id, arg_count)
+    }
+
+    // =========================================================================
+    // Register-based interpreter
+    // =========================================================================
+
+    /// Execute a task using register-based bytecode until completion, suspension, or failure.
+    ///
+    /// This is the register-based counterpart to `run()`. It uses a `RegisterFile` instead
+    /// of a `Stack`, and decodes fixed-width 32-bit instructions instead of variable-length
+    /// byte sequences.
+    pub fn run_register(&mut self, task: &Arc<Task>) -> ExecutionResult {
+        let module = task.module();
+
+        // Restore execution state (supports suspend/resume)
+        let mut current_func_id = task.current_func_id();
+        let mut frames: Vec<RegExecutionFrame> = task.take_reg_execution_frames();
+
+        let function = match module.functions.get(current_func_id) {
+            Some(f) => f,
+            None => {
+                return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                    "Function {} not found",
+                    current_func_id
+                )));
+            }
+        };
+
+        let mut regs = task.take_register_file();
+        let mut ip = task.ip();
+        let mut code: &[u32] = &function.reg_code;
+        let mut reg_base = task.reg_base();
+
+        // Check if we're resuming from suspension
+        if let Some(resume_value) = task.take_resume_value() {
+            let dest = task.resume_reg_dest();
+            if let Err(e) = regs.set_reg(reg_base, dest, resume_value) {
+                return ExecutionResult::Failed(e);
+            }
+        }
+
+        // Check for pending exception (e.g., from awaited task failure)
+        if task.has_exception() {
+            let exception = task.current_exception().unwrap_or_else(|| Value::null());
+            let mut handled = false;
+            'resume_exc: loop {
+                while let Some(handler) = task.peek_exception_handler() {
+                    if handler.frame_count != frames.len() {
+                        break;
+                    }
+                    if handler.catch_offset != -1 {
+                        let catch_reg = handler.catch_reg;
+                        task.pop_exception_handler();
+                        task.set_caught_exception(exception);
+                        task.clear_exception();
+                        let _ = regs.set_reg(reg_base, catch_reg, exception);
+                        ip = handler.catch_offset as usize;
+                        handled = true;
+                        break 'resume_exc;
+                    }
+                    if handler.finally_offset != -1 {
+                        task.pop_exception_handler();
+                        ip = handler.finally_offset as usize;
+                        handled = true;
+                        break 'resume_exc;
+                    }
+                    task.pop_exception_handler();
+                }
+                if let Some(frame) = frames.pop() {
+                    task.pop_call_frame();
+                    if frame.is_closure {
+                        task.pop_closure();
+                    }
+                    regs.free_frame(reg_base);
+                    current_func_id = frame.func_id;
+                    code = &module.functions[frame.func_id].reg_code;
+                    ip = frame.ip;
+                    reg_base = frame.reg_base;
+                } else {
+                    break;
+                }
+            }
+            if !handled {
+                let msg = exception.raw().to_string();
+                task.set_ip(ip);
+                task.save_register_file(regs);
+                return ExecutionResult::Failed(VmError::RuntimeError(
+                    format!("Unhandled exception from awaited task: {}", msg),
+                ));
+            }
+        }
+
+        // Initialize the task if this is a fresh start
+        if ip == 0 && regs.is_empty() && frames.is_empty() {
+            task.push_call_frame(current_func_id);
+
+            // Allocate the initial frame
+            let reg_count = function.register_count as usize;
+            match regs.alloc_frame(reg_count) {
+                Ok(base) => reg_base = base,
+                Err(e) => return ExecutionResult::Failed(e),
+            }
+
+            // Copy initial args into registers r0..rN
+            let initial_args = task.take_initial_args();
+            for (i, arg) in initial_args.into_iter().enumerate() {
+                if i < reg_count {
+                    if let Err(e) = regs.set_reg(reg_base, i as u8, arg) {
+                        return ExecutionResult::Failed(e);
+                    }
+                }
+            }
+        }
+
+        // Macro to save all frame state before leaving run_register()
+        macro_rules! save_reg_state {
+            () => {
+                task.set_ip(ip);
+                task.set_current_func_id(current_func_id);
+                task.set_reg_base(reg_base);
+                task.save_reg_execution_frames(frames);
+                task.save_register_file(regs);
+            };
+        }
+
+        // Helper: handle return from current function (frame pop)
+        macro_rules! handle_reg_frame_return {
+            ($return_value:expr) => {{
+                let return_value = $return_value;
+
+                if let Some(frame) = frames.pop() {
+                    task.pop_call_frame();
+                    if frame.is_closure {
+                        task.pop_closure();
+                    }
+
+                    // Free callee's frame
+                    regs.free_frame(reg_base);
+
+                    // Restore caller's state
+                    current_func_id = frame.func_id;
+                    code = &module.functions[frame.func_id].reg_code;
+                    ip = frame.ip;
+                    reg_base = frame.reg_base;
+
+                    // Write return value to caller's destination register
+                    match frame.return_action {
+                        ReturnAction::PushReturnValue => {
+                            if let Err(e) = regs.set_reg(reg_base, frame.dest_reg, return_value) {
+                                Some(ExecutionResult::Failed(e))
+                            } else {
+                                None
+                            }
+                        }
+                        ReturnAction::PushObject(obj) => {
+                            if let Err(e) = regs.set_reg(reg_base, frame.dest_reg, obj) {
+                                Some(ExecutionResult::Failed(e))
+                            } else {
+                                None
+                            }
+                        }
+                        ReturnAction::Discard => None,
+                    }
+                } else {
+                    // Top-level return - task is complete
+                    Some(ExecutionResult::Completed(return_value))
+                }
+            }};
+        }
+
+        // Main execution loop
+        loop {
+            // Safepoint poll for GC
+            self.safepoint.poll();
+
+            // Check for preemption
+            if task.is_preempt_requested() {
+                task.clear_preempt();
+                let count = task.increment_preempt_count();
+                if count >= self.max_preemptions {
+                    save_reg_state!();
+                    return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                        "Maximum execution time exceeded (task preempted {} times)",
+                        count
+                    )));
+                }
+                save_reg_state!();
+                return ExecutionResult::Suspended(SuspendReason::Sleep {
+                    wake_at: Instant::now(),
+                });
+            }
+
+            // Check for cancellation
+            if task.is_cancelled() {
+                save_reg_state!();
+                return ExecutionResult::Failed(VmError::RuntimeError(
+                    "Task cancelled".to_string(),
+                ));
+            }
+
+            // Bounds check - implicit return at end of function
+            if ip >= code.len() {
+                if let Some(result) = handle_reg_frame_return!(Value::null()) {
+                    return result;
+                }
+                continue;
+            }
+
+            // Fetch instruction
+            let instr = RegInstr::from_raw(code[ip]);
+            ip += 1;
+
+            // Read extra word for extended instructions
+            let extra = match instr.opcode() {
+                Some(op) if op.is_extended() => {
+                    if ip >= code.len() {
+                        return ExecutionResult::Failed(VmError::RuntimeError(
+                            "Extended instruction missing extra word".to_string(),
+                        ));
+                    }
+                    let e = code[ip];
+                    ip += 1;
+                    e
+                }
+                _ => 0,
+            };
+
+            // Handle exception opcodes inline (they need frames.len())
+            let opcode_for_dispatch = instr.opcode();
+            if matches!(
+                opcode_for_dispatch,
+                Some(RegOpcode::Try)
+                | Some(RegOpcode::EndTry)
+                | Some(RegOpcode::Throw)
+                | Some(RegOpcode::Rethrow)
+            ) {
+                let result = self.exec_reg_exception_ops(
+                    task,
+                    &mut regs,
+                    reg_base,
+                    instr,
+                    extra,
+                    frames.len(),
+                );
+                // AwaitAll re-execution handled below; exception results fall through
+                // to the same match below
+                match result {
+                    RegOpcodeResult::Continue => continue,
+                    RegOpcodeResult::Jump(target) => {
+                        ip = target;
+                        continue;
+                    }
+                    _ => {
+                        // Error/Suspend/Return — fall through to main match
+                    }
+                }
+                // If we get here, result is Error/Suspend/Return
+                // Re-match for the error handler
+                match result {
+                    RegOpcodeResult::Return(value) => {
+                        if let Some(r) = handle_reg_frame_return!(value) {
+                            return r;
+                        }
+                        continue;
+                    }
+                    RegOpcodeResult::Suspend(reason) => {
+                        task.reset_preempt_count();
+                        save_reg_state!();
+                        return ExecutionResult::Suspended(reason);
+                    }
+                    RegOpcodeResult::Error(e) => {
+                        // Fall through to the error handler below
+                        // We need to replicate the error handling inline
+                        if !task.has_exception() {
+                            let error_msg = e.to_string();
+                            let raya_string = RayaString::new(error_msg);
+                            let gc_ptr = self.gc.lock().allocate(raya_string);
+                            let exc_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
+                            task.set_exception(exc_val);
+                        }
+
+                        let exception = task.current_exception().unwrap_or_else(|| Value::null());
+                        let mut handled = false;
+                        'exc_search: loop {
+                            while let Some(handler) = task.peek_exception_handler() {
+                                if handler.frame_count != frames.len() {
+                                    break;
+                                }
+                                if handler.catch_offset != -1 {
+                                    let catch_reg = handler.catch_reg;
+                                    task.pop_exception_handler();
+                                    task.set_caught_exception(exception);
+                                    task.clear_exception();
+                                    let _ = regs.set_reg(reg_base, catch_reg, exception);
+                                    ip = handler.catch_offset as usize;
+                                    handled = true;
+                                    break 'exc_search;
+                                }
+                                if handler.finally_offset != -1 {
+                                    task.pop_exception_handler();
+                                    ip = handler.finally_offset as usize;
+                                    handled = true;
+                                    break 'exc_search;
+                                }
+                                task.pop_exception_handler();
+                            }
+                            if let Some(frame) = frames.pop() {
+                                task.pop_call_frame();
+                                if frame.is_closure {
+                                    task.pop_closure();
+                                }
+                                regs.free_frame(reg_base);
+                                current_func_id = frame.func_id;
+                                code = &module.functions[frame.func_id].reg_code;
+                                ip = frame.ip;
+                                reg_base = frame.reg_base;
+                            } else {
+                                break;
+                            }
+                        }
+                        if !handled {
+                            task.set_ip(ip);
+                            task.save_register_file(regs);
+                            return ExecutionResult::Failed(e);
+                        }
+                        continue;
+                    }
+                    _ => continue, // Continue/Jump already handled
+                }
+            }
+
+            // Dispatch to handler
+            match self.execute_reg_opcode(
+                task,
+                &mut regs,
+                reg_base,
+                instr,
+                extra,
+                module,
+                ip,
+            ) {
+                RegOpcodeResult::Continue => {
+                    // Continue to next instruction
+                }
+                RegOpcodeResult::Jump(target) => {
+                    ip = target;
+                }
+                RegOpcodeResult::Return(value) => {
+                    if let Some(result) = handle_reg_frame_return!(value) {
+                        return result;
+                    }
+                }
+                RegOpcodeResult::Suspend(reason) => {
+                    task.reset_preempt_count();
+                    save_reg_state!();
+                    return ExecutionResult::Suspended(reason);
+                }
+                RegOpcodeResult::PushFrame {
+                    func_id,
+                    arg_base,
+                    arg_count,
+                    dest_reg,
+                    is_closure,
+                    closure_val,
+                    return_action,
+                } => {
+                    // Validate function index
+                    let new_func = match module.functions.get(func_id) {
+                        Some(f) => f,
+                        None => {
+                            return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                                "Invalid function index: {}",
+                                func_id
+                            )));
+                        }
+                    };
+                    let new_reg_count = new_func.register_count as usize;
+
+                    // Save caller's frame
+                    frames.push(RegExecutionFrame {
+                        func_id: current_func_id,
+                        ip,
+                        reg_base,
+                        reg_count: module.functions[current_func_id].register_count,
+                        dest_reg,
+                        is_closure,
+                        return_action,
+                    });
+
+                    // Push call frame for stack traces
+                    task.push_call_frame(func_id);
+
+                    // Push closure onto closure stack if needed
+                    if let Some(cv) = closure_val {
+                        task.push_closure(cv);
+                    }
+
+                    // Allocate callee's register frame
+                    let new_base = match regs.alloc_frame(new_reg_count) {
+                        Ok(b) => b,
+                        Err(e) => return ExecutionResult::Failed(e),
+                    };
+
+                    // Copy arguments from caller's registers to callee's registers
+                    // For constructors (PushObject), callee.r0 = object, then user args follow
+                    let callee_offset = match &return_action {
+                        ReturnAction::PushObject(obj_val) => {
+                            if let Err(e) = regs.set_reg(new_base, 0, *obj_val) {
+                                return ExecutionResult::Failed(e);
+                            }
+                            1u8 // user args start at callee r1
+                        }
+                        _ => 0u8, // normal: args start at callee r0
+                    };
+
+                    let count = arg_count as usize;
+                    for i in 0..count {
+                        let val = match regs.get_reg(reg_base, arg_base.wrapping_add(i as u8)) {
+                            Ok(v) => v,
+                            Err(e) => return ExecutionResult::Failed(e),
+                        };
+                        if let Err(e) = regs.set_reg(new_base, callee_offset.wrapping_add(i as u8), val) {
+                            return ExecutionResult::Failed(e);
+                        }
+                    }
+
+                    // Switch to callee's code
+                    current_func_id = func_id;
+                    code = &module.functions[func_id].reg_code;
+                    reg_base = new_base;
+                    ip = 0;
+                }
+                RegOpcodeResult::Error(e) => {
+                    // Set exception on task if not already set
+                    if !task.has_exception() {
+                        let error_msg = e.to_string();
+                        let raya_string = RayaString::new(error_msg);
+                        let gc_ptr = self.gc.lock().allocate(raya_string);
+                        let exc_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        task.set_exception(exc_val);
+                    }
+
+                    let exception = task.current_exception().unwrap_or_else(|| Value::null());
+
+                    // Frame-aware exception handling: search for handlers,
+                    // unwinding register frames as needed.
+                    let mut handled = false;
+                    'exception_search: loop {
+                        while let Some(handler) = task.peek_exception_handler() {
+                            if handler.frame_count != frames.len() {
+                                break;
+                            }
+
+                            if handler.catch_offset != -1 {
+                                let catch_reg = handler.catch_reg;
+                                task.pop_exception_handler();
+                                task.set_caught_exception(exception);
+                                task.clear_exception();
+                                // Write exception to catch dest register
+                                let _ = regs.set_reg(reg_base, catch_reg, exception);
+                                ip = handler.catch_offset as usize;
+                                handled = true;
+                                break 'exception_search;
+                            }
+
+                            if handler.finally_offset != -1 {
+                                task.pop_exception_handler();
+                                ip = handler.finally_offset as usize;
+                                handled = true;
+                                break 'exception_search;
+                            }
+
+                            task.pop_exception_handler();
+                        }
+
+                        // No handler in current frame — pop frame and try parent
+                        if let Some(frame) = frames.pop() {
+                            task.pop_call_frame();
+                            if frame.is_closure {
+                                task.pop_closure();
+                            }
+                            regs.free_frame(reg_base);
+                            current_func_id = frame.func_id;
+                            code = &module.functions[frame.func_id].reg_code;
+                            ip = frame.ip;
+                            reg_base = frame.reg_base;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if !handled {
+                        task.set_ip(ip);
+                        task.save_register_file(regs);
+                        return ExecutionResult::Failed(e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Dispatch a single register-based opcode to the appropriate handler
+    #[allow(clippy::too_many_arguments)]
+    fn execute_reg_opcode(
+        &mut self,
+        task: &Arc<Task>,
+        regs: &mut RegisterFile,
+        reg_base: usize,
+        instr: RegInstr,
+        extra: u32,
+        module: &Module,
+        ip: usize,
+    ) -> RegOpcodeResult {
+        use super::reg_opcodes::control_flow::RegControlFlow;
+
+        let opcode = match instr.opcode() {
+            Some(op) => op,
+            None => {
+                return RegOpcodeResult::error(VmError::InvalidOpcode(instr.opcode_byte()));
+            }
+        };
+
+        match opcode {
+            // =========================================================
+            // Constants & Moves
+            // =========================================================
+            RegOpcode::Nop
+            | RegOpcode::Move
+            | RegOpcode::LoadNil
+            | RegOpcode::LoadTrue
+            | RegOpcode::LoadFalse
+            | RegOpcode::LoadInt
+            | RegOpcode::LoadConst
+            | RegOpcode::LoadGlobal
+            | RegOpcode::StoreGlobal => {
+                self.exec_reg_constant_ops(regs, reg_base, instr, module, self.globals_by_index)
+            }
+
+            // =========================================================
+            // Integer and Float Arithmetic
+            // =========================================================
+            RegOpcode::Iadd
+            | RegOpcode::Isub
+            | RegOpcode::Imul
+            | RegOpcode::Idiv
+            | RegOpcode::Imod
+            | RegOpcode::Ineg
+            | RegOpcode::Ipow
+            | RegOpcode::Ishl
+            | RegOpcode::Ishr
+            | RegOpcode::Iushr
+            | RegOpcode::Iand
+            | RegOpcode::Ior
+            | RegOpcode::Ixor
+            | RegOpcode::Inot
+            | RegOpcode::Fadd
+            | RegOpcode::Fsub
+            | RegOpcode::Fmul
+            | RegOpcode::Fdiv
+            | RegOpcode::Fneg
+            | RegOpcode::Fpow
+            | RegOpcode::Fmod => self.exec_reg_arithmetic_ops(regs, reg_base, instr),
+
+            // =========================================================
+            // Comparisons and Logical
+            // =========================================================
+            RegOpcode::Ieq
+            | RegOpcode::Ine
+            | RegOpcode::Ilt
+            | RegOpcode::Ile
+            | RegOpcode::Igt
+            | RegOpcode::Ige
+            | RegOpcode::Feq
+            | RegOpcode::Fne
+            | RegOpcode::Flt
+            | RegOpcode::Fle
+            | RegOpcode::Fgt
+            | RegOpcode::Fge
+            | RegOpcode::Eq
+            | RegOpcode::Ne
+            | RegOpcode::StrictEq
+            | RegOpcode::StrictNe
+            | RegOpcode::Not
+            | RegOpcode::And
+            | RegOpcode::Or
+            | RegOpcode::Typeof => self.exec_reg_comparison_ops(regs, reg_base, instr),
+
+            // =========================================================
+            // Control Flow
+            // =========================================================
+            RegOpcode::Jmp
+            | RegOpcode::JmpIf
+            | RegOpcode::JmpIfNot
+            | RegOpcode::JmpIfNull
+            | RegOpcode::JmpIfNotNull => {
+                match self.exec_reg_control_flow_ops(regs, reg_base, instr, ip) {
+                    Ok(RegControlFlow::Continue) => RegOpcodeResult::Continue,
+                    Ok(RegControlFlow::Jump(target)) => RegOpcodeResult::Jump(target),
+                    Ok(RegControlFlow::Return(val)) => RegOpcodeResult::Return(val),
+                    Err(e) => RegOpcodeResult::Error(e),
+                }
+            }
+
+            RegOpcode::Return | RegOpcode::ReturnVoid => {
+                match self.exec_reg_control_flow_ops(regs, reg_base, instr, ip) {
+                    Ok(RegControlFlow::Return(val)) => RegOpcodeResult::Return(val),
+                    Ok(_) => RegOpcodeResult::runtime_error("Return opcode didn't return"),
+                    Err(e) => RegOpcodeResult::Error(e),
+                }
+            }
+
+            // =========================================================
+            // String Operations
+            // =========================================================
+            RegOpcode::Sconcat
+            | RegOpcode::Slen
+            | RegOpcode::Seq
+            | RegOpcode::Sne
+            | RegOpcode::Slt
+            | RegOpcode::Sle
+            | RegOpcode::Sgt
+            | RegOpcode::Sge
+            | RegOpcode::ToString => self.exec_reg_string_ops(regs, reg_base, instr),
+
+            // =========================================================
+            // Function Calls
+            // =========================================================
+            RegOpcode::Call
+            | RegOpcode::CallMethod
+            | RegOpcode::CallConstructor
+            | RegOpcode::CallSuper
+            | RegOpcode::CallClosure
+            | RegOpcode::CallStatic => {
+                self.exec_reg_call_ops(task, regs, reg_base, instr, extra)
+            }
+
+            // =========================================================
+            // Closures & Captures
+            // =========================================================
+            RegOpcode::MakeClosure
+            | RegOpcode::LoadCaptured
+            | RegOpcode::StoreCaptured
+            | RegOpcode::SetClosureCapture
+            | RegOpcode::NewRefCell
+            | RegOpcode::LoadRefCell
+            | RegOpcode::StoreRefCell => {
+                self.exec_reg_closure_ops(task, regs, reg_base, instr, extra)
+            }
+
+            // =========================================================
+            // Object Operations
+            // =========================================================
+            RegOpcode::New
+            | RegOpcode::LoadField
+            | RegOpcode::StoreField
+            | RegOpcode::ObjectLiteral
+            | RegOpcode::LoadStatic
+            | RegOpcode::StoreStatic
+            | RegOpcode::InstanceOf
+            | RegOpcode::Cast
+            | RegOpcode::OptionalField => {
+                self.exec_reg_object_ops(regs, reg_base, instr, extra)
+            }
+
+            // =========================================================
+            // Array & Tuple Operations
+            // =========================================================
+            RegOpcode::NewArray
+            | RegOpcode::LoadElem
+            | RegOpcode::StoreElem
+            | RegOpcode::ArrayLen
+            | RegOpcode::ArrayLiteral
+            | RegOpcode::ArrayPush
+            | RegOpcode::ArrayPop
+            | RegOpcode::TupleLiteral
+            | RegOpcode::TupleGet => {
+                self.exec_reg_array_ops(regs, reg_base, instr, extra)
+            }
+
+            // =========================================================
+            // Exception Handling
+            // =========================================================
+            RegOpcode::Try
+            | RegOpcode::EndTry
+            | RegOpcode::Throw
+            | RegOpcode::Rethrow => {
+                // frame_count is not available here; caller must pass it.
+                // We use a sentinel that the dispatch loop will replace.
+                // Actually, we handle exceptions specially in the dispatch loop.
+                // Return a marker that the loop processes.
+                RegOpcodeResult::runtime_error("Exception opcodes handled in dispatch loop")
+            }
+
+            // =========================================================
+            // Concurrency
+            // =========================================================
+            RegOpcode::Spawn
+            | RegOpcode::SpawnClosure
+            | RegOpcode::Await
+            | RegOpcode::AwaitAll
+            | RegOpcode::Sleep
+            | RegOpcode::Yield
+            | RegOpcode::NewMutex
+            | RegOpcode::MutexLock
+            | RegOpcode::MutexUnlock
+            | RegOpcode::NewChannel
+            | RegOpcode::TaskCancel
+            | RegOpcode::TaskThen => {
+                self.exec_reg_concurrency_ops(task, regs, reg_base, instr, extra)
+            }
+
+            // =========================================================
+            // Native Calls
+            // =========================================================
+            RegOpcode::NativeCall
+            | RegOpcode::ModuleNativeCall
+            | RegOpcode::Trap => {
+                self.exec_reg_native_ops(task, regs, reg_base, instr, extra, module)
+            }
+
+            // =========================================================
+            // JSON Operations
+            // =========================================================
+            RegOpcode::JsonGet
+            | RegOpcode::JsonSet
+            | RegOpcode::JsonDelete
+            | RegOpcode::JsonIndex
+            | RegOpcode::JsonIndexSet
+            | RegOpcode::JsonPush
+            | RegOpcode::JsonPop
+            | RegOpcode::JsonNewObject
+            | RegOpcode::JsonNewArray
+            | RegOpcode::JsonKeys
+            | RegOpcode::JsonLength => {
+                self.exec_reg_json_ops(regs, reg_base, instr, extra, module)
+            }
+
+            // =========================================================
+            // Not yet implemented
+            // =========================================================
+            _ => RegOpcodeResult::runtime_error(format!(
+                "Register opcode {:?} not yet implemented",
+                opcode
+            )),
+        }
     }
 
 }

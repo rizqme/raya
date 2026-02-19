@@ -7,6 +7,8 @@ mod core;
 pub(crate) mod execution;
 mod handlers;
 mod opcodes;
+pub(crate) mod reg_execution;
+mod reg_opcodes;
 mod lifecycle;
 mod marshal;
 mod module_registry;

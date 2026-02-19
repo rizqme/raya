@@ -618,6 +618,8 @@ mod tests {
             param_count: 0,
             local_count: 1,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         assert!(verify_module(&module).is_ok());
@@ -632,6 +634,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![0xFF], // Invalid opcode (unassigned)
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let result = verify_module(&module);
@@ -651,6 +655,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let result = verify_module(&module);
@@ -670,6 +676,8 @@ mod tests {
             param_count: 0,
             local_count: 2,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let result = verify_module(&module);
@@ -691,6 +699,8 @@ mod tests {
             param_count: 2,
             local_count: 3,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         assert!(verify_module(&module).is_ok());
@@ -709,6 +719,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let result = verify_module(&module);

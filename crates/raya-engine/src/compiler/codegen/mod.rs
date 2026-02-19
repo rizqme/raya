@@ -19,6 +19,7 @@
 mod context;
 pub mod emit;
 mod control;
+pub mod reg_codegen;
 
 pub use context::IrCodeGenerator;
 
@@ -38,6 +39,15 @@ use rustc_hash::FxHashMap;
 pub fn generate(ir_module: &IrModule) -> CompileResult<Module> {
     let mut generator = IrCodeGenerator::new(&ir_module.name);
     generator.generate(ir_module)
+}
+
+/// Generate register bytecode for all functions in a module.
+///
+/// Takes the IR module and the already-built stack-bytecode Module,
+/// and populates reg_code + register_count on each Function.
+pub fn generate_register(ir_module: &IrModule, module: &mut Module) -> CompileResult<()> {
+    let generator = reg_codegen::RegCodeGenerator::new(ir_module);
+    generator.generate(module)
 }
 
 #[cfg(test)]

@@ -24,7 +24,9 @@ fn create_simple_task(name: &str, result: i32) -> Arc<Task> {
             ((result >> 24) & 0xFF) as u8,
             Opcode::Return as u8,
         ],
-    });
+            register_count: 0,
+            reg_code: Vec::new(),
+        });
 
     Arc::new(Task::new(0, Arc::new(module), None))
 }
@@ -106,6 +108,8 @@ fn create_compute_task(name: &str, iterations: u32) -> Arc<Task> {
         param_count: 0,
         local_count: 2, // counter and result
         code,
+        register_count: 0,
+        reg_code: Vec::new(),
     });
 
     Arc::new(Task::new(0, Arc::new(module), None))

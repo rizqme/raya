@@ -106,8 +106,13 @@ impl<'a> Compiler<'a> {
         // Get optimized IR
         let ir_module = self.compile_to_optimized_ir(module);
 
-        // Generate bytecode from IR
-        codegen::generate(&ir_module)
+        // Generate stack bytecode from IR
+        let mut bytecode_module = codegen::generate(&ir_module)?;
+
+        // Generate register bytecode (parallel path, populates reg_code)
+        codegen::generate_register(&ir_module, &mut bytecode_module)?;
+
+        Ok(bytecode_module)
     }
 
     /// Compile a module through the full IR pipeline with verification

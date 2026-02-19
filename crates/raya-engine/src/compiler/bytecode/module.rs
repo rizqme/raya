@@ -574,10 +574,16 @@ pub struct Function {
     pub name: String,
     /// Number of parameters
     pub param_count: usize,
-    /// Number of local variables
+    /// Number of local variables (stack-based interpreter)
     pub local_count: usize,
-    /// Bytecode instructions
+    /// Stack-based bytecode instructions
     pub code: Vec<u8>,
+    /// Number of registers needed (register-based interpreter)
+    /// Includes params + locals + temporaries. Set by register codegen.
+    pub register_count: u16,
+    /// Register-based bytecode instructions (32-bit fixed-width words)
+    /// Empty when using stack-based codegen.
+    pub reg_code: Vec<u32>,
 }
 
 impl Function {
@@ -614,6 +620,8 @@ impl Function {
             param_count,
             local_count,
             code,
+            register_count: 0,
+            reg_code: Vec::new(),
         })
     }
 }
@@ -1228,6 +1236,8 @@ mod tests {
             param_count: 0,
             local_count: 1,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         // Encode and decode
@@ -1373,6 +1383,8 @@ mod tests {
             param_count: 1,
             local_count: 2,
             code: writer.into_bytes(),
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         // Add class

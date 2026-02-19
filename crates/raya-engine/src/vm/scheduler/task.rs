@@ -1,12 +1,14 @@
 //! Task structure and execution state
 
 use crate::vm::interpreter::execution::ExecutionFrame;
+use crate::vm::interpreter::reg_execution::RegExecutionFrame;
+use crate::vm::register_file::RegisterFile;
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -113,6 +115,9 @@ pub struct ExceptionHandler {
 
     /// Number of mutexes held when handler was installed (for auto-unlock on unwind)
     pub mutex_count: usize,
+
+    /// Register to store caught exception value (register-based interpreter only)
+    pub catch_reg: u8,
 }
 
 /// A lightweight green thread
@@ -201,6 +206,22 @@ pub struct Task {
 
     /// Execution frame stack for frame-based interpreter (saved across suspend/resume)
     execution_frames: Mutex<Vec<ExecutionFrame>>,
+
+    // =========================================================================
+    // Register-based execution state
+    // =========================================================================
+
+    /// Register file for register-based execution
+    register_file: Mutex<RegisterFile>,
+
+    /// Register-based execution frame stack (saved across suspend/resume)
+    reg_execution_frames: Mutex<Vec<RegExecutionFrame>>,
+
+    /// Current register base offset in the register file
+    current_reg_base: AtomicUsize,
+
+    /// Which register receives the resume value after suspension (for Await)
+    resume_reg_dest: AtomicU8,
 }
 
 impl Task {
@@ -249,6 +270,10 @@ impl Task {
             current_func_id: AtomicUsize::new(function_id),
             current_locals_base: AtomicUsize::new(0),
             execution_frames: Mutex::new(Vec::new()),
+            register_file: Mutex::new(RegisterFile::new()),
+            reg_execution_frames: Mutex::new(Vec::new()),
+            current_reg_base: AtomicUsize::new(0),
+            resume_reg_dest: AtomicU8::new(0),
         }
     }
 
@@ -587,6 +612,50 @@ impl Task {
     }
 
     // =========================================================================
+    // Register-based Execution Frames
+    // =========================================================================
+
+    /// Get the current register base offset
+    pub fn reg_base(&self) -> usize {
+        self.current_reg_base.load(Ordering::Relaxed)
+    }
+
+    /// Set the current register base offset
+    pub fn set_reg_base(&self, base: usize) {
+        self.current_reg_base.store(base, Ordering::Relaxed);
+    }
+
+    /// Take the register file (drains it from the task for execution)
+    pub fn take_register_file(&self) -> RegisterFile {
+        std::mem::take(&mut *self.register_file.lock().unwrap())
+    }
+
+    /// Save the register file (for suspend/resume)
+    pub fn save_register_file(&self, regs: RegisterFile) {
+        *self.register_file.lock().unwrap() = regs;
+    }
+
+    /// Take the register execution frames (drains them from the task)
+    pub fn take_reg_execution_frames(&self) -> Vec<RegExecutionFrame> {
+        std::mem::take(&mut *self.reg_execution_frames.lock().unwrap())
+    }
+
+    /// Save register execution frames (for suspend)
+    pub fn save_reg_execution_frames(&self, frames: Vec<RegExecutionFrame>) {
+        *self.reg_execution_frames.lock().unwrap() = frames;
+    }
+
+    /// Get the resume register destination
+    pub fn resume_reg_dest(&self) -> u8 {
+        self.resume_reg_dest.load(Ordering::Relaxed)
+    }
+
+    /// Set the resume register destination (which register gets the resume value)
+    pub fn set_resume_reg_dest(&self, dest: u8) {
+        self.resume_reg_dest.store(dest, Ordering::Relaxed);
+    }
+
+    // =========================================================================
     // Suspension
     // =========================================================================
 
@@ -708,6 +777,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
         Arc::new(module)
     }
@@ -852,6 +923,7 @@ mod tests {
             stack_size: 5,
             frame_count: 2,
             mutex_count: 0,
+            catch_reg: 0,
         };
 
         task.push_exception_handler(handler.clone());
@@ -877,6 +949,7 @@ mod tests {
             stack_size: 5,
             frame_count: 2,
             mutex_count: 0,
+            catch_reg: 0,
         };
 
         task.push_exception_handler(handler.clone());
@@ -900,6 +973,7 @@ mod tests {
             stack_size: 5,
             frame_count: 2,
             mutex_count: 0,
+            catch_reg: 0,
         };
 
         let handler2 = ExceptionHandler {
@@ -908,6 +982,7 @@ mod tests {
             stack_size: 10,
             frame_count: 3,
             mutex_count: 0,
+            catch_reg: 0,
         };
 
         task.push_exception_handler(handler1);

@@ -284,6 +284,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -299,6 +301,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstTrue as u8, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -314,6 +318,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstFalse as u8, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -329,6 +335,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -358,6 +366,8 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -387,6 +397,8 @@ mod tests {
                 Opcode::Isub as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -416,6 +428,8 @@ mod tests {
                 Opcode::Imul as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -445,6 +459,8 @@ mod tests {
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -474,6 +490,8 @@ mod tests {
                 Opcode::Idiv as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -500,6 +518,8 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -539,6 +559,8 @@ mod tests {
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -568,6 +590,8 @@ mod tests {
                 Opcode::Ieq as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -597,6 +621,8 @@ mod tests {
                 Opcode::Ine as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -626,6 +652,8 @@ mod tests {
                 Opcode::Ilt as u8,
                 Opcode::Return as u8,
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -670,6 +698,8 @@ mod tests {
                 0,                    // offset 20-24
                 Opcode::Return as u8, // offset 25
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();
@@ -704,6 +734,8 @@ mod tests {
                 0,                    // offset 8-12
                 Opcode::Return as u8, // offset 13
             ],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
 
         let mut vm = Vm::new();

@@ -16,7 +16,9 @@ fn create_test_module(name: &str) -> Module {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstNull as u8, Opcode::Return as u8],
-    };
+            register_count: 0,
+            reg_code: Vec::new(),
+        };
     module.functions.push(func);
 
     module

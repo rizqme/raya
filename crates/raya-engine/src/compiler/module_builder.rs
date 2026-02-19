@@ -170,6 +170,8 @@ impl FunctionBuilder {
             param_count: self.param_count as usize,
             local_count: self.local_count as usize,
             code: self.code,
+            register_count: 0,
+            reg_code: Vec::new(),
         }
     }
 }

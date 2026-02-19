@@ -319,6 +319,8 @@ mod tests {
             param_count: 0,
             local_count: 0,
             code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
         });
         Arc::new(Task::new(0, Arc::new(module), None))
     }

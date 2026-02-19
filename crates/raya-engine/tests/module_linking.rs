@@ -38,6 +38,8 @@ fn test_link_simple_import() {
         param_count: 1,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     logging.exports.push(Export {
         name: "info".to_string(),
@@ -72,6 +74,8 @@ fn test_link_with_version_specifier() {
         param_count: 0,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     utils.exports.push(Export {
         name: "helper".to_string(),
@@ -104,6 +108,8 @@ fn test_link_scoped_package() {
         param_count: 0,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     org_package.exports.push(Export {
         name: "doWork".to_string(),
@@ -170,12 +176,16 @@ fn test_link_multiple_imports() {
         param_count: 2,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     utils.functions.push(Function {
         name: "multiply".to_string(),
         param_count: 2,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     utils.exports.push(Export {
         name: "add".to_string(),
@@ -221,6 +231,8 @@ fn test_link_with_alias() {
         param_count: 1,
         local_count: 0,
         code: vec![],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
     utils.exports.push(Export {
         name: "log".to_string(),

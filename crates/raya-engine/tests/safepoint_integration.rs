@@ -32,6 +32,8 @@ fn test_safepoint_no_pause() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let mut vm = Vm::new();
@@ -65,6 +67,8 @@ fn test_safepoint_polls_during_execution() {
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -113,6 +117,8 @@ fn test_safepoint_on_allocation() {
             0,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -150,6 +156,8 @@ fn test_safepoint_on_array_allocation() {
             Opcode::ArrayLen as u8,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -205,6 +213,8 @@ fn test_safepoint_pause_and_resume() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     // Execute without pause - should work fine
@@ -232,6 +242,8 @@ fn test_statistics_tracking() {
         param_count: 0,
         local_count: 0,
         code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     vm.execute(&module).unwrap();
@@ -300,6 +312,8 @@ fn test_loop_back_edge_safepoints() {
             Opcode::Isub as u8,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -356,6 +370,8 @@ fn test_safepoint_on_object_literal() {
             0,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -394,6 +410,8 @@ fn test_safepoint_on_array_literal() {
             Opcode::LoadElem as u8,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -479,6 +497,8 @@ fn test_safepoint_at_all_allocation_types() {
             0,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
@@ -525,6 +545,8 @@ fn test_safepoint_integration_with_gc() {
             0,
             Opcode::Return as u8,
         ],
+            register_count: 0,
+            reg_code: Vec::new(),
     });
 
     let result = vm.execute(&module).unwrap();
