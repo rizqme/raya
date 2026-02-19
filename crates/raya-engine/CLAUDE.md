@@ -10,6 +10,7 @@ src/
 ├── parser/          # Lexer, parser, type checker
 ├── compiler/        # IR, optimizations, bytecode generation
 ├── vm/              # Interpreter, scheduler, GC, runtime
+├── jit/             # JIT compilation (feature-gated: "jit")
 └── builtins/        # Precompiled builtin type signatures
 ```
 
@@ -47,6 +48,15 @@ src/
 - **reflect/**: Reflection API runtime (metadata, introspection, proxies, dynamic code) - see `vm/reflect/CLAUDE.md`
 - **module/**: Module loading and linking
 - **json/**: JSON parsing and serialization
+
+### `jit/` - JIT Compilation (feature-gated: `#[cfg(feature = "jit")]`)
+- **analysis/**: Bytecode decoder, control-flow graph, heuristics-based candidate selection
+- **ir/**: Backend-agnostic SSA-form IR (types, instructions, builder, display)
+- **pipeline/**: SSA lifter (stack→SSA), optimization passes, pre-warming
+- **backend/**: `CodegenBackend` trait, Cranelift backend (ABI, lowering), stub backend
+- **runtime/**: Code cache, trampoline (JitEntryFn C-ABI)
+- **profiling/**: Per-function counters, compilation policy (thresholds)
+- **engine.rs**: Top-level `JitEngine` + `JitConfig`, pre-warm orchestration
 
 ## Compilation Pipeline
 
@@ -90,6 +100,11 @@ Source (.raya)
          │
          ▼
 Binary (.ryb)
+    │
+    ▼ (optional, with --features jit)
+┌─────────────────┐
+│   JIT Compile   │  → native code (Cranelift)
+└─────────────────┘
 ```
 
 ## Key Types
@@ -144,6 +159,7 @@ Vm::execute(&Module) -> VmResult<Value>
 
 - **Engine unit tests** (835): Colocated `#[cfg(test)]` blocks in each module
 - **Engine integration tests** (920+): `tests/*.rs` files (codegen, IR, concurrency, etc.)
+- **JIT tests** (142): 83 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
 - **E2E tests** (883+): In `raya-runtime/tests/` (require `StdNativeHandler`)
 - `tests/reflect_phase8_tests.rs`: Reflect API integration tests
 - `tests/opcode_tests.rs`: Individual opcode tests
@@ -156,5 +172,6 @@ Vm::execute(&Module) -> VmResult<Value>
 - **Typed opcodes**: `IADD` (int), `FADD` (float/number)
 - **NativeHandler trait**: Engine defines this trait for stdlib decoupling; `raya-runtime` binds implementations
 - **Reflection always enabled**: No compiler flag needed, metadata always emitted
+- **JIT is feature-gated**: `cargo build --features jit` pulls in Cranelift; without the flag, no JIT deps
 
 See submodule CLAUDE.md files for detailed guidance on each component.

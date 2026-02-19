@@ -164,7 +164,15 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 2,930+ total (1,697 engine, 1,278 runtime, 17 stdlib) — 0 ignored
+**Tests:** 3,128+ total (1,672 engine + 142 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
+
+**JIT Compilation (feature-gated):** Complete
+- Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes
+- Static analysis heuristics for hot function detection
+- Pre-warming pipeline (compile at module load)
+- Vm integration: `enable_jit()`, automatic pre-warm in `execute()`
+- `cargo build --features jit` / `cargo test --features jit`
+- 142 tests (83 unit + 59 integration with native code execution)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -218,7 +226,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 
 ```
 crates/
-├── raya-engine/     # Parser, compiler, VM (main crate)
+├── raya-engine/     # Parser, compiler, VM, JIT (main crate)
 ├── raya-runtime/    # Binds engine + stdlib via NativeHandler trait
 ├── raya-stdlib/     # Native stdlib implementations (logger, etc.)
 ├── raya-cli/        # CLI tool
@@ -239,8 +247,9 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 ```bash
 cargo build                    # Build all
 cargo test                     # Run all tests (2,785+)
-cargo test -p raya-engine      # Engine tests only (1,697)
-cargo test -p raya-runtime     # Runtime + e2e tests (1,071)
+cargo test -p raya-engine      # Engine tests only (1,672)
+cargo test -p raya-engine --features jit  # Engine + JIT tests (1,814)
+cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests
 ```

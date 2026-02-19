@@ -9,7 +9,7 @@ interpreter/
 ├── mod.rs                    # Module index, re-exports
 ├── core.rs                   # Interpreter struct, main run() loop (~780 lines)
 ├── shared_state.rs           # SharedVmState (~155 lines)
-├── vm_facade.rs              # Vm public API (facade over scheduler)
+├── vm_facade.rs              # Vm public API (facade over scheduler, JIT enable/prewarm)
 ├── context.rs                # VmContext, ContextRegistry, VmOptions, ResourceLimits
 ├── execution.rs              # ExecutionResult, OpcodeResult, ControlFlow, ExecutionFrame
 ├── class_registry.rs         # Runtime class registry

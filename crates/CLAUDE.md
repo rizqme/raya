@@ -27,7 +27,8 @@ raya-runtime ─────────────┬─> raya-engine (core en
                            └─> raya-stdlib (native implementations)
 
 raya-engine ───────────────┬─> (defines NativeHandler trait)
-                           └─> (no dependency on stdlib)
+                           ├─> (no dependency on stdlib)
+                           └─> cranelift-* (optional, behind "jit" feature)
 
 raya-stdlib ───────────────┬─> raya-sdk (FFI types)
                            └─> raya-native (proc-macros)
@@ -40,7 +41,7 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| `raya-engine` | Full language engine: parser, compiler, VM | Active development |
+| `raya-engine` | Full language engine: parser, compiler, VM, JIT (feature-gated) | Active development |
 | `raya-runtime` | Binds engine + stdlib via `NativeHandler` trait; hosts e2e tests | ✅ Active (M4.2+) |
 | `raya-stdlib` | Native stdlib implementations + type defs | ✅ Logger, Math, Crypto, Time, Path complete |
 | `raya-cli` | `raya` CLI tool (run, build, test, etc.) | Scaffolded |

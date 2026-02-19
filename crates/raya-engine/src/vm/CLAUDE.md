@@ -44,6 +44,7 @@ vm/
 │   ├── permissions.rs     # Security & permissions (Phase 16)
 │   ├── dynamic_module.rs  # Dynamic module system (Phase 17)
 │   └── bootstrap.rs       # Bootstrap context (Phase 17)
+├── (jit integration)   # Vm has optional jit_engine field (#[cfg(feature = "jit")])
 ├── builtins/           # Global native handlers
 │   └── handlers/
 │       ├── runtime.rs  # std:runtime method handlers
@@ -138,8 +139,9 @@ const result = await task;  // Suspends current task
 - Tasks are green threads, not OS threads
 - Scheduler uses work-stealing for parallelism
 - Objects have vtables for method dispatch
-- Values are tagged (enum), not boxed
+- Values are NaN-boxed (64-bit tagged), not heap-boxed for primitives
 - Native calls use `NativeCall` opcode + native ID (dispatched in `interpreter/opcodes/native.rs`)
+- JIT integration: `Vm` has optional `jit_engine` field (`#[cfg(feature = "jit")]`), enable via `vm.enable_jit()`. Pre-warms hot functions at module load time.
 - Stdlib native calls delegate to `NativeHandler` trait (implemented by `StdNativeHandler` in raya-stdlib)
 - `ModuleNativeCall` uses `NativeFunctionRegistry` for name-based dispatch
 - Exception handling uses try/catch blocks in bytecode
