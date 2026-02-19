@@ -158,9 +158,10 @@ Vm::execute(&Module) -> VmResult<Value>
 ## Test Files
 
 - **Engine unit tests** (835): Colocated `#[cfg(test)]` blocks in each module
-- **Engine integration tests** (920+): `tests/*.rs` files (codegen, IR, concurrency, etc.)
+- **Engine integration tests** (950+): `tests/*.rs` files (codegen, IR, concurrency, module_loading, snapshots, etc.)
 - **JIT tests** (142): 83 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
 - **E2E tests** (883+): In `raya-runtime/tests/` (require `StdNativeHandler`)
+- `tests/module_loading.rs`: 29 E2E tests (load/execute pipeline, registry, classes, snapshots, file I/O)
 - `tests/reflect_phase8_tests.rs`: Reflect API integration tests
 - `tests/opcode_tests.rs`: Individual opcode tests
 

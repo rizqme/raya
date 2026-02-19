@@ -10,9 +10,10 @@ use raya_engine::vm::gc::GarbageCollector;
 use raya_engine::vm::value::Value;
 use raya_engine::vm::interpreter::{marshal, unmarshal, MarshalledValue};
 use raya_engine::vm::interpreter::{
-    Capability, CapabilityError, CapabilityRegistry, ContextRegistry, InnerVm, ResourceLimits,
-    VmContext, VmContextId, VmError, VmOptions,
+    Capability, CapabilityError, CapabilityRegistry, ContextRegistry, ResourceLimits,
+    VmContext, VmContextId, VmOptions,
 };
+use raya_engine::vm::Vm;
 use std::sync::Arc;
 
 // ============================================================================
@@ -31,8 +32,7 @@ fn test_create_vm_with_options() {
         ..Default::default()
     };
 
-    let vm = InnerVm::new(options);
-    assert!(vm.is_ok());
+    let _vm = Vm::with_options(options);
 }
 
 #[test]
@@ -112,7 +112,7 @@ fn test_heap_limit_enforcement() {
         ..Default::default()
     };
 
-    let _vm = InnerVm::new(options).unwrap();
+    let _vm = Vm::with_options(options);
 
     // GC will enforce limits during allocation
     // This test verifies the configuration is accepted
@@ -128,7 +128,7 @@ fn test_task_limit_configuration() {
         ..Default::default()
     };
 
-    let _vm = InnerVm::new(options).unwrap();
+    let _vm = Vm::with_options(options);
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn test_step_budget_configuration() {
         ..Default::default()
     };
 
-    let _vm = InnerVm::new(options).unwrap();
+    let _vm = Vm::with_options(options);
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn test_unlimited_resources() {
         ..Default::default()
     };
 
-    let _vm = InnerVm::new(options).unwrap();
+    let _vm = Vm::with_options(options);
 }
 
 // ============================================================================
@@ -483,37 +483,32 @@ fn test_context_registry_all_ids() {
 #[test]
 fn test_vm_creation() {
     let options = VmOptions::default();
-    let vm = InnerVm::new(options);
-    assert!(vm.is_ok());
+    let _vm = Vm::with_options(options);
 }
 
 #[test]
 fn test_vm_get_stats() {
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let vm = Vm::with_options(VmOptions::default());
     let stats = vm.get_stats();
-    assert!(stats.is_ok());
-
-    let stats = stats.unwrap();
     assert_eq!(stats.heap_bytes_used, 0); // No allocations yet
     assert_eq!(stats.tasks, 0); // No tasks yet
 }
 
 #[test]
 fn test_vm_terminate() {
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
-    let result = vm.terminate();
-    assert!(result.is_ok());
+    let mut vm = Vm::with_options(VmOptions::default());
+    vm.terminate();
 }
 
 #[test]
 fn test_load_empty_bytecode() {
-    let vm = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm = Vm::with_options(VmOptions::default());
 
     // Create minimal valid module
     let module = Module::new("test".to_string());
     let bytes = module.encode();
 
-    let result = vm.load_bytecode(&bytes);
+    let result = vm.load_rbin_bytes(&bytes);
     // May succeed or fail depending on validation - just verify it doesn't panic
     let _ = result;
 }
@@ -559,8 +554,8 @@ fn test_vm_with_capabilities() {
         ..Default::default()
     };
 
-    let vm = InnerVm::new(options).unwrap();
-    let stats = vm.get_stats().unwrap();
+    let vm = Vm::with_options(options);
+    let stats = vm.get_stats();
 
     // VM created with capability
     assert!(stats.heap_bytes_used >= 0);
@@ -572,13 +567,13 @@ fn test_vm_with_capabilities() {
 
 #[test]
 fn test_multiple_vms_concurrent() {
-    let vm1 = InnerVm::new(VmOptions::default()).unwrap();
-    let vm2 = InnerVm::new(VmOptions::default()).unwrap();
-    let vm3 = InnerVm::new(VmOptions::default()).unwrap();
+    let mut vm1 = Vm::with_options(VmOptions::default());
+    let mut vm2 = Vm::with_options(VmOptions::default());
+    let mut vm3 = Vm::with_options(VmOptions::default());
 
-    let stats1 = vm1.get_stats().unwrap();
-    let stats2 = vm2.get_stats().unwrap();
-    let stats3 = vm3.get_stats().unwrap();
+    let stats1 = vm1.get_stats();
+    let stats2 = vm2.get_stats();
+    let stats3 = vm3.get_stats();
 
     // All VMs are independent
     assert!(stats1.heap_bytes_used >= 0);
@@ -586,7 +581,7 @@ fn test_multiple_vms_concurrent() {
     assert!(stats3.heap_bytes_used >= 0);
 
     // Terminate all
-    assert!(vm1.terminate().is_ok());
-    assert!(vm2.terminate().is_ok());
-    assert!(vm3.terminate().is_ok());
+    vm1.terminate();
+    vm2.terminate();
+    vm3.terminate();
 }

@@ -73,7 +73,7 @@ pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
 pub use interpreter::{
     ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
-    VmOptions,
+    VmOptions, VmStats,
 };
 
 /// VM execution errors

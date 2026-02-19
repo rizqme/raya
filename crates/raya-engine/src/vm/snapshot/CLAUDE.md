@@ -14,6 +14,7 @@ Enables capturing the complete VM state to disk and resuming execution later. Us
 ```
 snapshot/
 ├── mod.rs      # Re-exports, SnapshotReader, SnapshotWriter
+├── task.rs     # SerializedTask, SerializedFrame, BlockedReason
 ├── format.rs   # Binary format definitions
 ├── encode.rs   # State serialization
 └── decode.rs   # State deserialization
@@ -55,66 +56,51 @@ snapshot/
 
 ### SnapshotWriter
 ```rust
-pub struct SnapshotWriter {
-    buffer: Vec<u8>,
-}
-
-writer.write_header(&vm)
-writer.write_tasks(&vm)
-writer.write_heap(&vm)
-writer.write_globals(&vm)
-writer.finish() -> Vec<u8>
+pub struct SnapshotWriter { /* internal buffer */ }
+writer.add_task(SerializedTask)     // add a task to the snapshot
+writer.write_to_file(&Path)         // write binary snapshot to file
+writer.write_snapshot(&mut impl Write)  // write to any writer
 ```
 
 ### SnapshotReader
 ```rust
-pub struct SnapshotReader<'a> {
-    data: &'a [u8],
-    offset: usize,
-}
-
-reader.read_header() -> SnapshotHeader
-reader.read_tasks() -> Vec<TaskSnapshot>
-reader.read_heap() -> HeapSnapshot
-reader.read_globals() -> GlobalsSnapshot
+pub struct SnapshotReader { /* parsed snapshot data */ }
+SnapshotReader::from_file(&Path)    // read from file
+SnapshotReader::from_reader(&mut impl Read)  // read from any reader
+reader.tasks() -> &[SerializedTask] // get deserialized tasks
 ```
+
+### Task ↔ SerializedTask Bridge
+```rust
+// scheduler::Task has snapshot bridge methods:
+task.to_serialized() -> SerializedTask    // live task → snapshot format
+Task::from_serialized(SerializedTask, Arc<Module>) -> Task  // restore from snapshot
+```
+
+Mappings: `ExecutionFrame` ↔ `SerializedFrame`, `SuspendReason` ↔ `BlockedReason`
 
 ## Snapshot Process
 
 ### Creating a Snapshot
 ```rust
-// 1. Pause all tasks (stop-the-world)
-vm.pause_all_tasks();
-
-// 2. Ensure all tasks are at safepoints
-vm.wait_for_safepoints();
-
-// 3. Write snapshot
-let mut writer = SnapshotWriter::new();
-writer.write(&vm);
-let bytes = writer.finish();
-
-// 4. Resume execution
-vm.resume_all_tasks();
+// Via Vm facade (call when no tasks are actively executing):
+let bytes = vm.snapshot_to_bytes()?;
+// or
+vm.snapshot_to_file(&path)?;
 ```
 
 ### Restoring a Snapshot
 ```rust
-// 1. Load modules referenced by snapshot
-let modules = load_modules(&snapshot_header.modules);
+// 1. Load modules first (snapshot references them by heuristic)
+vm.load_rbin_bytes(&module_bytes)?;
 
-// 2. Create VM with snapshot
-let mut vm = Vm::new();
-let reader = SnapshotReader::new(&bytes);
-
-// 3. Restore state
-vm.restore_tasks(reader.read_tasks());
-vm.restore_heap(reader.read_heap());
-vm.restore_globals(reader.read_globals());
-
-// 4. Resume execution
-vm.run();
+// 2. Restore snapshot
+vm.restore_from_bytes(&snap_bytes)?;
+// or
+vm.restore_from_file(&path)?;
 ```
+
+**Note:** Heap serialization is future work — only task state is currently persisted.
 
 ## Value Encoding
 

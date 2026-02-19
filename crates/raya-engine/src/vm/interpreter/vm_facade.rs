@@ -1,10 +1,11 @@
 //! Synchronous VM facade for testing and simple execution
 
 
-use super::{ClassRegistry, SafepointCoordinator};
+use super::SafepointCoordinator;
 use crate::vm::{
     object::{Object, RayaString},
     scheduler::{Scheduler, Task, TaskState},
+    snapshot::{SnapshotReader, SnapshotWriter},
     value::Value,
     VmError, VmResult,
 };
@@ -12,10 +13,27 @@ use crate::compiler::{Module, Opcode};
 use std::path::Path;
 use std::sync::Arc;
 
+/// Statistics for a running VM
+#[derive(Debug, Clone)]
+pub struct VmStats {
+    /// Current heap usage in bytes
+    pub heap_bytes_used: usize,
+
+    /// Maximum heap size limit (0 = unlimited)
+    pub max_heap_bytes: usize,
+
+    /// Current number of active tasks
+    pub tasks: usize,
+
+    /// Maximum task limit (0 = unlimited)
+    pub max_tasks: usize,
+
+    /// Total CPU steps executed
+    pub steps_executed: u64,
+}
+
 /// Raya virtual machine
 pub struct Vm {
-    /// Class registry (used by tests that register classes directly via `vm.classes`)
-    pub classes: ClassRegistry,
     /// Task scheduler (owns SharedVmState — the canonical runtime state)
     scheduler: Scheduler,
     /// JIT engine for pre-warming and native code compilation
@@ -36,7 +54,6 @@ impl Vm {
         scheduler.start();
 
         Self {
-            classes: ClassRegistry::new(),
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
@@ -49,7 +66,6 @@ impl Vm {
         scheduler.start();
 
         Self {
-            classes: ClassRegistry::new(),
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
@@ -62,7 +78,6 @@ impl Vm {
         scheduler.start();
 
         Self {
-            classes: ClassRegistry::new(),
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
@@ -132,6 +147,32 @@ impl Vm {
         Ok(())
     }
 
+    /// Get statistics for this VM
+    pub fn get_stats(&self) -> VmStats {
+        let gc = self.scheduler.shared_state().gc.lock();
+        let heap_stats = gc.heap_stats();
+        let task_count = self.scheduler.shared_state().tasks.read().len();
+        drop(gc);
+
+        VmStats {
+            heap_bytes_used: heap_stats.allocated_bytes,
+            max_heap_bytes: 0, // Limit is per-context, not directly accessible here
+            tasks: task_count,
+            max_tasks: 0,
+            steps_executed: 0,
+        }
+    }
+
+    /// Terminate this VM and shut down the scheduler
+    pub fn terminate(&mut self) {
+        self.scheduler.shutdown();
+    }
+
+    /// Register a class with the VM's shared class registry
+    pub fn register_class(&self, class: crate::vm::object::Class) {
+        self.scheduler.shared_state().classes.write().register_class(class);
+    }
+
     /// Trigger garbage collection on the shared GC
     pub fn collect_garbage(&mut self) {
         let mut gc = self.scheduler.shared_state().gc.lock();
@@ -165,9 +206,6 @@ impl Vm {
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module
         module.validate().map_err(|e| VmError::RuntimeError(e))?;
-
-        // Copy test-registered classes to shared state (tests register via vm.classes directly)
-        self.scheduler.shared_state().copy_classes_from(&self.classes);
 
         // Register module: classes, native linkage, and module registry
         self.scheduler.shared_state().register_module(Arc::new(module.clone()))
@@ -246,7 +284,100 @@ impl Vm {
 
         "Main task failed".to_string()
     }
+
+    // =========================================================================
+    // Snapshot / Restore
+    // =========================================================================
+
+    /// Capture a snapshot of the VM state and write it to a file.
+    ///
+    /// Must be called when no tasks are actively executing (e.g., before `execute()`
+    /// or after it returns). All registered tasks are serialized along with the heap.
+    pub fn snapshot_to_file(&self, path: &Path) -> VmResult<()> {
+        let mut writer = self.build_snapshot()?;
+        writer
+            .write_to_file(path)
+            .map_err(|e| VmError::IoError(format!("{}", e)))?;
+        Ok(())
+    }
+
+    /// Capture a snapshot of the VM state and write it to a byte buffer.
+    pub fn snapshot_to_bytes(&self) -> VmResult<Vec<u8>> {
+        let writer = self.build_snapshot()?;
+        let mut buf = Vec::new();
+        writer
+            .write_snapshot(&mut buf)
+            .map_err(|e| VmError::IoError(format!("{}", e)))?;
+        Ok(buf)
+    }
+
+    /// Build a SnapshotWriter from the current VM state.
+    fn build_snapshot(&self) -> VmResult<SnapshotWriter> {
+        let mut writer = SnapshotWriter::new();
+
+        // Serialize all tasks
+        let tasks = self.scheduler.shared_state().tasks.read();
+        for task in tasks.values() {
+            writer.add_task(task.to_serialized());
+        }
+
+        // Heap snapshot (placeholder — full heap serialization is future work)
+
+        Ok(writer)
+    }
+
+    /// Restore VM state from a snapshot file.
+    ///
+    /// The modules referenced by snapshot tasks must already be loaded
+    /// (via `load_rbin` / `load_rbin_bytes`) before calling restore.
+    /// Tasks are reconstructed and re-inserted into the scheduler's task map.
+    pub fn restore_from_file(&mut self, path: &Path) -> VmResult<()> {
+        let reader = SnapshotReader::from_file(path)
+            .map_err(|e| VmError::IoError(format!("{}", e)))?;
+        self.apply_snapshot(reader)
+    }
+
+    /// Restore VM state from snapshot bytes.
+    pub fn restore_from_bytes(&mut self, bytes: &[u8]) -> VmResult<()> {
+        let reader = SnapshotReader::from_reader(&mut &bytes[..])
+            .map_err(|e| VmError::IoError(format!("{}", e)))?;
+        self.apply_snapshot(reader)
+    }
+
+    /// Apply a parsed snapshot to this VM.
+    fn apply_snapshot(&mut self, reader: SnapshotReader) -> VmResult<()> {
+        let shared = self.scheduler.shared_state();
+
+        // Restore tasks: look up each task's module from the registry
+        let serialized_tasks = reader.tasks();
+        let mut tasks_map = shared.tasks.write();
+
+        for stask in serialized_tasks {
+            // Resolve the module for this task. The module must have been loaded
+            // beforehand. We use function_index == 0 heuristic: use first registered module.
+            // TODO: when snapshot includes module name/checksum per task, look up precisely.
+            let module = shared
+                .module_registry
+                .read()
+                .all_modules()
+                .first()
+                .cloned()
+                .ok_or_else(|| {
+                    VmError::RuntimeError(
+                        "No modules loaded — load modules before restoring snapshot".to_string(),
+                    )
+                })?;
+
+            let task = Arc::new(Task::from_serialized(stask.clone(), module));
+            tasks_map.insert(task.id(), task);
+        }
+
+        // Heap restoration is future work — heap objects are not yet serialized
+
+        Ok(())
+    }
 }
+
 impl Default for Vm {
     fn default() -> Self {
         Self::new()
@@ -698,4 +829,172 @@ mod tests {
         assert_eq!(result, Value::i32(42));
     }
 
+    // =========================================================================
+    // Snapshot / Restore tests
+    // =========================================================================
+
+    #[test]
+    fn test_snapshot_empty_vm() {
+        let vm = Vm::new();
+        let bytes = vm.snapshot_to_bytes().unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_after_execution() {
+        // Execute a module, then snapshot — completed tasks should be captured
+        let mut module = Module::new("test".to_string());
+        module.functions.push(Function {
+            name: "main".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: vec![Opcode::ConstI32 as u8, 42, 0, 0, 0, Opcode::Return as u8],
+        });
+
+        let mut vm = Vm::new();
+        let _result = vm.execute(&module).unwrap();
+
+        // Snapshot should succeed even after execution
+        let bytes = vm.snapshot_to_bytes().unwrap();
+        assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn test_snapshot_round_trip_bytes() {
+        use crate::vm::scheduler::{Task, TaskId};
+
+        // Create a VM and manually insert a task
+        let vm = Vm::new();
+
+        let mut module = Module::new("test".to_string());
+        module.functions.push(Function {
+            name: "test_fn".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: vec![Opcode::Return as u8],
+        });
+        let module = Arc::new(module);
+
+        // Register the module
+        vm.shared_state()
+            .register_module(module.clone())
+            .unwrap();
+
+        // Manually add a task to the task registry
+        let task = Arc::new(Task::new(0, module.clone(), None));
+        let task_id = task.id();
+        task.set_ip(42);
+        task.stack().lock().unwrap().push(Value::i32(100)).unwrap();
+        vm.shared_state().tasks.write().insert(task_id, task);
+
+        // Snapshot
+        let bytes = vm.snapshot_to_bytes().unwrap();
+
+        // Restore into a fresh VM
+        let mut vm2 = Vm::new();
+        vm2.shared_state()
+            .register_module(module.clone())
+            .unwrap();
+        vm2.restore_from_bytes(&bytes).unwrap();
+
+        // Verify the task was restored
+        let tasks = vm2.shared_state().tasks.read();
+        assert_eq!(tasks.len(), 1);
+        let restored = tasks.values().next().unwrap();
+        assert_eq!(restored.id().as_u64(), task_id.as_u64());
+        assert_eq!(restored.ip(), 42);
+        assert_eq!(
+            restored.stack().lock().unwrap().as_slice(),
+            &[Value::i32(100)]
+        );
+    }
+
+    #[test]
+    fn test_snapshot_round_trip_file() {
+        use crate::vm::scheduler::Task;
+
+        let vm = Vm::new();
+
+        let mut module = Module::new("test".to_string());
+        module.functions.push(Function {
+            name: "test_fn".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: vec![Opcode::Return as u8],
+        });
+        let module = Arc::new(module);
+
+        vm.shared_state()
+            .register_module(module.clone())
+            .unwrap();
+
+        let task = Arc::new(Task::new(0, module.clone(), None));
+        let task_id = task.id();
+        vm.shared_state().tasks.write().insert(task_id, task);
+
+        // Snapshot to temp file
+        let dir = std::env::temp_dir();
+        let path = dir.join("raya_test_snapshot.snap");
+
+        vm.snapshot_to_file(&path).unwrap();
+
+        // Restore
+        let mut vm2 = Vm::new();
+        vm2.shared_state()
+            .register_module(module.clone())
+            .unwrap();
+        vm2.restore_from_file(&path).unwrap();
+
+        let tasks = vm2.shared_state().tasks.read();
+        assert_eq!(tasks.len(), 1);
+
+        // Clean up
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_restore_requires_modules() {
+        // Snapshot an empty VM
+        let vm = Vm::new();
+        let bytes = vm.snapshot_to_bytes().unwrap();
+
+        // Now create a snapshot with tasks by manually creating one
+        use crate::vm::scheduler::Task;
+
+        let vm_with_task = Vm::new();
+        let mut module = Module::new("test".to_string());
+        module.functions.push(Function {
+            name: "test_fn".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: vec![Opcode::Return as u8],
+        });
+        let module = Arc::new(module);
+        vm_with_task
+            .shared_state()
+            .register_module(module.clone())
+            .unwrap();
+        let task = Arc::new(Task::new(0, module.clone(), None));
+        vm_with_task
+            .shared_state()
+            .tasks
+            .write()
+            .insert(task.id(), task);
+
+        let bytes_with_task = vm_with_task.snapshot_to_bytes().unwrap();
+
+        // Try restoring tasks without loading modules → should fail
+        let mut vm_empty = Vm::new();
+        let result = vm_empty.restore_from_bytes(&bytes_with_task);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No modules loaded"));
+
+        // Empty snapshot restore should succeed (no tasks to resolve)
+        let mut vm_empty2 = Vm::new();
+        let result = vm_empty2.restore_from_bytes(&bytes);
+        assert!(result.is_ok());
+    }
 }

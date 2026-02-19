@@ -164,7 +164,7 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,128+ total (1,672 engine + 142 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
+**Tests:** 3,158+ total (1,702 engine + 142 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
 
 **JIT Compilation (feature-gated):** Complete
 - Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes
@@ -246,9 +246,9 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (2,785+)
-cargo test -p raya-engine      # Engine tests only (1,672)
-cargo test -p raya-engine --features jit  # Engine + JIT tests (1,814)
+cargo test                     # Run all tests (2,816+)
+cargo test -p raya-engine      # Engine tests only (1,702)
+cargo test -p raya-engine --features jit  # Engine + JIT tests (1,844)
 cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests

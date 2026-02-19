@@ -7,7 +7,6 @@ mod core;
 pub(crate) mod execution;
 mod handlers;
 mod opcodes;
-mod lifecycle;
 mod marshal;
 mod module_registry;
 mod native_module_registry;
@@ -23,15 +22,9 @@ pub use context::{
 };
 pub use core::Interpreter;
 pub use execution::{ControlFlow, ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
-pub use lifecycle::{
-    ContextSnapshot, FrameSnapshot, TaskSnapshot, VmError, VmSnapshot, VmStats,
-};
-/// Deprecated: Use `vm::Vm` (the facade) instead. InnerVm will be removed in a future release.
-#[deprecated(note = "Use vm::Vm instead — it now supports both execution and module loading")]
-pub type InnerVm = lifecycle::Vm;
 pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, MarshalledValue};
 pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
 pub use shared_state::SharedVmState;
-pub use vm_facade::Vm;
+pub use vm_facade::{Vm, VmStats};

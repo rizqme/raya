@@ -17,7 +17,7 @@ fn test_object_creation_and_field_access() {
     // Create Point class with 2 fields (x, y)
     let mut vm = Vm::new();
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     // Bytecode: new Point(), set x=10, y=20, read x
     let mut module = Module::new("test".to_string());
@@ -190,10 +190,10 @@ fn test_multiple_objects() {
     let mut vm = Vm::new();
 
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let rect_class = Class::new(1, "Rectangle".to_string(), 4);
-    vm.classes.register_class(rect_class);
+    vm.register_class(rect_class);
 
     // Bytecode: create Point with x=5, y=10, create Rectangle with x1=0, y1=0, x2=100, y2=50
     // return Point.x + Point.y + Rectangle.x2
@@ -281,7 +281,7 @@ fn test_object_with_gc() {
     let mut vm = Vm::new();
 
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     // Create an object, store it in a local, trigger GC, access it
     let mut module = Module::new("test".to_string());
@@ -331,7 +331,7 @@ fn test_object_literal() {
     // Creates Point{x: 10, y: 20} using literal syntax
     let mut vm = Vm::new();
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
@@ -425,7 +425,7 @@ fn test_static_fields() {
     // Create class with 2 instance fields and 2 static fields
     let mut counter_class = Class::new(0, "Counter".to_string(), 2);
     counter_class.static_fields = vec![Value::i32(0), Value::i32(100)];
-    vm.classes.register_class(counter_class);
+    vm.register_class(counter_class);
 
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
@@ -472,7 +472,7 @@ fn test_optional_field_non_null() {
     // Test OPTIONAL_FIELD opcode with non-null object
     let mut vm = Vm::new();
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
@@ -517,7 +517,7 @@ fn test_optional_field_null() {
     // Test OPTIONAL_FIELD opcode with null object
     let mut vm = Vm::new();
     let point_class = Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     let main_fn = Function {
@@ -548,7 +548,7 @@ fn test_constructor_no_args() {
     // Create Point class with constructor
     let mut point_class = Class::new(0, "Point".to_string(), 2);
     point_class.set_constructor(1); // Constructor is function 1
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
 
@@ -613,7 +613,7 @@ fn test_constructor_basic() {
     // Create Point class with constructor
     let mut point_class = Class::new(0, "Point".to_string(), 2);
     point_class.set_constructor(1); // Constructor is function 1
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
 
@@ -698,12 +698,12 @@ fn test_call_super() {
     // Create Shape class (parent)
     let mut shape_class = Class::new(0, "Shape".to_string(), 1); // 1 field: color
     shape_class.set_constructor(1); // Constructor is function 1
-    vm.classes.register_class(shape_class);
+    vm.register_class(shape_class);
 
     // Create Circle class (child) with parent
     let mut circle_class = Class::with_parent(1, "Circle".to_string(), 2, 0); // 2 fields: color (inherited) + radius
     circle_class.set_constructor(2); // Constructor is function 2
-    vm.classes.register_class(circle_class);
+    vm.register_class(circle_class);
 
     let mut module = Module::new("test".to_string());
 

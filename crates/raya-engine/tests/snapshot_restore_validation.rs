@@ -876,29 +876,8 @@ fn test_snapshot_with_max_values() {
 
 // ===== Future Tests (when Vm::snapshot/restore are implemented) =====
 
-// These tests are placeholders for when full VM snapshot/restore is implemented
-
-// #[test]
-// fn test_vm_snapshot_and_restore() {
-//     use raya_engine::vm::interpreter::lifecycle::Vm;
-//
-//     let vm = Vm::new(VmOptions::default()).unwrap();
-//
-//     // Execute some code
-//     // ...
-//
-//     // Take snapshot
-//     let snapshot = vm.snapshot().unwrap();
-//
-//     // Modify VM state
-//     // ...
-//
-//     // Restore from snapshot
-//     vm.restore(snapshot).unwrap();
-//
-//     // Verify state is restored
-//     // ...
-// }
+// VM snapshot/restore is now implemented via Vm::snapshot_to_bytes() / Vm::restore_from_bytes().
+// See vm_facade.rs tests for round-trip tests.
 
 // #[test]
 // fn test_snapshot_portability_across_vms() {

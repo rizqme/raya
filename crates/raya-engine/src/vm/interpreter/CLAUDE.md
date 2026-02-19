@@ -9,14 +9,13 @@ interpreter/
 ├── mod.rs                    # Module index, re-exports
 ├── core.rs                   # Interpreter struct, main run() loop (~780 lines)
 ├── shared_state.rs           # SharedVmState (~155 lines)
-├── vm_facade.rs              # Vm public API (facade over scheduler, JIT enable/prewarm)
+├── vm_facade.rs              # Vm public API, VmStats, snapshot/restore, module loading
 ├── context.rs                # VmContext, ContextRegistry, VmOptions, ResourceLimits
 ├── execution.rs              # ExecutionResult, OpcodeResult, ControlFlow, ExecutionFrame
 ├── class_registry.rs         # Runtime class registry
-├── lifecycle.rs              # VM lifecycle, InnerVm, VmSnapshot, VmStats
 ├── marshal.rs                # Value marshaling (MarshalledValue, ForeignHandleManager)
 ├── capabilities.rs           # Capability registry (HTTP, Log, Read)
-├── module_registry.rs        # Module tracking
+├── module_registry.rs        # Module tracking (by name + SHA-256 checksum, deduplication)
 ├── native_module_registry.rs # Native function registration (NativeFn, NativeModule)
 ├── safepoint.rs              # Safepoint coordination for GC
 │
@@ -110,8 +109,21 @@ pub struct SharedVmState {
     pub native_handler: Arc<dyn NativeHandler>,
     pub resolved_natives: RwLock<ResolvedNatives>,
     pub native_registry: RwLock<NativeFunctionRegistry>,
+    pub module_registry: RwLock<ModuleRegistry>,
 }
 ```
+
+### Vm (facade)
+```rust
+pub struct Vm {
+    scheduler: Scheduler,
+    #[cfg(feature = "jit")]
+    jit_engine: Option<JitEngine>,
+}
+```
+Key methods: `new()`, `execute(&Module)`, `load_rbin(&Path)`, `load_rbin_bytes(&[u8])`,
+`snapshot_to_bytes()`, `snapshot_to_file(&Path)`, `restore_from_bytes(&[u8])`, `restore_from_file(&Path)`,
+`get_stats()`, `terminate()`, `register_class()`, `collect_garbage()`, `enable_jit()`
 
 ## Opcode Dispatch
 

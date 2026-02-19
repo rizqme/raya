@@ -1,6 +1,7 @@
 //! Task structure and execution state
 
 use crate::vm::interpreter::execution::ExecutionFrame;
+use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
@@ -665,6 +666,142 @@ impl Task {
     pub fn get_held_mutexes(&self) -> Vec<MutexId> {
         self.held_mutexes.lock().unwrap().clone()
     }
+
+    // =========================================================================
+    // Snapshot serialization bridge
+    // =========================================================================
+
+    /// Serialize this task into a `SerializedTask` for snapshot persistence.
+    ///
+    /// Must only be called when the task is paused (not actively executing on a worker).
+    /// Typically invoked during a stop-the-world safepoint or when the scheduler is idle.
+    pub fn to_serialized(&self) -> SerializedTask {
+        let state = *self.state.lock().unwrap();
+        let ip = self.ip.load(Ordering::Relaxed);
+        let stack_values = self.stack.lock().unwrap().as_slice().to_vec();
+        let result = self.result.lock().unwrap().clone();
+        let suspend_reason = self.suspend_reason.lock().unwrap().clone();
+        let execution_frames = self.execution_frames.lock().unwrap().clone();
+
+        // Map ExecutionFrame -> SerializedFrame
+        let frames: Vec<SerializedFrame> = execution_frames
+            .iter()
+            .map(|ef| SerializedFrame {
+                function_index: ef.func_id,
+                return_ip: ef.ip,
+                base_pointer: ef.locals_base,
+                locals: Vec::new(), // locals live on the shared stack, not per-frame
+            })
+            .collect();
+
+        // Map SuspendReason -> BlockedReason
+        let blocked_on = suspend_reason.map(|reason| match reason {
+            SuspendReason::AwaitTask(task_id) => BlockedReason::AwaitingTask(task_id),
+            SuspendReason::MutexLock { mutex_id } => {
+                BlockedReason::AwaitingMutex(mutex_id.as_u64())
+            }
+            SuspendReason::Sleep { .. } => BlockedReason::Other("sleep".to_string()),
+            SuspendReason::ChannelSend { channel_id, .. } => {
+                BlockedReason::Other(format!("channel_send:{}", channel_id))
+            }
+            SuspendReason::ChannelReceive { channel_id } => {
+                BlockedReason::Other(format!("channel_recv:{}", channel_id))
+            }
+            SuspendReason::IoWait => BlockedReason::Other("io_wait".to_string()),
+        });
+
+        SerializedTask {
+            task_id: self.id,
+            state,
+            function_index: self.function_id,
+            ip,
+            frames,
+            stack: stack_values,
+            result,
+            parent: self.parent,
+            blocked_on,
+        }
+    }
+
+    /// Restore a task from a `SerializedTask` and a module reference.
+    ///
+    /// The module must be the same module that was active when the snapshot was taken.
+    /// Runtime-transient state (preemption counters, start_time, waiters, etc.) is
+    /// reset to defaults — only persistent execution state is restored.
+    pub fn from_serialized(
+        serialized: SerializedTask,
+        module: Arc<crate::compiler::Module>,
+    ) -> Self {
+        // Map SerializedFrame -> ExecutionFrame
+        let execution_frames: Vec<ExecutionFrame> = serialized
+            .frames
+            .iter()
+            .map(|sf| ExecutionFrame {
+                func_id: sf.function_index,
+                ip: sf.return_ip,
+                locals_base: sf.base_pointer,
+                is_closure: false, // not persisted — closures are on the stack
+                return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
+            })
+            .collect();
+
+        // Rebuild stack from serialized values
+        let mut stack = Stack::new();
+        for value in &serialized.stack {
+            let _ = stack.push(*value);
+        }
+
+        // Map BlockedReason -> SuspendReason
+        let suspend_reason = serialized.blocked_on.map(|reason| match reason {
+            BlockedReason::AwaitingTask(task_id) => SuspendReason::AwaitTask(task_id),
+            BlockedReason::AwaitingMutex(id) => SuspendReason::MutexLock {
+                mutex_id: MutexId::from_u64(id),
+            },
+            BlockedReason::Other(_) => SuspendReason::IoWait, // best-effort for non-resumable reasons
+        });
+
+        // Determine current_func_id from the topmost execution frame or the root function
+        let current_func_id = execution_frames
+            .last()
+            .map(|f| f.func_id)
+            .unwrap_or(serialized.function_index);
+
+        let current_locals_base = execution_frames
+            .last()
+            .map(|f| f.locals_base)
+            .unwrap_or(0);
+
+        Self {
+            id: serialized.task_id,
+            state: Mutex::new(serialized.state),
+            function_id: serialized.function_index,
+            module,
+            stack: Mutex::new(stack),
+            ip: AtomicUsize::new(serialized.ip),
+            result: Mutex::new(serialized.result),
+            waiters: Mutex::new(Vec::new()),
+            parent: serialized.parent,
+            preempt_requested: AtomicBool::new(false),
+            preempt_count: AtomicU32::new(0),
+            start_time: Mutex::new(None),
+            exception_handlers: Mutex::new(Vec::new()),
+            current_exception: Mutex::new(None),
+            caught_exception: Mutex::new(None),
+            held_mutexes: Mutex::new(Vec::new()),
+            closure_stack: Mutex::new(Vec::new()),
+            call_stack: Mutex::new(Vec::new()),
+            suspend_reason: Mutex::new(suspend_reason),
+            resume_value: Mutex::new(None),
+            initial_args: Mutex::new(Vec::new()),
+            awaiting_task: Mutex::new(None),
+            cancelled: AtomicBool::new(false),
+            completion_lock: ParkingMutex::new(false),
+            completion_condvar: ParkingCondvar::new(),
+            current_func_id: AtomicUsize::new(current_func_id),
+            current_locals_base: AtomicUsize::new(current_locals_base),
+            execution_frames: Mutex::new(execution_frames),
+        }
+    }
 }
 
 /// Handle for awaiting a Task's result
@@ -944,5 +1081,215 @@ mod tests {
 
         assert!(!task.has_exception());
         assert!(task.current_exception().is_none());
+    }
+
+    // =========================================================================
+    // Snapshot bridge tests
+    // =========================================================================
+
+    #[test]
+    fn test_task_to_serialized_basic() {
+        let module = create_test_module();
+        let parent_id = TaskId::from_u64(99);
+        let task = Task::new(0, module.clone(), Some(parent_id));
+
+        task.set_state(TaskState::Running);
+        task.set_ip(42);
+        task.stack().lock().unwrap().push(Value::i32(10)).unwrap();
+        task.stack().lock().unwrap().push(Value::i32(20)).unwrap();
+
+        let serialized = task.to_serialized();
+
+        assert_eq!(serialized.task_id, task.id());
+        assert_eq!(serialized.state, TaskState::Running);
+        assert_eq!(serialized.function_index, 0);
+        assert_eq!(serialized.ip, 42);
+        assert_eq!(serialized.stack.len(), 2);
+        assert_eq!(serialized.stack[0], Value::i32(10));
+        assert_eq!(serialized.stack[1], Value::i32(20));
+        assert_eq!(serialized.parent, Some(parent_id));
+        assert!(serialized.result.is_none());
+        assert!(serialized.blocked_on.is_none());
+    }
+
+    #[test]
+    fn test_task_to_serialized_completed() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+        task.complete(Value::i32(42));
+
+        let serialized = task.to_serialized();
+
+        assert_eq!(serialized.state, TaskState::Completed);
+        assert_eq!(serialized.result, Some(Value::i32(42)));
+    }
+
+    #[test]
+    fn test_task_to_serialized_suspended_await() {
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+        let awaited = TaskId::from_u64(77);
+        task.suspend(SuspendReason::AwaitTask(awaited));
+
+        let serialized = task.to_serialized();
+
+        assert_eq!(serialized.state, TaskState::Suspended);
+        match &serialized.blocked_on {
+            Some(BlockedReason::AwaitingTask(id)) => assert_eq!(id.as_u64(), 77),
+            other => panic!("Expected AwaitingTask, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_to_serialized_suspended_mutex() {
+        use crate::vm::sync::MutexId;
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+        let mutex_id = MutexId::from_u64(55);
+        task.suspend(SuspendReason::MutexLock { mutex_id });
+
+        let serialized = task.to_serialized();
+
+        match &serialized.blocked_on {
+            Some(BlockedReason::AwaitingMutex(id)) => assert_eq!(*id, 55),
+            other => panic!("Expected AwaitingMutex, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_task_to_serialized_with_frames() {
+        use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+
+        let frames = vec![
+            ExecutionFrame {
+                func_id: 0,
+                ip: 10,
+                locals_base: 0,
+                is_closure: false,
+                return_action: ReturnAction::PushReturnValue,
+            },
+            ExecutionFrame {
+                func_id: 1,
+                ip: 25,
+                locals_base: 5,
+                is_closure: true,
+                return_action: ReturnAction::Discard,
+            },
+        ];
+        task.save_execution_frames(frames);
+
+        let serialized = task.to_serialized();
+
+        assert_eq!(serialized.frames.len(), 2);
+        assert_eq!(serialized.frames[0].function_index, 0);
+        assert_eq!(serialized.frames[0].return_ip, 10);
+        assert_eq!(serialized.frames[0].base_pointer, 0);
+        assert_eq!(serialized.frames[1].function_index, 1);
+        assert_eq!(serialized.frames[1].return_ip, 25);
+        assert_eq!(serialized.frames[1].base_pointer, 5);
+    }
+
+    #[test]
+    fn test_task_from_serialized_basic() {
+        let module = create_test_module();
+        let task_id = TaskId::from_u64(42);
+        let parent_id = TaskId::from_u64(99);
+
+        let mut serialized = SerializedTask::new(task_id, 0);
+        serialized.state = TaskState::Suspended;
+        serialized.ip = 100;
+        serialized.stack = vec![Value::i32(1), Value::i32(2), Value::i32(3)];
+        serialized.parent = Some(parent_id);
+
+        let task = Task::from_serialized(serialized, module);
+
+        assert_eq!(task.id().as_u64(), 42);
+        assert_eq!(task.state(), TaskState::Suspended);
+        assert_eq!(task.function_id(), 0);
+        assert_eq!(task.ip(), 100);
+        assert_eq!(task.stack().lock().unwrap().as_slice().len(), 3);
+        assert_eq!(task.parent(), Some(parent_id));
+    }
+
+    #[test]
+    fn test_task_round_trip() {
+        use crate::vm::interpreter::execution::{ExecutionFrame, ReturnAction};
+        let module = create_test_module();
+        let parent_id = TaskId::from_u64(88);
+        let task = Task::with_args(0, module.clone(), Some(parent_id), vec![]);
+
+        task.set_state(TaskState::Running);
+        task.set_ip(50);
+        task.stack().lock().unwrap().push(Value::i32(100)).unwrap();
+        task.stack().lock().unwrap().push(Value::null()).unwrap();
+        task.save_execution_frames(vec![ExecutionFrame {
+            func_id: 0,
+            ip: 20,
+            locals_base: 0,
+            is_closure: false,
+            return_action: ReturnAction::PushReturnValue,
+        }]);
+
+        // Serialize
+        let serialized = task.to_serialized();
+
+        // Deserialize
+        let restored = Task::from_serialized(serialized, module);
+
+        assert_eq!(restored.id(), task.id());
+        assert_eq!(restored.state(), TaskState::Running);
+        assert_eq!(restored.function_id(), 0);
+        assert_eq!(restored.ip(), 50);
+        assert_eq!(restored.parent(), Some(parent_id));
+
+        let stack = restored.stack().lock().unwrap();
+        assert_eq!(stack.as_slice().len(), 2);
+        assert_eq!(stack.as_slice()[0], Value::i32(100));
+        assert_eq!(stack.as_slice()[1], Value::null());
+        drop(stack);
+
+        let frames = restored.take_execution_frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].func_id, 0);
+        assert_eq!(frames[0].ip, 20);
+        assert_eq!(frames[0].locals_base, 0);
+    }
+
+    #[test]
+    fn test_task_round_trip_binary() {
+        // Full round trip: Task -> SerializedTask -> bytes -> SerializedTask -> Task
+        let module = create_test_module();
+        let task = Task::new(0, module.clone(), None);
+        task.set_state(TaskState::Suspended);
+        task.set_ip(75);
+        task.stack().lock().unwrap().push(Value::i32(42)).unwrap();
+        task.suspend(SuspendReason::AwaitTask(TaskId::from_u64(99)));
+
+        let serialized = task.to_serialized();
+
+        // Encode to bytes
+        let mut bytes = Vec::new();
+        serialized.encode(&mut bytes).unwrap();
+
+        // Decode from bytes
+        let decoded = SerializedTask::decode(&mut &bytes[..], false).unwrap();
+
+        // Restore task
+        let restored = Task::from_serialized(decoded, module);
+
+        assert_eq!(restored.id(), task.id());
+        assert_eq!(restored.state(), TaskState::Suspended);
+        assert_eq!(restored.ip(), 75);
+        assert_eq!(
+            restored.stack().lock().unwrap().as_slice(),
+            &[Value::i32(42)]
+        );
+
+        match restored.suspend_reason() {
+            Some(SuspendReason::AwaitTask(id)) => assert_eq!(id.as_u64(), 99),
+            other => panic!("Expected AwaitTask, got {:?}", other),
+        }
     }
 }

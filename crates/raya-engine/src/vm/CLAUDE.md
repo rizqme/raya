@@ -23,7 +23,7 @@ vm/
 │   ├── execution.rs    # ExecutionResult, OpcodeResult, ControlFlow
 │   ├── opcodes/        # 15 categorized opcode handler modules
 │   ├── handlers/       # Native method handlers (array, string, regexp, reflect)
-│   └── ...             # lifecycle, marshal, capabilities, safepoint, etc.
+│   └── ...             # marshal, capabilities, safepoint, module_registry, class_registry
 │
 ├── scheduler/          # Task scheduler (work-stealing)
 ├── gc/                 # Garbage collector

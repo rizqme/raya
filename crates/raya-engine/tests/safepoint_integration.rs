@@ -82,7 +82,7 @@ fn test_safepoint_on_allocation() {
 
     // Pre-register a class for object creation
     let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     module.functions.push(Function {
@@ -316,7 +316,7 @@ fn test_safepoint_on_object_literal() {
 
     // Pre-register Point class
     let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     module.functions.push(Function {
@@ -410,7 +410,7 @@ fn test_safepoint_at_all_allocation_types() {
 
     // Pre-register classes
     let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
 
@@ -496,7 +496,7 @@ fn test_safepoint_integration_with_gc() {
 
     // Pre-register class
     let point_class = raya_engine::vm::object::Class::new(0, "Point".to_string(), 2);
-    vm.classes.register_class(point_class);
+    vm.register_class(point_class);
 
     let mut module = Module::new("test".to_string());
     module.functions.push(Function {

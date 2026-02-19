@@ -72,6 +72,12 @@ Ready → Running → Suspended → Resumed → Running → ... → Completed/Fa
 
 Native handlers return `NativeCallResult::Suspend(IoRequest::BlockingWork { work })` to offload blocking IO to the IO pool. The reactor routes the work, and when the IO pool returns `IoCompletion`, the reactor converts it to a `Value` and resumes the task via `complete_task`.
 
+## Snapshot Bridge
+
+`Task` has bidirectional serialization for VM snapshots:
+- `task.to_serialized() -> SerializedTask` — serializes state, IP, stack, frames, suspend reason
+- `Task::from_serialized(SerializedTask, Arc<Module>) -> Task` — reconstructs from snapshot
+
 ## For AI Assistants
 
 - **Single reactor thread** — all scheduling decisions happen here (no races between scheduler operations)
