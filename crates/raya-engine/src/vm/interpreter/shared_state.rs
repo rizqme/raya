@@ -82,6 +82,16 @@ pub struct SharedVmState {
     /// Set once by `Vm::enable_jit()`, then read by interpreter threads.
     #[cfg(feature = "jit")]
     pub code_cache: Mutex<Option<Arc<crate::jit::runtime::code_cache::CodeCache>>>,
+
+    /// Per-module profiling data for hot function detection.
+    /// Keyed by module checksum. Created when a module is first executed with JIT enabled.
+    #[cfg(feature = "jit")]
+    pub module_profiles: RwLock<FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>>,
+
+    /// Handle to the background JIT compilation thread.
+    /// Set by `Vm::enable_jit()`, cloned by worker threads to submit compilation requests.
+    #[cfg(feature = "jit")]
+    pub background_compiler: Mutex<Option<Arc<crate::jit::profiling::BackgroundCompiler>>>,
 }
 
 impl SharedVmState {
@@ -121,6 +131,10 @@ impl SharedVmState {
             preempt_threshold_ms: 10,
             #[cfg(feature = "jit")]
             code_cache: Mutex::new(None),
+            #[cfg(feature = "jit")]
+            module_profiles: RwLock::new(FxHashMap::default()),
+            #[cfg(feature = "jit")]
+            background_compiler: Mutex::new(None),
         }
     }
 

@@ -344,11 +344,24 @@ impl Reactor {
                 state.max_preemptions,
             );
 
-            // Wire JIT code cache for native dispatch
+            // Wire JIT code cache and profiling for native dispatch
             #[cfg(feature = "jit")]
             {
                 let cache = state.code_cache.lock().clone();
                 interpreter.set_code_cache(cache);
+
+                // Wire profiling for on-the-fly compilation
+                let module = task.module();
+                let profiles = state.module_profiles.read();
+                if let Some(profile) = profiles.get(&module.checksum) {
+                    interpreter.set_module_profile(Some(profile.clone()));
+                }
+                drop(profiles);
+
+                let compiler = state.background_compiler.lock().clone();
+                if let Some(ref c) = compiler {
+                    interpreter.set_background_compiler(Some(c.clone()));
+                }
             }
 
             let result = interpreter.run(&task);

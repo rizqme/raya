@@ -70,6 +70,17 @@ pub struct Import {
     pub version_constraint: Option<String>,
 }
 
+/// JIT compilation hint for a function, computed at compile time
+#[derive(Debug, Clone)]
+pub struct JitHint {
+    /// Index in the module's function table
+    pub func_index: u32,
+    /// Heuristic score (higher = more suitable for JIT)
+    pub score: f64,
+    /// Whether the function is CPU-bound (no I/O or concurrency ops)
+    pub is_cpu_bound: bool,
+}
+
 /// A compiled Raya module
 #[derive(Debug, Clone)]
 pub struct Module {
@@ -101,6 +112,9 @@ pub struct Module {
     /// Present when HAS_NATIVE_FUNCTIONS flag is set.
     /// At load time, these names are resolved to handler functions via the NativeFunctionRegistry.
     pub native_functions: Vec<String>,
+    /// JIT compilation hints (present when HAS_JIT_HINTS flag is set).
+    /// Pre-computed heuristic scores for each candidate function.
+    pub jit_hints: Vec<JitHint>,
 }
 
 /// Module flags
@@ -111,6 +125,8 @@ pub mod flags {
     pub const HAS_REFLECTION: u32 = 1 << 1;
     /// Module has native function table (for ModuleNativeCall)
     pub const HAS_NATIVE_FUNCTIONS: u32 = 1 << 2;
+    /// Module has JIT compilation hints (pre-computed heuristic scores)
+    pub const HAS_JIT_HINTS: u32 = 1 << 3;
 }
 
 /// Reflection data for the entire module
@@ -913,6 +929,7 @@ impl Module {
             reflection: Some(ReflectionData::new()),
             debug_info: None,
             native_functions: Vec::new(),
+            jit_hints: Vec::new(),
         }
     }
 
@@ -1043,6 +1060,16 @@ impl Module {
             }
         }
 
+        // Encode JIT hints if present
+        if (self.flags & flags::HAS_JIT_HINTS) != 0 {
+            writer.emit_u32(self.jit_hints.len() as u32);
+            for hint in &self.jit_hints {
+                writer.emit_u32(hint.func_index);
+                writer.emit_f64(hint.score);
+                writer.emit_u8(hint.is_cpu_bound as u8);
+            }
+        }
+
         // Calculate checksums (of everything after header)
         let payload_start = header_start + 48; // Skip magic + version + flags + crc32 + sha256
         let payload = writer.buffer[payload_start..].to_vec(); // Clone to avoid borrow issues
@@ -1165,6 +1192,22 @@ impl Module {
             Vec::new()
         };
 
+        // Decode JIT hints if present
+        let jit_hints = if (flags & flags::HAS_JIT_HINTS) != 0 {
+            let count = reader.read_u32()? as usize;
+            let mut hints = Vec::with_capacity(count);
+            for _ in 0..count {
+                hints.push(JitHint {
+                    func_index: reader.read_u32()?,
+                    score: reader.read_f64()?,
+                    is_cpu_bound: reader.read_u8()? != 0,
+                });
+            }
+            hints
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             magic,
             version,
@@ -1179,6 +1222,7 @@ impl Module {
             reflection,
             debug_info,
             native_functions,
+            jit_hints,
         })
     }
 }
@@ -1560,5 +1604,37 @@ mod tests {
         // Verify no debug info
         assert!(!decoded.has_debug_info());
         assert!(decoded.debug_info.is_none());
+    }
+
+    #[test]
+    fn test_jit_hints_roundtrip() {
+        let mut module = Module::new("jit_test".to_string());
+        module.jit_hints = vec![
+            JitHint { func_index: 0, score: 25.7, is_cpu_bound: true },
+            JitHint { func_index: 3, score: 12.3, is_cpu_bound: false },
+        ];
+        module.flags |= flags::HAS_JIT_HINTS;
+
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+
+        assert_eq!(decoded.jit_hints.len(), 2);
+        assert_eq!(decoded.jit_hints[0].func_index, 0);
+        assert!((decoded.jit_hints[0].score - 25.7).abs() < 0.001);
+        assert!(decoded.jit_hints[0].is_cpu_bound);
+        assert_eq!(decoded.jit_hints[1].func_index, 3);
+        assert!((decoded.jit_hints[1].score - 12.3).abs() < 0.001);
+        assert!(!decoded.jit_hints[1].is_cpu_bound);
+    }
+
+    #[test]
+    fn test_module_no_jit_hints() {
+        let module = Module::new("no_hints".to_string());
+        assert!(module.jit_hints.is_empty());
+        assert!((module.flags & flags::HAS_JIT_HINTS) == 0);
+
+        let bytes = module.encode();
+        let decoded = Module::decode(&bytes).unwrap();
+        assert!(decoded.jit_hints.is_empty());
     }
 }

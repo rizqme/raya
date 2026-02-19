@@ -136,6 +136,7 @@ mod tests {
             reflection: None,
             debug_info: None,
             native_functions: vec![],
+            jit_hints: vec![],
         }
     }
 
@@ -289,6 +290,7 @@ mod tests {
             reflection: None,
             debug_info: None,
             native_functions: vec![],
+            jit_hints: vec![],
         };
 
         let pipeline = JitPipeline::new(StubBackend);

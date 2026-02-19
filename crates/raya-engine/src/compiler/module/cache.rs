@@ -197,6 +197,7 @@ mod tests {
                 source_file: None,
             },
             native_functions: vec![],
+            jit_hints: vec![],
             reflection: None,
             debug_info: None,
         }

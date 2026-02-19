@@ -85,6 +85,22 @@ pub struct Interpreter<'a> {
     /// JIT code cache for native dispatch (None when JIT is disabled)
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) code_cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
+
+    /// Per-module profiling counters for on-the-fly JIT compilation
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) module_profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
+
+    /// Handle to submit compilation requests to the background JIT thread
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) background_compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
+
+    /// Compilation policy for deciding when a function is hot enough
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) compilation_policy: crate::jit::profiling::policy::CompilationPolicy,
+
+    /// Current function ID being executed (tracked for loop profiling)
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) current_func_id_for_profiling: usize,
 }
 
 impl<'a> Interpreter<'a> {
@@ -120,6 +136,14 @@ impl<'a> Interpreter<'a> {
             max_preemptions,
             #[cfg(feature = "jit")]
             code_cache: None,
+            #[cfg(feature = "jit")]
+            module_profile: None,
+            #[cfg(feature = "jit")]
+            background_compiler: None,
+            #[cfg(feature = "jit")]
+            compilation_policy: crate::jit::profiling::policy::CompilationPolicy::new(),
+            #[cfg(feature = "jit")]
+            current_func_id_for_profiling: 0,
         }
     }
 
@@ -129,6 +153,24 @@ impl<'a> Interpreter<'a> {
     #[cfg(feature = "jit")]
     pub fn set_code_cache(&mut self, cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>) {
         self.code_cache = cache;
+    }
+
+    /// Set the module profile for on-the-fly JIT profiling.
+    #[cfg(feature = "jit")]
+    pub fn set_module_profile(&mut self, profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>) {
+        self.module_profile = profile;
+    }
+
+    /// Set the background compiler handle for submitting compilation requests.
+    #[cfg(feature = "jit")]
+    pub fn set_background_compiler(&mut self, compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>) {
+        self.background_compiler = compiler;
+    }
+
+    /// Set the compilation policy thresholds.
+    #[cfg(feature = "jit")]
+    pub fn set_compilation_policy(&mut self, policy: crate::jit::profiling::policy::CompilationPolicy) {
+        self.compilation_policy = policy;
     }
 
     /// Wake a suspended task by setting its resume value and pushing it to the scheduler.
@@ -159,6 +201,10 @@ impl<'a> Interpreter<'a> {
         // Restore execution state (supports suspend/resume)
         let mut current_func_id = task.current_func_id();
         let mut frames: Vec<ExecutionFrame> = task.take_execution_frames();
+
+        // Track current function for loop profiling
+        #[cfg(feature = "jit")]
+        { self.current_func_id_for_profiling = current_func_id; }
 
         let function = match module.functions.get(current_func_id) {
             Some(f) => f,
@@ -247,6 +293,8 @@ impl<'a> Interpreter<'a> {
 
                     // Restore caller's state
                     current_func_id = frame.func_id;
+                    #[cfg(feature = "jit")]
+                    { self.current_func_id_for_profiling = current_func_id; }
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
@@ -364,6 +412,20 @@ impl<'a> Interpreter<'a> {
                     closure_val,
                     return_action,
                 } => {
+                    // JIT profiling: record call and check if function should be compiled
+                    #[cfg(feature = "jit")]
+                    if !is_closure {
+                        if let Some(ref profile) = self.module_profile {
+                            let count = profile.record_call(func_id);
+                            // Check compilation policy every 256 calls to amortize overhead
+                            if count & 0xFF == 0 {
+                                if let Some(mid) = jit_module_id {
+                                    self.maybe_request_compilation(func_id, task.module(), mid);
+                                }
+                            }
+                        }
+                    }
+
                     // JIT fast path: dispatch to native code if available
                     // Only for non-closure, non-constructor calls (pure function calls)
                     #[cfg(feature = "jit")]
@@ -475,6 +537,8 @@ impl<'a> Interpreter<'a> {
 
                     // Switch to callee's code
                     current_func_id = func_id;
+                    #[cfg(feature = "jit")]
+                    { self.current_func_id_for_profiling = current_func_id; }
                     code = &module.functions[func_id].code;
                     ip = 0;
                 }
@@ -537,6 +601,8 @@ impl<'a> Interpreter<'a> {
                             // Restore caller's context — don't clean stack here,
                             // the exception handler's stack_size will handle unwinding
                             current_func_id = frame.func_id;
+                            #[cfg(feature = "jit")]
+                            { self.current_func_id_for_profiling = current_func_id; }
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
                             locals_base = frame.locals_base;
@@ -881,4 +947,53 @@ impl<'a> Interpreter<'a> {
         runtime_handler(&ctx, stack, method_id, arg_count)
     }
 
+    /// Check if a function should be compiled on-the-fly and submit a request.
+    ///
+    /// Called after profiling counters are incremented. Uses the compilation policy
+    /// to decide, then CAS-claims the function and sends a request to the background thread.
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) fn maybe_request_compilation(
+        &self,
+        func_id: usize,
+        module: &Arc<Module>,
+        module_id: u64,
+    ) {
+        let Some(ref profile) = self.module_profile else { return };
+        let Some(func_profile) = profile.get(func_id) else { return };
+
+        // Already compiled or in progress
+        if func_profile.is_jit_available() {
+            return;
+        }
+
+        let code_size = module.functions.get(func_id).map(|f| f.code.len()).unwrap_or(0);
+        if !self.compilation_policy.should_compile(func_profile, code_size) {
+            return;
+        }
+
+        // CAS to claim this function for compilation (prevents duplicate requests)
+        if !func_profile.try_start_compile() {
+            return;
+        }
+
+        // Submit to background compiler
+        if let Some(ref compiler) = self.background_compiler {
+            let request = crate::jit::profiling::CompilationRequest {
+                module: module.clone(),
+                func_index: func_id,
+                module_id,
+                module_profile: profile.clone(),
+            };
+            compiler.try_submit(request);
+        }
+    }
+
+    /// Record a backward jump (loop iteration) for profiling.
+    #[cfg(feature = "jit")]
+    #[inline]
+    pub(in crate::vm::interpreter) fn record_loop_for_profiling(&self) {
+        if let Some(ref profile) = self.module_profile {
+            profile.record_loop(self.current_func_id_for_profiling);
+        }
+    }
 }

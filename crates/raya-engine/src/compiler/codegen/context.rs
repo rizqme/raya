@@ -231,6 +231,25 @@ impl IrCodeGenerator {
             bytecode_module.native_functions = module.native_functions.clone();
         }
 
+        // Compute JIT hints at compile time (pre-score functions for JIT candidacy)
+        #[cfg(feature = "jit")]
+        {
+            use crate::jit::analysis::heuristics::HeuristicsAnalyzer;
+            let analyzer = HeuristicsAnalyzer::default();
+            let candidates = analyzer.select_candidates(&bytecode_module);
+            if !candidates.is_empty() {
+                bytecode_module.jit_hints = candidates
+                    .iter()
+                    .map(|c| crate::compiler::bytecode::JitHint {
+                        func_index: c.func_index as u32,
+                        score: c.score,
+                        is_cpu_bound: c.is_cpu_bound,
+                    })
+                    .collect();
+                bytecode_module.flags |= flags::HAS_JIT_HINTS;
+            }
+        }
+
         Ok(bytecode_module)
     }
 

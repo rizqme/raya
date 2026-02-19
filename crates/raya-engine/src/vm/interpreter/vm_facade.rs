@@ -36,9 +36,13 @@ pub struct VmStats {
 pub struct Vm {
     /// Task scheduler (owns SharedVmState — the canonical runtime state)
     scheduler: Scheduler,
-    /// JIT engine for pre-warming and native code compilation
+    /// JIT engine for pre-warming and native code compilation.
+    /// Consumed (moved to background thread) after the first `execute()` call.
     #[cfg(feature = "jit")]
     jit_engine: Option<crate::jit::JitEngine>,
+    /// JIT configuration (kept for creating CompilationPolicy and module profiles)
+    #[cfg(feature = "jit")]
+    jit_config: Option<crate::jit::JitConfig>,
 }
 
 impl Vm {
@@ -57,6 +61,8 @@ impl Vm {
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
+            #[cfg(feature = "jit")]
+            jit_config: None,
         }
     }
 
@@ -69,6 +75,8 @@ impl Vm {
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
+            #[cfg(feature = "jit")]
+            jit_config: None,
         }
     }
 
@@ -81,6 +89,8 @@ impl Vm {
             scheduler,
             #[cfg(feature = "jit")]
             jit_engine: None,
+            #[cfg(feature = "jit")]
+            jit_config: None,
         }
     }
 
@@ -181,23 +191,21 @@ impl Vm {
 
     /// Enable JIT compilation with default configuration.
     ///
-    /// When enabled, `execute()` will pre-warm CPU-intensive functions at module load time
-    /// and the interpreter will dispatch to native code for compiled functions.
+    /// When enabled, `execute()` will pre-warm CPU-intensive functions at module load time,
+    /// the interpreter will dispatch to native code for compiled functions, and a background
+    /// thread will compile additional hot functions discovered at runtime.
     #[cfg(feature = "jit")]
     pub fn enable_jit(&mut self) -> Result<(), String> {
-        let engine = crate::jit::JitEngine::new()
-            .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
-        *self.scheduler.shared_state().code_cache.lock() = Some(engine.code_cache().clone());
-        self.jit_engine = Some(engine);
-        Ok(())
+        self.enable_jit_with_config(crate::jit::JitConfig::default())
     }
 
     /// Enable JIT compilation with custom configuration.
     #[cfg(feature = "jit")]
     pub fn enable_jit_with_config(&mut self, config: crate::jit::JitConfig) -> Result<(), String> {
-        let engine = crate::jit::JitEngine::with_config(config)
+        let engine = crate::jit::JitEngine::with_config(config.clone())
             .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
         *self.scheduler.shared_state().code_cache.lock() = Some(engine.code_cache().clone());
+        self.jit_config = Some(config);
         self.jit_engine = Some(engine);
         Ok(())
     }
@@ -214,10 +222,49 @@ impl Vm {
         self.scheduler.shared_state().register_module(Arc::new(module.clone()))
             .map_err(|e| VmError::RuntimeError(e))?;
 
-        // JIT pre-warming: analyze, compile, and cache CPU-intensive functions
+        // JIT: start background thread and submit prewarm candidates (non-blocking)
         #[cfg(feature = "jit")]
-        if let Some(ref mut jit_engine) = self.jit_engine {
-            let _summary = jit_engine.prewarm(module);
+        if let Some(ref config) = self.jit_config {
+            // Create profiling counters for adaptive compilation
+            if config.adaptive_compilation {
+                let profile = Arc::new(
+                    crate::jit::profiling::counters::ModuleProfile::new(module.functions.len())
+                );
+                self.scheduler.shared_state().module_profiles.write()
+                    .insert(module.checksum, profile);
+            }
+
+            // Start background thread FIRST (consumes engine), then submit prewarm candidates
+            if let Some(engine) = self.jit_engine.take() {
+                let module_id = engine.register_module(module.checksum);
+                let bg_compiler = Arc::new(engine.start_background());
+                *self.scheduler.shared_state().background_compiler.lock() =
+                    Some(bg_compiler.clone());
+
+                // Submit prewarm candidates to background thread (non-blocking)
+                let candidates = Self::collect_prewarm_candidates(module, config);
+                if !candidates.is_empty() {
+                    let module_arc = Arc::new(module.clone());
+                    let profile = self.scheduler.shared_state().module_profiles.read()
+                        .get(&module.checksum).cloned()
+                        .unwrap_or_else(|| Arc::new(
+                            crate::jit::profiling::counters::ModuleProfile::new(module.functions.len())
+                        ));
+
+                    for &func_index in candidates.iter().take(config.max_prewarm_functions) {
+                        // Mark as compiling to prevent adaptive re-submission
+                        if let Some(fp) = profile.get(func_index) {
+                            if !fp.try_start_compile() { continue; }
+                        }
+                        let _ = bg_compiler.try_submit(crate::jit::profiling::CompilationRequest {
+                            module: module_arc.clone(),
+                            func_index,
+                            module_id,
+                            module_profile: profile.clone(),
+                        });
+                    }
+                }
+            }
         }
 
         // Find main function
@@ -253,6 +300,26 @@ impl Vm {
                 )))
             }
         }
+    }
+
+    /// Collect prewarm candidates from embedded JIT hints or runtime heuristics.
+    ///
+    /// Prefers compile-time hints (zero cost). Falls back to runtime analysis
+    /// for modules compiled without the JIT feature.
+    #[cfg(feature = "jit")]
+    fn collect_prewarm_candidates(module: &Module, config: &crate::jit::JitConfig) -> Vec<usize> {
+        if !module.jit_hints.is_empty() {
+            // Use pre-computed hints from compile time
+            return module.jit_hints.iter()
+                .filter(|h| h.score >= config.min_score && h.is_cpu_bound)
+                .map(|h| h.func_index as usize)
+                .collect();
+        }
+        // Fallback: run heuristics at runtime (for modules compiled without JIT)
+        let analyzer = crate::jit::analysis::heuristics::HeuristicsAnalyzer::new();
+        analyzer.select_candidates(module).iter()
+            .map(|c| c.func_index)
+            .collect()
     }
 
     /// Extract a human-readable error message from a failed task's exception

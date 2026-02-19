@@ -26,6 +26,7 @@ use crate::jit::runtime::code_cache::CodeCache;
 const DEFAULT_CODE_CACHE_SIZE: usize = 64 * 1024 * 1024;
 
 /// Configuration for the JIT engine
+#[derive(Clone)]
 pub struct JitConfig {
     /// Maximum functions to pre-compile per module (default: 16)
     pub max_prewarm_functions: usize,
@@ -37,6 +38,14 @@ pub struct JitConfig {
     pub min_instruction_count: usize,
     /// Maximum code cache size in bytes (default: 64 MB)
     pub max_code_cache_size: usize,
+    /// Enable on-the-fly compilation based on runtime profiling (default: true)
+    pub adaptive_compilation: bool,
+    /// Call count threshold before compiling a function on-the-fly (default: 1000)
+    pub call_threshold: u32,
+    /// Loop iteration threshold before compiling a function on-the-fly (default: 10_000)
+    pub loop_threshold: u32,
+    /// Maximum bytecode size for on-the-fly compilation candidates (default: 4096)
+    pub max_adaptive_function_size: usize,
 }
 
 impl Default for JitConfig {
@@ -47,6 +56,10 @@ impl Default for JitConfig {
             min_score: 10.0,
             min_instruction_count: 8,
             max_code_cache_size: DEFAULT_CODE_CACHE_SIZE,
+            adaptive_compilation: true,
+            call_threshold: 1000,
+            loop_threshold: 10_000,
+            max_adaptive_function_size: 4096,
         }
     }
 }
@@ -244,6 +257,64 @@ impl JitEngine {
     pub fn pipeline(&self) -> &JitPipeline<CraneliftBackend> {
         &self.pipeline
     }
+
+    /// Register a module in the code cache and return its ID.
+    ///
+    /// Call this before `start_background()` to get a module ID for
+    /// constructing `CompilationRequest`s.
+    pub fn register_module(&self, checksum: [u8; 32]) -> u64 {
+        self.code_cache.register_module(checksum)
+    }
+
+    /// Start the background compilation thread for on-the-fly JIT compilation.
+    ///
+    /// Consumes the engine and moves it to a dedicated thread that processes
+    /// `CompilationRequest`s from interpreter worker threads. Compiled code is
+    /// inserted into the shared `CodeCache`, where workers pick it up on the
+    /// next function call (no explicit notification needed).
+    ///
+    /// Returns a `BackgroundCompiler` handle for submitting requests.
+    /// Dropping the handle closes the channel and the thread exits.
+    pub fn start_background(
+        self,
+    ) -> crate::jit::profiling::BackgroundCompiler {
+        let (tx, rx) = crossbeam::channel::bounded::<crate::jit::profiling::CompilationRequest>(64);
+
+        std::thread::Builder::new()
+            .name("jit-compiler".into())
+            .spawn(move || {
+                let mut engine = self;
+                while let Ok(req) = rx.recv() {
+                    // Skip if already compiled (another request may have beaten us)
+                    if engine.code_cache.contains(req.module_id, req.func_index as u32) {
+                        req.module_profile.get(req.func_index)
+                            .map(|fp| fp.finish_compile());
+                        continue;
+                    }
+
+                    match engine.compile_to_cache(&req.module, req.func_index, req.module_id) {
+                        Ok(()) => {
+                            // Mark profile so workers see jit_available and stop requesting
+                            if let Some(fp) = req.module_profile.get(req.func_index) {
+                                fp.finish_compile();
+                            }
+                        }
+                        Err(_) => {
+                            // Compilation failed (e.g., loops in SSA lifter).
+                            // Clear the compiling flag so it's not stuck, but don't mark available.
+                            if let Some(fp) = req.module_profile.get(req.func_index) {
+                                // Mark as "done compiling" but NOT available — prevents re-requests
+                                // for functions that will never compile (e.g., loop limitation).
+                                fp.finish_compile();
+                            }
+                        }
+                    }
+                }
+            })
+            .expect("Failed to spawn JIT compiler thread");
+
+        crate::jit::profiling::BackgroundCompiler::new(tx)
+    }
 }
 
 // Safety: JitEngine is only mutated from the thread that owns the Vm.
@@ -287,6 +358,7 @@ mod tests {
             reflection: None,
             debug_info: None,
             native_functions: vec![],
+            jit_hints: vec![],
         }
     }
 

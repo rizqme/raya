@@ -244,6 +244,7 @@ mod tests {
             imports: vec![],
             checksum: [0; 32],
             native_functions: vec![],
+            jit_hints: vec![],
             reflection: None,
             debug_info: None,
         }

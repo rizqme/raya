@@ -48,6 +48,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
         reflection: None,
         debug_info: None,
         native_functions: vec![],
+        jit_hints: vec![],
     }
 }
 

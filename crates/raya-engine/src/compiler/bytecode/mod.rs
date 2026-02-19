@@ -13,7 +13,7 @@ pub use constants::ConstantPool;
 pub use encoder::{BytecodeReader, BytecodeWriter, DecodeError};
 pub use module::{
     flags, ClassDebugInfo, ClassDef, ClassReflectionData, DebugInfo, Export, FieldReflectionData,
-    Function, FunctionDebugInfo, Import, LineEntry, Metadata, Method, Module, ModuleError,
+    Function, FunctionDebugInfo, Import, JitHint, LineEntry, Metadata, Method, Module, ModuleError,
     ReflectionData, SymbolType,
 };
 pub use opcode::Opcode;

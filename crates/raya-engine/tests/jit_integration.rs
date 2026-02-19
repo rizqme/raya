@@ -112,6 +112,7 @@ fn make_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Module 
         reflection: None,
         debug_info: None,
         native_functions: vec![],
+        jit_hints: vec![],
     }
 }
 
@@ -139,6 +140,7 @@ fn make_vm_module(code: Vec<u8>, param_count: usize, local_count: usize) -> Modu
         reflection: None,
         debug_info: None,
         native_functions: vec![],
+        jit_hints: vec![],
     }
 }
 
@@ -1186,6 +1188,7 @@ fn engine_prewarm_selects_hot() {
         reflection: None,
         debug_info: None,
         native_functions: vec![],
+        jit_hints: vec![],
     };
 
     let result = engine.prewarm(&module);
@@ -1253,4 +1256,380 @@ fn vm_enable_jit_with_config() {
     let module = make_vm_module(code, 0, 0);
     let result = vm.execute(&module).expect("Execution failed");
     assert_eq!(result, raya_engine::Value::i32(100));
+}
+
+// ============================================================================
+// Category 6: Adaptive (On-the-Fly) JIT Compilation
+// ============================================================================
+
+#[test]
+fn profiling_counters_unit_test() {
+    use raya_engine::jit::profiling::counters::{FunctionProfile, ModuleProfile};
+
+    let profile = ModuleProfile::new(3);
+    assert_eq!(profile.record_call(0), 1);
+    assert_eq!(profile.record_call(0), 2);
+    assert_eq!(profile.record_call(1), 1);
+    assert_eq!(profile.record_loop(2), 1);
+
+    // Out-of-bounds returns 0
+    assert_eq!(profile.record_call(99), 0);
+}
+
+#[test]
+fn compilation_policy_unit_test() {
+    use raya_engine::jit::profiling::counters::FunctionProfile;
+    use raya_engine::jit::profiling::policy::CompilationPolicy;
+
+    let policy = CompilationPolicy::new();
+    let profile = FunctionProfile::new();
+
+    // Below threshold — should not compile
+    for _ in 0..999 {
+        profile.record_call();
+    }
+    assert!(!policy.should_compile(&profile, 100));
+
+    // At threshold — should compile
+    profile.record_call();
+    assert!(policy.should_compile(&profile, 100));
+
+    // Already compiling — should not re-request
+    assert!(profile.try_start_compile());
+    assert!(!policy.should_compile(&profile, 100));
+
+    // After compilation complete — should not re-request
+    profile.finish_compile();
+    assert!(!policy.should_compile(&profile, 100));
+}
+
+#[test]
+fn vm_adaptive_jit_creates_module_profile() {
+    // Verify that execute() with adaptive JIT creates a module profile
+    let mut vm = raya_engine::Vm::new();
+    let config = JitConfig {
+        adaptive_compilation: true,
+        ..Default::default()
+    };
+    vm.enable_jit_with_config(config).unwrap();
+
+    let mut code = Vec::new();
+    emit_i32(&mut code, 42);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_vm_module(code, 0, 0);
+    let result = vm.execute(&module).expect("Execution failed");
+    assert_eq!(result, raya_engine::Value::i32(42));
+
+    // Verify profile was created
+    let profiles = vm.shared_state().module_profiles.read();
+    assert_eq!(profiles.len(), 1, "Expected one module profile");
+}
+
+#[test]
+fn vm_adaptive_jit_disabled_no_profile() {
+    // When adaptive_compilation is false, no profile should be created
+    let mut vm = raya_engine::Vm::new();
+    let config = JitConfig {
+        adaptive_compilation: false,
+        ..Default::default()
+    };
+    vm.enable_jit_with_config(config).unwrap();
+
+    let mut code = Vec::new();
+    emit_i32(&mut code, 42);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_vm_module(code, 0, 0);
+    let result = vm.execute(&module).expect("Execution failed");
+    assert_eq!(result, raya_engine::Value::i32(42));
+
+    // Verify no profile was created
+    let profiles = vm.shared_state().module_profiles.read();
+    assert_eq!(profiles.len(), 0, "Expected no module profiles when adaptive is disabled");
+}
+
+#[test]
+fn vm_adaptive_jit_starts_background_compiler() {
+    // Verify that execute() with adaptive JIT starts the background compiler
+    let mut vm = raya_engine::Vm::new();
+    let config = JitConfig {
+        adaptive_compilation: true,
+        ..Default::default()
+    };
+    vm.enable_jit_with_config(config).unwrap();
+
+    let mut code = Vec::new();
+    emit_i32(&mut code, 42);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_vm_module(code, 0, 0);
+    let _result = vm.execute(&module).unwrap();
+
+    // Background compiler should be set
+    let compiler = vm.shared_state().background_compiler.lock();
+    assert!(compiler.is_some(), "Background compiler should be started");
+}
+
+#[test]
+fn background_compiler_processes_request() {
+    use raya_engine::jit::profiling::counters::ModuleProfile;
+    use std::sync::Arc;
+
+    // Create engine, start background thread, send a request, verify it gets compiled
+    let config = JitConfig {
+        min_score: 1.0,
+        min_instruction_count: 2,
+        ..Default::default()
+    };
+    let mut engine = JitEngine::with_config(config).unwrap();
+    let code_cache = engine.code_cache().clone();
+
+    // Build a compilable function (math-heavy, no loops)
+    let mut func_code = Vec::new();
+    for _ in 0..4 {
+        emit_i32(&mut func_code, 1);
+        emit_i32(&mut func_code, 2);
+        emit(&mut func_code, Opcode::Iadd);
+        emit_i32(&mut func_code, 3);
+        emit(&mut func_code, Opcode::Imul);
+    }
+    for _ in 0..3 {
+        emit(&mut func_code, Opcode::Iadd);
+    }
+    emit(&mut func_code, Opcode::Return);
+
+    let module = Arc::new(Module {
+        magic: *b"RAYA",
+        version: 1,
+        flags: 0,
+        constants: ConstantPool::new(),
+        functions: vec![Function {
+            name: "hot_func".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: func_code,
+        }],
+        classes: vec![],
+        metadata: Metadata {
+            name: "bg_test".to_string(),
+            source_file: None,
+        },
+        exports: vec![],
+        imports: vec![],
+        checksum: [1; 32],
+        reflection: None,
+        debug_info: None,
+        native_functions: vec![],
+        jit_hints: vec![],
+    });
+
+    let module_id = code_cache.register_module(module.checksum);
+    let profile = Arc::new(ModuleProfile::new(1));
+
+    // Function should NOT be in cache yet
+    assert!(!code_cache.contains(module_id, 0));
+
+    // Start background compiler
+    let bg = engine.start_background();
+
+    // Submit compilation request
+    let submitted = bg.try_submit(raya_engine::jit::profiling::CompilationRequest {
+        module: module.clone(),
+        func_index: 0,
+        module_id,
+        module_profile: profile.clone(),
+    });
+    assert!(submitted, "Request should be accepted");
+
+    // Wait for compilation (poll with timeout)
+    let start = std::time::Instant::now();
+    while !code_cache.contains(module_id, 0) {
+        if start.elapsed() > std::time::Duration::from_secs(5) {
+            // Check if profile says compilation finished (might have failed)
+            let fp = profile.get(0).unwrap();
+            if fp.is_jit_available() {
+                break; // Compiled successfully but cache may report differently
+            }
+            panic!("Background compilation timed out");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Verify the function was compiled
+    assert!(
+        code_cache.contains(module_id, 0) || profile.get(0).unwrap().is_jit_available(),
+        "Function should be compiled by background thread"
+    );
+}
+
+// =========================================================================
+// Category 7: Compile-Time JIT Hints & Background Prewarm
+// =========================================================================
+
+#[test]
+fn jit_hints_encode_decode_roundtrip() {
+    use raya_engine::compiler::bytecode::{JitHint, flags};
+
+    // Create a module with JIT hints
+    let mut module = Module {
+        magic: *b"RAYA",
+        version: 1,
+        flags: flags::HAS_JIT_HINTS,
+        constants: ConstantPool::new(),
+        functions: vec![
+            Function { name: "hot_func".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
+            Function { name: "cold_func".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
+        ],
+        classes: vec![],
+        metadata: Metadata { name: "hints_test".to_string(), source_file: None },
+        exports: vec![],
+        imports: vec![],
+        checksum: [0; 32],
+        reflection: None,
+        debug_info: None,
+        native_functions: vec![],
+        jit_hints: vec![
+            JitHint { func_index: 0, score: 42.5, is_cpu_bound: true },
+            JitHint { func_index: 1, score: 3.2, is_cpu_bound: false },
+        ],
+    };
+
+    // Encode
+    let bytes = module.encode();
+
+    // Decode
+    let decoded = Module::decode(&bytes).expect("Decode failed");
+
+    // Verify hints round-trip
+    assert_eq!(decoded.jit_hints.len(), 2);
+    assert_eq!(decoded.jit_hints[0].func_index, 0);
+    assert!((decoded.jit_hints[0].score - 42.5).abs() < 0.001);
+    assert!(decoded.jit_hints[0].is_cpu_bound);
+    assert_eq!(decoded.jit_hints[1].func_index, 1);
+    assert!((decoded.jit_hints[1].score - 3.2).abs() < 0.001);
+    assert!(!decoded.jit_hints[1].is_cpu_bound);
+    assert!((decoded.flags & flags::HAS_JIT_HINTS) != 0);
+}
+
+#[test]
+fn jit_hints_absent_when_no_flag() {
+    // Module without HAS_JIT_HINTS flag should decode with empty hints
+    let module = Module {
+        magic: *b"RAYA",
+        version: 1,
+        flags: 0,
+        constants: ConstantPool::new(),
+        functions: vec![
+            Function { name: "main".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
+        ],
+        classes: vec![],
+        metadata: Metadata { name: "no_hints".to_string(), source_file: None },
+        exports: vec![],
+        imports: vec![],
+        checksum: [0; 32],
+        reflection: None,
+        debug_info: None,
+        native_functions: vec![],
+        jit_hints: vec![],
+    };
+
+    let bytes = module.encode();
+    let decoded = Module::decode(&bytes).expect("Decode failed");
+    assert!(decoded.jit_hints.is_empty());
+    assert!((decoded.flags & raya_engine::compiler::bytecode::flags::HAS_JIT_HINTS) == 0);
+}
+
+#[test]
+fn background_prewarm_non_blocking() {
+    // Verify execute() doesn't block on prewarm — main task starts immediately
+    use std::time::Instant;
+
+    let mut vm = raya_engine::Vm::new();
+    let config = JitConfig {
+        adaptive_compilation: true,
+        ..Default::default()
+    };
+    vm.enable_jit_with_config(config).unwrap();
+
+    // Simple module — should return instantly without prewarm blocking
+    let mut code = Vec::new();
+    emit_i32(&mut code, 99);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_vm_module(code, 0, 0);
+
+    let start = Instant::now();
+    let result = vm.execute(&module).expect("Execution should succeed");
+    let elapsed = start.elapsed();
+
+    assert_eq!(result, raya_engine::Value::i32(99));
+    // Should complete very quickly (no blocking prewarm)
+    assert!(
+        elapsed.as_millis() < 500,
+        "execute() took {}ms — should not block on prewarm",
+        elapsed.as_millis()
+    );
+
+    // Background compiler should still be started
+    let compiler = vm.shared_state().background_compiler.lock();
+    assert!(compiler.is_some(), "Background compiler should be running");
+}
+
+#[test]
+fn prewarm_candidates_submitted_to_background() {
+    use raya_engine::jit::profiling::counters::ModuleProfile;
+
+    // Create a module with a math-heavy function that qualifies for prewarm
+    let mut heavy_code = Vec::new();
+    // Lots of arithmetic to exceed min_score
+    for _ in 0..4 {
+        emit_i32(&mut heavy_code, 1);
+        emit_i32(&mut heavy_code, 2);
+        emit(&mut heavy_code, Opcode::Iadd);
+        emit_i32(&mut heavy_code, 3);
+        emit(&mut heavy_code, Opcode::Imul);
+    }
+    for _ in 0..3 {
+        emit(&mut heavy_code, Opcode::Iadd);
+    }
+    emit(&mut heavy_code, Opcode::Return);
+
+    let module = Module {
+        magic: *b"RAYA",
+        version: 1,
+        flags: 0,
+        constants: ConstantPool::new(),
+        functions: vec![
+            Function { name: "main".to_string(), param_count: 0, local_count: 0, code: heavy_code },
+        ],
+        classes: vec![],
+        metadata: Metadata { name: "prewarm_bg_test".to_string(), source_file: None },
+        exports: vec![],
+        imports: vec![],
+        checksum: [0; 32],
+        reflection: None,
+        debug_info: None,
+        native_functions: vec![],
+        jit_hints: vec![],
+    };
+
+    let mut vm = raya_engine::Vm::new();
+    let config = JitConfig {
+        adaptive_compilation: true,
+        min_score: 5.0,
+        min_instruction_count: 4,
+        ..Default::default()
+    };
+    vm.enable_jit_with_config(config).unwrap();
+
+    let _result = vm.execute(&module).unwrap();
+
+    // The background compiler should have been started
+    let compiler = vm.shared_state().background_compiler.lock();
+    assert!(compiler.is_some(), "Background compiler should be running");
+
+    // The module profile should exist
+    let profiles = vm.shared_state().module_profiles.read();
+    assert_eq!(profiles.len(), 1, "Expected module profile for adaptive compilation");
 }

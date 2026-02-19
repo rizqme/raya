@@ -22,6 +22,8 @@ impl<'a> Interpreter<'a> {
                 };
                 if offset < 0 {
                     self.safepoint.poll();
+                    #[cfg(feature = "jit")]
+                    self.record_loop_for_profiling();
                 }
                 *ip = (*ip as isize + offset as isize) as usize;
                 OpcodeResult::Continue
@@ -37,6 +39,8 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if cond.is_truthy() {
+                    #[cfg(feature = "jit")]
+                    if offset < 0 { self.record_loop_for_profiling(); }
                     *ip = (*ip as isize + offset as isize) as usize;
                 }
                 OpcodeResult::Continue
@@ -52,6 +56,8 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if !cond.is_truthy() {
+                    #[cfg(feature = "jit")]
+                    if offset < 0 { self.record_loop_for_profiling(); }
                     *ip = (*ip as isize + offset as isize) as usize;
                 }
                 OpcodeResult::Continue
