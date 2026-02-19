@@ -55,6 +55,24 @@ regex = { workspace = true }
 # Lazy initialization
 once_cell = { workspace = true }
 
+# JIT compilation (optional, behind "jit" feature)
+cranelift-codegen = { workspace = true, optional = true }
+cranelift-frontend = { workspace = true, optional = true }
+cranelift-module = { workspace = true, optional = true }
+cranelift-jit = { workspace = true, optional = true }
+cranelift-native = { workspace = true, optional = true }
+target-lexicon = { workspace = true, optional = true }
+
+[features]
+jit = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-module",
+    "dep:cranelift-jit",
+    "dep:cranelift-native",
+    "dep:target-lexicon",
+]
+
 # Platform-specific dependencies
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

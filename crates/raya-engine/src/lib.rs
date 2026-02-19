@@ -62,6 +62,10 @@ pub mod compiler;
 /// VM module: Interpreter, scheduler, GC, and runtime
 pub mod vm;
 
+/// JIT compilation module (optional, behind "jit" feature)
+#[cfg(feature = "jit")]
+pub mod jit;
+
 /// Builtins module: Precompiled builtin types and signatures (re-exported from vm::builtins)
 pub use vm::builtins;
 

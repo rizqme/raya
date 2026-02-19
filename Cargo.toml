@@ -18,7 +18,7 @@ edition = "2021"
 authors = ["Raya Contributors"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rayalang/rayavm"
-rust-version = "1.70"
+rust-version = "1.90"
 
 [workspace.dependencies]
 # CLI and argument parsing
@@ -71,6 +71,14 @@ raya-runtime = { path = "crates/raya-runtime" }
 raya-stdlib-posix = { path = "crates/raya-stdlib-posix" }
 raya-native = { path = "crates/raya-native" }
 libc = "0.2"
+
+# JIT compilation (Cranelift)
+cranelift-codegen = "0.128"
+cranelift-frontend = "0.128"
+cranelift-module = "0.128"
+cranelift-jit = "0.128"
+cranelift-native = "0.128"
+target-lexicon = "0.13"
 
 [profile.release]
 lto = true
