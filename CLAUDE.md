@@ -229,7 +229,7 @@ crates/
 ├── raya-engine/     # Parser, compiler, VM, JIT (main crate)
 ├── raya-runtime/    # Binds engine + stdlib via NativeHandler trait
 ├── raya-stdlib/     # Native stdlib implementations (logger, etc.)
-├── raya-cli/        # CLI tool
+├── raya-cli/        # Unified CLI (run, build, test, pkg, etc.)
 ├── raya-pm/         # Package manager (rpkg)
 ├── raya-sdk/        # Native module FFI types
 └── raya-native/     # Proc-macros for native modules

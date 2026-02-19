@@ -4,83 +4,97 @@ Unified command-line interface for the Raya toolchain.
 
 ## Overview
 
-This crate provides the `raya` CLI tool that combines all toolchain operations:
-- Compilation and execution
-- Testing and benchmarking
-- Package management
-- Code formatting and linting
-- Documentation generation
+Single `raya` binary combining all toolchain operations. Built with clap derive.
+
+**Key features:**
+- Implicit file execution: `raya ./file.raya` (no `run` subcommand needed)
+- Dual-mode `run`: named scripts from `[scripts]` in raya.toml OR direct file execution
+- JIT enabled by default, `--no-jit` to disable
+- `pkg` subcommand group for registry/auth management
 
 ## Commands
 
-| Command | Description | Status |
-|---------|-------------|--------|
-| `raya run` | Run a Raya file | Stub |
-| `raya build` | Compile to .ryb binary | Stub |
-| `raya check` | Type-check without building | Stub |
-| `raya test` | Run tests | Stub |
-| `raya install` | Install dependencies | Stub |
-| `raya add` | Add a dependency | Stub |
-| `raya remove` | Remove a dependency | Stub |
-| `raya update` | Update dependencies | Stub |
-| `raya publish` | Publish to registry | Stub |
-| `raya fmt` | Format code | Stub |
-| `raya lint` | Lint code | Stub |
-| `raya doc` | Generate documentation | Stub |
-| `raya repl` | Interactive REPL | Stub |
-| `raya bench` | Run benchmarks | Stub |
-| `raya bundle` | Create standalone executable | Stub |
-| `raya init` | Initialize new project | Stub |
-| `raya create` | Create from template | Stub |
-| `raya upgrade` | Upgrade Raya installation | Stub |
-
-## Implementation Status
-
-Currently all commands are stubs that print placeholder messages. The CLI structure is complete using `clap` for argument parsing.
+| Command | Alias | Description | Status |
+|---------|-------|-------------|--------|
+| `raya run <target>` | `r` | Run script or file (dual-mode) | Scaffolded (script resolution works, execution pipeline TODO) |
+| `raya build` | `b` | Compile to .ryb binary | Stub |
+| `raya check` | `c` | Type-check without building | Stub |
+| `raya eval <code>` | — | Evaluate inline expression | Stub |
+| `raya test` | `t` | Run tests | Stub |
+| `raya bench` | — | Run benchmarks | Stub |
+| `raya fmt` | — | Format source files | Stub |
+| `raya lint` | — | Lint source files | Stub |
+| `raya repl` | — | Interactive REPL | Stub |
+| `raya init` | — | Initialize project | Stub |
+| `raya new <name>` | — | Create new project | Stub |
+| `raya add <pkg>` | `a` | Add dependency | Stub |
+| `raya remove <pkg>` | `rm` | Remove dependency | Stub |
+| `raya install` | `i` | Install all dependencies | Stub |
+| `raya update` | — | Update dependencies | Stub |
+| `raya publish` | — | Publish to registry | Stub |
+| `raya pkg login` | — | Authenticate with registry | Implemented |
+| `raya pkg logout` | — | Remove credentials | Implemented |
+| `raya pkg set-url` | — | Set registry URL | Implemented |
+| `raya pkg whoami` | — | Show current user | Implemented |
+| `raya pkg info` | — | Show package info | Stub |
+| `raya bundle` | — | Create standalone executable | Stub |
+| `raya doc` | — | Generate documentation | Stub |
+| `raya lsp` | — | Start Language Server | Stub |
+| `raya completions` | — | Generate shell completions | Stub |
+| `raya clean` | — | Clear caches/artifacts | Implemented |
+| `raya info` | — | Display environment info | Implemented |
+| `raya upgrade` | — | Upgrade Raya installation | Stub |
 
 ## Key Files
 
-- `src/main.rs`: CLI definition and command dispatch
+```
+src/
+├── main.rs              # CLI definition, implicit run detection, dispatch
+└── commands/
+    ├── mod.rs            # Module declarations
+    ├── run.rs            # Dual-mode run (scripts + files)
+    ├── pkg/
+    │   ├── mod.rs        # PkgCommands enum + dispatch
+    │   ├── login.rs      # Registry authentication (~/.raya/credentials.toml)
+    │   ├── logout.rs     # Remove credentials
+    │   ├── set_url.rs    # Registry URL management (project + global)
+    │   ├── whoami.rs     # Current user info
+    │   └── info.rs       # Package info (stub)
+    ├── clean.rs          # Functional: deletes dist/, .raya-cache/
+    ├── info.rs           # Functional: displays env/project info
+    └── *.rs              # Other stubs (build, check, test, etc.)
+```
 
-## Implementation Priority
+## Run Command (Dual-Mode)
 
-When implementing commands:
-1. **`run`** - Most important, needed for basic development
-2. **`build`** - Compile to .ryb binaries
-3. **`check`** - Fast type-checking feedback
-4. **`test`** - Testing infrastructure
-5. **`init`/`create`** - Project scaffolding
-6. **Package commands** - `install`, `add`, etc.
+```bash
+raya run dev           # Run script "dev" from [scripts] in raya.toml
+raya run ./app.raya    # Run a file directly
+raya ./app.raya        # Implicit run (no subcommand)
+raya run --list        # List available scripts
+```
+
+Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contains `/`/`\`/`.`, it's treated as a file path. Otherwise, it's looked up in `[scripts]`.
+
+## Registry/Auth
+
+- Credentials stored at `~/.raya/credentials.toml`
+- Global config at `~/.raya/config.toml`
+- Registry URL resolution: `RAYA_REGISTRY` env → project `[registry].url` → global config → default
 
 ## Dependencies
 
-- `raya-engine`: For compilation and execution
-- `raya-pm`: For package management commands
-- `clap`: CLI argument parsing
+- `raya-engine`: Compilation and execution
+- `rpkg` (raya-pm): Package management
+- `clap`: CLI argument parsing (derive)
 - `anyhow`: Error handling
-
-## Example Usage
-
-```bash
-# Run a file
-raya run main.raya
-
-# Build to binary
-raya build main.raya -o dist/
-
-# Type-check
-raya check src/
-
-# Run tests
-raya test --watch
-
-# Add a package
-raya add logging
-```
+- `toml`: Config file parsing
+- `dirs`: Platform-specific directories (~/.raya)
 
 ## For AI Assistants
 
-- All commands are currently stubs - implementation needed
-- Reference `docs/tooling/cli.md` for complete specification
-- Use `raya-engine` for actual compilation/execution
-- Use `raya-pm` for package management operations
+- Most commands are stubs — execution pipeline in `run.rs` needs wiring (Parse → Check → Compile → `Vm::execute`)
+- `pkg` subcommands (login/logout/set-url/whoami) are fully implemented
+- `clean` and `info` are functional
+- Use `StdNativeHandler` from raya-stdlib when wiring execution
+- JIT is default-on at the CLI level; `--no-jit` flag disables it

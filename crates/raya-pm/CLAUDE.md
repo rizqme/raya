@@ -71,8 +71,10 @@ src/
 // Package manifest (raya.toml)
 PackageManifest {
     package: PackageInfo,
+    scripts: HashMap<String, String>,
     dependencies: HashMap<String, Dependency>,
     dev_dependencies: HashMap<String, Dependency>,
+    registry: Option<RegistryConfig>,
 }
 
 // Lockfile (raya.lock)
@@ -116,12 +118,19 @@ name = "my-app"
 version = "1.0.0"
 description = "My Raya application"
 
+[scripts]
+dev = "src/main.raya --watch"
+build = "raya build --release"
+
 [dependencies]
 logging = "^1.2.0"
 utils = { path = "../utils" }
 
 [dev-dependencies]
 testing = "^2.0.0"
+
+[registry]
+url = "https://registry.raya.dev"
 ```
 
 ## Lockfile Format (raya.lock)
