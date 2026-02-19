@@ -8,7 +8,7 @@ use cranelift_codegen::ir::{self, condcodes, types, InstBuilder, MemFlags};
 use cranelift_codegen::ir::AbiParam;
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, Variable};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
 use super::abi;
@@ -23,6 +23,8 @@ pub struct LoweringContext<'a> {
     func: &'a JitFunction,
     /// Cranelift function parameters (args_ptr, arg_count, locals_ptr, local_count, ctx_ptr)
     params: FunctionParams,
+    /// Phi resolution: for each block, a list of (phi_dest_reg, source_reg) to def_var before terminator
+    phi_copies: FxHashMap<JitBlockId, Vec<(Reg, Reg)>>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -32,6 +34,39 @@ struct FunctionParams {
     locals_ptr: ir::Value,
     _local_count: ir::Value,
     _ctx_ptr: ir::Value,
+}
+
+/// Identify loop headers: blocks where at least one predecessor has a higher
+/// block index (indicating a back-edge).
+fn identify_loop_headers(func: &JitFunction) -> FxHashSet<JitBlockId> {
+    let mut headers = FxHashSet::default();
+    for block in &func.blocks {
+        for pred in &block.predecessors {
+            // Back-edge: predecessor ID >= this block's ID
+            if pred.0 >= block.id.0 {
+                headers.insert(block.id);
+            }
+        }
+    }
+    headers
+}
+
+/// Build the Phi resolution map: for each predecessor block, collect
+/// (phi_dest_reg, source_reg) pairs that need def_var before the terminator.
+fn build_phi_copies(func: &JitFunction) -> FxHashMap<JitBlockId, Vec<(Reg, Reg)>> {
+    let mut copies: FxHashMap<JitBlockId, Vec<(Reg, Reg)>> = FxHashMap::default();
+    for block in &func.blocks {
+        for instr in &block.instrs {
+            if let JitInstr::Phi { dest, sources } = instr {
+                for (src_block, src_reg) in sources {
+                    copies.entry(*src_block)
+                        .or_default()
+                        .push((*dest, *src_reg));
+                }
+            }
+        }
+    }
+    copies
 }
 
 impl<'a> LoweringContext<'a> {
@@ -48,11 +83,21 @@ impl<'a> LoweringContext<'a> {
             block_map.insert(jit_block.id, cl_block);
         }
 
+        // Identify loop headers (blocks with back-edge predecessors)
+        let loop_headers = identify_loop_headers(func);
+
+        // Build Phi resolution copies
+        let phi_copies = build_phi_copies(func);
+
         // Entry block gets the function parameters
         let entry_block = block_map[&func.entry];
         builder.append_block_params_for_function_params(entry_block);
         builder.switch_to_block(entry_block);
-        builder.seal_block(entry_block);
+
+        // Only seal the entry block if it's not a loop header
+        if !loop_headers.contains(&func.entry) {
+            builder.seal_block(entry_block);
+        }
 
         // Extract parameters
         let params = FunctionParams {
@@ -68,6 +113,7 @@ impl<'a> LoweringContext<'a> {
             block_map,
             func,
             params,
+            phi_copies,
         };
 
         // Declare all registers as Cranelift variables
@@ -81,10 +127,20 @@ impl<'a> LoweringContext<'a> {
             // Switch to block (entry already active for first block)
             if idx > 0 {
                 builder.switch_to_block(cl_block);
-                builder.seal_block(cl_block);
+
+                // Seal immediately unless it's a loop header (defer those)
+                if !loop_headers.contains(block_id) {
+                    builder.seal_block(cl_block);
+                }
             }
 
             ctx.lower_block(*block_id, &mut builder)?;
+        }
+
+        // Seal all deferred loop headers now that all predecessors are known
+        for header_id in &loop_headers {
+            let cl_block = ctx.block_map[header_id];
+            builder.seal_block(cl_block);
         }
 
         // Finalize (consumes the builder)
@@ -138,6 +194,17 @@ impl<'a> LoweringContext<'a> {
 
         for instr in &instrs {
             self.lower_instr(instr, builder)?;
+        }
+
+        // Emit Phi resolution copies before the terminator.
+        // For each Phi in a successor block that sources from this block,
+        // def_var the Phi's dest register with the source value from this block.
+        // Cranelift's SSA construction will merge these into block params when sealed.
+        if let Some(copies) = self.phi_copies.get(&block_id) {
+            for &(phi_dest, src_reg) in copies {
+                let val = self.use_reg(builder, src_reg);
+                self.def_reg(builder, phi_dest, val);
+            }
         }
 
         self.lower_terminator(&terminator, builder)?;
@@ -439,13 +506,10 @@ impl<'a> LoweringContext<'a> {
                 let v = self.use_reg(builder, *src);
                 self.def_reg(builder, *dest, v);
             }
-            JitInstr::Phi { dest, sources } => {
-                // Phi nodes are handled during block param setup
-                // For now, just use the first source as a fallback
-                if let Some((_, src_reg)) = sources.first() {
-                    let v = self.use_reg(builder, *src_reg);
-                    self.def_reg(builder, *dest, v);
-                }
+            JitInstr::Phi { .. } => {
+                // Phi resolution is handled by def_var copies in predecessor blocks
+                // (see phi_copies in lower_block). Cranelift's SSA construction
+                // merges the values automatically when the block is sealed.
             }
 
             // ===== Runtime Integration =====

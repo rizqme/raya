@@ -254,6 +254,13 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
             sub(value, subs);
         }
 
+        // Phi nodes: substitute sources
+        JitInstr::Phi { sources, .. } => {
+            for (_, reg) in sources.iter_mut() {
+                sub(reg, subs);
+            }
+        }
+
         // For remaining complex instructions, we skip replacement for simplicity.
         // A production optimizer would handle all instruction variants.
         _ => {}
