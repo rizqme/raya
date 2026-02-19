@@ -164,15 +164,17 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,158+ total (1,702 engine + 142 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
+**Tests:** 3,158+ total (1,702 engine + 147 JIT, 1,297 runtime, 17 stdlib) — 0 ignored
 
 **JIT Compilation (feature-gated):** Complete
 - Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes
+- Loop compilation: RPO lifting, Phi insertion, deferred Cranelift block sealing, CheckPreemption at back-edges
 - Static analysis heuristics for hot function detection
 - Pre-warming pipeline (compile at module load)
+- Adaptive compilation: profile-guided on-the-fly JIT via background thread
 - Vm integration: `enable_jit()`, automatic pre-warm in `execute()`
 - `cargo build --features jit` / `cargo test --features jit`
-- 142 tests (83 unit + 59 integration with native code execution)
+- 147 tests (88 unit + 59 integration with native code execution)
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -248,7 +250,7 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 cargo build                    # Build all
 cargo test                     # Run all tests (2,816+)
 cargo test -p raya-engine      # Engine tests only (1,702)
-cargo test -p raya-engine --features jit  # Engine + JIT tests (1,844)
+cargo test -p raya-engine --features jit  # Engine + JIT tests (1,891)
 cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p rpkg             # Package manager tests

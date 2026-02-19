@@ -141,7 +141,7 @@ const result = await task;  // Suspends current task
 - Objects have vtables for method dispatch
 - Values are NaN-boxed (64-bit tagged), not heap-boxed for primitives
 - Native calls use `NativeCall` opcode + native ID (dispatched in `interpreter/opcodes/native.rs`)
-- JIT integration: `Vm` has optional `jit_engine` field (`#[cfg(feature = "jit")]`), enable via `vm.enable_jit()`. Pre-warms hot functions at module load time.
+- JIT integration: `Vm` has optional `jit_engine` field (`#[cfg(feature = "jit")]`), enable via `vm.enable_jit()`. Pre-warms hot functions at module load time. Supports loops (RPO lifting, Phi insertion, deferred block sealing). Adaptive compilation via background thread with profile-guided thresholds.
 - Stdlib native calls delegate to `NativeHandler` trait (implemented by `StdNativeHandler` in raya-stdlib)
 - `ModuleNativeCall` uses `NativeFunctionRegistry` for name-based dispatch
 - Exception handling uses try/catch blocks in bytecode

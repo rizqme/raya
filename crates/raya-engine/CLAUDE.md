@@ -52,7 +52,7 @@ src/
 ### `jit/` - JIT Compilation (feature-gated: `#[cfg(feature = "jit")]`)
 - **analysis/**: Bytecode decoder, control-flow graph, heuristics-based candidate selection
 - **ir/**: Backend-agnostic SSA-form IR (types, instructions, builder, display)
-- **pipeline/**: SSA lifter (stack→SSA), optimization passes, pre-warming
+- **pipeline/**: SSA lifter (stack→SSA with RPO, Phi insertion, loop support), optimization passes, pre-warming
 - **backend/**: `CodegenBackend` trait, Cranelift backend (ABI, lowering), stub backend
 - **runtime/**: Code cache, trampoline (JitEntryFn C-ABI)
 - **profiling/**: Per-function counters, compilation policy (thresholds)
@@ -159,7 +159,7 @@ Vm::execute(&Module) -> VmResult<Value>
 
 - **Engine unit tests** (835): Colocated `#[cfg(test)]` blocks in each module
 - **Engine integration tests** (950+): `tests/*.rs` files (codegen, IR, concurrency, module_loading, snapshots, etc.)
-- **JIT tests** (142): 83 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
+- **JIT tests** (147): 88 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
 - **E2E tests** (883+): In `raya-runtime/tests/` (require `StdNativeHandler`)
 - `tests/module_loading.rs`: 29 E2E tests (load/execute pipeline, registry, classes, snapshots, file I/O)
 - `tests/reflect_phase8_tests.rs`: Reflect API integration tests
