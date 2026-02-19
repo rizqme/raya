@@ -5,7 +5,7 @@
 //! virtual register, and at merge points (multiple predecessors)
 //! Phi nodes are inserted when registers differ.
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use crate::compiler::bytecode::{Module, Function, Opcode};
 use crate::jit::analysis::decoder::{decode_function, DecodedInstr, Operands};
 use crate::jit::analysis::cfg::{build_cfg, BlockId, ControlFlowGraph, CfgTerminator, BranchKind};
@@ -53,6 +53,123 @@ impl StackState {
     fn clone_state(&self) -> Vec<Reg> {
         self.stack.clone()
     }
+
+    fn from_regs(regs: Vec<Reg>) -> Self {
+        StackState { stack: regs }
+    }
+}
+
+/// Compute reverse post-order traversal of CFG blocks.
+/// Ensures predecessors (excluding back-edges) are processed before successors.
+fn compute_rpo(cfg: &ControlFlowGraph) -> Vec<BlockId> {
+    let mut visited = FxHashSet::default();
+    let mut post_order = Vec::new();
+
+    fn dfs(
+        block_id: BlockId,
+        cfg: &ControlFlowGraph,
+        visited: &mut FxHashSet<BlockId>,
+        post_order: &mut Vec<BlockId>,
+    ) {
+        if !visited.insert(block_id) {
+            return;
+        }
+        for succ in cfg.successors(block_id) {
+            dfs(succ, cfg, visited, post_order);
+        }
+        post_order.push(block_id);
+    }
+
+    dfs(cfg.entry, cfg, &mut visited, &mut post_order);
+    post_order.reverse();
+
+    // Include any unreachable blocks not visited by DFS (e.g. dead code after return)
+    for block in &cfg.blocks {
+        if !visited.contains(&block.id) {
+            post_order.push(block.id);
+        }
+    }
+
+    post_order
+}
+
+/// Identify loop headers: blocks that have at least one predecessor
+/// with a higher RPO index (i.e. a back-edge).
+fn identify_loop_headers(
+    cfg: &ControlFlowGraph,
+    rpo: &[BlockId],
+    cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
+) -> FxHashSet<JitBlockId> {
+    let rpo_index: FxHashMap<BlockId, usize> = rpo.iter().enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let mut headers = FxHashSet::default();
+    for block in &cfg.blocks {
+        for pred in &block.predecessors {
+            // Back-edge: predecessor has a higher RPO index than this block
+            if let (Some(&pred_idx), Some(&block_idx)) =
+                (rpo_index.get(pred), rpo_index.get(&block.id))
+            {
+                if pred_idx >= block_idx {
+                    headers.insert(cfg_to_jit[&block.id]);
+                }
+            }
+        }
+    }
+    headers
+}
+
+/// Merge stack states from multiple predecessors. If all predecessors agree
+/// on the same register at a slot, use it directly. If they differ, insert
+/// a Phi node. Returns the merged stack state.
+fn merge_stacks(
+    predecessors: &[BlockId],
+    exit_stacks: &FxHashMap<BlockId, Vec<Reg>>,
+    func: &mut JitFunction,
+    jit_block: JitBlockId,
+    cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
+) -> StackState {
+    // Gather only predecessors that have been processed (have exit stacks)
+    let available: Vec<_> = predecessors.iter()
+        .filter(|p| exit_stacks.contains_key(p))
+        .copied()
+        .collect();
+
+    if available.is_empty() {
+        return StackState::new();
+    }
+
+    // Use the minimum depth (safe: structured control flow should agree)
+    let depth = available.iter()
+        .map(|p| exit_stacks[p].len())
+        .min()
+        .unwrap_or(0);
+
+    if depth == 0 {
+        return StackState::new();
+    }
+
+    let mut merged = Vec::with_capacity(depth);
+    for slot in 0..depth {
+        let first_reg = exit_stacks[&available[0]][slot];
+        let all_same = available.iter().all(|p| exit_stacks[p][slot] == first_reg);
+
+        if all_same {
+            merged.push(first_reg);
+        } else {
+            // Different registers — insert Phi
+            let ty = func.reg_type(first_reg);
+            let dest = func.alloc_reg(ty);
+            let sources: Vec<(JitBlockId, Reg)> = available.iter()
+                .map(|p| (cfg_to_jit[p], exit_stacks[p][slot]))
+                .collect();
+            func.block_mut(jit_block).instrs.push(JitInstr::Phi { dest, sources });
+            merged.push(dest);
+        }
+    }
+
+    StackState::from_regs(merged)
 }
 
 /// Lift a bytecode function into JIT IR
@@ -87,13 +204,54 @@ pub fn lift_function(
 
     jit_func.entry = cfg_to_jit[&cfg.entry];
 
-    // Lift each CFG block
-    // Process in order (we could do RPO for better Phi handling, but linear is fine for now)
+    // Wire up JIT block predecessors from CFG predecessor data
+    for cfg_block in &cfg.blocks {
+        let jit_id = cfg_to_jit[&cfg_block.id];
+        let jit_preds: Vec<JitBlockId> = cfg_block.predecessors.iter()
+            .filter_map(|p| cfg_to_jit.get(p).copied())
+            .collect();
+        jit_func.block_mut(jit_id).predecessors = jit_preds;
+    }
+
+    // Build CFG block lookup by ID
+    let cfg_block_map: FxHashMap<BlockId, usize> = cfg.blocks.iter()
+        .enumerate()
+        .map(|(i, b)| (b.id, i))
+        .collect();
+
+    // Compute reverse post-order for proper loop handling
+    let rpo = compute_rpo(&cfg);
+    let loop_headers = identify_loop_headers(&cfg, &rpo, &cfg_to_jit);
+
+    // Lift each CFG block in RPO
     let mut block_exit_stacks: FxHashMap<BlockId, Vec<Reg>> = FxHashMap::default();
 
-    for cfg_block in &cfg.blocks {
-        let jit_block_id = cfg_to_jit[&cfg_block.id];
-        let mut stack = StackState::new();
+    for &cfg_block_id in &rpo {
+        let block_idx = cfg_block_map[&cfg_block_id];
+        let cfg_block = &cfg.blocks[block_idx];
+        let jit_block_id = cfg_to_jit[&cfg_block_id];
+
+        // Determine entry stack state from predecessors
+        let mut stack = if cfg_block.predecessors.is_empty() {
+            // Entry block or unreachable — start with empty stack
+            StackState::new()
+        } else if cfg_block.predecessors.len() == 1 {
+            // Single predecessor — clone its exit stack if available
+            let pred = cfg_block.predecessors[0];
+            match block_exit_stacks.get(&pred) {
+                Some(exit) => StackState::from_regs(exit.clone()),
+                None => StackState::new(), // Back-edge not yet processed
+            }
+        } else {
+            // Multiple predecessors — merge stacks, inserting Phi where needed
+            merge_stacks(
+                &cfg_block.predecessors,
+                &block_exit_stacks,
+                &mut jit_func,
+                jit_block_id,
+                &cfg_to_jit,
+            )
+        };
 
         // Lift each instruction in this block
         for &instr_idx in &cfg_block.instrs {
@@ -107,28 +265,19 @@ pub fn lift_function(
                 JitTerminator::Jump(cfg_to_jit[target])
             }
             CfgTerminator::Jump(target) => {
+                // Detect back-edge: target has lower or equal block ID (loop back-jump)
+                if target.0 <= cfg_block_id.0 {
+                    // Insert preemption check before backward jump
+                    jit_func.block_mut(jit_block_id).instrs.push(JitInstr::CheckPreemption);
+                }
                 JitTerminator::Jump(cfg_to_jit[target])
             }
             CfgTerminator::Branch { kind, then_block, else_block } => {
-                // The condition was consumed by the branch instruction in lift_instruction,
-                // but we need the condition register. It was pushed as a result of the
-                // JmpIfFalse/JmpIfTrue decode — but actually these are terminators so
-                // the condition was already popped by the JmpIf* handling in lift_instruction.
-                // We need to handle this differently: the JmpIf* was lifted and popped the
-                // condition into a register that we stored. Let's retrieve it.
-                //
-                // Actually, the JmpIf opcodes pop a value and branch — they are handled
-                // in lift_instruction which pops the condition. The terminator register
-                // is stored in a field we set during lifting. For now, use a simplified approach:
-                // the last thing lift_instruction did for JmpIfFalse was create a branch condition.
-                //
-                // The approach: lift_instruction for JmpIf* doesn't emit any JIT instruction,
-                // it just pops the condition. The terminator uses that condition register.
-                //
-                // We handle this by looking at the terminator's condition register that was
-                // saved by lift_instruction. For now, if the stack is non-empty, use top.
-                // Otherwise fall back to a dummy.
                 let cond = stack.peek().unwrap_or(Reg(0));
+                // Check for back-edge branches too (e.g. JmpIfTrue looping back)
+                if then_block.0 <= cfg_block_id.0 || else_block.0 <= cfg_block_id.0 {
+                    jit_func.block_mut(jit_block_id).instrs.push(JitInstr::CheckPreemption);
+                }
                 match kind {
                     BranchKind::IfFalse | BranchKind::IfTrue => {
                         JitTerminator::Branch {
@@ -157,7 +306,7 @@ pub fn lift_function(
                 let val = stack.peek().unwrap_or(Reg(0));
                 JitTerminator::Throw(val)
             }
-            CfgTerminator::Trap(code) => {
+            CfgTerminator::Trap(_code) => {
                 JitTerminator::Unreachable
             }
             CfgTerminator::None => {
@@ -166,7 +315,57 @@ pub fn lift_function(
         };
 
         jit_func.block_mut(jit_block_id).terminator = term;
-        block_exit_stacks.insert(cfg_block.id, stack.clone_state());
+        block_exit_stacks.insert(cfg_block_id, stack.clone_state());
+    }
+
+    // Phase 2: Fix up Phi nodes at loop headers.
+    // Back-edge predecessors weren't processed when the header was lifted,
+    // so their stack entries are missing from Phi sources.
+    let rpo_index: FxHashMap<BlockId, usize> = rpo.iter().enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    for &header_jit_id in &loop_headers {
+        // Find the CFG block for this header
+        let header_cfg_id = cfg_to_jit.iter()
+            .find(|(_, &jit)| jit == header_jit_id)
+            .map(|(&cfg_id, _)| cfg_id)
+            .unwrap();
+        let block_idx = cfg_block_map[&header_cfg_id];
+        let cfg_block = &cfg.blocks[block_idx];
+        let header_rpo = rpo_index[&header_cfg_id];
+
+        // Collect back-edge predecessors and their exit stacks
+        let back_edge_preds: Vec<(JitBlockId, Vec<Reg>)> = cfg_block.predecessors.iter()
+            .filter_map(|pred| {
+                let pred_rpo = rpo_index.get(pred)?;
+                if *pred_rpo >= header_rpo {
+                    let exit = block_exit_stacks.get(pred)?;
+                    Some((cfg_to_jit[pred], exit.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if back_edge_preds.is_empty() {
+            continue;
+        }
+
+        // Find Phi instruction indices and update their sources
+        let block = jit_func.block_mut(header_jit_id);
+        let mut phi_slot = 0usize;
+        for i in 0..block.instrs.len() {
+            if let JitInstr::Phi { ref mut sources, .. } = block.instrs[i] {
+                for (pred_jit, exit_stack) in &back_edge_preds {
+                    let already_has = sources.iter().any(|(b, _)| b == pred_jit);
+                    if !already_has && phi_slot < exit_stack.len() {
+                        sources.push((*pred_jit, exit_stack[phi_slot]));
+                    }
+                }
+                phi_slot += 1;
+            }
+        }
     }
 
     Ok(jit_func)
@@ -1152,5 +1351,145 @@ mod tests {
         let module = make_module();
         let jit_func = lift_function(&func, &module, 0).unwrap();
         assert_eq!(jit_func.blocks.len(), 1); // One empty block from CFG
+    }
+
+    fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
+        code.push(op as u8);
+        code.extend_from_slice(&offset.to_le_bytes());
+    }
+
+    #[test]
+    fn test_lift_simple_loop() {
+        // while (true) { }
+        // offset 0: ConstTrue           (1 byte)
+        // offset 1: JmpIfFalse +10      (5 bytes, target = 1+10 = 11)
+        // offset 6: Jmp -6              (5 bytes, target = 6+(-6) = 0)
+        // offset 11: ReturnVoid         (1 byte)
+        let mut code = Vec::new();
+        emit(&mut code, Opcode::ConstTrue);
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);
+        emit_jmp(&mut code, Opcode::Jmp, -6);
+        emit(&mut code, Opcode::ReturnVoid);
+
+        let func = make_function(code, 0, 0);
+        let module = make_module();
+        let jit_func = lift_function(&func, &module, 0).unwrap();
+
+        // Should have multiple blocks (header, body, exit)
+        assert!(jit_func.blocks.len() >= 3, "expected >= 3 blocks, got {}", jit_func.blocks.len());
+
+        // Should have at least one CheckPreemption (at the back-edge)
+        let has_preemption = jit_func.blocks.iter().any(|b| {
+            b.instrs.iter().any(|i| matches!(i, JitInstr::CheckPreemption))
+        });
+        assert!(has_preemption, "expected CheckPreemption at back-edge");
+
+        // Should have a backward Jump terminator (back-edge to header)
+        let has_back_edge = jit_func.blocks.iter().any(|b| {
+            matches!(b.terminator, JitTerminator::Jump(target) if target.0 < b.id.0)
+        });
+        assert!(has_back_edge, "expected backward Jump (back-edge)");
+    }
+
+    #[test]
+    fn test_lift_loop_with_accumulator() {
+        // i = 0; while (i < 10) { i = i + 1; } return i;
+        // local[0] = i
+        //
+        // offset 0:  ConstI32 0         (5 bytes)
+        // offset 5:  StoreLocal 0       (3 bytes) → i = 0
+        // offset 8:  LoadLocal 0        (3 bytes) → push i  [loop header]
+        // offset 11: ConstI32 10        (5 bytes) → push 10
+        // offset 16: Ilt               (1 byte)  → push i < 10
+        // offset 17: JmpIfFalse 22     (5 bytes) → target = 17+22 = 39 (exit)
+        // offset 22: LoadLocal 0        (3 bytes) → push i  [loop body]
+        // offset 25: ConstI32 1         (5 bytes) → push 1
+        // offset 30: Iadd              (1 byte)  → push i + 1
+        // offset 31: StoreLocal 0       (3 bytes) → i = i + 1
+        // offset 34: Jmp -26           (5 bytes) → target = 34+(-26) = 8 (back-edge)
+        // offset 39: LoadLocal 0        (3 bytes) → push i  [exit]
+        // offset 42: Return            (1 byte)
+        let mut code = Vec::new();
+        emit_i32(&mut code, 0);
+        emit_store_local(&mut code, 0);
+        emit_load_local(&mut code, 0);
+        emit_i32(&mut code, 10);
+        emit(&mut code, Opcode::Ilt);
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 22);
+        emit_load_local(&mut code, 0);
+        emit_i32(&mut code, 1);
+        emit(&mut code, Opcode::Iadd);
+        emit_store_local(&mut code, 0);
+        emit_jmp(&mut code, Opcode::Jmp, -26);
+        emit_load_local(&mut code, 0);
+        emit(&mut code, Opcode::Return);
+
+        let func = make_function(code, 0, 1);
+        let module = make_module();
+        let jit_func = lift_function(&func, &module, 0).unwrap();
+
+        // Should have 4 blocks: init, header, body, exit
+        assert!(jit_func.blocks.len() >= 4, "expected >= 4 blocks, got {}", jit_func.blocks.len());
+
+        // Verify LoadLocal/StoreLocal in loop body
+        let has_store_local = jit_func.blocks.iter().any(|b| {
+            b.instrs.iter().any(|i| matches!(i, JitInstr::StoreLocal { index: 0, .. }))
+        });
+        assert!(has_store_local, "expected StoreLocal 0 in loop body");
+
+        // Verify IAdd is present
+        let has_iadd = jit_func.blocks.iter().any(|b| {
+            b.instrs.iter().any(|i| matches!(i, JitInstr::IAdd { .. }))
+        });
+        assert!(has_iadd, "expected IAdd in loop body");
+
+        // Verify CheckPreemption before back-edge
+        let has_preemption = jit_func.blocks.iter().any(|b| {
+            b.instrs.iter().any(|i| matches!(i, JitInstr::CheckPreemption))
+        });
+        assert!(has_preemption, "expected CheckPreemption at back-edge");
+
+        // Verify predecessors are wired — loop header should have 2 predecessors
+        let header_block = jit_func.blocks.iter().find(|b| {
+            b.predecessors.len() >= 2
+        });
+        assert!(header_block.is_some(), "expected loop header with >= 2 predecessors");
+    }
+
+    #[test]
+    fn test_lift_preemption_at_back_edges() {
+        // Two back-edges: outer loop with inner loop
+        // Simplified: two back-to-back loops
+        //
+        // Loop 1: offset 0..11
+        // offset 0: ConstTrue           (1 byte)
+        // offset 1: JmpIfFalse +10      (5 bytes, target = 11)
+        // offset 6: Jmp -6              (5 bytes, target = 0)
+        //
+        // Loop 2: offset 11..22
+        // offset 11: ConstTrue          (1 byte)
+        // offset 12: JmpIfFalse +10     (5 bytes, target = 22)
+        // offset 17: Jmp -6             (5 bytes, target = 11)
+        //
+        // offset 22: ReturnVoid         (1 byte)
+        let mut code = Vec::new();
+        emit(&mut code, Opcode::ConstTrue);
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);
+        emit_jmp(&mut code, Opcode::Jmp, -6);
+        emit(&mut code, Opcode::ConstTrue);
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);
+        emit_jmp(&mut code, Opcode::Jmp, -6);
+        emit(&mut code, Opcode::ReturnVoid);
+
+        let func = make_function(code, 0, 0);
+        let module = make_module();
+        let jit_func = lift_function(&func, &module, 0).unwrap();
+
+        // Should have at least 2 CheckPreemption instructions (one per back-edge)
+        let preemption_count: usize = jit_func.blocks.iter()
+            .flat_map(|b| &b.instrs)
+            .filter(|i| matches!(i, JitInstr::CheckPreemption))
+            .count();
+        assert!(preemption_count >= 2, "expected >= 2 CheckPreemption, got {}", preemption_count);
     }
 }

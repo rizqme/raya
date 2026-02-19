@@ -313,6 +313,62 @@ mod tests {
     }
 
     #[test]
+    fn test_pipeline_simple_loop() {
+        // while (true) { } — tests that loops compile through the full pipeline
+        // offset 0: ConstTrue           (1 byte)
+        // offset 1: JmpIfFalse +10      (5 bytes, target = 11)
+        // offset 6: Jmp -6              (5 bytes, target = 0)
+        // offset 11: ReturnVoid         (1 byte)
+        let mut code = Vec::new();
+        emit(&mut code, Opcode::ConstTrue);
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);
+        emit_jmp(&mut code, Opcode::Jmp, -6);
+        emit(&mut code, Opcode::ReturnVoid);
+
+        let module = make_module_with_func(code, 0, 0);
+        let pipeline = JitPipeline::new(StubBackend);
+
+        let result = pipeline.compile_function(
+            &module.functions[0], &module, 0
+        );
+        assert!(result.is_ok(), "Loop should compile through pipeline: {:?}", result.err());
+
+        let (jit_func, _) = result.unwrap();
+        assert!(jit_func.blocks.len() >= 3, "expected >= 3 blocks for loop");
+    }
+
+    #[test]
+    fn test_pipeline_loop_with_locals() {
+        // i = 0; while (i < 10) { i = i + 1; } return i;
+        let mut code = Vec::new();
+        emit_i32(&mut code, 0);                       // offset 0
+        emit_store_local(&mut code, 0);                // offset 5
+        emit_load_local(&mut code, 0);                 // offset 8 — loop header
+        emit_i32(&mut code, 10);                       // offset 11
+        emit(&mut code, Opcode::Ilt);                  // offset 16
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 22);  // offset 17, target=39
+        emit_load_local(&mut code, 0);                 // offset 22 — loop body
+        emit_i32(&mut code, 1);                        // offset 25
+        emit(&mut code, Opcode::Iadd);                 // offset 30
+        emit_store_local(&mut code, 0);                // offset 31
+        emit_jmp(&mut code, Opcode::Jmp, -26);        // offset 34, target=8
+        emit_load_local(&mut code, 0);                 // offset 39 — exit
+        emit(&mut code, Opcode::Return);               // offset 42
+
+        let module = make_module_with_func(code, 0, 1);
+        let pipeline = JitPipeline::new(StubBackend);
+
+        let result = pipeline.compile_function(
+            &module.functions[0], &module, 0
+        );
+        assert!(result.is_ok(), "Loop with locals should compile: {:?}", result.err());
+
+        let (jit_func, compiled) = result.unwrap();
+        assert!(jit_func.blocks.len() >= 4);
+        assert!(!compiled.code.is_empty());
+    }
+
+    #[test]
     fn test_pipeline_no_optimizer() {
         let mut code = Vec::new();
         emit_i32(&mut code, 3);
