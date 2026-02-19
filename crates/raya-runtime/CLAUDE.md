@@ -13,7 +13,7 @@ raya-engine (parser, compiler, VM, bytecode format)
     ↓
 raya-stdlib (StdNativeHandler + all stdlib modules)
 raya-stdlib-posix (POSIX natives: fs, net, http, process, os, env, io)
-rpkg (PackageManifest, DependencyResolver, UrlCache)
+raya_pm (PackageManifest, DependencyResolver, UrlCache)
     ↓
 raya-runtime (Runtime API: compile, load, execute, eval, dependency resolution)
     ↓
@@ -83,7 +83,7 @@ builtin_sources() + std_sources() + user source
 
 Resolves `[dependencies]` from `raya.toml`:
 - **Local path** (`path = "../lib"`) — canonicalize + load entry point
-- **URL/git** (`git = "https://..."`) — check rpkg UrlCache, fallback to `~/.raya/cache/urls/`
+- **URL/git** (`git = "https://..."`) — check raya_pm UrlCache, fallback to `~/.raya/cache/urls/`
 - **Registry** (`version = "1.0"`) — check `raya_packages/`, fallback to `~/.raya/packages/`
 
 Entry point discovery for package dirs: `raya.toml → [package].main` → fallback to `src/lib.raya`, `src/main.raya`, `lib.raya`, `index.raya`, `main.raya`.

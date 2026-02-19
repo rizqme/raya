@@ -86,7 +86,7 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 
 - `raya-runtime`: High-level Runtime API (compile, execute, eval, dependency resolution)
 - `raya-engine`: Compilation and execution (used transitively via runtime)
-- `rpkg` (raya-pm): Package management, manifest parsing
+- `raya_pm` (raya-pm): Package management, manifest parsing
 - `clap`: CLI argument parsing (derive)
 - `anyhow`: Error handling
 - `toml`: Config file parsing

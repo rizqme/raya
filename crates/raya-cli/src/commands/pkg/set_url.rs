@@ -1,7 +1,7 @@
 //! `raya pkg set-url` — Set the default package registry URL.
 
 use anyhow::anyhow;
-use rpkg::{PackageManifest, RegistryConfig};
+use raya_pm::{PackageManifest, RegistryConfig};
 use std::path::{Path, PathBuf};
 
 pub fn execute(url: Option<String>, global: bool, show: bool) -> anyhow::Result<()> {

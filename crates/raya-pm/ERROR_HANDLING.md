@@ -1,10 +1,10 @@
 # Error Handling Guide for raya-pm
 
-This document describes the error handling patterns and best practices used in the Raya Package Manager (rpkg) crate.
+This document describes the error handling patterns and best practices used in the Raya Package Manager (raya-pm) crate.
 
 ## Error Types
 
-The rpkg crate defines several specialized error types using the `thiserror` crate for consistent error handling:
+The raya-pm crate defines several specialized error types using the `thiserror` crate for consistent error handling:
 
 ### 1. CacheError
 
@@ -301,7 +301,7 @@ All error types are thoroughly tested. See integration tests:
 ## Example: Complete Error Handling Flow
 
 ```rust
-use rpkg::{Cache, DependencyResolver, Lockfile, PackageManifest};
+use raya_pm::{Cache, DependencyResolver, Lockfile, PackageManifest};
 use std::path::Path;
 
 pub fn install_dependencies(project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {

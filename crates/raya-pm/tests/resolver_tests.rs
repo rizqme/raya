@@ -1,6 +1,6 @@
 //! Integration tests for dependency resolution
 
-use rpkg::{Dependency, DependencyResolver, PackageInfo, PackageManifest, Version};
+use raya_pm::{Dependency, DependencyResolver, PackageInfo, PackageManifest, Version};
 use std::collections::HashMap;
 
 fn create_manifest(name: &str, version: &str) -> PackageManifest {

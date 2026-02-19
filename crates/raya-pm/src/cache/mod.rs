@@ -70,7 +70,7 @@ impl Cache {
     ///
     /// # Example
     /// ```
-    /// # use rpkg::Cache;
+    /// # use raya_pm::Cache;
     /// let cache = Cache::init().unwrap();
     /// ```
     pub fn init() -> Result<Self, CacheError> {
@@ -119,7 +119,7 @@ impl Cache {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::Cache;
+    /// # use raya_pm::Cache;
     /// # let cache = Cache::init().unwrap();
     /// let module_data = std::fs::read("my_module.ryb").unwrap();
     /// let hash = cache.store(&module_data).unwrap();
@@ -166,7 +166,7 @@ impl Cache {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::Cache;
+    /// # use raya_pm::Cache;
     /// # let cache = Cache::init().unwrap();
     /// # let hash = [0u8; 32];
     /// let module_bytes = cache.retrieve(&hash).unwrap();
@@ -205,7 +205,7 @@ impl Cache {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::Cache;
+    /// # use raya_pm::Cache;
     /// # let cache = Cache::init().unwrap();
     /// # let hash = [0u8; 32];
     /// if cache.exists(&hash) {
@@ -226,7 +226,7 @@ impl Cache {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::Cache;
+    /// # use raya_pm::Cache;
     /// # let cache = Cache::init().unwrap();
     /// # let hash = [0u8; 32];
     /// let path = cache.module_path(&hash);

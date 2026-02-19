@@ -299,7 +299,7 @@ impl Runtime {
         // 1. Check for raya.toml project
         if let Some(manifest_dir) = deps::find_manifest_dir(file_path) {
             let manifest_path = manifest_dir.join("raya.toml");
-            if let Ok(manifest) = rpkg::PackageManifest::from_file(&manifest_path) {
+            if let Ok(manifest) = raya_pm::PackageManifest::from_file(&manifest_path) {
                 if !manifest.dependencies.is_empty() {
                     return deps::load_dependencies(&manifest, &manifest_dir);
                 }

@@ -48,7 +48,7 @@ fn resolve_registry() -> String {
     }
 
     // Check project raya.toml
-    if let Ok(manifest) = rpkg::PackageManifest::from_file(&std::path::Path::new("raya.toml")) {
+    if let Ok(manifest) = raya_pm::PackageManifest::from_file(&std::path::Path::new("raya.toml")) {
         if let Some(reg) = manifest.registry {
             return reg.url;
         }

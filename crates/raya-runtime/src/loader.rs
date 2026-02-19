@@ -112,7 +112,7 @@ fn load_package_dir(dir: &Path, name: &str) -> Result<CompiledModule, RuntimeErr
     // Try raya.toml → [package].main
     let manifest_path = dir.join("raya.toml");
     if manifest_path.exists() {
-        if let Ok(manifest) = rpkg::PackageManifest::from_file(&manifest_path) {
+        if let Ok(manifest) = raya_pm::PackageManifest::from_file(&manifest_path) {
             if let Some(main) = &manifest.package.main {
                 let entry = dir.join(main);
                 if entry.exists() {

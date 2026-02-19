@@ -164,7 +164,7 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,258+ total (1,721 engine + 147 JIT, 1,297 runtime, 19 CLI, 17 stdlib, 204 rpkg) — 0 ignored
+**Tests:** 3,258+ total (1,721 engine + 147 JIT, 1,297 runtime, 19 CLI, 17 stdlib, 204 raya-pm) — 0 ignored
 
 **CLI Implementation:** Complete
 - `raya run` / `raya build` / `raya eval` fully wired through `raya-runtime::Runtime`
@@ -238,7 +238,7 @@ crates/
 ├── raya-runtime/    # High-level Runtime API (compile, load, execute, eval, deps)
 ├── raya-stdlib/     # Native stdlib implementations (logger, math, crypto, etc.)
 ├── raya-cli/        # Unified CLI (run, build, eval, pkg, etc.)
-├── raya-pm/         # Package manager (rpkg)
+├── raya-pm/         # Package manager (raya-pm)
 ├── raya-sdk/        # Native module FFI types
 └── raya-native/     # Proc-macros for native modules
 
@@ -260,7 +260,7 @@ cargo test -p raya-engine --features jit  # Engine + JIT tests (1,868)
 cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
 cargo test -p raya-cli         # CLI integration tests (19)
 cargo test -p raya-stdlib      # Stdlib tests (17)
-cargo test -p rpkg             # Package manager tests (204)
+cargo test -p raya-pm          # Package manager tests (204)
 ```
 
 ---

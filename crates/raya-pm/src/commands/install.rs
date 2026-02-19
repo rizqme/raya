@@ -16,7 +16,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum InstallError {
     /// No raya.toml found
-    #[error("No raya.toml found. Run `rpkg init` to create a project.")]
+    #[error("No raya.toml found. Run `raya init` to create a project.")]
     NoManifest,
 
     /// Manifest error

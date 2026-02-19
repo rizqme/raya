@@ -1,4 +1,4 @@
-# raya-pm (rpkg)
+# raya-pm
 
 Package manager library for Raya. This is a library crate used by the main `raya` CLI.
 
@@ -17,7 +17,7 @@ This crate provides package management functionality:
 
 ## Usage
 
-The rpkg library is integrated into the main `raya` CLI:
+The raya-pm library is integrated into the main `raya` CLI:
 
 ```bash
 # Initialize a new project
@@ -188,7 +188,7 @@ GET /packages/{name}/{version} → VersionInfo + download URL
 ## For AI Assistants
 
 - This is a **library** crate, not a binary
-- Commands are exposed via `rpkg::commands::{init, install, add}`
+- Commands are exposed via `raya_pm::commands::{init, install, add}`
 - The main `raya` CLI (raya-cli) uses this library
 - Version constraint matching uses standard semver rules
 - Cache uses SHA-256 for content addressing

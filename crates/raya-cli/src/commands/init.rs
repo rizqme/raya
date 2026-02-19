@@ -8,7 +8,7 @@ pub fn execute(
     _template: String,
     _yes: bool,
 ) -> anyhow::Result<()> {
-    match rpkg::commands::init::init_project(&path, name.as_deref()) {
+    match raya_pm::commands::init::init_project(&path, name.as_deref()) {
         Ok(()) => Ok(()),
         Err(e) => {
             eprintln!("Error: {}", e);

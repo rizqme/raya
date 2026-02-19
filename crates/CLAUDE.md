@@ -26,7 +26,7 @@ raya-cli ──────────────────┬─> raya-runt
 raya-runtime ─────────────┬─> raya-engine (core engine)
                            ├─> raya-stdlib (native implementations)
                            ├─> raya-stdlib-posix (POSIX natives)
-                           └─> rpkg (manifest parsing, URL cache)
+                           └─> raya_pm (manifest parsing, URL cache)
 
 raya-engine ───────────────┬─> (defines NativeHandler trait)
                            ├─> (no dependency on stdlib)

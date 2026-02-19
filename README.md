@@ -98,7 +98,7 @@ crates/
 ├── raya-stdlib/        # Core stdlib (logger, math, crypto, time, path, stream)
 ├── raya-stdlib-posix/  # System stdlib (fs, net, http, fetch, env, process, os, io)
 ├── raya-cli/           # CLI tool (raya)
-├── raya-pm/            # Package manager (rpkg)
+├── raya-pm/            # Package manager (raya-pm)
 ├── raya-sdk/           # Native module FFI types
 └── raya-native/        # Proc-macros for native modules
 ```

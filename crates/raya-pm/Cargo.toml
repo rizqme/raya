@@ -1,5 +1,5 @@
 [package]
-name = "rpkg"
+name = "raya-pm"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -9,7 +9,7 @@ rust-version.workspace = true
 description = "Package manager library for Raya"
 
 [lib]
-name = "rpkg"
+name = "raya_pm"
 path = "src/lib.rs"
 
 [dependencies]

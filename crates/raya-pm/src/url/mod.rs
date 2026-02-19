@@ -12,7 +12,7 @@
 //! ## Usage
 //!
 //! ```ignore
-//! use rpkg::url::{UrlCache, UrlFetcher};
+//! use raya_pm::url::{UrlCache, UrlFetcher};
 //!
 //! // Create cache
 //! let cache = UrlCache::default_cache();

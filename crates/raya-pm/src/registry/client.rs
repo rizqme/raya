@@ -80,7 +80,7 @@ impl RegistryClient {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
-            .user_agent(format!("rpkg/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("raya-pm/{}", env!("CARGO_PKG_VERSION")))
             .build()?;
 
         Ok(Self {

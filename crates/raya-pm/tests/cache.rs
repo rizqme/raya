@@ -2,7 +2,7 @@
 //!
 //! Tests the complete cache infrastructure including storage, retrieval, and metadata.
 
-use rpkg::{Cache, ModuleMetadata};
+use raya_pm::{Cache, ModuleMetadata};
 
 /// Generate unique test data to avoid cache pollution between test runs
 fn unique_test_data(test_name: &str) -> Vec<u8> {

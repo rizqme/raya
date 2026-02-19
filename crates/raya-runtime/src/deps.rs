@@ -1,6 +1,6 @@
 //! Dependency resolution from raya.toml manifests.
 
-use rpkg::{Dependency, PackageManifest};
+use raya_pm::{Dependency, PackageManifest};
 use std::path::{Path, PathBuf};
 
 use crate::error::RuntimeError;
@@ -68,8 +68,8 @@ fn load_path_dep(
 
 /// Load a URL/git dependency from cache.
 fn load_url_dep(name: &str, url: &str) -> Result<CompiledModule, RuntimeError> {
-    // Check rpkg URL cache
-    let cache = rpkg::UrlCache::default_cache();
+    // Check raya_pm URL cache
+    let cache = raya_pm::UrlCache::default_cache();
     if let Some(cached) = cache.is_cached(url, None) {
         if let Some(entry) = cache.find_entry_point(&cached) {
             return loader::load_entry_point_pub(&entry);

@@ -23,7 +23,7 @@ thiserror = "2.0"
 raya-sdk = { workspace = true }
 
 # Package management (for module resolution)
-raya-pm = { package = "rpkg", path = "../raya-pm" }
+raya-pm = { path = "../raya-pm" }
 
 # Home directory (for cache path)
 dirs = "5.0"

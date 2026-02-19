@@ -1,6 +1,6 @@
 //! Integration tests for semver parsing and constraint matching
 
-use rpkg::{Constraint, Version};
+use raya_pm::{Constraint, Version};
 
 #[test]
 fn test_version_parsing() {

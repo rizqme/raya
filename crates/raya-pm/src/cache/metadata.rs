@@ -69,7 +69,7 @@ impl ModuleMetadata {
     ///
     /// # Example
     /// ```
-    /// # use rpkg::ModuleMetadata;
+    /// # use raya_pm::ModuleMetadata;
     /// use std::collections::HashMap;
     ///
     /// let metadata = ModuleMetadata::new(
@@ -127,7 +127,7 @@ impl ModuleMetadata {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::ModuleMetadata;
+    /// # use raya_pm::ModuleMetadata;
     /// # use std::path::Path;
     /// let metadata = ModuleMetadata::load(Path::new("metadata.json")).unwrap();
     /// ```
@@ -148,7 +148,7 @@ impl ModuleMetadata {
     ///
     /// # Example
     /// ```no_run
-    /// # use rpkg::ModuleMetadata;
+    /// # use raya_pm::ModuleMetadata;
     /// # use std::path::Path;
     /// # let metadata = ModuleMetadata::new("test".into(), "1.0.0".into(), "abc".into());
     /// metadata.save(Path::new("metadata.json")).unwrap();

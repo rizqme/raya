@@ -1,6 +1,6 @@
 //! End-to-end integration tests for the complete package management workflow
 
-use rpkg::{
+use raya_pm::{
     Cache, DependencyResolver, Lockfile, PackageManifest, PathResolver, Version,
 };
 use std::fs;
@@ -11,12 +11,12 @@ fn create_test_manifest(root: &std::path::Path, name: &str, version: &str, deps:
     for (dep_name, constraint) in deps {
         deps_map.insert(
             dep_name.to_string(),
-            rpkg::Dependency::Simple(constraint.to_string()),
+            raya_pm::Dependency::Simple(constraint.to_string()),
         );
     }
 
     let manifest = PackageManifest {
-        package: rpkg::PackageInfo {
+        package: raya_pm::PackageInfo {
             name: name.to_string(),
             version: version.to_string(),
             description: None,

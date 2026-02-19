@@ -12,7 +12,7 @@ description = "Raya runtime that binds the engine with standard library"
 raya-engine = { workspace = true }
 raya-stdlib = { path = "../raya-stdlib" }
 raya-stdlib-posix = { path = "../raya-stdlib-posix" }
-rpkg = { path = "../raya-pm" }
+raya-pm = { path = "../raya-pm" }
 thiserror = { workspace = true }
 num_cpus = { workspace = true }
 dirs = "5"

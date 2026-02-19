@@ -15,7 +15,7 @@ path = "src/main.rs"
 [dependencies]
 raya-engine = { workspace = true }
 raya-runtime = { workspace = true }
-rpkg = { path = "../raya-pm" }
+raya-pm = { path = "../raya-pm" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 toml = "0.8"

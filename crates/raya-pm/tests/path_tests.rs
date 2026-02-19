@@ -1,6 +1,6 @@
 //! Integration tests for path dependency resolution
 
-use rpkg::{find_project_root, PathResolver};
+use raya_pm::{find_project_root, PathResolver};
 use std::fs;
 use tempfile::TempDir;
 

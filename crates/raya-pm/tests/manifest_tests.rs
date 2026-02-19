@@ -2,7 +2,7 @@
 //!
 //! Tests the PackageManifest parser with realistic raya.toml files.
 
-use rpkg::{Dependency, PackageManifest};
+use raya_pm::{Dependency, PackageManifest};
 use std::collections::HashMap;
 
 #[test]
@@ -310,7 +310,7 @@ dep1 = "^1.0.0"
 #[test]
 fn test_roundtrip_complex() {
     let mut manifest = PackageManifest {
-        package: rpkg::PackageInfo {
+        package: raya_pm::PackageInfo {
             name: "complex-pkg".to_string(),
             version: "2.3.4".to_string(),
             description: Some("Test package".to_string()),

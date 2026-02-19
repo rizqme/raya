@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use raya_runtime::{Runtime, RuntimeOptions};
-use rpkg::PackageManifest;
+use raya_pm::PackageManifest;
 use std::path::Path;
 use std::process::Command;
 

@@ -2,7 +2,7 @@
 //!
 //! Tests the Lockfile parser with realistic raya.lock files.
 
-use rpkg::{Lockfile, LockedPackage, Source};
+use raya_pm::{Lockfile, LockedPackage, Source};
 
 #[test]
 fn test_create_empty_lockfile() {

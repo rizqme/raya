@@ -7,12 +7,12 @@ pub fn execute(package: Option<String>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let options = rpkg::commands::install::InstallOptions {
+    let options = raya_pm::commands::install::InstallOptions {
         production: false,
         force: false,
         update: true,
     };
-    match rpkg::commands::install::install_dependencies(None, options) {
+    match raya_pm::commands::install::install_dependencies(None, options) {
         Ok(result) => {
             println!(
                 "\nDone! {} installed, {} from cache, {} updated.",

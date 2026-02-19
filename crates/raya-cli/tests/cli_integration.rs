@@ -370,7 +370,7 @@ fn test_script_manifest_parsing() {
     // Verify that the scripts manifest fixture parses correctly
     let manifest_path = fixtures_dir().join("scripts-project/raya.toml");
     let manifest =
-        rpkg::PackageManifest::from_file(&manifest_path).expect("parse manifest failed");
+        raya_pm::PackageManifest::from_file(&manifest_path).expect("parse manifest failed");
 
     assert_eq!(manifest.scripts.get("dev").map(|s| s.as_str()), Some("src/main.raya"));
     assert_eq!(manifest.scripts.get("start").map(|s| s.as_str()), Some("src/main.raya"));

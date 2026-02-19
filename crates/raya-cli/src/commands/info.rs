@@ -16,7 +16,7 @@ pub fn execute() -> anyhow::Result<()> {
     // Project info
     let manifest_path = Path::new("raya.toml");
     if manifest_path.exists() {
-        if let Ok(manifest) = rpkg::PackageManifest::from_file(manifest_path) {
+        if let Ok(manifest) = raya_pm::PackageManifest::from_file(manifest_path) {
             println!();
             println!("Project:      {} v{}", manifest.package.name, manifest.package.version);
             if let Some(ref main) = manifest.package.main {

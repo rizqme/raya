@@ -6,12 +6,12 @@ pub fn execute(
     exact: bool,
     no_install: bool,
 ) -> anyhow::Result<()> {
-    let options = rpkg::commands::add::AddOptions {
+    let options = raya_pm::commands::add::AddOptions {
         dev,
         exact,
         no_install,
     };
-    match rpkg::commands::add::add_package(&package, None, options) {
+    match raya_pm::commands::add::add_package(&package, None, options) {
         Ok(()) => {
             println!("\nPackage added successfully.");
             Ok(())
