@@ -41,6 +41,9 @@ pub struct Vm {
     held_mutexes: Vec<crate::vm::sync::MutexId>,
     /// Mutex registry for managing all mutexes
     mutex_registry: MutexRegistry,
+    /// JIT engine for pre-warming and native code compilation
+    #[cfg(feature = "jit")]
+    jit_engine: Option<crate::jit::JitEngine>,
 }
 
 impl Vm {
@@ -68,6 +71,8 @@ impl Vm {
             caught_exception: None,
             held_mutexes: Vec::new(),
             mutex_registry: MutexRegistry::new(),
+            #[cfg(feature = "jit")]
+            jit_engine: None,
         }
     }
 
@@ -89,6 +94,8 @@ impl Vm {
             caught_exception: None,
             held_mutexes: Vec::new(),
             mutex_registry: MutexRegistry::new(),
+            #[cfg(feature = "jit")]
+            jit_engine: None,
         }
     }
 
@@ -110,6 +117,8 @@ impl Vm {
             caught_exception: None,
             held_mutexes: Vec::new(),
             mutex_registry: MutexRegistry::new(),
+            #[cfg(feature = "jit")]
+            jit_engine: None,
         }
     }
 
@@ -174,6 +183,26 @@ impl Vm {
         self.gc.collect();
     }
 
+    /// Enable JIT compilation with default configuration.
+    ///
+    /// When enabled, `execute()` will pre-warm CPU-intensive functions at module load time.
+    #[cfg(feature = "jit")]
+    pub fn enable_jit(&mut self) -> Result<(), String> {
+        let engine = crate::jit::JitEngine::new()
+            .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
+        self.jit_engine = Some(engine);
+        Ok(())
+    }
+
+    /// Enable JIT compilation with custom configuration.
+    #[cfg(feature = "jit")]
+    pub fn enable_jit_with_config(&mut self, config: crate::jit::JitConfig) -> Result<(), String> {
+        let engine = crate::jit::JitEngine::with_config(config)
+            .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
+        self.jit_engine = Some(engine);
+        Ok(())
+    }
+
     /// Execute a module using the task scheduler
     ///
     /// This method runs the main function as a task, enabling full cooperative
@@ -191,6 +220,12 @@ impl Vm {
         // Link module's native function table (for ModuleNativeCall dispatch)
         self.scheduler.shared_state().link_module_natives(module)
             .map_err(|e| VmError::RuntimeError(format!("Native link error: {}", e)))?;
+
+        // JIT pre-warming: analyze and compile CPU-intensive functions before execution
+        #[cfg(feature = "jit")]
+        if let Some(ref jit_engine) = self.jit_engine {
+            let _result = jit_engine.prewarm(module);
+        }
 
         // Find main function
         let main_fn_id = module
