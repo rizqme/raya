@@ -16,8 +16,10 @@ fn create_manifest(name: &str, version: &str) -> PackageManifest {
             main: None,
         },
         jsx: None,
+        scripts: HashMap::new(),
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
+        registry: None,
     }
 }
 

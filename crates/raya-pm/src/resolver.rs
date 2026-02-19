@@ -446,8 +446,10 @@ mod tests {
                 main: None,
             },
             jsx: None,
+            scripts: HashMap::new(),
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
+            registry: None,
         }
     }
 

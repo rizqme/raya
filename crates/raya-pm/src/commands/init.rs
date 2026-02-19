@@ -58,8 +58,10 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
             main: Some("src/main.raya".to_string()),
         },
         jsx: None,
+        scripts: HashMap::new(),
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
+        registry: None,
     };
 
     // Create directory if it doesn't exist

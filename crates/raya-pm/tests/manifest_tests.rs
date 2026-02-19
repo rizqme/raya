@@ -321,8 +321,10 @@ fn test_roundtrip_complex() {
             main: None,
         },
         jsx: None,
+        scripts: HashMap::new(),
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
+        registry: None,
     };
 
     manifest.dependencies.insert(

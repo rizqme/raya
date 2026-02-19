@@ -37,6 +37,10 @@ pub struct PackageManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jsx: Option<JsxConfig>,
 
+    /// Named scripts (e.g., `raya run dev`)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub scripts: HashMap<String, String>,
+
     /// Runtime dependencies
     #[serde(default)]
     pub dependencies: HashMap<String, Dependency>,
@@ -44,6 +48,17 @@ pub struct PackageManifest {
     /// Development-only dependencies
     #[serde(default, rename = "dev-dependencies")]
     pub dev_dependencies: HashMap<String, Dependency>,
+
+    /// Package registry configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry: Option<RegistryConfig>,
+}
+
+/// Registry configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RegistryConfig {
+    /// Registry URL
+    pub url: String,
 }
 
 /// JSX compilation configuration
@@ -584,8 +599,10 @@ version = "1.0.0"
                 main: None,
             },
             jsx: Some(config.clone()),
+            scripts: HashMap::new(),
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
+            registry: None,
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();

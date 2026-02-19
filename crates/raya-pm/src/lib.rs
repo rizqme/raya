@@ -24,7 +24,7 @@ pub mod url;
 pub use cache::{Cache, CacheError, ModuleMetadata};
 pub use commands::{add_package, init_project, install_dependencies};
 pub use lockfile::{Lockfile, LockfileError, LockedPackage, Source};
-pub use manifest::{Dependency, ManifestError, PackageInfo, PackageManifest};
+pub use manifest::{Dependency, ManifestError, PackageInfo, PackageManifest, RegistryConfig};
 pub use path::{find_project_root, PathError, PathResolver};
 pub use registry::{PackageMetadata, RegistryClient, RegistryError, VersionInfo};
 pub use resolver::{
