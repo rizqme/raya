@@ -68,6 +68,21 @@ impl<B: CodegenBackend> JitPipeline<B> {
         Ok((jit_func, code))
     }
 
+    /// Lift and optimize a function without backend compilation.
+    ///
+    /// Returns the optimized JIT IR, ready for lowering through a JITModule
+    /// or other backend. Used by JitEngine for executable code generation.
+    pub fn lift_and_optimize(
+        &self,
+        func: &Function,
+        module: &Module,
+        func_index: u32,
+    ) -> Result<JitFunction, JitError> {
+        let mut jit_func = lifter::lift_function(func, module, func_index)?;
+        self.optimizer.optimize(&mut jit_func);
+        Ok(jit_func)
+    }
+
     /// Compile all functions in a module
     pub fn compile_module(
         &self,

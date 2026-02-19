@@ -1136,7 +1136,7 @@ fn pipeline_bytecode_to_native_multi_op() {
 
 #[test]
 fn engine_prewarm_selects_hot() {
-    let engine = JitEngine::new().unwrap();
+    let mut engine = JitEngine::new().unwrap();
 
     // Create a module with two functions:
     // func 0: trivial (ConstNull, Return) — should NOT be selected
@@ -1191,7 +1191,7 @@ fn engine_prewarm_selects_hot() {
     let result = engine.prewarm(&module);
 
     // The heavy function should be compiled (or at least attempted)
-    let total = result.compiled.len() + result.skipped.len();
+    let total = result.compiled + result.failed;
     assert!(total > 0, "Prewarm should have processed at least one function");
 }
 
@@ -1203,7 +1203,7 @@ fn engine_prewarm_with_custom_config() {
         min_instruction_count: 2,
         ..Default::default()
     };
-    let engine = JitEngine::with_config(config).unwrap();
+    let mut engine = JitEngine::with_config(config).unwrap();
 
     // Even a simple function should be a candidate with min_score = 1.0
     let mut code = Vec::new();
@@ -1216,7 +1216,7 @@ fn engine_prewarm_with_custom_config() {
     let result = engine.prewarm(&module);
 
     // With low threshold, the function should be considered
-    let total = result.compiled.len() + result.skipped.len();
+    let total = result.compiled + result.failed;
     assert!(total >= 0); // Just verify no crash
 }
 

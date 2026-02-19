@@ -344,6 +344,13 @@ impl Reactor {
                 state.max_preemptions,
             );
 
+            // Wire JIT code cache for native dispatch
+            #[cfg(feature = "jit")]
+            {
+                let cache = state.code_cache.lock().clone();
+                interpreter.set_code_cache(cache);
+            }
+
             let result = interpreter.run(&task);
             task.clear_start_time();
 

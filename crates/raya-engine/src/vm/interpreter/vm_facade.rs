@@ -181,11 +181,13 @@ impl Vm {
 
     /// Enable JIT compilation with default configuration.
     ///
-    /// When enabled, `execute()` will pre-warm CPU-intensive functions at module load time.
+    /// When enabled, `execute()` will pre-warm CPU-intensive functions at module load time
+    /// and the interpreter will dispatch to native code for compiled functions.
     #[cfg(feature = "jit")]
     pub fn enable_jit(&mut self) -> Result<(), String> {
         let engine = crate::jit::JitEngine::new()
             .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
+        *self.scheduler.shared_state().code_cache.lock() = Some(engine.code_cache().clone());
         self.jit_engine = Some(engine);
         Ok(())
     }
@@ -195,6 +197,7 @@ impl Vm {
     pub fn enable_jit_with_config(&mut self, config: crate::jit::JitConfig) -> Result<(), String> {
         let engine = crate::jit::JitEngine::with_config(config)
             .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
+        *self.scheduler.shared_state().code_cache.lock() = Some(engine.code_cache().clone());
         self.jit_engine = Some(engine);
         Ok(())
     }
@@ -211,10 +214,10 @@ impl Vm {
         self.scheduler.shared_state().register_module(Arc::new(module.clone()))
             .map_err(|e| VmError::RuntimeError(e))?;
 
-        // JIT pre-warming: analyze and compile CPU-intensive functions before execution
+        // JIT pre-warming: analyze, compile, and cache CPU-intensive functions
         #[cfg(feature = "jit")]
-        if let Some(ref jit_engine) = self.jit_engine {
-            let _result = jit_engine.prewarm(module);
+        if let Some(ref mut jit_engine) = self.jit_engine {
+            let _summary = jit_engine.prewarm(module);
         }
 
         // Find main function

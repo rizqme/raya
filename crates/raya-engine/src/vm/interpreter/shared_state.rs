@@ -77,6 +77,11 @@ pub struct SharedVmState {
     /// Preemption threshold in milliseconds (how long a task runs before being preempted).
     /// Default: 10ms.
     pub preempt_threshold_ms: u64,
+
+    /// JIT code cache — shared with interpreter threads for native dispatch.
+    /// Set once by `Vm::enable_jit()`, then read by interpreter threads.
+    #[cfg(feature = "jit")]
+    pub code_cache: Mutex<Option<Arc<crate::jit::runtime::code_cache::CodeCache>>>,
 }
 
 impl SharedVmState {
@@ -114,6 +119,8 @@ impl SharedVmState {
             module_registry: RwLock::new(ModuleRegistry::new()),
             max_preemptions: 1000,
             preempt_threshold_ms: 10,
+            #[cfg(feature = "jit")]
+            code_cache: Mutex::new(None),
         }
     }
 

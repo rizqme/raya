@@ -81,6 +81,10 @@ pub struct Interpreter<'a> {
 
     /// Maximum consecutive preemptions before killing a task
     pub(in crate::vm::interpreter) max_preemptions: u32,
+
+    /// JIT code cache for native dispatch (None when JIT is disabled)
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) code_cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
 }
 
 impl<'a> Interpreter<'a> {
@@ -114,7 +118,17 @@ impl<'a> Interpreter<'a> {
             resolved_natives,
             io_submit_tx,
             max_preemptions,
+            #[cfg(feature = "jit")]
+            code_cache: None,
         }
+    }
+
+    /// Set the JIT code cache for native dispatch.
+    ///
+    /// Called by the reactor worker after constructing the interpreter.
+    #[cfg(feature = "jit")]
+    pub fn set_code_cache(&mut self, cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>) {
+        self.code_cache = cache;
     }
 
     /// Wake a suspended task by setting its resume value and pushing it to the scheduler.
@@ -136,6 +150,11 @@ impl<'a> Interpreter<'a> {
     /// suspension (channel operations, await, sleep) to work at any call depth.
     pub fn run(&mut self, task: &Arc<Task>) -> ExecutionResult {
         let module = task.module();
+
+        // JIT: look up the module_id for this module's checksum (cached for the run)
+        #[cfg(feature = "jit")]
+        let jit_module_id: Option<u64> = self.code_cache.as_ref()
+            .and_then(|cache| cache.module_id(&module.checksum));
 
         // Restore execution state (supports suspend/resume)
         let mut current_func_id = task.current_func_id();
@@ -345,6 +364,68 @@ impl<'a> Interpreter<'a> {
                     closure_val,
                     return_action,
                 } => {
+                    // JIT fast path: dispatch to native code if available
+                    // Only for non-closure, non-constructor calls (pure function calls)
+                    #[cfg(feature = "jit")]
+                    if !is_closure {
+                        if let (Some(cache), Some(mid)) = (&self.code_cache, jit_module_id) {
+                            if let Some(jit_fn) = cache.get(mid, func_id as u32) {
+                                // Collect args from stack as NaN-boxed u64s
+                                let args: Vec<u64> = (0..arg_count)
+                                    .map(|i| {
+                                        stack_guard
+                                            .peek_at(stack_guard.depth() - arg_count + i)
+                                            .unwrap_or(Value::null())
+                                            .raw()
+                                    })
+                                    .collect();
+
+                                let func = &module.functions[func_id];
+                                let local_count = func.local_count as usize;
+                                let extra_locals = if local_count > arg_count {
+                                    local_count - arg_count
+                                } else {
+                                    0
+                                };
+                                let mut locals_buf = vec![0u64; extra_locals];
+
+                                // Call the JIT-compiled function (no RuntimeContext for pure functions)
+                                let result = unsafe {
+                                    jit_fn(
+                                        args.as_ptr(),
+                                        arg_count as u32,
+                                        locals_buf.as_mut_ptr(),
+                                        extra_locals as u32,
+                                        std::ptr::null_mut(), // RuntimeContext — null for pure functions
+                                    )
+                                };
+
+                                // Pop args from stack
+                                for _ in 0..arg_count {
+                                    let _ = stack_guard.pop();
+                                }
+
+                                // Push return value (or handle based on return_action)
+                                // Safety: result is a NaN-boxed Value returned by JIT-compiled code
+                                let return_val = unsafe { Value::from_raw(result) };
+                                match return_action {
+                                    ReturnAction::PushReturnValue => {
+                                        if let Err(e) = stack_guard.push(return_val) {
+                                            return ExecutionResult::Failed(e);
+                                        }
+                                    }
+                                    ReturnAction::PushObject(obj) => {
+                                        if let Err(e) = stack_guard.push(obj) {
+                                            return ExecutionResult::Failed(e);
+                                        }
+                                    }
+                                    ReturnAction::Discard => {}
+                                }
+                                continue; // skip bytecode frame setup
+                            }
+                        }
+                    }
+
                     // Validate function index
                     let new_func = match module.functions.get(func_id) {
                         Some(f) => f,
