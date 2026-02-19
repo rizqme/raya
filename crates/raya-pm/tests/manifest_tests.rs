@@ -320,6 +320,7 @@ fn test_roundtrip_complex() {
             homepage: None,
             main: None,
         },
+        jsx: None,
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
     };

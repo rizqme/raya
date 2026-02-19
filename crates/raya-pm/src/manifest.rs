@@ -33,6 +33,10 @@ pub struct PackageManifest {
     /// Package metadata
     pub package: PackageInfo,
 
+    /// JSX compilation settings (optional — omit to disable JSX)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jsx: Option<JsxConfig>,
+
     /// Runtime dependencies
     #[serde(default)]
     pub dependencies: HashMap<String, Dependency>,
@@ -40,6 +44,45 @@ pub struct PackageManifest {
     /// Development-only dependencies
     #[serde(default, rename = "dev-dependencies")]
     pub dev_dependencies: HashMap<String, Dependency>,
+}
+
+/// JSX compilation configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct JsxConfig {
+    /// Factory function name (default: "createElement")
+    #[serde(default = "default_jsx_factory")]
+    pub factory: String,
+
+    /// Fragment component name (default: "Fragment")
+    #[serde(default = "default_jsx_fragment")]
+    pub fragment: String,
+
+    /// Module to auto-import factory from (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factory_module: Option<String>,
+
+    /// Development mode — adds __source and __self props for debugging
+    #[serde(default)]
+    pub development: bool,
+}
+
+fn default_jsx_factory() -> String {
+    "createElement".to_string()
+}
+
+fn default_jsx_fragment() -> String {
+    "Fragment".to_string()
+}
+
+impl Default for JsxConfig {
+    fn default() -> Self {
+        Self {
+            factory: default_jsx_factory(),
+            fragment: default_jsx_fragment(),
+            factory_module: None,
+            development: false,
+        }
+    }
 }
 
 /// Package information
@@ -467,5 +510,86 @@ bad = { version = "^1.0.0", path = "../local" }
 
         let result = PackageManifest::from_str(toml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_jsx_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[jsx]
+factory = "h"
+fragment = "F"
+factory_module = "preact"
+development = true
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let jsx = manifest.jsx.unwrap();
+        assert_eq!(jsx.factory, "h");
+        assert_eq!(jsx.fragment, "F");
+        assert_eq!(jsx.factory_module, Some("preact".to_string()));
+        assert!(jsx.development);
+    }
+
+    #[test]
+    fn test_parse_jsx_config_defaults() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[jsx]
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let jsx = manifest.jsx.unwrap();
+        assert_eq!(jsx.factory, "createElement");
+        assert_eq!(jsx.fragment, "Fragment");
+        assert_eq!(jsx.factory_module, None);
+        assert!(!jsx.development);
+    }
+
+    #[test]
+    fn test_parse_no_jsx_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        assert!(manifest.jsx.is_none());
+    }
+
+    #[test]
+    fn test_jsx_config_round_trip() {
+        let config = JsxConfig {
+            factory: "h".to_string(),
+            fragment: "Fragment".to_string(),
+            factory_module: Some("preact".to_string()),
+            development: true,
+        };
+        let manifest = PackageManifest {
+            package: PackageInfo {
+                name: "test".to_string(),
+                version: "1.0.0".to_string(),
+                description: None,
+                authors: Vec::new(),
+                license: None,
+                repository: None,
+                homepage: None,
+                main: None,
+            },
+            jsx: Some(config.clone()),
+            dependencies: HashMap::new(),
+            dev_dependencies: HashMap::new(),
+        };
+
+        let serialized = toml::to_string_pretty(&manifest).unwrap();
+        let deserialized: PackageManifest = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.jsx.unwrap(), config);
     }
 }

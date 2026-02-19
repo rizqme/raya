@@ -57,6 +57,7 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
             homepage: None,
             main: Some("src/main.raya".to_string()),
         },
+        jsx: None,
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
     };

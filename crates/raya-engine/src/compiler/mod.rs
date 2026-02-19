@@ -49,16 +49,24 @@ pub struct Compiler<'a> {
     interner: &'a Interner,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// JSX compilation options (None = JSX disabled)
+    jsx_options: Option<lower::JsxOptions>,
 }
 
 impl<'a> Compiler<'a> {
     pub fn new(type_ctx: TypeContext, interner: &'a Interner) -> Self {
-        Self { type_ctx, interner, expr_types: FxHashMap::default() }
+        Self { type_ctx, interner, expr_types: FxHashMap::default(), jsx_options: None }
     }
 
     /// Set expression types from the type checker's CheckResult
     pub fn with_expr_types(mut self, expr_types: FxHashMap<usize, TypeId>) -> Self {
         self.expr_types = expr_types;
+        self
+    }
+
+    /// Enable JSX compilation with the given options
+    pub fn with_jsx(mut self, options: lower::JsxOptions) -> Self {
+        self.jsx_options = Some(options);
         self
     }
 
@@ -71,6 +79,9 @@ impl<'a> Compiler<'a> {
     /// Compile a module to IR (for debugging/inspection)
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
         let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
+        if let Some(ref jsx_opts) = self.jsx_options {
+            lowerer = lowerer.with_jsx(jsx_opts.clone());
+        }
         lowerer.lower_module(module)
     }
 
@@ -83,6 +94,9 @@ impl<'a> Compiler<'a> {
     pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> ir::IrModule {
         // Step 1: Lower AST to IR
         let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
+        if let Some(ref jsx_opts) = self.jsx_options {
+            lowerer = lowerer.with_jsx(jsx_opts.clone());
+        }
         let mut ir_module = lowerer.lower_module(module);
 
         // Step 2: Monomorphization
@@ -135,6 +149,9 @@ impl<'a> Compiler<'a> {
 
         // Step 1: Lower AST to IR
         let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone());
+        if let Some(ref jsx_opts) = self.jsx_options {
+            lowerer = lowerer.with_jsx(jsx_opts.clone());
+        }
         let mut ir_module = lowerer.lower_module(module);
 
         writeln!(debug, "=== IR Before Optimization ===").unwrap();

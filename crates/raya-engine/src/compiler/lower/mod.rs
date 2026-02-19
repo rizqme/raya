@@ -15,6 +15,27 @@ use crate::parser::ast::{self, Expression, Pattern, Statement, VariableKind};
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+/// JSX compilation options (passed from manifest or CLI)
+#[derive(Debug, Clone)]
+pub struct JsxOptions {
+    /// Factory function name to call (e.g., "createElement", "h")
+    pub factory: String,
+    /// Fragment identifier (e.g., "Fragment")
+    pub fragment: String,
+    /// Development mode (adds __source/__self)
+    pub development: bool,
+}
+
+impl Default for JsxOptions {
+    fn default() -> Self {
+        Self {
+            factory: "createElement".to_string(),
+            fragment: "Fragment".to_string(),
+            development: false,
+        }
+    }
+}
+
 /// Compile-time constant value (for constant folding)
 /// Only literal values that can be evaluated at compile time
 #[derive(Debug, Clone)]
@@ -330,6 +351,8 @@ pub struct Lowerer<'a> {
     native_function_table: Vec<String>,
     /// Reverse lookup: name → local index (for deduplication)
     native_function_map: FxHashMap<String, u16>,
+    /// JSX compilation options (None = JSX not enabled)
+    jsx_options: Option<JsxOptions>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -395,7 +418,14 @@ impl<'a> Lowerer<'a> {
             variable_object_fields: FxHashMap::default(),
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
+            jsx_options: None,
         }
+    }
+
+    /// Enable JSX compilation with the given options
+    pub fn with_jsx(mut self, options: JsxOptions) -> Self {
+        self.jsx_options = Some(options);
+        self
     }
 
     /// Resolve a native function name to a module-local index.

@@ -26,6 +26,7 @@ fn create_test_manifest(root: &std::path::Path, name: &str, version: &str, deps:
             homepage: None,
             main: None,
         },
+        jsx: None,
         dependencies: deps_map,
         dev_dependencies: std::collections::HashMap::new(),
     };

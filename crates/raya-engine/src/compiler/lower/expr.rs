@@ -209,6 +209,8 @@ impl<'a> Lowerer<'a> {
             Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.lower_instanceof(instanceof),
             Expression::TypeCast(cast) => self.lower_type_cast(cast),
+            Expression::JsxElement(jsx) => self.lower_jsx_element(jsx),
+            Expression::JsxFragment(jsx) => self.lower_jsx_fragment(jsx),
             _ => {
                 // For unhandled expressions, emit a null placeholder
                 self.lower_null_literal()
@@ -3976,6 +3978,361 @@ impl<'a> Lowerer<'a> {
                 left.ty
             }
         }
+    }
+
+    // ============================================================================
+    // JSX Lowering
+    // ============================================================================
+    //
+    // JSX elements and fragments are desugared to createElement() calls:
+    //   <div className="x">{name}</div>
+    //   →  createElement("div", { className: "x" }, name)
+    //
+    //   <>A B</>
+    //   →  createElement(Fragment, null, "A", "B")
+
+    /// Lower a JSX element to a createElement call
+    fn lower_jsx_element(&mut self, jsx: &ast::JsxElement) -> Register {
+        let jsx_options = match &self.jsx_options {
+            Some(opts) => opts.clone(),
+            None => {
+                // JSX not enabled — emit null
+                return self.lower_null_literal();
+            }
+        };
+
+        // 1. Lower the tag argument
+        let tag_reg = self.lower_jsx_tag(&jsx.opening.name);
+
+        // 2. Lower props (attributes → object literal, or null)
+        let props_reg = self.lower_jsx_props(&jsx.opening.attributes);
+
+        // 3. Lower children
+        let child_regs = self.lower_jsx_children(&jsx.children);
+
+        // 4. Emit factory call: createElement(tag, props, ...children)
+        self.emit_jsx_factory_call(&jsx_options.factory, tag_reg, props_reg, child_regs)
+    }
+
+    /// Lower a JSX fragment to a createElement call
+    fn lower_jsx_fragment(&mut self, jsx: &ast::JsxFragment) -> Register {
+        let jsx_options = match &self.jsx_options {
+            Some(opts) => opts.clone(),
+            None => {
+                return self.lower_null_literal();
+            }
+        };
+
+        // 1. Fragment identifier as tag
+        let tag_reg = self.lower_jsx_fragment_tag(&jsx_options.fragment);
+
+        // 2. Null props
+        let props_reg = self.lower_null_literal();
+
+        // 3. Lower children
+        let child_regs = self.lower_jsx_children(&jsx.children);
+
+        // 4. Emit factory call
+        self.emit_jsx_factory_call(&jsx_options.factory, tag_reg, props_reg, child_regs)
+    }
+
+    /// Lower a JSX element name to a register.
+    ///
+    /// - Intrinsic elements (lowercase: div, span) → string literal
+    /// - Component elements (uppercase: Button) → identifier reference
+    /// - Member expressions (UI.Button) → member access chain
+    /// - Namespaced (svg:path) → string literal
+    fn lower_jsx_tag(&mut self, name: &ast::JsxElementName) -> Register {
+        match name {
+            ast::JsxElementName::Identifier(ident) if name.is_intrinsic(self.interner) => {
+                // Intrinsic HTML element → string: "div", "span"
+                let tag_name = self.interner.resolve(ident.name).to_string();
+                let dest = self.alloc_register(TypeId::new(1)); // String
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::String(tag_name)),
+                });
+                dest
+            }
+            ast::JsxElementName::Identifier(ident) => {
+                // Component → identifier reference
+                self.lower_identifier(ident)
+            }
+            ast::JsxElementName::MemberExpression { object, property } => {
+                // UI.Button → member access chain
+                self.lower_jsx_member_name(object, property)
+            }
+            ast::JsxElementName::Namespaced { namespace, name } => {
+                // svg:path → string "svg:path"
+                let ns = self.interner.resolve(namespace.name);
+                let n = self.interner.resolve(name.name);
+                let tag_name = format!("{}:{}", ns, n);
+                let dest = self.alloc_register(TypeId::new(1)); // String
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::String(tag_name)),
+                });
+                dest
+            }
+        }
+    }
+
+    /// Lower a JSX member expression name (e.g., UI.Components.Button)
+    fn lower_jsx_member_name(
+        &mut self,
+        object: &ast::JsxElementName,
+        property: &ast::Identifier,
+    ) -> Register {
+        let obj_reg = match object {
+            ast::JsxElementName::Identifier(ident) => self.lower_identifier(ident),
+            ast::JsxElementName::MemberExpression {
+                object: inner_obj,
+                property: inner_prop,
+            } => self.lower_jsx_member_name(inner_obj, inner_prop),
+            ast::JsxElementName::Namespaced { .. } => self.lower_null_literal(),
+        };
+
+        // Emit field access: obj.property
+        let dest = self.alloc_register(TypeId::new(0));
+        let field_name = self.interner.resolve(property.name).to_string();
+        self.emit(IrInstr::JsonLoadProperty {
+            dest: dest.clone(),
+            object: obj_reg,
+            property: field_name,
+        });
+        dest
+    }
+
+    /// Lower a Fragment identifier tag
+    fn lower_jsx_fragment_tag(&mut self, fragment_name: &str) -> Register {
+        // Try to resolve as an existing identifier in scope
+        if let Some(sym) = self.interner.lookup(fragment_name) {
+            if let Some(&local_idx) = self.local_map.get(&sym) {
+                let dest = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::LoadLocal {
+                    dest: dest.clone(),
+                    index: local_idx,
+                });
+                return dest;
+            }
+        }
+        // Fragment not in scope — emit as a null (framework should provide it)
+        self.lower_null_literal()
+    }
+
+    /// Lower JSX attributes into a props object (or null if empty)
+    fn lower_jsx_props(&mut self, attributes: &[ast::JsxAttribute]) -> Register {
+        if attributes.is_empty() {
+            return self.lower_null_literal();
+        }
+
+        // Check for spread attributes
+        let has_spread = attributes
+            .iter()
+            .any(|a| matches!(a, ast::JsxAttribute::Spread { .. }));
+
+        if has_spread {
+            return self.lower_jsx_props_with_spread(attributes);
+        }
+
+        // Simple case: all regular attributes → object literal
+        let mut fields = Vec::new();
+        let mut field_layout = Vec::new();
+
+        for (idx, attr) in attributes.iter().enumerate() {
+            if let ast::JsxAttribute::Attribute { name, value, .. } = attr {
+                let value_reg = self.lower_jsx_attr_value(value);
+                fields.push((idx as u16, value_reg));
+
+                let key = self.jsx_attr_name_string(name);
+                field_layout.push((key, idx));
+            }
+        }
+
+        let dest = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ObjectLiteral {
+            dest: dest.clone(),
+            class: ClassId::new(0),
+            fields,
+        });
+
+        // Register field layout for destructuring support
+        self.register_object_fields.insert(dest.id, field_layout);
+
+        dest
+    }
+
+    /// Lower JSX props that include spread attributes.
+    ///
+    /// Uses JsonStoreProperty to build the object incrementally,
+    /// preserving attribute evaluation order.
+    fn lower_jsx_props_with_spread(&mut self, attributes: &[ast::JsxAttribute]) -> Register {
+        // Start with an empty object
+        let dest = self.alloc_register(TypeId::new(0));
+        self.emit(IrInstr::ObjectLiteral {
+            dest: dest.clone(),
+            class: ClassId::new(0),
+            fields: vec![],
+        });
+
+        for attr in attributes {
+            match attr {
+                ast::JsxAttribute::Spread { argument, .. } => {
+                    // Lower the spread source and copy its properties
+                    // For now, emit a NativeCall to a runtime helper that merges objects
+                    // TODO: Implement proper object spread in IR
+                    let _spread_reg = self.lower_expr(argument);
+                    // Spread handling would need runtime support — skip for now
+                }
+                ast::JsxAttribute::Attribute { name, value, .. } => {
+                    let key = self.jsx_attr_name_string(name);
+                    let value_reg = self.lower_jsx_attr_value(value);
+                    self.emit(IrInstr::JsonStoreProperty {
+                        object: dest.clone(),
+                        property: key,
+                        value: value_reg,
+                    });
+                }
+            }
+        }
+
+        dest
+    }
+
+    /// Lower a single JSX attribute value
+    fn lower_jsx_attr_value(&mut self, value: &Option<ast::JsxAttributeValue>) -> Register {
+        match value {
+            Some(ast::JsxAttributeValue::StringLiteral(lit)) => {
+                self.lower_string_literal(lit)
+            }
+            Some(ast::JsxAttributeValue::Expression(expr)) => {
+                self.lower_expr(expr)
+            }
+            Some(ast::JsxAttributeValue::JsxElement(jsx)) => {
+                self.lower_jsx_element(jsx)
+            }
+            Some(ast::JsxAttributeValue::JsxFragment(jsx)) => {
+                self.lower_jsx_fragment(jsx)
+            }
+            None => {
+                // Boolean attribute: <input disabled /> → true
+                let dest = self.alloc_register(TypeId::new(2)); // Boolean
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(true)),
+                });
+                dest
+            }
+        }
+    }
+
+    /// Get the string key name for a JSX attribute
+    fn jsx_attr_name_string(&self, name: &ast::JsxAttributeName) -> String {
+        match name {
+            ast::JsxAttributeName::Identifier(ident) => {
+                self.interner.resolve(ident.name).to_string()
+            }
+            ast::JsxAttributeName::Namespaced { namespace, name } => {
+                format!(
+                    "{}:{}",
+                    self.interner.resolve(namespace.name),
+                    self.interner.resolve(name.name)
+                )
+            }
+        }
+    }
+
+    /// Lower JSX children, filtering out whitespace-only text nodes
+    fn lower_jsx_children(&mut self, children: &[ast::JsxChild]) -> Vec<Register> {
+        let mut regs = Vec::new();
+
+        for child in children {
+            match child {
+                ast::JsxChild::Text(text) => {
+                    // Skip whitespace-only text nodes
+                    let trimmed = text.value.trim();
+                    if !trimmed.is_empty() {
+                        let dest = self.alloc_register(TypeId::new(1)); // String
+                        self.emit(IrInstr::Assign {
+                            dest: dest.clone(),
+                            value: IrValue::Constant(IrConstant::String(trimmed.to_string())),
+                        });
+                        regs.push(dest);
+                    }
+                }
+                ast::JsxChild::Element(jsx_elem) => {
+                    regs.push(self.lower_jsx_element(jsx_elem));
+                }
+                ast::JsxChild::Fragment(jsx_frag) => {
+                    regs.push(self.lower_jsx_fragment(jsx_frag));
+                }
+                ast::JsxChild::Expression(jsx_expr) => {
+                    if let Some(ref expr) = jsx_expr.expression {
+                        regs.push(self.lower_expr(expr));
+                    }
+                    // Empty expressions {} are skipped
+                }
+            }
+        }
+
+        regs
+    }
+
+    /// Emit the JSX factory function call: factory(tag, props, ...children)
+    ///
+    /// Resolves the factory function in scope (function_map or local_map)
+    /// and emits the appropriate call instruction.
+    fn emit_jsx_factory_call(
+        &mut self,
+        factory_name: &str,
+        tag: Register,
+        props: Register,
+        children: Vec<Register>,
+    ) -> Register {
+        // Build argument list: (tag, props, ...children)
+        let mut args = vec![tag, props];
+        args.extend(children);
+
+        let dest = self.alloc_register(TypeId::new(0));
+
+        // Try to resolve factory by symbol in the interner
+        if let Some(factory_sym) = self.interner.lookup(factory_name) {
+            // Check if it's a known function (declared in this module)
+            if let Some(&func_id) = self.function_map.get(&factory_sym) {
+                self.emit(IrInstr::Call {
+                    dest: Some(dest.clone()),
+                    func: func_id,
+                    args,
+                });
+                return dest;
+            }
+
+            // Check if it's a local variable (imported function / closure)
+            if let Some(&local_idx) = self.local_map.get(&factory_sym) {
+                let closure = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::LoadLocal {
+                    dest: closure.clone(),
+                    index: local_idx,
+                });
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+        }
+
+        // Factory not found in scope — emit a CallClosure with a null callee
+        // This will produce a runtime error, which is the expected behavior
+        // when the factory function hasn't been imported/defined
+        let null_reg = self.lower_null_literal();
+        self.emit(IrInstr::CallClosure {
+            dest: Some(dest.clone()),
+            closure: null_reg,
+            args,
+        });
+        dest
     }
 }
 

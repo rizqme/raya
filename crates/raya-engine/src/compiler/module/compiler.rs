@@ -87,6 +87,8 @@ pub struct ModuleCompiler {
     cache: ModuleCache,
     /// Export registry for cross-module symbol resolution
     exports: ExportRegistry,
+    /// JSX compilation options (None = JSX disabled)
+    jsx_options: Option<crate::compiler::lower::JsxOptions>,
 }
 
 impl ModuleCompiler {
@@ -97,6 +99,7 @@ impl ModuleCompiler {
             graph: ModuleGraph::new(),
             cache: ModuleCache::new(),
             exports: ExportRegistry::new(),
+            jsx_options: None,
         }
     }
 
@@ -108,7 +111,14 @@ impl ModuleCompiler {
             graph: ModuleGraph::new(),
             cache: ModuleCache::new(),
             exports: ExportRegistry::new(),
+            jsx_options: None,
         })
+    }
+
+    /// Enable JSX compilation with the given options
+    pub fn with_jsx(mut self, options: crate::compiler::lower::JsxOptions) -> Self {
+        self.jsx_options = Some(options);
+        self
     }
 
     /// Compile a single entry point and all its dependencies
@@ -297,7 +307,10 @@ impl ModuleCompiler {
         let module_exports = self.extract_exports(path, &symbols);
 
         // Compile
-        let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+        let mut compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+        if let Some(ref jsx_opts) = self.jsx_options {
+            compiler = compiler.with_jsx(jsx_opts.clone());
+        }
 
         let bytecode = compiler.compile_via_ir(&ast).map_err(|e| ModuleCompileError::CompileError {
             path: path.clone(),

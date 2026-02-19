@@ -90,6 +90,14 @@ impl Interner {
         &self.strings[sym.to_raw()]
     }
 
+    /// Look up a string without interning it.
+    ///
+    /// Returns `Some(symbol)` if the string was previously interned, `None` otherwise.
+    #[inline]
+    pub fn lookup(&self, s: &str) -> Option<Symbol> {
+        self.map.get(s).copied()
+    }
+
     /// Get the number of interned strings.
     pub fn len(&self) -> usize {
         self.strings.len()

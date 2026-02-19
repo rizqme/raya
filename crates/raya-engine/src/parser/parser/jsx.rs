@@ -166,6 +166,24 @@ fn parse_jsx_element_name(parser: &mut Parser) -> Result<JsxElementName, ParseEr
         };
         parser.advance();
 
+        // Check for namespaced name: svg:path
+        if parser.check(&Token::Colon) {
+            parser.advance();
+            if let Token::Identifier(local_name) = parser.current() {
+                let local = Identifier {
+                    name: local_name.clone(),
+                    span: parser.current_span(),
+                };
+                parser.advance();
+                return Ok(JsxElementName::Namespaced {
+                    namespace: id,
+                    name: local,
+                });
+            } else {
+                return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+            }
+        }
+
         // Check for member expression: Foo.Bar
         let mut result = JsxElementName::Identifier(id);
         while parser.check(&Token::Dot) {
@@ -427,9 +445,16 @@ fn parse_jsx_text(parser: &mut Parser) -> Result<JsxChild, ParseError> {
     while !parser.check(&Token::Less) && !parser.check(&Token::LeftBrace) && !parser.at_eof() {
         guard.check()?;
 
-        // For now, just convert the token to string
-        // In a real implementation, we'd have a JSX text mode in the lexer
-        text.push_str(&format!("{} ", parser.current()));
+        // Extract actual text content from the token
+        let token_text = match parser.current() {
+            Token::Identifier(sym) => parser.resolve(*sym).to_string(),
+            Token::StringLiteral(sym) => parser.resolve(*sym).to_string(),
+            Token::IntLiteral(n) => n.to_string(),
+            Token::FloatLiteral(n) => n.to_string(),
+            other => format!("{}", other),
+        };
+        text.push_str(&token_text);
+        text.push(' ');
         parser.advance();
     }
 
