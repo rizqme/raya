@@ -11,9 +11,24 @@ use crate::compiler::ir::{
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
-use crate::parser::ast::{self, Expression, Pattern, Statement, VariableKind};
+use crate::parser::ast::{self, Expression, Pattern, Statement, VariableKind, Visitor, walk_block_statement};
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Collects identifiers referenced in a function body that match module-level variable names.
+/// Used to determine which module-level variables need global promotion (LoadGlobal/StoreGlobal).
+struct ModuleVarRefCollector<'a> {
+    candidates: &'a FxHashSet<Symbol>,
+    referenced: &'a mut FxHashSet<Symbol>,
+}
+
+impl<'a> Visitor for ModuleVarRefCollector<'a> {
+    fn visit_identifier(&mut self, id: &ast::Identifier) {
+        if self.candidates.contains(&id.name) {
+            self.referenced.insert(id.name);
+        }
+    }
+}
 
 /// JSX compilation options (passed from manifest or CLI)
 #[derive(Debug, Clone)]
@@ -328,8 +343,14 @@ pub struct Lowerer<'a> {
     static_method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
     /// Method return type class mapping (for chained method call resolution)
     method_return_class_map: FxHashMap<(ClassId, Symbol), ClassId>,
-    /// Next global variable index (for static fields)
+    /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
+    /// Module-level variable name to global index mapping.
+    /// Variables stored as globals so both main and module-level functions can access them.
+    module_var_globals: FxHashMap<Symbol, u16>,
+    /// Depth counter: 0 = module top-level, >0 = inside function declaration.
+    /// Used to prevent `let x = ...` inside functions from hijacking module globals.
+    function_depth: u32,
     /// Set of function IDs that are async closures (should be spawned as Tasks)
     async_closures: FxHashSet<FunctionId>,
     /// Map from local variable index to function ID for closures stored in variables
@@ -410,6 +431,8 @@ impl<'a> Lowerer<'a> {
             static_method_map: FxHashMap::default(),
             method_return_class_map: FxHashMap::default(),
             next_global_index: 0,
+            module_var_globals: FxHashMap::default(),
+            function_depth: 0,
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
             expr_types,
@@ -492,6 +515,52 @@ impl<'a> Lowerer<'a> {
                             if let Some(const_val) = self.try_eval_constant(init) {
                                 self.constant_map.insert(ident.name, const_val);
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pre-pass: assign global indices to module-level let/var declarations
+        // so both main and module-level functions can access them via LoadGlobal/StoreGlobal.
+        // Only promote variables that are actually referenced by module-level function bodies.
+        {
+            // Step 1: Collect candidate module-level variable names (excluding constants)
+            let candidates: FxHashSet<Symbol> = module.statements.iter()
+                .filter_map(|s| {
+                    if let Statement::VariableDecl(decl) = s {
+                        if let Pattern::Identifier(ident) = &decl.pattern {
+                            if !self.constant_map.contains_key(&ident.name) {
+                                return Some(ident.name);
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            // Step 2: Walk function bodies to find which candidates they reference
+            let mut referenced = FxHashSet::default();
+            if !candidates.is_empty() {
+                for stmt in &module.statements {
+                    if let Statement::FunctionDecl(func) = stmt {
+                        let mut collector = ModuleVarRefCollector {
+                            candidates: &candidates,
+                            referenced: &mut referenced,
+                        };
+                        walk_block_statement(&mut collector, &func.body);
+                    }
+                }
+            }
+
+            // Step 3: Only promote variables that are actually referenced by functions
+            for stmt in &module.statements {
+                if let Statement::VariableDecl(decl) = stmt {
+                    if let Pattern::Identifier(ident) = &decl.pattern {
+                        if referenced.contains(&ident.name) {
+                            let global_index = self.next_global_index;
+                            self.next_global_index += 1;
+                            self.module_var_globals.insert(ident.name, global_index);
                         }
                     }
                 }
@@ -1404,6 +1473,9 @@ impl<'a> Lowerer<'a> {
 
     /// Lower a function declaration
     fn lower_function(&mut self, func: &ast::FunctionDecl) -> IrFunction {
+        // Track that we're inside a function (prevents var decls from hijacking module globals)
+        self.function_depth += 1;
+
         // Reset per-function state
         self.next_register = 0;
         self.next_block = 0;
@@ -1485,6 +1557,9 @@ impl<'a> Lowerer<'a> {
             self.set_terminator(Terminator::Return(None));
         }
 
+        // Restore function depth
+        self.function_depth -= 1;
+
         // Take the function out
         self.current_function.take().unwrap()
     }
@@ -1503,7 +1578,9 @@ impl<'a> Lowerer<'a> {
 
         // Pre-scan to identify captured variables
         let stmts_owned: Vec<ast::Statement> = stmts.iter().map(|s| (*s).clone()).collect();
-        let locals = self.collect_local_names(&stmts_owned);
+        let mut locals = self.collect_local_names(&stmts_owned);
+        // Remove module-level globals — they use LoadGlobal/StoreGlobal, not locals
+        locals.retain(|name| !self.module_var_globals.contains_key(name));
         self.scan_for_captured_vars(&stmts_owned, &locals);
 
         // Create main function

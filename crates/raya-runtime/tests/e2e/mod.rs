@@ -38,6 +38,7 @@ mod os;
 mod io;
 mod fs;
 mod process;
+mod module_vars;
 
 
 pub use harness::*;

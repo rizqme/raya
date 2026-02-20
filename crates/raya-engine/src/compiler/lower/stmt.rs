@@ -680,6 +680,64 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Module-level variable: use global storage (not local) so module-level
+        // functions can access them via LoadGlobal/StoreGlobal.
+        // Only at module scope (depth 0) — inside function bodies, `let x` creates a local
+        // even if a module-level `x` exists (shadowing).
+        if self.function_depth == 0 {
+        if let Some(&global_idx) = self.module_var_globals.get(&name) {
+            if let Some(init) = &decl.initializer {
+                // Track class type from type annotation (same as local path)
+                if let Some(type_ann) = &decl.type_annotation {
+                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                            self.variable_class_map.insert(name, class_id);
+                        }
+                    }
+                    if let ast::Type::Array(arr_ty) = &type_ann.ty {
+                        if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
+                            if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
+                                self.array_element_class_map.insert(name, class_id);
+                            }
+                        }
+                    }
+                }
+
+                // Track class type from new expression (e.g., `let x = new MyClass()`)
+                if !self.variable_class_map.contains_key(&name) {
+                    if let ast::Expression::New(new_expr) = init {
+                        if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                                self.variable_class_map.insert(name, class_id);
+                            }
+                        }
+                    }
+                }
+
+                // Infer class type from method call return types
+                if !self.variable_class_map.contains_key(&name) {
+                    if let Some(class_id) = self.infer_class_id(init) {
+                        self.variable_class_map.insert(name, class_id);
+                    }
+                }
+
+                let value = self.lower_expr(init);
+
+                // Transfer object field layout from register to variable
+                if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
+                    self.variable_object_fields.insert(name, fields);
+                }
+
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value,
+                });
+            }
+            // No local allocation — resolved via LoadGlobal/StoreGlobal
+            return;
+        }
+        }
+
         // Allocate local slot (only for non-constant or non-literal variables)
         let local_idx = self.allocate_local(name);
 
