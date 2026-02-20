@@ -12,6 +12,9 @@ description = "Unified CLI tool for Raya"
 name = "raya"
 path = "src/main.rs"
 
+[features]
+aot = ["raya-engine/aot"]
+
 [dependencies]
 raya-engine = { workspace = true }
 raya-runtime = { workspace = true }

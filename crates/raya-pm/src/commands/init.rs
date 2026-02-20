@@ -62,6 +62,8 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
         registry: None,
+        assets: None,
+        bundle: None,
     };
 
     // Create directory if it doesn't exist

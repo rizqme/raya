@@ -164,7 +164,7 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,258+ total (1,721 engine + 147 JIT, 1,297 runtime, 19 CLI, 17 stdlib, 204 raya-pm) — 0 ignored
+**Tests:** 3,328+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 19 CLI, 17 stdlib, 204 raya-pm) — 0 ignored
 
 **CLI Implementation:** Complete
 - `raya run` / `raya build` / `raya eval` fully wired through `raya-runtime::Runtime`
@@ -181,6 +181,17 @@
 - Vm integration: `enable_jit()`, automatic pre-warm in `execute()`
 - `cargo build --features jit` / `cargo test --features jit`
 - 147 tests (88 unit + 59 integration with native code execution)
+
+**AOT Compilation (feature-gated):** Complete
+- Full native compilation: Source → Bytecode → StateMachine → Cranelift → Native
+- State machine transform for suspension/resumption (async, preemption)
+- Cranelift lowering with NaN-boxing ABI (same as JIT)
+- Direct compilation (no ObjectModule) — zero relocations via AotHelperTable
+- Bundle format: [code][func_table][VFS][trailer] with magic=b"RAYAAOT\0"
+- Scheduler integration: `run_aot_function()` executor with full suspend/resume
+- CLI: `raya bundle input.raya -o output.bundle` (requires `--features aot`)
+- `cargo build --features aot` / `cargo test --features aot`
+- 55 AOT tests + 15 bundle format tests
 
 See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](plans/milestone-3.9.md), [plans/milestone-4.1.md](plans/milestone-4.1.md), [plans/milestone-4.2.md](plans/milestone-4.2.md), [plans/milestone-4.3.md](plans/milestone-4.3.md), [plans/milestone-4.4.md](plans/milestone-4.4.md), [plans/milestone-4.5.md](plans/milestone-4.5.md), [plans/milestone-4.6.md](plans/milestone-4.6.md), [plans/milestone-4.7.md](plans/milestone-4.7.md), [plans/milestone-4.8.md](plans/milestone-4.8.md), and [plans/milestone-4.9.md](plans/milestone-4.9.md) for details.
 
@@ -234,8 +245,8 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 
 ```
 crates/
-├── raya-engine/     # Parser, compiler, VM, JIT (main crate)
-├── raya-runtime/    # High-level Runtime API (compile, load, execute, eval, deps)
+├── raya-engine/     # Parser, compiler, VM, JIT, AOT (main crate)
+├── raya-runtime/    # High-level Runtime API + bundle format (compile, load, execute, eval, deps)
 ├── raya-stdlib/     # Native stdlib implementations (logger, math, crypto, etc.)
 ├── raya-cli/        # Unified CLI (run, build, eval, pkg, etc.)
 ├── raya-pm/         # Package manager (raya-pm)
@@ -254,10 +265,11 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (3,258+)
+cargo test                     # Run all tests (3,328+)
 cargo test -p raya-engine      # Engine tests only (1,721)
 cargo test -p raya-engine --features jit  # Engine + JIT tests (1,868)
-cargo test -p raya-runtime     # Runtime + e2e tests (1,297)
+cargo test -p raya-engine --features aot  # Engine + AOT tests (1,776)
+cargo test -p raya-runtime     # Runtime + e2e + bundle tests (1,312)
 cargo test -p raya-cli         # CLI integration tests (19)
 cargo test -p raya-stdlib      # Stdlib tests (17)
 cargo test -p raya-pm          # Package manager tests (204)

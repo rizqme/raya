@@ -61,6 +61,7 @@ cranelift-frontend = { workspace = true, optional = true }
 cranelift-module = { workspace = true, optional = true }
 cranelift-jit = { workspace = true, optional = true }
 cranelift-native = { workspace = true, optional = true }
+cranelift-object = { workspace = true, optional = true }
 target-lexicon = { workspace = true, optional = true }
 
 [features]
@@ -69,6 +70,14 @@ jit = [
     "dep:cranelift-frontend",
     "dep:cranelift-module",
     "dep:cranelift-jit",
+    "dep:cranelift-native",
+    "dep:target-lexicon",
+]
+aot = [
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-module",
+    "dep:cranelift-object",
     "dep:cranelift-native",
     "dep:target-lexicon",
 ]

@@ -11,6 +11,7 @@ src/
 ├── compiler/        # IR, optimizations, bytecode generation
 ├── vm/              # Interpreter, scheduler, GC, runtime
 ├── jit/             # JIT compilation (feature-gated: "jit")
+├── aot/             # AOT native compilation (feature-gated: "aot")
 └── builtins/        # Precompiled builtin type signatures
 ```
 
@@ -58,6 +59,20 @@ src/
 - **profiling/**: Per-function counters, compilation policy (thresholds)
 - **engine.rs**: Top-level `JitEngine` + `JitConfig`, pre-warm orchestration
 
+### `aot/` - AOT Native Compilation (feature-gated: `#[cfg(feature = "aot")]`)
+- **frame.rs**: `AotFrame`, `AotTaskContext`, `AotHelperTable` (25 entries), `AotEntryFn` C-ABI signature
+- **abi.rs**: NaN-boxing constants and Cranelift IR emit helpers (box/unbox i32, f64, bool, null)
+- **analysis.rs**: Suspension point analysis (`SuspensionKind`: Await, NativeCall, Preemption)
+- **statemachine.rs**: State machine transform — splits at suspension points, inserts dispatch/save/restore
+- **traits.rs**: `AotCompilable` trait, `compile_to_state_machine()` pipeline
+- **ir_adapter.rs**: `IrFunctionAdapter` — translates IR to AOT blocks with type-aware arithmetic
+- **bytecode_adapter.rs**: `LiftedFunction` — lifts bytecode to AOT form (stub: returns null)
+- **lowering.rs**: Cranelift lowering from `StateMachineFunction` to native code (if-else dispatch chain)
+- **codegen.rs**: `compile_functions()` — compiles each function independently via `Context::compile()`
+- **helpers.rs**: 25 runtime helper implementations for `AotHelperTable` (frame, GC, values, native calls)
+- **executor.rs**: `run_aot_function()` — bridges compiled functions with scheduler (`ExecutionResult`)
+- **linker.rs**: Cross-module symbol resolution
+
 ## Compilation Pipeline
 
 ```
@@ -101,10 +116,23 @@ Source (.raya)
          ▼
 Binary (.ryb)
     │
-    ▼ (optional, with --features jit)
-┌─────────────────┐
-│   JIT Compile   │  → native code (Cranelift)
-└─────────────────┘
+    ├──▶ (optional, with --features jit)
+    │   ┌─────────────────┐
+    │   │   JIT Compile   │  → native code at runtime (Cranelift)
+    │   └─────────────────┘
+    │
+    └──▶ (optional, with --features aot)
+        ┌─────────────────┐
+        │  State Machine  │  → suspension/resume transform
+        └────────┬────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │  AOT Compile    │  → native code (Cranelift)
+        └────────┬────────┘
+                 │
+                 ▼
+        Bundle (.bundle)
 ```
 
 ## Key Types
@@ -157,8 +185,9 @@ Vm::execute(&Module) -> VmResult<Value>
 
 ## Test Files
 
-- **Engine total** (1,721): Unit tests + integration tests (without JIT)
+- **Engine total** (1,721): Unit tests + integration tests (without JIT or AOT)
 - **JIT tests** (147): 88 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
+- **AOT tests** (55): Unit tests across 12 modules in `src/aot/` (requires `--features aot`)
 - **E2E tests** (1,297): In `raya-runtime/tests/` (require `StdNativeHandler`)
 - **CLI tests** (19): In `raya-cli/tests/` (use `raya-runtime::Runtime`)
 - `tests/module_loading.rs`: 29 E2E tests (load/execute pipeline, registry, classes, snapshots, file I/O)
@@ -174,5 +203,6 @@ Vm::execute(&Module) -> VmResult<Value>
 - **NativeHandler trait**: Engine defines this trait for stdlib decoupling; `raya-runtime` binds implementations via `Runtime` API
 - **Reflection always enabled**: No compiler flag needed, metadata always emitted
 - **JIT is feature-gated**: `cargo build --features jit` pulls in Cranelift; without the flag, no JIT deps
+- **AOT is feature-gated**: `cargo build --features aot` enables ahead-of-time native compilation; shares Cranelift deps with JIT
 
 See submodule CLAUDE.md files for detailed guidance on each component.

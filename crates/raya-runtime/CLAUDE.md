@@ -59,7 +59,11 @@ src/
 ├── compile.rs          # compile_source(): parser → binder → checker → compiler
 ├── vm_setup.rs         # create_vm(): VM with StdNativeHandler + stdlib + posix
 ├── loader.rs           # load_bytecode_file(), resolve_ryb_deps(), find_library()
-└── deps.rs             # load_dependencies() from raya.toml manifest
+├── deps.rs             # load_dependencies() from raya.toml manifest
+└── bundle/             # AOT bundle format and loading
+    ├── format.rs       # AotTrailer, BundledFuncEntry, VFS section read/write
+    ├── loader.rs       # AotCodeRegion — mmap executable memory
+    └── vfs.rs          # Virtual filesystem (DiskBacked + Embedded)
 
 tests/
 ├── e2e_tests.rs        # E2E test entry point
@@ -103,6 +107,7 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 ## Tests
 
 - **E2E tests** (1,297+): Full compilation + execution tests using `StdNativeHandler`
+- **Bundle tests** (15): Format roundtrip, loader, VFS (DiskBacked + Embedded)
 - **0 ignored**: All tests passing
 - Test modules include: syntax_edge_cases, concurrency_edge_cases, edge_cases, and 30+ feature modules
 

@@ -30,7 +30,8 @@ raya-runtime ─────────────┬─> raya-engine (core en
 
 raya-engine ───────────────┬─> (defines NativeHandler trait)
                            ├─> (no dependency on stdlib)
-                           └─> cranelift-* (optional, behind "jit" feature)
+                           ├─> cranelift-* (optional, behind "jit" feature)
+                           └─> cranelift-* (optional, behind "aot" feature)
 
 raya-stdlib ───────────────┬─> raya-sdk (FFI types)
                            └─> raya-native (proc-macros)
@@ -43,8 +44,8 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 
 | Crate | Purpose | Status |
 |-------|---------|--------|
-| `raya-engine` | Full language engine: parser, compiler, VM, JIT (feature-gated) | Active development |
-| `raya-runtime` | High-level Runtime API: compile, load, execute, eval, dependency resolution; hosts e2e tests | ✅ Complete (Runtime struct, 1,297 e2e tests) |
+| `raya-engine` | Full language engine: parser, compiler, VM, JIT + AOT (feature-gated) | Active development |
+| `raya-runtime` | High-level Runtime API + bundle format: compile, load, execute, eval, dependency resolution; hosts e2e tests | ✅ Complete (Runtime struct, 1,297 e2e + 15 bundle tests) |
 | `raya-stdlib` | Native stdlib implementations + type defs | ✅ Logger, Math, Crypto, Time, Path complete |
 | `raya-cli` | `raya` CLI tool (run, build, eval, pkg, etc.) | ✅ run/build/eval implemented (19 integration tests) |
 | `raya-lsp` | Language server for IDE support | Placeholder |

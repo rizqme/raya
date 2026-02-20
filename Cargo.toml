@@ -78,6 +78,7 @@ cranelift-frontend = "0.128"
 cranelift-module = "0.128"
 cranelift-jit = "0.128"
 cranelift-native = "0.128"
+cranelift-object = "0.128"
 target-lexicon = "0.13"
 
 [profile.release]

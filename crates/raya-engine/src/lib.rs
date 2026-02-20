@@ -66,6 +66,10 @@ pub mod vm;
 #[cfg(feature = "jit")]
 pub mod jit;
 
+/// AOT (Ahead-of-Time) compilation module (optional, behind "aot" feature)
+#[cfg(feature = "aot")]
+pub mod aot;
+
 /// Builtins module: Precompiled builtin types and signatures (re-exported from vm::builtins)
 pub use vm::builtins;
 

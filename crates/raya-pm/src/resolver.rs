@@ -450,6 +450,8 @@ mod tests {
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
             registry: None,
+            assets: None,
+            bundle: None,
         }
     }
 

@@ -52,6 +52,14 @@ pub struct PackageManifest {
     /// Package registry configuration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<RegistryConfig>,
+
+    /// Asset files to mount into the virtual filesystem (shared between run and bundle)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assets: Option<AssetsConfig>,
+
+    /// Bundle configuration for `raya bundle`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle: Option<BundleConfig>,
 }
 
 /// Registry configuration
@@ -96,6 +104,63 @@ impl Default for JsxConfig {
             fragment: default_jsx_fragment(),
             factory_module: None,
             development: false,
+        }
+    }
+}
+
+/// Asset configuration — shared between `raya run` and `raya bundle`.
+///
+/// Files declared here are mounted into a virtual filesystem (VFS):
+/// - In dev mode (`raya run`): VFS reads live from disk relative to project root
+/// - In bundle mode: VFS reads from data embedded in the executable
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct AssetsConfig {
+    /// Files and directories to mount into the virtual filesystem.
+    /// Paths are relative to the project root (where raya.toml lives).
+    #[serde(default)]
+    pub include: Vec<String>,
+
+    /// Glob patterns to exclude from included paths.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Bundle-specific configuration for `raya bundle`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BundleConfig {
+    /// Entry point file (.raya or .ryb). Defaults to [package].main.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+
+    /// Output binary name. Defaults to [package].name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+
+    /// Target platform triple (default: "native" = current platform).
+    #[serde(default = "default_bundle_target")]
+    pub target: String,
+
+    /// Strip debug info from embedded bytecode.
+    #[serde(default)]
+    pub strip: bool,
+
+    /// Compress the bundle payload.
+    #[serde(default)]
+    pub compress: bool,
+}
+
+fn default_bundle_target() -> String {
+    "native".to_string()
+}
+
+impl Default for BundleConfig {
+    fn default() -> Self {
+        Self {
+            entry: None,
+            output: None,
+            target: default_bundle_target(),
+            strip: false,
+            compress: false,
         }
     }
 }
@@ -580,6 +645,138 @@ version = "1.0.0"
     }
 
     #[test]
+    fn test_parse_assets_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[assets]
+include = ["assets/", "config.json", "templates/"]
+exclude = ["**/*.test.raya", "assets/dev-only/"]
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let assets = manifest.assets.unwrap();
+        assert_eq!(assets.include, vec!["assets/", "config.json", "templates/"]);
+        assert_eq!(assets.exclude, vec!["**/*.test.raya", "assets/dev-only/"]);
+    }
+
+    #[test]
+    fn test_parse_no_assets_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        assert!(manifest.assets.is_none());
+    }
+
+    #[test]
+    fn test_parse_bundle_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[bundle]
+entry = "src/server.raya"
+output = "my-server"
+strip = true
+compress = true
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let bundle = manifest.bundle.unwrap();
+        assert_eq!(bundle.entry, Some("src/server.raya".to_string()));
+        assert_eq!(bundle.output, Some("my-server".to_string()));
+        assert_eq!(bundle.target, "native");
+        assert!(bundle.strip);
+        assert!(bundle.compress);
+    }
+
+    #[test]
+    fn test_parse_bundle_config_defaults() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[bundle]
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let bundle = manifest.bundle.unwrap();
+        assert_eq!(bundle.entry, None);
+        assert_eq!(bundle.output, None);
+        assert_eq!(bundle.target, "native");
+        assert!(!bundle.strip);
+        assert!(!bundle.compress);
+    }
+
+    #[test]
+    fn test_parse_no_bundle_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        assert!(manifest.bundle.is_none());
+    }
+
+    #[test]
+    fn test_parse_full_manifest_with_assets_and_bundle() {
+        let toml = r#"
+[package]
+name = "my-server"
+version = "2.0.0"
+main = "src/main.raya"
+
+[assets]
+include = ["assets/", "config/"]
+exclude = ["**/*.test.raya"]
+
+[bundle]
+output = "my-server"
+strip = true
+
+[dependencies]
+http = "^2.0.0"
+
+[scripts]
+dev = "src/main.raya"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        assert_eq!(manifest.package.name, "my-server");
+        assert!(manifest.assets.is_some());
+        assert!(manifest.bundle.is_some());
+        assert_eq!(manifest.dependencies.len(), 1);
+        assert_eq!(manifest.scripts.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_bundle_with_ryb_entry() {
+        let toml = r#"
+[package]
+name = "precompiled"
+version = "1.0.0"
+
+[bundle]
+entry = "dist/main.ryb"
+output = "app"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let bundle = manifest.bundle.unwrap();
+        assert_eq!(bundle.entry, Some("dist/main.ryb".to_string()));
+    }
+
+    #[test]
     fn test_jsx_config_round_trip() {
         let config = JsxConfig {
             factory: "h".to_string(),
@@ -603,6 +800,8 @@ version = "1.0.0"
             dependencies: HashMap::new(),
             dev_dependencies: HashMap::new(),
             registry: None,
+            assets: None,
+            bundle: None,
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();

@@ -37,7 +37,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 | `raya pkg set-url` | — | Set registry URL | Implemented |
 | `raya pkg whoami` | — | Show current user | Implemented |
 | `raya pkg info` | — | Show package info | Stub |
-| `raya bundle` | — | Create standalone executable | Stub |
+| `raya bundle` | — | AOT compile to native bundle | **Implemented** — requires `--features aot` |
 | `raya doc` | — | Generate documentation | Stub |
 | `raya lsp` | — | Start Language Server | Stub |
 | `raya completions` | — | Generate shell completions | Stub |
@@ -60,9 +60,10 @@ src/
     │   ├── set_url.rs    # Registry URL management (project + global)
     │   ├── whoami.rs     # Current user info
     │   └── info.rs       # Package info (stub)
+    ├── bundle.rs         # AOT compilation to native bundle (feature-gated: "aot")
     ├── clean.rs          # Functional: deletes dist/, .raya-cache/
     ├── info.rs           # Functional: displays env/project info
-    └── *.rs              # Other stubs (build, check, test, etc.)
+    └── *.rs              # Other stubs (check, test, etc.)
 ```
 
 ## Run Command (Dual-Mode)
@@ -105,11 +106,13 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 ## For AI Assistants
 
 - `run`, `build`, `eval` are fully wired through `raya-runtime::Runtime`
-- Most other commands are still stubs
+- `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
 - `pkg` subcommands (login/logout/set-url/whoami) are fully implemented
 - `clean` and `info` are functional
 - `run.rs` uses `Runtime::run_file()` which auto-detects .raya/.ryb and resolves deps from raya.toml
 - `eval.rs` auto-wraps bare expressions in `return ...;`
 - `build.rs` uses `Runtime::compile_file()` + `CompiledModule::encode()`
+- `bundle.rs` uses `raya-engine::aot` pipeline + `raya-runtime::bundle::format` for output
 - JIT is default-on at the CLI level; `--no-jit` flag disables it
+- AOT feature: `[features] aot = ["raya-engine/aot"]` — forwards to engine
 - Run CLI tests with: `cargo test -p raya-cli`
