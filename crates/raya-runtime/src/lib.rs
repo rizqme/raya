@@ -163,6 +163,29 @@ impl Runtime {
         self.compile(&source)
     }
 
+    /// Compile a Raya source string with options (e.g., source map).
+    pub fn compile_with_options(
+        &self,
+        source: &str,
+        options: &compile::CompileOptions,
+    ) -> Result<CompiledModule, RuntimeError> {
+        let (module, interner) = compile::compile_source_with_options(source, options)?;
+        Ok(CompiledModule {
+            module,
+            interner: Some(interner),
+        })
+    }
+
+    /// Compile a .raya source file with options (e.g., source map).
+    pub fn compile_file_with_options(
+        &self,
+        path: &Path,
+        options: &compile::CompileOptions,
+    ) -> Result<CompiledModule, RuntimeError> {
+        let source = std::fs::read_to_string(path)?;
+        self.compile_with_options(&source, options)
+    }
+
     // ── Checking ─────────────────────────────────────────────────────────
 
     /// Type-check a Raya source string without generating bytecode.

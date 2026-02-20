@@ -69,7 +69,7 @@ fn test_integer_literal() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     // Should emit: CONST_I32 42, STORE_LOCAL, LOAD_LOCAL, RETURN
@@ -92,7 +92,7 @@ fn test_float_literal() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     assert_eq!(code[0], Opcode::ConstF64 as u8);
@@ -120,7 +120,7 @@ fn test_boolean_literals() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     assert_eq!(code[0], Opcode::ConstTrue as u8);
@@ -141,7 +141,7 @@ fn test_null_literal() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     assert_eq!(code[0], Opcode::ConstNull as u8);
@@ -162,7 +162,7 @@ fn test_string_literal() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     assert_eq!(code[0], Opcode::ConstStr as u8);
@@ -203,7 +203,7 @@ fn test_binary_add() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     // Find IADD opcode in the bytecode
@@ -255,7 +255,7 @@ fn test_binary_operations() {
         func.add_block(entry);
         module.add_function(func);
 
-        let result = codegen::generate(&module).unwrap();
+        let result = codegen::generate(&module, false).unwrap();
         let code = &result.functions[0].code;
 
         let has_opcode = code.iter().any(|&b| b == expected_opcode as u8);
@@ -293,7 +293,7 @@ fn test_unary_neg() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_ineg = code.iter().any(|&b| b == Opcode::Ineg as u8);
@@ -322,7 +322,7 @@ fn test_unary_not() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_not = code.iter().any(|&b| b == Opcode::Not as u8);
@@ -350,7 +350,7 @@ fn test_unconditional_jump() {
     func.add_block(bb1);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_jmp = code.iter().any(|&b| b == Opcode::Jmp as u8);
@@ -403,7 +403,7 @@ fn test_conditional_branch() {
     func.add_block(bb3);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_jmp_if_false = code.iter().any(|&b| b == Opcode::JmpIfFalse as u8);
@@ -475,7 +475,7 @@ fn test_simple_loop() {
     func.add_block(bb3);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     // Should have multiple jumps for the loop
@@ -518,7 +518,7 @@ fn test_function_call() {
     main.add_block(entry);
     module.add_function(main);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
 
     // Main function should have CALL opcode
     let main_code = &result.functions[1].code;
@@ -564,7 +564,7 @@ fn test_local_variables() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
 
     // Check function has correct local count
     assert!(
@@ -589,7 +589,7 @@ fn test_optimized_local_slots() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     // First local (slot 0) should use optimized STORE_LOCAL_0/LOAD_LOCAL_0
@@ -637,7 +637,7 @@ fn test_array_literal() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_array_literal = code.iter().any(|&b| b == Opcode::ArrayLiteral as u8);
@@ -681,7 +681,7 @@ fn test_array_access() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_load_elem = code.iter().any(|&b| b == Opcode::LoadElem as u8);
@@ -712,7 +712,7 @@ fn test_new_object() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_new = code.iter().any(|&b| b == Opcode::New as u8);
@@ -747,7 +747,7 @@ fn test_field_access() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_load_field = code.iter().any(|&b| b == Opcode::LoadField as u8);
@@ -767,7 +767,7 @@ fn test_return_void() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     // Return(None) emits ConstNull + Return
@@ -791,7 +791,7 @@ fn test_return_value() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_return = code.iter().any(|&b| b == Opcode::Return as u8);
@@ -830,7 +830,7 @@ fn test_multiple_functions() {
     func2.add_block(entry2);
     module.add_function(func2);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
 
     assert_eq!(result.functions.len(), 2);
     assert_eq!(result.functions[0].name, "first");
@@ -876,7 +876,7 @@ fn test_make_closure() {
     main.add_block(entry);
     module.add_function(main);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let main_code = &result.functions[1].code;
 
     let has_make_closure = main_code.iter().any(|&b| b == Opcode::MakeClosure as u8);
@@ -903,7 +903,7 @@ fn test_load_captured() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_load_captured = code.iter().any(|&b| b == Opcode::LoadCaptured as u8);
@@ -936,7 +936,7 @@ fn test_store_captured() {
     func.add_block(entry);
     module.add_function(func);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let code = &result.functions[0].code;
 
     let has_store_captured = code.iter().any(|&b| b == Opcode::StoreCaptured as u8);
@@ -991,7 +991,7 @@ fn test_closure_with_multiple_captures() {
     main.add_block(entry);
     module.add_function(main);
 
-    let result = codegen::generate(&module).unwrap();
+    let result = codegen::generate(&module, false).unwrap();
     let main_code = &result.functions[1].code;
 
     let has_make_closure = main_code.iter().any(|&b| b == Opcode::MakeClosure as u8);
@@ -1039,7 +1039,7 @@ fn test_string_compare_index_mode() {
     func.add_block(entry);
     module.add_function(func);
 
-    let module_result = codegen::generate(&module).unwrap();
+    let module_result = codegen::generate(&module, false).unwrap();
     let code = &module_result.functions[0].code;
 
     // Should emit IEQ for index-based comparison
@@ -1081,7 +1081,7 @@ fn test_string_compare_full_mode() {
     func.add_block(entry);
     module.add_function(func);
 
-    let module_result = codegen::generate(&module).unwrap();
+    let module_result = codegen::generate(&module, false).unwrap();
     let code = &module_result.functions[0].code;
 
     // Should emit SEQ for full string comparison
@@ -1123,7 +1123,7 @@ fn test_string_compare_not_equal_index() {
     func.add_block(entry);
     module.add_function(func);
 
-    let module_result = codegen::generate(&module).unwrap();
+    let module_result = codegen::generate(&module, false).unwrap();
     let code = &module_result.functions[0].code;
 
     // Should emit INE for index-based not-equal comparison
@@ -1161,7 +1161,7 @@ fn test_string_compare_not_equal_full() {
     func.add_block(entry);
     module.add_function(func);
 
-    let module_result = codegen::generate(&module).unwrap();
+    let module_result = codegen::generate(&module, false).unwrap();
     let code = &module_result.functions[0].code;
 
     // Should emit SNE for full string not-equal comparison

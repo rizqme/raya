@@ -63,6 +63,7 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
         dev_dependencies: HashMap::new(),
         registry: None,
         assets: None,
+        build: None,
         bundle: None,
         lint: None,
     };

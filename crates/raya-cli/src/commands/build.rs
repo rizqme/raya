@@ -1,5 +1,6 @@
 //! `raya build` — Compile Raya source to .ryb bytecode.
 
+use raya_runtime::compile::CompileOptions;
 use raya_runtime::Runtime;
 use std::path::{Path, PathBuf};
 
@@ -11,10 +12,14 @@ pub fn execute(
     sourcemap: bool,
     dry_run: bool,
 ) -> anyhow::Result<()> {
-    let _ = (release, watch, sourcemap); // TODO: wire these flags
+    let _ = (release, watch); // TODO: wire these flags
 
     let rt = Runtime::new();
     let out_dir = PathBuf::from(&out_dir);
+
+    let options = CompileOptions {
+        sourcemap,
+    };
 
     // Collect .raya files from input paths
     let source_files = collect_raya_files(&files)?;
@@ -34,7 +39,7 @@ pub fn execute(
         }
 
         let compiled = rt
-            .compile_file(src_path)
+            .compile_file_with_options(src_path, &options)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         if let Some(parent) = out_path.parent() {

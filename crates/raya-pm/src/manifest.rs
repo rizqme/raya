@@ -57,6 +57,10 @@ pub struct PackageManifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assets: Option<AssetsConfig>,
 
+    /// Build configuration for compilation output
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BuildConfig>,
+
     /// Bundle configuration for `raya bundle`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<BundleConfig>,
@@ -165,6 +169,35 @@ impl Default for BundleConfig {
             target: default_bundle_target(),
             strip: false,
             compress: false,
+        }
+    }
+}
+
+/// Build configuration for `[build]` section in raya.toml.
+///
+/// Controls compilation output options like source map generation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BuildConfig {
+    /// Include source map (bytecode offset → source location) in .ryb files.
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub sourcemap: bool,
+
+    /// Embed original source text in .ryb for rich error context.
+    /// Default: false
+    #[serde(default)]
+    pub embed_source: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for BuildConfig {
+    fn default() -> Self {
+        Self {
+            sourcemap: true,
+            embed_source: false,
         }
     }
 }
@@ -789,6 +822,52 @@ output = "app"
     }
 
     #[test]
+    fn test_parse_build_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[build]
+sourcemap = false
+embed_source = true
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let build = manifest.build.unwrap();
+        assert!(!build.sourcemap);
+        assert!(build.embed_source);
+    }
+
+    #[test]
+    fn test_parse_build_config_defaults() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+
+[build]
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let build = manifest.build.unwrap();
+        assert!(build.sourcemap);
+        assert!(!build.embed_source);
+    }
+
+    #[test]
+    fn test_parse_no_build_config() {
+        let toml = r#"
+[package]
+name = "my-app"
+version = "1.0.0"
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        assert!(manifest.build.is_none());
+    }
+
+    #[test]
     fn test_jsx_config_round_trip() {
         let config = JsxConfig {
             factory: "h".to_string(),
@@ -813,6 +892,7 @@ output = "app"
             dev_dependencies: HashMap::new(),
             registry: None,
             assets: None,
+            build: None,
             bundle: None,
             lint: None,
         };

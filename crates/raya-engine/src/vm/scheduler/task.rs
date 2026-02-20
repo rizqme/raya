@@ -535,7 +535,9 @@ impl Task {
     /// Build a stack trace string from the current call stack
     pub fn build_stack_trace(&self, error_name: &str, error_message: &str) -> String {
         let call_stack = self.call_stack.lock().unwrap();
+        let execution_frames = self.execution_frames.lock().unwrap();
         let module = &self.module;
+        let debug_info = module.debug_info.as_ref();
 
         let mut trace = if error_message.is_empty() {
             error_name.to_string()
@@ -543,10 +545,38 @@ impl Task {
             format!("{}: {}", error_name, error_message)
         };
 
+        // Build a map of func_id → bytecode offset from execution frames
+        // The current frame's IP comes from self.ip, caller frames come from execution_frames
+        let current_ip = self.ip.load(std::sync::atomic::Ordering::Relaxed);
+
         // Add each frame to the stack trace (most recent first)
-        for &func_id in call_stack.iter().rev() {
+        for (i, &func_id) in call_stack.iter().rev().enumerate() {
             if let Some(func) = module.functions.get(func_id) {
-                trace.push_str(&format!("\n    at {}", func.name));
+                // Try to get bytecode offset: first frame uses current ip,
+                // subsequent frames use execution_frames (which are in reverse order)
+                let ip = if i == 0 {
+                    Some(current_ip)
+                } else {
+                    // Execution frames are pushed in call order, so reverse iteration
+                    // matches the call_stack reverse iteration
+                    let frame_idx = execution_frames.len().checked_sub(i);
+                    frame_idx.and_then(|idx| execution_frames.get(idx)).map(|f| f.ip)
+                };
+
+                // Try to look up source location from debug info
+                let location = ip.and_then(|offset| {
+                    debug_info.and_then(|di| {
+                        di.functions.get(func_id).and_then(|fdi| {
+                            fdi.lookup_location(offset as u32)
+                        })
+                    })
+                });
+
+                if let Some(loc) = location {
+                    trace.push_str(&format!("\n    at {} (line {}:{})", func.name, loc.line, loc.column));
+                } else {
+                    trace.push_str(&format!("\n    at {}", func.name));
+                }
             }
         }
 
