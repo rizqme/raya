@@ -126,7 +126,104 @@ export class Base32 {
 }
 
 /**
- * Encoding facade providing access to CSV, XML, and Base32 utilities.
+ * Handle-based JSON value for structured data navigation.
+ *
+ * Obtained from `Json.parse()`, `Toml.parse()`, or builder methods.
+ * Call `release()` when done to free native memory.
+ */
+export class JsonValue {
+    /** Wrap a native handle (internal use). */
+    constructor(handle: number);
+
+    /** Get a child value by object key. Returns a JsonValue (null if key missing). */
+    get(key: string): JsonValue;
+
+    /** Get a child value by array index. Returns a JsonValue (null if out of range). */
+    at(index: number): JsonValue;
+
+    /** Read value as string. Objects/arrays are serialized. */
+    string(): string;
+
+    /** Read value as number. Returns 0 if not numeric. */
+    number(): number;
+
+    /** Read value as boolean. Returns false if not boolean. */
+    bool(): boolean;
+
+    /** Check if value is null. */
+    isNull(): boolean;
+
+    /** Get value type: "string", "number", "boolean", "null", "array", or "object". */
+    type(): string;
+
+    /** Get object keys as string array. Returns empty array for non-objects. */
+    keys(): string[];
+
+    /** Get length: array length, object key count, or string length. */
+    length(): number;
+
+    /** Set a key on this object (mutates). */
+    set(key: string, value: JsonValue): void;
+
+    /** Push a value onto this array (mutates). */
+    push(value: JsonValue): void;
+
+    /** Serialize to compact JSON string. */
+    stringify(): string;
+
+    /** Serialize to pretty-printed JSON string. */
+    stringifyPretty(): string;
+
+    /** Release native memory for this value. */
+    release(): void;
+}
+
+/**
+ * JSON parsing, serialization, and builder utilities.
+ */
+export class Json {
+    /** Parse a JSON string into a navigable JsonValue. */
+    parse(input: string): JsonValue;
+
+    /** Serialize a JsonValue to compact JSON string. */
+    stringify(value: JsonValue): string;
+
+    /** Serialize a JsonValue to pretty-printed JSON string. */
+    stringifyPretty(value: JsonValue): string;
+
+    /** Create a new empty JSON object. */
+    newObject(): JsonValue;
+
+    /** Create a new empty JSON array. */
+    newArray(): JsonValue;
+
+    /** Create a JSON string value. */
+    fromString(s: string): JsonValue;
+
+    /** Create a JSON number value. */
+    fromNumber(n: number): JsonValue;
+
+    /** Create a JSON boolean value. */
+    fromBool(b: boolean): JsonValue;
+
+    /** Create a JSON null value. */
+    null(): JsonValue;
+}
+
+/**
+ * TOML parsing and serialization utilities.
+ * Uses JsonValue handles for data navigation (TOML is converted to JSON internally).
+ */
+export class Toml {
+    /** Parse a TOML string into a navigable JsonValue. */
+    parse(input: string): JsonValue;
+
+    /** Serialize a JsonValue to TOML string. */
+    stringify(value: JsonValue): string;
+}
+
+/**
+ * Encoding facade providing access to CSV, XML, Base32, JSON, and TOML utilities.
  */
 declare class Encoding {
     /** CSV parsing and serialization utilities. */
@@ -137,6 +234,12 @@ declare class Encoding {
 
     /** Base32 encoding and decoding utilities. */
     base32: Base32;
+
+    /** JSON parsing, serialization, and builder utilities. */
+    json: Json;
+
+    /** TOML parsing and serialization utilities. */
+    toml: Toml;
 }
 
 /** encoding singleton instance */

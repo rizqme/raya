@@ -1,35 +1,18 @@
 //! URL cache management
 //!
-//! Handles caching URL imports in the global cache directory.
+//! Handles looking up cached URL imports in the global cache directory.
+//! Fetching and caching is now handled by std:pm in Raya.
 
-use crate::lockfile::{LockedPackage, Lockfile, Source};
+use crate::lockfile::Source;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-
-use super::fetch::{extract_package_name, extract_version, FetchError, UrlFetcher};
 
 /// Errors that can occur during URL caching
 #[derive(Debug, Error)]
 pub enum UrlCacheError {
-    /// Fetch error
-    #[error("Failed to fetch URL: {0}")]
-    FetchError(#[from] FetchError),
-
     /// IO error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-
-    /// Archive extraction error
-    #[error("Failed to extract archive: {0}")]
-    ExtractionError(String),
-
-    /// Lockfile error
-    #[error("Lockfile error: {0}")]
-    LockfileError(#[from] crate::lockfile::LockfileError),
-
-    /// Invalid URL
-    #[error("Invalid URL: {0}")]
-    InvalidUrl(String),
 
     /// Package not found in cache
     #[error("URL not found in cache: {0}")]
@@ -55,17 +38,12 @@ pub struct CachedUrl {
 pub struct UrlCache {
     /// Cache root directory (~/.raya/cache/)
     cache_root: PathBuf,
-    /// URL fetcher
-    fetcher: UrlFetcher,
 }
 
 impl UrlCache {
     /// Create a new URL cache manager
     pub fn new(cache_root: PathBuf) -> Self {
-        Self {
-            cache_root,
-            fetcher: UrlFetcher::new(),
-        }
+        Self { cache_root }
     }
 
     /// Create URL cache with default cache directory
@@ -83,15 +61,13 @@ impl UrlCache {
     }
 
     /// Check if a URL is already cached (by checking lockfile)
-    pub fn is_cached(&self, url: &str, lockfile: Option<&Lockfile>) -> Option<CachedUrl> {
-        // Look for URL in lockfile
+    pub fn is_cached(&self, url: &str, lockfile: Option<&crate::Lockfile>) -> Option<CachedUrl> {
         let locked = lockfile?.packages.iter().find(|p| {
             matches!(&p.source, Source::Url { url: u } if u == url)
         })?;
 
         let cache_dir = self.cache_dir(&locked.checksum);
 
-        // Verify cache directory exists with required files
         if !cache_dir.exists() {
             return None;
         }
@@ -107,167 +83,6 @@ impl UrlCache {
                 Some(locked.version.clone())
             },
         })
-    }
-
-    /// Fetch and cache a URL
-    ///
-    /// Returns the cached entry and optionally a lockfile entry to add.
-    pub fn fetch_and_cache(&self, url: &str) -> Result<(CachedUrl, LockedPackage), UrlCacheError> {
-        // Fetch the URL
-        let result = self.fetcher.fetch(url)?;
-
-        // Get or extract package name
-        let name = extract_package_name(url)
-            .unwrap_or_else(|| format!("url-{}", &result.checksum[..8]));
-
-        // Get or extract version
-        let version = extract_version(url)
-            .unwrap_or_else(|| "0.0.0".to_string());
-
-        // Create cache directory
-        let cache_dir = self.cache_dir(&result.checksum);
-        std::fs::create_dir_all(&cache_dir)?;
-
-        // Determine content type and handle accordingly
-        let content_type = result.content_type.as_deref();
-
-        if is_archive_content_type(content_type) || is_archive_url(url) {
-            // Extract archive
-            self.extract_archive(&result.content, &cache_dir, url)?;
-        } else {
-            // Assume it's a single file module
-            // Try to detect if it's a .ryb file or source
-            if url.ends_with(".ryb") {
-                std::fs::write(cache_dir.join("module.ryb"), &result.content)?;
-            } else {
-                // Assume source file, write as main.raya
-                std::fs::write(cache_dir.join("main.raya"), &result.content)?;
-            }
-        }
-
-        // Create locked package entry
-        let locked = LockedPackage::new(
-            name.clone(),
-            version.clone(),
-            result.checksum.clone(),
-            Source::url(url),
-        );
-
-        let cached = CachedUrl {
-            url: url.to_string(),
-            checksum: result.checksum,
-            cache_path: cache_dir,
-            name,
-            version: Some(version),
-        };
-
-        Ok((cached, locked))
-    }
-
-    /// Fetch and cache with verification against expected checksum
-    pub fn fetch_and_cache_verified(
-        &self,
-        url: &str,
-        expected_checksum: &str,
-    ) -> Result<CachedUrl, UrlCacheError> {
-        let result = self.fetcher.fetch_verified(url, expected_checksum)?;
-
-        // Get or extract package name
-        let name = extract_package_name(url)
-            .unwrap_or_else(|| format!("url-{}", &result.checksum[..8]));
-
-        // Get or extract version
-        let version = extract_version(url);
-
-        // Create cache directory
-        let cache_dir = self.cache_dir(&result.checksum);
-        std::fs::create_dir_all(&cache_dir)?;
-
-        // Extract or save content
-        let content_type = result.content_type.as_deref();
-        if is_archive_content_type(content_type) || is_archive_url(url) {
-            self.extract_archive(&result.content, &cache_dir, url)?;
-        } else {
-            if url.ends_with(".ryb") {
-                std::fs::write(cache_dir.join("module.ryb"), &result.content)?;
-            } else {
-                std::fs::write(cache_dir.join("main.raya"), &result.content)?;
-            }
-        }
-
-        Ok(CachedUrl {
-            url: url.to_string(),
-            checksum: result.checksum,
-            cache_path: cache_dir,
-            name,
-            version,
-        })
-    }
-
-    /// Extract an archive to the cache directory
-    fn extract_archive(
-        &self,
-        content: &[u8],
-        dest: &Path,
-        url: &str,
-    ) -> Result<(), UrlCacheError> {
-        use flate2::read::GzDecoder;
-        use std::io::Cursor;
-        use tar::Archive;
-
-        // Determine archive type
-        if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-            // Extract tar.gz
-            let cursor = Cursor::new(content);
-            let decoder = GzDecoder::new(cursor);
-            let mut archive = Archive::new(decoder);
-
-            // Extract all files
-            for entry in archive.entries().map_err(|e| {
-                UrlCacheError::ExtractionError(format!("Failed to read tar entries: {}", e))
-            })? {
-                let mut entry = entry.map_err(|e| {
-                    UrlCacheError::ExtractionError(format!("Failed to read entry: {}", e))
-                })?;
-
-                let entry_path = entry.path().map_err(|e| {
-                    UrlCacheError::ExtractionError(format!("Invalid entry path: {}", e))
-                })?;
-
-                // Skip the top-level directory if all files are in one
-                let components: Vec<_> = entry_path.components().collect();
-                let dest_path = if components.len() > 1 {
-                    // Skip first component (the archive root directory)
-                    let rest: PathBuf = components[1..].iter().collect();
-                    dest.join(rest)
-                } else {
-                    dest.join(&entry_path)
-                };
-
-                if entry.header().entry_type().is_dir() {
-                    std::fs::create_dir_all(&dest_path)?;
-                } else {
-                    if let Some(parent) = dest_path.parent() {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                    entry.unpack(&dest_path).map_err(|e| {
-                        UrlCacheError::ExtractionError(format!("Failed to extract {}: {}", dest_path.display(), e))
-                    })?;
-                }
-            }
-
-            Ok(())
-        } else if url.ends_with(".zip") {
-            // For now, return error - we'd need the zip crate
-            Err(UrlCacheError::ExtractionError(
-                "ZIP archives not yet supported".to_string(),
-            ))
-        } else {
-            Err(UrlCacheError::ExtractionError(format!(
-                "Unknown archive format: {}",
-                url
-            )))
-        }
     }
 
     /// Get the entry point for a cached URL
@@ -325,28 +140,6 @@ impl UrlCache {
     }
 }
 
-/// Check if content type indicates an archive
-fn is_archive_content_type(content_type: Option<&str>) -> bool {
-    match content_type {
-        Some(ct) => {
-            ct.contains("application/gzip")
-                || ct.contains("application/x-gzip")
-                || ct.contains("application/x-tar")
-                || ct.contains("application/zip")
-                || ct.contains("application/x-compressed")
-        }
-        None => false,
-    }
-}
-
-/// Check if URL suggests an archive
-fn is_archive_url(url: &str) -> bool {
-    url.ends_with(".tar.gz")
-        || url.ends_with(".tgz")
-        || url.ends_with(".zip")
-        || url.ends_with(".tar")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -361,15 +154,6 @@ mod tests {
         let dir = cache.cache_dir(&checksum);
 
         assert_eq!(dir, temp.path().join(&checksum));
-    }
-
-    #[test]
-    fn test_is_archive_url() {
-        assert!(is_archive_url("https://example.com/file.tar.gz"));
-        assert!(is_archive_url("https://example.com/file.tgz"));
-        assert!(is_archive_url("https://example.com/file.zip"));
-        assert!(!is_archive_url("https://example.com/file.ryb"));
-        assert!(!is_archive_url("https://example.com/file.raya"));
     }
 
     #[test]

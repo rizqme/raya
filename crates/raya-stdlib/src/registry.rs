@@ -405,6 +405,33 @@ fn register_encoding(registry: &mut NativeFunctionRegistry) {
     registry.register("encoding.base32Decode", |ctx, args| crate::encoding::call_encoding_method(ctx, 0xA021, args));
     registry.register("encoding.base32HexEncode", |ctx, args| crate::encoding::call_encoding_method(ctx, 0xA022, args));
     registry.register("encoding.base32HexDecode", |ctx, args| crate::encoding::call_encoding_method(ctx, 0xA023, args));
+
+    // JSON operations (handle-based)
+    registry.register("encoding.jsonParse", |ctx, args| crate::json_toml::json_parse(ctx, args));
+    registry.register("encoding.jsonStringify", |ctx, args| crate::json_toml::json_stringify(ctx, args));
+    registry.register("encoding.jsonStringifyPretty", |ctx, args| crate::json_toml::json_stringify_pretty(ctx, args));
+    registry.register("encoding.jsonGet", |ctx, args| crate::json_toml::json_get(ctx, args));
+    registry.register("encoding.jsonAt", |ctx, args| crate::json_toml::json_at(ctx, args));
+    registry.register("encoding.jsonString", |ctx, args| crate::json_toml::json_string(ctx, args));
+    registry.register("encoding.jsonNumber", |ctx, args| crate::json_toml::json_number(ctx, args));
+    registry.register("encoding.jsonBool", |ctx, args| crate::json_toml::json_bool(ctx, args));
+    registry.register("encoding.jsonIsNull", |ctx, args| crate::json_toml::json_is_null(ctx, args));
+    registry.register("encoding.jsonType", |ctx, args| crate::json_toml::json_type(ctx, args));
+    registry.register("encoding.jsonKeys", |ctx, args| crate::json_toml::json_keys(ctx, args));
+    registry.register("encoding.jsonLength", |ctx, args| crate::json_toml::json_length(ctx, args));
+    registry.register("encoding.jsonRelease", |ctx, args| crate::json_toml::json_release(ctx, args));
+    registry.register("encoding.jsonNewObject", |ctx, args| crate::json_toml::json_new_object(ctx, args));
+    registry.register("encoding.jsonNewArray", |ctx, args| crate::json_toml::json_new_array(ctx, args));
+    registry.register("encoding.jsonSet", |ctx, args| crate::json_toml::json_set(ctx, args));
+    registry.register("encoding.jsonPush", |ctx, args| crate::json_toml::json_push(ctx, args));
+    registry.register("encoding.jsonFromString", |ctx, args| crate::json_toml::json_from_string(ctx, args));
+    registry.register("encoding.jsonFromNumber", |ctx, args| crate::json_toml::json_from_number(ctx, args));
+    registry.register("encoding.jsonFromBool", |ctx, args| crate::json_toml::json_from_bool(ctx, args));
+    registry.register("encoding.jsonNull", |ctx, args| crate::json_toml::json_null(ctx, args));
+
+    // TOML operations (handle-based, reuses JSON handles)
+    registry.register("encoding.tomlParse", |ctx, args| crate::json_toml::toml_parse(ctx, args));
+    registry.register("encoding.tomlStringify", |ctx, args| crate::json_toml::toml_stringify(ctx, args));
 }
 
 /// Register template native functions (delegate to existing call_template_method)

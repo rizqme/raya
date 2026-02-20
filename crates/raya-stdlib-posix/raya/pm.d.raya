@@ -1,0 +1,151 @@
+/**
+ * std:pm - Package Manager Module
+ *
+ * Provides commands for managing Raya packages: init, install, add, remove, update.
+ *
+ * Usage:
+ *   import pm from "std:pm";
+ *
+ *   pm.init("/path/to/project", "my-project");
+ *   pm.install(".", false, false, false);
+ *   pm.add(".", "logging@^1.0.0", false, false, false);
+ *   pm.remove(".", "logging");
+ *   pm.update(".", false);
+ */
+
+import { JsonValue } from "std:encoding";
+
+/**
+ * Result of an install or update operation.
+ */
+export class InstallResult {
+    /** Number of newly installed packages. */
+    installed: number;
+    /** Number of packages already cached. */
+    cached: number;
+    /** Number of packages that failed to install. */
+    failed: number;
+}
+
+/**
+ * Manifest loading and saving utilities.
+ */
+export class Manifest {
+    /** Load a raya.toml manifest from a directory. */
+    static load(dir: string): JsonValue;
+    /** Save a manifest to raya.toml in a directory. */
+    static save(dir: string, manifest: JsonValue): void;
+    /** Get the package name from a manifest. */
+    static name(manifest: JsonValue): string;
+    /** Get the package version from a manifest. */
+    static version(manifest: JsonValue): string;
+    /** Get the main entry point from a manifest. */
+    static main(manifest: JsonValue): string;
+    /** Get the dependencies object from a manifest. */
+    static dependencies(manifest: JsonValue): JsonValue;
+    /** Get the dev-dependencies object from a manifest. */
+    static devDependencies(manifest: JsonValue): JsonValue;
+}
+
+/**
+ * Lockfile loading and saving utilities.
+ */
+export class LockfileUtil {
+    /** Load a raya.lock lockfile from a directory. Returns null if no lockfile. */
+    static load(dir: string): JsonValue | null;
+    /** Save a lockfile to raya.lock in a directory. */
+    static save(dir: string, lockfile: JsonValue): void;
+    /** Find a package entry in the lockfile by name. */
+    static findPackage(lockfile: JsonValue, name: string): JsonValue | null;
+    /** Create an empty lockfile with root package name. */
+    static createEmpty(rootName: string): JsonValue;
+}
+
+/**
+ * Registry client for the package registry API.
+ */
+export class Registry {
+    /** Base URL of the registry API. */
+    baseUrl: string;
+
+    /** Create a new registry client. */
+    constructor(baseUrl: string);
+
+    /** Get package metadata from registry. */
+    getPackage(name: string): JsonValue;
+    /** Get version info from registry. */
+    getVersion(name: string, version: string): JsonValue;
+    /** Get all available version strings for a package. */
+    getVersions(name: string): string[];
+    /** Download a package to a target directory. Returns checksum. */
+    download(name: string, version: string, targetDir: string): string;
+}
+
+/**
+ * Local package cache (~/.raya/cache/).
+ */
+export class Cache {
+    constructor();
+    /** Initialize cache directory structure. */
+    init(): void;
+    /** Check if a package is cached by checksum. */
+    exists(checksum: string): boolean;
+    /** Get the cache directory path for a checksum. */
+    modulePath(checksum: string): string;
+}
+
+/**
+ * Package manager facade with all PM commands.
+ */
+declare class PackageManager {
+    /**
+     * Initialize a new Raya project.
+     * @param dir - Directory to initialize
+     * @param name - Package name (defaults to directory basename)
+     */
+    init(dir: string, name: string | null): void;
+
+    /**
+     * Install all dependencies from raya.toml.
+     * @param startDir - Directory to start searching for raya.toml
+     * @param production - If true, skip dev dependencies
+     * @param force - If true, re-download even if cached
+     * @param update - If true, ignore lockfile and resolve fresh
+     */
+    install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult;
+
+    /**
+     * Add a dependency to the project.
+     * @param startDir - Directory to start searching for raya.toml
+     * @param spec - Package specifier (name, name@version, @org/name@version)
+     * @param dev - If true, add to dev-dependencies
+     * @param exact - If true, use exact version (no ^ prefix)
+     * @param noInstall - If true, skip running install after adding
+     */
+    add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void;
+
+    /**
+     * Remove a dependency from the project.
+     * @param startDir - Directory to start searching for raya.toml
+     * @param pkgName - Package name to remove
+     */
+    remove(startDir: string, pkgName: string): void;
+
+    /**
+     * Update all dependencies to latest compatible versions.
+     * @param startDir - Directory to start searching for raya.toml
+     * @param production - If true, skip dev dependencies
+     */
+    update(startDir: string, production: boolean): InstallResult;
+
+    /**
+     * Find the project root by searching upward for raya.toml.
+     * @param startDir - Directory to start searching
+     */
+    findProjectRoot(startDir: string): string;
+}
+
+/** pm singleton instance */
+declare const pm: PackageManager;
+
+export default pm;
