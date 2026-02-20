@@ -86,6 +86,10 @@ aot = [
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[[example]]
+name = "jit_bench"
+required-features = ["jit"]
+
 [dev-dependencies]
 criterion = { workspace = true }
 tempfile = "3.8"

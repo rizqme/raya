@@ -20,6 +20,8 @@ fn create_manifest(name: &str, version: &str) -> PackageManifest {
         dependencies: HashMap::new(),
         dev_dependencies: HashMap::new(),
         registry: None,
+        assets: None,
+        bundle: None,
     }
 }
 

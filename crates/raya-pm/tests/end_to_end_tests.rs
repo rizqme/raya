@@ -31,6 +31,8 @@ fn create_test_manifest(root: &std::path::Path, name: &str, version: &str, deps:
         dependencies: deps_map,
         dev_dependencies: std::collections::HashMap::new(),
         registry: None,
+        assets: None,
+        bundle: None,
     };
 
     fs::create_dir_all(root).unwrap();
