@@ -13,7 +13,6 @@ pub mod init;
 pub mod install;
 pub mod lint;
 pub mod lsp;
-pub mod new;
 pub mod pkg;
 pub mod publish;
 pub mod remove;

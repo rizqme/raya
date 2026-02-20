@@ -221,15 +221,6 @@ enum Commands {
         yes: bool,
     },
 
-    /// Create a new project (alias for init with directory)
-    New {
-        /// Project name
-        name: String,
-        /// Project template
-        #[arg(long, default_value = "basic")]
-        template: String,
-    },
-
     /// Add a dependency
     #[command(alias = "a")]
     Add {
@@ -286,7 +277,7 @@ enum Commands {
         access: String,
     },
 
-    /// Registry and auth management
+    /// Package management (init, install, add, remove, login, ...)
     Pkg {
         #[command(subcommand)]
         command: commands::pkg::PkgCommands,
@@ -444,9 +435,6 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
 
         Commands::Init { path, name, template, yes } =>
             commands::init::execute(path, name, template, yes),
-
-        Commands::New { name, template } =>
-            commands::new::execute(name, template),
 
         Commands::Add { package, dev, exact, no_install } =>
             commands::add::execute(package, dev, exact, no_install),

@@ -10,9 +10,12 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 - Implicit file execution: `raya ./file.raya` (no `run` subcommand needed)
 - Dual-mode `run`: named scripts from `[scripts]` in raya.toml OR direct file execution
 - JIT enabled by default, `--no-jit` to disable
-- `pkg` subcommand group for registry/auth management
+- `pkg` subcommand group is the canonical home for all package management
+- Common PM commands aliased at top-level: `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade`
 
 ## Commands
+
+### Toolchain Commands
 
 | Command | Alias | Description | Status |
 |---------|-------|-------------|--------|
@@ -25,25 +28,29 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 | `raya fmt` | — | Format source files | Stub |
 | `raya lint` | — | Lint source files | Stub |
 | `raya repl` | — | Interactive REPL | Stub |
-| `raya init` | — | Initialize project | Stub |
-| `raya new <name>` | — | Create new project | Stub |
-| `raya add <pkg>` | `a` | Add dependency | Stub |
-| `raya remove <pkg>` | `rm` | Remove dependency | Stub |
-| `raya install` | `i` | Install all dependencies | Stub |
-| `raya update` | — | Update dependencies | Stub |
-| `raya publish` | — | Publish to registry | Stub |
-| `raya pkg login` | — | Authenticate with registry | Implemented |
-| `raya pkg logout` | — | Remove credentials | Implemented |
-| `raya pkg set-url` | — | Set registry URL | Implemented |
-| `raya pkg whoami` | — | Show current user | Implemented |
-| `raya pkg info` | — | Show package info | Stub |
 | `raya bundle` | — | AOT compile to native bundle | **Implemented** — requires `--features aot` |
 | `raya doc` | — | Generate documentation | Stub |
 | `raya lsp` | — | Start Language Server | Stub |
 | `raya completions` | — | Generate shell completions | Stub |
 | `raya clean` | — | Clear caches/artifacts | Implemented |
 | `raya info` | — | Display environment info | Implemented |
-| `raya upgrade` | — | Upgrade Raya installation | Stub |
+
+### Package Management (`raya pkg` — canonical, with top-level aliases)
+
+| Command | Alias | Description | Status |
+|---------|-------|-------------|--------|
+| `raya pkg init` | `raya init` | Initialize project | **Implemented** |
+| `raya pkg install` | `raya install`, `raya i` | Install all dependencies | **Implemented** |
+| `raya pkg add <pkg>` | `raya add`, `raya a` | Add dependency | **Implemented** |
+| `raya pkg remove <pkg>` | `raya remove`, `raya rm` | Remove dependency | **Implemented** |
+| `raya pkg update` | `raya update` | Update dependencies | Partial (full update works) |
+| `raya pkg publish` | `raya publish` | Publish to registry | Stub |
+| `raya pkg upgrade` | `raya upgrade` | Upgrade Raya installation | Stub |
+| `raya pkg login` | — | Authenticate with registry | **Implemented** |
+| `raya pkg logout` | — | Remove credentials | **Implemented** |
+| `raya pkg set-url` | — | Set registry URL | **Implemented** |
+| `raya pkg whoami` | — | Show current user | **Implemented** |
+| `raya pkg info` | — | Show package info | Stub |
 
 ## Key Files
 
@@ -54,12 +61,19 @@ src/
     ├── mod.rs            # Module declarations
     ├── run.rs            # Dual-mode run (scripts + files)
     ├── pkg/
-    │   ├── mod.rs        # PkgCommands enum + dispatch
+    │   ├── mod.rs        # PkgCommands enum (all PM commands) + dispatch
     │   ├── login.rs      # Registry authentication (~/.raya/credentials.toml)
     │   ├── logout.rs     # Remove credentials
     │   ├── set_url.rs    # Registry URL management (project + global)
     │   ├── whoami.rs     # Current user info
     │   └── info.rs       # Package info (stub)
+    ├── init.rs           # Project initialization (called by pkg dispatch)
+    ├── install.rs        # Dependency installation (called by pkg dispatch)
+    ├── add.rs            # Add dependency (called by pkg dispatch)
+    ├── remove.rs         # Remove dependency (called by pkg dispatch)
+    ├── update.rs         # Update dependencies (called by pkg dispatch)
+    ├── publish.rs        # Publish to registry (stub)
+    ├── upgrade.rs        # Self-update (stub)
     ├── bundle.rs         # AOT compilation to native bundle (feature-gated: "aot")
     ├── clean.rs          # Functional: deletes dist/, .raya-cache/
     ├── info.rs           # Functional: displays env/project info
@@ -107,7 +121,9 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 
 - `run`, `build`, `eval` are fully wired through `raya-runtime::Runtime`
 - `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
-- `pkg` subcommands (login/logout/set-url/whoami) are fully implemented
+- `pkg` is the canonical PM namespace — all PM commands live in `PkgCommands` enum
+- Top-level `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade` are aliases that delegate to the same implementations
+- `pkg` registry subcommands (login/logout/set-url/whoami) are fully implemented
 - `clean` and `info` are functional
 - `run.rs` uses `Runtime::run_file()` which auto-detects .raya/.ryb and resolves deps from raya.toml
 - `eval.rs` auto-wraps bare expressions in `return ...;`

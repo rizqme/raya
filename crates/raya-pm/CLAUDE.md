@@ -17,24 +17,23 @@ This crate provides package management functionality:
 
 ## Usage
 
-The raya-pm library is integrated into the main `raya` CLI:
+The raya-pm library is integrated into the main `raya` CLI via `raya pkg` (canonical) with top-level aliases:
 
 ```bash
 # Initialize a new project
-raya init [path] [--name NAME]
-raya new <name>
+raya pkg init [path] [--name NAME]    # or: raya init
 
 # Install dependencies from raya.toml
-raya install [--production] [--force] [--update]
+raya pkg install [--production] [--frozen] [--force]    # or: raya install
 
 # Add a dependency
-raya add <package>[@version] [--dev] [--exact] [--no-install]
+raya pkg add <package>[@version] [--dev] [--exact] [--no-install]    # or: raya add
 
 # Remove a dependency
-raya remove <package>
+raya pkg remove <package>    # or: raya remove
 
 # Update dependencies
-raya update [package]
+raya pkg update [package]    # or: raya update
 ```
 
 ## Module Structure
@@ -47,7 +46,7 @@ src/
 │   └── metadata.rs
 ├── commands/    # Command implementations (used by raya-cli)
 │   ├── mod.rs
-│   ├── init.rs     # init/new
+│   ├── init.rs     # init
 │   ├── install.rs  # install/update
 │   └── add.rs      # add/remove
 ├── registry/    # Registry client

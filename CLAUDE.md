@@ -175,6 +175,8 @@
 **CLI Implementation:** Complete
 - `raya run` / `raya build` / `raya eval` fully wired through `raya-runtime::Runtime`
 - `raya run <script>` resolves named scripts from `[scripts]` in raya.toml
+- `raya pkg` is canonical PM namespace (init, install, add, remove, update, publish, upgrade, login, logout, set-url, whoami, info)
+- Common PM commands aliased at top-level: `raya init`, `raya install`, `raya add`, `raya remove`, `raya update`, `raya publish`, `raya upgrade`
 - Dependency resolution: local path, URL/git (cached), registry packages
 - 19 CLI integration tests covering all execution scenarios
 
