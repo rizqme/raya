@@ -86,7 +86,7 @@ fn test_number_division() {
 // ============================================================================
 
 #[test]
-#[ignore = "explicit int type annotation causes TypeMismatch with integer literals"]
+
 fn test_int_number_addition_promotion() {
     expect_f64(
         "let x: int = 10;
@@ -97,7 +97,7 @@ fn test_int_number_addition_promotion() {
 }
 
 #[test]
-#[ignore = "explicit int type in function param not yet supported"]
+
 fn test_int_number_in_function() {
     expect_f64(
         "function compute(x: int, y: number): number {
@@ -113,7 +113,7 @@ fn test_int_number_in_function() {
 // ============================================================================
 
 #[test]
-#[ignore = "explicit int type annotation causes TypeMismatch with integer literals"]
+
 fn test_int_variable_explicit_type() {
     expect_i32(
         "let x: int = 42;
@@ -123,7 +123,7 @@ fn test_int_variable_explicit_type() {
 }
 
 #[test]
-#[ignore = "explicit int type annotation causes TypeMismatch with integer literals"]
+
 fn test_int_variable_computed() {
     expect_i32(
         "let a: int = 20;
@@ -207,7 +207,7 @@ fn test_bitwise_shift_right() {
 // ============================================================================
 
 #[test]
-#[ignore = "explicit int[] type annotation not yet supported"]
+
 fn test_int_array() {
     expect_i32(
         "let nums: int[] = [10, 20, 12];

@@ -59,6 +59,9 @@ impl<'a> AssignabilityContext<'a> {
             // number ~> string
             (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => true,
 
+            // int ~> string
+            (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String)) => true,
+
             // boolean ~> string
             (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::String)) => {
                 true
@@ -104,6 +107,9 @@ impl<'a> AssignabilityContext<'a> {
             (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => {
                 Some(CoercionKind::NumberToString)
             }
+            (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String)) => {
+                Some(CoercionKind::IntToString)
+            }
             (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::String)) => {
                 Some(CoercionKind::BooleanToString)
             }
@@ -120,6 +126,8 @@ impl<'a> AssignabilityContext<'a> {
 pub enum CoercionKind {
     /// number → string
     NumberToString,
+    /// int → string
+    IntToString,
     /// boolean → string
     BooleanToString,
     /// null → string
@@ -131,6 +139,7 @@ impl CoercionKind {
     pub fn name(&self) -> &'static str {
         match self {
             CoercionKind::NumberToString => "number_to_string",
+            CoercionKind::IntToString => "int_to_string",
             CoercionKind::BooleanToString => "boolean_to_string",
             CoercionKind::NullToString => "null_to_string",
         }

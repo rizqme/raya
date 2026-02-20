@@ -3,7 +3,7 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{Type, TypeId};
+use super::ty::{PrimitiveType, Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Context for checking subtyping relationships
@@ -53,8 +53,15 @@ impl<'a> SubtypingContext<'a> {
             // Everything is subtype of Unknown (Unknown is top type)
             (_, Type::Unknown) => true,
 
-            // Primitive subtyping (only reflexive)
-            (Type::Primitive(p1), Type::Primitive(p2)) => p1 == p2,
+            // Primitive subtyping (reflexive + int <-> number interop)
+            (Type::Primitive(p1), Type::Primitive(p2)) => {
+                p1 == p2
+                    || matches!(
+                        (p1, p2),
+                        (PrimitiveType::Int, PrimitiveType::Number)
+                            | (PrimitiveType::Number, PrimitiveType::Int)
+                    )
+            }
 
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
             (_, Type::Union(union)) => {

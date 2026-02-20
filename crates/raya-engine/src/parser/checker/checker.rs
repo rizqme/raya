@@ -1107,6 +1107,7 @@ impl<'a> TypeChecker<'a> {
                 // Add can be either numeric or string concatenation
                 let string_ty = self.type_ctx.string_type();
                 let number_ty = self.type_ctx.number_type();
+                let int_ty = self.type_ctx.int_type();
 
                 // Check if either operand IS a string type (exact match or assignable)
                 let left_is_string = left_ty == string_ty;
@@ -1117,8 +1118,11 @@ impl<'a> TypeChecker<'a> {
                     self.check_assignable(left_ty, string_ty, *bin.left.span());
                     self.check_assignable(right_ty, string_ty, *bin.right.span());
                     string_ty
+                } else if left_ty == int_ty && right_ty == int_ty {
+                    // int + int = int
+                    int_ty
                 } else {
-                    // Numeric addition
+                    // Numeric addition (mixed int/number promotes to number)
                     self.check_assignable(left_ty, number_ty, *bin.left.span());
                     self.check_assignable(right_ty, number_ty, *bin.right.span());
                     number_ty
@@ -1130,11 +1134,17 @@ impl<'a> TypeChecker<'a> {
             | BinaryOperator::Divide
             | BinaryOperator::Modulo
             | BinaryOperator::Exponent => {
-                // Arithmetic operations require number operands
+                // Arithmetic operations require numeric operands
                 let number_ty = self.type_ctx.number_type();
-                self.check_assignable(left_ty, number_ty, *bin.left.span());
-                self.check_assignable(right_ty, number_ty, *bin.right.span());
-                number_ty
+                let int_ty = self.type_ctx.int_type();
+                if left_ty == int_ty && right_ty == int_ty {
+                    // int op int = int
+                    int_ty
+                } else {
+                    self.check_assignable(left_ty, number_ty, *bin.left.span());
+                    self.check_assignable(right_ty, number_ty, *bin.right.span());
+                    number_ty
+                }
             }
 
             BinaryOperator::Equal
@@ -1155,11 +1165,11 @@ impl<'a> TypeChecker<'a> {
             | BinaryOperator::LeftShift
             | BinaryOperator::RightShift
             | BinaryOperator::UnsignedRightShift => {
-                // Bitwise operations require number operands
+                // Bitwise operations require numeric operands and produce int
                 let number_ty = self.type_ctx.number_type();
                 self.check_assignable(left_ty, number_ty, *bin.left.span());
                 self.check_assignable(right_ty, number_ty, *bin.right.span());
-                number_ty
+                self.type_ctx.int_type()
             }
         }
     }
