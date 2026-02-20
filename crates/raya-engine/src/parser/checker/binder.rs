@@ -30,6 +30,8 @@ pub struct Binder<'a> {
     /// When true, builtin source files are prepended to user code, so duplicate
     /// class/function names between builtins and user code are expected (user shadows).
     detect_top_level_duplicates: bool,
+    /// Tracks type parameter names for generic type aliases (e.g., Container<T> → ["T"])
+    generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl<'a> Binder<'a> {
@@ -42,6 +44,7 @@ impl<'a> Binder<'a> {
             bound_classes: std::collections::HashMap::new(),
             bound_functions: std::collections::HashMap::new(),
             detect_top_level_duplicates: true,
+            generic_type_alias_params: std::collections::HashMap::new(),
         }
     }
 
@@ -1521,11 +1524,42 @@ impl<'a> Binder<'a> {
 
     /// Bind type alias declaration
     fn bind_type_alias(&mut self, alias: &TypeAliasDecl) -> Result<(), BindError> {
-        // Resolve the type annotation
+        let alias_name = self.resolve(alias.name.name);
+
+        // If the type alias has type parameters, register them in a nested scope
+        let has_type_params = alias.type_params.as_ref().map_or(false, |p| !p.is_empty());
+        let mut type_param_names = Vec::new();
+
+        if has_type_params {
+            self.symbols.push_scope(ScopeKind::Function);
+            for type_param in alias.type_params.as_ref().unwrap() {
+                let param_name = self.resolve(type_param.name.name);
+                let type_var = self.type_ctx.type_variable(param_name.clone());
+                let sym = Symbol {
+                    name: param_name.clone(),
+                    kind: SymbolKind::TypeAlias,
+                    ty: type_var,
+                    flags: SymbolFlags::default(),
+                    scope_id: self.symbols.current_scope_id(),
+                    span: Span { start: 0, end: 0, line: 0, column: 0 },
+                    referenced: false,
+                };
+                let _ = self.symbols.define(sym);
+                type_param_names.push(param_name);
+            }
+        }
+
+        // Resolve the type annotation (TypeVars will be resolved from the nested scope)
         let ty = self.resolve_type_annotation(&alias.type_annotation)?;
 
+        if has_type_params {
+            self.symbols.pop_scope();
+            // Store type param names for later substitution during type reference resolution
+            self.generic_type_alias_params.insert(alias_name.clone(), type_param_names);
+        }
+
         let symbol = Symbol {
-            name: self.resolve(alias.name.name),
+            name: alias_name,
             kind: SymbolKind::TypeAlias,
             ty,
             flags: SymbolFlags::default(),
@@ -1692,6 +1726,50 @@ impl<'a> Binder<'a> {
         self.resolve_type(&ty_annot.ty, ty_annot.span)
     }
 
+    /// Recursively substitute TypeVars in a type according to a substitution map
+    fn substitute_type_vars(&mut self, ty: TypeId, subs: &std::collections::HashMap<String, TypeId>) -> TypeId {
+        let type_info = self.type_ctx.get(ty).cloned();
+        match type_info {
+            Some(Type::TypeVar(tv)) => {
+                if let Some(&sub) = subs.get(&tv.name) {
+                    sub
+                } else {
+                    ty
+                }
+            }
+            Some(Type::Object(obj)) => {
+                let new_props: Vec<_> = obj.properties.iter().map(|p| {
+                    PropertySignature {
+                        name: p.name.clone(),
+                        ty: self.substitute_type_vars(p.ty, subs),
+                        optional: p.optional,
+                        readonly: p.readonly,
+                        visibility: p.visibility.clone(),
+                    }
+                }).collect();
+                self.type_ctx.object_type(new_props)
+            }
+            Some(Type::Union(union)) => {
+                let new_members: Vec<_> = union.members.iter().map(|&m| {
+                    self.substitute_type_vars(m, subs)
+                }).collect();
+                self.type_ctx.union_type(new_members)
+            }
+            Some(Type::Function(func)) => {
+                let new_params: Vec<_> = func.params.iter().map(|&p| {
+                    self.substitute_type_vars(p, subs)
+                }).collect();
+                let new_ret = self.substitute_type_vars(func.return_type, subs);
+                self.type_ctx.function_type(new_params, new_ret, func.is_async)
+            }
+            Some(Type::Array(arr)) => {
+                let new_elem = self.substitute_type_vars(arr.element, subs);
+                self.type_ctx.array_type(new_elem)
+            }
+            _ => ty,
+        }
+    }
+
     /// Resolve type to TypeId
     fn resolve_type(&mut self, ty: &crate::parser::ast::Type, span: crate::parser::Span) -> Result<TypeId, BindError> {
         use crate::parser::ast::Type as AstType;
@@ -1757,7 +1835,29 @@ impl<'a> Binder<'a> {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter
                         || symbol.kind == SymbolKind::Class {
-                        Ok(symbol.ty)
+                        let template_ty = symbol.ty;
+
+                        // Check if this is a generic type alias with type arguments
+                        if let Some(ref type_args) = type_ref.type_args {
+                            if let Some(param_names) = self.generic_type_alias_params.get(&name).cloned() {
+                                if type_args.len() == param_names.len() {
+                                    // Resolve each type argument
+                                    let mut resolved_args = Vec::new();
+                                    for arg in type_args {
+                                        resolved_args.push(self.resolve_type_annotation(arg)?);
+                                    }
+                                    // Build substitution map: param_name → concrete type
+                                    let mut subs = std::collections::HashMap::new();
+                                    for (param_name, arg_ty) in param_names.iter().zip(resolved_args.iter()) {
+                                        subs.insert(param_name.clone(), *arg_ty);
+                                    }
+                                    // Apply substitution to the template type
+                                    return Ok(self.substitute_type_vars(template_ty, &subs));
+                                }
+                            }
+                        }
+
+                        Ok(template_ty)
                     } else {
                         Err(BindError::NotAType {
                             name,

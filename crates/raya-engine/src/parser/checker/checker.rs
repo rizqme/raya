@@ -296,6 +296,13 @@ impl<'a> TypeChecker<'a> {
                 // Check class declaration including decorators
                 self.check_class(class);
             }
+            Statement::TypeAliasDecl(alias) => {
+                // Sync scope for generic type aliases (binder creates a scope for type params)
+                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                    self.enter_scope();
+                    self.exit_scope();
+                }
+            }
             _ => {}
         }
     }
@@ -568,6 +575,13 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::ClassDecl(class) => {
                 self.sync_class_scopes(class);
+            }
+            Statement::TypeAliasDecl(alias) => {
+                // Sync scope for generic type aliases (binder creates a scope for type params)
+                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                    self.enter_scope();
+                    self.exit_scope();
+                }
             }
             // Other statements don't create scopes
             _ => {}

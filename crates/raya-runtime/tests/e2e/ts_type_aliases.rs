@@ -181,7 +181,6 @@ fn test_class_implements_multiple_types() {
 // ============================================================================
 
 #[test]
-#[ignore = "generic type alias object literal not yet implemented"]
 fn test_generic_type_alias_object() {
     expect_i32(
         "type Container<T> = {
@@ -194,7 +193,6 @@ fn test_generic_type_alias_object() {
 }
 
 #[test]
-#[ignore = "class implements generic type alias not yet implemented"]
 fn test_generic_type_alias_with_method() {
     expect_i32(
         "type Wrapper<T> = {

@@ -149,7 +149,6 @@ fn test_discriminated_union_reset_variant() {
 // ============================================================================
 
 #[test]
-#[ignore = "generic type parameters in union type alias body not yet supported"]
 fn test_discriminated_union_generic_result() {
     expect_i32(
         "type Result<T, E> =
@@ -168,7 +167,6 @@ fn test_discriminated_union_generic_result() {
 }
 
 #[test]
-#[ignore = "generic type parameters in union type alias body not yet supported"]
 fn test_discriminated_union_generic_result_fallback() {
     expect_i32(
         "type Result<T, E> =
