@@ -54,5 +54,8 @@ mod ts_advanced_classes;
 mod ts_narrowing;
 mod ts_int_number;
 
+// Real-world application e2e tests
+mod real_world;
+
 
 pub use harness::*;

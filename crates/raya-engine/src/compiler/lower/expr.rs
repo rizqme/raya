@@ -193,7 +193,7 @@ impl<'a> Lowerer<'a> {
             Expression::Identifier(ident) => self.lower_identifier(ident),
             Expression::Binary(binary) => self.lower_binary(binary),
             Expression::Unary(unary) => self.lower_unary(unary),
-            Expression::Call(call) => self.lower_call(call),
+            Expression::Call(call) => self.lower_call(call, expr),
             Expression::Member(member) => self.lower_member(member),
             Expression::Index(index) => self.lower_index(index, expr),
             Expression::Array(array) => self.lower_array(array, expr),
@@ -494,12 +494,13 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_call(&mut self, call: &ast::CallExpression) -> Register {
+    fn lower_call(&mut self, call: &ast::CallExpression, full_expr: &Expression) -> Register {
         // Lower arguments first
         let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
-        // Try to resolve the callee
-        let mut dest = self.alloc_register(TypeId::new(0));
+        // Use the type checker's computed return type for this call expression
+        let call_ty = self.get_expr_type(full_expr);
+        let mut dest = self.alloc_register(call_ty);
 
         // Handle super() constructor call
         if let Expression::Super(_) = &*call.callee {
@@ -1181,9 +1182,8 @@ impl<'a> Lowerer<'a> {
                 args,
             });
 
-            // Propagate return type for builtin methods so chained calls resolve correctly.
-            // String methods that return strings need TypeId(1) so subsequent .method() calls
-            // are recognized as string methods by lookup_builtin_method().
+            // Propagate return type for builtin methods so subsequent operations
+            // use the correct typed opcodes (e.g., Iadd vs Fadd, Seq vs Feq).
             if crate::vm::builtin::is_string_method(method_id) {
                 use crate::vm::builtin::string as bs;
                 match method_id {
@@ -1192,6 +1192,14 @@ impl<'a> Lowerer<'a> {
                     | bs::TRIM | bs::TRIM_START | bs::TRIM_END | bs::REPLACE | bs::REPEAT
                     | bs::PAD_START | bs::PAD_END => {
                         dest.ty = TypeId::new(1);
+                    }
+                    // String methods that return int
+                    bs::INDEX_OF | bs::LAST_INDEX_OF | bs::CHAR_CODE_AT => {
+                        dest.ty = TypeId::new(16);
+                    }
+                    // String methods that return boolean
+                    bs::INCLUDES | bs::STARTS_WITH | bs::ENDS_WITH => {
+                        dest.ty = TypeId::new(2);
                     }
                     _ => {}
                 }
@@ -2548,7 +2556,7 @@ impl<'a> Lowerer<'a> {
 
             // String type (TypeId 1)
             if obj_ty == 1 {
-                let dest = self.alloc_register(TypeId::new(0)); // Number result
+                let dest = self.alloc_register(TypeId::new(16)); // Int result (Slen returns i32)
                 self.emit(IrInstr::StringLen {
                     dest: dest.clone(),
                     string: object,
@@ -2561,7 +2569,7 @@ impl<'a> Lowerer<'a> {
             // Numbers don't have .length, so if we're accessing .length on TypeId 0,
             // it's most likely an array
             if obj_ty > 6 || obj_ty == 0 {
-                let dest = self.alloc_register(TypeId::new(0)); // Number result
+                let dest = self.alloc_register(TypeId::new(16)); // Int result (Alen returns i32)
                 self.emit(IrInstr::ArrayLen {
                     dest: dest.clone(),
                     array: object,
