@@ -1,0 +1,87 @@
+// Watch - File system watching module
+// Usage: import watch from "std:watch";
+//        import { FileWatcher, WatchEvent } from "std:watch";
+
+export class WatchEvent {
+    private _kind: string;
+    private _path: string;
+
+    constructor(raw: string) {
+        let colonIdx = raw.indexOf(":");
+        if (colonIdx >= 0) {
+            this._kind = raw.substring(0, colonIdx);
+            this._path = raw.substring(colonIdx + 1, raw.length);
+        } else {
+            this._kind = "unknown";
+            this._path = raw;
+        }
+    }
+
+    kind(): string {
+        return this._kind;
+    }
+
+    path(): string {
+        return this._path;
+    }
+
+    isCreate(): boolean {
+        return this._kind == "create";
+    }
+
+    isModify(): boolean {
+        return this._kind == "modify";
+    }
+
+    isRemove(): boolean {
+        return this._kind == "remove";
+    }
+
+    isAccess(): boolean {
+        return this._kind == "access";
+    }
+
+    toString(): string {
+        return this._kind + ":" + this._path;
+    }
+}
+
+export class FileWatcher {
+    private _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    nextEvent(): WatchEvent {
+        let raw = __NATIVE_CALL<string>("watch.nextEvent", this._handle);
+        return new WatchEvent(raw);
+    }
+
+    addPath(path: string): void {
+        __NATIVE_CALL("watch.addPath", this._handle, path);
+    }
+
+    removePath(path: string): void {
+        __NATIVE_CALL("watch.removePath", this._handle, path);
+    }
+
+    close(): void {
+        __NATIVE_CALL("watch.close", this._handle);
+    }
+}
+
+class WatchClass {
+    create(paths: string[]): FileWatcher {
+        let handle = __NATIVE_CALL<number>("watch.create", paths);
+        return new FileWatcher(handle);
+    }
+
+    createRecursive(paths: string[], recursive: boolean): FileWatcher {
+        let handle = __NATIVE_CALL<number>("watch.createRecursive", paths, recursive);
+        return new FileWatcher(handle);
+    }
+}
+
+const watch = new WatchClass();
+export default watch;

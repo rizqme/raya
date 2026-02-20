@@ -35,6 +35,26 @@ impl NativeHandler for StdNativeHandler {
             // Path methods (0x6000-0x600C)
             return crate::path::call_path_method(ctx, id, args);
         }
+        if (0x8000..=0x80FF).contains(&id) {
+            // Compress methods (0x8000-0x8005)
+            return crate::compress::call_compress_method(ctx, id, args);
+        }
+        if (0x9000..=0x90FF).contains(&id) {
+            // URL methods (0x9000-0x903D)
+            return crate::url::call_url_method(ctx, id, args);
+        }
+        if (0xA000..=0xA0FF).contains(&id) {
+            // Encoding methods (0xA000-0xA023)
+            return crate::encoding::call_encoding_method(ctx, id, args);
+        }
+        if (0xB000..=0xB0FF).contains(&id) {
+            // Template methods (0xB000-0xB003)
+            return crate::template::call_template_method(ctx, id, args);
+        }
+        if (0xC000..=0xC0FF).contains(&id) {
+            // Semver methods (0xC000-0xC016)
+            return crate::semver_mod::call_semver_method(ctx, id, args);
+        }
         match id {
             // Logger methods (0x1000-0x1003)
             0x1000 => {

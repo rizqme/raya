@@ -1,0 +1,43 @@
+// Dns - Standard DNS resolution module
+// Usage: import dns from "std:dns";
+
+class Dns {
+    lookup(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookup", hostname);
+    }
+
+    lookup4(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookup4", hostname);
+    }
+
+    lookup6(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookup6", hostname);
+    }
+
+    lookupMx(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookupMx", hostname);
+    }
+
+    lookupTxt(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookupTxt", hostname);
+    }
+
+    lookupSrv(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookupSrv", hostname);
+    }
+
+    lookupCname(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookupCname", hostname);
+    }
+
+    lookupNs(hostname: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.lookupNs", hostname);
+    }
+
+    reverse(ip: string): string[] {
+        return __NATIVE_CALL<string[]>("dns.reverse", ip);
+    }
+}
+
+const dns = new Dns();
+export default dns;

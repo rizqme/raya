@@ -1,0 +1,49 @@
+// Compress - Standard compression module
+// Usage: import compress from "std:compress";
+
+class Compress {
+    // ── Gzip ──
+
+    gzip(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.gzip", data, 6);
+    }
+
+    gzipLevel(data: Buffer, level: number): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.gzip", data, level);
+    }
+
+    gunzip(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.gunzip", data);
+    }
+
+    // ── Raw Deflate ──
+
+    deflate(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.deflate", data, 6);
+    }
+
+    deflateLevel(data: Buffer, level: number): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.deflate", data, level);
+    }
+
+    inflate(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.inflate", data);
+    }
+
+    // ── Zlib ──
+
+    zlibCompress(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, 6);
+    }
+
+    zlibCompressLevel(data: Buffer, level: number): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, level);
+    }
+
+    zlibDecompress(data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("compress.zlibDecompress", data);
+    }
+}
+
+const compress = new Compress();
+export default compress;

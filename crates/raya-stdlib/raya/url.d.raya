@@ -1,0 +1,145 @@
+/**
+ * std:url - URL parsing and manipulation (WHATWG URL Standard)
+ *
+ * Provides URL parsing, component access, percent-encoding/decoding,
+ * and URLSearchParams for query string manipulation.
+ *
+ * Usage:
+ *   import url from "std:url";
+ *   import { Url, UrlSearchParams } from "std:url";
+ *
+ *   const u = new Url("https://example.com/path?q=1#frag", "");
+ *   let host: string = u.hostname();  // "example.com"
+ *   let encoded: string = url.encode("hello world");  // "hello%20world"
+ */
+
+/**
+ * Parsed URL object. Wraps a native WHATWG URL parser handle.
+ *
+ * Construct with `new Url(input, "")` or `new Url(relative, baseUrl)`.
+ */
+export class Url {
+    /** Parse a URL string. Pass empty string for base to parse absolute URLs. */
+    constructor(input: string, base: string);
+
+    /** Get the protocol/scheme (e.g., "https:"). */
+    protocol(): string;
+
+    /** Get the hostname (e.g., "example.com"). */
+    hostname(): string;
+
+    /** Get the port as a string (e.g., "8080"), or empty string if not specified. */
+    port(): string;
+
+    /** Get host (hostname:port or just hostname if port is default). */
+    host(): string;
+
+    /** Get the pathname (e.g., "/path/to/resource"). */
+    pathname(): string;
+
+    /** Get the search/query string including "?" prefix, or empty string. */
+    search(): string;
+
+    /** Get the hash/fragment including "#" prefix, or empty string. */
+    hash(): string;
+
+    /** Get the origin (e.g., "https://example.com"). */
+    origin(): string;
+
+    /** Get the full URL string (href). */
+    href(): string;
+
+    /** Get the username component. */
+    username(): string;
+
+    /** Get the password component. */
+    password(): string;
+
+    /** Extract search parameters as a UrlSearchParams object. */
+    searchParams(): UrlSearchParams;
+
+    /** Convert URL to string (same as href). */
+    toString(): string;
+
+    /** Return new URL with different protocol. */
+    withProtocol(protocol: string): Url;
+    /** Return new URL with different hostname. */
+    withHostname(hostname: string): Url;
+    /** Return new URL with different port. */
+    withPort(port: string): Url;
+    /** Return new URL with different pathname. */
+    withPathname(pathname: string): Url;
+    /** Return new URL with different search/query string. */
+    withSearch(search: string): Url;
+    /** Return new URL with different hash/fragment. */
+    withHash(hash: string): Url;
+}
+
+/**
+ * URL search parameters (query string) manipulation.
+ *
+ * Construct with `new UrlSearchParams("")` for empty params,
+ * or `new UrlSearchParams("key=val&other=val2")` to parse a query string.
+ */
+export class UrlSearchParams {
+    /** Create search params. Pass empty string for empty params, or a query string to parse. */
+    constructor(init: string);
+
+    /** Get the first value for a parameter name, or null if not found. */
+    get(name: string): string;
+
+    /** Get all values for a parameter name. */
+    getAll(name: string): string[];
+
+    /** Check if a parameter name exists. */
+    has(name: string): boolean;
+
+    /** Set a parameter value (replaces all existing values for that name). */
+    set(name: string, value: string): void;
+
+    /** Append a new name=value pair (does not remove existing). */
+    append(name: string, value: string): void;
+
+    /** Delete all entries for a parameter name. */
+    delete(name: string): void;
+
+    /** Get all parameter names. */
+    keys(): string[];
+
+    /** Get all parameter values. */
+    values(): string[];
+
+    /** Get all entries as a flat array [key1, val1, key2, val2, ...]. */
+    entries(): string[];
+
+    /** Sort parameters by name (stable sort). */
+    sort(): void;
+
+    /** Serialize to a query string (without "?" prefix). */
+    toString(): string;
+
+    /** Get the number of parameters. */
+    size(): number;
+}
+
+/**
+ * URL utility functions for percent-encoding and decoding.
+ */
+declare class UrlUtils {
+    /** Percent-encode a URI component (equivalent to encodeURIComponent). */
+    encode(component: string): string;
+
+    /** Percent-decode a URI component (equivalent to decodeURIComponent). */
+    decode(component: string): string;
+
+    /** Percent-encode a path segment. */
+    encodePath(path: string): string;
+
+    /** Percent-decode a path segment. */
+    decodePath(path: string): string;
+}
+
+/** url utility singleton instance */
+declare const url: UrlUtils;
+
+export default url;

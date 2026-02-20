@@ -1,0 +1,60 @@
+/**
+ * std:template - Mustache-like Template Engine
+ *
+ * A simple template engine supporting variable interpolation, sections,
+ * inverted sections, and raw (unescaped) variables. Data is provided
+ * as JSON strings.
+ *
+ * Template syntax:
+ *   {{name}}           - Variable substitution (HTML-escaped)
+ *   {{{name}}}         - Raw variable substitution (unescaped)
+ *   {{#section}}...{{/section}} - Section (renders if truthy / iterates if array)
+ *   {{^section}}...{{/section}} - Inverted section (renders if falsy/empty)
+ *   {{.}}              - Current value in loop context
+ *
+ * Usage:
+ *   import template from "std:template";
+ *   let result: string = template.render("Hello, {{name}}!", '{"name": "World"}');
+ *
+ *   import { CompiledTemplate } from "std:template";
+ *   let compiled: CompiledTemplate = template.compile("Hello, {{name}}!");
+ *   let output: string = compiled.render('{"name": "World"}');
+ *   compiled.release();
+ */
+
+/**
+ * A pre-compiled template that can be rendered multiple times
+ * with different data without re-parsing the template source.
+ */
+export class CompiledTemplate {
+    /** Create a compiled template from a handle (internal use). */
+    constructor(handle: number);
+
+    /** Render this compiled template with JSON data string. */
+    render(data: string): string;
+
+    /** Release the compiled template handle and free memory. */
+    release(): void;
+}
+
+/**
+ * Template engine providing compile and render operations.
+ */
+declare class TemplateEngine {
+    /**
+     * Compile a template source string for repeated rendering.
+     * Returns a CompiledTemplate that can be rendered multiple times.
+     */
+    compile(source: string): CompiledTemplate;
+
+    /**
+     * One-shot render: parse and render a template with JSON data.
+     * For single-use templates. For repeated rendering, use compile().
+     */
+    render(source: string, data: string): string;
+}
+
+/** template singleton instance */
+declare const template: TemplateEngine;
+
+export default template;

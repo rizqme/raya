@@ -891,6 +891,30 @@ pub mod crypto {
     // ── Comparison (0x400B) ──
     /// `crypto.timingSafeEqual(a, b)` - Constant-time equality check
     pub const TIMING_SAFE_EQUAL: u16 = 0x400B;
+
+    // ── Encryption (0x400C-0x400D) ──
+    /// `crypto.encrypt(key, plaintext)` - AES-256-GCM encrypt, returns nonce+ciphertext+tag
+    pub const ENCRYPT: u16 = 0x400C;
+    /// `crypto.decrypt(key, ciphertext)` - AES-256-GCM decrypt
+    pub const DECRYPT: u16 = 0x400D;
+
+    // ── Key Generation (0x400E) ──
+    /// `crypto.generateKey(bits)` - Generate random symmetric key (128, 192, or 256 bits)
+    pub const GENERATE_KEY: u16 = 0x400E;
+
+    // ── Signing (0x400F-0x4011) ──
+    /// `crypto.sign(algorithm, privateKey, data)` - Sign data with Ed25519
+    pub const SIGN: u16 = 0x400F;
+    /// `crypto.verify(algorithm, publicKey, data, signature)` - Verify signature
+    pub const VERIFY: u16 = 0x4010;
+    /// `crypto.generateKeyPair(algorithm)` - Generate key pair, returns [publicPem, privatePem]
+    pub const GENERATE_KEY_PAIR: u16 = 0x4011;
+
+    // ── Key Derivation (0x4012-0x4013) ──
+    /// `crypto.hkdf(hash, ikm, salt, info, length)` - HKDF key derivation
+    pub const HKDF: u16 = 0x4012;
+    /// `crypto.pbkdf2(password, salt, iterations, length, hash)` - PBKDF2 key derivation
+    pub const PBKDF2: u16 = 0x4013;
 }
 
 /// Check if a method ID is a crypto method (std:crypto)
@@ -962,6 +986,110 @@ pub mod path {
 /// Check if a method ID is a path method (std:path)
 pub fn is_path_method(method_id: u16) -> bool {
     (0x6000..=0x60FF).contains(&method_id)
+}
+
+/// Built-in method IDs for Compress (std:compress)
+pub mod compress {
+    // ── Gzip (0x8000-0x8001) ──
+    /// `compress.gzip(data, level)` - Gzip compress data
+    pub const GZIP: u16 = 0x8000;
+    /// `compress.gunzip(data)` - Gzip decompress data
+    pub const GUNZIP: u16 = 0x8001;
+
+    // ── Raw Deflate (0x8002-0x8003) ──
+    /// `compress.deflate(data, level)` - Raw deflate compress
+    pub const DEFLATE: u16 = 0x8002;
+    /// `compress.inflate(data)` - Raw deflate decompress
+    pub const INFLATE: u16 = 0x8003;
+
+    // ── Zlib (0x8004-0x8005) ──
+    /// `compress.zlibCompress(data, level)` - Zlib compress
+    pub const ZLIB_COMPRESS: u16 = 0x8004;
+    /// `compress.zlibDecompress(data)` - Zlib decompress
+    pub const ZLIB_DECOMPRESS: u16 = 0x8005;
+}
+
+/// Check if a method ID is a compress method (std:compress)
+pub fn is_compress_method(method_id: u16) -> bool {
+    (0x8000..=0x80FF).contains(&method_id)
+}
+
+/// Built-in method IDs for URL (std:url)
+pub mod url {
+    // ── URL Parsing (0x9000-0x9001) ──
+    /// `url.parse(input)` - Parse a URL string, returns handle
+    pub const PARSE: u16 = 0x9000;
+    /// `url.parseWithBase(input, base)` - Parse with base URL, returns handle
+    pub const PARSE_WITH_BASE: u16 = 0x9001;
+
+    // ── URL Components (0x9010-0x901E) ──
+    /// `url.protocol(handle)` - Get URL protocol/scheme
+    pub const PROTOCOL: u16 = 0x9010;
+    /// `url.hostname(handle)` - Get hostname
+    pub const HOSTNAME: u16 = 0x9011;
+    /// `url.port(handle)` - Get port
+    pub const PORT: u16 = 0x9012;
+    /// `url.host(handle)` - Get host (hostname:port)
+    pub const HOST: u16 = 0x9013;
+    /// `url.pathname(handle)` - Get pathname
+    pub const PATHNAME: u16 = 0x9014;
+    /// `url.search(handle)` - Get search/query string
+    pub const SEARCH: u16 = 0x9015;
+    /// `url.hash(handle)` - Get hash/fragment
+    pub const HASH: u16 = 0x9016;
+    /// `url.origin(handle)` - Get origin
+    pub const ORIGIN: u16 = 0x9017;
+    /// `url.href(handle)` - Get full URL string
+    pub const HREF: u16 = 0x9018;
+    /// `url.username(handle)` - Get username
+    pub const USERNAME: u16 = 0x9019;
+    /// `url.password(handle)` - Get password
+    pub const PASSWORD: u16 = 0x901A;
+    /// `url.searchParams(handle)` - Get search params handle
+    pub const SEARCH_PARAMS: u16 = 0x901B;
+    /// `url.toString(handle)` - Convert URL to string
+    pub const TO_STRING: u16 = 0x901C;
+
+    // ── Encoding (0x9020-0x9021) ──
+    /// `url.encode(component)` - Percent-encode a URI component
+    pub const ENCODE: u16 = 0x9020;
+    /// `url.decode(component)` - Percent-decode a URI component
+    pub const DECODE: u16 = 0x9021;
+
+    // ── URLSearchParams (0x9030-0x903F) ──
+    /// `url.paramsNew()` - Create empty search params
+    pub const PARAMS_NEW: u16 = 0x9030;
+    /// `url.paramsFromString(init)` - Create params from query string
+    pub const PARAMS_FROM_STRING: u16 = 0x9031;
+    /// `url.paramsGet(handle, name)` - Get first value for name
+    pub const PARAMS_GET: u16 = 0x9032;
+    /// `url.paramsGetAll(handle, name)` - Get all values for name
+    pub const PARAMS_GET_ALL: u16 = 0x9033;
+    /// `url.paramsHas(handle, name)` - Check if name exists
+    pub const PARAMS_HAS: u16 = 0x9034;
+    /// `url.paramsSet(handle, name, value)` - Set value for name
+    pub const PARAMS_SET: u16 = 0x9035;
+    /// `url.paramsAppend(handle, name, value)` - Append name=value pair
+    pub const PARAMS_APPEND: u16 = 0x9036;
+    /// `url.paramsDelete(handle, name)` - Delete all entries for name
+    pub const PARAMS_DELETE: u16 = 0x9037;
+    /// `url.paramsKeys(handle)` - Get all parameter names
+    pub const PARAMS_KEYS: u16 = 0x9038;
+    /// `url.paramsValues(handle)` - Get all parameter values
+    pub const PARAMS_VALUES: u16 = 0x9039;
+    /// `url.paramsEntries(handle)` - Get all entries as flat array
+    pub const PARAMS_ENTRIES: u16 = 0x903A;
+    /// `url.paramsSort(handle)` - Sort params by name
+    pub const PARAMS_SORT: u16 = 0x903B;
+    /// `url.paramsToString(handle)` - Serialize params to query string
+    pub const PARAMS_TO_STRING: u16 = 0x903C;
+    /// `url.paramsSize(handle)` - Get number of params
+    pub const PARAMS_SIZE: u16 = 0x903D;
+}
+
+/// Check if a method ID is a URL method (std:url)
+pub fn is_url_method(method_id: u16) -> bool {
+    (0x9000..=0x90FF).contains(&method_id)
 }
 
 /// Built-in method IDs for Date

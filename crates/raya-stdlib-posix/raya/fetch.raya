@@ -32,6 +32,18 @@ class Response {
     bytes(): Buffer {
         return __NATIVE_CALL<Buffer>("fetch.resBytes", this._handle);
     }
+
+    release(): void {
+        __NATIVE_CALL("fetch.resRelease", this._handle);
+    }
+
+    ok(): boolean {
+        return __NATIVE_CALL<boolean>("fetch.resOk", this._handle);
+    }
+
+    redirected(): boolean {
+        return __NATIVE_CALL<boolean>("fetch.resRedirected", this._handle);
+    }
 }
 
 class Fetch {

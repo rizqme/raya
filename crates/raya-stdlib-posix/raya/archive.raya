@@ -1,0 +1,45 @@
+// Archive - Standard archive module (tar, tar.gz, zip)
+// Usage: import archive from "std:archive";
+
+class Archive {
+    // ── Tar ──
+
+    tarCreate(outputPath: string, inputPaths: string[]): void {
+        __NATIVE_CALL("archive.tarCreate", outputPath, inputPaths);
+    }
+
+    tarExtract(archivePath: string, outputDir: string): void {
+        __NATIVE_CALL("archive.tarExtract", archivePath, outputDir);
+    }
+
+    tarList(archivePath: string): string[] {
+        return __NATIVE_CALL<string[]>("archive.tarList", archivePath);
+    }
+
+    // ── Tar.gz ──
+
+    tgzCreate(outputPath: string, inputPaths: string[]): void {
+        __NATIVE_CALL("archive.tgzCreate", outputPath, inputPaths);
+    }
+
+    tgzExtract(archivePath: string, outputDir: string): void {
+        __NATIVE_CALL("archive.tgzExtract", archivePath, outputDir);
+    }
+
+    // ── Zip ──
+
+    zipCreate(outputPath: string, inputPaths: string[]): void {
+        __NATIVE_CALL("archive.zipCreate", outputPath, inputPaths);
+    }
+
+    zipExtract(archivePath: string, outputDir: string): void {
+        __NATIVE_CALL("archive.zipExtract", archivePath, outputDir);
+    }
+
+    zipList(archivePath: string): string[] {
+        return __NATIVE_CALL<string[]>("archive.zipList", archivePath);
+    }
+}
+
+const archive = new Archive();
+export default archive;

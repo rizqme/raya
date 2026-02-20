@@ -91,6 +91,46 @@ class UdpSocket {
     }
 }
 
+class TlsStream {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    read(size: number): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tlsRead", this._handle, size);
+    }
+
+    readAll(): Buffer {
+        return __NATIVE_CALL<Buffer>("net.tlsReadAll", this._handle);
+    }
+
+    readLine(): string {
+        return __NATIVE_CALL<string>("net.tlsReadLine", this._handle);
+    }
+
+    write(data: Buffer): number {
+        return __NATIVE_CALL<number>("net.tlsWrite", this._handle, data);
+    }
+
+    writeText(data: string): number {
+        return __NATIVE_CALL<number>("net.tlsWriteText", this._handle, data);
+    }
+
+    close(): void {
+        __NATIVE_CALL("net.tlsClose", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("net.tlsRemoteAddr", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("net.tlsLocalAddr", this._handle);
+    }
+}
+
 class Net {
     listen(host: string, port: number): TcpListener {
         const h: number = __NATIVE_CALL<number>("net.tcpListen", host, port);
@@ -102,6 +142,16 @@ class Net {
         return new TcpStream(h);
     }
 
+    connectTls(host: string, port: number): TlsStream {
+        const h: number = __NATIVE_CALL<number>("net.tlsConnect", host, port);
+        return new TlsStream(h);
+    }
+
+    connectTlsWithCa(host: string, port: number, caPem: string): TlsStream {
+        const h: number = __NATIVE_CALL<number>("net.tlsConnectWithCa", host, port, caPem);
+        return new TlsStream(h);
+    }
+
     bindUdp(host: string, port: number): UdpSocket {
         const h: number = __NATIVE_CALL<number>("net.udpBind", host, port);
         return new UdpSocket(h);
@@ -109,5 +159,5 @@ class Net {
 }
 
 const net = new Net();
-export { TcpListener, TcpStream, UdpSocket };
+export { TcpListener, TcpStream, TlsStream, UdpSocket };
 export default net;

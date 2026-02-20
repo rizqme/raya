@@ -37,6 +37,46 @@ class Os {
     tmpdir(): string {
         return __NATIVE_CALL<string>("os.tmpdir");
     }
+
+    release(): string {
+        return __NATIVE_CALL<string>("os.release");
+    }
+
+    osType(): string {
+        return __NATIVE_CALL<string>("os.osType");
+    }
+
+    machine(): string {
+        return __NATIVE_CALL<string>("os.machine");
+    }
+
+    username(): string {
+        return __NATIVE_CALL<string>("os.username");
+    }
+
+    userInfo(): string[] {
+        return __NATIVE_CALL<string[]>("os.userInfo");
+    }
+
+    shell(): string {
+        return __NATIVE_CALL<string>("os.shell");
+    }
+
+    loadavg(): number[] {
+        return __NATIVE_CALL<number[]>("os.loadavg");
+    }
+
+    networkInterfaces(): string[] {
+        return __NATIVE_CALL<string[]>("os.networkInterfaces");
+    }
+
+    endianness(): string {
+        return __NATIVE_CALL<string>("os.endianness");
+    }
+
+    pageSize(): number {
+        return __NATIVE_CALL<number>("os.pageSize");
+    }
 }
 
 const os = new Os();

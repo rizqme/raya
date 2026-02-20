@@ -1,0 +1,121 @@
+/**
+ * std:terminal - Terminal Control Module
+ *
+ * Usage:
+ *   import terminal from "std:terminal";
+ *   if (terminal.isTerminal()) {
+ *       console.log(terminal.green("Connected to TTY"));
+ *   }
+ */
+
+export class Terminal {
+    // ── TTY Detection ──
+
+    /** Check if stdout is a terminal */
+    isTerminal(): boolean;
+    /** Check if stdin is a terminal */
+    isTerminalStdin(): boolean;
+    /** Check if stderr is a terminal */
+    isTerminalStderr(): boolean;
+
+    // ── Terminal Size ──
+
+    /** Get terminal width in columns (default 80 if unavailable) */
+    columns(): number;
+    /** Get terminal height in rows (default 24 if unavailable) */
+    rows(): number;
+
+    // ── Raw Mode ──
+
+    /** Enable raw mode on stdin (disables line buffering and echo) */
+    enableRawMode(): void;
+    /** Disable raw mode on stdin (restore original terminal settings) */
+    disableRawMode(): void;
+
+    // ── Input ──
+
+    /**
+     * Read a single key or escape sequence from stdin (blocking).
+     * Returns key names: "a", "Enter", "Tab", "Backspace", "Escape",
+     * "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+     * "Home", "End", "Insert", "Delete", "PageUp", "PageDown",
+     * "F1"-"F4", "Ctrl+A"-"Ctrl+Z", "Alt+x", "Shift+Tab"
+     */
+    readKey(): string;
+
+    // ── Cursor Control ──
+
+    /** Move cursor to absolute position (0-based column and row) */
+    moveTo(col: number, row: number): void;
+    /** Move cursor up by n lines */
+    moveUp(n: number): void;
+    /** Move cursor down by n lines */
+    moveDown(n: number): void;
+    /** Move cursor right by n columns */
+    moveRight(n: number): void;
+    /** Move cursor left by n columns */
+    moveLeft(n: number): void;
+    /** Save current cursor position */
+    saveCursor(): void;
+    /** Restore previously saved cursor position */
+    restoreCursor(): void;
+    /** Hide the cursor */
+    hideCursor(): void;
+    /** Show the cursor */
+    showCursor(): void;
+
+    // ── Screen Control ──
+
+    /** Clear entire screen and move cursor to top-left */
+    clearScreen(): void;
+    /** Clear entire current line */
+    clearLine(): void;
+    /** Clear from cursor to end of line */
+    clearToEndOfLine(): void;
+    /** Clear from cursor to end of screen */
+    clearToEndOfScreen(): void;
+
+    // ── Colors/Styling ──
+
+    /** Wrap text in bold ANSI escape codes */
+    bold(text: string): string;
+    /** Wrap text in dim ANSI escape codes */
+    dim(text: string): string;
+    /** Wrap text in italic ANSI escape codes */
+    italic(text: string): string;
+    /** Wrap text in underline ANSI escape codes */
+    underline(text: string): string;
+    /** Wrap text in strikethrough ANSI escape codes */
+    strikethrough(text: string): string;
+    /** Wrap text in red foreground ANSI escape codes */
+    red(text: string): string;
+    /** Wrap text in green foreground ANSI escape codes */
+    green(text: string): string;
+    /** Wrap text in yellow foreground ANSI escape codes */
+    yellow(text: string): string;
+    /** Wrap text in blue foreground ANSI escape codes */
+    blue(text: string): string;
+    /** Wrap text in magenta foreground ANSI escape codes */
+    magenta(text: string): string;
+    /** Wrap text in cyan foreground ANSI escape codes */
+    cyan(text: string): string;
+    /** Wrap text in white foreground ANSI escape codes */
+    white(text: string): string;
+    /** Wrap text in gray (bright black) foreground ANSI escape codes */
+    gray(text: string): string;
+    /** Wrap text in red background ANSI escape codes */
+    bgRed(text: string): string;
+    /** Wrap text in green background ANSI escape codes */
+    bgGreen(text: string): string;
+    /** Wrap text in yellow background ANSI escape codes */
+    bgYellow(text: string): string;
+    /** Wrap text in blue background ANSI escape codes */
+    bgBlue(text: string): string;
+    /** Wrap text in RGB foreground color (24-bit true color) */
+    rgb(r: number, g: number, b: number, text: string): string;
+    /** Wrap text in RGB background color (24-bit true color) */
+    bgRgb(r: number, g: number, b: number, text: string): string;
+}
+
+declare const terminal: Terminal;
+export default terminal;

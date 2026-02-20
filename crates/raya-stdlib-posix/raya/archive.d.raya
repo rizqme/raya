@@ -1,0 +1,30 @@
+/**
+ * std:archive - Archive Module (tar, tar.gz, zip)
+ *
+ * Usage:
+ *   import archive from "std:archive";
+ *   archive.tarCreate("out.tar", ["file1.txt", "dir/"]);
+ *   archive.zipExtract("data.zip", "./output");
+ */
+
+export class Archive {
+    /** Create a tar archive from input paths */
+    tarCreate(outputPath: string, inputPaths: string[]): void;
+    /** Extract a tar archive to a directory */
+    tarExtract(archivePath: string, outputDir: string): void;
+    /** List entries in a tar archive */
+    tarList(archivePath: string): string[];
+    /** Create a gzip-compressed tar archive (.tar.gz / .tgz) */
+    tgzCreate(outputPath: string, inputPaths: string[]): void;
+    /** Extract a gzip-compressed tar archive (.tar.gz / .tgz) */
+    tgzExtract(archivePath: string, outputDir: string): void;
+    /** Create a zip archive from input paths */
+    zipCreate(outputPath: string, inputPaths: string[]): void;
+    /** Extract a zip archive to a directory */
+    zipExtract(archivePath: string, outputDir: string): void;
+    /** List entries in a zip archive */
+    zipList(archivePath: string): string[];
+}
+
+declare const archive: Archive;
+export default archive;

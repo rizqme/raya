@@ -35,6 +35,14 @@ class HttpRequest {
     bodyBytes(): Buffer {
         return __NATIVE_CALL<Buffer>("http.reqBodyBytes", this._handle);
     }
+
+    url(): string {
+        return __NATIVE_CALL<string>("http.reqUrl", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("http.reqRemoteAddr", this._handle);
+    }
 }
 
 class HttpServer {
@@ -42,6 +50,16 @@ class HttpServer {
 
     constructor(host: string, port: number) {
         this._handle = __NATIVE_CALL<number>("http.serverCreate", host, port);
+    }
+
+    static withTls(host: string, port: number, certPem: string, keyPem: string): HttpServer {
+        const h: number = __NATIVE_CALL<number>("http.serverCreateTls", host, port, certPem, keyPem);
+        // Construct with port 0 to get a valid object, then replace handle
+        // Note: serverCreate with port 0 will bind to an ephemeral port — we close it immediately
+        const server = new HttpServer("127.0.0.1", 0);
+        __NATIVE_CALL("http.serverClose", server._handle);
+        server._handle = h;
+        return server;
     }
 
     accept(): HttpRequest {

@@ -6,6 +6,28 @@
  *   const code: number = process.run("echo hello");
  */
 
+export class ChildProcess {
+    constructor(handle: number);
+    /** Wait for completion, returns exit code */
+    wait(): number;
+    /** Non-blocking check — returns exit code or -1 if still running */
+    tryWait(): number;
+    /** Check if process is still running */
+    isAlive(): boolean;
+    /** Write to child's stdin */
+    writeStdin(data: string): void;
+    /** Read chunk from stdout (blocking) */
+    readStdout(): string;
+    /** Read chunk from stderr (blocking) */
+    readStderr(): string;
+    /** Send SIGKILL to child */
+    kill(): void;
+    /** Send named signal to child */
+    signal(sig: string): void;
+    /** Get child process ID */
+    pid(): number;
+}
+
 export class Process {
     /** Exit the process */
     exit(code: number): void;
@@ -27,6 +49,57 @@ export class Process {
     execRelease(handle: number): void;
     /** Execute and return exit code (convenience) */
     run(command: string): number;
+    /** Parent process ID */
+    ppid(): number;
+    /** Runtime version string */
+    version(): string;
+    /** Process uptime in seconds */
+    uptime(): number;
+    /** Process resident memory usage in bytes */
+    memoryUsage(): number;
+    /** CPU usage as [user_micros, system_micros] */
+    cpuUsage(): number[];
+    /** Raya GC heap used in bytes */
+    heapUsed(): number;
+    /** Raya GC heap total in bytes */
+    heapTotal(): number;
+    /** Get process title */
+    title(): string;
+    /** Set process title */
+    setTitle(title: string): void;
+    /** Change current working directory */
+    chdir(path: string): void;
+    /** Get current umask without changing it */
+    umaskGet(): number;
+    /** Set umask, return old umask */
+    umaskSet(mask: number): number;
+    /** Real user ID */
+    uid(): number;
+    /** Real group ID */
+    gid(): number;
+    /** Effective user ID */
+    euid(): number;
+    /** Effective group ID */
+    egid(): number;
+    /** Supplementary group IDs */
+    groups(): number[];
+    /** Spawn command via shell (sh -c) */
+    spawn(command: string): ChildProcess;
+    /** Spawn command with explicit args (no shell) */
+    spawnWithArgs(command: string, args: string[]): ChildProcess;
+    /** Spawn with custom working directory and environment */
+    spawnWithOptions(command: string, args: string[], cwd: string, env: string[]): ChildProcess;
+
+    /** Register a signal to be trapped (SIGINT, SIGTERM, SIGHUP, SIGUSR1, SIGUSR2) */
+    trapSignal(signal: string): void;
+    /** Remove signal trap and restore default handler */
+    untrapSignal(signal: string): void;
+    /** Check if a trapped signal has been received (non-blocking) */
+    hasSignal(signal: string): boolean;
+    /** Clear a signal flag (acknowledge receipt) */
+    clearSignal(signal: string): void;
+    /** Wait until any trapped signal is received (blocking). Returns signal name. */
+    waitSignal(): string;
 }
 
 declare const process: Process;

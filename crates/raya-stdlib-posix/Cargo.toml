@@ -13,3 +13,18 @@ raya-sdk = { workspace = true }
 parking_lot = { workspace = true }
 dashmap = { workspace = true }
 libc = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+rustls-pemfile = { workspace = true }
+tungstenite = { workspace = true }
+
+# Archive
+tar = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+
+# Glob
+glob = { workspace = true }
+
+# File watching
+notify = { workspace = true }

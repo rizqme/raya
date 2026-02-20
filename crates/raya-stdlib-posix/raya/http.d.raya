@@ -22,11 +22,17 @@ export class HttpRequest {
     body(): string;
     /** Request body as bytes */
     bodyBytes(): Buffer;
+    /** Full request URL (path + query) */
+    url(): string;
+    /** Remote address of the client */
+    remoteAddr(): string;
 }
 
 export class HttpServer {
     constructor(host: string, port: number);
-    /** Accept next request (blocking) */
+    /** Create TLS-enabled HTTPS server */
+    static withTls(host: string, port: number, certPem: string, keyPem: string): HttpServer;
+    /** Accept next request (blocking) — performs TLS handshake if TLS-enabled */
     accept(): HttpRequest;
     /** Send text response */
     respond(reqHandle: number, status: number, body: string): void;

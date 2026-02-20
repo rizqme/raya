@@ -1,0 +1,31 @@
+/**
+ * std:dns - DNS Resolution Module
+ *
+ * Usage:
+ *   import dns from "std:dns";
+ *   let ips = dns.lookup("example.com");
+ */
+
+export class Dns {
+    /** Resolve hostname to all IP addresses */
+    lookup(hostname: string): string[];
+    /** Resolve hostname to IPv4 addresses only */
+    lookup4(hostname: string): string[];
+    /** Resolve hostname to IPv6 addresses only */
+    lookup6(hostname: string): string[];
+    /** Look up MX records — flat [priority, exchange, ...] */
+    lookupMx(hostname: string): string[];
+    /** Look up TXT records */
+    lookupTxt(hostname: string): string[];
+    /** Look up SRV records — flat [priority, weight, port, target, ...] */
+    lookupSrv(hostname: string): string[];
+    /** Look up CNAME records */
+    lookupCname(hostname: string): string[];
+    /** Look up NS (nameserver) records */
+    lookupNs(hostname: string): string[];
+    /** Reverse DNS lookup — hostnames for an IP address */
+    reverse(ip: string): string[];
+}
+
+declare const dns: Dns;
+export default dns;

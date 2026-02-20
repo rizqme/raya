@@ -59,6 +59,46 @@ class Crypto {
     timingSafeEqual(a: Buffer, b: Buffer): boolean {
         return __NATIVE_CALL<boolean>("crypto.timingSafeEqual", a, b);
     }
+
+    // ── Encryption ──
+
+    encrypt(key: Buffer, plaintext: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.encrypt", key, plaintext);
+    }
+
+    decrypt(key: Buffer, ciphertext: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.decrypt", key, ciphertext);
+    }
+
+    // ── Key Generation ──
+
+    generateKey(bits: number): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.generateKey", bits);
+    }
+
+    // ── Signing ──
+
+    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.sign", algorithm, privateKey, data);
+    }
+
+    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean {
+        return __NATIVE_CALL<boolean>("crypto.verify", algorithm, publicKey, data, signature);
+    }
+
+    generateKeyPair(algorithm: string): string[] {
+        return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
+    }
+
+    // ── Key Derivation ──
+
+    hkdf(hash: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.hkdf", hash, ikm, salt, info, length);
+    }
+
+    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hash: string): Buffer {
+        return __NATIVE_CALL<Buffer>("crypto.pbkdf2", password, salt, iterations, length, hash);
+    }
 }
 
 const crypto = new Crypto();

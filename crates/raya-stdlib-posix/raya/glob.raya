@@ -1,0 +1,19 @@
+// Glob - File pattern matching module
+// Usage: import glob from "std:glob";
+
+class GlobClass {
+    find(pattern: string): string[] {
+        return __NATIVE_CALL<string[]>("glob.find", pattern);
+    }
+
+    findInDir(pattern: string, cwd: string): string[] {
+        return __NATIVE_CALL<string[]>("glob.findInDir", pattern, cwd);
+    }
+
+    matches(path: string, pattern: string): boolean {
+        return __NATIVE_CALL<boolean>("glob.matches", path, pattern);
+    }
+}
+
+const glob = new GlobClass();
+export default glob;

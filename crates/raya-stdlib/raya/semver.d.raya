@@ -1,0 +1,94 @@
+/**
+ * std:semver - Semantic Versioning (SemVer 2.0.0)
+ *
+ * Provides parsing, comparison, and range matching for semantic versions.
+ *
+ * Usage:
+ *   import semver from "std:semver";
+ *   import { SemverVersion } from "std:semver";
+ *
+ *   const valid: boolean = semver.valid("1.2.3");
+ *   const v: SemverVersion = semver.parse("1.2.3-beta.1+build.42");
+ *   let major: number = v.major();  // 1
+ *   let pre: string = v.prerelease();  // "beta.1"
+ *   let cmp: boolean = semver.gt("2.0.0", "1.0.0");  // true
+ *   let sat: boolean = semver.satisfies("1.2.3", ">=1.0.0 <2.0.0");  // true
+ */
+
+/**
+ * A parsed semantic version object.
+ *
+ * Created via `semver.parse()`. Wraps a native handle for efficient
+ * access to version components (major, minor, patch, prerelease, build).
+ */
+export class SemverVersion {
+    /** Create a SemverVersion from a native handle. Use `semver.parse()` instead. */
+    constructor(handle: number);
+
+    /** Get the major version number. */
+    major(): number;
+
+    /** Get the minor version number. */
+    minor(): number;
+
+    /** Get the patch version number. */
+    patch(): number;
+
+    /** Get the prerelease identifier (e.g., "beta.1"), or empty string if none. */
+    prerelease(): string;
+
+    /** Get the build metadata (e.g., "build.42"), or empty string if none. */
+    build(): string;
+
+    /** Get the full version string (e.g., "1.2.3-beta.1+build.42"). */
+    toString(): string;
+}
+
+/**
+ * Semantic versioning utility functions.
+ *
+ * Provides parsing, validation, comparison, and range matching
+ * following the SemVer 2.0.0 specification.
+ */
+declare class SemverClass {
+    /**
+     * Parse a version string into a SemverVersion object.
+     * Throws if the string is not a valid semver version.
+     */
+    parse(version: string): SemverVersion;
+
+    /** Check if a string is a valid semantic version. */
+    valid(version: string): boolean;
+
+    /**
+     * Compare two version strings.
+     * Returns -1 if a < b, 0 if a == b, 1 if a > b.
+     */
+    compare(a: string, b: string): number;
+
+    /**
+     * Check if a version satisfies a semver range requirement.
+     * Range syntax follows the semver crate conventions (e.g., ">=1.0.0 <2.0.0", "^1.2", "~1.2.3").
+     */
+    satisfies(version: string, range: string): boolean;
+
+    /** Check if version a is greater than version b. */
+    gt(a: string, b: string): boolean;
+
+    /** Check if version a is greater than or equal to version b. */
+    gte(a: string, b: string): boolean;
+
+    /** Check if version a is less than version b. */
+    lt(a: string, b: string): boolean;
+
+    /** Check if version a is less than or equal to version b. */
+    lte(a: string, b: string): boolean;
+
+    /** Check if version a is equal to version b. */
+    eq(a: string, b: string): boolean;
+}
+
+/** semver utility singleton instance */
+declare const semver: SemverClass;
+
+export default semver;

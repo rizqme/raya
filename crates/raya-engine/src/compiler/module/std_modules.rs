@@ -54,6 +54,30 @@ impl StdModuleRegistry {
             "stream",
             include_str!("../../../../raya-stdlib/raya/stream.raya"),
         );
+        modules.insert(
+            "compress",
+            include_str!("../../../../raya-stdlib/raya/compress.raya"),
+        );
+        modules.insert(
+            "url",
+            include_str!("../../../../raya-stdlib/raya/url.raya"),
+        );
+        modules.insert(
+            "args",
+            include_str!("../../../../raya-stdlib/raya/args.raya"),
+        );
+        modules.insert(
+            "encoding",
+            include_str!("../../../../raya-stdlib/raya/encoding.raya"),
+        );
+        modules.insert(
+            "template",
+            include_str!("../../../../raya-stdlib/raya/template.raya"),
+        );
+        modules.insert(
+            "semver",
+            include_str!("../../../../raya-stdlib/raya/semver.raya"),
+        );
 
         // POSIX stdlib modules (raya-stdlib-posix)
         modules.insert(
@@ -87,6 +111,34 @@ impl StdModuleRegistry {
         modules.insert(
             "io",
             include_str!("../../../../raya-stdlib-posix/raya/io.raya"),
+        );
+        modules.insert(
+            "dns",
+            include_str!("../../../../raya-stdlib-posix/raya/dns.raya"),
+        );
+        modules.insert(
+            "terminal",
+            include_str!("../../../../raya-stdlib-posix/raya/terminal.raya"),
+        );
+        modules.insert(
+            "ws",
+            include_str!("../../../../raya-stdlib-posix/raya/ws.raya"),
+        );
+        modules.insert(
+            "readline",
+            include_str!("../../../../raya-stdlib-posix/raya/readline.raya"),
+        );
+        modules.insert(
+            "glob",
+            include_str!("../../../../raya-stdlib-posix/raya/glob.raya"),
+        );
+        modules.insert(
+            "archive",
+            include_str!("../../../../raya-stdlib-posix/raya/archive.raya"),
+        );
+        modules.insert(
+            "watch",
+            include_str!("../../../../raya-stdlib-posix/raya/watch.raya"),
         );
         Self { modules }
     }

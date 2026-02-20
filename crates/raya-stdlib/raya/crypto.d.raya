@@ -53,6 +53,30 @@ export class CryptoClass {
 
     /** Constant-time equality check (prevents timing attacks). */
     timingSafeEqual(a: Buffer, b: Buffer): boolean;
+
+    /** AES-256-GCM encrypt. Key must be 32 bytes. Returns nonce + ciphertext + tag. */
+    encrypt(key: Buffer, plaintext: Buffer): Buffer;
+
+    /** AES-256-GCM decrypt. Key must be 32 bytes. Input is nonce + ciphertext + tag. */
+    decrypt(key: Buffer, ciphertext: Buffer): Buffer;
+
+    /** Generate a random symmetric key. Supported bit sizes: 128, 192, 256. */
+    generateKey(bits: number): Buffer;
+
+    /** Sign data. Supported algorithms: "ed25519". Private key as PEM in Buffer. */
+    sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer;
+
+    /** Verify signature. Supported algorithms: "ed25519". Public key as PEM in Buffer. */
+    verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean;
+
+    /** Generate asymmetric key pair. Supported algorithms: "ed25519". Returns [publicPem, privatePem]. */
+    generateKeyPair(algorithm: string): string[];
+
+    /** HKDF key derivation. Supported hashes: "sha256", "sha384", "sha512". */
+    hkdf(hash: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer;
+
+    /** PBKDF2 key derivation. Supported hashes: "sha256", "sha384", "sha512". */
+    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hash: string): Buffer;
 }
 
 /** crypto singleton instance */

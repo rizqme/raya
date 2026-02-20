@@ -1,0 +1,111 @@
+/**
+ * std:args - Structured argument parsing
+ *
+ * Provides a fluent API for defining and parsing command-line arguments.
+ * Supports long flags (--name), short flags (-n), boolean flags,
+ * positional arguments, and rest arguments after --.
+ *
+ * Usage:
+ *   import args from "std:args";
+ *   import { ArgParser, ArgResult } from "std:args";
+ *
+ *   const result = args.parser()
+ *       .string("output", "Output file path")
+ *       .boolean("verbose", "Enable verbose output")
+ *       .alias("verbose", "v")
+ *       .parse(argv);
+ *
+ *   let out: string = result.getString("output");
+ *   let verbose: boolean = result.getBoolean("verbose");
+ */
+
+/**
+ * Result of parsing command-line arguments.
+ *
+ * Access parsed values by name using getString() and getBoolean().
+ * Positional arguments and rest arguments (after --) are also available.
+ */
+export class ArgResult {
+    constructor();
+
+    /** Get a string value by option name. Returns empty string if not set. */
+    getString(name: string): string;
+
+    /** Get a boolean value by option name. Returns true only if value is "true". */
+    getBoolean(name: string): boolean;
+
+    /** Get all positional arguments (non-flag arguments). */
+    positionals(): string[];
+
+    /** Get all rest arguments (arguments after --). */
+    rest(): string[];
+
+    /** Check if an option was explicitly provided on the command line. */
+    has(name: string): boolean;
+}
+
+/**
+ * Fluent argument parser builder.
+ *
+ * Define options with string(), boolean(), number(), then call parse()
+ * with the argument array. Supports method chaining.
+ *
+ * Features:
+ * - Long flags: --name value, --name=value
+ * - Short aliases: -n value
+ * - Boolean flags: --verbose (sets to true), --no-verbose (sets to false)
+ * - Positional arguments
+ * - Rest arguments after -- separator
+ * - Default values
+ * - Required flags
+ * - Usage text generation
+ */
+export class ArgParser {
+    constructor();
+
+    /** Define a string option. */
+    string(name: string, description: string): ArgParser;
+
+    /** Define a string option with a default value. */
+    stringDefault(name: string, description: string, defaultValue: string): ArgParser;
+
+    /** Define a number option (value stored as string). */
+    number(name: string, description: string): ArgParser;
+
+    /** Define a number option with a default value (stored as string). */
+    numberDefault(name: string, description: string, defaultValue: string): ArgParser;
+
+    /** Define a boolean flag (defaults to false). */
+    boolean(name: string, description: string): ArgParser;
+
+    /** Set a short alias for a named option (e.g., alias("verbose", "v")). */
+    alias(name: string, short: string): ArgParser;
+
+    /** Define a positional argument. */
+    positional(name: string, description: string): ArgParser;
+
+    /** Mark an option as required. */
+    required(name: string): ArgParser;
+
+    /** Parse an argument array and return the result. */
+    parse(argv: string[]): ArgResult;
+
+    /** Generate a usage/help string for all defined options. */
+    usage(): string;
+
+    /** Set the program name shown in usage text. */
+    name(programName: string): ArgParser;
+}
+
+/**
+ * Args utility class providing factory methods.
+ */
+declare class Args {
+    /** Create a new ArgParser instance. */
+    parser(): ArgParser;
+}
+
+/** args singleton instance */
+declare const args: Args;
+
+export default args;

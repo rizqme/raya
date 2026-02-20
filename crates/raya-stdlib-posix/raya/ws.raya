@@ -1,0 +1,89 @@
+// WebSocket - Standard WebSocket module
+// Usage: import ws from "std:ws";
+// Usage: import { WebSocket, WebSocketServer } from "std:ws";
+
+class WebSocket {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    send(message: string): void {
+        __NATIVE_CALL("ws.send", this._handle, message);
+    }
+
+    sendBytes(data: Buffer): void {
+        __NATIVE_CALL("ws.sendBytes", this._handle, data);
+    }
+
+    receive(): string {
+        return __NATIVE_CALL<string>("ws.receive", this._handle);
+    }
+
+    receiveBytes(): Buffer {
+        return __NATIVE_CALL<Buffer>("ws.receiveBytes", this._handle);
+    }
+
+    close(): void {
+        __NATIVE_CALL("ws.close", this._handle);
+    }
+
+    closeWithCode(code: number, reason: string): void {
+        __NATIVE_CALL("ws.closeWithCode", this._handle, code, reason);
+    }
+
+    isOpen(): boolean {
+        return __NATIVE_CALL<boolean>("ws.isOpen", this._handle);
+    }
+
+    remoteAddr(): string {
+        return __NATIVE_CALL<string>("ws.remoteAddr", this._handle);
+    }
+
+    protocol(): string {
+        return __NATIVE_CALL<string>("ws.protocol", this._handle);
+    }
+}
+
+class WebSocketServer {
+    _handle: number;
+
+    constructor(host: string, port: number) {
+        this._handle = __NATIVE_CALL<number>("ws.serverCreate", host, port);
+    }
+
+    accept(): WebSocket {
+        const h: number = __NATIVE_CALL<number>("ws.serverAccept", this._handle);
+        return new WebSocket(h);
+    }
+
+    close(): void {
+        __NATIVE_CALL("ws.serverClose", this._handle);
+    }
+
+    localAddr(): string {
+        return __NATIVE_CALL<string>("ws.serverAddr", this._handle);
+    }
+}
+
+class Ws {
+    connect(url: string): WebSocket {
+        const h: number = __NATIVE_CALL<number>("ws.connect", url);
+        return new WebSocket(h);
+    }
+
+    connectWithProtocols(url: string, protocols: string[]): WebSocket {
+        const joined: string = protocols.join(", ");
+        const h: number = __NATIVE_CALL<number>("ws.connectWithProtocols", url, joined);
+        return new WebSocket(h);
+    }
+
+    serve(host: string, port: number): WebSocketServer {
+        return new WebSocketServer(host, port);
+    }
+}
+
+const ws = new Ws();
+export { WebSocket, WebSocketServer };
+export default ws;

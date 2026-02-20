@@ -1,13 +1,15 @@
-//! std:fetch — HTTP/1.1 client (minimal, built on std::net)
+//! std:fetch — HTTP/1.1 client with TLS support (rustls)
 
 use crate::handles::HandleRegistry;
-use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
+use crate::tls;
+use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
 use std::sync::LazyLock;
 
-static RESPONSES: LazyLock<HandleRegistry<HttpResponseData>> = LazyLock::new(HandleRegistry::new);
+static RESPONSES: LazyLock<HandleRegistry<HttpResponseData>> =
+    LazyLock::new(HandleRegistry::new);
 
 /// Parsed HTTP response data
 struct HttpResponseData {
@@ -47,7 +49,8 @@ pub fn request(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
 
 /// Get response status code
 pub fn res_status(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
@@ -58,18 +61,22 @@ pub fn res_status(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 
 /// Get response status text
 pub fn res_status_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
         Some(resp) => NativeCallResult::Value(ctx.create_string(&resp.status_text)),
-        None => NativeCallResult::Error(format!("fetch.resStatusText: invalid handle {}", handle)),
+        None => {
+            NativeCallResult::Error(format!("fetch.resStatusText: invalid handle {}", handle))
+        }
     }
 }
 
 /// Get specific response header
 pub fn res_header(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let name = match ctx.read_string(args[1]) {
@@ -87,7 +94,8 @@ pub fn res_header(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 
 /// Get all response headers as flat [key, value, ...] array
 pub fn res_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
@@ -105,7 +113,8 @@ pub fn res_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 
 /// Get response body as text
 pub fn res_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
@@ -119,7 +128,8 @@ pub fn res_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
 
 /// Get response body as bytes
 pub fn res_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
@@ -128,18 +138,95 @@ pub fn res_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
     }
 }
 
-// ── Internal: raw HTTP/1.1 client ──
+/// Release response handle
+pub fn res_release(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args
+        .first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    RESPONSES.remove(handle);
+    NativeCallResult::null()
+}
 
-fn do_http_request(method: &str, url: &str, body: &str, extra_headers: &str) -> Result<HttpResponseData, String> {
-    // Parse URL: http://host:port/path
+/// Check if response status is 200-299
+pub fn res_ok(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args
+        .first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    match RESPONSES.get(handle) {
+        Some(resp) => NativeCallResult::bool(resp.status >= 200 && resp.status < 300),
+        None => NativeCallResult::Error(format!("fetch.resOk: invalid handle {}", handle)),
+    }
+}
+
+/// Check if response was redirected (status 3xx)
+pub fn res_redirected(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args
+        .first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    match RESPONSES.get(handle) {
+        Some(resp) => NativeCallResult::bool(resp.status >= 300 && resp.status < 400),
+        None => NativeCallResult::Error(format!("fetch.resRedirected: invalid handle {}", handle)),
+    }
+}
+
+// ── Internal: raw HTTP/1.1 client with TLS support ──
+
+/// Parsed URL components
+struct ParsedUrl {
+    host: String,
+    port: u16,
+    path: String,
+    is_tls: bool,
+}
+
+fn do_http_request(
+    method: &str,
+    url: &str,
+    body: &str,
+    extra_headers: &str,
+) -> Result<HttpResponseData, String> {
     let url = url.trim();
-    let (host, port, path) = parse_url(url)?;
+    let parsed = parse_url(url)?;
 
-    // Connect
-    let addr = format!("{}:{}", host, port);
-    let mut stream = net::TcpStream::connect(&addr).map_err(|e| e.to_string())?;
+    // Connect TCP
+    let addr = format!("{}:{}", parsed.host, parsed.port);
+    let stream = net::TcpStream::connect(&addr).map_err(|e| e.to_string())?;
 
-    // Build request
+    // Build HTTP request payload
+    let request = build_request(method, &parsed.host, &parsed.path, body, extra_headers);
+
+    if parsed.is_tls {
+        // HTTPS path: wrap in TLS
+        let config = tls::default_client_config();
+        let mut tls_stream = tls::connect_tls(stream, &parsed.host, config)?;
+        tls_stream
+            .write_all(request.as_bytes())
+            .map_err(|e| e.to_string())?;
+        tls_stream.flush().map_err(|e| e.to_string())?;
+        let reader = BufReader::new(tls_stream);
+        read_http_response(reader)
+    } else {
+        // HTTP path: plain TCP
+        let mut stream_ref = &stream;
+        stream_ref
+            .write_all(request.as_bytes())
+            .map_err(|e| e.to_string())?;
+        stream_ref.flush().map_err(|e| e.to_string())?;
+        let reader = BufReader::new(stream);
+        read_http_response(reader)
+    }
+}
+
+fn build_request(
+    method: &str,
+    host: &str,
+    path: &str,
+    body: &str,
+    extra_headers: &str,
+) -> String {
     let mut request = format!("{} {} HTTP/1.1\r\n", method, path);
     request.push_str(&format!("Host: {}\r\n", host));
     request.push_str("Connection: close\r\n");
@@ -160,17 +247,17 @@ fn do_http_request(method: &str, url: &str, body: &str, extra_headers: &str) -> 
     if !body.is_empty() {
         request.push_str(body);
     }
+    request
+}
 
-    // Send
-    stream.write_all(request.as_bytes()).map_err(|e| e.to_string())?;
-    stream.flush().map_err(|e| e.to_string())?;
-
-    // Read response
-    let mut reader = BufReader::new(stream);
+fn read_http_response<R: Read>(reader: BufReader<R>) -> Result<HttpResponseData, String> {
+    let mut reader = reader;
 
     // Status line
     let mut status_line = String::new();
-    reader.read_line(&mut status_line).map_err(|e| e.to_string())?;
+    reader
+        .read_line(&mut status_line)
+        .map_err(|e| e.to_string())?;
     let (status, status_text) = parse_status_line(&status_line)?;
 
     // Headers
@@ -219,30 +306,38 @@ fn do_http_request(method: &str, url: &str, body: &str, extra_headers: &str) -> 
     })
 }
 
-fn parse_url(url: &str) -> Result<(String, u16, String), String> {
-    let url = if url.starts_with("http://") {
-        &url[7..]
-    } else if url.starts_with("https://") {
-        return Err("HTTPS not supported (use HTTP)".to_string());
+fn parse_url(url: &str) -> Result<ParsedUrl, String> {
+    let (remainder, is_tls) = if url.starts_with("https://") {
+        (&url[8..], true)
+    } else if url.starts_with("http://") {
+        (&url[7..], false)
     } else {
-        url
+        (url, false)
     };
 
-    let (host_port, path) = if let Some(idx) = url.find('/') {
-        (&url[..idx], &url[idx..])
+    let (host_port, path) = if let Some(idx) = remainder.find('/') {
+        (&remainder[..idx], &remainder[idx..])
     } else {
-        (url, "/")
+        (remainder, "/")
     };
 
     let (host, port) = if let Some(idx) = host_port.find(':') {
         let h = &host_port[..idx];
-        let p: u16 = host_port[idx + 1..].parse().map_err(|_| "Invalid port")?;
+        let p: u16 = host_port[idx + 1..]
+            .parse()
+            .map_err(|_| "Invalid port".to_string())?;
         (h.to_string(), p)
     } else {
-        (host_port.to_string(), 80)
+        let default_port = if is_tls { 443 } else { 80 };
+        (host_port.to_string(), default_port)
     };
 
-    Ok((host, port, path.to_string()))
+    Ok(ParsedUrl {
+        host,
+        port,
+        path: path.to_string(),
+        is_tls,
+    })
 }
 
 fn parse_status_line(line: &str) -> Result<(u16, String), String> {
@@ -252,15 +347,21 @@ fn parse_status_line(line: &str) -> Result<(u16, String), String> {
         return Err("Invalid HTTP status line".to_string());
     }
     let status: u16 = parts[1].parse().map_err(|_| "Invalid status code")?;
-    let text = if parts.len() >= 3 { parts[2].to_string() } else { String::new() };
+    let text = if parts.len() >= 3 {
+        parts[2].to_string()
+    } else {
+        String::new()
+    };
     Ok((status, text))
 }
 
-fn read_chunked_body(reader: &mut BufReader<net::TcpStream>) -> Result<Vec<u8>, String> {
+fn read_chunked_body<R: Read>(reader: &mut BufReader<R>) -> Result<Vec<u8>, String> {
     let mut body = Vec::new();
     loop {
         let mut size_line = String::new();
-        reader.read_line(&mut size_line).map_err(|e| e.to_string())?;
+        reader
+            .read_line(&mut size_line)
+            .map_err(|e| e.to_string())?;
         let size = usize::from_str_radix(size_line.trim(), 16).unwrap_or(0);
         if size == 0 {
             break;

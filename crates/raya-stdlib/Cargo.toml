@@ -22,9 +22,31 @@ hex = "0.4"
 base64 = "0.21"
 subtle = "2.5"
 uuid = { version = "1.6", features = ["v4"] }
+aes-gcm = { workspace = true }
+ed25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+pbkdf2 = { workspace = true }
 
 # Path dependencies
 pathdiff = "0.2"
+
+# Compression
+flate2 = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+percent-encoding = "2"
+
+# Encoding (CSV, XML, Base32)
+csv = { workspace = true }
+quick-xml = { workspace = true }
+data-encoding = { workspace = true }
+
+# Semver
+semver = { workspace = true }
+
+# Serialization (for template module)
+serde_json = { workspace = true }
 
 [dev-dependencies]
 raya-engine = { workspace = true }

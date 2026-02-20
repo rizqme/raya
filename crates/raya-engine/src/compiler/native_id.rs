@@ -290,6 +290,22 @@ pub const CRYPTO_TO_BASE64: u16 = 0x4009;
 pub const CRYPTO_FROM_BASE64: u16 = 0x400A;
 /// crypto.timingSafeEqual(a, b) - Constant-time equality check
 pub const CRYPTO_TIMING_SAFE_EQUAL: u16 = 0x400B;
+/// crypto.encrypt(key, plaintext) - AES-256-GCM encrypt, returns nonce+ciphertext+tag
+pub const CRYPTO_ENCRYPT: u16 = 0x400C;
+/// crypto.decrypt(key, ciphertext) - AES-256-GCM decrypt
+pub const CRYPTO_DECRYPT: u16 = 0x400D;
+/// crypto.generateKey(bits) - Generate random symmetric key (128, 192, or 256 bits)
+pub const CRYPTO_GENERATE_KEY: u16 = 0x400E;
+/// crypto.sign(algorithm, privateKey, data) - Sign data with Ed25519
+pub const CRYPTO_SIGN: u16 = 0x400F;
+/// crypto.verify(algorithm, publicKey, data, signature) - Verify signature
+pub const CRYPTO_VERIFY: u16 = 0x4010;
+/// crypto.generateKeyPair(algorithm) - Generate key pair, returns [publicPem, privatePem]
+pub const CRYPTO_GENERATE_KEY_PAIR: u16 = 0x4011;
+/// crypto.hkdf(hash, ikm, salt, info, length) - HKDF key derivation
+pub const CRYPTO_HKDF: u16 = 0x4012;
+/// crypto.pbkdf2(password, salt, iterations, length, hash) - PBKDF2 key derivation
+pub const CRYPTO_PBKDF2: u16 = 0x4013;
 
 // ============================================================================
 // Time (0x50xx) - std:time module
@@ -619,6 +635,14 @@ pub fn native_name(id: u16) -> &'static str {
         CRYPTO_TO_BASE64 => "crypto.toBase64",
         CRYPTO_FROM_BASE64 => "crypto.fromBase64",
         CRYPTO_TIMING_SAFE_EQUAL => "crypto.timingSafeEqual",
+        CRYPTO_ENCRYPT => "crypto.encrypt",
+        CRYPTO_DECRYPT => "crypto.decrypt",
+        CRYPTO_GENERATE_KEY => "crypto.generateKey",
+        CRYPTO_SIGN => "crypto.sign",
+        CRYPTO_VERIFY => "crypto.verify",
+        CRYPTO_GENERATE_KEY_PAIR => "crypto.generateKeyPair",
+        CRYPTO_HKDF => "crypto.hkdf",
+        CRYPTO_PBKDF2 => "crypto.pbkdf2",
 
         // Math
         MATH_ABS => "math.abs",

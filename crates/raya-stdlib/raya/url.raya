@@ -1,0 +1,194 @@
+// URL - Standard URL module (WHATWG URL parser)
+// Usage: import url from "std:url";
+// Usage: import { Url, UrlSearchParams } from "std:url";
+
+class UrlSearchParams {
+    _handle: number;
+
+    constructor(init: string) {
+        if (init == "") {
+            this._handle = __NATIVE_CALL<number>("url.paramsNew");
+        } else {
+            this._handle = __NATIVE_CALL<number>("url.paramsFromString", init);
+        }
+    }
+
+    get(name: string): string {
+        return __NATIVE_CALL<string>("url.paramsGet", this._handle, name);
+    }
+
+    getAll(name: string): string[] {
+        return __NATIVE_CALL<string[]>("url.paramsGetAll", this._handle, name);
+    }
+
+    has(name: string): boolean {
+        return __NATIVE_CALL<boolean>("url.paramsHas", this._handle, name);
+    }
+
+    set(name: string, value: string): void {
+        __NATIVE_CALL("url.paramsSet", this._handle, name, value);
+    }
+
+    append(name: string, value: string): void {
+        __NATIVE_CALL("url.paramsAppend", this._handle, name, value);
+    }
+
+    delete(name: string): void {
+        __NATIVE_CALL("url.paramsDelete", this._handle, name);
+    }
+
+    keys(): string[] {
+        return __NATIVE_CALL<string[]>("url.paramsKeys", this._handle);
+    }
+
+    values(): string[] {
+        return __NATIVE_CALL<string[]>("url.paramsValues", this._handle);
+    }
+
+    entries(): string[] {
+        return __NATIVE_CALL<string[]>("url.paramsEntries", this._handle);
+    }
+
+    sort(): void {
+        __NATIVE_CALL("url.paramsSort", this._handle);
+    }
+
+    toString(): string {
+        return __NATIVE_CALL<string>("url.paramsToString", this._handle);
+    }
+
+    size(): number {
+        return __NATIVE_CALL<number>("url.paramsSize", this._handle);
+    }
+}
+
+class Url {
+    _handle: number;
+
+    constructor(input: string, base: string) {
+        if (base == "") {
+            this._handle = __NATIVE_CALL<number>("url.parse", input);
+        } else {
+            this._handle = __NATIVE_CALL<number>("url.parseWithBase", input, base);
+        }
+    }
+
+    protocol(): string {
+        return __NATIVE_CALL<string>("url.protocol", this._handle);
+    }
+
+    hostname(): string {
+        return __NATIVE_CALL<string>("url.hostname", this._handle);
+    }
+
+    port(): string {
+        return __NATIVE_CALL<string>("url.port", this._handle);
+    }
+
+    host(): string {
+        return __NATIVE_CALL<string>("url.host", this._handle);
+    }
+
+    pathname(): string {
+        return __NATIVE_CALL<string>("url.pathname", this._handle);
+    }
+
+    search(): string {
+        return __NATIVE_CALL<string>("url.search", this._handle);
+    }
+
+    hash(): string {
+        return __NATIVE_CALL<string>("url.hash", this._handle);
+    }
+
+    origin(): string {
+        return __NATIVE_CALL<string>("url.origin", this._handle);
+    }
+
+    href(): string {
+        return __NATIVE_CALL<string>("url.href", this._handle);
+    }
+
+    username(): string {
+        return __NATIVE_CALL<string>("url.username", this._handle);
+    }
+
+    password(): string {
+        return __NATIVE_CALL<string>("url.password", this._handle);
+    }
+
+    searchParams(): UrlSearchParams {
+        const handle: number = __NATIVE_CALL<number>("url.searchParams", this._handle);
+        const params = new UrlSearchParams("");
+        params._handle = handle;
+        return params;
+    }
+
+    toString(): string {
+        return __NATIVE_CALL<string>("url.toString", this._handle);
+    }
+
+    withProtocol(protocol: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withProtocol", this._handle, protocol);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+
+    withHostname(hostname: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withHostname", this._handle, hostname);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+
+    withPort(port: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withPort", this._handle, port);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+
+    withPathname(pathname: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withPathname", this._handle, pathname);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+
+    withSearch(search: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withSearch", this._handle, search);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+
+    withHash(hash: string): Url {
+        const h: number = __NATIVE_CALL<number>("url.withHash", this._handle, hash);
+        const u = new Url("http://x", "");
+        u._handle = h;
+        return u;
+    }
+}
+
+class UrlUtils {
+    encode(component: string): string {
+        return __NATIVE_CALL<string>("url.encode", component);
+    }
+
+    decode(component: string): string {
+        return __NATIVE_CALL<string>("url.decode", component);
+    }
+
+    encodePath(path: string): string {
+        return __NATIVE_CALL<string>("url.encodePath", path);
+    }
+
+    decodePath(path: string): string {
+        return __NATIVE_CALL<string>("url.decodePath", path);
+    }
+}
+
+const url = new UrlUtils();
+export { Url, UrlSearchParams };
+export default url;
