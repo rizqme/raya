@@ -77,7 +77,6 @@ fn test_type_alias_with_nested_object() {
 // ============================================================================
 
 #[test]
-#[ignore = "type alias as variable type for class instance not yet implemented"]
 fn test_type_alias_with_method_signature() {
     expect_i32(
         "type Computable = {

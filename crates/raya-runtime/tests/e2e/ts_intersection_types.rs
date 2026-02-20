@@ -43,7 +43,6 @@ fn test_intersection_three_types() {
 // ============================================================================
 
 #[test]
-#[ignore = "class instance to intersection-typed variable assignment not yet supported"]
 fn test_intersection_with_methods() {
     expect_string(
         "type Printable = {

@@ -143,14 +143,19 @@ impl<'a> SubtypingContext<'a> {
                 })
             }
 
-            // Class <: Object (structural): anonymous class from object literal <: object type
+            // Class <: Object (structural): class instance <: object type
             (Type::Class(c), Type::Object(o)) => {
                 o.properties.iter().all(|op| {
+                    // Check class properties
                     c.properties.iter().any(|cp| {
                         cp.name == op.name
                             && cp.optional == op.optional
                             && (!op.readonly || cp.readonly)
                             && self.is_subtype(cp.ty, op.ty)
+                    })
+                    // Also check class methods (methods are stored separately from properties)
+                    || c.methods.iter().any(|cm| {
+                        cm.name == op.name && self.is_subtype(cm.ty, op.ty)
                     })
                 })
             }
