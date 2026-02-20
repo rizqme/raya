@@ -170,13 +170,15 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,328+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 19 CLI, 17 stdlib, 204 raya-pm) — 0 ignored
+**Tests:** 3,348+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 39 CLI (26 integration + 13 unit), 17 stdlib, 204 raya-pm) — 0 ignored
 
 **CLI Implementation:** Complete
-- `raya run` / `raya build` / `raya eval` fully wired through `raya-runtime::Runtime`
+- `raya run` / `raya build` / `raya eval` / `raya repl` fully wired through `raya-runtime::Runtime`/`Session`
 - `raya run <script>` resolves named scripts from `[scripts]` in raya.toml
 - Dependency resolution: local path, URL/git (cached), registry packages
-- 19 CLI integration tests covering all execution scenarios
+- `raya repl`: persistent session, multi-line input, history, dot-commands (.help/.clear/.load/.type/.exit)
+- Session accumulates declarations (let, const, function, class, import) across evals
+- 26 CLI integration tests + 13 REPL unit tests
 
 **JIT Compilation (feature-gated):** Complete
 - Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes
