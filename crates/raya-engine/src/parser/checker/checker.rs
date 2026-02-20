@@ -311,7 +311,16 @@ impl<'a> TypeChecker<'a> {
                             self.check_assignable(init_ty, symbol.ty, *init.span());
                             symbol.ty
                         } else {
-                            init_ty
+                            // Inside arrow bodies, the binder never visited — resolve
+                            // the annotation and store in inferred_var_types so
+                            // subsequent references can find this variable
+                            let resolved_ty = self.resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
+                            self.check_assignable(init_ty, resolved_ty, *init.span());
+                            self.inferred_var_types.insert(
+                                (self.current_scope.0, name.clone()),
+                                resolved_ty,
+                            );
+                            resolved_ty
                         }
                     } else {
                         // No type annotation - infer type from initializer

@@ -436,6 +436,16 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Check module-level variables (stored as globals)
+        if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::LoadGlobal {
+                dest: dest.clone(),
+                index: global_idx,
+            });
+            return dest;
+        }
+
         // Unknown variable - could be a global or error
         // For now, return a null placeholder
         self.lower_null_literal()
@@ -783,6 +793,21 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Regular closure call
+                self.emit(IrInstr::CallClosure {
+                    dest: Some(dest.clone()),
+                    closure,
+                    args,
+                });
+                return dest;
+            }
+
+            // Check for closure stored in a module-level global variable
+            if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                let closure = self.alloc_register(TypeId::new(0));
+                self.emit(IrInstr::LoadGlobal {
+                    dest: closure.clone(),
+                    index: global_idx,
+                });
                 self.emit(IrInstr::CallClosure {
                     dest: Some(dest.clone()),
                     closure,
@@ -2740,6 +2765,12 @@ impl<'a> Lowerer<'a> {
                             value: rhs,
                         });
                     }
+                } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                    // Module-level variable — store via global slot
+                    self.emit(IrInstr::StoreGlobal {
+                        index: global_idx,
+                        value: rhs,
+                    });
                 }
             }
             self.set_terminator(Terminator::Jump(merge_block));
@@ -2885,7 +2916,19 @@ impl<'a> Lowerer<'a> {
                                 value: value.clone(),
                             });
                         }
+                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        // Module-level variable inside arrow — store via global slot
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
+                            value: value.clone(),
+                        });
                     }
+                } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                    // Module-level variable — store via global slot
+                    self.emit(IrInstr::StoreGlobal {
+                        index: global_idx,
+                        value: value.clone(),
+                    });
                 }
             }
             Expression::Member(member) => {

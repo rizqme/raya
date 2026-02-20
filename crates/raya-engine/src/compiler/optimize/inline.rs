@@ -250,6 +250,8 @@ impl Inliner {
                     f(arg.id.as_u32());
                 }
             }
+            IrInstr::StoreGlobal { value, .. } => f(value.id.as_u32()),
+            IrInstr::LoadGlobal { dest, .. } => f(dest.id.as_u32()),
             // Add other cases as needed; these are the main ones for small inlinable functions
             _ => {}
         }
@@ -448,6 +450,14 @@ impl Inliner {
                 dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 closure: self.rename_register(closure, reg_map),
                 args: closure_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+            }),
+            IrInstr::StoreGlobal { index, value } => Some(IrInstr::StoreGlobal {
+                index: *index,
+                value: self.rename_register(value, reg_map),
+            }),
+            IrInstr::LoadGlobal { dest, index } => Some(IrInstr::LoadGlobal {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                index: *index,
             }),
             // For instructions we don't expect in inlinable functions,
             // clone them as-is (they should have been filtered out)
