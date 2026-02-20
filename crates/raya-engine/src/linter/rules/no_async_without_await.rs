@@ -1,7 +1,9 @@
 //! Rule: no-async-without-await (L3002)
 //!
-//! Flags `async` functions that never use `await`. The `async` keyword adds
-//! overhead (Task wrapping) for no benefit if await is never used.
+//! Flags `async` functions that never use `await`. In Raya, `async` means
+//! "spawn a green thread," so an async function without await is still valid
+//! for concurrency. This rule is off by default — enable it if you prefer
+//! explicit separation of concurrent vs. suspending functions.
 
 use crate::linter::rule::*;
 use crate::parser::ast::{self, visitor::{Visitor, walk_block_statement, walk_expression}};
@@ -11,9 +13,9 @@ pub struct NoAsyncWithoutAwait;
 static META: RuleMeta = RuleMeta {
     name: "no-async-without-await",
     code: "L3002",
-    description: "Disallow async functions that don't use await",
+    description: "Disallow async functions that don't use await (opt-in)",
     category: Category::BestPractice,
-    default_severity: Severity::Warn,
+    default_severity: Severity::Off,
     fixable: false,
 };
 
@@ -48,7 +50,7 @@ impl LintRule for NoAsyncWithoutAwait {
                 span: func.span.clone(),
                 severity: META.default_severity,
                 fix: None,
-                notes: vec!["Remove the 'async' keyword if await is not needed".to_string()],
+                notes: vec!["In Raya, async functions run as concurrent tasks even without await. Remove 'async' if concurrency is not intended".to_string()],
             }]
         } else {
             vec![]
@@ -84,7 +86,7 @@ impl LintRule for NoAsyncWithoutAwait {
                 span: arrow.span.clone(),
                 severity: META.default_severity,
                 fix: None,
-                notes: vec!["Remove the 'async' keyword if await is not needed".to_string()],
+                notes: vec!["In Raya, async functions run as concurrent tasks even without await. Remove 'async' if concurrency is not intended".to_string()],
             }]
         } else {
             vec![]
@@ -120,11 +122,15 @@ impl Visitor for AwaitFinder {
 
 #[cfg(test)]
 mod tests {
-    use crate::linter::rule::LintDiagnostic;
+    use crate::linter::config::LintConfig;
+    use crate::linter::rule::{LintDiagnostic, Severity};
     use crate::linter::Linter;
 
     fn lint(source: &str) -> Vec<LintDiagnostic> {
-        let linter = Linter::new();
+        // Rule is Off by default; explicitly enable for testing.
+        let mut config = LintConfig::default();
+        config.set_severity("no-async-without-await", Severity::Warn);
+        let linter = Linter::with_config(config);
         linter.lint_source(source, "test.raya").diagnostics
     }
 
@@ -133,9 +139,16 @@ mod tests {
     }
 
     #[test]
+    fn test_off_by_default() {
+        let linter = Linter::new();
+        let diags = linter.lint_source("async function f(): void { const x: int = 1; }", "test.raya").diagnostics;
+        assert!(!has_rule(&diags, "L3002"), "should NOT fire when Off by default");
+    }
+
+    #[test]
     fn test_async_without_await_flagged() {
         let diags = lint("async function f(): void { const x: int = 1; }");
-        assert!(has_rule(&diags, "L3002"), "should flag async without await, got: {:?}", diags);
+        assert!(has_rule(&diags, "L3002"), "should flag async without await when enabled, got: {:?}", diags);
     }
 
     #[test]
