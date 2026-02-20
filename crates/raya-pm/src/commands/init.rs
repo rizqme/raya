@@ -64,6 +64,7 @@ pub fn init_project(dir: &Path, name: Option<&str>) -> Result<(), InitError> {
         registry: None,
         assets: None,
         bundle: None,
+        lint: None,
     };
 
     // Create directory if it doesn't exist

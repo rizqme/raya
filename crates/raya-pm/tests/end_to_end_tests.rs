@@ -33,6 +33,7 @@ fn create_test_manifest(root: &std::path::Path, name: &str, version: &str, deps:
         registry: None,
         assets: None,
         bundle: None,
+        lint: None,
     };
 
     fs::create_dir_all(root).unwrap();
