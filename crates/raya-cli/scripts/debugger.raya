@@ -1,0 +1,287 @@
+/**
+ * Raya Interactive Debugger
+ *
+ * Self-hosted debug CLI written in Raya. Spawns a child VM in debug mode
+ * and provides a REPL for stepping through code, setting breakpoints, and
+ * inspecting state.
+ *
+ * Invoked via: raya debug <target.raya> [--break-at-entry] [--break-at file:line,...]
+ */
+
+import { Compiler, Vm, VmInstance } from "std:runtime";
+import { Readline } from "std:readline";
+import fs from "std:fs";
+import io from "std:io";
+import terminal from "std:terminal";
+
+// ─── CLI Arguments (injected by `raya debug` command as constants) ───
+// __DEBUG_TARGET, __DEBUG_BREAK_AT_ENTRY, __DEBUG_BREAK_AT are prepended
+// to this script source by the debug command handler.
+
+const targetFile: string = __DEBUG_TARGET;
+const breakAtEntry: boolean = __DEBUG_BREAK_AT_ENTRY;
+const initialBreaks: string = __DEBUG_BREAK_AT;
+
+if (!fs.exists(targetFile)) {
+    io.writeErrln("Error: file not found: " + targetFile);
+    return;
+}
+
+// ─── Setup child VM ───
+
+const source: string = fs.readTextFile(targetFile);
+const vm: VmInstance = Vm.spawn();
+vm.enableDebug();
+const moduleId: number = vm.compile(source);
+const rl: Readline = new Readline();
+
+// Set initial breakpoints
+if (initialBreaks != "") {
+    const bps: string[] = initialBreaks.split(",");
+    for (let i: number = 0; i < bps.length; i = i + 1) {
+        const p: string[] = bps[i].split(":");
+        if (p.length == 2) {
+            const bpId: number = vm.setBreakpoint(p[0].trim(), parseInt(p[1].trim()));
+            io.writeln(terminal.gray("Breakpoint " + bpId + " at " + p[0].trim() + ":" + p[1].trim()));
+        }
+    }
+}
+
+if (breakAtEntry) {
+    vm.debugBreakAtEntry(moduleId);
+}
+
+// ─── Banner ───
+
+io.writeln(terminal.bold("Raya Debugger") + " — type " + terminal.cyan("h") + " for help");
+io.writeln("Target: " + terminal.bold(targetFile));
+io.writeln("");
+
+// ─── Run ───
+
+let state: string = vm.debugRun(moduleId);
+let lastCmd: string = "";
+
+if (state == "paused") {
+    showPause();
+}
+
+// ─── REPL ───
+
+while (state == "paused") {
+    const input: string = rl.prompt(terminal.cyan("debug") + "> ");
+    rl.addHistory(input);
+    const trimmed: string = input.trim();
+    if (trimmed == "") {
+        if (lastCmd != "") {
+            dispatch(lastCmd);
+        }
+        continue;
+    }
+    lastCmd = trimmed;
+    dispatch(trimmed);
+}
+
+if (state == "completed") {
+    io.writeln(terminal.green("Program exited normally."));
+} else {
+    io.writeErrln(terminal.red("Program exited with error."));
+}
+vm.terminate();
+rl.close();
+
+// ─── Command Dispatch ───
+
+function dispatch(input: string): void {
+    const parts: string[] = input.split(" ");
+    const cmd: string = parts[0];
+
+    if (cmd == "c" || cmd == "continue") {
+        state = vm.debugContinue();
+        if (state == "paused") { showPause(); }
+    } else if (cmd == "n" || cmd == "next") {
+        state = vm.debugStepOver();
+        if (state == "paused") { showPause(); }
+    } else if (cmd == "s" || cmd == "step") {
+        state = vm.debugStepInto();
+        if (state == "paused") { showPause(); }
+    } else if (cmd == "out" || cmd == "finish") {
+        state = vm.debugStepOut();
+        if (state == "paused") { showPause(); }
+    } else if (cmd == "b" || cmd == "break") {
+        setBreak(parts);
+    } else if (cmd == "d" || cmd == "delete") {
+        if (parts.length > 1) {
+            vm.removeBreakpoint(parseInt(parts[1]));
+            io.writeln("Breakpoint deleted.");
+        } else {
+            io.writeln("Usage: d <breakpoint-id>");
+        }
+    } else if (cmd == "bl" || cmd == "breakpoints") {
+        listBreaks();
+    } else if (cmd == "bt" || cmd == "backtrace") {
+        backtrace();
+    } else if (cmd == "l" || cmd == "list") {
+        list(parts);
+    } else if (cmd == "p" || cmd == "print") {
+        if (input.length > 2) {
+            evaluate(input.substring(2).trim());
+        }
+    } else if (cmd == "locals" || cmd == "vars") {
+        locals(parts);
+    } else if (cmd == "w" || cmd == "where") {
+        showPause();
+    } else if (cmd == "q" || cmd == "quit" || cmd == "exit") {
+        state = "quit";
+    } else if (cmd == "h" || cmd == "help") {
+        help();
+    } else {
+        evaluate(input);
+    }
+}
+
+// ─── Display helpers ───
+
+function showPause(): void {
+    const locJson: string = vm.debugLocation();
+    const loc: any = JSON.parse(locJson);
+    const file: string = loc.file;
+    const line: number = loc.line;
+    const reason: string = loc.reason;
+    const funcName: string = loc.functionName;
+
+    if (reason == "breakpoint") {
+        io.writeln(terminal.yellow("Breakpoint") + " hit in " + terminal.bold(funcName) + " at " + terminal.bold(file + ":" + line));
+    } else if (reason == "debugger") {
+        io.writeln(terminal.yellow("debugger;") + " statement in " + terminal.bold(funcName) + " at " + terminal.bold(file + ":" + line));
+    } else if (reason == "entry") {
+        io.writeln("Stopped at " + terminal.bold("entry point") + " (" + file + ":" + line + ")");
+    } else if (reason == "step") {
+        io.writeln(terminal.gray(funcName) + " at " + terminal.bold(file + ":" + line));
+    }
+    showSource(file, line, 3);
+}
+
+function showSource(file: string, center: number, ctx: number): void {
+    let start: number = center - ctx;
+    if (start < 1) { start = 1; }
+    const end: number = center + ctx;
+    const src: string = vm.debugGetSource(file, start, end);
+    const lines: string[] = src.split("\n");
+    for (let i: number = 0; i < lines.length; i = i + 1) {
+        const lineNum: number = start + i;
+        const numStr: string = padLeft("" + lineNum, 4);
+        if (lineNum == center) {
+            io.writeln(terminal.green(" => " + numStr + " | ") + terminal.bold(lines[i]));
+        } else {
+            io.writeln("    " + terminal.gray(numStr + " | ") + lines[i]);
+        }
+    }
+}
+
+function backtrace(): void {
+    const framesJson: string = vm.debugStackTrace();
+    const frames: any[] = JSON.parse(framesJson);
+    for (let i: number = 0; i < frames.length; i = i + 1) {
+        const f: any = frames[i];
+        const mark: string = i == 0 ? terminal.green("-> ") : "   ";
+        let loc: string = "";
+        if (f.file != "") {
+            loc = terminal.gray(" at " + f.file + ":" + f.line);
+        }
+        io.writeln(mark + "#" + i + " " + terminal.bold(f.functionName) + loc);
+    }
+}
+
+function locals(parts: string[]): void {
+    let idx: number = 0;
+    if (parts.length > 1) {
+        idx = parseInt(parts[1]);
+    }
+    const varsJson: string = vm.debugGetLocals(idx);
+    const vars: any[] = JSON.parse(varsJson);
+    if (vars.length == 0) {
+        io.writeln(terminal.gray("  (no locals)"));
+        return;
+    }
+    for (let i: number = 0; i < vars.length; i = i + 1) {
+        const v: any = vars[i];
+        io.writeln("  " + terminal.cyan(v.name) + ": " + terminal.gray(v.type) + " = " + v.value);
+    }
+}
+
+function evaluate(expr: string): void {
+    const result: string = vm.debugEvaluate(expr);
+    io.writeln("  " + result);
+}
+
+function setBreak(parts: string[]): void {
+    if (parts.length < 2) {
+        io.writeln("Usage: b <line> or b <file>:<line>");
+        return;
+    }
+    let file: string = targetFile;
+    let line: number = 0;
+    if (parts[1].indexOf(":") >= 0) {
+        const p: string[] = parts[1].split(":");
+        file = p[0];
+        line = parseInt(p[1]);
+    } else {
+        line = parseInt(parts[1]);
+    }
+    const bpId: number = vm.setBreakpoint(file, line);
+    io.writeln("Breakpoint " + bpId + " at " + file + ":" + line);
+}
+
+function listBreaks(): void {
+    const bpsJson: string = vm.listBreakpoints();
+    const bps: any[] = JSON.parse(bpsJson);
+    if (bps.length == 0) {
+        io.writeln(terminal.gray("  No breakpoints set."));
+        return;
+    }
+    for (let i: number = 0; i < bps.length; i = i + 1) {
+        const bp: any = bps[i];
+        const marker: string = bp.enabled ? terminal.green("*") : terminal.gray("o");
+        io.writeln("  " + marker + " #" + bp.id + " " + bp.file + ":" + bp.line
+            + terminal.gray(" (hits: " + bp.hitCount + ")"));
+    }
+}
+
+function list(parts: string[]): void {
+    const locJson: string = vm.debugLocation();
+    const loc: any = JSON.parse(locJson);
+    let center: number = loc.line;
+    if (parts.length > 1) {
+        center = parseInt(parts[1]);
+    }
+    showSource(loc.file, center, 10);
+}
+
+function padLeft(s: string, width: number): string {
+    let result: string = s;
+    while (result.length < width) {
+        result = " " + result;
+    }
+    return result;
+}
+
+function help(): void {
+    io.writeln(terminal.bold("Commands:"));
+    io.writeln("  " + terminal.cyan("c, continue   ") + " Resume execution");
+    io.writeln("  " + terminal.cyan("n, next       ") + " Step over (next line)");
+    io.writeln("  " + terminal.cyan("s, step       ") + " Step into");
+    io.writeln("  " + terminal.cyan("out, finish   ") + " Step out of function");
+    io.writeln("  " + terminal.cyan("b <line>      ") + " Set breakpoint at line");
+    io.writeln("  " + terminal.cyan("b <file>:<ln> ") + " Set breakpoint at file:line");
+    io.writeln("  " + terminal.cyan("d <id>        ") + " Delete breakpoint");
+    io.writeln("  " + terminal.cyan("bl, breakpoints") + " List breakpoints");
+    io.writeln("  " + terminal.cyan("bt, backtrace ") + " Show call stack");
+    io.writeln("  " + terminal.cyan("l, list [line]") + " Show source around line");
+    io.writeln("  " + terminal.cyan("p <expr>      ") + " Evaluate expression");
+    io.writeln("  " + terminal.cyan("locals [frame]") + " Show local variables");
+    io.writeln("  " + terminal.cyan("w, where      ") + " Current location + source");
+    io.writeln("  " + terminal.cyan("q, quit       ") + " Exit debugger");
+    io.writeln("  " + terminal.cyan("<expr>        ") + " Evaluate (shortcut)");
+    io.writeln("  " + terminal.cyan("<Enter>       ") + " Repeat last command");
+}

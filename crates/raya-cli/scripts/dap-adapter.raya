@@ -1,0 +1,282 @@
+/**
+ * Raya DAP Adapter
+ *
+ * Debug Adapter Protocol (DAP) implementation for VS Code integration.
+ * Communicates via JSON-RPC over stdin/stdout.
+ *
+ * Invoked via: raya debug --dap <target.raya>
+ *
+ * The CLI injects __DEBUG_TARGET, __DEBUG_BREAK_AT_ENTRY, __DEBUG_BREAK_AT
+ * as constants before this script runs.
+ */
+
+import { Compiler, Vm, VmInstance } from "std:runtime";
+import fs from "std:fs";
+import io from "std:io";
+import path from "std:path";
+
+let vm: VmInstance;
+let moduleId: number = 0;
+let seq: number = 1;
+let initialized: boolean = false;
+
+// ─── DAP Message I/O (Content-Length framing over stdio) ───
+
+function readMessage(): string {
+    // Read header: "Content-Length: NNN\r\n\r\n"
+    const header: string = io.readLine();
+    if (header == "") { return ""; }
+
+    // Extract content length
+    let contentLength: number = 0;
+    if (header.startsWith("Content-Length:")) {
+        contentLength = parseInt(header.substring(15).trim());
+    }
+
+    // Read the empty separator line
+    io.readLine();
+
+    // Read exactly contentLength bytes of body
+    const body: string = io.readExact(contentLength);
+    return body;
+}
+
+function sendMessage(msg: any): void {
+    const body: string = JSON.stringify(msg);
+    io.write("Content-Length: " + body.length + "\r\n\r\n" + body);
+    io.flush();
+}
+
+function respond(request: any, body: any): void {
+    sendMessage({
+        seq: seq,
+        type: "response",
+        request_seq: request.seq,
+        command: request.command,
+        success: true,
+        body: body
+    });
+    seq = seq + 1;
+}
+
+function respondError(request: any, message: string): void {
+    sendMessage({
+        seq: seq,
+        type: "response",
+        request_seq: request.seq,
+        command: request.command,
+        success: false,
+        message: message
+    });
+    seq = seq + 1;
+}
+
+function event(name: string, body: any): void {
+    sendMessage({
+        seq: seq,
+        type: "event",
+        event: name,
+        body: body
+    });
+    seq = seq + 1;
+}
+
+// ─── DAP Request Handling ───
+
+let running: boolean = true;
+
+while (running) {
+    const body: string = readMessage();
+    if (body == "") { break; }
+
+    const req: any = JSON.parse(body);
+    const cmd: string = req.command;
+
+    if (cmd == "initialize") {
+        respond(req, {
+            supportsConfigurationDoneRequest: true,
+            supportsEvaluateForHovers: true,
+            supportsStepBack: false,
+            supportsSetVariable: false,
+            supportsConditionalBreakpoints: true
+        });
+        event("initialized", {});
+
+    } else if (cmd == "launch") {
+        const program: string = req.arguments.program;
+        const stopOnEntry: boolean = req.arguments.stopOnEntry;
+
+        if (!fs.exists(program)) {
+            respondError(req, "File not found: " + program);
+            continue;
+        }
+
+        vm = Vm.spawn();
+        vm.enableDebug();
+        const source: string = fs.readTextFile(program);
+        moduleId = vm.compile(source);
+
+        if (stopOnEntry) {
+            vm.debugBreakAtEntry(moduleId);
+        }
+
+        initialized = true;
+        respond(req, {});
+
+    } else if (cmd == "setBreakpoints") {
+        if (!initialized) {
+            respondError(req, "Not initialized");
+            continue;
+        }
+        const src: any = req.arguments.source;
+        const bps: any[] = req.arguments.breakpoints;
+        const verified: any[] = [];
+        for (let i: number = 0; i < bps.length; i = i + 1) {
+            const bpId: number = vm.setBreakpoint(src.path, bps[i].line);
+            verified.push({
+                id: bpId,
+                verified: true,
+                line: bps[i].line,
+                source: src
+            });
+        }
+        respond(req, { breakpoints: verified });
+
+    } else if (cmd == "configurationDone") {
+        respond(req, {});
+
+        const state: string = vm.debugRun(moduleId);
+        if (state == "paused") {
+            const loc: any = JSON.parse(vm.debugLocation());
+            let reason: string = "breakpoint";
+            if (loc.reason == "entry") { reason = "entry"; }
+            else if (loc.reason == "step") { reason = "step"; }
+            event("stopped", {
+                reason: reason,
+                threadId: 1,
+                allThreadsStopped: true
+            });
+        } else {
+            event("terminated", {});
+        }
+
+    } else if (cmd == "threads") {
+        respond(req, {
+            threads: [{ id: 1, name: "main" }]
+        });
+
+    } else if (cmd == "continue") {
+        respond(req, { allThreadsContinued: true });
+        const state: string = vm.debugContinue();
+        if (state == "paused") {
+            const loc: any = JSON.parse(vm.debugLocation());
+            const reason: string = loc.reason == "breakpoint" ? "breakpoint" : "step";
+            event("stopped", {
+                reason: reason,
+                threadId: 1,
+                allThreadsStopped: true
+            });
+        } else {
+            event("terminated", {});
+        }
+
+    } else if (cmd == "next") {
+        respond(req, {});
+        const state: string = vm.debugStepOver();
+        if (state == "paused") {
+            event("stopped", {
+                reason: "step",
+                threadId: 1,
+                allThreadsStopped: true
+            });
+        } else {
+            event("terminated", {});
+        }
+
+    } else if (cmd == "stepIn") {
+        respond(req, {});
+        const state: string = vm.debugStepInto();
+        if (state == "paused") {
+            event("stopped", {
+                reason: "step",
+                threadId: 1,
+                allThreadsStopped: true
+            });
+        } else {
+            event("terminated", {});
+        }
+
+    } else if (cmd == "stepOut") {
+        respond(req, {});
+        const state: string = vm.debugStepOut();
+        if (state == "paused") {
+            event("stopped", {
+                reason: "step",
+                threadId: 1,
+                allThreadsStopped: true
+            });
+        } else {
+            event("terminated", {});
+        }
+
+    } else if (cmd == "stackTrace") {
+        const frames: any[] = JSON.parse(vm.debugStackTrace());
+        const dapFrames: any[] = [];
+        for (let i: number = 0; i < frames.length; i = i + 1) {
+            const f: any = frames[i];
+            dapFrames.push({
+                id: i,
+                name: f.functionName,
+                line: f.line,
+                column: f.column,
+                source: {
+                    name: path.basename(f.file),
+                    path: f.file
+                }
+            });
+        }
+        respond(req, {
+            stackFrames: dapFrames,
+            totalFrames: dapFrames.length
+        });
+
+    } else if (cmd == "scopes") {
+        const frameId: number = req.arguments.frameId;
+        respond(req, {
+            scopes: [{
+                name: "Locals",
+                variablesReference: frameId + 1,
+                expensive: false
+            }]
+        });
+
+    } else if (cmd == "variables") {
+        const varRef: number = req.arguments.variablesReference;
+        const frameIdx: number = varRef - 1;
+        const vars: any[] = JSON.parse(vm.debugGetLocals(frameIdx));
+        const dapVars: any[] = [];
+        for (let i: number = 0; i < vars.length; i = i + 1) {
+            dapVars.push({
+                name: vars[i].name,
+                value: vars[i].value,
+                type: vars[i].type,
+                variablesReference: 0
+            });
+        }
+        respond(req, { variables: dapVars });
+
+    } else if (cmd == "evaluate") {
+        const result: string = vm.debugEvaluate(req.arguments.expression);
+        respond(req, {
+            result: result,
+            variablesReference: 0
+        });
+
+    } else if (cmd == "disconnect") {
+        if (initialized) {
+            vm.terminate();
+        }
+        respond(req, {});
+        running = false;
+    }
+}

@@ -265,6 +265,66 @@ export class VmInstance {
 
     /** Terminate this VM instance and all its descendants. */
     terminate(): void;
+
+    // ─── Debug Control ───
+
+    /** Enable debug mode for this VM instance. */
+    enableDebug(): void;
+
+    /** Run a module in debug mode. Returns "paused", "completed", or "error:...". */
+    debugRun(moduleId: number): string;
+
+    /** Resume execution until next pause. Returns "paused", "completed", or "error:...". */
+    debugContinue(): string;
+
+    /** Step over to next line at same or shallower depth. */
+    debugStepOver(): string;
+
+    /** Step into the next line at any depth. */
+    debugStepInto(): string;
+
+    /** Step out of the current function. */
+    debugStepOut(): string;
+
+    /** Break at the first instruction of a module. */
+    debugBreakAtEntry(moduleId: number): void;
+
+    // ─── Breakpoints ───
+
+    /** Set a breakpoint at file:line. Returns breakpoint ID. */
+    setBreakpoint(file: string, line: number): number;
+
+    /** Set a condition on a breakpoint. */
+    setBreakpointCondition(bpId: number, condition: string): void;
+
+    /** Remove a breakpoint by ID. */
+    removeBreakpoint(bpId: number): void;
+
+    /** List all breakpoints as a JSON string. */
+    listBreakpoints(): string;
+
+    // ─── Inspection (valid while paused) ───
+
+    /** Get the current pause location as a JSON string. */
+    debugLocation(): string;
+
+    /** Get a stack trace as a JSON string. */
+    debugStackTrace(): string;
+
+    /** Get local variables at a frame as a JSON string. */
+    debugGetLocals(frameIndex: number): string;
+
+    /** Get variables with types at a frame as a JSON string. */
+    debugGetVariables(frameIndex: number): string;
+
+    /** Evaluate an expression in the paused context. */
+    debugEvaluate(expression: string): string;
+
+    /** Get source text for a file range. */
+    debugGetSource(file: string, startLine: number, endLine: number): string;
+
+    /** Check if the child VM is currently paused. */
+    debugIsPaused(): boolean;
 }
 
 /**

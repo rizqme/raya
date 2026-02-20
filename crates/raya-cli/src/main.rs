@@ -67,6 +67,22 @@ enum Commands {
         prof_interval: u64,
     },
 
+    /// Debug a Raya script interactively
+    #[command(alias = "d")]
+    Debug {
+        /// Script to debug
+        target: String,
+        /// Break at entry point
+        #[arg(long)]
+        break_at_entry: bool,
+        /// Initial breakpoints (file:line,...)
+        #[arg(long)]
+        break_at: Option<String>,
+        /// Start DAP adapter instead of CLI REPL
+        #[arg(long)]
+        dap: bool,
+    },
+
     /// Compile to bytecode (.ryb)
     #[command(alias = "b")]
     Build {
@@ -423,6 +439,9 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             no_cache, no_jit, jit_threshold, threads,
             heap_limit, timeout, list, cpu_prof, prof_interval,
         }),
+
+        Commands::Debug { target, break_at_entry, break_at, dap } =>
+            commands::debug::execute(target, break_at_entry, break_at, dap),
 
         Commands::Build { files, out_dir, release, watch, sourcemap, dry_run } =>
             commands::build::execute(files, out_dir, release, watch, sourcemap, dry_run),

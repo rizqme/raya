@@ -90,6 +90,22 @@ pub fn write_errln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     }
 }
 
+/// Read exactly `n` bytes from stdin (blocking → IO pool)
+pub fn read_exact(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let n = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as usize;
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            let mut buf = vec![0u8; n];
+            match io::stdin().lock().read_exact(&mut buf) {
+                Ok(_) => IoCompletion::String(String::from_utf8_lossy(&buf).into_owned()),
+                Err(e) => IoCompletion::Error(format!("io.readExact: {}", e)),
+            }
+        }),
+    })
+}
+
 /// Flush stdout
 pub fn flush(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     match io::stdout().flush() {

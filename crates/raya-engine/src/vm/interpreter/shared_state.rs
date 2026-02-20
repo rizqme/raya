@@ -70,6 +70,9 @@ pub struct SharedVmState {
     /// Module registry for loaded bytecode modules
     pub module_registry: RwLock<ModuleRegistry>,
 
+    /// Debug state for debugger coordination (None = no debugger attached)
+    pub debug_state: Mutex<Option<Arc<super::debug_state::DebugState>>>,
+
     /// Maximum consecutive preemptions before killing a task (infinite loop detection).
     /// Default: 1000. Set lower (e.g. 100) for faster infinite loop detection in tests.
     pub max_preemptions: u32,
@@ -131,6 +134,7 @@ impl SharedVmState {
             resolved_natives: RwLock::new(ResolvedNatives::empty()),
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
             module_registry: RwLock::new(ModuleRegistry::new()),
+            debug_state: Mutex::new(None),
             max_preemptions: 1000,
             preempt_threshold_ms: 10,
             profiler: Mutex::new(None),

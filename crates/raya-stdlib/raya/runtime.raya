@@ -101,6 +101,26 @@ const VM_INSTANCE_IS_DESTROYED: number = 0x302A;
 const VM_INSTANCE_EXECUTE: number = 0x302B;
 const VM_INSTANCE_EVAL: number = 0x302C;
 
+// VmInstance debug methods (0x3070-0x3081)
+const VM_ENABLE_DEBUG: number = 0x3070;
+const VM_DEBUG_RUN: number = 0x3071;
+const VM_DEBUG_CONTINUE: number = 0x3072;
+const VM_DEBUG_STEP_OVER: number = 0x3073;
+const VM_DEBUG_STEP_INTO: number = 0x3074;
+const VM_DEBUG_STEP_OUT: number = 0x3075;
+const VM_SET_BREAKPOINT: number = 0x3076;
+const VM_REMOVE_BREAKPOINT: number = 0x3077;
+const VM_LIST_BREAKPOINTS: number = 0x3078;
+const VM_DEBUG_STACK_TRACE: number = 0x3079;
+const VM_DEBUG_GET_LOCALS: number = 0x307A;
+const VM_DEBUG_EVALUATE: number = 0x307B;
+const VM_DEBUG_LOCATION: number = 0x307C;
+const VM_DEBUG_GET_SOURCE: number = 0x307D;
+const VM_DEBUG_IS_PAUSED: number = 0x307E;
+const VM_DEBUG_GET_VARIABLES: number = 0x307F;
+const VM_SET_BP_CONDITION: number = 0x3080;
+const VM_DEBUG_BREAK_AT_ENTRY: number = 0x3081;
+
 // ============================================================================
 // Compiler class
 // ============================================================================
@@ -398,6 +418,84 @@ class VmInstance {
 
     terminate(): void {
         __NATIVE_CALL<number>(VM_INSTANCE_TERMINATE, this._handle);
+    }
+
+    // ─── Debug Control ───
+
+    enableDebug(): void {
+        __NATIVE_CALL<number>(VM_ENABLE_DEBUG, this._handle);
+    }
+
+    debugRun(moduleId: number): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_RUN, this._handle, moduleId);
+    }
+
+    debugContinue(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_CONTINUE, this._handle);
+    }
+
+    debugStepOver(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_STEP_OVER, this._handle);
+    }
+
+    debugStepInto(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_STEP_INTO, this._handle);
+    }
+
+    debugStepOut(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_STEP_OUT, this._handle);
+    }
+
+    debugBreakAtEntry(moduleId: number): void {
+        __NATIVE_CALL<number>(VM_DEBUG_BREAK_AT_ENTRY, this._handle, moduleId);
+    }
+
+    // ─── Breakpoints ───
+
+    setBreakpoint(file: string, line: number): number {
+        return __NATIVE_CALL<number>(VM_SET_BREAKPOINT, this._handle, file, line);
+    }
+
+    setBreakpointCondition(bpId: number, condition: string): void {
+        __NATIVE_CALL<number>(VM_SET_BP_CONDITION, this._handle, bpId, condition);
+    }
+
+    removeBreakpoint(bpId: number): void {
+        __NATIVE_CALL<number>(VM_REMOVE_BREAKPOINT, this._handle, bpId);
+    }
+
+    listBreakpoints(): string {
+        return __NATIVE_CALL<string>(VM_LIST_BREAKPOINTS, this._handle);
+    }
+
+    // ─── Inspection (valid while paused) ───
+
+    debugLocation(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_LOCATION, this._handle);
+    }
+
+    debugStackTrace(): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_STACK_TRACE, this._handle);
+    }
+
+    debugGetLocals(frameIndex: number): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_GET_LOCALS, this._handle, frameIndex);
+    }
+
+    debugGetVariables(frameIndex: number): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_GET_VARIABLES, this._handle, frameIndex);
+    }
+
+    debugEvaluate(expression: string): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_EVALUATE, this._handle, expression);
+    }
+
+    debugGetSource(file: string, startLine: number, endLine: number): string {
+        return __NATIVE_CALL<string>(VM_DEBUG_GET_SOURCE, this._handle, file, startLine, endLine);
+    }
+
+    debugIsPaused(): boolean {
+        return __NATIVE_CALL<boolean>(VM_DEBUG_IS_PAUSED, this._handle);
     }
 }
 

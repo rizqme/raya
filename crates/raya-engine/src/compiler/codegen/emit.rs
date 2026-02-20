@@ -76,6 +76,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::ArrayLen
         | Opcode::Await
         | Opcode::Yield
+        | Opcode::Debugger
         | Opcode::NewMutex
         | Opcode::NewChannel
         | Opcode::MutexLock

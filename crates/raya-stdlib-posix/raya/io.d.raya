@@ -11,6 +11,8 @@ export class Io {
     readLine(): string;
     /** Read all of stdin until EOF */
     readAll(): string;
+    /** Read exactly n bytes from stdin (blocking) */
+    readExact(n: number): string;
     /** Write to stdout */
     write(data: string): void;
     /** Write line to stdout */

@@ -2,6 +2,7 @@ pub mod add;
 pub mod bench;
 pub mod build;
 pub mod bundle;
+pub mod debug;
 pub mod check;
 pub mod files;
 pub mod clean;

@@ -849,6 +849,44 @@ pub mod runtime {
     pub const LOADED_MODULES: u16 = 0x3049;
     /// `Vm.hasModule(name)` - Check if a module is loaded
     pub const HAS_MODULE: u16 = 0x304A;
+
+    // ── VmInstance Debug Control (0x3070-0x3081) ──
+    /// `instance.enableDebug()` - Activate DebugState for child VM
+    pub const VM_ENABLE_DEBUG: u16 = 0x3070;
+    /// `instance.debugRun(moduleId)` - Run module until breakpoint/end
+    pub const VM_DEBUG_RUN: u16 = 0x3071;
+    /// `instance.debugContinue()` - Resume until next pause
+    pub const VM_DEBUG_CONTINUE: u16 = 0x3072;
+    /// `instance.debugStepOver()` - Step over (same depth, different line)
+    pub const VM_DEBUG_STEP_OVER: u16 = 0x3073;
+    /// `instance.debugStepInto()` - Step into (any depth, different line)
+    pub const VM_DEBUG_STEP_INTO: u16 = 0x3074;
+    /// `instance.debugStepOut()` - Step out (shallower depth)
+    pub const VM_DEBUG_STEP_OUT: u16 = 0x3075;
+    /// `instance.setBreakpoint(file, line)` - Returns breakpoint ID
+    pub const VM_SET_BREAKPOINT: u16 = 0x3076;
+    /// `instance.removeBreakpoint(bpId)` - Remove a breakpoint
+    pub const VM_REMOVE_BREAKPOINT: u16 = 0x3077;
+    /// `instance.listBreakpoints()` - JSON array of breakpoint entries
+    pub const VM_LIST_BREAKPOINTS: u16 = 0x3078;
+    /// `instance.debugStackTrace()` - JSON array of stack frames
+    pub const VM_DEBUG_STACK_TRACE: u16 = 0x3079;
+    /// `instance.debugGetLocals(frameIndex)` - JSON array of locals
+    pub const VM_DEBUG_GET_LOCALS: u16 = 0x307A;
+    /// `instance.debugEvaluate(expression)` - Eval in paused context
+    pub const VM_DEBUG_EVALUATE: u16 = 0x307B;
+    /// `instance.debugLocation()` - JSON with current pause location
+    pub const VM_DEBUG_LOCATION: u16 = 0x307C;
+    /// `instance.debugGetSource(file, startLine, endLine)` - Source text
+    pub const VM_DEBUG_GET_SOURCE: u16 = 0x307D;
+    /// `instance.debugIsPaused()` - Check if child is paused
+    pub const VM_DEBUG_IS_PAUSED: u16 = 0x307E;
+    /// `instance.debugGetVariables(frameIndex)` - JSON locals with types
+    pub const VM_DEBUG_GET_VARIABLES: u16 = 0x307F;
+    /// `instance.setBreakpointCondition(bpId, condition)` - Set condition
+    pub const VM_SET_BP_CONDITION: u16 = 0x3080;
+    /// `instance.debugBreakAtEntry(moduleId)` - Break at first instruction
+    pub const VM_DEBUG_BREAK_AT_ENTRY: u16 = 0x3081;
 }
 
 /// Check if a method ID is a runtime method (std:runtime)

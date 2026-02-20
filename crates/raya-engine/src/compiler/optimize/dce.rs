@@ -211,6 +211,9 @@ impl DeadCodeEliminator {
             IrInstr::Yield => {
                 // No register uses
             }
+            IrInstr::Debugger => {
+                // No register uses
+            }
             IrInstr::NewMutex { .. } => {
                 // Creates a mutex, dest is handled by dest() method
             }

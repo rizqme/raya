@@ -370,7 +370,16 @@ impl Reactor {
                 interpreter.set_profiler(Some(profiler.clone()));
             }
 
+            // Wire debug state for debugger coordination
+            if let Some(ref ds) = *state.debug_state.lock() {
+                interpreter.set_debug_state(Some(ds.clone()));
+            }
+
             let result = interpreter.run(&task);
+
+            // Signal debug state for terminal results (completion/failure)
+            interpreter.signal_debug_result(&result);
+
             task.clear_start_time();
 
             let _ = result_tx.send(VmResult { task, result });

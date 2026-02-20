@@ -64,6 +64,7 @@ fn register_os(registry: &mut NativeFunctionRegistry) {
 fn register_io(registry: &mut NativeFunctionRegistry) {
     registry.register("io.readLine", |ctx, args| crate::io::read_line(ctx, args));
     registry.register("io.readAll", |ctx, args| crate::io::read_all(ctx, args));
+    registry.register("io.readExact", |ctx, args| crate::io::read_exact(ctx, args));
     registry.register("io.write", |ctx, args| crate::io::write(ctx, args));
     registry.register("io.writeln", |ctx, args| crate::io::writeln(ctx, args));
     registry.register("io.writeErr", |ctx, args| crate::io::write_err(ctx, args));

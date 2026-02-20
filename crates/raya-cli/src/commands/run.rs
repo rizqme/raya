@@ -43,6 +43,15 @@ pub fn execute(args: RunArgs) -> anyhow::Result<()> {
         return list_scripts();
     }
 
+    // Delegate to debug command when --inspect or --inspect-brk is used
+    if args.inspect || args.inspect_brk {
+        let target = args.target.clone().unwrap_or_default();
+        if target.is_empty() {
+            return Err(anyhow!("--inspect requires a target file"));
+        }
+        return super::debug::execute(target, args.inspect_brk, None, false);
+    }
+
     let rt = Runtime::with_options(args.to_runtime_options());
 
     match &args.target {

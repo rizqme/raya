@@ -94,6 +94,9 @@ impl<'a> Lowerer<'a> {
                     _ => {} // Named/All exports are module-level metadata only
                 }
             }
+            Statement::Debugger(_) => {
+                self.emit(IrInstr::Debugger);
+            }
             Statement::Empty(_) => {
                 // No code to emit
             }

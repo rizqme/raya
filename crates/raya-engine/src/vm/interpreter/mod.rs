@@ -12,6 +12,7 @@ mod module_registry;
 mod native_module_registry;
 mod safepoint;
 mod shared_state;
+pub mod debug_state;
 mod vm_facade;
 
 pub use capabilities::{Capability, CapabilityError, CapabilityRegistry};
@@ -27,4 +28,5 @@ pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
 pub use shared_state::SharedVmState;
+pub use debug_state::DebugState;
 pub use vm_facade::{Vm, VmStats};
