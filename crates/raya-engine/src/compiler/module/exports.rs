@@ -65,6 +65,7 @@ impl ExportedSymbol {
             },
             scope_id,
             span: Span::new(0, 0, 0, 0), // Imported symbols don't have a local span
+            referenced: false,
         }
     }
 }

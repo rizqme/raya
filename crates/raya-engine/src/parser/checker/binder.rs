@@ -88,6 +88,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -105,6 +106,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -124,6 +126,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -141,6 +144,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -158,6 +162,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -175,6 +180,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -192,6 +198,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -209,6 +216,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -226,6 +234,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -243,6 +252,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -260,6 +270,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
@@ -338,6 +349,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(symbol);
     }
@@ -395,6 +407,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(class_symbol);
 
@@ -419,6 +432,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(class_decorator_symbol);
 
@@ -437,6 +451,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(method_decorator_symbol);
 
@@ -459,6 +474,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(field_decorator_symbol);
 
@@ -481,6 +497,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
         let _ = self.symbols.define(param_decorator_symbol);
     }
@@ -572,6 +589,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
 
         // Ignore errors for duplicate symbols (builtins might override each other)
@@ -598,6 +616,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
         };
 
         let _ = self.symbols.define(symbol);
@@ -766,6 +785,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: class.name.span,
+            referenced: false,
         };
 
         self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
@@ -797,6 +817,7 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: func.name.span,
+            referenced: false,
         };
 
         self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
@@ -873,6 +894,7 @@ impl<'a> Binder<'a> {
                             },
                             scope_id: self.symbols.current_scope_id(),
                             span: span.clone(),
+                            referenced: false,
                         };
                         let _ = self.symbols.define(default_sym);
                     }
@@ -892,6 +914,7 @@ impl<'a> Binder<'a> {
                         },
                         scope_id: self.symbols.current_scope_id(),
                         span: span.clone(),
+                        referenced: false,
                     };
                     let _ = self.symbols.define(default_sym);
                 }
@@ -945,6 +968,7 @@ impl<'a> Binder<'a> {
                     },
                     scope_id: self.symbols.current_scope_id(),
                     span: ident.span,
+                    referenced: false,
                 };
                 self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
                     name: err.name,
@@ -982,6 +1006,7 @@ impl<'a> Binder<'a> {
                         },
                         scope_id: self.symbols.current_scope_id(),
                         span: rest_ident.span,
+                        referenced: false,
                     };
                     self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
                         name: err.name,
@@ -1031,6 +1056,7 @@ impl<'a> Binder<'a> {
                     flags: SymbolFlags::default(),
                     scope_id: self.symbols.current_scope_id(),
                     span: type_param.span,
+                    referenced: false,
                 };
 
                 self.symbols.define(tp_symbol).map_err(|err| BindError::DuplicateSymbol {
@@ -1077,6 +1103,7 @@ impl<'a> Binder<'a> {
                 },
                 scope_id: parent_scope_id,
                 span: func.name.span,
+                referenced: false,
             };
             self.symbols.define_in_scope(parent_scope_id, symbol).map_err(|err| BindError::DuplicateSymbol {
                 name: err.name,
@@ -1106,6 +1133,7 @@ impl<'a> Binder<'a> {
                 },
                 scope_id: self.symbols.current_scope_id(),
                 span: param_span,
+                referenced: false,
             };
 
             self.symbols.define(param_symbol).map_err(|err| BindError::DuplicateSymbol {
@@ -1170,6 +1198,7 @@ impl<'a> Binder<'a> {
                 },
                 scope_id: class_definition_scope,
                 span: class.name.span,
+                referenced: false,
             };
             self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
                 name: err.name,
@@ -1191,6 +1220,7 @@ impl<'a> Binder<'a> {
                 flags: SymbolFlags::default(),
                 scope_id: self.symbols.current_scope_id(),
                 span: Span { start: 0, end: 0, line: 0, column: 0 },
+                referenced: false,
             };
             let _ = self.symbols.define(symbol);
         }
@@ -1246,6 +1276,7 @@ impl<'a> Binder<'a> {
                                 flags: SymbolFlags::default(),
                                 scope_id: self.symbols.current_scope_id(),
                                 span: Span { start: 0, end: 0, line: 0, column: 0 },
+                                referenced: false,
                             };
                             let _ = self.symbols.define(symbol);
                         }
@@ -1351,6 +1382,7 @@ impl<'a> Binder<'a> {
                                     flags: SymbolFlags::default(),
                                     scope_id: self.symbols.current_scope_id(),
                                     span: tp.span,
+                                    referenced: false,
                                 };
                                 let _ = self.symbols.define(symbol);
                             }
@@ -1389,6 +1421,7 @@ impl<'a> Binder<'a> {
             flags: SymbolFlags::default(),
             scope_id: self.symbols.current_scope_id(),
             span: alias.name.span,
+            referenced: false,
         };
 
         self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
@@ -1516,6 +1549,7 @@ impl<'a> Binder<'a> {
                     },
                     scope_id: self.symbols.current_scope_id(),
                     span: param_span,
+                    referenced: false,
                 };
 
                 self.symbols.define(param_symbol).map_err(|err| BindError::DuplicateSymbol {

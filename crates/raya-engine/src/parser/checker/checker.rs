@@ -4,7 +4,7 @@
 //! type-safe. It uses the symbol table for name resolution and the type
 //! context for type operations.
 
-use super::error::CheckError;
+use super::error::{CheckError, CheckWarning};
 use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_type_guard, TypeGuard};
 use super::narrowing::{apply_type_guard, TypeEnv};
@@ -45,6 +45,8 @@ pub struct CheckResult {
     pub captures: ModuleCaptureInfo,
     /// Expression types: maps expression ID (ptr as usize) to TypeId
     pub expr_types: FxHashMap<usize, TypeId>,
+    /// Warnings collected during type checking
+    pub warnings: Vec<CheckWarning>,
 }
 
 /// Negate a type guard
@@ -139,6 +141,9 @@ pub struct TypeChecker<'a> {
     /// When > 0, scope enter/exit are no-ops because the binder never visits
     /// inside expressions, so arrow body scopes don't exist in the symbol table.
     arrow_depth: u32,
+
+    /// Warnings collected during type checking
+    warnings: Vec<CheckWarning>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -160,6 +165,7 @@ impl<'a> TypeChecker<'a> {
             current_class_type: None,
             in_constructor: false,
             arrow_depth: 0,
+            warnings: Vec::new(),
         }
     }
 
@@ -203,14 +209,52 @@ impl<'a> TypeChecker<'a> {
             self.check_stmt(stmt);
         }
 
+        // Collect unused variable warnings
+        self.collect_unused_warnings();
+
         if self.errors.is_empty() {
             Ok(CheckResult {
                 inferred_types: self.inferred_var_types,
                 captures: self.capture_info,
                 expr_types: self.expr_types,
+                warnings: self.warnings,
             })
         } else {
             Err(self.errors)
+        }
+    }
+
+    /// Collect warnings for unused variables across all scopes
+    fn collect_unused_warnings(&mut self) {
+        use super::symbols::SymbolKind;
+
+        for scope in self.symbols.all_scopes() {
+            for symbol in scope.symbols.values() {
+                // Only warn about variables (not functions, classes, types, etc.)
+                if symbol.kind != SymbolKind::Variable {
+                    continue;
+                }
+
+                // Skip if already referenced
+                if symbol.referenced {
+                    continue;
+                }
+
+                // Skip _-prefixed names (intentionally unused)
+                if symbol.name.starts_with('_') {
+                    continue;
+                }
+
+                // Skip exported symbols
+                if symbol.flags.is_exported {
+                    continue;
+                }
+
+                self.warnings.push(CheckWarning::UnusedVariable {
+                    name: symbol.name.clone(),
+                    span: symbol.span,
+                });
+            }
         }
     }
 

@@ -315,3 +315,236 @@ impl BindError {
         }
     }
 }
+
+// ========================================================================
+// Warnings
+// ========================================================================
+
+/// Warning codes for configurable warnings
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WarningCode {
+    /// Unused variable (W1001)
+    UnusedVariable,
+    /// Unused import (W1002)
+    UnusedImport,
+    /// Unused parameter (W1003)
+    UnusedParameter,
+    /// Unreachable code (W1004)
+    UnreachableCode,
+    /// Shadowed variable (W1005)
+    ShadowedVariable,
+}
+
+impl WarningCode {
+    /// Get the warning code string (e.g., "W1001")
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            WarningCode::UnusedVariable => "W1001",
+            WarningCode::UnusedImport => "W1002",
+            WarningCode::UnusedParameter => "W1003",
+            WarningCode::UnreachableCode => "W1004",
+            WarningCode::ShadowedVariable => "W1005",
+        }
+    }
+
+    /// Parse a warning code from a CLI flag name
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "unused-variable" => Some(WarningCode::UnusedVariable),
+            "unused-import" => Some(WarningCode::UnusedImport),
+            "unused-parameter" => Some(WarningCode::UnusedParameter),
+            "unreachable-code" => Some(WarningCode::UnreachableCode),
+            "shadowed-variable" => Some(WarningCode::ShadowedVariable),
+            _ => None,
+        }
+    }
+}
+
+/// Warnings emitted during type checking
+#[derive(Debug, Clone)]
+pub enum CheckWarning {
+    /// Variable declared but never used
+    UnusedVariable {
+        /// Variable name
+        name: String,
+        /// Location of declaration
+        span: Span,
+    },
+
+    /// Code after return/throw/break/continue that will never execute
+    UnreachableCode {
+        /// Location of unreachable code
+        span: Span,
+    },
+
+    /// Variable in inner scope shadows an outer variable
+    ShadowedVariable {
+        /// Variable name
+        name: String,
+        /// Location of original declaration
+        original: Span,
+        /// Location of shadowing declaration
+        shadow: Span,
+    },
+}
+
+impl CheckWarning {
+    /// Get the primary span associated with this warning
+    pub fn span(&self) -> Span {
+        match self {
+            CheckWarning::UnusedVariable { span, .. } => *span,
+            CheckWarning::UnreachableCode { span } => *span,
+            CheckWarning::ShadowedVariable { shadow, .. } => *shadow,
+        }
+    }
+
+    /// Get the warning code for this warning
+    pub fn code(&self) -> WarningCode {
+        match self {
+            CheckWarning::UnusedVariable { .. } => WarningCode::UnusedVariable,
+            CheckWarning::UnreachableCode { .. } => WarningCode::UnreachableCode,
+            CheckWarning::ShadowedVariable { .. } => WarningCode::ShadowedVariable,
+        }
+    }
+}
+
+/// Configuration for which warnings are enabled/disabled
+#[derive(Debug, Clone)]
+pub struct WarningConfig {
+    /// Disabled warning codes (suppressed)
+    pub disabled: std::collections::HashSet<WarningCode>,
+    /// Warnings promoted to errors
+    pub deny: std::collections::HashSet<WarningCode>,
+    /// When true, ALL warnings become errors (--strict)
+    pub strict: bool,
+}
+
+impl Default for WarningConfig {
+    fn default() -> Self {
+        Self {
+            disabled: std::collections::HashSet::new(),
+            deny: std::collections::HashSet::new(),
+            strict: false,
+        }
+    }
+}
+
+impl WarningConfig {
+    /// Strict mode — all warnings are errors
+    pub fn strict() -> Self {
+        Self { strict: true, ..Self::default() }
+    }
+
+    /// Check if a warning should be emitted
+    pub fn is_enabled(&self, code: WarningCode) -> bool {
+        !self.disabled.contains(&code)
+    }
+
+    /// Check if a warning should be treated as an error
+    pub fn is_denied(&self, code: WarningCode) -> bool {
+        self.strict || self.deny.contains(&code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── WarningCode ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_warning_code_as_str() {
+        assert_eq!(WarningCode::UnusedVariable.as_str(), "W1001");
+        assert_eq!(WarningCode::UnusedImport.as_str(), "W1002");
+        assert_eq!(WarningCode::UnusedParameter.as_str(), "W1003");
+        assert_eq!(WarningCode::UnreachableCode.as_str(), "W1004");
+        assert_eq!(WarningCode::ShadowedVariable.as_str(), "W1005");
+    }
+
+    #[test]
+    fn test_warning_code_from_name() {
+        assert_eq!(WarningCode::from_name("unused-variable"), Some(WarningCode::UnusedVariable));
+        assert_eq!(WarningCode::from_name("unused-import"), Some(WarningCode::UnusedImport));
+        assert_eq!(WarningCode::from_name("unused-parameter"), Some(WarningCode::UnusedParameter));
+        assert_eq!(WarningCode::from_name("unreachable-code"), Some(WarningCode::UnreachableCode));
+        assert_eq!(WarningCode::from_name("shadowed-variable"), Some(WarningCode::ShadowedVariable));
+        assert_eq!(WarningCode::from_name("unknown"), None);
+        assert_eq!(WarningCode::from_name(""), None);
+    }
+
+    // ── CheckWarning ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_check_warning_span() {
+        let span = Span::new(10, 20, 1, 5);
+        let w = CheckWarning::UnusedVariable { name: "x".to_string(), span };
+        assert_eq!(w.span().start, 10);
+        assert_eq!(w.span().end, 20);
+
+        let w = CheckWarning::UnreachableCode { span };
+        assert_eq!(w.span().start, 10);
+
+        let shadow_span = Span::new(30, 40, 3, 1);
+        let w = CheckWarning::ShadowedVariable {
+            name: "x".to_string(),
+            original: span,
+            shadow: shadow_span,
+        };
+        assert_eq!(w.span().start, 30); // Returns shadow span
+    }
+
+    #[test]
+    fn test_check_warning_code() {
+        let span = Span::new(0, 1, 1, 1);
+        assert_eq!(CheckWarning::UnusedVariable { name: "x".into(), span }.code(), WarningCode::UnusedVariable);
+        assert_eq!(CheckWarning::UnreachableCode { span }.code(), WarningCode::UnreachableCode);
+        assert_eq!(
+            CheckWarning::ShadowedVariable { name: "x".into(), original: span, shadow: span }.code(),
+            WarningCode::ShadowedVariable
+        );
+    }
+
+    // ── WarningConfig ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_warning_config_default_all_enabled() {
+        let config = WarningConfig::default();
+        assert!(config.is_enabled(WarningCode::UnusedVariable));
+        assert!(config.is_enabled(WarningCode::UnreachableCode));
+        assert!(config.is_enabled(WarningCode::ShadowedVariable));
+        assert!(!config.is_denied(WarningCode::UnusedVariable));
+    }
+
+    #[test]
+    fn test_warning_config_strict() {
+        let config = WarningConfig::strict();
+        assert!(config.is_enabled(WarningCode::UnusedVariable));
+        assert!(config.is_denied(WarningCode::UnusedVariable));
+        assert!(config.is_denied(WarningCode::UnreachableCode));
+        assert!(config.is_denied(WarningCode::ShadowedVariable));
+    }
+
+    #[test]
+    fn test_warning_config_disabled() {
+        let mut config = WarningConfig::default();
+        config.disabled.insert(WarningCode::UnusedVariable);
+        assert!(!config.is_enabled(WarningCode::UnusedVariable));
+        assert!(config.is_enabled(WarningCode::UnreachableCode));
+    }
+
+    #[test]
+    fn test_warning_config_deny() {
+        let mut config = WarningConfig::default();
+        config.deny.insert(WarningCode::ShadowedVariable);
+        assert!(config.is_denied(WarningCode::ShadowedVariable));
+        assert!(!config.is_denied(WarningCode::UnusedVariable));
+    }
+
+    #[test]
+    fn test_warning_config_strict_overrides_deny() {
+        let config = WarningConfig::strict();
+        // In strict mode, everything is denied even without explicit deny
+        assert!(config.is_denied(WarningCode::UnusedVariable));
+        assert!(config.is_denied(WarningCode::UnusedImport));
+    }
+}

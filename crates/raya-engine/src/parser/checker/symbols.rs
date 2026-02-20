@@ -65,6 +65,8 @@ pub struct Symbol {
     pub scope_id: ScopeId,
     /// Source location
     pub span: Span,
+    /// Whether this symbol has been referenced (for unused detection)
+    pub referenced: bool,
 }
 
 /// Scope identifier
@@ -315,6 +317,36 @@ impl SymbolTable {
     pub fn define_imported(&mut self, symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         self.define_in_scope(ScopeId(0), symbol)
     }
+
+    /// Mark a symbol as referenced by name, searching from a specific scope
+    ///
+    /// Returns true if the symbol was found and marked.
+    pub fn mark_referenced(&mut self, name: &str, mut scope_id: ScopeId) -> bool {
+        if (scope_id.0 as usize) >= self.scopes.len() && !self.scopes.is_empty() {
+            scope_id = ScopeId((self.scopes.len() - 1) as u32);
+        }
+        loop {
+            let scope = match self.scopes.get_mut(scope_id.0 as usize) {
+                Some(s) => s,
+                None => return false,
+            };
+
+            if let Some(symbol) = scope.symbols.get_mut(name) {
+                symbol.referenced = true;
+                return true;
+            }
+
+            match scope.parent {
+                Some(parent) => scope_id = parent,
+                None => return false,
+            }
+        }
+    }
+
+    /// Get all scopes (for warning analysis)
+    pub fn all_scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
 }
 
 impl Default for SymbolTable {
@@ -384,6 +416,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(0),
             span: Span::new(0, 1, 1, 1),
+            referenced: false,
         };
 
         table.define(symbol).unwrap();
@@ -408,6 +441,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(0),
             span: Span::new(0, 1, 1, 1),
+            referenced: false,
         };
         table.define(symbol).unwrap();
 
@@ -434,6 +468,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(0),
             span: Span::new(0, 1, 1, 1),
+            referenced: false,
         };
         table.define(symbol1).unwrap();
 
@@ -448,6 +483,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(1),
             span: Span::new(10, 11, 1, 10),
+            referenced: false,
         };
         table.define(symbol2).unwrap();
 
@@ -477,6 +513,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(0),
             span: Span::new(0, 1, 1, 1),
+            referenced: false,
         };
         table.define(symbol1).unwrap();
 
@@ -488,6 +525,7 @@ mod tests {
             flags: SymbolFlags::default(),
             scope_id: ScopeId(0),
             span: Span::new(10, 11, 1, 10),
+            referenced: false,
         };
 
         let result = table.define(symbol2);

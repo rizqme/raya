@@ -21,7 +21,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 |---------|-------|-------------|--------|
 | `raya run <target>` | `r` | Run script or file (dual-mode) | **Implemented** — compiles+executes .raya, loads .ryb, resolves deps |
 | `raya build` | `b` | Compile to .ryb binary | **Implemented** — compiles .raya files to .ryb bytecode |
-| `raya check` | `c` | Type-check without building | Stub |
+| `raya check` | `c` | Type-check without building | **Implemented** — Parse→Bind→TypeCheck, configurable warnings, pretty/json output |
 | `raya eval <code>` | — | Evaluate inline expression | **Implemented** — evaluates expressions, wraps bare exprs automatically |
 | `raya test` | `t` | Run tests | Stub |
 | `raya bench` | — | Run benchmarks | Stub |
@@ -78,7 +78,8 @@ src/
     ├── bundle.rs         # AOT compilation to native bundle (feature-gated: "aot")
     ├── clean.rs          # Functional: deletes dist/, .raya-cache/
     ├── info.rs           # Functional: displays env/project info
-    └── *.rs              # Other stubs (check, test, etc.)
+    ├── files.rs          # Shared file collection utilities (collect_raya_files)
+    └── *.rs              # Other stubs (test, etc.)
 ```
 
 ## Run Command (Dual-Mode)
