@@ -78,6 +78,10 @@ pub struct SharedVmState {
     /// Default: 10ms.
     pub preempt_threshold_ms: u64,
 
+    /// CPU/wall-clock profiler — shared with interpreter threads for sampling.
+    /// Set by `Vm::enable_profiling()`, cloned by worker threads.
+    pub profiler: Mutex<Option<Arc<crate::profiler::Profiler>>>,
+
     /// JIT code cache — shared with interpreter threads for native dispatch.
     /// Set once by `Vm::enable_jit()`, then read by interpreter threads.
     #[cfg(feature = "jit")]
@@ -129,6 +133,7 @@ impl SharedVmState {
             module_registry: RwLock::new(ModuleRegistry::new()),
             max_preemptions: 1000,
             preempt_threshold_ms: 10,
+            profiler: Mutex::new(None),
             #[cfg(feature = "jit")]
             code_cache: Mutex::new(None),
             #[cfg(feature = "jit")]

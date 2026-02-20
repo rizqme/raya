@@ -70,6 +70,9 @@ pub mod jit;
 #[cfg(feature = "aot")]
 pub mod aot;
 
+/// Profiler module: sampling-based CPU/wall-clock profiling
+pub mod profiler;
+
 /// Linter module: AST-based lint analysis
 pub mod linter;
 

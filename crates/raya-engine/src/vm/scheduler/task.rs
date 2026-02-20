@@ -582,6 +582,11 @@ impl Task {
         std::mem::take(&mut *self.execution_frames.lock().unwrap())
     }
 
+    /// Get a snapshot of the execution frames (non-draining clone, for profiling).
+    pub fn get_execution_frames(&self) -> Vec<ExecutionFrame> {
+        self.execution_frames.lock().unwrap().clone()
+    }
+
     /// Save execution frames (for suspend)
     pub fn save_execution_frames(&self, frames: Vec<ExecutionFrame>) {
         *self.execution_frames.lock().unwrap() = frames;

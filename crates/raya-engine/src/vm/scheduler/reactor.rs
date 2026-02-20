@@ -364,6 +364,11 @@ impl Reactor {
                 }
             }
 
+            // Wire profiler for CPU/wall-clock sampling
+            if let Some(ref profiler) = *state.profiler.lock() {
+                interpreter.set_profiler(Some(profiler.clone()));
+            }
+
             let result = interpreter.run(&task);
             task.clear_start_time();
 

@@ -58,6 +58,13 @@ enum Commands {
         /// List available scripts from raya.toml
         #[arg(long)]
         list: bool,
+        /// Enable CPU profiling and write output to file.
+        /// Extension determines format: .cpuprofile (Chrome DevTools) or .folded (flamegraph).
+        #[arg(long, value_name = "FILE")]
+        cpu_prof: Option<PathBuf>,
+        /// Profiling sample interval in microseconds (default: 10000 = 100Hz)
+        #[arg(long, default_value = "10000")]
+        prof_interval: u64,
     },
 
     /// Compile to bytecode (.ryb)
@@ -410,11 +417,11 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         Commands::Run {
             target, args, watch, inspect, inspect_brk,
             no_cache, no_jit, jit_threshold, threads,
-            heap_limit, timeout, list,
+            heap_limit, timeout, list, cpu_prof, prof_interval,
         } => commands::run::execute(commands::run::RunArgs {
             target, args, watch, inspect, inspect_brk,
             no_cache, no_jit, jit_threshold, threads,
-            heap_limit, timeout, list,
+            heap_limit, timeout, list, cpu_prof, prof_interval,
         }),
 
         Commands::Build { files, out_dir, release, watch, sourcemap, dry_run } =>

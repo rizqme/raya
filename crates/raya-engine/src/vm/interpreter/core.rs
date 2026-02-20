@@ -101,6 +101,12 @@ pub struct Interpreter<'a> {
     /// Current function ID being executed (tracked for loop profiling)
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) current_func_id_for_profiling: usize,
+
+    /// Sampling profiler (None when profiling is disabled).
+    pub(in crate::vm::interpreter) profiler: Option<Arc<crate::profiler::Profiler>>,
+
+    /// Current function ID for profiler stack capture.
+    pub(in crate::vm::interpreter) profiler_func_id: usize,
 }
 
 impl<'a> Interpreter<'a> {
@@ -144,7 +150,14 @@ impl<'a> Interpreter<'a> {
             compilation_policy: crate::jit::profiling::policy::CompilationPolicy::new(),
             #[cfg(feature = "jit")]
             current_func_id_for_profiling: 0,
+            profiler: None,
+            profiler_func_id: 0,
         }
+    }
+
+    /// Set the profiler for sampling.
+    pub fn set_profiler(&mut self, profiler: Option<Arc<crate::profiler::Profiler>>) {
+        self.profiler = profiler;
     }
 
     /// Set the JIT code cache for native dispatch.
@@ -205,6 +218,7 @@ impl<'a> Interpreter<'a> {
         // Track current function for loop profiling
         #[cfg(feature = "jit")]
         { self.current_func_id_for_profiling = current_func_id; }
+        self.profiler_func_id = current_func_id;
 
         let function = match module.functions.get(current_func_id) {
             Some(f) => f,
@@ -295,6 +309,7 @@ impl<'a> Interpreter<'a> {
                     current_func_id = frame.func_id;
                     #[cfg(feature = "jit")]
                     { self.current_func_id_for_profiling = current_func_id; }
+                    self.profiler_func_id = current_func_id;
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
@@ -324,6 +339,11 @@ impl<'a> Interpreter<'a> {
         loop {
             // Safepoint poll for GC
             self.safepoint.poll();
+
+            // Profiler: sample at preemption points (zero-cost when profiler is None)
+            if let Some(ref profiler) = self.profiler {
+                profiler.maybe_sample(task, self.profiler_func_id, ip);
+            }
 
             // Check for preemption
             if task.is_preempt_requested() {
@@ -539,6 +559,7 @@ impl<'a> Interpreter<'a> {
                     current_func_id = func_id;
                     #[cfg(feature = "jit")]
                     { self.current_func_id_for_profiling = current_func_id; }
+                    self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
                     ip = 0;
                 }

@@ -64,6 +64,12 @@ pub struct RuntimeOptions {
     pub no_jit: bool,
     /// JIT adaptive compilation call threshold.
     pub jit_threshold: u32,
+    /// Enable CPU profiling and write output to this path.
+    /// None = profiling disabled. Format is inferred from extension:
+    /// `.cpuprofile` → Chrome DevTools JSON, anything else → folded stacks.
+    pub cpu_prof: Option<std::path::PathBuf>,
+    /// Profiling sample interval in microseconds (default: 10_000 = 10ms / 100Hz).
+    pub prof_interval_us: u64,
 }
 
 impl Default for RuntimeOptions {
@@ -74,6 +80,8 @@ impl Default for RuntimeOptions {
             timeout: 0,
             no_jit: false,
             jit_threshold: 1000,
+            cpu_prof: None,
+            prof_interval_us: 10_000,
         }
     }
 }
@@ -195,7 +203,10 @@ impl Runtime {
     /// Execute a compiled module and return the VM result value.
     pub fn execute(&self, module: &CompiledModule) -> Result<Value, RuntimeError> {
         let mut vm = vm_setup::create_vm(&self.options);
-        Ok(vm.execute(&module.module)?)
+        self.maybe_enable_profiling(&vm);
+        let result = vm.execute(&module.module)?;
+        self.maybe_write_profile(&vm, &module.module);
+        Ok(result)
     }
 
     /// Execute a compiled module with pre-loaded dependency modules.
@@ -217,7 +228,10 @@ impl Runtime {
                 .map_err(|e| RuntimeError::Dependency(e))?;
         }
 
-        Ok(vm.execute(&module.module)?)
+        self.maybe_enable_profiling(&vm);
+        let result = vm.execute(&module.module)?;
+        self.maybe_write_profile(&vm, &module.module);
+        Ok(result)
     }
 
     // ── Convenience ──────────────────────────────────────────────────────
@@ -304,6 +318,45 @@ impl Runtime {
                 Ok(1)
             }
             Err(e) => Err(e),
+        }
+    }
+
+    // ── Profiling helpers ────────────────────────────────────────────────
+
+    fn maybe_enable_profiling(&self, vm: &raya_engine::vm::Vm) {
+        if self.options.cpu_prof.is_some() {
+            let config = raya_engine::profiler::ProfileConfig {
+                interval_us: self.options.prof_interval_us,
+                ..Default::default()
+            };
+            vm.enable_profiling(config);
+        }
+    }
+
+    fn maybe_write_profile(&self, vm: &raya_engine::vm::Vm, module: &Module) {
+        let Some(ref path) = self.options.cpu_prof else {
+            return;
+        };
+        let Some(data) = vm.stop_profiling() else {
+            return;
+        };
+        let resolved = data.resolve(module);
+        let is_cpuprofile = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e == "cpuprofile")
+            .unwrap_or(false);
+
+        let output = if is_cpuprofile {
+            resolved.to_cpuprofile_json()
+        } else {
+            resolved.to_flamegraph()
+        };
+
+        if let Err(e) = std::fs::write(path, &output) {
+            eprintln!("Warning: failed to write profile to {}: {}", path.display(), e);
+        } else {
+            eprintln!("Profile written to {}", path.display());
         }
     }
 

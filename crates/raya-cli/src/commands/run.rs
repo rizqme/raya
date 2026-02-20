@@ -20,6 +20,8 @@ pub struct RunArgs {
     pub heap_limit: usize,
     pub timeout: u64,
     pub list: bool,
+    pub cpu_prof: Option<std::path::PathBuf>,
+    pub prof_interval: u64,
 }
 
 impl RunArgs {
@@ -30,6 +32,8 @@ impl RunArgs {
             timeout: self.timeout,
             no_jit: self.no_jit,
             jit_threshold: self.jit_threshold,
+            cpu_prof: self.cpu_prof.clone(),
+            prof_interval_us: self.prof_interval,
         }
     }
 }
