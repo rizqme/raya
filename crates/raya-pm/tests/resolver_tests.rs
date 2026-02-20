@@ -22,6 +22,7 @@ fn create_manifest(name: &str, version: &str) -> PackageManifest {
         registry: None,
         assets: None,
         bundle: None,
+        lint: None,
     }
 }
 

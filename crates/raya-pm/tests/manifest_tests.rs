@@ -327,6 +327,7 @@ fn test_roundtrip_complex() {
         registry: None,
         assets: None,
         bundle: None,
+        lint: None,
     };
 
     manifest.dependencies.insert(

@@ -452,6 +452,7 @@ mod tests {
             registry: None,
             assets: None,
             bundle: None,
+            lint: None,
         }
     }
 

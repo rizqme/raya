@@ -60,6 +60,10 @@ pub struct PackageManifest {
     /// Bundle configuration for `raya bundle`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<BundleConfig>,
+
+    /// Lint configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<LintManifestConfig>,
 }
 
 /// Registry configuration
@@ -163,6 +167,14 @@ impl Default for BundleConfig {
             compress: false,
         }
     }
+}
+
+/// Lint configuration for `[lint]` section in raya.toml
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct LintManifestConfig {
+    /// Per-rule severity overrides: "off" | "warn" | "error"
+    #[serde(default)]
+    pub rules: HashMap<String, String>,
 }
 
 /// Package information
@@ -802,6 +814,7 @@ output = "app"
             registry: None,
             assets: None,
             bundle: None,
+            lint: None,
         };
 
         let serialized = toml::to_string_pretty(&manifest).unwrap();
