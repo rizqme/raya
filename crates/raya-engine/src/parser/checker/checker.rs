@@ -27,6 +27,7 @@ fn get_guard_var(guard: &TypeGuard) -> &String {
         TypeGuard::IsNaN { var, .. } => var,
         TypeGuard::IsFinite { var, .. } => var,
         TypeGuard::TypePredicate { var, .. } => var,
+        TypeGuard::Truthiness { var, .. } => var,
     }
 }
 
@@ -87,6 +88,10 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
         TypeGuard::TypePredicate { var, predicate, negated } => TypeGuard::TypePredicate {
             var: var.clone(),
             predicate: predicate.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Truthiness { var, negated } => TypeGuard::Truthiness {
+            var: var.clone(),
             negated: !negated,
         },
     }
@@ -729,10 +734,20 @@ impl<'a> TypeChecker<'a> {
 
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
-        // Check condition is boolean
+        // Check condition — allow any type (truthiness), not just boolean
         let cond_ty = self.check_expr(&if_stmt.condition);
         let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
+        // Only enforce boolean for non-union, non-nullable types
+        // TypeScript allows any expression in if-conditions (truthiness)
+        let is_union_or_nullable = matches!(
+            self.type_ctx.get(cond_ty),
+            Some(crate::parser::types::Type::Union(_))
+                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::String))
+                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::Number))
+        );
+        if !is_union_or_nullable {
+            self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
+        }
 
         // Try to extract type guard from condition
         let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
@@ -2674,13 +2689,13 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.array_type(never);
         }
 
-        // Find first non-None element to infer type
-        let first_ty = arr.elements.iter()
-            .find_map(|elem_opt| {
-                elem_opt.as_ref().map(|elem| match elem {
+        // Collect all distinct element types to compute a unified element type
+        let mut elem_types = Vec::new();
+        for elem_opt in &arr.elements {
+            if let Some(elem) = elem_opt {
+                let elem_ty = match elem {
                     ArrayElement::Expression(expr) => self.check_expr(expr),
                     ArrayElement::Spread(expr) => {
-                        // For spread, extract element type from the array type
                         let spread_ty = self.check_expr(expr);
                         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
                             arr_ty.element
@@ -2688,31 +2703,23 @@ impl<'a> TypeChecker<'a> {
                             spread_ty
                         }
                     }
-                })
-            })
-            .unwrap_or_else(|| self.type_ctx.unknown_type());
-
-        // Check all elements have compatible types
-        for elem_opt in &arr.elements {
-            if let Some(elem) = elem_opt {
-                let (elem_ty, elem_span) = match elem {
-                    ArrayElement::Expression(expr) => (self.check_expr(expr), *expr.span()),
-                    ArrayElement::Spread(expr) => {
-                        let spread_ty = self.check_expr(expr);
-                        let resolved = if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
-                            arr_ty.element
-                        } else {
-                            spread_ty
-                        };
-                        (resolved, *expr.span())
-                    }
                 };
-                // TODO: Compute union type instead of requiring exact match
-                self.check_assignable(elem_ty, first_ty, elem_span);
+                if !elem_types.contains(&elem_ty) {
+                    elem_types.push(elem_ty);
+                }
             }
         }
 
-        self.type_ctx.array_type(first_ty)
+        // If all elements are the same type, use that; otherwise create a union
+        let unified_ty = if elem_types.len() == 1 {
+            elem_types[0]
+        } else if elem_types.is_empty() {
+            self.type_ctx.unknown_type()
+        } else {
+            self.type_ctx.union_type(elem_types)
+        };
+
+        self.type_ctx.array_type(unified_ty)
     }
 
     /// Check object literal

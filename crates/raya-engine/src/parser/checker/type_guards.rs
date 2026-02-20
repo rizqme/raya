@@ -82,6 +82,14 @@ pub enum TypeGuard {
         /// Whether this is a negated check
         negated: bool,
     },
+
+    /// Truthiness check: `if (x)` narrows by removing null/falsy types
+    Truthiness {
+        /// Variable name being tested
+        var: String,
+        /// Whether this is a negated check (falsy branch)
+        negated: bool,
+    },
 }
 
 /// Extract a type guard from a conditional expression
@@ -98,6 +106,15 @@ pub enum TypeGuard {
 /// - `x !== null` → Nullish guard (negated)
 /// - `x === null` → Nullish guard
 pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<TypeGuard> {
+    // Truthiness check: bare identifier (e.g., `if (s)`)
+    if let Expression::Identifier(ident) = expr {
+        let var_name = interner.resolve(ident.name).to_string();
+        return Some(TypeGuard::Truthiness {
+            var: var_name,
+            negated: false,
+        });
+    }
+
     // Type guards are binary expressions with === or !==
     let bin = match expr {
         Expression::Binary(b) => b,

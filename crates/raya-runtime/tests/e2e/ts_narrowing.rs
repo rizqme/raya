@@ -196,7 +196,6 @@ fn test_null_check_not_null() {
 // ============================================================================
 
 #[test]
-#[ignore = "truthiness narrowing for string|null not yet supported"]
 fn test_truthiness_string_narrowing() {
     expect_i32(
         "function process(s: string | null): number {
@@ -211,7 +210,6 @@ fn test_truthiness_string_narrowing() {
 }
 
 #[test]
-#[ignore = "truthiness narrowing for string|null not yet supported"]
 fn test_truthiness_null_falsy() {
     expect_i32(
         "function process(s: string | null): number {
@@ -265,7 +263,6 @@ fn test_narrowing_with_early_return() {
 // ============================================================================
 
 #[test]
-#[ignore = "mixed type array (string|number)[] not yet supported in this context"]
 fn test_typeof_narrowing_in_array_loop() {
     expect_i32(
         "function sumNumbers(items: (string | number)[]): number {

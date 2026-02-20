@@ -112,6 +112,25 @@ pub fn apply_type_guard(
         TypeGuard::TypePredicate { predicate, negated, .. } => {
             apply_type_predicate_guard(ctx, ty, predicate, *negated)
         }
+        TypeGuard::Truthiness { negated, .. } => {
+            // Truthiness narrows by removing null (and potentially other falsy types)
+            let null_ty = ctx.null_type();
+            if !negated {
+                // Truthy branch: remove null from union
+                remove_from_union(ctx, ty, null_ty)
+            } else {
+                // Falsy branch: narrow to null (or keep as-is for non-nullable)
+                if let Some(Type::Union(union)) = ctx.get(ty) {
+                    if union.members.contains(&null_ty) {
+                        Some(null_ty)
+                    } else {
+                        Some(ty)
+                    }
+                } else {
+                    Some(ty)
+                }
+            }
+        }
     }
 }
 
