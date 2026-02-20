@@ -1149,3 +1149,164 @@ fn test_number_to_string_octal() {
         return x.toString(8);
     "#, "377");
 }
+
+// ============================================================================
+// Map.keys / Map.values / Map.entries
+// ============================================================================
+
+#[test]
+fn test_map_keys() {
+    expect_i32_with_builtins(r#"
+        let m = new Map<string, number>();
+        m.set("a", 1);
+        m.set("b", 2);
+        m.set("c", 3);
+        let keys = m.keys();
+        return keys.length;
+    "#, 3);
+}
+
+#[test]
+fn test_map_keys_transform() {
+    // Same pattern as the failing test_collection_map_transform
+    expect_i32_with_builtins(r#"
+        let original = new Map<string, number>();
+        original.set("a", 1);
+        original.set("b", 2);
+        original.set("c", 3);
+
+        let inverse = new Map<number, string>();
+        let keys = original.keys();
+        for (let i = 0; i < keys.length; i = i + 1) {
+            let val = original.get(keys[i]);
+            if (val != null) {
+                inverse.set(val, keys[i]);
+            }
+        }
+
+        let result = 0;
+        let valFor1 = inverse.get(1);
+        let valFor2 = inverse.get(2);
+        let valFor3 = inverse.get(3);
+        if (valFor1 == "a") { result = result + 1; }
+        if (valFor2 == "b") { result = result + 10; }
+        if (valFor3 == "c") { result = result + 100; }
+
+        return result + inverse.size();
+    "#, 114);
+}
+
+#[test]
+fn test_map_values() {
+    expect_i32_with_builtins(r#"
+        let m = new Map<string, number>();
+        m.set("x", 10);
+        m.set("y", 20);
+        let vals = m.values();
+        let sum = 0;
+        for (let i = 0; i < vals.length; i = i + 1) {
+            sum = sum + vals[i];
+        }
+        return sum;
+    "#, 30);
+}
+
+// ============================================================================
+// Set.values / Set.union / Set.intersection / Set.difference
+// ============================================================================
+
+#[test]
+fn test_set_values() {
+    expect_i32_with_builtins(r#"
+        let s = new Set<number>();
+        s.add(10);
+        s.add(20);
+        s.add(30);
+        let vals = s.values();
+        return vals.length;
+    "#, 3);
+}
+
+#[test]
+fn test_set_intersection() {
+    expect_i32_with_builtins(r#"
+        let setA = new Set<number>();
+        setA.add(1); setA.add(2); setA.add(3); setA.add(4); setA.add(5);
+
+        let setB = new Set<number>();
+        setB.add(3); setB.add(4); setB.add(5); setB.add(6); setB.add(7);
+
+        let inter = setA.intersection(setB);
+        return inter.size();
+    "#, 3);
+}
+
+#[test]
+fn test_set_union() {
+    expect_i32_with_builtins(r#"
+        let setA = new Set<number>();
+        setA.add(1); setA.add(2); setA.add(3);
+
+        let setB = new Set<number>();
+        setB.add(3); setB.add(4); setB.add(5);
+
+        let uni = setA.union(setB);
+        return uni.size();
+    "#, 5);
+}
+
+#[test]
+fn test_set_difference() {
+    expect_i32_with_builtins(r#"
+        let setA = new Set<number>();
+        setA.add(1); setA.add(2); setA.add(3); setA.add(4);
+
+        let setB = new Set<number>();
+        setB.add(2); setB.add(4);
+
+        let diff = setA.difference(setB);
+        return diff.size();
+    "#, 2);
+}
+
+#[test]
+fn test_set_operations_combined() {
+    // Same pattern as the failing test_collection_set_operations
+    expect_i32_with_builtins(r#"
+        let setA = new Set<number>();
+        setA.add(1); setA.add(2); setA.add(3); setA.add(4); setA.add(5);
+
+        let setB = new Set<number>();
+        setB.add(3); setB.add(4); setB.add(5); setB.add(6); setB.add(7);
+
+        let inter = setA.intersection(setB);
+        let uni = setA.union(setB);
+
+        return inter.size() * 10 + uni.size();
+    "#, 37);
+}
+
+#[test]
+fn test_set_deduplication() {
+    // Same pattern as the failing test_collection_deduplication
+    expect_i32_with_builtins(r#"
+        let input: number[] = [1, 3, 2, 3, 1, 4, 2, 5, 4, 3];
+        let seen = new Set<number>();
+        let unique: number[] = [];
+
+        for (let i = 0; i < input.length; i = i + 1) {
+            if (!seen.has(input[i])) {
+                seen.add(input[i]);
+                unique.push(input[i]);
+            }
+        }
+
+        let sum = 0;
+        for (let i = 0; i < unique.length; i = i + 1) {
+            sum = sum + unique[i];
+        }
+
+        return sum * 10 + unique.length;
+    "#, 155);
+}
+

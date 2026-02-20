@@ -496,7 +496,7 @@ impl<'a> Lowerer<'a> {
         let args: Vec<Register> = call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
         // Try to resolve the callee
-        let dest = self.alloc_register(TypeId::new(0));
+        let mut dest = self.alloc_register(TypeId::new(0));
 
         // Handle super() constructor call
         if let Expression::Super(_) = &*call.callee {
@@ -1160,6 +1160,23 @@ impl<'a> Lowerer<'a> {
                 method: method_id,
                 args,
             });
+
+            // Propagate return type for builtin methods so chained calls resolve correctly.
+            // String methods that return strings need TypeId(1) so subsequent .method() calls
+            // are recognized as string methods by lookup_builtin_method().
+            if crate::vm::builtin::is_string_method(method_id) {
+                use crate::vm::builtin::string as bs;
+                match method_id {
+                    // String methods that return string
+                    bs::CHAR_AT | bs::SUBSTRING | bs::TO_UPPER_CASE | bs::TO_LOWER_CASE
+                    | bs::TRIM | bs::TRIM_START | bs::TRIM_END | bs::REPLACE | bs::REPEAT
+                    | bs::PAD_START | bs::PAD_END => {
+                        dest.ty = TypeId::new(1);
+                    }
+                    _ => {}
+                }
+            }
+
             return dest;
         }
 
