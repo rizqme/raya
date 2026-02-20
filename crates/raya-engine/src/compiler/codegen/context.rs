@@ -3,7 +3,8 @@
 //! Manages state during bytecode generation from IR.
 
 use crate::compiler::bytecode::{
-    ClassReflectionData, FieldReflectionData, Function, Module, Opcode, ReflectionData,
+    ClassReflectionData, DebugInfo, FieldReflectionData, Function, FunctionDebugInfo, LineEntry,
+    Module, Opcode, ReflectionData,
 };
 use crate::compiler::bytecode::flags;
 use crate::compiler::error::{CompileError, CompileResult};
@@ -12,6 +13,7 @@ use crate::compiler::ir::{
     IrModule, IrValue, Register, StringCompareMode, Terminator, UnaryOp,
 };
 use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
+use crate::parser::token::Span;
 use rustc_hash::FxHashMap;
 
 /// Code generator that transforms IR to bytecode
@@ -20,6 +22,8 @@ pub struct IrCodeGenerator {
     module_builder: ModuleBuilder,
     /// Current function being compiled
     current_func: Option<FunctionContext>,
+    /// Whether to emit source map data (bytecode offset → source location)
+    emit_sourcemap: bool,
 }
 
 /// Context for compiling a single function
@@ -36,6 +40,10 @@ struct FunctionContext {
     pending_jumps: Vec<(usize, BasicBlockId)>,
     /// Pending i32 jumps for try blocks (source position, target block)
     pending_try_jumps: Vec<(usize, BasicBlockId)>,
+    /// Collected line entries for debug info (bytecode offset → source location)
+    line_entries: Vec<LineEntry>,
+    /// Last recorded line to avoid duplicate entries for the same line
+    last_line: u32,
 }
 
 impl FunctionContext {
@@ -47,6 +55,24 @@ impl FunctionContext {
             block_positions: FxHashMap::default(),
             pending_jumps: Vec::new(),
             pending_try_jumps: Vec::new(),
+            line_entries: Vec::new(),
+            last_line: 0,
+        }
+    }
+
+    /// Record a line entry mapping current bytecode offset to source location.
+    /// Deduplicates consecutive entries on the same line.
+    fn record_line(&mut self, span: &Span) {
+        if span.line == 0 {
+            return; // No source info
+        }
+        if span.line != self.last_line {
+            self.line_entries.push(LineEntry {
+                bytecode_offset: self.current_position() as u32,
+                line: span.line,
+                column: span.column,
+            });
+            self.last_line = span.line;
         }
     }
 
@@ -173,17 +199,30 @@ impl IrCodeGenerator {
         Self {
             module_builder: ModuleBuilder::new(module_name.to_string()),
             current_func: None,
+            emit_sourcemap: false,
         }
+    }
+
+    /// Enable/disable source map generation
+    pub fn set_emit_sourcemap(&mut self, enable: bool) {
+        self.emit_sourcemap = enable;
     }
 
     /// Generate bytecode from an IR module
     ///
     /// Reflection data (class/field/method names) is always included.
     pub fn generate(&mut self, module: &IrModule) -> CompileResult<Module> {
-        // Generate bytecode for each function
+        // Generate bytecode for each function, collecting debug info
+        let mut func_debug_infos: Vec<FunctionDebugInfo> = Vec::new();
         for func in module.functions() {
-            let bytecode_func = self.generate_function(func)?;
+            let (bytecode_func, debug_info) = self.generate_function(func)?;
             self.module_builder.add_function(bytecode_func);
+            if let Some(di) = debug_info {
+                func_debug_infos.push(di);
+            } else if self.emit_sourcemap {
+                // Placeholder for functions without debug info to keep indices aligned
+                func_debug_infos.push(FunctionDebugInfo::default());
+            }
         }
 
         // Always generate reflection data for runtime introspection
@@ -229,6 +268,14 @@ impl IrCodeGenerator {
         if !module.native_functions.is_empty() {
             bytecode_module.flags |= flags::HAS_NATIVE_FUNCTIONS;
             bytecode_module.native_functions = module.native_functions.clone();
+        }
+
+        // Add debug info (source map) if collected
+        if self.emit_sourcemap && !func_debug_infos.is_empty() {
+            let mut debug_info = DebugInfo::default();
+            debug_info.functions = func_debug_infos;
+            bytecode_module.flags |= flags::HAS_DEBUG_INFO;
+            bytecode_module.debug_info = Some(debug_info);
         }
 
         // Compute JIT hints at compile time (pre-score functions for JIT candidacy)
@@ -308,8 +355,8 @@ impl IrCodeGenerator {
         }
     }
 
-    /// Generate bytecode for a single function
-    fn generate_function(&mut self, func: &IrFunction) -> CompileResult<Function> {
+    /// Generate bytecode for a single function, returning the bytecode and optional debug info.
+    fn generate_function(&mut self, func: &IrFunction) -> CompileResult<(Function, Option<FunctionDebugInfo>)> {
         let param_count = func.param_count() as u8;
         let mut ctx = FunctionContext::new(func.name.clone(), param_count);
 
@@ -344,17 +391,42 @@ impl IrCodeGenerator {
             self.generate_block(&mut ctx, block)?;
         }
 
-        Ok(ctx.build())
+        // Build debug info from collected line entries
+        let debug_info = if self.emit_sourcemap && !ctx.line_entries.is_empty() {
+            let span = &func.source_span;
+            let mut func_debug = FunctionDebugInfo::new(
+                0, // source_file_index (set by caller)
+                span.line,
+                span.column,
+                0, // end_line (not tracked yet)
+                0, // end_column (not tracked yet)
+            );
+            func_debug.line_table = std::mem::take(&mut ctx.line_entries);
+            Some(func_debug)
+        } else {
+            None
+        };
+
+        Ok((ctx.build(), debug_info))
     }
 
     /// Generate bytecode for a basic block
     fn generate_block(&mut self, ctx: &mut FunctionContext, block: &BasicBlock) -> CompileResult<()> {
+        let has_spans = !block.instruction_spans.is_empty();
+
         // Emit instructions
-        for instr in &block.instructions {
+        for (i, instr) in block.instructions.iter().enumerate() {
+            // Record source location before emitting bytecode
+            if self.emit_sourcemap && has_spans {
+                ctx.record_line(&block.instruction_spans[i]);
+            }
             self.generate_instr(ctx, instr)?;
         }
 
-        // Emit terminator
+        // Emit terminator with span
+        if self.emit_sourcemap && block.terminator_span.line > 0 {
+            ctx.record_line(&block.terminator_span);
+        }
         self.generate_terminator(ctx, &block.terminator)?;
 
         Ok(())

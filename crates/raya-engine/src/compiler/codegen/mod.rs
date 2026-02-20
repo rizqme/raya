@@ -35,8 +35,12 @@ use rustc_hash::FxHashMap;
 ///
 /// Reflection metadata (class/field/method names) is always included
 /// to support runtime introspection via the Reflect API.
-pub fn generate(ir_module: &IrModule) -> CompileResult<Module> {
+///
+/// When `emit_sourcemap` is true, the generated module includes debug info
+/// with bytecode offset → source location mappings.
+pub fn generate(ir_module: &IrModule, emit_sourcemap: bool) -> CompileResult<Module> {
     let mut generator = IrCodeGenerator::new(&ir_module.name);
+    generator.set_emit_sourcemap(emit_sourcemap);
     generator.generate(ir_module)
 }
 
@@ -63,7 +67,7 @@ mod tests {
         main.add_block(entry);
         module.add_function(main);
 
-        let result = generate(&module);
+        let result = generate(&module, false);
         assert!(result.is_ok());
 
         let bytecode = result.unwrap();
@@ -88,7 +92,7 @@ mod tests {
         func.add_block(entry);
         module.add_function(func);
 
-        let result = generate(&module);
+        let result = generate(&module, false);
         assert!(result.is_ok());
 
         let bytecode = result.unwrap();
@@ -131,7 +135,7 @@ mod tests {
         func.add_block(entry);
         module.add_function(func);
 
-        let result = generate(&module);
+        let result = generate(&module, false);
         assert!(result.is_ok());
     }
 }

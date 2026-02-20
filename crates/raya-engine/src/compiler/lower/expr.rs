@@ -181,6 +181,9 @@ fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
 impl<'a> Lowerer<'a> {
     /// Lower an expression, returning the register holding its value
     pub fn lower_expr(&mut self, expr: &Expression) -> Register {
+        // Track source span for sourcemap generation
+        self.set_span(expr.span());
+
         match expr {
             Expression::IntLiteral(lit) => self.lower_int_literal(lit),
             Expression::FloatLiteral(lit) => self.lower_float_literal(lit),
@@ -3221,7 +3224,10 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_else(|| TypeId::new(0));
 
         // Create the arrow function
-        let ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
+        let mut ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
+        if self.emit_sourcemap {
+            ir_func.source_span = arrow.span;
+        }
         self.current_function = Some(ir_func);
 
         // Create entry block

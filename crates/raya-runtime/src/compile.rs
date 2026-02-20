@@ -9,6 +9,19 @@ use raya_engine::parser::{Interner, Parser, TypeContext};
 use crate::builtins;
 use crate::error::RuntimeError;
 
+/// Options controlling compilation output.
+#[derive(Debug, Clone)]
+pub struct CompileOptions {
+    /// Include source map (bytecode offset → source location) in output.
+    pub sourcemap: bool,
+}
+
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self { sourcemap: false }
+    }
+}
+
 /// Diagnostics returned from a check-only pass (no codegen).
 pub struct CheckDiagnostics {
     /// Type checking errors
@@ -70,6 +83,59 @@ pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> 
     // Compile via IR pipeline
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types);
+    let bytecode = compiler.compile_via_ir(&ast)?;
+
+    Ok((bytecode, interner))
+}
+
+/// Compile Raya source code to a bytecode module with options.
+///
+/// Same as `compile_source` but allows controlling compilation output
+/// (e.g., source map generation).
+pub fn compile_source_with_options(
+    source: &str,
+    options: &CompileOptions,
+) -> Result<(Module, Interner), RuntimeError> {
+    let full_source = format!(
+        "{}\n{}\n{}",
+        builtins::builtin_sources(),
+        builtins::std_sources(),
+        source,
+    );
+
+    // Parse
+    let parser = Parser::new(&full_source)
+        .map_err(|e| RuntimeError::Lex(format!("{:?}", e)))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|e| RuntimeError::Parse(format!("{:?}", e)))?;
+
+    // Bind (creates symbol table)
+    let mut type_ctx = TypeContext::new();
+    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
+    binder.register_builtins(&empty_sigs);
+    binder.skip_top_level_duplicate_detection();
+
+    let mut symbols = binder
+        .bind_module(&ast)
+        .map_err(|e| RuntimeError::TypeCheck(format!("Binding error: {:?}", e)))?;
+
+    // Type check
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let check_result = checker
+        .check_module(&ast)
+        .map_err(|e| RuntimeError::TypeCheck(format!("{:?}", e)))?;
+
+    // Apply inferred types to symbol table
+    for ((scope_id, name), ty) in check_result.inferred_types {
+        symbols.update_type(ScopeId(scope_id), &name, ty);
+    }
+
+    // Compile via IR pipeline
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types)
+        .with_sourcemap(options.sourcemap);
     let bytecode = compiler.compile_via_ir(&ast)?;
 
     Ok((bytecode, interner))

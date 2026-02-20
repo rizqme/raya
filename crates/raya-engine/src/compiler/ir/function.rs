@@ -4,6 +4,7 @@
 
 use super::block::{BasicBlock, BasicBlockId};
 use super::value::Register;
+use crate::parser::token::Span;
 use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
@@ -24,6 +25,8 @@ pub struct IrFunction {
     pub entry_block: BasicBlockId,
     /// Block lookup map for fast access
     block_map: FxHashMap<BasicBlockId, usize>,
+    /// Source span covering the function definition (default when sourcemap disabled)
+    pub source_span: Span,
 }
 
 impl IrFunction {
@@ -37,6 +40,7 @@ impl IrFunction {
             blocks: Vec::new(),
             entry_block: BasicBlockId(0),
             block_map: FxHashMap::default(),
+            source_span: Span::default(),
         }
     }
 

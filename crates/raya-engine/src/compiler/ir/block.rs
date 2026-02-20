@@ -5,6 +5,7 @@
 
 use super::instr::IrInstr;
 use super::value::Register;
+use crate::parser::token::Span;
 
 /// Basic block identifier
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -35,8 +36,12 @@ pub struct BasicBlock {
     pub label: Option<String>,
     /// Instructions in this block (excluding terminator)
     pub instructions: Vec<IrInstr>,
+    /// Source spans for each instruction (1:1 with `instructions`, empty when sourcemap disabled)
+    pub instruction_spans: Vec<Span>,
     /// How this block exits (must be set before code generation)
     pub terminator: Terminator,
+    /// Source span for the terminator instruction
+    pub terminator_span: Span,
 }
 
 impl BasicBlock {
@@ -46,7 +51,9 @@ impl BasicBlock {
             id,
             label: None,
             instructions: Vec::new(),
+            instruction_spans: Vec::new(),
             terminator: Terminator::Unreachable,
+            terminator_span: Span::default(),
         }
     }
 
@@ -56,7 +63,9 @@ impl BasicBlock {
             id,
             label: Some(label.into()),
             instructions: Vec::new(),
+            instruction_spans: Vec::new(),
             terminator: Terminator::Unreachable,
+            terminator_span: Span::default(),
         }
     }
 
@@ -65,9 +74,21 @@ impl BasicBlock {
         self.instructions.push(instr);
     }
 
+    /// Add an instruction with a source span
+    pub fn add_instr_spanned(&mut self, instr: IrInstr, span: Span) {
+        self.instructions.push(instr);
+        self.instruction_spans.push(span);
+    }
+
     /// Set the terminator for this block
     pub fn set_terminator(&mut self, term: Terminator) {
         self.terminator = term;
+    }
+
+    /// Set the terminator with a source span
+    pub fn set_terminator_spanned(&mut self, term: Terminator, span: Span) {
+        self.terminator = term;
+        self.terminator_span = span;
     }
 
     /// Get the successor blocks

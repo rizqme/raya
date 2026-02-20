@@ -183,6 +183,12 @@ pub struct Span {
     pub column: u32,
 }
 
+impl Default for Span {
+    fn default() -> Self {
+        Self { start: 0, end: 0, line: 0, column: 0 }
+    }
+}
+
 impl Span {
     pub fn new(start: usize, end: usize, line: u32, column: u32) -> Self {
         Self {

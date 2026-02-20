@@ -326,6 +326,7 @@ fn test_roundtrip_complex() {
         dev_dependencies: HashMap::new(),
         registry: None,
         assets: None,
+        build: None,
         bundle: None,
         lint: None,
     };

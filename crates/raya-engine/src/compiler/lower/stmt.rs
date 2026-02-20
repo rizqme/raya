@@ -18,6 +18,9 @@ impl<'a> Lowerer<'a> {
             return;
         }
 
+        // Track source span for sourcemap generation
+        self.set_span(stmt.span());
+
         match stmt {
             Statement::VariableDecl(decl) => self.lower_var_decl(decl),
             Statement::Expression(expr) => self.lower_expr_stmt(expr),

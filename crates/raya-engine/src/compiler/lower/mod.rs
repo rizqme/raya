@@ -12,6 +12,7 @@ use crate::compiler::ir::{
     TypeAliasId,
 };
 use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
+use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -405,6 +406,10 @@ pub struct Lowerer<'a> {
     jsx_options: Option<JsxOptions>,
     /// Type parameter names for generic classes (ClassId → ["T", "E", ...])
     class_type_params: FxHashMap<ClassId, Vec<String>>,
+    /// Whether to track source spans in IR for source map generation
+    emit_sourcemap: bool,
+    /// Current source span (set at statement/expression boundaries, used by emit/set_terminator)
+    current_span: Span,
 }
 
 impl<'a> Lowerer<'a> {
@@ -476,7 +481,15 @@ impl<'a> Lowerer<'a> {
             native_function_map: FxHashMap::default(),
             jsx_options: None,
             class_type_params: FxHashMap::default(),
+            emit_sourcemap: false,
+            current_span: Span::default(),
         }
+    }
+
+    /// Enable/disable source map span tracking in generated IR
+    pub fn with_sourcemap(mut self, enable: bool) -> Self {
+        self.emit_sourcemap = enable;
+        self
     }
 
     /// Enable JSX compilation with the given options
@@ -1750,7 +1763,10 @@ impl<'a> Lowerer<'a> {
             .unwrap_or_else(|| TypeId::new(0)); // void
 
         // Create function
-        let ir_func = IrFunction::new(name, params, return_ty);
+        let mut ir_func = IrFunction::new(name, params, return_ty);
+        if self.emit_sourcemap {
+            ir_func.source_span = func.span;
+        }
         self.current_function = Some(ir_func);
 
         // Create entry block
@@ -2015,7 +2031,10 @@ impl<'a> Lowerer<'a> {
                         .unwrap_or_else(|| TypeId::new(0));
 
                     // Create function with mangled name
-                    let ir_func = IrFunction::new(&full_name, params, return_ty);
+                    let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                    if self.emit_sourcemap {
+                        ir_func.source_span = method.span;
+                    }
                     self.current_function = Some(ir_func);
 
                     // Create entry block
@@ -2126,7 +2145,10 @@ impl<'a> Lowerer<'a> {
                 let return_ty = TypeId::new(0);
 
                 // Create function with mangled name
-                let ir_func = IrFunction::new(&full_name, params, return_ty);
+                let mut ir_func = IrFunction::new(&full_name, params, return_ty);
+                if self.emit_sourcemap {
+                    ir_func.source_span = ctor.span;
+                }
                 self.current_function = Some(ir_func);
 
                 // Create entry block
@@ -2330,14 +2352,31 @@ impl<'a> Lowerer<'a> {
             .expect("Current block not found")
     }
 
-    /// Add an instruction to the current block
+    /// Add an instruction to the current block.
+    /// When sourcemap is enabled, automatically attaches the current source span.
     fn emit(&mut self, instr: IrInstr) {
-        self.current_block_mut().add_instr(instr);
+        if self.emit_sourcemap {
+            let span = self.current_span;
+            self.current_block_mut().add_instr_spanned(instr, span);
+        } else {
+            self.current_block_mut().add_instr(instr);
+        }
     }
 
-    /// Set the terminator for the current block
+    /// Set the terminator for the current block.
+    /// When sourcemap is enabled, automatically attaches the current source span.
     fn set_terminator(&mut self, term: Terminator) {
-        self.current_block_mut().set_terminator(term);
+        if self.emit_sourcemap {
+            let span = self.current_span;
+            self.current_block_mut().set_terminator_spanned(term, span);
+        } else {
+            self.current_block_mut().set_terminator(term);
+        }
+    }
+
+    /// Update the current source span (call at statement/expression boundaries)
+    fn set_span(&mut self, span: &Span) {
+        self.current_span = *span;
     }
 
     /// Check if the current block is terminated

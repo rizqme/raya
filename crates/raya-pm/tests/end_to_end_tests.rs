@@ -32,6 +32,7 @@ fn create_test_manifest(root: &std::path::Path, name: &str, version: &str, deps:
         dev_dependencies: std::collections::HashMap::new(),
         registry: None,
         assets: None,
+        build: None,
         bundle: None,
         lint: None,
     };
