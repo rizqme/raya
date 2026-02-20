@@ -213,7 +213,7 @@ impl NativeContext for EngineContext<'_> {
         let obj_ptr = unsafe { v.as_ptr::<Object>() }
             .ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &mut *(obj_ptr.as_ptr() as *mut Object) };
-        obj.set_field(index, native_to_value(value));
+        let _ = obj.set_field(index, native_to_value(value));
         Ok(())
     }
 
@@ -507,7 +507,7 @@ pub fn object_set_field(val: NativeValue, field_index: usize, value: NativeValue
     let obj_ptr = unsafe { v.as_ptr::<Object>() }
         .ok_or_else(|| "Expected Object".to_string())?;
     let obj = unsafe { &mut *(obj_ptr.as_ptr() as *mut Object) };
-    obj.set_field(field_index, native_to_value(value));
+    let _ = obj.set_field(field_index, native_to_value(value));
     Ok(())
 }
 

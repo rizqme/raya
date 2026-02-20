@@ -5,7 +5,7 @@
 
 use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::fs::File;
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::path::Path;
 
 // ============================================================================

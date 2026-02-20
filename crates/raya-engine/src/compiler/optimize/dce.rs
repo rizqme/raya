@@ -2,7 +2,7 @@
 //!
 //! Removes instructions whose results are never used.
 
-use crate::compiler::ir::{BasicBlock, IrFunction, IrInstr, IrModule, IrValue, RegisterId, Terminator};
+use crate::compiler::ir::{IrFunction, IrInstr, IrModule, IrValue, RegisterId, Terminator};
 use rustc_hash::FxHashSet;
 
 /// Dead code eliminator

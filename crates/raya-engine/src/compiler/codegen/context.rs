@@ -9,7 +9,7 @@ use crate::compiler::bytecode::{
 use crate::compiler::bytecode::flags;
 use crate::compiler::error::{CompileError, CompileResult};
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrConstant, IrFunction, IrInstr,
+    BasicBlock, BasicBlockId, BinaryOp, IrConstant, IrFunction, IrInstr,
     IrModule, IrValue, Register, StringCompareMode, Terminator, UnaryOp,
 };
 use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
@@ -21,7 +21,7 @@ pub struct IrCodeGenerator {
     /// Module builder for constructing the output
     module_builder: ModuleBuilder,
     /// Current function being compiled
-    current_func: Option<FunctionContext>,
+    _current_func: Option<FunctionContext>,
     /// Whether to emit source map data (bytecode offset → source location)
     emit_sourcemap: bool,
 }
@@ -198,7 +198,7 @@ impl IrCodeGenerator {
     pub fn new(module_name: &str) -> Self {
         Self {
             module_builder: ModuleBuilder::new(module_name.to_string()),
-            current_func: None,
+            _current_func: None,
             emit_sourcemap: false,
         }
     }

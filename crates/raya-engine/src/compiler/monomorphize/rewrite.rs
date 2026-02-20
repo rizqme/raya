@@ -2,7 +2,7 @@
 //!
 //! Rewrites call sites to use specialized versions of generic functions and classes.
 
-use super::{GenericId, MonoKey, MonomorphizationContext};
+use super::{MonoKey, MonomorphizationContext};
 use crate::compiler::ir::function::IrFunction;
 use crate::compiler::ir::instr::{ClassId, FunctionId, IrInstr};
 use crate::compiler::ir::module::IrModule;
@@ -76,7 +76,7 @@ impl<'a> CallSiteRewriter<'a> {
         match instr {
             IrInstr::Call { dest, func, args } => {
                 // Check if this is a call to a generic function
-                if let Some(type_params) = self.generic_functions.get(func) {
+                if let Some(_type_params) = self.generic_functions.get(func) {
                     // Infer type arguments from call arguments
                     let type_args: Vec<TypeId> = args.iter().map(|a| a.ty).collect();
 
@@ -106,16 +106,16 @@ impl<'a> CallSiteRewriter<'a> {
                 }
                 None
             }
-            IrInstr::CallMethod { dest, object, method, args } => {
+            IrInstr::CallMethod { dest: _, object: _, method: _, args: _ } => {
                 // Method calls on generic objects may need rewriting too
                 // For now, we just pass through
                 None
             }
-            IrInstr::LoadField { dest, object, field } => {
+            IrInstr::LoadField { dest: _, object: _, field: _ } => {
                 // Field access on generic objects - pass through for now
                 None
             }
-            IrInstr::StoreField { object, field, value } => {
+            IrInstr::StoreField { object: _, field: _, value: _ } => {
                 // Field stores on generic objects - pass through for now
                 None
             }
@@ -172,7 +172,7 @@ impl<'a> TypeAwareRewriter<'a> {
         for block in func.blocks_mut() {
             for instr in &mut block.instructions {
                 // Track type arguments from NewObject
-                if let IrInstr::NewObject { dest, class } = instr {
+                if let IrInstr::NewObject { dest: _, class: _ } = instr {
                     // Store type args for this register if we have specialization info
                     // This would be populated during the specialization phase
                 }

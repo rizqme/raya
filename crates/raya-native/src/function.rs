@@ -6,10 +6,6 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemFn, Result};
 
-use crate::traits::{
-    generate_arg_extraction, generate_from_raya_impl, generate_panic_wrapper, generate_pin_code,
-    generate_to_raya_impl,
-};
 
 /// Expands the #[function] attribute macro.
 ///
@@ -52,7 +48,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::new();
 
-    for (i, arg) in inputs.iter().enumerate() {
+    for (_i, arg) in inputs.iter().enumerate() {
         match arg {
             syn::FnArg::Typed(pat_type) => {
                 if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {

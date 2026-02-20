@@ -26,6 +26,7 @@ pub struct CachedModule {
 
 /// Cache entry for AST
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CachedAst {
     /// Path to the source file
     pub path: PathBuf,

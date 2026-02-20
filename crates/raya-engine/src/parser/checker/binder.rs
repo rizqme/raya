@@ -710,9 +710,9 @@ impl<'a> Binder<'a> {
 
         // Check for generic class types (e.g., "Set<T>", "Map<K, V>")
         if let Some(idx) = ty_str.find('<') {
-            let class_name = &ty_str[..idx];
+            let _class_name = &ty_str[..idx];
             let args_str = &ty_str[idx+1..ty_str.len()-1];
-            let args: Vec<TypeId> = args_str.split(',')
+            let _args: Vec<TypeId> = args_str.split(',')
                 .map(|p| self.parse_type_string(p.trim(), type_params))
                 .collect();
             // For now, just return unknown for complex generic types

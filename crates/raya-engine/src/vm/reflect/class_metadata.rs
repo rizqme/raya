@@ -6,7 +6,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{FieldInfo, MethodInfo, ConstructorInfo, ParameterInfo, TypeInfo};
+use super::{FieldInfo, MethodInfo, ConstructorInfo, TypeInfo};
 
 /// Reflection metadata for a single class
 #[derive(Debug, Clone, Default)]
@@ -243,6 +243,7 @@ impl ClassMetadataRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::reflect::introspection::ParameterInfo;
 
     #[test]
     fn test_class_metadata_fields() {

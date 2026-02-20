@@ -32,6 +32,7 @@ fn make_simple_function(name: &str, param_ty: TypeId, return_ty: TypeId) -> IrFu
     func
 }
 
+#[allow(dead_code)]
 fn make_add_function(name: &str, param_ty: TypeId) -> IrFunction {
     let mut func = IrFunction::new(
         name,
@@ -305,7 +306,7 @@ mod monomorphizer_tests {
 
         // Specialize for i32
         let key = MonoKey::function(func_id, vec![TypeId::new(1)]);
-        let pending = PendingInstantiation {
+        let _pending = PendingInstantiation {
             key: key.clone(),
             kind: InstantiationKind::Function(func_id),
         };
@@ -334,7 +335,7 @@ mod monomorphizer_tests {
         });
 
         // Manually specialize
-        let key = MonoKey::function(func_id, vec![TypeId::new(1)]);
+        let _key = MonoKey::function(func_id, vec![TypeId::new(1)]);
 
         // Get initial function count
         let initial_count = module.function_count();
@@ -551,7 +552,7 @@ mod integration_tests {
         // Verify the result
         // The identity<i32> specialization should have been created
         // (since main calls identity with an i32 argument)
-        assert!(result.functions_specialized >= 0);
+        let _ = result.functions_specialized; // usize always non-negative
     }
 
     #[test]

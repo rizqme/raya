@@ -349,7 +349,7 @@ fn test_parse_object_with_array_pattern() {
 fn test_parse_function_with_array_pattern_param() {
     let source = "function process([a, b]) { return a + b; }";
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
@@ -395,7 +395,7 @@ fn test_parse_function_with_object_pattern_param() {
 fn test_parse_empty_array_pattern() {
     let source = "let [] = empty;";
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => match &decl.pattern {
@@ -412,7 +412,7 @@ fn test_parse_empty_array_pattern() {
 fn test_parse_empty_object_pattern() {
     let source = "let {} = empty;";
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => match &decl.pattern {

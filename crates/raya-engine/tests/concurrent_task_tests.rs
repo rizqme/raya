@@ -16,7 +16,6 @@
 
 use raya_engine::vm::scheduler::{Scheduler, TaskId};
 use raya_engine::vm::interpreter::VmContext;
-use std::sync::Arc;
 
 // ===== Basic Task Execution Tests =====
 

@@ -5,9 +5,9 @@
 
 use crate::compiler::ir::block::{BasicBlock, Terminator};
 use crate::compiler::ir::function::IrFunction;
-use crate::compiler::ir::instr::{IrInstr, StringCompareMode};
-use crate::compiler::ir::value::{IrValue, Register, RegisterId};
-use crate::parser::{TypeContext, TypeId};
+use crate::compiler::ir::instr::IrInstr;
+use crate::compiler::ir::value::{IrValue, Register};
+use crate::parser::TypeId;
 use rustc_hash::FxHashMap;
 
 /// Represents a type parameter that can be substituted
@@ -483,7 +483,7 @@ mod tests {
     use super::*;
     use crate::compiler::ir::block::BasicBlockId;
     use crate::compiler::ir::instr::BinaryOp;
-    use crate::compiler::ir::value::IrConstant;
+    use crate::compiler::ir::value::{IrConstant, RegisterId};
 
     fn make_reg(id: u32, ty: u32) -> Register {
         Register::new(RegisterId::new(id), TypeId::new(ty))

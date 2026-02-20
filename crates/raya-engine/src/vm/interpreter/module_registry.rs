@@ -183,11 +183,11 @@ mod tests {
         let mut registry = ModuleRegistry::new();
 
         // Create modules with different checksums by encoding them
-        let mut module1 = create_test_module("test1");
+        let module1 = create_test_module("test1");
         let bytes1 = module1.encode();
         let decoded1 = Module::decode(&bytes1).unwrap();
 
-        let mut module2 = create_test_module("test2");
+        let module2 = create_test_module("test2");
         let bytes2 = module2.encode();
         let decoded2 = Module::decode(&bytes2).unwrap();
 

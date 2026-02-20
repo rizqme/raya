@@ -5,7 +5,7 @@
 //! consider collecting promises and awaiting them all at once.
 
 use crate::linter::rule::*;
-use crate::parser::ast::{self, visitor::{Visitor, walk_statement, walk_expression}};
+use crate::parser::ast::{self, visitor::{Visitor, walk_expression}};
 
 pub struct AwaitInLoop;
 

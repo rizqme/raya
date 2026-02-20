@@ -1,13 +1,14 @@
 //! `raya test` — Discover, run, and report tests.
 
 use crate::output::{self, StyledOutput};
-use raya_runtime::test_runner::{self, TestFileResult, TestResult};
+use raya_runtime::test_runner::{self, TestFileResult};
 use raya_runtime::RuntimeOptions;
 use std::path::PathBuf;
 use std::time::Instant;
 use termcolor::Color;
 
 /// Arguments for the test command.
+#[allow(dead_code)]
 pub struct TestArgs {
     pub filter: Option<String>,
     pub watch: bool,

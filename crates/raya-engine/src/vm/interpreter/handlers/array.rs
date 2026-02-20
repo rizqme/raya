@@ -13,11 +13,11 @@ impl<'a> Interpreter<'a> {
     /// Handle built-in array methods
     pub(in crate::vm::interpreter) fn call_array_method(
         &mut self,
-        task: &Arc<Task>,
+        _task: &Arc<Task>,
         stack: &mut Stack,
         method_id: u16,
         arg_count: usize,
-        module: &Module,
+        _module: &Module,
     ) -> Result<(), VmError> {
         use crate::vm::builtin::array;
 

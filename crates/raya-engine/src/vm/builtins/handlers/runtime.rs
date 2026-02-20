@@ -210,6 +210,7 @@ impl VmPermissions {
 }
 
 /// A single VM instance entry
+#[allow(dead_code)]
 struct VmInstanceEntry {
     id: u32,
     /// The actual VM — None for root or while borrowed for execution

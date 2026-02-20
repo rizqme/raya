@@ -21,11 +21,11 @@
 // ```
 
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, ItemFn, ItemMod};
+use syn::{parse_macro_input, ItemFn};
 
 mod function;
 mod module;
+#[allow(dead_code)]
 mod traits;
 
 /// Marks a Rust function as a native module function.

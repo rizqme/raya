@@ -80,7 +80,7 @@ impl Linter {
         file_path: &str,
     ) -> LintResult {
         // Filter out disabled rules and apply severity overrides.
-        let active_rules: Vec<&Box<dyn LintRule>> = self
+        let _active_rules: Vec<&Box<dyn LintRule>> = self
             .rules
             .iter()
             .filter(|r| !self.config.is_disabled(r.meta().name))

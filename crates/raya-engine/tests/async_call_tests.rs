@@ -205,7 +205,7 @@ fn test_parse_async_call_with_type_args() {
 fn test_parse_regular_call_without_async() {
     let source = "myFn()";
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
@@ -276,7 +276,7 @@ fn test_async_with_non_call_expression_fails() {
 fn test_parse_async_call_in_binary_expression() {
     let source = "let x = async foo() + bar()";
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
         Statement::VariableDecl(decl) => match &decl.initializer {
@@ -301,7 +301,7 @@ fn test_parse_multiple_async_calls() {
         let task3 = async save();
     "#;
     let parser = Parser::new(source).unwrap();
-    let (module, interner) = parser.parse().unwrap();
+    let (module, _interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 3);
 

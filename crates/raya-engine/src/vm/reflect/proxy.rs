@@ -24,7 +24,7 @@
 //! ```
 
 use crate::vm::gc::GcHeader;
-use crate::vm::object::{Closure, Object, Proxy, RayaString};
+use crate::vm::object::{Closure, Object, Proxy};
 use crate::vm::value::Value;
 use std::any::TypeId;
 
@@ -196,7 +196,7 @@ pub enum TrapResult {
 pub fn prepare_get_trap(
     handler: Value,
     target: Value,
-    property_name: &str,
+    _property_name: &str,
 ) -> TrapResult {
     match get_trap_method(handler, "get") {
         TrapMethod::Closure(closure) => {

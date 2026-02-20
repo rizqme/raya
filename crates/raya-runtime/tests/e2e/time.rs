@@ -3,9 +3,7 @@
 //! Tests verify that time methods compile and execute correctly,
 //! including wall clock, monotonic clock, sleep, and duration conversion.
 
-use super::harness::{
-    compile_and_run_with_builtins, expect_f64_with_builtins, expect_i32_with_builtins,
-};
+use super::harness::{compile_and_run_with_builtins, expect_f64_with_builtins};
 
 // ============================================================================
 // Import

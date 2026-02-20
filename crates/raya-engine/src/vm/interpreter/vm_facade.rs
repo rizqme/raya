@@ -9,7 +9,7 @@ use crate::vm::{
     value::Value,
     VmError, VmResult,
 };
-use crate::compiler::{Module, Opcode};
+use crate::compiler::Module;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -383,7 +383,7 @@ impl Vm {
     /// Must be called when no tasks are actively executing (e.g., before `execute()`
     /// or after it returns). All registered tasks are serialized along with the heap.
     pub fn snapshot_to_file(&self, path: &Path) -> VmResult<()> {
-        let mut writer = self.build_snapshot()?;
+        let writer = self.build_snapshot()?;
         writer
             .write_to_file(path)
             .map_err(|e| VmError::IoError(format!("{}", e)))?;
@@ -476,6 +476,7 @@ impl Default for Vm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::bytecode::opcode::Opcode;
     use crate::compiler::Function;
 
     #[test]

@@ -3,7 +3,7 @@
 //! Collects all generic instantiations from the IR module.
 //! This is the first phase of monomorphization.
 
-use super::{GenericId, InstantiationKind, MonoKey, PendingInstantiation};
+use super::{InstantiationKind, MonoKey, PendingInstantiation};
 use crate::compiler::ir::instr::{ClassId, FunctionId, IrInstr};
 use crate::compiler::ir::module::IrModule;
 use crate::parser::{Interner, TypeContext, TypeId};
@@ -143,7 +143,7 @@ impl<'a> InstantiationCollector<'a> {
     /// Infer type arguments from call arguments
     fn infer_type_args_from_call(
         &self,
-        info: &GenericFunctionInfo,
+        _info: &GenericFunctionInfo,
         args: &[crate::ir::value::Register],
     ) -> Vec<TypeId> {
         // Simple inference: use the types of the arguments

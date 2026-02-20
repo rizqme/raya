@@ -32,12 +32,12 @@ impl<T> HandleRegistry<T> {
     }
 
     /// Get a reference to a value by handle.
-    pub fn get(&self, id: u64) -> Option<dashmap::mapref::one::Ref<u64, T>> {
+    pub fn get(&self, id: u64) -> Option<dashmap::mapref::one::Ref<'_, u64, T>> {
         self.map.get(&id)
     }
 
     /// Get a mutable reference to a value by handle.
-    pub fn get_mut(&self, id: u64) -> Option<dashmap::mapref::one::RefMut<u64, T>> {
+    pub fn get_mut(&self, id: u64) -> Option<dashmap::mapref::one::RefMut<'_, u64, T>> {
         self.map.get_mut(&id)
     }
 

@@ -10,6 +10,7 @@ use std::io::{BufReader, Read};
 use std::path::Path;
 
 /// Snapshot reader - restores VM state from snapshot
+#[allow(dead_code)]
 pub struct SnapshotReader {
     header: SnapshotHeader,
     tasks: Vec<SerializedTask>,

@@ -14,15 +14,19 @@
 
 pub mod bytecode;
 pub mod codegen;
+#[allow(dead_code)]
 pub mod codegen_ast;
 pub mod error;
 pub mod intrinsic;
 pub mod ir;
+#[allow(dead_code)]
 pub mod lower;
 pub mod module;
 pub mod module_builder;
+#[allow(dead_code)]
 pub mod monomorphize;
 pub mod native_id;
+#[allow(dead_code)]
 pub mod optimize;
 
 pub use codegen_ast::CodeGenerator;

@@ -279,7 +279,7 @@ impl<'a> Interpreter<'a> {
                     // All tasks done - create result array
                     let mut result_arr = Array::new(task_count, task_count);
                     for (i, result) in results.into_iter().enumerate() {
-                        result_arr.set(i, result);
+                        let _ = result_arr.set(i, result);
                     }
                     let gc_ptr = self.gc.lock().allocate(result_arr);
                     let result_val =

@@ -818,7 +818,7 @@ impl<'a> Lowerer<'a> {
     /// Collect all variable names that are assigned in the given statements.
     /// Does NOT descend into arrow function bodies (those are separate scopes).
     fn collect_scope_assignments(&self, stmts: &[ast::Statement], assigned: &mut FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
+        
         for stmt in stmts {
             self.collect_assignments_in_stmt(stmt, assigned);
         }

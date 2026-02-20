@@ -1348,7 +1348,7 @@ impl<'a> TypeChecker<'a> {
                     let mut gen_ctx = GenericContext::new(self.type_ctx);
 
                     // Unify each argument type with parameter type
-                    for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                    for (i, (arg_ty, _arg_span)) in arg_types.iter().enumerate() {
                         if let Some(&param_ty) = func.params.get(i) {
                             // Attempt unification
                             let _ = gen_ctx.unify(param_ty, *arg_ty);
@@ -1984,7 +1984,7 @@ impl<'a> TypeChecker<'a> {
     /// Check type cast expression: expr as TypeName
     fn check_type_cast(&mut self, cast: &crate::parser::ast::TypeCastExpression) -> TypeId {
         // Check the object expression
-        let object_ty = self.check_expr(&cast.object);
+        let _object_ty = self.check_expr(&cast.object);
 
         // Resolve the target type from the type annotation
         let target_ty = self.resolve_type_annotation(&cast.target_type);

@@ -18,18 +18,14 @@
 
 mod context;
 pub mod emit;
+#[allow(dead_code)]
 mod control;
 
 pub use context::IrCodeGenerator;
 
-use crate::compiler::bytecode::{Function, Module, Opcode};
-use crate::compiler::error::{CompileError, CompileResult};
-use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrConstant, IrFunction, IrInstr,
-    IrModule, IrValue, Register, Terminator, UnaryOp,
-};
-use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
-use rustc_hash::FxHashMap;
+use crate::compiler::bytecode::Module;
+use crate::compiler::error::CompileResult;
+use crate::compiler::ir::IrModule;
 
 /// Generate bytecode from an IR module
 ///
@@ -47,8 +43,9 @@ pub fn generate(ir_module: &IrModule, emit_sourcemap: bool) -> CompileResult<Mod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{BasicBlock, IrFunction, IrModule};
+    use crate::compiler::ir::{BasicBlock, BasicBlockId, IrFunction, IrModule};
     use crate::compiler::ir::block::Terminator;
+    use crate::compiler::ir::instr::{BinaryOp, IrInstr};
     use crate::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
     use crate::parser::TypeId;
 

@@ -425,6 +425,8 @@ fn test_runtime_with_options() {
         timeout: 5000,
         no_jit: true,
         jit_threshold: 500,
+        cpu_prof: None,
+        prof_interval_us: 10_000,
     });
 
     let value = rt.eval("return 99;").expect("eval with options failed");

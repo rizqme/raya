@@ -350,7 +350,7 @@ fn test_marshal_primitives() {
 #[test]
 fn test_marshal_string() {
     let mut ctx1 = VmContext::new();
-    let ctx2 = VmContext::new();
+    let _ctx2 = VmContext::new();
 
     // Allocate string in ctx1
     let gc1 = ctx1.gc_mut();
@@ -558,7 +558,7 @@ fn test_vm_with_capabilities() {
     let stats = vm.get_stats();
 
     // VM created with capability
-    assert!(stats.heap_bytes_used >= 0);
+    let _ = stats.heap_bytes_used; // usize is always non-negative
 }
 
 // ============================================================================
@@ -576,9 +576,9 @@ fn test_multiple_vms_concurrent() {
     let stats3 = vm3.get_stats();
 
     // All VMs are independent
-    assert!(stats1.heap_bytes_used >= 0);
-    assert!(stats2.heap_bytes_used >= 0);
-    assert!(stats3.heap_bytes_used >= 0);
+    let _ = stats1.heap_bytes_used; // usize always non-negative
+    let _ = stats2.heap_bytes_used;
+    let _ = stats3.heap_bytes_used;
 
     // Terminate all
     vm1.terminate();

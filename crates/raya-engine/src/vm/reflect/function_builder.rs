@@ -16,8 +16,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::bytecode_builder::{opcode, BytecodeBuilder, ConstantValue};
-use super::runtime_builder::{DynamicFunction, DynamicFunctionRegistry};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 

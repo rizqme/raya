@@ -744,8 +744,6 @@ template`"#;
 
 #[test]
 fn test_empty_template() {
-    use raya_engine::parser::TemplatePart;
-
     let source = "``";
     let (tokens, _interner) = lex_tokens(source);
 

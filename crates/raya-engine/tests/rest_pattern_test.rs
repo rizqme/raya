@@ -1,6 +1,6 @@
 //! Tests for rest pattern parsing
 
-use raya_engine::parser::ast::{Expression, Pattern, Statement};
+use raya_engine::parser::ast::{Pattern, Statement};
 use raya_engine::parser::Parser;
 
 // ============================================================================

@@ -125,7 +125,7 @@ pub fn check_typeof_exhaustiveness(
     bare_union: TypeId,
     tested_types: &HashSet<String>,
 ) -> Option<Vec<String>> {
-    use crate::parser::types::PrimitiveType;
+    
 
     let type_def = ctx.get(bare_union)?;
 
@@ -183,6 +183,7 @@ fn extract_union_variants(ctx: &TypeContext, ty: TypeId) -> Option<HashSet<Strin
 }
 
 /// Extract the discriminant value from an object type
+#[allow(dead_code)]
 fn extract_discriminant_value(
     ctx: &TypeContext,
     ty: TypeId,

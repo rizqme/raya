@@ -186,6 +186,7 @@ impl std::fmt::Display for ReflectionPermission {
 
 /// Entry in the permission store with optional sealing
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PermissionEntry {
     permissions: ReflectionPermission,
     sealed: bool,
@@ -728,7 +729,7 @@ mod tests {
     fn test_permission_resolution() {
         let mut store = PermissionStore::new();
         store.set_global(ReflectionPermission::ALL);
-        store.set_class(10, ReflectionPermission::FULL_ACCESS);
+        let _ = store.set_class(10, ReflectionPermission::FULL_ACCESS);
         store.set_object(123, ReflectionPermission::READ_PUBLIC).unwrap();
 
         // Object-level takes precedence

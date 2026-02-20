@@ -11,7 +11,6 @@
 //! integrate with the GC to clean up entries.
 
 use std::collections::HashMap;
-use std::ptr::NonNull;
 
 use crate::vm::Value;
 

@@ -232,7 +232,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                 // Could be async () => ... or async (params) => ...
                 // Need to look ahead to see if there's a => after the parentheses
                 // Save position and try to parse as arrow
-                let paren_start = parser.current_span();
+                let _paren_start = parser.current_span();
                 parser.advance(); // consume (
 
                 // Parse parameters
@@ -1520,6 +1520,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
 }
 
 /// Parse parameter list (simplified stub - will be implemented in pattern parsing).
+#[allow(dead_code)]
 pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>, ParseError> {
     let mut params = Vec::with_capacity(4); // Most functions have < 4 parameters
     let mut guard = super::guards::LoopGuard::new("function_parameters");

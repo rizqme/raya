@@ -15,6 +15,7 @@ fn lower(source: &str) -> IrModule {
     lowerer.lower_module(&module)
 }
 
+#[allow(dead_code)]
 fn lower_and_print(source: &str) -> String {
     lower(source).pretty_print()
 }

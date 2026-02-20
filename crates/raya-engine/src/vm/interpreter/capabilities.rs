@@ -202,6 +202,7 @@ impl Capability for LogCapability {
 
 /// Read capability - allows Inner VM to read host files (with path restrictions)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ReadCapability {
     allowed_paths: Vec<String>,
 }
@@ -248,6 +249,7 @@ impl Capability for ReadCapability {
 
 /// HTTP capability - allows Inner VM to make HTTP requests (with domain restrictions)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct HttpCapability {
     allowed_domains: Vec<String>,
 }

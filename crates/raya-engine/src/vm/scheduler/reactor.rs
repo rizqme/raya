@@ -41,6 +41,7 @@ pub struct IoSubmission {
 }
 
 /// IO work sent from reactor to an IO worker
+#[allow(dead_code)]
 struct IoWork {
     task_id: TaskId,
     work: Box<dyn FnOnce() -> IoCompletion + Send>,

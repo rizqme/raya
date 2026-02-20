@@ -502,7 +502,7 @@ mod tests {
             default: None,
         }));
 
-        let mut gen_ctx = GenericContext::new(&mut ctx);
+        let gen_ctx = GenericContext::new(&mut ctx);
 
         // number satisfies constraint
         assert!(gen_ctx.check_constraint(num, num).is_ok());

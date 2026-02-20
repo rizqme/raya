@@ -21,11 +21,13 @@ pub fn resolve_color_choice(flag: Option<&str>) -> ColorChoice {
 }
 
 /// Styled output writer for terminal.
+#[allow(dead_code)]
 pub struct StyledOutput {
     stdout: StandardStream,
     stderr: StandardStream,
 }
 
+#[allow(dead_code)]
 impl StyledOutput {
     /// Create a new styled output with the given color choice.
     pub fn new(choice: ColorChoice) -> Self {

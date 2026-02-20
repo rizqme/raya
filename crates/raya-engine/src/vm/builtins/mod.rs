@@ -525,8 +525,7 @@ mod tests {
     fn test_builtins_count() {
         // Builtins may be empty during development (not precompiled yet)
         // This test verifies the API works, not that builtins are populated
-        let count = builtin_count();
-        assert!(count >= 0, "Count should be non-negative");
+        let _count = builtin_count(); // usize is always non-negative
     }
 
     #[test]

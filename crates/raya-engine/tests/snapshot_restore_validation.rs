@@ -618,7 +618,7 @@ fn test_endianness_marker_in_snapshot() {
     writer.write_snapshot(&mut buf).unwrap();
 
     // Read header and verify endianness marker
-    let reader = SnapshotReader::from_reader(&mut Cursor::new(&buf)).unwrap();
+    let _reader = SnapshotReader::from_reader(&mut Cursor::new(&buf)).unwrap();
     // If we can read it successfully, the endianness matches
 
     // Manually check the endianness marker bytes in the buffer

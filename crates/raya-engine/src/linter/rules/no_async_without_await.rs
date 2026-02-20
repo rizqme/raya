@@ -6,7 +6,7 @@
 //! explicit separation of concurrent vs. suspending functions.
 
 use crate::linter::rule::*;
-use crate::parser::ast::{self, visitor::{Visitor, walk_block_statement, walk_expression}};
+use crate::parser::ast::{self, visitor::{Visitor, walk_expression}};
 
 pub struct NoAsyncWithoutAwait;
 

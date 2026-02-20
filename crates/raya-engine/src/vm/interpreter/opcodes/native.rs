@@ -9,7 +9,7 @@ use crate::compiler::native_id::{
     CHANNEL_NEW, CHANNEL_SEND, CHANNEL_RECEIVE, CHANNEL_TRY_SEND, CHANNEL_TRY_RECEIVE,
     CHANNEL_CLOSE, CHANNEL_IS_CLOSED, CHANNEL_LENGTH, CHANNEL_CAPACITY,
 };
-use crate::vm::builtin::{buffer, channel, map, mutex, set, date, regexp};
+use crate::vm::builtin::{buffer, map, mutex, set, date, regexp};
 use crate::vm::object::{
     Array, Buffer, ChannelObject, DateObject, MapObject, Object, RayaString, RegExpObject,
     SetObject,
@@ -1587,7 +1587,7 @@ impl<'a> Interpreter<'a> {
                         for (index, key) in field_keys.iter().enumerate() {
                             let field_value = json_value.get_property(key);
                             let vm_value = json::json_to_value(&field_value, &mut gc);
-                            obj.set_field(index, vm_value);
+                            let _ = obj.set_field(index, vm_value);
                         }
 
                         // Allocate and return the object
@@ -1605,7 +1605,7 @@ impl<'a> Interpreter<'a> {
 
                     // JSON.merge(dest, source) - copy all properties from source to dest
                     0x0C03 => {
-                        use crate::vm::json::{self, JsonValue};
+                        use crate::vm::json::JsonValue;
 
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::RuntimeError(

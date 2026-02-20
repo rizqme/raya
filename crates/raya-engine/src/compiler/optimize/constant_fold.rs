@@ -2,7 +2,7 @@
 //!
 //! Evaluates constant expressions at compile time.
 
-use crate::compiler::ir::{BasicBlock, BinaryOp, IrConstant, IrFunction, IrInstr, IrModule, IrValue, Register, RegisterId, UnaryOp};
+use crate::compiler::ir::{BasicBlock, BinaryOp, IrConstant, IrFunction, IrInstr, IrModule, IrValue, RegisterId, UnaryOp};
 use rustc_hash::FxHashMap;
 
 /// Constant folding optimizer

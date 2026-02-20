@@ -24,10 +24,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::vm::object::{Class, Closure, VTable};
+use crate::vm::object::Closure;
 use crate::vm::reflect::{
-    ClassMetadata, FieldDefinition, FieldInfo, MethodDefinition, MethodInfo, ParameterInfo,
-    SubclassDefinition, TypeInfo,
+    FieldDefinition, MethodDefinition,
+    SubclassDefinition,
 };
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -520,7 +520,7 @@ mod tests {
 
     #[test]
     fn test_class_builder_basic() {
-        let mut builder = ClassBuilder::new("TestClass".to_string());
+        let builder = ClassBuilder::new("TestClass".to_string());
         assert_eq!(builder.name, "TestClass");
         assert!(!builder.finalized);
     }

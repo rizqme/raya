@@ -2,11 +2,11 @@
 //!
 //! Provides human-readable output for debugging IR structures.
 
-use super::block::{BasicBlock, Terminator};
+use super::block::BasicBlock;
 use super::function::IrFunction;
 use super::instr::IrInstr;
 use super::module::IrModule;
-use super::value::{IrConstant, IrValue};
+use super::value::IrValue;
 use std::fmt::Write;
 
 /// Trait for pretty-printing IR constructs
@@ -385,9 +385,9 @@ fn format_value(value: &IrValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::block::BasicBlockId;
+    use crate::compiler::ir::block::{BasicBlockId, Terminator};
     use crate::compiler::ir::instr::BinaryOp;
-    use crate::compiler::ir::value::{Register, RegisterId};
+    use crate::compiler::ir::value::{IrConstant, Register, RegisterId};
     use crate::parser::TypeId;
 
     fn make_reg(id: u32) -> Register {

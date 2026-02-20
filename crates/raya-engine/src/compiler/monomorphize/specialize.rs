@@ -3,13 +3,12 @@
 //! Creates specialized versions of generic functions and classes
 //! for specific type argument combinations.
 
-use super::collect::{GenericClassInfo, GenericFunctionInfo, InstantiationTracker};
+use super::collect::{GenericClassInfo, GenericFunctionInfo};
 use super::substitute::TypeSubstitution;
 use super::{
-    GenericId, InstantiationKind, MonoKey, MonomorphizationContext, MonomorphizationResult,
+    InstantiationKind, MonoKey, MonomorphizationContext, MonomorphizationResult,
     PendingInstantiation,
 };
-use crate::compiler::ir::function::IrFunction;
 use crate::compiler::ir::instr::{ClassId, FunctionId};
 use crate::compiler::ir::module::{IrClass, IrField, IrModule};
 use crate::parser::{Interner, TypeContext, TypeId};
@@ -85,7 +84,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Identify generic functions and classes in the module
-    fn identify_generics(&mut self, module: &IrModule) {
+    fn identify_generics(&mut self, _module: &IrModule) {
         // For now, we consider functions with type parameters as generic
         // In the current IR, we don't have explicit type parameters yet,
         // so we'll use a heuristic or rely on external registration
@@ -118,7 +117,7 @@ impl<'a> Monomorphizer<'a> {
 
         match instr {
             IrInstr::Call { func, args, .. } => {
-                if let Some(info) = self.generic_functions.get(func) {
+                if let Some(_info) = self.generic_functions.get(func) {
                     // Infer type arguments from call
                     let type_args: Vec<TypeId> = args.iter().map(|a| a.ty).collect();
                     if !type_args.is_empty() {
@@ -343,6 +342,7 @@ impl<'a> Monomorphizer<'a> {
 mod tests {
     use super::*;
     use crate::compiler::ir::block::{BasicBlock, BasicBlockId, Terminator};
+    use crate::compiler::ir::function::IrFunction;
     use crate::compiler::ir::instr::IrInstr;
     use crate::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
 

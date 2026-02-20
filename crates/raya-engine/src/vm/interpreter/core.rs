@@ -187,6 +187,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Wake a suspended task by setting its resume value and pushing it to the scheduler.
+    #[allow(dead_code)]
     pub(in crate::vm::interpreter) fn wake_task(&self, task_id: u64, resume_value: Value) {
         let tasks = self.tasks.read();
         let target_id = TaskId::from_u64(task_id);

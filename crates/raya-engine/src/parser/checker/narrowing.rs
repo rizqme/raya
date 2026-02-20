@@ -528,7 +528,7 @@ fn apply_is_array_guard(
     ty: TypeId,
     negated: bool,
 ) -> Option<TypeId> {
-    use crate::parser::types::ty::ArrayType;
+    
 
     if negated {
         // !Array.isArray(x) - remove array types from union
@@ -679,7 +679,7 @@ fn apply_type_predicate_guard(
     predicate: &str,
     negated: bool,
 ) -> Option<TypeId> {
-    use crate::parser::types::PrimitiveType;
+    
 
     // Map predicate names to types
     let target_ty = match predicate {

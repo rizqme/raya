@@ -11,7 +11,7 @@ use thiserror::Error;
 use crate::compiler::bytecode::Module as BytecodeModule;
 use crate::compiler::{Compiler, CompileError};
 use crate::parser::ast::{Module as AstModule, Statement, ImportSpecifier};
-use crate::parser::checker::{Binder, TypeChecker, Symbol, SymbolFlags, SymbolKind, ScopeId};
+use crate::parser::checker::{Binder, TypeChecker, Symbol, SymbolFlags, ScopeId};
 use crate::parser::{Interner, Parser, TypeContext, Span};
 
 use super::cache::ModuleCache;

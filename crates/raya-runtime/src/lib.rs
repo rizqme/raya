@@ -89,6 +89,7 @@ impl Default for RuntimeOptions {
 // ────────────────────────────────────────────────────────────────────────────
 
 /// A compiled module ready for execution.
+#[allow(dead_code)]
 pub struct CompiledModule {
     /// The bytecode module.
     pub(crate) module: Module,

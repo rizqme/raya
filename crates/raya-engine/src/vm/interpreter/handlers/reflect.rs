@@ -3,7 +3,7 @@
 use crate::compiler::Module;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::core::value_to_f64;
-use crate::vm::object::{Array, Buffer, Closure, MapObject, Object, RayaString};
+use crate::vm::object::{Array, Closure, MapObject, Object, RayaString};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -1595,15 +1595,15 @@ impl<'a> Interpreter<'a> {
                                 // Set file
                                 let file_str = RayaString::new(source_file.to_string());
                                 let file_ptr = self.gc.lock().allocate(file_str);
-                                result_obj.set_field(0, unsafe {
+                                let _ = result_obj.set_field(0, unsafe {
                                     Value::from_ptr(std::ptr::NonNull::new(file_ptr.as_ptr()).unwrap())
                                 });
 
                                 // Set line (1-indexed)
-                                result_obj.set_field(1, Value::i32(func_debug.start_line as i32));
+                                let _ = result_obj.set_field(1, Value::i32(func_debug.start_line as i32));
 
                                 // Set column (1-indexed)
-                                result_obj.set_field(2, Value::i32(func_debug.start_column as i32));
+                                let _ = result_obj.set_field(2, Value::i32(func_debug.start_column as i32));
 
                                 let result_ptr = self.gc.lock().allocate(result_obj);
                                 unsafe { Value::from_ptr(std::ptr::NonNull::new(result_ptr.as_ptr()).unwrap()) }
@@ -2576,6 +2576,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Convert ObjectSnapshot to a Raya Value (Object)
+    #[allow(unused_must_use)]
     fn snapshot_to_value(&self, snapshot: &ObjectSnapshot) -> Value {
         // Create an object with snapshot fields:
         // - class_name: string
@@ -2605,6 +2606,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Convert snapshot fields HashMap to a Raya Value (Object)
+    #[allow(unused_must_use)]
     fn snapshot_fields_to_value(&self, fields: &std::collections::HashMap<String, crate::vm::reflect::FieldSnapshot>) -> Value {
         // Create an object with field count matching the number of fields
         let field_count = fields.len();
@@ -2676,6 +2678,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Convert ObjectDiff to a Raya Value (Object)
+    #[allow(unused_must_use)]
     fn diff_to_value(&self, diff: &ObjectDiff) -> Value {
         // Create an object with diff fields:
         // - added: string[] (field names added)
@@ -2712,6 +2715,7 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Convert diff changes HashMap to a Raya Value (Object)
+    #[allow(unused_must_use)]
     fn diff_changes_to_value(&self, changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>) -> Value {
         let change_count = changes.len();
         let mut obj = Object::new(0, change_count);

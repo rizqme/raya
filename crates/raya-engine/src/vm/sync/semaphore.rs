@@ -1,7 +1,6 @@
 //! Task-aware Semaphore implementation
 
 use crate::vm::scheduler::TaskId;
-use crossbeam::atomic::AtomicCell;
 use parking_lot::Mutex as ParkingLotMutex;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -174,6 +173,7 @@ impl Semaphore {
     }
 
     /// Get the wait queue (for serialization/debugging)
+    #[allow(dead_code)]
     pub(crate) fn get_wait_queue(&self) -> Vec<(TaskId, usize)> {
         self.wait_queue.lock().iter().copied().collect()
     }

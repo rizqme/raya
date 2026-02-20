@@ -895,7 +895,7 @@ impl<'a> Lowerer<'a> {
                             "decode" => {
                                 // JSON.decode<T>(json) -> typed decoder
                                 // If type argument is provided, use specialized decoder
-                                use crate::compiler::native_id::JSON_DECODE_OBJECT;
+                                
 
                                 if let Some(type_args) = &call.type_args {
                                     if let Some(first_type) = type_args.first() {
@@ -3693,7 +3693,7 @@ impl<'a> Lowerer<'a> {
             }
 
             // Instance method - find the method and spawn with 'this'
-            let mut class_id = self.infer_class_id(&member.object);
+            let class_id = self.infer_class_id(&member.object);
             if let Some(class_id) = class_id {
                 if let Some(func_id) = self.find_method(class_id, method_name_symbol) {
                     let mut method_args = vec![object];
