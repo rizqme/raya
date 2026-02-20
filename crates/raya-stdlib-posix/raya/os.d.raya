@@ -25,6 +25,26 @@ export class Os {
     eol(): string;
     /** OS temp directory */
     tmpdir(): string;
+    /** OS kernel release string */
+    release(): string;
+    /** OS type / sysname (e.g. "Darwin", "Linux") */
+    osType(): string;
+    /** Machine hardware name (e.g. "arm64", "x86_64") */
+    machine(): string;
+    /** Current username */
+    username(): string;
+    /** User info as [uid, gid, username, homedir, shell] */
+    userInfo(): string[];
+    /** User login shell */
+    shell(): string;
+    /** System load averages [1min, 5min, 15min] */
+    loadavg(): number[];
+    /** Network interfaces as [name, addr, family, ...] */
+    networkInterfaces(): string[];
+    /** Byte order: "LE" or "BE" */
+    endianness(): string;
+    /** System page size in bytes */
+    pageSize(): number;
 }
 
 declare const os: Os;

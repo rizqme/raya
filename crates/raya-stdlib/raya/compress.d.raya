@@ -1,0 +1,52 @@
+/**
+ * std:compress - Standard Compression Module
+ *
+ * Provides gzip, deflate, and zlib compression/decompression
+ * using in-memory buffer transforms.
+ *
+ * Usage:
+ *   import compress from "std:compress";
+ *   let compressed: Buffer = compress.gzip(data);
+ *   let original: Buffer = compress.gunzip(compressed);
+ */
+
+/**
+ * Compress provides methods for gzip, raw deflate, and zlib
+ * compression and decompression.
+ *
+ * Compression levels range from 0 (no compression) to 9 (best compression).
+ * Default level is 6 (good balance of speed and compression ratio).
+ */
+export class CompressClass {
+    /** Gzip compress data with default level (6). */
+    gzip(data: Buffer): Buffer;
+
+    /** Gzip compress data with specified level (0-9). */
+    gzipLevel(data: Buffer, level: number): Buffer;
+
+    /** Gzip decompress data. */
+    gunzip(data: Buffer): Buffer;
+
+    /** Raw deflate compress with default level (6). */
+    deflate(data: Buffer): Buffer;
+
+    /** Raw deflate compress with specified level (0-9). */
+    deflateLevel(data: Buffer, level: number): Buffer;
+
+    /** Raw deflate decompress (inflate). */
+    inflate(data: Buffer): Buffer;
+
+    /** Zlib compress with default level (6). */
+    zlibCompress(data: Buffer): Buffer;
+
+    /** Zlib compress with specified level (0-9). */
+    zlibCompressLevel(data: Buffer, level: number): Buffer;
+
+    /** Zlib decompress. */
+    zlibDecompress(data: Buffer): Buffer;
+}
+
+/** compress singleton instance */
+declare const compress: CompressClass;
+
+export default compress;

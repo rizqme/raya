@@ -1,0 +1,145 @@
+/**
+ * std:encoding - Standard Encoding Module
+ *
+ * Provides CSV parsing/serialization, XML parsing/serialization,
+ * and Base32 encoding/decoding.
+ *
+ * Usage:
+ *   import encoding from "std:encoding";
+ *   import { CsvTable, XmlNode, Csv, Xml, Base32 } from "std:encoding";
+ *
+ *   let table: CsvTable = encoding.csv.parseWithHeaders("name,age\nAlice,30\nBob,25");
+ *   let headers: string[] = table.headers();
+ *   let name: string[] = table.column("name");
+ */
+
+/**
+ * Handle-based CSV table for row/column access.
+ *
+ * Obtained from `Csv.parse()` or `Csv.parseWithHeaders()`.
+ * Call `release()` when done to free native memory.
+ */
+export class CsvTable {
+    /** Wrap a native handle (internal use). */
+    constructor(handle: number);
+
+    /** Get column headers. Returns empty array if parsed without headers. */
+    headers(): string[];
+
+    /**
+     * Get all rows as a flat array with null separators.
+     * Format: [col1, col2, ..., null, col1, col2, ..., null, ...]
+     */
+    rows(): string[];
+
+    /** Get a single row by zero-based index. */
+    row(index: number): string[];
+
+    /** Get all values from a column by header name. Requires headers. */
+    column(name: string): string[];
+
+    /** Get the number of data rows. */
+    rowCount(): number;
+
+    /** Release native memory for this table. */
+    release(): void;
+
+    /** Serialize rows to CSV string (no header row). */
+    stringify(): string;
+
+    /** Serialize rows to CSV string with header row. */
+    stringifyWithHeaders(): string;
+}
+
+/**
+ * Handle-based XML node for tree navigation.
+ *
+ * Obtained from `Xml.parse()` or by navigating child nodes.
+ * Call `release()` on the root node when done to free the entire tree.
+ */
+export class XmlNode {
+    /** Wrap a native handle (internal use). */
+    constructor(handle: number);
+
+    /** Get the element tag name. */
+    tag(): string;
+
+    /** Get the text content of this element. */
+    text(): string;
+
+    /** Get an attribute value by name. Returns null if not found. */
+    attr(name: string): string;
+
+    /** Get all attributes as a flat array [key1, val1, key2, val2, ...]. */
+    attrs(): string[];
+
+    /** Get all direct child nodes. */
+    children(): XmlNode[];
+
+    /** Get the first child with a matching tag name. Returns node with handle -1 if not found. */
+    child(tagName: string): XmlNode;
+
+    /** Get all children with a matching tag name. */
+    childrenByTag(tagName: string): XmlNode[];
+
+    /** Serialize this node and its subtree to an XML string. */
+    stringify(): string;
+
+    /** Release native memory for this node and all its descendants. */
+    release(): void;
+}
+
+/**
+ * CSV parsing and serialization utilities.
+ */
+export class Csv {
+    /** Parse a CSV string without headers. All rows are data rows. */
+    parse(input: string): CsvTable;
+
+    /** Parse a CSV string with the first row as headers. */
+    parseWithHeaders(input: string): CsvTable;
+}
+
+/**
+ * XML parsing and serialization utilities.
+ */
+export class Xml {
+    /** Parse an XML string into a navigable node tree. Returns the root element. */
+    parse(input: string): XmlNode;
+}
+
+/**
+ * Base32 encoding and decoding (RFC 4648).
+ */
+export class Base32 {
+    /** Encode a buffer to a Base32 string (standard alphabet with padding). */
+    encode(data: Buffer): string;
+
+    /** Decode a Base32 string to a buffer. */
+    decode(input: string): Buffer;
+
+    /** Encode a buffer to a Base32hex string (extended hex alphabet). */
+    hexEncode(data: Buffer): string;
+
+    /** Decode a Base32hex string to a buffer. */
+    hexDecode(input: string): Buffer;
+}
+
+/**
+ * Encoding facade providing access to CSV, XML, and Base32 utilities.
+ */
+declare class Encoding {
+    /** CSV parsing and serialization utilities. */
+    csv: Csv;
+
+    /** XML parsing and serialization utilities. */
+    xml: Xml;
+
+    /** Base32 encoding and decoding utilities. */
+    base32: Base32;
+}
+
+/** encoding singleton instance */
+declare const encoding: Encoding;
+
+export default encoding;

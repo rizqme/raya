@@ -1,0 +1,167 @@
+// Encoding - Standard encoding module (CSV, XML, Base32)
+// Usage: import encoding from "std:encoding";
+// Usage: import { CsvTable, XmlNode, Csv, Xml, Base32 } from "std:encoding";
+
+// ── CSV Table (handle-based) ──
+
+class CsvTable {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    headers(): string[] {
+        return __NATIVE_CALL<string[]>("encoding.csvTableHeaders", this._handle);
+    }
+
+    rows(): string[] {
+        return __NATIVE_CALL<string[]>("encoding.csvTableRows", this._handle);
+    }
+
+    row(index: number): string[] {
+        return __NATIVE_CALL<string[]>("encoding.csvTableRow", this._handle, index);
+    }
+
+    column(name: string): string[] {
+        return __NATIVE_CALL<string[]>("encoding.csvTableColumn", this._handle, name);
+    }
+
+    rowCount(): number {
+        return __NATIVE_CALL<number>("encoding.csvTableRowCount", this._handle);
+    }
+
+    release(): void {
+        __NATIVE_CALL("encoding.csvTableRelease", this._handle);
+    }
+
+    stringify(): string {
+        return __NATIVE_CALL<string>("encoding.csvStringify", this._handle);
+    }
+
+    stringifyWithHeaders(): string {
+        return __NATIVE_CALL<string>("encoding.csvStringifyHeaders", this._handle);
+    }
+}
+
+// ── XML Node (handle-based) ──
+
+class XmlNode {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    tag(): string {
+        return __NATIVE_CALL<string>("encoding.xmlTag", this._handle);
+    }
+
+    text(): string {
+        return __NATIVE_CALL<string>("encoding.xmlText", this._handle);
+    }
+
+    attr(name: string): string {
+        return __NATIVE_CALL<string>("encoding.xmlAttr", this._handle, name);
+    }
+
+    attrs(): string[] {
+        return __NATIVE_CALL<string[]>("encoding.xmlAttrs", this._handle);
+    }
+
+    children(): XmlNode[] {
+        const handles: number[] = __NATIVE_CALL<number[]>("encoding.xmlChildren", this._handle);
+        const nodes: XmlNode[] = [];
+        let i = 0;
+        while (i < handles.length) {
+            nodes.push(new XmlNode(handles[i]));
+            i = i + 1;
+        }
+        return nodes;
+    }
+
+    child(tagName: string): XmlNode {
+        const handle: number = __NATIVE_CALL<number>("encoding.xmlChild", this._handle, tagName);
+        return new XmlNode(handle);
+    }
+
+    childrenByTag(tagName: string): XmlNode[] {
+        const handles: number[] = __NATIVE_CALL<number[]>("encoding.xmlChildrenByTag", this._handle, tagName);
+        const nodes: XmlNode[] = [];
+        let i = 0;
+        while (i < handles.length) {
+            nodes.push(new XmlNode(handles[i]));
+            i = i + 1;
+        }
+        return nodes;
+    }
+
+    stringify(): string {
+        return __NATIVE_CALL<string>("encoding.xmlStringify", this._handle);
+    }
+
+    release(): void {
+        __NATIVE_CALL("encoding.xmlRelease", this._handle);
+    }
+}
+
+// ── CSV Utilities ──
+
+class Csv {
+    parse(input: string): CsvTable {
+        const handle: number = __NATIVE_CALL<number>("encoding.csvParse", input);
+        return new CsvTable(handle);
+    }
+
+    parseWithHeaders(input: string): CsvTable {
+        const handle: number = __NATIVE_CALL<number>("encoding.csvParseHeaders", input);
+        return new CsvTable(handle);
+    }
+}
+
+// ── XML Utilities ──
+
+class Xml {
+    parse(input: string): XmlNode {
+        const handle: number = __NATIVE_CALL<number>("encoding.xmlParse", input);
+        return new XmlNode(handle);
+    }
+}
+
+// ── Base32 Utilities ──
+
+class Base32 {
+    encode(data: Buffer): string {
+        return __NATIVE_CALL<string>("encoding.base32Encode", data);
+    }
+
+    decode(input: string): Buffer {
+        return __NATIVE_CALL<Buffer>("encoding.base32Decode", input);
+    }
+
+    hexEncode(data: Buffer): string {
+        return __NATIVE_CALL<string>("encoding.base32HexEncode", data);
+    }
+
+    hexDecode(input: string): Buffer {
+        return __NATIVE_CALL<Buffer>("encoding.base32HexDecode", input);
+    }
+}
+
+// ── Encoding Facade ──
+
+class Encoding {
+    csv: Csv;
+    xml: Xml;
+    base32: Base32;
+
+    constructor() {
+        this.csv = new Csv();
+        this.xml = new Xml();
+        this.base32 = new Base32();
+    }
+}
+
+const encoding = new Encoding();
+export { CsvTable, XmlNode, Csv, Xml, Base32 };
+export default encoding;

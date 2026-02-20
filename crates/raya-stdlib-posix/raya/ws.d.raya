@@ -1,0 +1,51 @@
+/**
+ * std:ws - WebSocket Module
+ *
+ * Usage:
+ *   import ws from "std:ws";
+ *   import { WebSocket, WebSocketServer } from "std:ws";
+ */
+
+export class WebSocket {
+    constructor(handle: number);
+    /** Send a text message */
+    send(message: string): void;
+    /** Send binary data */
+    sendBytes(data: Buffer): void;
+    /** Receive next message as string (blocking) */
+    receive(): string;
+    /** Receive next message as bytes (blocking) */
+    receiveBytes(): Buffer;
+    /** Close the connection */
+    close(): void;
+    /** Close with a specific code and reason */
+    closeWithCode(code: number, reason: string): void;
+    /** Check if the connection is still open */
+    isOpen(): boolean;
+    /** Get the remote address */
+    remoteAddr(): string;
+    /** Get the negotiated subprotocol */
+    protocol(): string;
+}
+
+export class WebSocketServer {
+    constructor(host: string, port: number);
+    /** Accept a new WebSocket connection (blocking) */
+    accept(): WebSocket;
+    /** Close the server */
+    close(): void;
+    /** Get the local address (host:port) */
+    localAddr(): string;
+}
+
+export class Ws {
+    /** Connect to a WebSocket server (ws:// or wss://) */
+    connect(url: string): WebSocket;
+    /** Connect with subprotocol negotiation */
+    connectWithProtocols(url: string, protocols: string[]): WebSocket;
+    /** Create a WebSocket server */
+    serve(host: string, port: number): WebSocketServer;
+}
+
+declare const ws: Ws;
+export default ws;

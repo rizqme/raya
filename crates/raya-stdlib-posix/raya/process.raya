@@ -1,6 +1,50 @@
 // Process - Standard process management module
 // Usage: import process from "std:process";
 
+class ChildProcess {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    wait(): number {
+        return __NATIVE_CALL<number>("process.childWait", this._handle);
+    }
+
+    tryWait(): number {
+        return __NATIVE_CALL<number>("process.childTryWait", this._handle);
+    }
+
+    isAlive(): boolean {
+        return __NATIVE_CALL<boolean>("process.childIsAlive", this._handle);
+    }
+
+    writeStdin(data: string): void {
+        __NATIVE_CALL("process.childWriteStdin", this._handle, data);
+    }
+
+    readStdout(): string {
+        return __NATIVE_CALL<string>("process.childReadStdout", this._handle);
+    }
+
+    readStderr(): string {
+        return __NATIVE_CALL<string>("process.childReadStderr", this._handle);
+    }
+
+    kill(): void {
+        __NATIVE_CALL("process.childKill", this._handle);
+    }
+
+    signal(sig: string): void {
+        __NATIVE_CALL("process.childSignal", this._handle, sig);
+    }
+
+    pid(): number {
+        return __NATIVE_CALL<number>("process.childPid", this._handle);
+    }
+}
+
 class Process {
     exit(code: number): void {
         __NATIVE_CALL("process.exit", code);
@@ -38,13 +82,117 @@ class Process {
         __NATIVE_CALL("process.execRelease", handle);
     }
 
+    ppid(): number {
+        return __NATIVE_CALL<number>("process.ppid");
+    }
+
+    version(): string {
+        return __NATIVE_CALL<string>("process.version");
+    }
+
+    uptime(): number {
+        return __NATIVE_CALL<number>("process.uptime");
+    }
+
+    memoryUsage(): number {
+        return __NATIVE_CALL<number>("process.memoryUsage");
+    }
+
+    cpuUsage(): number[] {
+        return __NATIVE_CALL<number[]>("process.cpuUsage");
+    }
+
+    heapUsed(): number {
+        return __NATIVE_CALL<number>("process.heapUsed");
+    }
+
+    heapTotal(): number {
+        return __NATIVE_CALL<number>("process.heapTotal");
+    }
+
+    title(): string {
+        return __NATIVE_CALL<string>("process.title");
+    }
+
+    setTitle(t: string): void {
+        __NATIVE_CALL("process.setTitle", t);
+    }
+
+    chdir(path: string): void {
+        __NATIVE_CALL("process.chdir", path);
+    }
+
+    umaskGet(): number {
+        return __NATIVE_CALL<number>("process.umaskGet");
+    }
+
+    umaskSet(mask: number): number {
+        return __NATIVE_CALL<number>("process.umaskSet", mask);
+    }
+
+    uid(): number {
+        return __NATIVE_CALL<number>("process.uid");
+    }
+
+    gid(): number {
+        return __NATIVE_CALL<number>("process.gid");
+    }
+
+    euid(): number {
+        return __NATIVE_CALL<number>("process.euid");
+    }
+
+    egid(): number {
+        return __NATIVE_CALL<number>("process.egid");
+    }
+
+    groups(): number[] {
+        return __NATIVE_CALL<number[]>("process.groups");
+    }
+
     run(command: string): number {
         const handle: number = this.exec(command);
         const code: number = this.execGetCode(handle);
         this.execRelease(handle);
         return code;
     }
+
+    spawn(command: string): ChildProcess {
+        const h: number = __NATIVE_CALL<number>("process.spawn", command);
+        return new ChildProcess(h);
+    }
+
+    spawnWithArgs(command: string, args: string[]): ChildProcess {
+        const h: number = __NATIVE_CALL<number>("process.spawnWithArgs", command, args);
+        return new ChildProcess(h);
+    }
+
+    spawnWithOptions(command: string, args: string[], cwd: string, env: string[]): ChildProcess {
+        const h: number = __NATIVE_CALL<number>("process.spawnWithOptions", command, args, cwd, env);
+        return new ChildProcess(h);
+    }
+
+    trapSignal(signal: string): void {
+        __NATIVE_CALL("process.trapSignal", signal);
+    }
+
+    untrapSignal(signal: string): void {
+        __NATIVE_CALL("process.untrapSignal", signal);
+    }
+
+    hasSignal(signal: string): boolean {
+        return __NATIVE_CALL<boolean>("process.hasSignal", signal);
+    }
+
+    clearSignal(signal: string): void {
+        __NATIVE_CALL("process.clearSignal", signal);
+    }
+
+    waitSignal(): string {
+        return __NATIVE_CALL<string>("process.waitSignal");
+    }
 }
 
 const process = new Process();
 export default process;
+export { ChildProcess };

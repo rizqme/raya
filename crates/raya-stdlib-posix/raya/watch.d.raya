@@ -1,0 +1,56 @@
+/**
+ * std:watch - File System Watching Module
+ *
+ * Usage:
+ *   import watch from "std:watch";
+ *   let watcher = watch.create(["./src"]);
+ *   let event = watcher.nextEvent();
+ *   print(event.kind() + " " + event.path());
+ *   watcher.close();
+ *
+ *   import { FileWatcher, WatchEvent } from "std:watch";
+ */
+
+/** Represents a single file system event */
+export class WatchEvent {
+    /** Create a WatchEvent from a raw "kind:path" string */
+    constructor(raw: string);
+    /** Get the event kind: "create", "modify", "remove", "access", or "other" */
+    kind(): string;
+    /** Get the file path that triggered the event */
+    path(): string;
+    /** Check if this is a file creation event */
+    isCreate(): boolean;
+    /** Check if this is a file modification event */
+    isModify(): boolean;
+    /** Check if this is a file removal event */
+    isRemove(): boolean;
+    /** Check if this is a file access event */
+    isAccess(): boolean;
+    /** String representation as "kind:path" */
+    toString(): string;
+}
+
+/** A file system watcher that receives OS-native events */
+export class FileWatcher {
+    /** Create a FileWatcher from a native handle */
+    constructor(handle: number);
+    /** Block until the next file system event arrives */
+    nextEvent(): WatchEvent;
+    /** Add a path to watch (non-recursive) */
+    addPath(path: string): void;
+    /** Remove a path from watching */
+    removePath(path: string): void;
+    /** Close the watcher and release resources */
+    close(): void;
+}
+
+export class WatchClass {
+    /** Create a non-recursive file watcher for the given paths */
+    create(paths: string[]): FileWatcher;
+    /** Create a file watcher with explicit recursive flag */
+    createRecursive(paths: string[], recursive: boolean): FileWatcher;
+}
+
+declare const watch: WatchClass;
+export default watch;

@@ -1,9 +1,11 @@
 /**
- * std:fetch - HTTP Client Module
+ * std:fetch - HTTP/HTTPS Client Module
+ *
+ * Supports both HTTP and HTTPS (TLS) URLs.
  *
  * Usage:
  *   import fetch from "std:fetch";
- *   const resp: Response = fetch.get("http://example.com");
+ *   const resp: Response = fetch.get("https://api.example.com/data");
  */
 
 export class Response {
@@ -20,6 +22,12 @@ export class Response {
     text(): string;
     /** Response body as bytes */
     bytes(): Buffer;
+    /** Release response handle (free memory) */
+    release(): void;
+    /** Check if response status is 200-299 */
+    ok(): boolean;
+    /** Check if response was redirected (status 3xx) */
+    redirected(): boolean;
 }
 
 export class Fetch {

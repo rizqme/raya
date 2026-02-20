@@ -1,0 +1,46 @@
+/**
+ * std:readline - Interactive Line Input Module
+ *
+ * Usage:
+ *   import readline from "std:readline";
+ *   const name: string = readline.prompt("Enter name: ");
+ *
+ *   import { Readline } from "std:readline";
+ *   const rl = new Readline();
+ *   const line: string = rl.prompt("> ");
+ *   rl.addHistory(line);
+ *   rl.close();
+ */
+
+export class Readline {
+    /** Create a new readline instance with empty history */
+    constructor();
+    /** Show prompt text and read a line from stdin (blocking) */
+    prompt(text: string): string;
+    /** Add a line to the history */
+    addHistory(line: string): void;
+    /** Load history from a file (one line per entry) */
+    loadHistory(path: string): void;
+    /** Save history to a file (one line per entry) */
+    saveHistory(path: string): void;
+    /** Clear all history entries */
+    clearHistory(): void;
+    /** Get the number of history entries */
+    historySize(): number;
+    /** Close the readline instance and release resources */
+    close(): void;
+}
+
+export class ReadlineUtils {
+    /** One-shot prompt: show text, read line (no handle needed) */
+    prompt(text: string): string;
+    /** Prompt with (y/n) suffix, return true for y/yes */
+    confirm(text: string): boolean;
+    /** Prompt for input with echo disabled (hidden password input) */
+    password(text: string): string;
+    /** Display numbered list of options, return 0-based index (-1 if invalid) */
+    select(text: string, options: string[]): number;
+}
+
+declare const readline: ReadlineUtils;
+export default readline;

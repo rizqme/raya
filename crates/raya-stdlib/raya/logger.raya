@@ -17,6 +17,42 @@ class Logger {
     error(message: string): void {
         __NATIVE_CALL("logger.error", message);
     }
+
+    setLevel(level: string): void {
+        __NATIVE_CALL("logger.setLevel", level);
+    }
+
+    getLevel(): string {
+        return __NATIVE_CALL<string>("logger.getLevel");
+    }
+
+    debugData(message: string, data: string): void {
+        __NATIVE_CALL("logger.debugData", message, data);
+    }
+
+    infoData(message: string, data: string): void {
+        __NATIVE_CALL("logger.infoData", message, data);
+    }
+
+    warnData(message: string, data: string): void {
+        __NATIVE_CALL("logger.warnData", message, data);
+    }
+
+    errorData(message: string, data: string): void {
+        __NATIVE_CALL("logger.errorData", message, data);
+    }
+
+    setFormat(format: string): void {
+        __NATIVE_CALL("logger.setFormat", format);
+    }
+
+    setTimestamp(enabled: boolean): void {
+        __NATIVE_CALL("logger.setTimestamp", enabled);
+    }
+
+    setPrefix(prefix: string): void {
+        __NATIVE_CALL("logger.setPrefix", prefix);
+    }
 }
 
 const logger = new Logger();

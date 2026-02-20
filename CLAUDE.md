@@ -170,7 +170,13 @@
 - Deleted TaskExecutor + execute_nested_function (~3,400 lines)
 - Net ~9,500 lines removed across 35 files
 
-**Tests:** 3,348+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 39 CLI (26 integration + 13 unit), 17 stdlib, 204 raya-pm) — 0 ignored
+**Stdlib Expansion:** In Progress (feat/stdlib-expansion branch)
+- 29 total std: modules (14 cross-platform in raya-stdlib, 15 POSIX in raya-stdlib-posix)
+- Cross-platform: logger, math, crypto, time, path, stream, url, compress, encoding, semver, template, args, runtime, reflect
+- POSIX: fs, net, http, fetch, env, process, os, io, dns, terminal, ws, readline, glob, archive, watch
+- Remaining: std:test (separate task)
+
+**Tests:** 3,348+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 39 CLI (26 integration + 13 unit), 41 stdlib, 204 raya-pm) — 0 ignored
 
 **`raya check` Command:** Complete
 - Type-check without building: Parse → Bind → TypeCheck (no codegen)
@@ -263,13 +269,14 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 
 ```
 crates/
-├── raya-engine/     # Parser, compiler, VM, JIT, AOT (main crate)
-├── raya-runtime/    # High-level Runtime API + bundle format (compile, load, execute, eval, deps)
-├── raya-stdlib/     # Native stdlib implementations (logger, math, crypto, etc.)
-├── raya-cli/        # Unified CLI (run, build, eval, pkg, etc.)
-├── raya-pm/         # Package manager (raya-pm)
-├── raya-sdk/        # Native module FFI types
-└── raya-native/     # Proc-macros for native modules
+├── raya-engine/       # Parser, compiler, VM, JIT, AOT (main crate)
+├── raya-runtime/      # High-level Runtime API + bundle format (compile, load, execute, eval, deps)
+├── raya-stdlib/       # Cross-platform native stdlib (logger, math, crypto, url, encoding, semver, template, etc.)
+├── raya-stdlib-posix/ # POSIX native stdlib (fs, net, http, fetch, process, dns, terminal, ws, etc.)
+├── raya-cli/          # Unified CLI (run, build, eval, pkg, etc.)
+├── raya-pm/           # Package manager (raya-pm)
+├── raya-sdk/          # Native module FFI types
+└── raya-native/       # Proc-macros for native modules
 
 docs/                # Design documentation (VitePress site)
 plans/               # Implementation roadmap
@@ -289,7 +296,7 @@ cargo test -p raya-engine --features jit  # Engine + JIT tests (1,868)
 cargo test -p raya-engine --features aot  # Engine + AOT tests (1,776)
 cargo test -p raya-runtime     # Runtime + e2e + bundle tests (1,312)
 cargo test -p raya-cli         # CLI integration tests (19)
-cargo test -p raya-stdlib      # Stdlib tests (17)
+cargo test -p raya-stdlib      # Stdlib tests (41)
 cargo test -p raya-pm          # Package manager tests (204)
 ```
 

@@ -46,7 +46,8 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 |-------|---------|--------|
 | `raya-engine` | Full language engine: parser, compiler, VM, JIT + AOT (feature-gated) | Active development |
 | `raya-runtime` | High-level Runtime API + bundle format: compile, load, execute, eval, dependency resolution; hosts e2e tests | ✅ Complete (Runtime struct, 1,297 e2e + 15 bundle tests) |
-| `raya-stdlib` | Native stdlib implementations + type defs | ✅ Logger, Math, Crypto, Time, Path complete |
+| `raya-stdlib` | Cross-platform native stdlib (logger, math, crypto, url, encoding, semver, template, etc.) | ✅ 14 modules |
+| `raya-stdlib-posix` | POSIX native stdlib (fs, net, http, process, dns, terminal, ws, etc.) | ✅ 15 modules |
 | `raya-cli` | `raya` CLI tool (run, build, eval, pkg, etc.) | ✅ run/build/eval implemented (19 integration tests) |
 | `raya-lsp` | Language server for IDE support | Placeholder |
 | `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
@@ -69,7 +70,8 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 
 When working on Raya:
 - **Most changes** go in `raya-engine` - it's the core of everything
-- **Stdlib implementations** go in `raya-stdlib` (contains `StdNativeHandler`), re-exported by `raya-runtime`
+- **Cross-platform stdlib** goes in `raya-stdlib` (math, crypto, url, encoding, etc.)
+- **OS-dependent stdlib** goes in `raya-stdlib-posix` (fs, net, http, process, etc.)
 - **E2E tests** live in `raya-runtime` (moved from engine in M4.2)
 - **CLI commands** go in `raya-cli/src/commands/` — run/build/eval are wired through `raya-runtime::Runtime`, pkg/clean/info also functional
 - **Native module development** uses `raya-sdk` + `raya-native`

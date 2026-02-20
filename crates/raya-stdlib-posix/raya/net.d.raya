@@ -50,11 +50,35 @@ export class UdpSocket {
     localAddr(): string;
 }
 
+export class TlsStream {
+    constructor(handle: number);
+    /** Read up to N bytes */
+    read(size: number): Buffer;
+    /** Read until EOF */
+    readAll(): Buffer;
+    /** Read line (until \n) */
+    readLine(): string;
+    /** Write bytes, return count */
+    write(data: Buffer): number;
+    /** Write string, return byte count */
+    writeText(data: string): number;
+    /** Close stream */
+    close(): void;
+    /** Remote address */
+    remoteAddr(): string;
+    /** Local address */
+    localAddr(): string;
+}
+
 export class Net {
     /** Bind TCP listener */
     listen(host: string, port: number): TcpListener;
     /** Connect to TCP server */
     connect(host: string, port: number): TcpStream;
+    /** Connect to TLS server (HTTPS, default port 443) */
+    connectTls(host: string, port: number): TlsStream;
+    /** Connect to TLS server with custom CA certificate */
+    connectTlsWithCa(host: string, port: number, caPem: string): TlsStream;
     /** Bind UDP socket */
     bindUdp(host: string, port: number): UdpSocket;
 }

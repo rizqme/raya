@@ -1,0 +1,78 @@
+// Semver - Standard semantic versioning module
+// Usage: import semver from "std:semver";
+// Usage: import { SemverVersion } from "std:semver";
+
+export class SemverVersion {
+    private _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    major(): number {
+        return __NATIVE_CALL<number>("semver.versionMajor", this._handle);
+    }
+
+    minor(): number {
+        return __NATIVE_CALL<number>("semver.versionMinor", this._handle);
+    }
+
+    patch(): number {
+        return __NATIVE_CALL<number>("semver.versionPatch", this._handle);
+    }
+
+    prerelease(): string {
+        return __NATIVE_CALL<string>("semver.versionPrerelease", this._handle);
+    }
+
+    build(): string {
+        return __NATIVE_CALL<string>("semver.versionBuild", this._handle);
+    }
+
+    toString(): string {
+        return __NATIVE_CALL<string>("semver.versionToString", this._handle);
+    }
+}
+
+class SemverClass {
+    parse(version: string): SemverVersion {
+        const handle = __NATIVE_CALL<number>("semver.parse", version);
+        return new SemverVersion(handle);
+    }
+
+    valid(version: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.valid", version);
+    }
+
+    compare(a: string, b: string): number {
+        return __NATIVE_CALL<number>("semver.compare", a, b);
+    }
+
+    satisfies(version: string, range: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.satisfies", version, range);
+    }
+
+    gt(a: string, b: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.gt", a, b);
+    }
+
+    gte(a: string, b: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.gte", a, b);
+    }
+
+    lt(a: string, b: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.lt", a, b);
+    }
+
+    lte(a: string, b: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.lte", a, b);
+    }
+
+    eq(a: string, b: string): boolean {
+        return __NATIVE_CALL<boolean>("semver.eq", a, b);
+    }
+}
+
+const semver = new SemverClass();
+export { semver };
+export default semver;

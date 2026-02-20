@@ -1,0 +1,19 @@
+/**
+ * std:glob - File Pattern Matching Module
+ *
+ * Usage:
+ *   import glob from "std:glob";
+ *   let files = glob.find("src/**/*.raya");
+ */
+
+export class GlobClass {
+    /** Find files matching a glob pattern relative to cwd */
+    find(pattern: string): string[];
+    /** Find files matching a glob pattern within a specific directory */
+    findInDir(pattern: string, cwd: string): string[];
+    /** Test if a path matches a glob pattern (no filesystem access) */
+    matches(path: string, pattern: string): boolean;
+}
+
+declare const glob: GlobClass;
+export default glob;

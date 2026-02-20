@@ -1,6 +1,7 @@
-//! std:net — TCP/UDP sockets
+//! std:net — TCP/UDP sockets + TLS streams
 
 use crate::handles::HandleRegistry;
+use crate::tls;
 use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
@@ -9,6 +10,7 @@ use std::sync::LazyLock;
 static TCP_LISTENERS: LazyLock<HandleRegistry<net::TcpListener>> = LazyLock::new(HandleRegistry::new);
 static TCP_STREAMS: LazyLock<HandleRegistry<net::TcpStream>> = LazyLock::new(HandleRegistry::new);
 static UDP_SOCKETS: LazyLock<HandleRegistry<net::UdpSocket>> = LazyLock::new(HandleRegistry::new);
+static TLS_STREAMS: LazyLock<HandleRegistry<tls::ClientTlsStream>> = LazyLock::new(HandleRegistry::new);
 
 // ── TCP Listener ──
 
@@ -380,5 +382,236 @@ pub fn udp_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
             Err(e) => NativeCallResult::Error(format!("net.udpLocalAddr: {}", e)),
         },
         None => NativeCallResult::Error(format!("net.udpLocalAddr: invalid handle {}", handle)),
+    }
+}
+
+// ── TLS Stream ──
+
+/// Connect to TLS server with default CA roots (blocking → IO pool)
+pub fn tls_connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let host = match ctx.read_string(args[0]) {
+        Ok(s) => s,
+        Err(e) => return NativeCallResult::Error(format!("net.tlsConnect: {}", e)),
+    };
+    let port = args.get(1)
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(443.0) as u16;
+    let addr = format!("{}:{}", host, port);
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match net::TcpStream::connect(&addr) {
+                Ok(stream) => {
+                    let config = tls::default_client_config();
+                    match tls::connect_tls(stream, &host, config) {
+                        Ok(tls_stream) => {
+                            let handle = TLS_STREAMS.insert(tls_stream);
+                            IoCompletion::Primitive(NativeValue::f64(handle as f64))
+                        }
+                        Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
+                    }
+                }
+                Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
+            }
+        }),
+    })
+}
+
+/// Connect to TLS server with custom CA certificate (blocking → IO pool)
+pub fn tls_connect_with_ca(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let host = match ctx.read_string(args[0]) {
+        Ok(s) => s,
+        Err(e) => return NativeCallResult::Error(format!("net.tlsConnectWithCa: {}", e)),
+    };
+    let port = args.get(1)
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(443.0) as u16;
+    let ca_pem = match ctx.read_string(args[2]) {
+        Ok(s) => s,
+        Err(e) => return NativeCallResult::Error(format!("net.tlsConnectWithCa: {}", e)),
+    };
+    let addr = format!("{}:{}", host, port);
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            let config = match tls::client_config_with_ca(&ca_pem) {
+                Ok(c) => c,
+                Err(e) => return IoCompletion::Error(format!("net.tlsConnectWithCa: {}", e)),
+            };
+            match net::TcpStream::connect(&addr) {
+                Ok(stream) => match tls::connect_tls(stream, &host, config) {
+                    Ok(tls_stream) => {
+                        let handle = TLS_STREAMS.insert(tls_stream);
+                        IoCompletion::Primitive(NativeValue::f64(handle as f64))
+                    }
+                    Err(e) => IoCompletion::Error(format!("net.tlsConnectWithCa: {}", e)),
+                },
+                Err(e) => IoCompletion::Error(format!("net.tlsConnectWithCa: {}", e)),
+            }
+        }),
+    })
+}
+
+/// Read up to N bytes from TLS stream (blocking → IO pool)
+pub fn tls_read(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    let size = args.get(1)
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(4096.0) as usize;
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match TLS_STREAMS.get_mut(handle) {
+                Some(mut stream) => {
+                    let mut buf = vec![0u8; size];
+                    match stream.read(&mut buf) {
+                        Ok(n) => {
+                            buf.truncate(n);
+                            IoCompletion::Bytes(buf)
+                        }
+                        Err(e) => IoCompletion::Error(format!("net.tlsRead: {}", e)),
+                    }
+                }
+                None => IoCompletion::Error(format!("net.tlsRead: invalid handle {}", handle)),
+            }
+        }),
+    })
+}
+
+/// Read all bytes from TLS stream until EOF (blocking → IO pool)
+pub fn tls_read_all(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match TLS_STREAMS.get_mut(handle) {
+                Some(mut stream) => {
+                    let mut buf = Vec::new();
+                    match stream.read_to_end(&mut buf) {
+                        Ok(_) => IoCompletion::Bytes(buf),
+                        Err(e) => IoCompletion::Error(format!("net.tlsReadAll: {}", e)),
+                    }
+                }
+                None => IoCompletion::Error(format!("net.tlsReadAll: invalid handle {}", handle)),
+            }
+        }),
+    })
+}
+
+/// Read a line from TLS stream (blocking → IO pool)
+pub fn tls_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match TLS_STREAMS.get_mut(handle) {
+                Some(mut stream) => {
+                    // Read byte-by-byte until newline (TLS streams can't clone)
+                    let mut line = Vec::new();
+                    let mut byte = [0u8; 1];
+                    loop {
+                        match stream.read(&mut byte) {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                if byte[0] == b'\n' {
+                                    break;
+                                }
+                                line.push(byte[0]);
+                            }
+                            Err(e) => return IoCompletion::Error(format!("net.tlsReadLine: {}", e)),
+                        }
+                    }
+                    // Strip trailing \r if present
+                    if line.last() == Some(&b'\r') {
+                        line.pop();
+                    }
+                    let s = String::from_utf8_lossy(&line).into_owned();
+                    IoCompletion::String(s)
+                }
+                None => IoCompletion::Error(format!("net.tlsReadLine: invalid handle {}", handle)),
+            }
+        }),
+    })
+}
+
+/// Write bytes to TLS stream (blocking → IO pool)
+pub fn tls_write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    let data = match ctx.read_buffer(args[1]) {
+        Ok(d) => d,
+        Err(e) => return NativeCallResult::Error(format!("net.tlsWrite: {}", e)),
+    };
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match TLS_STREAMS.get_mut(handle) {
+                Some(mut stream) => match stream.write(&data) {
+                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                    Err(e) => IoCompletion::Error(format!("net.tlsWrite: {}", e)),
+                },
+                None => IoCompletion::Error(format!("net.tlsWrite: invalid handle {}", handle)),
+            }
+        }),
+    })
+}
+
+/// Write string to TLS stream (blocking → IO pool)
+pub fn tls_write_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    let data = match ctx.read_string(args[1]) {
+        Ok(s) => s,
+        Err(e) => return NativeCallResult::Error(format!("net.tlsWriteText: {}", e)),
+    };
+    NativeCallResult::Suspend(IoRequest::BlockingWork {
+        work: Box::new(move || {
+            match TLS_STREAMS.get_mut(handle) {
+                Some(mut stream) => match stream.write(data.as_bytes()) {
+                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                    Err(e) => IoCompletion::Error(format!("net.tlsWriteText: {}", e)),
+                },
+                None => IoCompletion::Error(format!("net.tlsWriteText: invalid handle {}", handle)),
+            }
+        }),
+    })
+}
+
+/// Close TLS stream
+pub fn tls_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    TLS_STREAMS.remove(handle);
+    NativeCallResult::null()
+}
+
+/// Get remote address of TLS stream
+pub fn tls_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    match TLS_STREAMS.get(handle) {
+        Some(stream) => match stream.sock.peer_addr() {
+            Ok(addr) => NativeCallResult::Value(ctx.create_string(&addr.to_string())),
+            Err(e) => NativeCallResult::Error(format!("net.tlsRemoteAddr: {}", e)),
+        },
+        None => NativeCallResult::Error(format!("net.tlsRemoteAddr: invalid handle {}", handle)),
+    }
+}
+
+/// Get local address of TLS stream
+pub fn tls_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args.first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    match TLS_STREAMS.get(handle) {
+        Some(stream) => match stream.sock.local_addr() {
+            Ok(addr) => NativeCallResult::Value(ctx.create_string(&addr.to_string())),
+            Err(e) => NativeCallResult::Error(format!("net.tlsLocalAddr: {}", e)),
+        },
+        None => NativeCallResult::Error(format!("net.tlsLocalAddr: invalid handle {}", handle)),
     }
 }

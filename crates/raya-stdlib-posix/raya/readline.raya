@@ -1,0 +1,61 @@
+// Readline - Interactive line input module
+// Usage: import readline from "std:readline";
+//        import { Readline } from "std:readline";
+
+class Readline {
+    _handle: number;
+
+    constructor() {
+        this._handle = __NATIVE_CALL<number>("readline.new");
+    }
+
+    prompt(text: string): string {
+        return __NATIVE_CALL<string>("readline.prompt", this._handle, text);
+    }
+
+    addHistory(line: string): void {
+        __NATIVE_CALL("readline.addHistory", this._handle, line);
+    }
+
+    loadHistory(path: string): void {
+        __NATIVE_CALL("readline.loadHistory", this._handle, path);
+    }
+
+    saveHistory(path: string): void {
+        __NATIVE_CALL("readline.saveHistory", this._handle, path);
+    }
+
+    clearHistory(): void {
+        __NATIVE_CALL("readline.clearHistory", this._handle);
+    }
+
+    historySize(): number {
+        return __NATIVE_CALL<number>("readline.historySize", this._handle);
+    }
+
+    close(): void {
+        __NATIVE_CALL("readline.close", this._handle);
+    }
+}
+
+class ReadlineUtils {
+    prompt(text: string): string {
+        return __NATIVE_CALL<string>("readline.simplePrompt", text);
+    }
+
+    confirm(text: string): boolean {
+        return __NATIVE_CALL<boolean>("readline.confirm", text);
+    }
+
+    password(text: string): string {
+        return __NATIVE_CALL<string>("readline.password", text);
+    }
+
+    select(text: string, options: string[]): number {
+        return __NATIVE_CALL<number>("readline.select", text, options);
+    }
+}
+
+const readline = new ReadlineUtils();
+export { Readline };
+export default readline;

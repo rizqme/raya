@@ -1,11 +1,13 @@
 /**
  * std:logger - Standard Logging Module
  *
- * Provides structured logging with severity levels.
+ * Provides structured logging with severity levels, level filtering,
+ * JSON output, timestamps, and prefixes.
  *
  * Usage:
  *   import logger from "std:logger";
  *   logger.info("Application started");
+ *   logger.setLevel("warn");   // Only show warn and error
  */
 
 /**
@@ -23,6 +25,33 @@ export class Logger {
 
     /** Log an error message (highest severity) */
     error(message: string): void;
+
+    /** Set minimum log level: "debug", "info", "warn", "error", "silent" */
+    setLevel(level: string): void;
+
+    /** Get current log level name */
+    getLevel(): string;
+
+    /** Log debug with structured JSON data */
+    debugData(message: string, data: string): void;
+
+    /** Log info with structured JSON data */
+    infoData(message: string, data: string): void;
+
+    /** Log warn with structured JSON data */
+    warnData(message: string, data: string): void;
+
+    /** Log error with structured JSON data */
+    errorData(message: string, data: string): void;
+
+    /** Set output format: "text" (default) or "json" */
+    setFormat(format: string): void;
+
+    /** Enable or disable ISO timestamp in output */
+    setTimestamp(enabled: boolean): void;
+
+    /** Set a prefix string (e.g., "[MyApp]") for all log messages */
+    setPrefix(prefix: string): void;
 }
 
 /** Default logger instance */

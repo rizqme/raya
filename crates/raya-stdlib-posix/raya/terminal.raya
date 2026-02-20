@@ -1,0 +1,181 @@
+// Terminal - Standard terminal module
+// Usage: import terminal from "std:terminal";
+
+class Terminal {
+    // ── TTY Detection ──
+
+    isTerminal(): boolean {
+        return __NATIVE_CALL<boolean>("terminal.isTerminal");
+    }
+
+    isTerminalStdin(): boolean {
+        return __NATIVE_CALL<boolean>("terminal.isTerminalStdin");
+    }
+
+    isTerminalStderr(): boolean {
+        return __NATIVE_CALL<boolean>("terminal.isTerminalStderr");
+    }
+
+    // ── Terminal Size ──
+
+    columns(): number {
+        return __NATIVE_CALL<number>("terminal.columns");
+    }
+
+    rows(): number {
+        return __NATIVE_CALL<number>("terminal.rows");
+    }
+
+    // ── Raw Mode ──
+
+    enableRawMode(): void {
+        __NATIVE_CALL("terminal.enableRawMode");
+    }
+
+    disableRawMode(): void {
+        __NATIVE_CALL("terminal.disableRawMode");
+    }
+
+    // ── Input ──
+
+    readKey(): string {
+        return __NATIVE_CALL<string>("terminal.readKey");
+    }
+
+    // ── Cursor Control ──
+
+    moveTo(col: number, row: number): void {
+        __NATIVE_CALL("terminal.moveTo", col, row);
+    }
+
+    moveUp(n: number): void {
+        __NATIVE_CALL("terminal.moveUp", n);
+    }
+
+    moveDown(n: number): void {
+        __NATIVE_CALL("terminal.moveDown", n);
+    }
+
+    moveRight(n: number): void {
+        __NATIVE_CALL("terminal.moveRight", n);
+    }
+
+    moveLeft(n: number): void {
+        __NATIVE_CALL("terminal.moveLeft", n);
+    }
+
+    saveCursor(): void {
+        __NATIVE_CALL("terminal.saveCursor");
+    }
+
+    restoreCursor(): void {
+        __NATIVE_CALL("terminal.restoreCursor");
+    }
+
+    hideCursor(): void {
+        __NATIVE_CALL("terminal.hideCursor");
+    }
+
+    showCursor(): void {
+        __NATIVE_CALL("terminal.showCursor");
+    }
+
+    // ── Screen Control ──
+
+    clearScreen(): void {
+        __NATIVE_CALL("terminal.clearScreen");
+    }
+
+    clearLine(): void {
+        __NATIVE_CALL("terminal.clearLine");
+    }
+
+    clearToEndOfLine(): void {
+        __NATIVE_CALL("terminal.clearToEndOfLine");
+    }
+
+    clearToEndOfScreen(): void {
+        __NATIVE_CALL("terminal.clearToEndOfScreen");
+    }
+
+    // ── Colors/Styling (pure Raya — ANSI escape codes) ──
+
+    bold(text: string): string {
+        return "\x1b[1m" + text + "\x1b[0m";
+    }
+
+    dim(text: string): string {
+        return "\x1b[2m" + text + "\x1b[0m";
+    }
+
+    italic(text: string): string {
+        return "\x1b[3m" + text + "\x1b[0m";
+    }
+
+    underline(text: string): string {
+        return "\x1b[4m" + text + "\x1b[0m";
+    }
+
+    strikethrough(text: string): string {
+        return "\x1b[9m" + text + "\x1b[0m";
+    }
+
+    red(text: string): string {
+        return "\x1b[31m" + text + "\x1b[0m";
+    }
+
+    green(text: string): string {
+        return "\x1b[32m" + text + "\x1b[0m";
+    }
+
+    yellow(text: string): string {
+        return "\x1b[33m" + text + "\x1b[0m";
+    }
+
+    blue(text: string): string {
+        return "\x1b[34m" + text + "\x1b[0m";
+    }
+
+    magenta(text: string): string {
+        return "\x1b[35m" + text + "\x1b[0m";
+    }
+
+    cyan(text: string): string {
+        return "\x1b[36m" + text + "\x1b[0m";
+    }
+
+    white(text: string): string {
+        return "\x1b[37m" + text + "\x1b[0m";
+    }
+
+    gray(text: string): string {
+        return "\x1b[90m" + text + "\x1b[0m";
+    }
+
+    bgRed(text: string): string {
+        return "\x1b[41m" + text + "\x1b[0m";
+    }
+
+    bgGreen(text: string): string {
+        return "\x1b[42m" + text + "\x1b[0m";
+    }
+
+    bgYellow(text: string): string {
+        return "\x1b[43m" + text + "\x1b[0m";
+    }
+
+    bgBlue(text: string): string {
+        return "\x1b[44m" + text + "\x1b[0m";
+    }
+
+    rgb(r: number, g: number, b: number, text: string): string {
+        return "\x1b[38;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
+    }
+
+    bgRgb(r: number, g: number, b: number, text: string): string {
+        return "\x1b[48;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
+    }
+}
+
+const terminal = new Terminal();
+export default terminal;

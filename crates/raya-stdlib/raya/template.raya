@@ -1,0 +1,33 @@
+// Template - Mustache-like template engine
+// Usage: import template from "std:template";
+// Usage: import { CompiledTemplate } from "std:template";
+
+export class CompiledTemplate {
+    private _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    render(data: string): string {
+        return __NATIVE_CALL<string>("template.compiledRender", this._handle, data);
+    }
+
+    release(): void {
+        __NATIVE_CALL("template.compiledRelease", this._handle);
+    }
+}
+
+class TemplateEngine {
+    compile(source: string): CompiledTemplate {
+        let handle = __NATIVE_CALL<number>("template.compile", source);
+        return new CompiledTemplate(handle);
+    }
+
+    render(source: string, data: string): string {
+        return __NATIVE_CALL<string>("template.render", source, data);
+    }
+}
+
+const template = new TemplateEngine();
+export default template;

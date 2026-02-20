@@ -43,8 +43,20 @@ rand = "0.8"
 rustc-hash = "1.1"
 sha2 = "0.10"
 
+# Crypto
+aes-gcm = "0.10"
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem", "rand_core"] }
+hkdf = "0.12"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+
 # Regex
 regex = "1.10"
+
+# Compression
+flate2 = "1"
+
+# URL parsing
+url = "2"
 
 # Allocator
 mimalloc = { version = "0.1", default-features = false }
@@ -71,6 +83,32 @@ raya-runtime = { path = "crates/raya-runtime" }
 raya-stdlib-posix = { path = "crates/raya-stdlib-posix" }
 raya-native = { path = "crates/raya-native" }
 libc = "0.2"
+
+# WebSocket
+tungstenite = "0.24"
+
+# TLS
+rustls = "0.23"
+webpki-roots = "0.26"
+rustls-pemfile = "2"
+
+# Encoding
+csv = "1"
+quick-xml = "0.37"
+data-encoding = "2"
+
+# Archive
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Glob
+glob = "0.3"
+
+# File watching
+notify = "7"
+
+# Semver
+semver = "1"
 
 # JIT compilation (Cranelift)
 cranelift-codegen = "0.128"
