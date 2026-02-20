@@ -97,6 +97,7 @@ fn test_function_decl_simple() {
         params: vec![
             Parameter {
                 decorators: vec![],
+                visibility: None,
                 pattern: Pattern::Identifier(ident(&mut interner, "x", Span::new(13, 14, 1, 14))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),
@@ -107,6 +108,7 @@ fn test_function_decl_simple() {
             },
             Parameter {
                 decorators: vec![],
+                visibility: None,
                 pattern: Pattern::Identifier(ident(&mut interner, "y", Span::new(24, 25, 1, 25))),
                 type_annotation: Some(TypeAnnotation {
                     ty: Type::Primitive(PrimitiveType::Number),

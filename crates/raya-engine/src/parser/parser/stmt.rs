@@ -1,5 +1,6 @@
 //! Statement parsing
 
+use super::expr::keyword_as_property_name;
 use super::{ParseError, Parser};
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
@@ -1193,30 +1194,25 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
-    // Parse member name - allow keywords that are valid as method names
-    let name = match parser.current() {
-        Token::Identifier(name) => {
-            let name_str = name.clone();
-            let name_span = parser.current_span();
-            parser.advance();
-            Identifier {
-                name: name_str,
-                span: name_span,
-            }
+    // Parse member name - allow keywords that are valid as method names (like JavaScript/TypeScript)
+    let name = if let Token::Identifier(name) = parser.current() {
+        let name_str = name.clone();
+        let name_span = parser.current_span();
+        parser.advance();
+        Identifier {
+            name: name_str,
+            span: name_span,
         }
-        // Allow reserved keywords as method names (like JavaScript)
-        Token::Delete | Token::Await | Token::Typeof | Token::Void | Token::In | Token::Of => {
-            let name_str = parser.intern(parser.current().to_string().as_str());
-            let name_span = parser.current_span();
-            parser.advance();
-            Identifier {
-                name: name_str,
-                span: name_span,
-            }
+    } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
+        let name_str = parser.intern(kw_name);
+        let name_span = parser.current_span();
+        parser.advance();
+        Identifier {
+            name: name_str,
+            span: name_span,
         }
-        _ => {
-            return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
-        }
+    } else {
+        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
     };
 
     // Check for constructor (identifier named "constructor")
@@ -1901,6 +1897,54 @@ class User {
             } else {
                 panic!("Expected Field");
             }
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_keyword_method_names() {
+        // Keywords like 'type', 'null', 'class' should be allowed as method names
+        let source = r#"
+class Foo {
+    type(): string { return "test"; }
+    null(): number { return 0; }
+    delete(): void { }
+    in(): boolean { return true; }
+    class(): void { }
+    for(): void { }
+    if(): void { }
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            assert_eq!(class.members.len(), 7);
+            let names: Vec<_> = class.members.iter().filter_map(|m| {
+                if let crate::parser::ast::ClassMember::Method(method) = m {
+                    Some(method.name.name)
+                } else {
+                    None
+                }
+            }).collect();
+            assert_eq!(names.len(), 7);
+        } else {
+            panic!("Expected ClassDecl");
+        }
+    }
+
+    #[test]
+    fn test_keyword_field_names() {
+        // Keywords should also work as field names
+        let source = r#"
+class Foo {
+    type: string;
+    null: number;
+    default: boolean;
+}
+"#;
+        let module = parse(source);
+        if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
+            assert_eq!(class.members.len(), 3);
         } else {
             panic!("Expected ClassDecl");
         }
