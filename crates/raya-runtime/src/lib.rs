@@ -162,6 +162,21 @@ impl Runtime {
         self.compile(&source)
     }
 
+    // ── Checking ─────────────────────────────────────────────────────────
+
+    /// Type-check a Raya source string without generating bytecode.
+    ///
+    /// Returns diagnostics (errors + warnings) without compiling.
+    pub fn check(&self, source: &str) -> Result<compile::CheckDiagnostics, RuntimeError> {
+        compile::check_source(source)
+    }
+
+    /// Type-check a .raya source file without generating bytecode.
+    pub fn check_file(&self, path: &Path) -> Result<compile::CheckDiagnostics, RuntimeError> {
+        let source = std::fs::read_to_string(path)?;
+        self.check(&source)
+    }
+
     // ── Loading ──────────────────────────────────────────────────────────
 
     /// Load a .ryb bytecode file.

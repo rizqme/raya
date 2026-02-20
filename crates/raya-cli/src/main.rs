@@ -91,12 +91,21 @@ enum Commands {
         /// Watch for changes
         #[arg(short, long)]
         watch: bool,
-        /// Treat warnings as errors
+        /// Treat all warnings as errors
         #[arg(long)]
         strict: bool,
-        /// Diagnostic format
+        /// Diagnostic format (pretty, json)
         #[arg(long, default_value = "pretty")]
         format: String,
+        /// Suppress specific warnings (e.g., --allow unused-variable)
+        #[arg(long = "allow", value_name = "WARNING")]
+        allow: Vec<String>,
+        /// Treat specific warnings as errors (e.g., --deny shadowed-variable)
+        #[arg(long = "deny", value_name = "WARNING")]
+        deny: Vec<String>,
+        /// Suppress all warnings
+        #[arg(long)]
+        no_warnings: bool,
     },
 
     /// Evaluate an inline expression
@@ -407,8 +416,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         Commands::Build { files, out_dir, release, watch, sourcemap, dry_run } =>
             commands::build::execute(files, out_dir, release, watch, sourcemap, dry_run),
 
-        Commands::Check { files, watch, strict, format } =>
-            commands::check::execute(files, watch, strict, format),
+        Commands::Check { files, watch, strict, format, allow, deny, no_warnings } =>
+            commands::check::execute(files, watch, strict, format, allow, deny, no_warnings),
 
         Commands::Eval { code, print, no_print, no_jit } =>
             commands::eval::execute(code, print, no_print, no_jit),

@@ -107,6 +107,22 @@ pub enum CheckError {
 }
 ```
 
+## Warnings (`error.rs`)
+
+Configurable warning system for `raya check`:
+
+```rust
+pub enum WarningCode { UnusedVariable, UnusedImport, UnusedParameter, UnreachableCode, ShadowedVariable }
+pub enum CheckWarning { UnusedVariable { name, span }, UnreachableCode { span }, ShadowedVariable { name, original, shadow } }
+pub struct WarningConfig { disabled: HashSet<WarningCode>, deny: HashSet<WarningCode>, strict: bool }
+```
+
+- `WarningCode::from_name("unused-variable")` — CLI flag parsing
+- `WarningConfig::is_enabled(code)` / `is_denied(code)` — filtering
+- `Symbol.referenced` field tracks usage; `collect_unused_warnings()` scans for unreferenced variables
+- `_`-prefixed and exported symbols excluded from warnings
+- `Diagnostic::from_check_warning()` converts to codespan diagnostics
+
 ## Built-in Types (`builtins.rs`)
 
 Pre-defined signatures for:

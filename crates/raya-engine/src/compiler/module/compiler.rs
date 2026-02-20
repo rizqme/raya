@@ -369,6 +369,7 @@ impl ModuleCompiler {
                                     },
                                     scope_id: ScopeId(0),
                                     span: Span::new(0, 0, 0, 0),
+                                    referenced: false,
                                 };
                                 // Ignore duplicate errors (might be re-importing)
                                 let _ = binder.define_imported(symbol);
@@ -395,6 +396,7 @@ impl ModuleCompiler {
                                     },
                                     scope_id: ScopeId(0),
                                     span: Span::new(0, 0, 0, 0),
+                                    referenced: false,
                                 };
                                 let _ = binder.define_imported(symbol);
                             }

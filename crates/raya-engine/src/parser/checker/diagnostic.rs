@@ -4,14 +4,15 @@
 //! helpful suggestions, and multiple output formats.
 
 use codespan_reporting::diagnostic::{Diagnostic as CsDiagnostic, Label, Severity};
-use codespan_reporting::files::{Files, SimpleFiles};
+pub use codespan_reporting::files::SimpleFiles;
+use codespan_reporting::files::Files;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
 use crate::parser::Span;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use super::error::{BindError, CheckError};
+use super::error::{BindError, CheckError, CheckWarning};
 
 /// Error code for a diagnostic
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +301,31 @@ impl Diagnostic {
                 Diagnostic::error(format!("Type '{}' expects {} type argument(s), got {}", name, expected, actual))
                     .with_code(ErrorCode("E3005"))
                     .with_primary_label(file_id, *span, "wrong number of type arguments")
+            }
+        }
+    }
+
+    /// Create diagnostic from a CheckWarning
+    pub fn from_check_warning(warning: &CheckWarning, file_id: usize) -> Self {
+        match warning {
+            CheckWarning::UnusedVariable { name, span } => {
+                Diagnostic::warning(format!("Variable '{}' is declared but never used", name))
+                    .with_code(ErrorCode(warning.code().as_str()))
+                    .with_primary_label(file_id, *span, "unused variable")
+                    .with_help(format!("Prefix with _ to suppress: _{}", name))
+            }
+
+            CheckWarning::UnreachableCode { span } => {
+                Diagnostic::warning("Unreachable code detected")
+                    .with_code(ErrorCode(warning.code().as_str()))
+                    .with_primary_label(file_id, *span, "this code will never execute")
+            }
+
+            CheckWarning::ShadowedVariable { name, original, shadow } => {
+                Diagnostic::warning(format!("Variable '{}' shadows a variable in an outer scope", name))
+                    .with_code(ErrorCode(warning.code().as_str()))
+                    .with_primary_label(file_id, *shadow, "shadows outer variable")
+                    .with_secondary_label(file_id, *original, "previously declared here")
             }
         }
     }
