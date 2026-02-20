@@ -241,3 +241,36 @@ fn test_string_pad_end() {
 fn test_string_pad_end_no_padding_needed() {
     expect_string("return \"hello\".padEnd(3, \"0\");", "hello");
 }
+
+// ============================================================================
+// String Replace
+// ============================================================================
+
+#[test]
+fn test_string_replace_basic() {
+    expect_string(
+        r#"return "hello world".replace("world", "universe");"#,
+        "hello universe",
+    );
+}
+
+#[test]
+fn test_string_replace_first_only() {
+    expect_string(
+        r#"return "abcabc".replace("abc", "x");"#,
+        "xabc",
+    );
+}
+
+#[test]
+fn test_string_replace_chained() {
+    expect_string(
+        r#"
+        let tmpl = "Hello, NAME! Welcome to PLACE.";
+        let result = tmpl.replace("NAME", "Alice");
+        result = result.replace("PLACE", "Raya");
+        return result;
+        "#,
+        "Hello, Alice! Welcome to Raya.",
+    );
+}

@@ -58,16 +58,22 @@ class Set<T> {
 
     // Return a new set containing elements from both sets
     union(other: Set<T>): Set<T> {
-        return __NATIVE_CALL(SET_UNION, this.setPtr, other.setPtr);
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL(SET_UNION, this.setPtr, other.setPtr);
+        return result;
     }
 
     // Return a new set containing elements present in both sets
     intersection(other: Set<T>): Set<T> {
-        return __NATIVE_CALL(SET_INTERSECTION, this.setPtr, other.setPtr);
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL(SET_INTERSECTION, this.setPtr, other.setPtr);
+        return result;
     }
 
     // Return a new set containing elements in this set but not in other
     difference(other: Set<T>): Set<T> {
-        return __NATIVE_CALL(SET_DIFFERENCE, this.setPtr, other.setPtr);
+        let result = new Set<T>();
+        result.setPtr = __NATIVE_CALL(SET_DIFFERENCE, this.setPtr, other.setPtr);
+        return result;
     }
 }

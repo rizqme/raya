@@ -303,6 +303,10 @@ impl<'a> TypeChecker<'a> {
                     self.exit_scope();
                 }
             }
+            Statement::ExportDecl(export) => match export {
+                ExportDecl::Declaration(inner_stmt) => self.check_stmt(inner_stmt),
+                _ => {}
+            }
             _ => {}
         }
     }
@@ -582,6 +586,10 @@ impl<'a> TypeChecker<'a> {
                     self.enter_scope();
                     self.exit_scope();
                 }
+            }
+            Statement::ExportDecl(export) => match export {
+                ExportDecl::Declaration(inner_stmt) => self.sync_stmt_scopes(inner_stmt),
+                _ => {}
             }
             // Other statements don't create scopes
             _ => {}

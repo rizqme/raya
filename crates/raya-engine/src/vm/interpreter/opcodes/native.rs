@@ -507,6 +507,76 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == map::KEYS as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let map_ptr = handle as *const MapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid map handle".to_string()));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        let keys = map.keys();
+                        let mut arr = Array::new(0, 0);
+                        for key in keys {
+                            arr.push(key);
+                        }
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        let arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == map::VALUES as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let map_ptr = handle as *const MapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid map handle".to_string()));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        let values = map.values();
+                        let mut arr = Array::new(0, 0);
+                        for val in values {
+                            arr.push(val);
+                        }
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        let arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == map::ENTRIES as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let map_ptr = handle as *const MapObject;
+                        if map_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid map handle".to_string()));
+                        }
+                        let map = unsafe { &*map_ptr };
+                        let entries = map.entries();
+                        let mut arr = Array::new(0, 0);
+                        for (key, val) in entries {
+                            let mut entry = Array::new(0, 0);
+                            entry.push(key);
+                            entry.push(val);
+                            let entry_gc = self.gc.lock().allocate(entry);
+                            let entry_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(entry_gc.as_ptr()).unwrap())
+                            };
+                            arr.push(entry_val);
+                        }
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        let arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Set native calls
                     id if id == set::NEW as u16 => {
                         let set_obj = SetObject::new();
@@ -579,6 +649,97 @@ impl<'a> Interpreter<'a> {
                         let set_obj = unsafe { &mut *set_ptr };
                         set_obj.clear();
                         if let Err(e) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::VALUES as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let set_ptr = handle as *const SetObject;
+                        if set_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid set handle".to_string()));
+                        }
+                        let set_obj = unsafe { &*set_ptr };
+                        let values = set_obj.values();
+                        let mut arr = Array::new(0, 0);
+                        for val in values {
+                            arr.push(val);
+                        }
+                        let arr_gc = self.gc.lock().allocate(arr);
+                        let arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(arr_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::UNION as u16 => {
+                        let handle_a = args[0].as_u64().unwrap_or(0);
+                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let set_a_ptr = handle_a as *const SetObject;
+                        let set_b_ptr = handle_b as *const SetObject;
+                        if set_a_ptr.is_null() || set_b_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid set handle".to_string()));
+                        }
+                        let set_a = unsafe { &*set_a_ptr };
+                        let set_b = unsafe { &*set_b_ptr };
+                        let mut result = SetObject::new();
+                        for val in set_a.values() {
+                            result.add(val);
+                        }
+                        for val in set_b.values() {
+                            result.add(val);
+                        }
+                        let gc_ptr = self.gc.lock().allocate(result);
+                        let handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(handle)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::INTERSECTION as u16 => {
+                        let handle_a = args[0].as_u64().unwrap_or(0);
+                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let set_a_ptr = handle_a as *const SetObject;
+                        let set_b_ptr = handle_b as *const SetObject;
+                        if set_a_ptr.is_null() || set_b_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid set handle".to_string()));
+                        }
+                        let set_a = unsafe { &*set_a_ptr };
+                        let set_b = unsafe { &*set_b_ptr };
+                        let mut result = SetObject::new();
+                        for val in set_a.values() {
+                            if set_b.has(val) {
+                                result.add(val);
+                            }
+                        }
+                        let gc_ptr = self.gc.lock().allocate(result);
+                        let handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(handle)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == set::DIFFERENCE as u16 => {
+                        let handle_a = args[0].as_u64().unwrap_or(0);
+                        let handle_b = args[1].as_u64().unwrap_or(0);
+                        let set_a_ptr = handle_a as *const SetObject;
+                        let set_b_ptr = handle_b as *const SetObject;
+                        if set_a_ptr.is_null() || set_b_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid set handle".to_string()));
+                        }
+                        let set_a = unsafe { &*set_a_ptr };
+                        let set_b = unsafe { &*set_b_ptr };
+                        let mut result = SetObject::new();
+                        for val in set_a.values() {
+                            if !set_b.has(val) {
+                                result.add(val);
+                            }
+                        }
+                        let gc_ptr = self.gc.lock().allocate(result);
+                        let handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(handle)) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
