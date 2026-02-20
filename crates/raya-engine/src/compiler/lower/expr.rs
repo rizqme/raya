@@ -195,7 +195,7 @@ impl<'a> Lowerer<'a> {
             Expression::Unary(unary) => self.lower_unary(unary),
             Expression::Call(call) => self.lower_call(call),
             Expression::Member(member) => self.lower_member(member),
-            Expression::Index(index) => self.lower_index(index),
+            Expression::Index(index) => self.lower_index(index, expr),
             Expression::Array(array) => self.lower_array(array, expr),
             Expression::Object(object) => self.lower_object(object),
             Expression::Assignment(assign) => self.lower_assignment(assign),
@@ -2640,10 +2640,11 @@ impl<'a> Lowerer<'a> {
         dest
     }
 
-    fn lower_index(&mut self, index: &ast::IndexExpression) -> Register {
+    fn lower_index(&mut self, index: &ast::IndexExpression, full_expr: &Expression) -> Register {
         let array = self.lower_expr(&index.object);
         let idx = self.lower_expr(&index.index);
-        let dest = self.alloc_register(TypeId::new(0));
+        let elem_ty = self.get_expr_type(full_expr);
+        let dest = self.alloc_register(elem_ty);
 
         self.emit(IrInstr::LoadElement {
             dest: dest.clone(),
