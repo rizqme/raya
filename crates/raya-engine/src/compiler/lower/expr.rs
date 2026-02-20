@@ -1061,6 +1061,17 @@ impl<'a> Lowerer<'a> {
                         });
                     }
                     return dest;
+                } else if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name_symbol)) {
+                    // Abstract method with vtable slot - use virtual dispatch.
+                    // The actual implementation is provided by a derived class.
+                    let object = self.lower_expr(&member.object);
+                    self.emit(IrInstr::CallMethod {
+                        dest: Some(dest.clone()),
+                        object,
+                        method: slot,
+                        args,
+                    });
+                    return dest;
                 }
             }
 

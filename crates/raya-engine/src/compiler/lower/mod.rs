@@ -1482,6 +1482,20 @@ impl<'a> Lowerer<'a> {
             .and_then(|pid| self.class_info_map.get(&pid))
             .map_or(0, |info| info.method_slot_count);
         let mut next_slot = parent_slot_count;
+
+        // Reserve vtable slots for abstract methods first (they have no body
+        // but need slots so derived classes override at the correct position)
+        for member in &class.members {
+            if let ast::ClassMember::Method(method) = member {
+                if method.body.is_none() && !method.is_static {
+                    let method_name = method.name.name;
+                    let slot = self.find_parent_method_slot(parent_class, method_name)
+                        .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
+                    self.method_slot_map.insert((class_id, method_name), slot);
+                }
+            }
+        }
+
         for method_info in &methods {
             let slot = self.find_parent_method_slot(parent_class, method_info.name)
                 .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });

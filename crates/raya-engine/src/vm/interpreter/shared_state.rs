@@ -172,15 +172,16 @@ impl SharedVmState {
                 crate::vm::object::Class::new(i, class_def.name.clone(), class_def.field_count)
             };
 
-            // Add/override methods by vtable slot index
-            for method in &class_def.methods {
-                if method.slot < class.vtable.methods.len() {
-                    // Override inherited method at same slot
-                    class.vtable.methods[method.slot] = method.function_id;
-                } else {
-                    // New method, append to vtable
-                    class.add_method(method.function_id);
+            // Pre-size vtable to accommodate all slots (including gaps from abstract methods)
+            if let Some(max_slot) = class_def.methods.iter().map(|m| m.slot + 1).max() {
+                while class.vtable.methods.len() < max_slot {
+                    class.add_method(usize::MAX); // sentinel for abstract/unimplemented slots
                 }
+            }
+
+            // Place methods at their correct vtable slots
+            for method in &class_def.methods {
+                class.vtable.methods[method.slot] = method.function_id;
             }
 
             classes.register_class(class);

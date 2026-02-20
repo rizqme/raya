@@ -54,7 +54,7 @@ fn test_abstract_concrete_subclass() {
 }
 
 #[test]
-#[ignore = "abstract method dispatch through concrete base method causes stack overflow"]
+
 fn test_abstract_with_concrete_method() {
     expect_string(
         "abstract class Animal {
@@ -78,7 +78,7 @@ fn test_abstract_with_concrete_method() {
 }
 
 #[test]
-#[ignore = "abstract method dispatch through concrete base method causes stack overflow"]
+
 fn test_abstract_with_fields() {
     expect_i32(
         "abstract class Counter {
@@ -161,7 +161,7 @@ fn test_abstract_generic_class() {
 }
 
 #[test]
-#[ignore = "abstract method dispatch through concrete base method causes stack overflow"]
+
 fn test_abstract_generic_with_concrete_method() {
     expect_string(
         "abstract class Transformer<T> {
