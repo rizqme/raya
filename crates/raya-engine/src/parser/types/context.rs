@@ -87,6 +87,24 @@ impl TypeContext {
         id
     }
 
+    /// Replace the type at an existing TypeId in-place.
+    ///
+    /// This is used for self-referential class types: a placeholder is interned first,
+    /// field/method types are resolved (which may reference the placeholder TypeId),
+    /// then the placeholder is replaced with the full class type. All existing references
+    /// to this TypeId (e.g., in union types like `Node | null`) automatically see the update.
+    pub fn replace_type(&mut self, id: TypeId, new_ty: Type) {
+        let idx = id.0 as usize;
+        if idx < self.types.len() {
+            // Remove old reverse mapping
+            let old_ty = (*self.types[idx]).clone();
+            self.type_to_id.remove(&old_ty);
+            // Store new type and add reverse mapping
+            self.types[idx] = Arc::new(new_ty.clone());
+            self.type_to_id.insert(new_ty, id);
+        }
+    }
+
     /// Get a type by its TypeId
     pub fn get(&self, id: TypeId) -> Option<&Type> {
         self.types.get(id.0 as usize).map(|arc| arc.as_ref())
@@ -276,10 +294,22 @@ impl TypeContext {
 
     /// Create a function type
     pub fn function_type(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool) -> TypeId {
+        let min_params = params.len(); // Default: all params required
         self.intern(Type::Function(super::ty::FunctionType {
             params,
             return_type,
             is_async,
+            min_params,
+        }))
+    }
+
+    /// Create a function type with specified minimum required params
+    pub fn function_type_with_min_params(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool, min_params: usize) -> TypeId {
+        self.intern(Type::Function(super::ty::FunctionType {
+            params,
+            return_type,
+            is_async,
+            min_params,
         }))
     }
 

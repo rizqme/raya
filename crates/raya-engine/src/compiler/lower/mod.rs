@@ -335,6 +335,8 @@ pub struct Lowerer<'a> {
     ancestor_variables: Option<FxHashMap<Symbol, AncestorVar>>,
     /// Captured variables for the current arrow function
     captures: Vec<CaptureInfo>,
+    /// Next available capture slot index (shared by both `this` and regular captures)
+    next_capture_slot: u16,
     /// Info about the last created closure (for self-recursive closure detection)
     /// Contains (closure_register, Vec<(symbol, capture_index)>)
     last_closure_info: Option<(Register, Vec<(Symbol, u16)>)>,
@@ -440,6 +442,7 @@ impl<'a> Lowerer<'a> {
             arrow_counter: 0,
             ancestor_variables: None,
             captures: Vec::new(),
+            next_capture_slot: 0,
             last_closure_info: None,
             last_arrow_func_id: None,
             refcell_vars: FxHashSet::default(),
@@ -671,10 +674,8 @@ impl<'a> Lowerer<'a> {
                     let name = ident.name;
                     // Track class type from explicit type annotation
                     if let Some(type_ann) = &decl.type_annotation {
-                        if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                            if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                                self.variable_class_map.insert(name, class_id);
-                            }
+                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                            self.variable_class_map.insert(name, class_id);
                         }
                     }
                     // Track class type from new expression (e.g., `const math = new Math()`)
@@ -1367,11 +1368,12 @@ impl<'a> Lowerer<'a> {
         let mut static_fields = Vec::new();
 
         // Start field index after ALL ancestor fields (not just immediate parent)
-        let mut field_index = if let Some(parent_id) = parent_class {
-            self.get_all_fields(parent_id).len() as u16
+        let parent_fields = if let Some(parent_id) = parent_class {
+            self.get_all_fields(parent_id)
         } else {
-            0u16
+            Vec::new()
         };
+        let mut field_index = parent_fields.len() as u16;
 
         for member in &class.members {
             if let ast::ClassMember::Field(field) = member {
@@ -1407,15 +1409,31 @@ impl<'a> Lowerer<'a> {
                         initializer: field.initializer.clone(),
                     });
                 } else {
+                    // Check if this field shadows a parent field with the same name.
+                    // If so, reuse the parent's field index so base class methods
+                    // that access `this.x` see the derived class's value.
+                    let field_name_str = self.interner.resolve(field.name.name);
+                    let shadowed_index = parent_fields
+                        .iter()
+                        .find(|pf| self.interner.resolve(pf.name) == field_name_str)
+                        .map(|pf| pf.index);
+
+                    let idx = if let Some(parent_idx) = shadowed_index {
+                        parent_idx
+                    } else {
+                        let idx = field_index;
+                        field_index += 1;
+                        idx
+                    };
+
                     fields.push(ClassFieldInfo {
                         name: field.name.name,
-                        index: field_index,
+                        index: idx,
                         ty,
                         initializer: field.initializer.clone(),
                         class_type,
                         type_name,
                     });
-                    field_index += 1;
                 }
             }
         }
@@ -1622,10 +1640,8 @@ impl<'a> Lowerer<'a> {
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
-                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                            self.variable_class_map.insert(ident.name, class_id);
-                        }
+                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                        self.variable_class_map.insert(ident.name, class_id);
                     }
                 }
             }
@@ -1859,10 +1875,8 @@ impl<'a> Lowerer<'a> {
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
-                                if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                                    if let Some(&param_class_id) = self.class_map.get(&type_ref.name.name) {
-                                        self.variable_class_map.insert(ident.name, param_class_id);
-                                    }
+                                if let Some(param_class_id) = self.try_extract_class_from_type(type_ann) {
+                                    self.variable_class_map.insert(ident.name, param_class_id);
                                 }
                             }
                         }
@@ -2551,6 +2565,33 @@ impl<'a> Lowerer<'a> {
             }
             // For other type forms (function, union, etc.), default to 0
             _ => TypeId::new(0),
+        }
+    }
+
+    /// Extract a ClassId from a type annotation, handling both direct class references
+    /// and nullable unions (e.g., `Node | null` → Node's ClassId).
+    fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
+        match &type_ann.ty {
+            ast::Type::Reference(type_ref) => {
+                self.class_map.get(&type_ref.name.name).copied()
+            }
+            ast::Type::Union(union_type) => {
+                let mut class_id = None;
+                for member in &union_type.types {
+                    match &member.ty {
+                        ast::Type::Primitive(ast::PrimitiveType::Null) => {} // skip null
+                        ast::Type::Reference(type_ref) => {
+                            if class_id.is_some() {
+                                return None; // multiple class refs — ambiguous
+                            }
+                            class_id = self.class_map.get(&type_ref.name.name).copied();
+                        }
+                        _ => return None, // non-null, non-class member
+                    }
+                }
+                class_id
+            }
+            _ => None,
         }
     }
 
