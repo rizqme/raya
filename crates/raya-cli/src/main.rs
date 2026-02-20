@@ -4,6 +4,7 @@
 //! compilation, execution, testing, package management, and more.
 
 mod commands;
+mod output;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -152,6 +153,9 @@ enum Commands {
         /// Update snapshot expectations
         #[arg(long)]
         update_snapshots: bool,
+        /// Color output: auto, always, or never
+        #[arg(long, default_value = "auto")]
+        color: String,
     },
 
     /// Run benchmarks
@@ -424,11 +428,11 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
 
         Commands::Test {
             filter, watch, coverage, bail, timeout,
-            concurrency, reporter, file, update_snapshots,
-        } => commands::test::execute(
+            concurrency, reporter, file, update_snapshots, color,
+        } => commands::test::execute(commands::test::TestArgs {
             filter, watch, coverage, bail, timeout,
-            concurrency, reporter, file, update_snapshots,
-        ),
+            concurrency, reporter, file, update_snapshots, color,
+        }),
 
         Commands::Bench { filter, warmup, iterations, save, compare, json } =>
             commands::bench::execute(filter, warmup, iterations, save, compare, json),

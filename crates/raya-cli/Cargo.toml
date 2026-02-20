@@ -24,3 +24,6 @@ anyhow = { workspace = true }
 toml = "0.8"
 dirs = "5"
 rustyline = "15"
+termcolor = "1.4"
+glob = "0.3"
+num_cpus = "1"

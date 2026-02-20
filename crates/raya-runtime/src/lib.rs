@@ -31,6 +31,7 @@ pub mod deps;
 pub mod error;
 pub mod loader;
 pub mod session;
+pub mod test_runner;
 mod vm_setup;
 
 // Re-export key types from raya-engine for convenience

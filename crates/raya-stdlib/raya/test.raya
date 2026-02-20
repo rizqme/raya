@@ -1,0 +1,314 @@
+// std:test — Test framework implementation
+//
+// All stateful API functions use arrow syntax to enable closure capture of
+// module-scope variables. Uses separate Expectation/NegatedExpectation classes
+// to avoid recursive type references.
+
+// ── Internal state ─────────────────────────────────────────────────────
+
+let __testNames: string[] = [];
+let __testFns: (() => void)[] = [];
+let __beforeEachFns: (() => void)[] = [];
+let __afterEachFns: (() => void)[] = [];
+let __beforeAllFns: (() => void)[] = [];
+let __afterAllFns: (() => void)[] = [];
+
+// ── NegatedExpectation class ─────────────────────────────────────────
+
+class NegatedExpectation<T> {
+    actual: T;
+
+    constructor(actual: T) {
+        this.actual = actual;
+    }
+
+    _fail(msg: string): void {
+        throw new Error(msg);
+    }
+
+    toBe(expected: T): void {
+        let eq: boolean = __NATIVE_CALL<boolean>("test.deepEqual", this.actual, expected);
+        if (eq) {
+            this._fail("Expected not " + __NATIVE_CALL<string>("test.stringify", expected));
+        }
+    }
+
+    toEqual(expected: T): void {
+        let eq: boolean = __NATIVE_CALL<boolean>("test.deepEqual", this.actual, expected);
+        if (eq) {
+            this._fail("Expected values to not be deeply equal");
+        }
+    }
+
+    toBeTruthy(): void {
+        let truthy: boolean = __NATIVE_CALL<boolean>("test.isTruthy", this.actual);
+        if (truthy) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be falsy");
+        }
+    }
+
+    toBeFalsy(): void {
+        let truthy: boolean = __NATIVE_CALL<boolean>("test.isTruthy", this.actual);
+        if (!truthy) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be truthy");
+        }
+    }
+
+    toBeNull(): void {
+        let isNull: boolean = __NATIVE_CALL<boolean>("test.isNull", this.actual);
+        if (isNull) {
+            this._fail("Expected value to not be null");
+        }
+    }
+
+    toBeGreaterThan(n: number): void {
+        let gt: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, ">");
+        if (gt) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to not be greater than " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeGreaterThanOrEqual(n: number): void {
+        let gte: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, ">=");
+        if (gte) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to not be >= " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeLessThan(n: number): void {
+        let lt: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, "<");
+        if (lt) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to not be less than " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeLessThanOrEqual(n: number): void {
+        let lte: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, "<=");
+        if (lte) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to not be <= " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toContain(item: T): void {
+        let has: boolean = __NATIVE_CALL<boolean>("test.contains", this.actual, item);
+        if (has) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to not contain " + __NATIVE_CALL<string>("test.stringify", item));
+        }
+    }
+
+    toMatch(pattern: string): void {
+        let matches: boolean = __NATIVE_CALL<boolean>("test.stringMatch", this.actual, pattern);
+        if (matches) {
+            this._fail("Expected string to not match \"" + pattern + "\"");
+        }
+    }
+}
+
+// ── Expectation class ────────────────────────────────────────────────
+
+class Expectation<T> {
+    actual: T;
+    not: NegatedExpectation<T>;
+
+    constructor(actual: T) {
+        this.actual = actual;
+        this.not = new NegatedExpectation<T>(actual);
+    }
+
+    _fail(msg: string): void {
+        throw new Error(msg);
+    }
+
+    toBe(expected: T): void {
+        let eq: boolean = __NATIVE_CALL<boolean>("test.deepEqual", this.actual, expected);
+        if (!eq) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", expected) + " but got " + __NATIVE_CALL<string>("test.stringify", this.actual));
+        }
+    }
+
+    toEqual(expected: T): void {
+        let eq: boolean = __NATIVE_CALL<boolean>("test.deepEqual", this.actual, expected);
+        if (!eq) {
+            this._fail("Expected deep equality: " + __NATIVE_CALL<string>("test.stringify", expected) + " but got " + __NATIVE_CALL<string>("test.stringify", this.actual));
+        }
+    }
+
+    toBeTruthy(): void {
+        let truthy: boolean = __NATIVE_CALL<boolean>("test.isTruthy", this.actual);
+        if (!truthy) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be truthy");
+        }
+    }
+
+    toBeFalsy(): void {
+        let truthy: boolean = __NATIVE_CALL<boolean>("test.isTruthy", this.actual);
+        if (truthy) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be falsy");
+        }
+    }
+
+    toBeNull(): void {
+        let isNull: boolean = __NATIVE_CALL<boolean>("test.isNull", this.actual);
+        if (!isNull) {
+            this._fail("Expected null but got " + __NATIVE_CALL<string>("test.stringify", this.actual));
+        }
+    }
+
+    toBeGreaterThan(n: number): void {
+        let gt: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, ">");
+        if (!gt) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be greater than " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeGreaterThanOrEqual(n: number): void {
+        let gte: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, ">=");
+        if (!gte) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be >= " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeLessThan(n: number): void {
+        let lt: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, "<");
+        if (!lt) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be less than " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toBeLessThanOrEqual(n: number): void {
+        let lte: boolean = __NATIVE_CALL<boolean>("test.compare", this.actual, n, "<=");
+        if (!lte) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to be <= " + __NATIVE_CALL<string>("test.stringify", n));
+        }
+    }
+
+    toContain(item: T): void {
+        let has: boolean = __NATIVE_CALL<boolean>("test.contains", this.actual, item);
+        if (!has) {
+            this._fail("Expected " + __NATIVE_CALL<string>("test.stringify", this.actual) + " to contain " + __NATIVE_CALL<string>("test.stringify", item));
+        }
+    }
+
+    toMatch(pattern: string): void {
+        let matches: boolean = __NATIVE_CALL<boolean>("test.stringMatch", this.actual, pattern);
+        if (!matches) {
+            this._fail("Expected string to match \"" + pattern + "\"");
+        }
+    }
+}
+
+// ── Public API ─────────────────────────────────────────────────────────
+
+// Functions that capture module-scope arrays use arrow syntax.
+// Functions that don't capture anything can use either style.
+
+let test = (name: string, fn: () => void): void => {
+    __testNames.push(name);
+    __testFns.push(fn);
+};
+
+let describe = (name: string, fn: () => void): void => {
+    fn();
+};
+
+let it = (name: string, fn: () => void): void => {
+    test(name, fn);
+};
+
+function expect<T>(actual: T): Expectation<T> {
+    return new Expectation<T>(actual);
+}
+
+function expectToThrow(fn: () => void): void {
+    let threw: boolean = false;
+    try {
+        fn();
+    } catch (_e) {
+        threw = true;
+    }
+    if (!threw) {
+        throw new Error("Expected function to throw");
+    }
+}
+
+function expectNotToThrow(fn: () => void): void {
+    try {
+        fn();
+    } catch (_e) {
+        throw new Error("Expected function not to throw");
+    }
+}
+
+let beforeEach = (fn: () => void): void => {
+    __beforeEachFns.push(fn);
+};
+
+let afterEach = (fn: () => void): void => {
+    __afterEachFns.push(fn);
+};
+
+let beforeAll = (fn: () => void): void => {
+    __beforeAllFns.push(fn);
+};
+
+let afterAll = (fn: () => void): void => {
+    __afterAllFns.push(fn);
+};
+
+// ── Test runner ────────────────────────────────────────────────────────
+
+let __runTests = (): number => {
+    let total: number = __testNames.length;
+    let passed: number = 0;
+    let failed: number = 0;
+
+    __NATIVE_CALL("test.reportStart", total);
+
+    // beforeAll hooks
+    for (let i: number = 0; i < __beforeAllFns.length; i = i + 1) {
+        __beforeAllFns[i]();
+    }
+
+    // Run each test
+    for (let t: number = 0; t < total; t = t + 1) {
+        let name: string = __testNames[t];
+        let testFn: () => void = __testFns[t];
+
+        // beforeEach hooks
+        for (let j: number = 0; j < __beforeEachFns.length; j = j + 1) {
+            __beforeEachFns[j]();
+        }
+
+        // Execute the test
+        let testPassed: boolean = true;
+        let errorMsg: string = "";
+        try {
+            testFn();
+        } catch (_e) {
+            testPassed = false;
+            errorMsg = "test failed";
+        }
+
+        // afterEach hooks
+        for (let k: number = 0; k < __afterEachFns.length; k = k + 1) {
+            __afterEachFns[k]();
+        }
+
+        // Report result
+        if (testPassed) {
+            __NATIVE_CALL("test.reportPass", name, 0);
+            passed = passed + 1;
+        } else {
+            __NATIVE_CALL("test.reportFail", name, errorMsg, 0);
+            failed = failed + 1;
+        }
+    }
+
+    // afterAll hooks
+    for (let m: number = 0; m < __afterAllFns.length; m = m + 1) {
+        __afterAllFns[m]();
+    }
+
+    __NATIVE_CALL("test.reportEnd", passed, failed);
+    return 0;
+};

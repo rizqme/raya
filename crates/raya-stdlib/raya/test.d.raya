@@ -1,0 +1,143 @@
+/**
+ * std:test - Standard Testing Module
+ *
+ * Provides a test runner API for writing and running tests.
+ *
+ * Usage:
+ *   import { test, describe, it, expect } from "std:test";
+ *
+ *   test("basic addition", () => {
+ *       expect(1 + 2).toBe(3);
+ *   });
+ *
+ *   describe("Array", () => {
+ *       it("should have length", () => {
+ *           let arr = [1, 2, 3];
+ *           expect(arr.length).toBe(3);
+ *       });
+ *   });
+ */
+
+/**
+ * Register a top-level test case.
+ *
+ * @param name - The test description
+ * @param fn - The test function to execute
+ */
+export function test(name: string, fn: () => void): void;
+
+/**
+ * Create a test suite group. Suites can be nested.
+ *
+ * @param name - The suite description
+ * @param fn - A function that registers tests and nested suites
+ */
+export function describe(name: string, fn: () => void): void;
+
+/**
+ * Register a test case within a describe block. Alias for test().
+ *
+ * @param name - The test description
+ * @param fn - The test function to execute
+ */
+export function it(name: string, fn: () => void): void;
+
+/**
+ * Create an expectation for asserting values.
+ *
+ * @param actual - The value to test
+ * @returns An Expectation with matcher methods
+ */
+export function expect<T>(actual: T): Expectation<T>;
+
+/**
+ * Assert that a function throws an error.
+ *
+ * @param fn - The function expected to throw
+ */
+export function expectToThrow(fn: () => void): void;
+
+/**
+ * Assert that a function does NOT throw.
+ *
+ * @param fn - The function expected not to throw
+ */
+export function expectNotToThrow(fn: () => void): void;
+
+/**
+ * Register a function to run before each test in the current scope.
+ */
+export function beforeEach(fn: () => void): void;
+
+/**
+ * Register a function to run after each test in the current scope.
+ */
+export function afterEach(fn: () => void): void;
+
+/**
+ * Register a function to run once before all tests in the current scope.
+ */
+export function beforeAll(fn: () => void): void;
+
+/**
+ * Register a function to run once after all tests in the current scope.
+ */
+export function afterAll(fn: () => void): void;
+
+/**
+ * Negated expectation — all assertions are inverted.
+ */
+export class NegatedExpectation<T> {
+    toBe(expected: T): void;
+    toEqual(expected: T): void;
+    toBeTruthy(): void;
+    toBeFalsy(): void;
+    toBeNull(): void;
+    toBeGreaterThan(n: number): void;
+    toBeGreaterThanOrEqual(n: number): void;
+    toBeLessThan(n: number): void;
+    toBeLessThanOrEqual(n: number): void;
+    toContain(item: T): void;
+    toMatch(pattern: string): void;
+}
+
+/**
+ * Expectation class providing assertion matchers.
+ */
+export class Expectation<T> {
+    /** Negate the next assertion */
+    not: NegatedExpectation<T>;
+
+    /** Assert strict equality */
+    toBe(expected: T): void;
+
+    /** Assert deep equality */
+    toEqual(expected: T): void;
+
+    /** Assert value is truthy */
+    toBeTruthy(): void;
+
+    /** Assert value is falsy */
+    toBeFalsy(): void;
+
+    /** Assert value is null */
+    toBeNull(): void;
+
+    /** Assert value is greater than n */
+    toBeGreaterThan(n: number): void;
+
+    /** Assert value is greater than or equal to n */
+    toBeGreaterThanOrEqual(n: number): void;
+
+    /** Assert value is less than n */
+    toBeLessThan(n: number): void;
+
+    /** Assert value is less than or equal to n */
+    toBeLessThanOrEqual(n: number): void;
+
+    /** Assert array or string contains the item */
+    toContain(item: T): void;
+
+    /** Assert string matches a pattern (substring match) */
+    toMatch(pattern: string): void;
+}

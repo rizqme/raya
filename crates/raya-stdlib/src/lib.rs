@@ -17,6 +17,7 @@ pub mod template;
 pub mod url;
 pub mod encoding;
 pub mod semver_mod;
+pub mod test;
 pub mod registry;
 
 pub use handler::StdNativeHandler;

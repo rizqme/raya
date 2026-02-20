@@ -11,7 +11,7 @@ use crate::compiler::ir::{
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
-use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_block_statement};
+use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -27,6 +27,29 @@ impl<'a> Visitor for ModuleVarRefCollector<'a> {
         if self.candidates.contains(&id.name) {
             self.referenced.insert(id.name);
         }
+    }
+}
+
+/// Walks expressions but only collects variable references found INSIDE arrow function bodies.
+/// This avoids promoting variables that are only referenced in top-level sequential code
+/// (where locals suffice), while still promoting variables accessed by closures.
+struct ArrowBodyVarRefCollector<'a> {
+    candidates: &'a FxHashSet<Symbol>,
+    referenced: &'a mut FxHashSet<Symbol>,
+}
+
+impl<'a> Visitor for ArrowBodyVarRefCollector<'a> {
+    fn visit_identifier(&mut self, _id: &ast::Identifier) {
+        // Ignore identifiers at the top level — only collect inside arrow functions
+    }
+
+    fn visit_arrow_function(&mut self, func: &ast::ArrowFunction) {
+        // Inside an arrow function body, collect all referenced module-level variables
+        let mut collector = ModuleVarRefCollector {
+            candidates: self.candidates,
+            referenced: self.referenced,
+        };
+        walk_arrow_function(&mut collector, func);
     }
 }
 
@@ -343,6 +366,8 @@ pub struct Lowerer<'a> {
     static_method_map: FxHashMap<(ClassId, Symbol), FunctionId>,
     /// Method return type class mapping (for chained method call resolution)
     method_return_class_map: FxHashMap<(ClassId, Symbol), ClassId>,
+    /// Function return type class mapping (for method dispatch on objects returned from standalone function calls)
+    function_return_class_map: FxHashMap<Symbol, ClassId>,
     /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
     /// Module-level variable name to global index mapping.
@@ -430,6 +455,7 @@ impl<'a> Lowerer<'a> {
             method_slot_map: FxHashMap::default(),
             static_method_map: FxHashMap::default(),
             method_return_class_map: FxHashMap::default(),
+            function_return_class_map: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             function_depth: 0,
@@ -551,17 +577,36 @@ impl<'a> Lowerer<'a> {
                 })
                 .collect();
 
-            // Step 2: Walk function bodies to find which candidates they reference
+            // Step 2: Walk function/closure bodies to find which candidates they reference
             let mut referenced = FxHashSet::default();
             if !candidates.is_empty() {
                 for raw_stmt in &module.statements {
                     let stmt = Self::unwrap_export(raw_stmt);
-                    if let Statement::FunctionDecl(func) = stmt {
-                        let mut collector = ModuleVarRefCollector {
-                            candidates: &candidates,
-                            referenced: &mut referenced,
-                        };
-                        walk_block_statement(&mut collector, &func.body);
+                    match stmt {
+                        Statement::FunctionDecl(func) => {
+                            let mut collector = ModuleVarRefCollector {
+                                candidates: &candidates,
+                                referenced: &mut referenced,
+                            };
+                            walk_block_statement(&mut collector, &func.body);
+                        }
+                        Statement::Expression(expr_stmt) => {
+                            let mut collector = ArrowBodyVarRefCollector {
+                                candidates: &candidates,
+                                referenced: &mut referenced,
+                            };
+                            walk_expression(&mut collector, &expr_stmt.expression);
+                        }
+                        Statement::VariableDecl(decl) => {
+                            if let Some(initializer) = &decl.initializer {
+                                let mut collector = ArrowBodyVarRefCollector {
+                                    candidates: &candidates,
+                                    referenced: &mut referenced,
+                                };
+                                walk_expression(&mut collector, initializer);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -592,6 +637,14 @@ impl<'a> Lowerer<'a> {
                     // Track async functions for Spawn emission
                     if func.is_async {
                         self.async_functions.insert(id);
+                    }
+                    // Track return type for method dispatch on returned objects
+                    if let Some(ret_type) = &func.return_type {
+                        if let ast::Type::Reference(type_ref) = &ret_type.ty {
+                            if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                                self.function_return_class_map.insert(func.name.name, class_id);
+                            }
+                        }
                     }
                 }
                 Statement::ClassDecl(class) => {

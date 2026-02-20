@@ -2461,13 +2461,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Try to determine the class type of the object for field resolution
-        let class_id = match &*member.object {
-            // Handle 'this.field' - use current class context
-            Expression::This(_) => self.current_class,
-            // Handle 'obj.field' where obj is a variable
-            Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
-            _ => None,
-        };
+        let class_id = self.infer_class_id(&member.object);
 
         let object = self.lower_expr(&member.object);
 
@@ -3798,7 +3792,7 @@ impl<'a> Lowerer<'a> {
                 }
                 None
             }
-            // Method call: check if the method has a known return class type
+            // Method/function call: check if the call has a known return class type
             Expression::Call(call) => {
                 if let Expression::Member(member) = &*call.callee {
                     let obj_class_id = self.infer_class_id(&member.object)?;
@@ -3810,6 +3804,12 @@ impl<'a> Lowerer<'a> {
                     // Otherwise, if the method exists, assume it returns the same class
                     if self.method_map.contains_key(&(obj_class_id, method_name)) {
                         return Some(obj_class_id);
+                    }
+                }
+                // Standalone function call: check function return class
+                if let Expression::Identifier(ident) = &*call.callee {
+                    if let Some(&ret_class_id) = self.function_return_class_map.get(&ident.name) {
+                        return Some(ret_class_id);
                     }
                 }
                 None
