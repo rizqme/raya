@@ -682,7 +682,6 @@ impl<'a> Binder<'a> {
             "boolean" => self.type_ctx.boolean_type(),
             "void" => self.type_ctx.void_type(),
             "null" => self.type_ctx.null_type(),
-            "any" => self.type_ctx.unknown_type(),
             _ => {
                 // Could be a class name - look it up or return unknown
                 if let Some(sym) = self.symbols.resolve(ty_str) {

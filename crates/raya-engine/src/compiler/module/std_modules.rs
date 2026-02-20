@@ -78,6 +78,10 @@ impl StdModuleRegistry {
             "semver",
             include_str!("../../../../raya-stdlib/raya/semver.raya"),
         );
+        modules.insert(
+            "test",
+            include_str!("../../../../raya-stdlib/raya/test.raya"),
+        );
 
         // POSIX stdlib modules (raya-stdlib-posix)
         modules.insert(
