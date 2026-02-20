@@ -70,6 +70,9 @@ pub mod jit;
 #[cfg(feature = "aot")]
 pub mod aot;
 
+/// Linter module: AST-based lint analysis
+pub mod linter;
+
 /// Builtins module: Precompiled builtin types and signatures (re-exported from vm::builtins)
 pub use vm::builtins;
 
