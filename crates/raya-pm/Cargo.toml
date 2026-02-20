@@ -6,26 +6,21 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Package manager library for Raya"
+description = "Package manager data types and utilities for Raya"
 
 [lib]
 name = "raya_pm"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
 dirs = "5.0"
 hex = "0.4"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
-url = "2.5"
-tar = "0.4"
-flate2 = "1.0"
 
 [dev-dependencies]
 tempfile = "3.8"

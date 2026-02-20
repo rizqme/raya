@@ -64,5 +64,15 @@ pub fn std_sources() -> &'static str {
         "\n",
         include_str!("../../raya-stdlib-posix/raya/io.raya"),
         "\n",
+        // Additional stdlib (needed by pm)
+        include_str!("../../raya-stdlib/raya/encoding.raya"),
+        "\n",
+        include_str!("../../raya-stdlib/raya/semver.raya"),
+        "\n",
+        include_str!("../../raya-stdlib-posix/raya/archive.raya"),
+        "\n",
+        // Package manager
+        include_str!("../../raya-stdlib-posix/raya/pm.raya"),
+        "\n",
     )
 }

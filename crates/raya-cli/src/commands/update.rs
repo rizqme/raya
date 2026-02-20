@@ -1,5 +1,7 @@
 //! `raya update` — Update dependencies.
 
+use raya_runtime::Runtime;
+
 pub fn execute(package: Option<String>) -> anyhow::Result<()> {
     if let Some(pkg) = package {
         println!("Updating package: {}", pkg);
@@ -7,19 +9,19 @@ pub fn execute(package: Option<String>) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let options = raya_pm::commands::install::InstallOptions {
-        production: false,
-        force: false,
-        update: true,
-    };
-    match raya_pm::commands::install::install_dependencies(None, options) {
-        Ok(result) => {
-            println!(
-                "\nDone! {} installed, {} from cache, {} updated.",
-                result.installed, result.cached, result.updated
-            );
-            Ok(())
-        }
+    let rt = Runtime::new();
+    let cwd = std::env::current_dir()?
+        .display()
+        .to_string()
+        .replace('\\', "/")
+        .replace('"', "\\\"");
+    let script = format!(
+        r#"const result = pm.update("{}", false);
+io.writeln("Done! " + result.installed.toString() + " installed, " + result.cached.toString() + " from cache.")"#,
+        cwd
+    );
+    match rt.eval(&script) {
+        Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("Error: {}", e);
             std::process::exit(1);

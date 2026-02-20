@@ -21,7 +21,7 @@ raya-runtime = { workspace = true }
 raya-pm = { path = "../raya-pm" }
 clap = { workspace = true }
 anyhow = { workspace = true }
-toml = "0.8"
+toml = { workspace = true }
 dirs = "5"
 rustyline = "15"
 termcolor = "1.4"

@@ -32,6 +32,10 @@ export class SemverVersion {
     toString(): string {
         return __NATIVE_CALL<string>("semver.versionToString", this._handle);
     }
+
+    release(): void {
+        __NATIVE_CALL<void>("semver.versionRelease", this._handle);
+    }
 }
 
 class SemverClass {

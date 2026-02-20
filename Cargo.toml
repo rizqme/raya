@@ -96,6 +96,7 @@ rustls-pemfile = "2"
 csv = "1"
 quick-xml = "0.37"
 data-encoding = "2"
+toml = "0.8"
 
 # Archive
 tar = "0.4"
@@ -123,6 +124,8 @@ target-lexicon = "0.13"
 lto = true
 codegen-units = 1
 opt-level = 3
+strip = true
+panic = "abort"
 
 [profile.bench]
 inherits = "release"

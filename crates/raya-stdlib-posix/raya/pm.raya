@@ -1,0 +1,752 @@
+// Package Manager - Standard PM module
+// Usage: import pm from "std:pm";
+// Implements init, install, add, remove, update commands in Raya.
+
+import fs from "std:fs";
+import path from "std:path";
+import env from "std:env";
+import fetch from "std:fetch";
+import archive from "std:archive";
+import crypto from "std:crypto";
+import semver from "std:semver";
+import encoding from "std:encoding";
+
+// ── Constants ──
+
+const DEFAULT_REGISTRY = "https://pkg.raya.dev/api/v1";
+const LOCKFILE_VERSION = 1;
+
+// ── Manifest Parsing ──
+
+class Manifest {
+    static load(dir: string): JsonValue {
+        const file = path.join(dir, "raya.toml");
+        const content = fs.readTextFile(file);
+        return encoding.toml.parse(content);
+    }
+
+    static save(dir: string, manifest: JsonValue): void {
+        const file = path.join(dir, "raya.toml");
+        const content = encoding.toml.stringify(manifest);
+        fs.writeTextFile(file, content);
+    }
+
+    static name(manifest: JsonValue): string {
+        return manifest.get("package").get("name").string();
+    }
+
+    static version(manifest: JsonValue): string {
+        return manifest.get("package").get("version").string();
+    }
+
+    static main(manifest: JsonValue): string {
+        const m = manifest.get("package").get("main");
+        if (m.isNull()) return "src/main.raya";
+        return m.string();
+    }
+
+    static dependencies(manifest: JsonValue): JsonValue {
+        const deps = manifest.get("dependencies");
+        if (deps.isNull() || deps.type() != "object") {
+            return encoding.json.newObject();
+        }
+        return deps;
+    }
+
+    static devDependencies(manifest: JsonValue): JsonValue {
+        const deps = manifest.get("dev-dependencies");
+        if (deps.isNull() || deps.type() != "object") {
+            // Try dev_dependencies (underscore variant)
+            const deps2 = manifest.get("dev_dependencies");
+            if (deps2.isNull() || deps2.type() != "object") {
+                return encoding.json.newObject();
+            }
+            return deps2;
+        }
+        return deps;
+    }
+}
+
+// ── Lockfile ──
+
+class LockfileUtil {
+    static load(dir: string): JsonValue | null {
+        const file = path.join(dir, "raya.lock");
+        if (!fs.exists(file)) return null;
+        const content = fs.readTextFile(file);
+        return encoding.toml.parse(content);
+    }
+
+    static save(dir: string, lockfile: JsonValue): void {
+        const file = path.join(dir, "raya.lock");
+        const content = encoding.toml.stringify(lockfile);
+        fs.writeTextFile(file, content);
+    }
+
+    static findPackage(lockfile: JsonValue, name: string): JsonValue | null {
+        const packages = lockfile.get("packages");
+        if (packages.isNull() || packages.type() != "array") return null;
+        let i = 0;
+        const len = packages.length();
+        while (i < len) {
+            const pkg = packages.at(i);
+            if (pkg.get("name").string() == name) return pkg;
+            i = i + 1;
+        }
+        return null;
+    }
+
+    static createEmpty(rootName: string): JsonValue {
+        const lock = encoding.json.newObject();
+        lock.set("version", encoding.json.fromNumber(LOCKFILE_VERSION));
+        lock.set("root", encoding.json.fromString(rootName));
+        lock.set("packages", encoding.json.newArray());
+        return lock;
+    }
+}
+
+// ── Registry Client ──
+
+class Registry {
+    baseUrl: string;
+
+    constructor(baseUrl: string) {
+        this.baseUrl = baseUrl;
+    }
+
+    encodeName(name: string): string {
+        if (name.startsWith("@")) {
+            return name.replace("/", "%2F");
+        }
+        return name;
+    }
+
+    getPackage(name: string): JsonValue {
+        const url = this.baseUrl + "/packages/" + this.encodeName(name);
+        const res = fetch.get(url);
+        const status = res.status();
+        if (status == 404) {
+            res.release();
+            throw new Error("Package not found: " + name);
+        }
+        if (!res.ok()) {
+            const statusText = res.statusText();
+            res.release();
+            throw new Error("Registry error " + status.toString() + ": " + statusText);
+        }
+        const body = res.text();
+        res.release();
+        return encoding.json.parse(body);
+    }
+
+    getVersion(name: string, version: string): JsonValue {
+        const url = this.baseUrl + "/packages/" + this.encodeName(name) + "/" + version;
+        const res = fetch.get(url);
+        const status = res.status();
+        if (status == 404) {
+            res.release();
+            throw new Error("Version " + version + " not found for package " + name);
+        }
+        if (!res.ok()) {
+            const statusText = res.statusText();
+            res.release();
+            throw new Error("Registry error " + status.toString() + ": " + statusText);
+        }
+        const body = res.text();
+        res.release();
+        return encoding.json.parse(body);
+    }
+
+    getVersions(name: string): string[] {
+        const meta = this.getPackage(name);
+        const versions = meta.get("versions");
+        const result: string[] = [];
+        let i = 0;
+        const len = versions.length();
+        while (i < len) {
+            result.push(versions.at(i).string());
+            i = i + 1;
+        }
+        meta.release();
+        return result;
+    }
+
+    download(name: string, version: string, targetDir: string): string {
+        const info = this.getVersion(name, version);
+        const downloadUrl = info.get("download").get("url").string();
+        const expectedChecksum = info.get("checksum").string();
+        info.release();
+
+        // Download the archive
+        const res = fetch.get(downloadUrl);
+        if (!res.ok()) {
+            const status = res.status();
+            res.release();
+            throw new Error("Download failed with status " + status.toString());
+        }
+        const archiveBytes = res.bytes();
+        res.release();
+
+        // Verify checksum
+        const actualChecksum = crypto.toHex(crypto.hashBytes("sha256", archiveBytes));
+        if (actualChecksum != expectedChecksum) {
+            throw new Error(
+                "Checksum mismatch for " + name + "@" + version +
+                ": expected " + expectedChecksum + ", got " + actualChecksum
+            );
+        }
+
+        // Write to temp file and extract
+        fs.mkdirRecursive(targetDir);
+        const tmpFile = fs.tempFile("raya-pkg-");
+        fs.writeFile(tmpFile, archiveBytes);
+        archive.tgzExtract(tmpFile, targetDir);
+        fs.remove(tmpFile);
+
+        return actualChecksum;
+    }
+}
+
+// ── Cache ──
+
+class Cache {
+    root: string;
+
+    constructor() {
+        this.root = path.join(env.home(), ".raya/cache");
+    }
+
+    init(): void {
+        fs.mkdirRecursive(this.root);
+        fs.mkdirRecursive(path.join(this.root, "tmp"));
+    }
+
+    exists(checksum: string): boolean {
+        const dir = path.join(this.root, checksum);
+        return fs.isDir(dir);
+    }
+
+    modulePath(checksum: string): string {
+        return path.join(this.root, checksum);
+    }
+}
+
+// ── Find Project Root ──
+
+function findProjectRoot(startDir: string): string {
+    let dir = startDir;
+    while (true) {
+        const tomlPath = path.join(dir, "raya.toml");
+        if (fs.exists(tomlPath)) return dir;
+        const parent = path.dirname(dir);
+        if (parent == dir) {
+            throw new Error("Could not find raya.toml in " + startDir + " or any parent directory");
+        }
+        dir = parent;
+    }
+}
+
+// ── Dependency Resolution ──
+
+function parseDependencyConstraint(dep: JsonValue): string {
+    // dep can be a string (simple) or object (detailed)
+    if (dep.type() == "string") {
+        return dep.string();
+    }
+    if (dep.type() == "object") {
+        const v = dep.get("version");
+        if (!v.isNull()) return v.string();
+        // Path or git dependency — no version constraint
+        return "*";
+    }
+    return "*";
+}
+
+function isDependencyPath(dep: JsonValue): boolean {
+    if (dep.type() == "object") {
+        const p = dep.get("path");
+        return !p.isNull() && p.type() == "string";
+    }
+    return false;
+}
+
+function getDependencyPath(dep: JsonValue): string {
+    return dep.get("path").string();
+}
+
+function isDependencyGit(dep: JsonValue): boolean {
+    if (dep.type() == "object") {
+        const g = dep.get("git");
+        return !g.isNull() && g.type() == "string";
+    }
+    return false;
+}
+
+function resolveVersions(
+    name: string,
+    constraint: string,
+    availableVersions: string[]
+): string | null {
+    // Find the best (latest) version that satisfies the constraint
+    let best: string | null = null;
+    let i = 0;
+    while (i < availableVersions.length) {
+        const ver = availableVersions[i];
+        if (semver.valid(ver) && semver.satisfies(ver, constraint)) {
+            if (best == null || semver.gt(ver, best)) {
+                best = ver;
+            }
+        }
+        i = i + 1;
+    }
+    return best;
+}
+
+// ── Commands ──
+
+// -- init --
+
+function init(dir: string, name: string | null): void {
+    const manifestPath = path.join(dir, "raya.toml");
+    if (fs.exists(manifestPath)) {
+        throw new Error("raya.toml already exists in " + dir);
+    }
+
+    const pkgName = name != null ? name : path.basename(dir);
+
+    // Build manifest as JSON, then serialize to TOML
+    const manifest = encoding.json.newObject();
+
+    const pkg = encoding.json.newObject();
+    pkg.set("name", encoding.json.fromString(pkgName));
+    pkg.set("version", encoding.json.fromString("0.1.0"));
+    pkg.set("description", encoding.json.fromString(""));
+    pkg.set("license", encoding.json.fromString("MIT"));
+    pkg.set("main", encoding.json.fromString("src/main.raya"));
+    manifest.set("package", pkg);
+
+    manifest.set("dependencies", encoding.json.newObject());
+    manifest.set("dev-dependencies", encoding.json.newObject());
+
+    // Create directory structure
+    fs.mkdirRecursive(dir);
+    Manifest.save(dir, manifest);
+    manifest.release();
+
+    fs.mkdirRecursive(path.join(dir, "src"));
+    fs.writeTextFile(
+        path.join(dir, "src/main.raya"),
+        "io.writeln(\"Hello, Raya!\")\n"
+    );
+}
+
+// -- install --
+
+function install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
+    const dir = findProjectRoot(startDir);
+    const manifest = Manifest.load(dir);
+    const rootName = Manifest.name(manifest);
+
+    // Load or create lockfile
+    let lockfile: JsonValue | null = null;
+    if (!update) {
+        lockfile = LockfileUtil.load(dir);
+    }
+
+    // Initialize cache
+    const cache = new Cache();
+    cache.init();
+
+    // Get registry URL from manifest or use default
+    const registryConfig = manifest.get("registry");
+    let registryUrl = DEFAULT_REGISTRY;
+    if (!registryConfig.isNull() && registryConfig.type() == "object") {
+        const url = registryConfig.get("url");
+        if (!url.isNull()) registryUrl = url.string();
+    }
+    const registry = new Registry(registryUrl);
+
+    // Collect all dependencies
+    const deps = Manifest.dependencies(manifest);
+    const devDeps = production ? encoding.json.newObject() : Manifest.devDependencies(manifest);
+
+    let installed = 0;
+    let cached = 0;
+    let failed = 0;
+
+    // Create new lockfile
+    const newLock = LockfileUtil.createEmpty(rootName);
+    const packages = newLock.get("packages");
+
+    // Process each dependency
+    const depNames = deps.keys();
+    let i = 0;
+    while (i < depNames.length) {
+        const depName = depNames[i];
+        const dep = deps.get(depName);
+        const result = installDependency(
+            depName, dep, dir, registry, cache, lockfile, force
+        );
+        if (result != null) {
+            packages.push(result);
+            if (result.get("_cached").bool()) {
+                cached = cached + 1;
+            } else {
+                installed = installed + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Process dev dependencies
+    const devDepNames = devDeps.keys();
+    i = 0;
+    while (i < devDepNames.length) {
+        const depName = devDepNames[i];
+        const dep = devDeps.get(depName);
+        const result = installDependency(
+            depName, dep, dir, registry, cache, lockfile, force
+        );
+        if (result != null) {
+            packages.push(result);
+            if (result.get("_cached").bool()) {
+                cached = cached + 1;
+            } else {
+                installed = installed + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Save lockfile
+    LockfileUtil.save(dir, newLock);
+
+    // Cleanup handles
+    manifest.release();
+    newLock.release();
+    if (lockfile != null) lockfile.release();
+
+    return new InstallResult(installed, cached, failed);
+}
+
+function installDependency(
+    name: string,
+    dep: JsonValue,
+    projectDir: string,
+    registry: Registry,
+    cache: Cache,
+    lockfile: JsonValue | null,
+    force: boolean
+): JsonValue | null {
+    // Path dependency — no download needed
+    if (isDependencyPath(dep)) {
+        const depPath = getDependencyPath(dep);
+        const resolvedPath = path.isAbsolute(depPath)
+            ? depPath
+            : path.resolve(projectDir, depPath);
+
+        const pkg = encoding.json.newObject();
+        pkg.set("name", encoding.json.fromString(name));
+        pkg.set("version", encoding.json.fromString("0.0.0"));
+        pkg.set("checksum", encoding.json.fromString(""));
+        const source = encoding.json.newObject();
+        source.set("type", encoding.json.fromString("path"));
+        source.set("path", encoding.json.fromString(resolvedPath));
+        pkg.set("source", source);
+        pkg.set("dependencies", encoding.json.newArray());
+        pkg.set("_cached", encoding.json.fromBool(true));
+        return pkg;
+    }
+
+    // Git dependency — not yet supported in download
+    if (isDependencyGit(dep)) {
+        const pkg = encoding.json.newObject();
+        pkg.set("name", encoding.json.fromString(name));
+        pkg.set("version", encoding.json.fromString("0.0.0"));
+        pkg.set("checksum", encoding.json.fromString(""));
+        const source = encoding.json.newObject();
+        source.set("type", encoding.json.fromString("git"));
+        source.set("url", dep.get("git"));
+        pkg.set("source", source);
+        pkg.set("dependencies", encoding.json.newArray());
+        pkg.set("_cached", encoding.json.fromBool(true));
+        return pkg;
+    }
+
+    // Registry dependency
+    const constraint = parseDependencyConstraint(dep);
+
+    // Check lockfile first
+    if (lockfile != null && !force) {
+        const locked = LockfileUtil.findPackage(lockfile, name);
+        if (locked != null) {
+            const lockedVersion = locked.get("version").string();
+            if (semver.satisfies(lockedVersion, constraint)) {
+                const checksum = locked.get("checksum").string();
+                if (checksum.length > 0 && cache.exists(checksum)) {
+                    // Already cached with matching version
+                    const pkg = encoding.json.newObject();
+                    pkg.set("name", encoding.json.fromString(name));
+                    pkg.set("version", encoding.json.fromString(lockedVersion));
+                    pkg.set("checksum", encoding.json.fromString(checksum));
+                    const source = encoding.json.newObject();
+                    source.set("type", encoding.json.fromString("registry"));
+                    pkg.set("source", source);
+                    pkg.set("dependencies", encoding.json.newArray());
+                    pkg.set("_cached", encoding.json.fromBool(true));
+                    return pkg;
+                }
+            }
+        }
+    }
+
+    // Fetch available versions from registry
+    const versions = registry.getVersions(name);
+    const resolved = resolveVersions(name, constraint, versions);
+    if (resolved == null) {
+        throw new Error(
+            "No version of " + name + " satisfies constraint " + constraint
+        );
+    }
+
+    // Check if already cached by checksum from registry
+    const versionInfo = registry.getVersion(name, resolved);
+    const expectedChecksum = versionInfo.get("checksum").string();
+    versionInfo.release();
+
+    let wasCached = false;
+    if (!force && expectedChecksum.length > 0 && cache.exists(expectedChecksum)) {
+        wasCached = true;
+    } else {
+        // Download to cache
+        const targetDir = cache.modulePath(expectedChecksum);
+        registry.download(name, resolved, targetDir);
+    }
+
+    const pkg = encoding.json.newObject();
+    pkg.set("name", encoding.json.fromString(name));
+    pkg.set("version", encoding.json.fromString(resolved));
+    pkg.set("checksum", encoding.json.fromString(expectedChecksum));
+    const source = encoding.json.newObject();
+    source.set("type", encoding.json.fromString("registry"));
+    pkg.set("source", source);
+    pkg.set("dependencies", encoding.json.newArray());
+    pkg.set("_cached", encoding.json.fromBool(wasCached));
+    return pkg;
+}
+
+class InstallResult {
+    installed: number;
+    cached: number;
+    failed: number;
+
+    constructor(installed: number, cached: number, failed: number) {
+        this.installed = installed;
+        this.cached = cached;
+        this.failed = failed;
+    }
+}
+
+// -- add --
+
+function add(
+    startDir: string,
+    spec: string,
+    dev: boolean,
+    exact: boolean,
+    noInstall: boolean
+): void {
+    const dir = findProjectRoot(startDir);
+    const manifest = Manifest.load(dir);
+
+    // Parse package specifier: name or name@version or @org/name@version
+    let pkgName = spec;
+    let versionSpec: string | null = null;
+
+    // Find the last @ that's not at position 0 (scoped package)
+    let searchStart = 0;
+    if (spec.startsWith("@")) searchStart = 1;
+    const atIdx = spec.indexOf("@", searchStart);
+
+    if (atIdx >= 0) {
+        pkgName = spec.substring(0, atIdx);
+        versionSpec = spec.substring(atIdx + 1);
+    }
+
+    // Determine version constraint
+    let constraint: string;
+    if (versionSpec != null && versionSpec.length > 0) {
+        // User provided version
+        if (exact) {
+            constraint = versionSpec;
+        } else if (
+            versionSpec.startsWith("^") ||
+            versionSpec.startsWith("~") ||
+            versionSpec.startsWith(">") ||
+            versionSpec.startsWith("<") ||
+            versionSpec.startsWith("=")
+        ) {
+            constraint = versionSpec;
+        } else {
+            constraint = "^" + versionSpec;
+        }
+    } else {
+        // No version — fetch latest from registry
+        const registryConfig = manifest.get("registry");
+        let registryUrl = DEFAULT_REGISTRY;
+        if (!registryConfig.isNull() && registryConfig.type() == "object") {
+            const url = registryConfig.get("url");
+            if (!url.isNull()) registryUrl = url.string();
+        }
+        const registry = new Registry(registryUrl);
+        const versions = registry.getVersions(pkgName);
+
+        // Find latest non-prerelease version
+        let latest: string | null = null;
+        let j = 0;
+        while (j < versions.length) {
+            const v = versions[j];
+            if (semver.valid(v)) {
+                const sv = semver.parse(v);
+                const pre = sv.prerelease();
+                sv.release();
+                if (pre.length == 0) {
+                    if (latest == null || semver.gt(v, latest)) {
+                        latest = v;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+
+        if (latest == null) {
+            manifest.release();
+            throw new Error("No versions found for package " + pkgName);
+        }
+
+        if (exact) {
+            constraint = latest;
+        } else {
+            constraint = "^" + latest;
+        }
+    }
+
+    // Add to manifest
+    const depsKey = dev ? "dev-dependencies" : "dependencies";
+    let deps = manifest.get(depsKey);
+    if (deps.isNull() || deps.type() != "object") {
+        deps = encoding.json.newObject();
+        manifest.set(depsKey, deps);
+    }
+    deps.set(pkgName, encoding.json.fromString(constraint));
+
+    // Save manifest
+    Manifest.save(dir, manifest);
+    manifest.release();
+
+    // Run install unless --no-install
+    if (!noInstall) {
+        install(dir, false, false, false);
+    }
+}
+
+// -- remove --
+
+function remove(startDir: string, pkgName: string): void {
+    const dir = findProjectRoot(startDir);
+    const manifest = Manifest.load(dir);
+
+    // We need to rebuild manifest without the package
+    // Since JsonValue doesn't have a delete method, we rebuild the deps objects
+    let found = false;
+
+    const deps = Manifest.dependencies(manifest);
+    const depKeys = deps.keys();
+    let i = 0;
+    while (i < depKeys.length) {
+        if (depKeys[i] == pkgName) {
+            found = true;
+            break;
+        }
+        i = i + 1;
+    }
+
+    const devDeps = Manifest.devDependencies(manifest);
+    const devDepKeys = devDeps.keys();
+    i = 0;
+    while (i < devDepKeys.length) {
+        if (devDepKeys[i] == pkgName) {
+            found = true;
+            break;
+        }
+        i = i + 1;
+    }
+
+    if (!found) {
+        manifest.release();
+        throw new Error("Package " + pkgName + " not found in dependencies");
+    }
+
+    // Rebuild dependencies without the removed package
+    const newDeps = encoding.json.newObject();
+    i = 0;
+    while (i < depKeys.length) {
+        if (depKeys[i] != pkgName) {
+            newDeps.set(depKeys[i], deps.get(depKeys[i]));
+        }
+        i = i + 1;
+    }
+    manifest.set("dependencies", newDeps);
+
+    const newDevDeps = encoding.json.newObject();
+    i = 0;
+    while (i < devDepKeys.length) {
+        if (devDepKeys[i] != pkgName) {
+            newDevDeps.set(devDepKeys[i], devDeps.get(devDepKeys[i]));
+        }
+        i = i + 1;
+    }
+    manifest.set("dev-dependencies", newDevDeps);
+
+    Manifest.save(dir, manifest);
+    manifest.release();
+}
+
+// -- update --
+
+function update(startDir: string, production: boolean): InstallResult {
+    // Update is just install with update=true (ignores lockfile)
+    return install(startDir, production, false, true);
+}
+
+// ── PM Facade ──
+
+class PackageManager {
+    init(dir: string, name: string | null): void {
+        init(dir, name);
+    }
+
+    install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
+        return install(startDir, production, force, update);
+    }
+
+    add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void {
+        add(startDir, spec, dev, exact, noInstall);
+    }
+
+    remove(startDir: string, pkgName: string): void {
+        remove(startDir, pkgName);
+    }
+
+    update(startDir: string, production: boolean): InstallResult {
+        return update(startDir, production);
+    }
+
+    findProjectRoot(startDir: string): string {
+        return findProjectRoot(startDir);
+    }
+}
+
+const pm = new PackageManager();
+export { InstallResult, Manifest, LockfileUtil, Registry, Cache };
+export default pm;

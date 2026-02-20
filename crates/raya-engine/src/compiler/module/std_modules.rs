@@ -144,6 +144,10 @@ impl StdModuleRegistry {
             "watch",
             include_str!("../../../../raya-stdlib-posix/raya/watch.raya"),
         );
+        modules.insert(
+            "pm",
+            include_str!("../../../../raya-stdlib-posix/raya/pm.raya"),
+        );
         Self { modules }
     }
 

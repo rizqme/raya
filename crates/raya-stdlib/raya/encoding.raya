@@ -148,20 +148,152 @@ class Base32 {
     }
 }
 
+// ── JSON Value (handle-based) ──
+
+class JsonValue {
+    _handle: number;
+
+    constructor(handle: number) {
+        this._handle = handle;
+    }
+
+    get(key: string): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonGet", this._handle, key);
+        return new JsonValue(h);
+    }
+
+    at(index: number): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonAt", this._handle, index);
+        return new JsonValue(h);
+    }
+
+    string(): string {
+        return __NATIVE_CALL<string>("encoding.jsonString", this._handle);
+    }
+
+    number(): number {
+        return __NATIVE_CALL<number>("encoding.jsonNumber", this._handle);
+    }
+
+    bool(): boolean {
+        return __NATIVE_CALL<boolean>("encoding.jsonBool", this._handle);
+    }
+
+    isNull(): boolean {
+        return __NATIVE_CALL<boolean>("encoding.jsonIsNull", this._handle);
+    }
+
+    type(): string {
+        return __NATIVE_CALL<string>("encoding.jsonType", this._handle);
+    }
+
+    keys(): string[] {
+        return __NATIVE_CALL<string[]>("encoding.jsonKeys", this._handle);
+    }
+
+    length(): number {
+        return __NATIVE_CALL<number>("encoding.jsonLength", this._handle);
+    }
+
+    set(key: string, value: JsonValue): void {
+        __NATIVE_CALL("encoding.jsonSet", this._handle, key, value._handle);
+    }
+
+    push(value: JsonValue): void {
+        __NATIVE_CALL("encoding.jsonPush", this._handle, value._handle);
+    }
+
+    stringify(): string {
+        return __NATIVE_CALL<string>("encoding.jsonStringify", this._handle);
+    }
+
+    stringifyPretty(): string {
+        return __NATIVE_CALL<string>("encoding.jsonStringifyPretty", this._handle);
+    }
+
+    release(): void {
+        __NATIVE_CALL("encoding.jsonRelease", this._handle);
+    }
+}
+
+// ── JSON Utilities ──
+
+class Json {
+    parse(input: string): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonParse", input);
+        return new JsonValue(h);
+    }
+
+    stringify(value: JsonValue): string {
+        return __NATIVE_CALL<string>("encoding.jsonStringify", value._handle);
+    }
+
+    stringifyPretty(value: JsonValue): string {
+        return __NATIVE_CALL<string>("encoding.jsonStringifyPretty", value._handle);
+    }
+
+    newObject(): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonNewObject");
+        return new JsonValue(h);
+    }
+
+    newArray(): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonNewArray");
+        return new JsonValue(h);
+    }
+
+    fromString(s: string): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonFromString", s);
+        return new JsonValue(h);
+    }
+
+    fromNumber(n: number): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonFromNumber", n);
+        return new JsonValue(h);
+    }
+
+    fromBool(b: boolean): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonFromBool", b);
+        return new JsonValue(h);
+    }
+
+    null(): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.jsonNull");
+        return new JsonValue(h);
+    }
+}
+
+// ── TOML Utilities ──
+
+class Toml {
+    parse(input: string): JsonValue {
+        const h: number = __NATIVE_CALL<number>("encoding.tomlParse", input);
+        return new JsonValue(h);
+    }
+
+    stringify(value: JsonValue): string {
+        return __NATIVE_CALL<string>("encoding.tomlStringify", value._handle);
+    }
+}
+
 // ── Encoding Facade ──
 
 class Encoding {
     csv: Csv;
     xml: Xml;
     base32: Base32;
+    json: Json;
+    toml: Toml;
 
     constructor() {
         this.csv = new Csv();
         this.xml = new Xml();
         this.base32 = new Base32();
+        this.json = new Json();
+        this.toml = new Toml();
     }
 }
 
 const encoding = new Encoding();
-export { CsvTable, XmlNode, Csv, Xml, Base32 };
+export { CsvTable, XmlNode, JsonValue, Csv, Xml, Base32, Json, Toml };
 export default encoding;
