@@ -2135,6 +2135,15 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check for object type properties (from type aliases like `type Point = { x: number }`)
+        if let Some(crate::parser::types::Type::Object(obj)) = &obj_type {
+            for prop in &obj.properties {
+                if prop.name == property_name {
+                    return prop.ty;
+                }
+            }
+        }
+
         // Handle Union types: if the union contains a class and null, look up member on the class
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();

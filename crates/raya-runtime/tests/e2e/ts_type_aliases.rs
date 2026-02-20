@@ -18,7 +18,6 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_basic_object_shape() {
     expect_i32(
         "type Point = {
@@ -32,7 +31,6 @@ fn test_type_alias_basic_object_shape() {
 }
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_with_string_property() {
     expect_string(
         "type Named = {
@@ -45,7 +43,6 @@ fn test_type_alias_with_string_property() {
 }
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_with_boolean_property() {
     expect_bool(
         "type Flags = {
@@ -59,7 +56,6 @@ fn test_type_alias_with_boolean_property() {
 }
 
 #[test]
-#[ignore = "nested object literal type alias assignment not yet implemented"]
 fn test_type_alias_with_nested_object() {
     expect_i32(
         "type Inner = {
@@ -225,7 +221,6 @@ fn test_generic_type_alias_with_method() {
 // ============================================================================
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_structural_compatibility() {
     expect_i32(
         "type HasX = {
@@ -238,7 +233,6 @@ fn test_type_alias_structural_compatibility() {
 }
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_as_parameter_type() {
     expect_i32(
         "type Pair = {
@@ -254,7 +248,6 @@ fn test_type_alias_as_parameter_type() {
 }
 
 #[test]
-#[ignore = "object literal type alias assignment not yet implemented"]
 fn test_type_alias_as_return_type() {
     expect_i32(
         "type Result = {

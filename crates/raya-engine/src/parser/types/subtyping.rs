@@ -128,6 +128,29 @@ impl<'a> SubtypingContext<'a> {
                 })
             }
 
+            // Class <: Object (structural): anonymous class from object literal <: object type
+            (Type::Class(c), Type::Object(o)) => {
+                o.properties.iter().all(|op| {
+                    c.properties.iter().any(|cp| {
+                        cp.name == op.name
+                            && cp.optional == op.optional
+                            && (!op.readonly || cp.readonly)
+                            && self.is_subtype(cp.ty, op.ty)
+                    })
+                })
+            }
+
+            // Object <: Object-like Class (structural)
+            (Type::Object(o), Type::Class(c)) => {
+                c.properties.iter().all(|cp| {
+                    o.properties.iter().any(|op| {
+                        op.name == cp.name
+                            && op.optional == cp.optional
+                            && self.is_subtype(op.ty, cp.ty)
+                    })
+                })
+            }
+
             // Class subtyping (nominal): only through extends/implements
             (Type::Class(c1), Type::Class(c2)) => {
                 if c1.name == c2.name {

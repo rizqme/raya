@@ -2551,7 +2551,23 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => None,
             };
-            (obj_field_idx.unwrap_or(0), TypeId::new(0))
+
+            if let Some(idx) = obj_field_idx {
+                (idx, TypeId::new(0))
+            } else {
+                // Fall back to type-based field resolution (for function parameters typed as object types)
+                let expr_ty = self.get_expr_type(&member.object);
+                let type_field_idx = self.type_ctx.get(expr_ty).and_then(|ty| {
+                    if let crate::parser::types::ty::Type::Object(obj) = ty {
+                        obj.properties.iter().enumerate().find_map(|(i, p)| {
+                            if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
+                        })
+                    } else {
+                        None
+                    }
+                });
+                type_field_idx.unwrap_or((0, TypeId::new(0)))
+            }
         };
 
         // Fall back to field access for objects
