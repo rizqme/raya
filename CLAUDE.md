@@ -4,6 +4,12 @@
 
 ---
 
+## ⚠️ Worktree Workflow (MANDATORY)
+
+**Before executing any plan**, use the `/worktree` skill to create a git worktree first. All implementation work must happen in an isolated worktree, not directly on the main branch.
+
+---
+
 ## ⚠️ Documentation Maintenance (MANDATORY)
 
 **After EVERY turn, update relevant documentation:**
