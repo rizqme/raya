@@ -35,6 +35,14 @@ raya-cli (CLI commands use Runtime)
 - `run_file(path: &Path) -> Result<i32>` — auto-detect .raya/.ryb, resolve deps from manifest
 - `run_file_with_deps(path: &Path, deps: Vec<CompiledModule>) -> Result<i32>` — run with explicit deps
 
+### `Session`
+- Persistent evaluation session for REPL / incremental execution
+- `Session::new(options: &RuntimeOptions)` — create session
+- `eval(code: &str) -> Result<Value>` — eval with accumulated declarations
+- `format_value(value: &Value) -> String` — human-readable display (reads strings from GC)
+- `reset(options: &RuntimeOptions)` — discard all state
+- Accumulates declarations (let, const, function, class, import) across evals
+
 ### `CompiledModule`
 - Wraps `Module` + optional `Interner`
 - `encode(&self) -> Vec<u8>` — serialize to .ryb bytes
@@ -57,6 +65,7 @@ src/
 ├── error.rs            # RuntimeError enum (thiserror)
 ├── builtins.rs         # builtin_sources() + std_sources() via include_str!
 ├── compile.rs          # compile_source(): parser → binder → checker → compiler
+├── session.rs          # Session: persistent eval with declaration accumulation (REPL)
 ├── vm_setup.rs         # create_vm(): VM with StdNativeHandler + stdlib + posix
 ├── loader.rs           # load_bytecode_file(), resolve_ryb_deps(), find_library()
 ├── deps.rs             # load_dependencies() from raya.toml manifest

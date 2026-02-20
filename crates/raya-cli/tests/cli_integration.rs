@@ -445,3 +445,95 @@ fn test_runtime_default() {
         value
     );
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Session (REPL) tests
+// ────────────────────────────────────────────────────────────────────────────
+
+use raya_runtime::Session;
+
+#[test]
+fn test_session_eval_basic() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    let value = session.eval("return 1 + 2;").expect("eval failed");
+    assert!(
+        value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
+        "Expected 3, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_session_persists_variables() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    session.eval("let x: number = 42;").expect("let failed");
+    let value = session.eval("return x;").expect("return x failed");
+    assert!(
+        value.as_i32() == Some(42) || value.as_f64() == Some(42.0),
+        "Expected 42, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_session_persists_functions() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    session
+        .eval("function double(n: number): number { return n * 2; }")
+        .expect("function def failed");
+    let value = session.eval("return double(21);").expect("call failed");
+    assert!(
+        value.as_i32() == Some(42) || value.as_f64() == Some(42.0),
+        "Expected 42, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_session_reset_clears_state() {
+    let options = RuntimeOptions::default();
+    let mut session = Session::new(&options);
+    session.eval("let x: number = 10;").expect("let failed");
+    session.reset(&options);
+    // After reset, x should no longer exist
+    assert!(session.eval("return x;").is_err());
+}
+
+#[test]
+fn test_session_format_value_primitives() {
+    let mut session = Session::new(&RuntimeOptions::default());
+
+    let val = session.eval("return 42;").unwrap();
+    assert_eq!(session.format_value(&val), "42");
+
+    let val = session.eval("return true;").unwrap();
+    assert_eq!(session.format_value(&val), "true");
+
+    let val = session.eval("return null;").unwrap();
+    assert_eq!(session.format_value(&val), "null");
+
+    let val = session.eval("return 3.14;").unwrap();
+    assert_eq!(session.format_value(&val), "3.14");
+}
+
+#[test]
+fn test_session_format_value_string() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    let val = session.eval("return \"hello\";").unwrap();
+    let formatted = session.format_value(&val);
+    assert_eq!(formatted, "\"hello\"");
+}
+
+#[test]
+fn test_session_multiple_evals() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    session.eval("let a: number = 1;").unwrap();
+    session.eval("let b: number = 2;").unwrap();
+    session.eval("let c: number = 3;").unwrap();
+    let value = session.eval("return a + b + c;").unwrap();
+    assert!(
+        value.as_i32() == Some(6) || value.as_f64() == Some(6.0),
+        "Expected 6, got {:?}",
+        value
+    );
+}
