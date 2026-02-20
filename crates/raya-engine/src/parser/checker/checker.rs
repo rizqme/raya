@@ -2144,9 +2144,11 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Handle Union types: if the union contains a class and null, look up member on the class
+        // Handle Union types: look up member on any union variant that has it
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();
+
+            // Try Class members first (nullable class unions)
             let class_members: Vec<_> = union.members.iter()
                 .filter(|&&m| m != null_ty)
                 .filter_map(|&m| {
@@ -2159,6 +2161,23 @@ impl<'a> TypeChecker<'a> {
                 if let Some((ty, _vis)) = self.lookup_class_member(&class_members[0], &property_name) {
                     return ty;
                 }
+            }
+
+            // Try Object members (for discriminated unions: type X = | { a: T } | { b: U })
+            let mut found_types = Vec::new();
+            for &member_id in &union.members {
+                if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(member_id) {
+                    for prop in &obj.properties {
+                        if prop.name == property_name && !found_types.contains(&prop.ty) {
+                            found_types.push(prop.ty);
+                        }
+                    }
+                }
+            }
+            if found_types.len() == 1 {
+                return found_types[0];
+            } else if found_types.len() > 1 {
+                return self.type_ctx.union_type(found_types);
             }
         }
 
@@ -2421,8 +2440,8 @@ impl<'a> TypeChecker<'a> {
             "toFixed" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
             // toPrecision(precision: number) -> string
             "toPrecision" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toString(radix: number) -> string
-            "toString" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // toString(radix?: number) -> string
+            "toString" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             _ => None,
         }
     }

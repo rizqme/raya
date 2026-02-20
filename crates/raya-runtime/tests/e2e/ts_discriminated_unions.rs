@@ -4,11 +4,8 @@
 //!   - controlFlow/controlFlowGenericTypes.ts (discriminated patterns)
 //!   - types/conditional/ (discriminant narrowing patterns)
 //!
-//! Raya's spec emphasizes discriminated unions but the parser does not yet
-//! support the `type X = | { kind: "a" } | { kind: "b" }` syntax with
-//! object literal types in type alias definitions.
-//!
-//! All tests are #[ignore]d until this feature is implemented.
+//! Raya supports discriminated unions with the
+//! `type X = | { kind: "a" } | { kind: "b" }` syntax.
 
 use super::harness::*;
 
@@ -17,7 +14,6 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_switch_string() {
     expect_string(
         "type Shape =
@@ -38,7 +34,6 @@ fn test_discriminated_union_switch_string() {
 }
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_switch_rect() {
     expect_string(
         "type Shape =
@@ -63,7 +58,6 @@ fn test_discriminated_union_switch_rect() {
 // ============================================================================
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_if_narrowing() {
     expect_i32(
         "type Result =
@@ -83,7 +77,6 @@ fn test_discriminated_union_if_narrowing() {
 }
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_if_error_branch() {
     expect_i32(
         "type Result =
@@ -107,7 +100,6 @@ fn test_discriminated_union_if_error_branch() {
 // ============================================================================
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_three_variants() {
     expect_i32(
         "type Action =
@@ -133,7 +125,6 @@ fn test_discriminated_union_three_variants() {
 }
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_reset_variant() {
     expect_i32(
         "type Action =
@@ -158,7 +149,7 @@ fn test_discriminated_union_reset_variant() {
 // ============================================================================
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
+#[ignore = "generic type parameters in union type alias body not yet supported"]
 fn test_discriminated_union_generic_result() {
     expect_i32(
         "type Result<T, E> =
@@ -177,7 +168,7 @@ fn test_discriminated_union_generic_result() {
 }
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
+#[ignore = "generic type parameters in union type alias body not yet supported"]
 fn test_discriminated_union_generic_result_fallback() {
     expect_i32(
         "type Result<T, E> =
@@ -200,7 +191,6 @@ fn test_discriminated_union_generic_result_fallback() {
 // ============================================================================
 
 #[test]
-#[ignore = "discriminated union object types not yet parseable"]
 fn test_discriminated_union_nested() {
     expect_i32(
         "type Inner =

@@ -8,7 +8,7 @@ use super::precedence::{get_precedence, is_right_associative, Precedence};
 
 /// Check if a token is a keyword that can be used as a property/method name.
 /// Returns the keyword string for keywords.
-fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
+pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
     match token {
         // Keywords that can be used as property/method names
         Token::Delete => Some("delete"),
@@ -307,6 +307,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                     let param = crate::parser::ast::Parameter {
                         decorators: vec![],
+                        visibility: None,
                         pattern: crate::parser::ast::Pattern::Identifier(crate::parser::ast::Identifier {
                             name: param_name,
                             span: ident_span,
@@ -1033,6 +1034,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
             let params = vec![Parameter {
                 decorators: vec![],
+                visibility: None,
                 pattern: Pattern::Identifier(Identifier {
                     name: param_name,
                     span: start_span,
@@ -1261,9 +1263,16 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         return Ok(ObjectProperty::Spread(SpreadProperty { argument, span }));
     }
 
-    // Property key
+    // Property key (identifiers and contextual keywords like `type`, `class`, etc.)
     let key = if let Token::Identifier(name) = parser.current() {
         let name = name.clone();
+        parser.advance();
+        PropertyKey::Identifier(Identifier {
+            name,
+            span: start_span,
+        })
+    } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
+        let name = parser.intern(kw_name);
         parser.advance();
         PropertyKey::Identifier(Identifier {
             name,
@@ -1458,6 +1467,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
 
             params.push(Parameter {
                 decorators: vec![],
+                visibility: None,
                 pattern: Pattern::Identifier(Identifier {
                     name,
                     span: start_span,
@@ -1532,6 +1542,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
 
             params.push(Parameter {
                 decorators,
+                visibility: None,
                 pattern: Pattern::Identifier(Identifier {
                     name,
                     span: start_span,

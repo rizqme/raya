@@ -2562,6 +2562,18 @@ impl<'a> Lowerer<'a> {
                         obj.properties.iter().enumerate().find_map(|(i, p)| {
                             if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
                         })
+                    } else if let crate::parser::types::ty::Type::Union(union) = ty {
+                        // Search union members for the property
+                        for &member_id in &union.members {
+                            if let Some(crate::parser::types::ty::Type::Object(obj)) = self.type_ctx.get(member_id) {
+                                if let Some(result) = obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                    if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
+                                }) {
+                                    return Some(result);
+                                }
+                            }
+                        }
+                        None
                     } else {
                         None
                     }
@@ -4049,10 +4061,13 @@ impl<'a> Lowerer<'a> {
         if op.is_comparison() || op.is_logical() {
             TypeId::new(2) // Boolean type
         } else {
-            // Mixed int+number promotes to number (f64)
             let l = left.ty.as_u32();
             let r = right.ty.as_u32();
-            if l == 0 || r == 0 {
+            // String concatenation: if either operand is a string, result is string
+            if matches!(op, BinaryOp::Add) && (l == 1 || r == 1) {
+                TypeId::new(1) // String type
+            } else if l == 0 || r == 0 {
+                // Mixed int+number promotes to number (f64)
                 TypeId::new(0) // number (f64)
             } else {
                 left.ty

@@ -63,6 +63,21 @@ impl<'a> SubtypingContext<'a> {
                     )
             }
 
+            // Literal type subtyping: "ok" <: string, 42 <: number, true <: boolean
+            (Type::StringLiteral(_), Type::Primitive(PrimitiveType::String)) => true,
+            (Type::NumberLiteral(_), Type::Primitive(PrimitiveType::Number)) => true,
+            (Type::BooleanLiteral(_), Type::Primitive(PrimitiveType::Boolean)) => true,
+
+            // Widening: string <: "ok" (allows assignment of string values to literal types)
+            (Type::Primitive(PrimitiveType::String), Type::StringLiteral(_)) => true,
+            (Type::Primitive(PrimitiveType::Number), Type::NumberLiteral(_)) => true,
+            (Type::Primitive(PrimitiveType::Boolean), Type::BooleanLiteral(_)) => true,
+
+            // Literal type reflexivity (same literal values)
+            (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
+            (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
+            (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
+
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
             (_, Type::Union(union)) => {
                 union.members.iter().any(|&member| self.is_subtype(sub, member))

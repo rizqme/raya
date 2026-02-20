@@ -1,6 +1,7 @@
 //! Type annotation parsing
 
 use super::{ParseError, ParseErrorKind, Parser};
+use super::expr::keyword_as_property_name;
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::Token;
@@ -24,10 +25,18 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
     }
 
     let start_span = parser.current_span();
+
+    // Allow optional leading pipe for discriminated union syntax:
+    // type X = | { kind: "a" } | { kind: "b" }
+    let has_leading_pipe = parser.check(&Token::Pipe);
+    if has_leading_pipe {
+        parser.advance(); // consume leading |
+    }
+
     let first_type = parse_primary_type(parser)?;
 
     // Check if this is a union type
-    if parser.check(&Token::Pipe) {
+    if has_leading_pipe || parser.check(&Token::Pipe) {
         let mut types = vec![first_type];
         let mut guard = super::guards::LoopGuard::new("union_types");
 
@@ -441,10 +450,17 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
             false
         };
 
-        // Parse property/method name
+        // Parse property/method name (identifiers and contextual keywords like `type`)
         let name = if let Token::Identifier(n) = parser.current() {
             let id = Identifier {
                 name: n.clone(),
+                span: parser.current_span(),
+            };
+            parser.advance();
+            id
+        } else if let Some(kw_name) = keyword_as_property_name(parser.current()) {
+            let id = Identifier {
+                name: parser.intern(kw_name),
                 span: parser.current_span(),
             };
             parser.advance();
@@ -461,17 +477,14 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
             false
         };
 
-        parser.expect(Token::Colon)?;
-
-        // Check if this is a method type: foo(): number
-        // vs property type: foo: number
-        // We need to check if the type is a function type
+        // Check for method shorthand: compute(a: number, b: number): number
+        // vs property syntax: compute: (a: number) => number
         if parser.check(&Token::LeftParen) {
-            // Method type
+            // Method shorthand: name(params): return_type
             parser.advance();
             let params = parse_function_type_params(parser)?;
             parser.expect(Token::RightParen)?;
-            parser.expect(Token::Arrow)?;
+            parser.expect(Token::Colon)?;
             let return_type = parse_type_annotation(parser)?;
             let span = parser.combine_spans(&start_span, &return_type.span);
 
@@ -482,18 +495,38 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
                 span,
             }));
         } else {
-            // Property type
-            let ty = parse_type_annotation(parser)?;
-            let span = parser.combine_spans(&start_span, &ty.span);
+            parser.expect(Token::Colon)?;
 
-            members.push(ObjectTypeMember::Property(ObjectTypeProperty {
-                name,
-                ty,
-                optional,
-                readonly,
-                annotations,
-                span,
-            }));
+            // Check if this is a method type: foo: (params) => return_type
+            if parser.check(&Token::LeftParen) {
+                // Method type with colon syntax
+                parser.advance();
+                let params = parse_function_type_params(parser)?;
+                parser.expect(Token::RightParen)?;
+                parser.expect(Token::Arrow)?;
+                let return_type = parse_type_annotation(parser)?;
+                let span = parser.combine_spans(&start_span, &return_type.span);
+
+                members.push(ObjectTypeMember::Method(ObjectTypeMethod {
+                    name,
+                    params,
+                    return_type,
+                    span,
+                }));
+            } else {
+                // Property type
+                let ty = parse_type_annotation(parser)?;
+                let span = parser.combine_spans(&start_span, &ty.span);
+
+                members.push(ObjectTypeMember::Property(ObjectTypeProperty {
+                    name,
+                    ty,
+                    optional,
+                    readonly,
+                    annotations,
+                    span,
+                }));
+            }
         }
 
         // Optional semicolon or comma separator

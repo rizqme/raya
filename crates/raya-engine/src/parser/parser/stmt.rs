@@ -279,6 +279,14 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         // Parse parameter decorators (@Inject, @Validate, etc.)
         let decorators = parse_decorators(parser)?;
 
+        // Parse optional visibility modifier for constructor parameter properties
+        let visibility = match parser.current() {
+            Token::Public => { parser.advance(); Some(Visibility::Public) }
+            Token::Private => { parser.advance(); Some(Visibility::Private) }
+            Token::Protected => { parser.advance(); Some(Visibility::Protected) }
+            _ => None,
+        };
+
         // Parse parameter pattern
         let pattern = super::pattern::parse_pattern(parser)?;
 
@@ -308,6 +316,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
 
         params.push(Parameter {
             decorators,
+            visibility,
             pattern,
             type_annotation,
             default_value,
