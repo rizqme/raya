@@ -4,9 +4,8 @@
 //! and execute correctly. Since logger methods are void-returning native
 //! calls, tests return sentinel values to confirm execution completed.
 //!
-//! Note: logger calls inside nested functions/methods hit a known VM limitation
-//! ("CallMethod not implemented in nested call"), so these tests use top-level
-//! calls only.
+//! Known issue: stdlib method calls inside nested functions dispatch to the
+//! wrong method index. Tests use top-level calls only to avoid this.
 
 use super::harness::{expect_i32_with_builtins, compile_and_run_with_builtins};
 

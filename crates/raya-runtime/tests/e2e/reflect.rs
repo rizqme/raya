@@ -13,8 +13,7 @@
 //!   `let x = __NATIVE_CALL(...)` without explicit type annotation instead.
 //! - Field access (has/get/set) requires ClassMetadataRegistry to be populated,
 //!   which is not yet connected to the e2e compilation pipeline.
-//! - Proxy, permissions, and bootstrap handlers are in handlers/reflect.rs
-//!   but not yet wired to the nested call dispatch path.
+//! - Proxy, permissions, and bootstrap handlers are in handlers/reflect.rs.
 
 use super::harness::{
     compile_and_run_with_builtins, expect_bool_with_builtins, expect_i32_with_builtins,

@@ -2,10 +2,6 @@
 //!
 //! Tests verify that math methods compile and execute correctly,
 //! returning proper numeric results through the NativeHandler pipeline.
-//!
-//! Note: math method calls inside nested functions/methods hit a known VM
-//! limitation ("CallMethod not implemented in nested call"), so these tests
-//! use top-level calls only.
 
 use super::harness::{expect_f64_with_builtins, expect_i32_with_builtins, compile_and_run_with_builtins};
 
@@ -441,4 +437,32 @@ fn test_math_import() {
         return x;
     "#);
     assert!(result.is_ok(), "Math should be importable from std:math: {:?}", result.err());
+}
+
+// ============================================================================
+// Nested calls (stdlib method calls inside function bodies)
+// ============================================================================
+
+#[test]
+fn test_math_call_inside_function() {
+    expect_f64_with_builtins(r#"
+        import math from "std:math";
+        function compute(): number {
+            return math.abs(-42);
+        }
+        return compute();
+    "#, 42.0);
+}
+
+#[test]
+fn test_math_multiple_nested_calls() {
+    expect_f64_with_builtins(r#"
+        import math from "std:math";
+        function compute(x: number): number {
+            let a: number = math.abs(x);
+            let b: number = math.sqrt(a);
+            return math.floor(b);
+        }
+        return compute(-16);
+    "#, 4.0);
 }

@@ -11,7 +11,7 @@ use crate::compiler::ir::{
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
-use crate::parser::ast::{self, Expression, Pattern, Statement, VariableKind, Visitor, walk_block_statement};
+use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_block_statement};
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -501,13 +501,24 @@ impl<'a> Lowerer<'a> {
         self.expr_types.get(&expr_id).copied().unwrap_or(TypeId::new(0))
     }
 
+    /// Unwrap `ExportDecl::Declaration` to get the inner statement.
+    /// Returns the statement as-is for non-export statements.
+    fn unwrap_export(stmt: &Statement) -> &Statement {
+        if let Statement::ExportDecl(ExportDecl::Declaration(inner)) = stmt {
+            inner.as_ref()
+        } else {
+            stmt
+        }
+    }
+
     /// Lower an AST module to IR
     pub fn lower_module(&mut self, module: &ast::Module) -> IrModule {
         let mut ir_module = IrModule::new("main");
 
         // Pre-pass: collect module-level const declarations (for constant folding)
         // These need to be processed before classes/functions so they're available
-        for stmt in &module.statements {
+        for raw_stmt in &module.statements {
+            let stmt = Self::unwrap_export(raw_stmt);
             if let Statement::VariableDecl(decl) = stmt {
                 if decl.kind == VariableKind::Const {
                     if let Pattern::Identifier(ident) = &decl.pattern {
@@ -528,6 +539,7 @@ impl<'a> Lowerer<'a> {
             // Step 1: Collect candidate module-level variable names (excluding constants)
             let candidates: FxHashSet<Symbol> = module.statements.iter()
                 .filter_map(|s| {
+                    let s = Self::unwrap_export(s);
                     if let Statement::VariableDecl(decl) = s {
                         if let Pattern::Identifier(ident) = &decl.pattern {
                             if !self.constant_map.contains_key(&ident.name) {
@@ -542,7 +554,8 @@ impl<'a> Lowerer<'a> {
             // Step 2: Walk function bodies to find which candidates they reference
             let mut referenced = FxHashSet::default();
             if !candidates.is_empty() {
-                for stmt in &module.statements {
+                for raw_stmt in &module.statements {
+                    let stmt = Self::unwrap_export(raw_stmt);
                     if let Statement::FunctionDecl(func) = stmt {
                         let mut collector = ModuleVarRefCollector {
                             candidates: &candidates,
@@ -554,7 +567,8 @@ impl<'a> Lowerer<'a> {
             }
 
             // Step 3: Only promote variables that are actually referenced by functions
-            for stmt in &module.statements {
+            for raw_stmt in &module.statements {
+                let stmt = Self::unwrap_export(raw_stmt);
                 if let Statement::VariableDecl(decl) = stmt {
                     if let Pattern::Identifier(ident) = &decl.pattern {
                         if referenced.contains(&ident.name) {
@@ -568,7 +582,8 @@ impl<'a> Lowerer<'a> {
         }
 
         // First pass: collect function and class declarations
-        for stmt in &module.statements {
+        for raw_stmt in &module.statements {
+            let stmt = Self::unwrap_export(raw_stmt);
             match stmt {
                 Statement::FunctionDecl(func) => {
                     let id = FunctionId::new(self.next_function_id);
@@ -592,11 +607,45 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Pre-pass: populate variable_class_map for module-level variable declarations.
+        // This must happen BEFORE the second pass (which lowers functions) so that
+        // functions referencing module-level variables (e.g., `math.abs()` where
+        // `const math = new Math()`) can resolve the correct class type for method dispatch.
+        for raw_stmt in &module.statements {
+            let stmt = Self::unwrap_export(raw_stmt);
+            if let Statement::VariableDecl(decl) = stmt {
+                if let Pattern::Identifier(ident) = &decl.pattern {
+                    let name = ident.name;
+                    // Track class type from explicit type annotation
+                    if let Some(type_ann) = &decl.type_annotation {
+                        if let ast::Type::Reference(type_ref) = &type_ann.ty {
+                            if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                                self.variable_class_map.insert(name, class_id);
+                            }
+                        }
+                    }
+                    // Track class type from new expression (e.g., `const math = new Math()`)
+                    if !self.variable_class_map.contains_key(&name) {
+                        if let Some(init) = &decl.initializer {
+                            if let ast::Expression::New(new_expr) = init {
+                                if let ast::Expression::Identifier(class_ident) = &*new_expr.callee {
+                                    if let Some(&class_id) = self.class_map.get(&class_ident.name) {
+                                        self.variable_class_map.insert(name, class_id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Second pass: lower all declarations
         // IMPORTANT: All functions must be added to pending_arrow_functions with their pre-assigned IDs
         // so they can be sorted and added to the module in the correct order.
         // This ensures function indices match the pre-assigned IDs used in Call instructions.
-        for stmt in &module.statements {
+        for raw_stmt in &module.statements {
+            let stmt = Self::unwrap_export(raw_stmt);
             match stmt {
                 Statement::FunctionDecl(func) => {
                     // Get the pre-assigned function ID
@@ -621,13 +670,16 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        // Collect top-level statements for main function
+        // Collect top-level statements for main function.
+        // ExportDecl::Declaration wrapping a func/class/type-alias was already handled above;
+        // ExportDecl::Declaration wrapping a VariableDecl needs to go through top-level lowering.
         let top_level_stmts: Vec<_> = module
             .statements
             .iter()
             .filter(|s| {
+                let inner = Self::unwrap_export(s);
                 !matches!(
-                    s,
+                    inner,
                     Statement::FunctionDecl(_)
                         | Statement::ClassDecl(_)
                         | Statement::TypeAliasDecl(_)

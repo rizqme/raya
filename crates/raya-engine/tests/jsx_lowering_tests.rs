@@ -196,8 +196,9 @@ fn test_jsx_spread_attributes() {
         const props = {};
         const x = <div {...props} />;
     "#);
-    // Should still produce an ObjectLiteral (even if spread handling is basic)
-    assert!(ir.contains("object_literal"), "IR should contain ObjectLiteral for spread props:\n{}", ir);
+    // Spread should produce a native_call to JSON.merge
+    assert!(ir.contains("native_call"), "IR should contain native_call for spread:\n{}", ir);
+    assert!(ir.contains("JSON.merge"), "IR should contain JSON.merge for spread:\n{}", ir);
 }
 
 #[test]
@@ -208,6 +209,8 @@ fn test_jsx_mixed_spread_and_regular_attrs() {
     "#);
     assert!(ir.contains("\"1\""), "IR should contain attr value \"1\":\n{}", ir);
     assert!(ir.contains("\"2\""), "IR should contain attr value \"2\":\n{}", ir);
+    // Spread should produce native_call for merging
+    assert!(ir.contains("JSON.merge"), "IR should contain JSON.merge for spread:\n{}", ir);
 }
 
 // ============================================================================
