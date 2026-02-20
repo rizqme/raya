@@ -251,7 +251,9 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
         | CheckError::InvalidDecorator { span, .. }
         | CheckError::DecoratorSignatureMismatch { span, .. }
         | CheckError::DecoratorReturnMismatch { span, .. }
-        | CheckError::ReadonlyAssignment { span, .. } => {
+        | CheckError::ReadonlyAssignment { span, .. }
+        | CheckError::ConstReassignment { span, .. }
+        | CheckError::NewNonClass { span, .. } => {
             if let Some(new_span) = adjust_span(*span, offset) {
                 *span = new_span;
             }
