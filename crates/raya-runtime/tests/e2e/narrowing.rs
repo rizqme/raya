@@ -583,3 +583,127 @@ fn test_typeof_chain_number_path() {
         1,
     );
 }
+
+// ============================================================================
+// 9. Compound Condition (&&) Narrowing
+//    Tests that && conditions narrow types in the then-branch
+// ============================================================================
+
+#[test]
+fn test_compound_null_check_narrows() {
+    // if (x != null && ...) should narrow x to non-null in the then-branch
+    expect_i32(
+        "function process(val: number | null, flag: boolean): number {
+             if (val != null && flag) {
+                 return val + 1;
+             }
+             return -1;
+         }
+         return process(41, true);",
+        42,
+    );
+}
+
+#[test]
+fn test_compound_null_check_false_flag() {
+    expect_i32(
+        "function process(val: number | null, flag: boolean): number {
+             if (val != null && flag) {
+                 return val + 1;
+             }
+             return -1;
+         }
+         return process(41, false);",
+        -1,
+    );
+}
+
+#[test]
+fn test_compound_two_null_checks() {
+    // Both variables narrowed in && condition
+    expect_i32(
+        "function add(a: number | null, b: number | null): number {
+             if (a != null && b != null) {
+                 return a + b;
+             }
+             return -1;
+         }
+         return add(20, 22);",
+        42,
+    );
+}
+
+#[test]
+fn test_compound_two_null_checks_one_null() {
+    expect_i32(
+        "function add(a: number | null, b: number | null): number {
+             if (a != null && b != null) {
+                 return a + b;
+             }
+             return -1;
+         }
+         return add(20, null);",
+        -1,
+    );
+}
+
+#[test]
+fn test_compound_null_check_with_property() {
+    // x != null && x.length > 0 should narrow x
+    expect_i32(
+        "function getLength(s: string | null): number {
+             if (s != null && s.length > 0) {
+                 return s.length;
+             }
+             return -1;
+         }
+         return getLength(\"hello\");",
+        5,
+    );
+}
+
+#[test]
+fn test_compound_null_check_with_property_null() {
+    expect_i32(
+        "function getLength(s: string | null): number {
+             if (s != null && s.length > 0) {
+                 return s.length;
+             }
+             return -1;
+         }
+         return getLength(null);",
+        -1,
+    );
+}
+
+// ============================================================================
+// 10. indexOf with fromIndex
+//     Tests that indexOf accepts optional second parameter
+// ============================================================================
+
+#[test]
+fn test_string_index_of_with_from_index() {
+    expect_i32(
+        "const s = \"hello@world@end\";
+         return s.indexOf(\"@\", 6);",
+        11,
+    );
+}
+
+#[test]
+fn test_string_index_of_single_arg() {
+    expect_i32(
+        "const s = \"hello@world\";
+         return s.indexOf(\"@\");",
+        5,
+    );
+}
+
+#[test]
+fn test_array_index_of_with_from_index() {
+    expect_i32(
+        "const arr = [10, 20, 30, 20, 40];
+         return arr.indexOf(20, 2);",
+        3,
+    );
+}

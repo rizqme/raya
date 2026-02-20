@@ -3,7 +3,7 @@
 //! This module provides utilities for detecting type guards in expressions,
 //! which are used to narrow types in conditional branches.
 
-use crate::parser::ast::{BinaryOperator, Expression};
+use crate::parser::ast::{BinaryOperator, Expression, LogicalOperator};
 use crate::parser::Interner;
 
 /// A type guard extracted from a conditional expression
@@ -329,6 +329,33 @@ fn try_extract_nullish_guard(
     }
 }
 
+/// Extract all type guards from a condition, handling `&&` compound conditions.
+///
+/// For `a && b`, collects guards from both sides recursively.
+/// This allows `if (x != null && y != null)` to narrow both variables.
+pub fn extract_all_type_guards(expr: &Expression, interner: &Interner) -> Vec<TypeGuard> {
+    // Handle LogicalAnd: collect guards from both sides
+    if let Expression::Logical(logical) = expr {
+        if matches!(logical.operator, LogicalOperator::And) {
+            let mut guards = extract_all_type_guards(&logical.left, interner);
+            guards.extend(extract_all_type_guards(&logical.right, interner));
+            return guards;
+        }
+    }
+
+    // Try standard guard extraction
+    if let Some(guard) = extract_type_guard(expr, interner) {
+        return vec![guard];
+    }
+
+    // Try call-based guard extraction
+    if let Some(guard) = extract_call_type_guard(expr, interner) {
+        return vec![guard];
+    }
+
+    vec![]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -539,5 +566,64 @@ mod tests {
         let (expr, interner) = parse_expr("doSomething(x)");
         let guard = extract_call_type_guard(&expr, &interner);
         assert!(guard.is_none());
+    }
+
+    // Tests for extract_all_type_guards (compound && conditions)
+
+    #[test]
+    fn test_compound_single_guard() {
+        let (expr, interner) = parse_expr("x !== null");
+        let guards = extract_all_type_guards(&expr, &interner);
+        assert_eq!(guards.len(), 1);
+        assert_eq!(
+            guards[0],
+            TypeGuard::Nullish {
+                var: "x".to_string(),
+                negated: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_compound_and_two_null_checks() {
+        let (expr, interner) = parse_expr("x !== null && y !== null");
+        let guards = extract_all_type_guards(&expr, &interner);
+        assert_eq!(guards.len(), 2);
+        assert_eq!(
+            guards[0],
+            TypeGuard::Nullish {
+                var: "x".to_string(),
+                negated: true,
+            }
+        );
+        assert_eq!(
+            guards[1],
+            TypeGuard::Nullish {
+                var: "y".to_string(),
+                negated: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_compound_null_check_and_non_guard() {
+        // x != null && x.length > 0 — only the null check is a guard
+        let (expr, interner) = parse_expr("x != null && x.length > 0");
+        let guards = extract_all_type_guards(&expr, &interner);
+        assert_eq!(guards.len(), 1);
+        assert_eq!(
+            guards[0],
+            TypeGuard::Nullish {
+                var: "x".to_string(),
+                negated: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_compound_no_guards() {
+        let (expr, interner) = parse_expr("a > 0 && b > 0");
+        let guards = extract_all_type_guards(&expr, &interner);
+        assert_eq!(guards.len(), 0);
     }
 }

@@ -6,7 +6,7 @@
 
 use super::error::{CheckError, CheckWarning};
 use super::symbols::{SymbolKind, SymbolTable};
-use super::type_guards::{extract_type_guard, TypeGuard};
+use super::type_guards::{extract_type_guard, extract_all_type_guards, TypeGuard};
 use super::narrowing::{apply_type_guard, TypeEnv};
 use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use super::captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo, FreeVariableCollector};
@@ -771,8 +771,11 @@ impl<'a> TypeChecker<'a> {
             self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
         }
 
-        // Try to extract type guard from condition
+        // Try to extract single type guard (used for else-branch / early-return narrowing)
         let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
+
+        // Extract all type guards including from && compound conditions (used for then-branch)
+        let all_guards = extract_all_type_guards(&if_stmt.condition, self.interner);
 
         // Try to extract instanceof guard (needs symbol table, so done in checker)
         let instanceof_guard = self.try_extract_instanceof_guard(&if_stmt.condition);
@@ -780,13 +783,14 @@ impl<'a> TypeChecker<'a> {
         // Save current environment
         let saved_env = self.type_env.clone();
 
-        // Apply type guard for then branch
-        if let Some(ref guard) = type_guard {
-            let var_name = get_guard_var(guard);
-            // Get the actual type of the variable (including inferred types)
-            if let Some(var_ty) = self.get_var_type(var_name) {
-                if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard) {
-                    self.type_env.set(var_name.clone(), narrowed_ty);
+        // Apply all type guards for then branch (handles && compound conditions)
+        if !all_guards.is_empty() {
+            for guard in &all_guards {
+                let var_name = get_guard_var(guard);
+                if let Some(var_ty) = self.get_var_type(var_name) {
+                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, guard) {
+                        self.type_env.set(var_name.clone(), narrowed_ty);
+                    }
                 }
             }
         } else if let Some((ref var_name, class_ty)) = instanceof_guard {
@@ -2330,8 +2334,8 @@ impl<'a> TypeChecker<'a> {
             "shift" => Some(self.type_ctx.function_type(vec![], elem_ty, false)),
             // unshift(value: T) -> number
             "unshift" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
-            // indexOf(value: T) -> number
-            "indexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // indexOf(value: T, fromIndex?: number) -> number
+            "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
             // includes(value: T) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
             // slice(start: number, end: number) -> Array<T>
@@ -2376,8 +2380,8 @@ impl<'a> TypeChecker<'a> {
             }
             // length -> number (property, not method)
             "length" => Some(number_ty),
-            // lastIndexOf(value: T) -> number
-            "lastIndexOf" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
+            // lastIndexOf(value: T, fromIndex?: number) -> number
+            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
             // sort(compareFn?: (a: T, b: T) => number) -> Array<T>
             "sort" => {
                 let compare_fn_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], number_ty, false);
@@ -2420,8 +2424,8 @@ impl<'a> TypeChecker<'a> {
             "toLowerCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // trim() -> string
             "trim" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
-            // indexOf(searchStr: string) -> number
-            "indexOf" => Some(self.type_ctx.function_type(vec![string_ty], number_ty, false)),
+            // indexOf(searchStr: string, fromIndex?: number) -> number
+            "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], number_ty, false, 1)),
             // includes(searchStr: string) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
             // startsWith(prefix: string) -> boolean
@@ -2445,8 +2449,8 @@ impl<'a> TypeChecker<'a> {
             "repeat" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
             // charCodeAt(index: number) -> number
             "charCodeAt" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
-            // lastIndexOf(searchStr: string) -> number
-            "lastIndexOf" => Some(self.type_ctx.function_type(vec![string_ty], number_ty, false)),
+            // lastIndexOf(searchStr: string, fromIndex?: number) -> number
+            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], number_ty, false, 1)),
             // trimStart() -> string
             "trimStart" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // trimEnd() -> string

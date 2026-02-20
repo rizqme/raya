@@ -89,11 +89,17 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::INDEX_OF => {
-                if arg_count != 1 {
+                if arg_count < 1 || arg_count > 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.indexOf expects 1 argument, got {}", arg_count
+                        "Array.indexOf expects 1-2 arguments, got {}", arg_count
                     )));
                 }
+                let from_index = if arg_count == 2 {
+                    let v = stack.pop()?;
+                    v.as_i32().unwrap_or(0).max(0) as usize
+                } else {
+                    0
+                };
                 let value = stack.pop()?;
                 let array_val = stack.pop()?;
                 if !array_val.is_ptr() {
@@ -101,7 +107,13 @@ impl<'a> Interpreter<'a> {
                 }
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
-                let result = arr.index_of(value);
+                let mut result: i32 = -1;
+                for (i, elem) in arr.elements.iter().enumerate().skip(from_index) {
+                    if *elem == value {
+                        result = i as i32;
+                        break;
+                    }
+                }
                 stack.push(Value::i32(result))?;
                 Ok(())
             }
@@ -202,12 +214,18 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::LAST_INDEX_OF => {
-                // lastIndexOf(value): find last occurrence
-                if arg_count != 1 {
+                // lastIndexOf(value, fromIndex?): find last occurrence
+                if arg_count < 1 || arg_count > 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.lastIndexOf expects 1 argument, got {}", arg_count
+                        "Array.lastIndexOf expects 1-2 arguments, got {}", arg_count
                     )));
                 }
+                let from_index = if arg_count == 2 {
+                    let v = stack.pop()?;
+                    Some(v.as_i32().unwrap_or(0).max(0) as usize)
+                } else {
+                    None
+                };
                 let search_val = stack.pop()?;
                 let array_val = stack.pop()?;
 
@@ -218,21 +236,10 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
+                let end = from_index.unwrap_or(arr.elements.len().saturating_sub(1));
                 let mut found_index: i32 = -1;
-                for (i, elem) in arr.elements.iter().enumerate().rev() {
-                    // Compare values
-                    let matches = if let (Some(a), Some(b)) = (elem.as_i32(), search_val.as_i32()) {
-                        a == b
-                    } else if let (Some(a), Some(b)) = (elem.as_f64(), search_val.as_f64()) {
-                        a == b
-                    } else if let (Some(a), Some(b)) = (elem.as_bool(), search_val.as_bool()) {
-                        a == b
-                    } else if elem.is_null() && search_val.is_null() {
-                        true
-                    } else {
-                        false
-                    };
-                    if matches {
+                for i in (0..=end.min(arr.elements.len().saturating_sub(1))).rev() {
+                    if arr.elements[i] == search_val {
                         found_index = i as i32;
                         break;
                     }
