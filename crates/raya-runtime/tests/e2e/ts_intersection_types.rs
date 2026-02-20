@@ -14,7 +14,6 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "object literal assignment to intersection type not yet implemented"]
 fn test_intersection_two_object_types() {
     expect_i32(
         "type HasX = { x: number };
@@ -27,7 +26,6 @@ fn test_intersection_two_object_types() {
 }
 
 #[test]
-#[ignore = "object literal assignment to intersection type not yet implemented"]
 fn test_intersection_three_types() {
     expect_i32(
         "type A = { a: number };
@@ -45,7 +43,7 @@ fn test_intersection_three_types() {
 // ============================================================================
 
 #[test]
-#[ignore = "class implements intersection type not yet implemented"]
+#[ignore = "class instance to intersection-typed variable assignment not yet supported"]
 fn test_intersection_with_methods() {
     expect_string(
         "type Printable = {
@@ -72,7 +70,6 @@ fn test_intersection_with_methods() {
 // ============================================================================
 
 #[test]
-#[ignore = "object literal assignment to intersection type not yet implemented"]
 fn test_intersection_extend_base() {
     expect_i32(
         "type Base = {
@@ -89,7 +86,6 @@ fn test_intersection_extend_base() {
 }
 
 #[test]
-#[ignore = "object literal assignment to intersection type not yet implemented"]
 fn test_intersection_as_function_param() {
     expect_string(
         "type Named = { name: string };

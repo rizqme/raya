@@ -286,6 +286,14 @@ impl TypeContext {
         }))
     }
 
+    /// Create an object type from a list of properties
+    pub fn object_type(&mut self, properties: Vec<super::ty::PropertySignature>) -> TypeId {
+        self.intern(Type::Object(super::ty::ObjectType {
+            properties,
+            index_signature: None,
+        }))
+    }
+
     /// Create an array type
     pub fn array_type(&mut self, element: TypeId) -> TypeId {
         self.intern(Type::Array(super::ty::ArrayType { element }))

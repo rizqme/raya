@@ -2986,6 +2986,24 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx.union_type(member_tys)
             }
 
+            AstType::Intersection(intersection) => {
+                // Merge constituent types into a single Object type
+                let mut merged_properties = Vec::new();
+                for ty_annot in &intersection.types {
+                    let ty_id = self.resolve_type_annotation(ty_annot);
+                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
+                        if let crate::parser::types::Type::Object(obj) = ty {
+                            for prop in &obj.properties {
+                                if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                    merged_properties.push(prop.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                self.type_ctx.object_type(merged_properties)
+            }
+
             AstType::Function(func) => {
                 let param_tys: Vec<_> = func
                     .params

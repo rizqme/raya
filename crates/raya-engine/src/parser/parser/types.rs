@@ -33,7 +33,7 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
         parser.advance(); // consume leading |
     }
 
-    let first_type = parse_primary_type(parser)?;
+    let first_type = parse_intersection_type(parser)?;
 
     // Check if this is a union type
     if has_leading_pipe || parser.check(&Token::Pipe) {
@@ -43,7 +43,7 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
         while parser.check(&Token::Pipe) {
             guard.check()?;
             parser.advance(); // consume |
-            let next_type = parse_primary_type(parser)?;
+            let next_type = parse_intersection_type(parser)?;
             types.push(next_type);
         }
 
@@ -58,6 +58,34 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
         Ok(result)
     } else {
         parser.depth -= 1;
+        Ok(first_type)
+    }
+}
+
+/// Parse an intersection type (A & B & C) or a single type
+fn parse_intersection_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
+    let start_span = parser.current_span();
+    let first_type = parse_primary_type(parser)?;
+
+    if parser.check(&Token::Amp) {
+        let mut types = vec![first_type];
+        let mut guard = super::guards::LoopGuard::new("intersection_types");
+
+        while parser.check(&Token::Amp) {
+            guard.check()?;
+            parser.advance(); // consume &
+            let next_type = parse_primary_type(parser)?;
+            types.push(next_type);
+        }
+
+        let end_span = types.last().unwrap().span.clone();
+        let span = parser.combine_spans(&start_span, &end_span);
+
+        Ok(TypeAnnotation {
+            ty: Type::Intersection(IntersectionType { types }),
+            span,
+        })
+    } else {
         Ok(first_type)
     }
 }

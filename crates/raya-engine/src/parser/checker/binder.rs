@@ -1795,6 +1795,30 @@ impl<'a> Binder<'a> {
                 Ok(self.type_ctx.union_type(member_tys?))
             }
 
+            AstType::Intersection(intersection) => {
+                // Resolve all constituent types and merge their properties into a single Object type
+                let mut merged_properties = Vec::new();
+                for ty_annot in &intersection.types {
+                    let ty_id = self.resolve_type_annotation(ty_annot)?;
+                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
+                        match ty {
+                            crate::parser::types::Type::Object(obj) => {
+                                for prop in &obj.properties {
+                                    if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                        merged_properties.push(prop.clone());
+                                    }
+                                }
+                            }
+                            _ => {
+                                // For non-object types, just return the first resolved type
+                                // (intersection of non-objects is complex and not yet needed)
+                            }
+                        }
+                    }
+                }
+                Ok(self.type_ctx.object_type(merged_properties))
+            }
+
             AstType::Function(func) => {
                 let param_tys: Result<Vec<_>, _> = func
                     .params
