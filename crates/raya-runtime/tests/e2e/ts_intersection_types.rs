@@ -107,7 +107,6 @@ fn test_intersection_as_function_param() {
 // ============================================================================
 
 #[test]
-#[ignore = "class implements multiple types not yet implemented"]
 fn test_intersection_class_implements() {
     expect_i32(
         "type Readable = {

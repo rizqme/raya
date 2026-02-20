@@ -112,7 +112,6 @@ fn test_type_alias_function_type() {
 // ============================================================================
 
 #[test]
-#[ignore = "class implements type alias not yet implemented"]
 fn test_class_implements_type_alias() {
     expect_i32(
         "type Measurable = {
@@ -130,7 +129,6 @@ fn test_class_implements_type_alias() {
 }
 
 #[test]
-#[ignore = "class implements type alias not yet implemented"]
 fn test_class_implements_type_with_fields_and_methods() {
     expect_i32(
         "type Entity = {
@@ -154,7 +152,6 @@ fn test_class_implements_type_with_fields_and_methods() {
 }
 
 #[test]
-#[ignore = "class implements type alias not yet implemented"]
 fn test_class_implements_multiple_types() {
     expect_string(
         "type Named = {

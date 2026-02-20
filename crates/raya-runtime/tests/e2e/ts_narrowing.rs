@@ -61,7 +61,6 @@ fn test_typeof_boolean_narrowing() {
 }
 
 #[test]
-#[ignore = "toString() argument count mismatch in narrowed else branch"]
 fn test_typeof_in_else_branch() {
     expect_string(
         "function describe(x: string | number): string {
