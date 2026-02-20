@@ -310,7 +310,6 @@ fn test_generic_method_on_nongeneric_class() {
 }
 
 #[test]
-#[ignore = "generic method with function parameter not yet supported"]
 fn test_generic_class_with_generic_method() {
     expect_string(
         "class Store<T> {

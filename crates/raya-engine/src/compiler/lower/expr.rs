@@ -445,6 +445,17 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        // Check if this is a named function used as a value (function reference)
+        if let Some(&func_id) = self.function_map.get(&ident.name) {
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::MakeClosure {
+                dest: dest.clone(),
+                func: func_id,
+                captures: vec![],
+            });
+            return dest;
+        }
+
         // Unknown variable - could be a global or error
         // For now, return a null placeholder
         self.lower_null_literal()

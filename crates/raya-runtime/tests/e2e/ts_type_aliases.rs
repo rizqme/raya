@@ -95,7 +95,6 @@ fn test_type_alias_with_method_signature() {
 }
 
 #[test]
-#[ignore = "function type alias assignment not yet implemented"]
 fn test_type_alias_function_type() {
     expect_i32(
         "type Transform = (x: number) => number;
