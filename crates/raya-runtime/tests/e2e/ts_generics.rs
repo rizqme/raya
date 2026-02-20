@@ -250,7 +250,6 @@ fn test_generic_class_multiple_instantiations() {
 // ============================================================================
 
 #[test]
-#[ignore = "generic constraints (T extends ...) not yet implemented"]
 fn test_generic_constraint_extends() {
     expect_i32(
         "type HasLength = { length: number; };
@@ -264,7 +263,6 @@ fn test_generic_constraint_extends() {
 }
 
 #[test]
-#[ignore = "generic constraints (T extends ...) not yet implemented"]
 fn test_generic_constraint_string() {
     expect_i32(
         "type HasLength = { length: number; };
@@ -277,7 +275,6 @@ fn test_generic_constraint_string() {
 }
 
 #[test]
-#[ignore = "generic constraints (T extends Class) not yet implemented"]
 fn test_generic_constraint_class() {
     expect_i32(
         "class Animal {

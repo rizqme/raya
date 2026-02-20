@@ -1090,8 +1090,14 @@ impl<'a> Binder<'a> {
         if let Some(ref type_params) = func.type_params {
             for type_param in type_params {
                 let param_name = self.resolve(type_param.name.name);
+                // Resolve constraint if present (e.g., T extends HasLength)
+                let constraint_ty = if let Some(ref constraint) = type_param.constraint {
+                    self.resolve_type_annotation(constraint).ok()
+                } else {
+                    None
+                };
                 // Create a type variable for this type parameter
-                let type_var = self.type_ctx.type_variable(param_name.clone());
+                let type_var = self.type_ctx.type_variable_with_constraint(param_name.clone(), constraint_ty);
 
                 let tp_symbol = Symbol {
                     name: param_name,

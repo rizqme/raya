@@ -277,6 +277,15 @@ impl TypeContext {
         }))
     }
 
+    /// Create a type variable with an optional constraint (e.g., `T extends HasLength`)
+    pub fn type_variable_with_constraint(&mut self, name: impl Into<String>, constraint: Option<TypeId>) -> TypeId {
+        self.intern(Type::TypeVar(super::ty::TypeVar {
+            name: name.into(),
+            constraint,
+            default: None,
+        }))
+    }
+
     /// Create an array type
     pub fn array_type(&mut self, element: TypeId) -> TypeId {
         self.intern(Type::Array(super::ty::ArrayType { element }))

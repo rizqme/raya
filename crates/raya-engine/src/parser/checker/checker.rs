@@ -2181,6 +2181,30 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Handle TypeVar with constraint: delegate member access to the constraint type
+        if let Some(crate::parser::types::Type::TypeVar(tv)) = &obj_type {
+            if let Some(constraint_id) = tv.constraint {
+                if let Some(constraint_type) = self.type_ctx.get(constraint_id).cloned() {
+                    // Look up member on the constraint type (Object or Class)
+                    match &constraint_type {
+                        crate::parser::types::Type::Object(obj) => {
+                            for prop in &obj.properties {
+                                if prop.name == property_name {
+                                    return prop.ty;
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Class(class) => {
+                            if let Some((ty, _vis)) = self.lookup_class_member(class, &property_name) {
+                                return ty;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // For now, return unknown for other member access
         self.type_ctx.unknown_type()
     }
