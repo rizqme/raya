@@ -1215,7 +1215,7 @@ impl<'a> Binder<'a> {
                         name: field_name,
                         ty: field_ty,
                         optional: false,
-                        readonly: false,
+                        readonly: field.is_readonly,
                     };
                     if field.is_static {
                         static_properties.push(prop);
@@ -1677,7 +1677,7 @@ impl<'a> Binder<'a> {
                                 name: self.resolve(prop.name.name),
                                 ty: prop_type,
                                 optional: prop.optional,
-                                readonly: false, // TODO: support readonly modifier
+                                readonly: prop.readonly,
                             });
                         }
                         ObjectTypeMember::Method(method) => {

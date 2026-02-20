@@ -227,6 +227,15 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// Cannot assign to readonly property
+    #[error("Cannot assign to readonly property '{property}'")]
+    ReadonlyAssignment {
+        /// Property name
+        property: String,
+        /// Location of assignment
+        span: Span,
+    },
+
     // ========================================================================
     // Decorator Errors
     // ========================================================================
@@ -286,6 +295,7 @@ impl CheckError {
             CheckError::ForbiddenFieldAccess { span, .. } => *span,
             CheckError::AbstractClassInstantiation { span, .. } => *span,
             CheckError::UndefinedMember { span, .. } => *span,
+            CheckError::ReadonlyAssignment { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,
             CheckError::DecoratorReturnMismatch { span, .. } => *span,

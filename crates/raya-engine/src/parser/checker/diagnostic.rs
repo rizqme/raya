@@ -242,6 +242,13 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "undefined member")
             }
 
+            ReadonlyAssignment { property, span } => {
+                Diagnostic::error(format!("Cannot assign to readonly property '{}'", property))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "readonly property")
+                    .with_help("Readonly properties can only be assigned in the constructor")
+            }
+
             // Decorator errors
             InvalidDecorator { ty, expected, span } => {
                 Diagnostic::error(format!("Invalid decorator: type '{}' is not a valid decorator", ty))
@@ -427,6 +434,7 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         ConstraintViolation { .. } => ErrorCode("E2015"),
         UndefinedMember { .. } => ErrorCode("E2016"),
         AbstractClassInstantiation { .. } => ErrorCode("E2017"),
+        ReadonlyAssignment { .. } => ErrorCode("E2018"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

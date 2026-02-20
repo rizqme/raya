@@ -103,9 +103,14 @@ pub enum CheckError {
     UndefinedVariable { name: String, span: Span },
     NotCallable { ty: TypeId, span: Span },
     MissingProperty { name: String, ty: TypeId, span: Span },
+    ReadonlyAssignment { property: String, span: Span },  // E2018
     // ... many more
 }
 ```
+
+### Readonly Enforcement
+The checker rejects assignments to readonly properties (`obj.readonlyField = value`).
+`this.field = value` is allowed inside constructors. Readonly is checked via `is_readonly_property()` which inspects `PropertySignature.readonly` on Class, Object, and Interface types.
 
 ## Built-in Types (`builtins.rs`)
 

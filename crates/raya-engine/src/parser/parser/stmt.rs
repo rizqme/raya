@@ -1170,6 +1170,13 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
+    let is_readonly = if parser.check(&Token::Readonly) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
+
     let is_async = if parser.check(&Token::Async) {
         parser.advance();
         true
@@ -1301,6 +1308,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
             type_annotation,
             initializer,
             is_static,
+            is_readonly,
             span,
         }))
     }

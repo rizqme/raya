@@ -1607,6 +1607,7 @@ impl<'a> Lowerer<'a> {
 
                     // Process JSON annotations for this field
                     let mut ir_field = IrField::new(field_name, ty, index);
+                    ir_field.readonly = field.is_readonly;
                     for annotation in &field.annotations {
                         if annotation.tag == "json" {
                             if annotation.is_skip() {

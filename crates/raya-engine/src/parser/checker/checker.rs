@@ -132,6 +132,9 @@ pub struct TypeChecker<'a> {
     /// Current class type for checking `this` expressions
     current_class_type: Option<TypeId>,
 
+    /// Whether we are inside a constructor body (readonly fields can be assigned)
+    in_constructor: bool,
+
     /// Depth counter for arrow function bodies
     /// When > 0, scope enter/exit are no-ops because the binder never visits
     /// inside expressions, so arrow body scopes don't exist in the symbol table.
@@ -155,6 +158,7 @@ impl<'a> TypeChecker<'a> {
             inferred_var_types: FxHashMap::default(),
             capture_info: ModuleCaptureInfo::new(),
             current_class_type: None,
+            in_constructor: false,
             arrow_depth: 0,
         }
     }
@@ -2537,6 +2541,22 @@ impl<'a> TypeChecker<'a> {
 
     /// Check assignment expression
     fn check_assignment(&mut self, assign: &AssignmentExpression) -> TypeId {
+        // Check for readonly property assignment
+        if let Expression::Member(member) = &*assign.left {
+            let is_this = matches!(&*member.object, Expression::This(_));
+            // Allow this.field = value inside constructors
+            if !(is_this && self.in_constructor) {
+                let object_ty = self.check_expr(&member.object);
+                let property_name = self.resolve(member.property.name);
+                if self.is_readonly_property(object_ty, &property_name) {
+                    self.errors.push(CheckError::ReadonlyAssignment {
+                        property: property_name,
+                        span: member.span,
+                    });
+                }
+            }
+        }
+
         // For simple identifier assignments, use the declared type (not narrowed)
         // so that reassignment back to the original wider type is allowed.
         // e.g., inside `while (val != null)`, `val = ch.tryReceive()` should work
@@ -2569,6 +2589,37 @@ impl<'a> TypeChecker<'a> {
                 note: None,
             });
         }
+    }
+
+    /// Check if a property is readonly on a given type
+    fn is_readonly_property(&self, ty: TypeId, property_name: &str) -> bool {
+        if let Some(resolved) = self.type_ctx.get(ty) {
+            match resolved {
+                crate::parser::types::Type::Class(class) => {
+                    for prop in &class.properties {
+                        if prop.name == property_name {
+                            return prop.readonly;
+                        }
+                    }
+                }
+                crate::parser::types::Type::Object(obj) => {
+                    for prop in &obj.properties {
+                        if prop.name == property_name {
+                            return prop.readonly;
+                        }
+                    }
+                }
+                crate::parser::types::Type::Interface(iface) => {
+                    for prop in &iface.properties {
+                        if prop.name == property_name {
+                            return prop.readonly;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Format a type for display in error messages

@@ -51,6 +51,7 @@ pub enum Token {
     Super,
     Static,
     Abstract,
+    Readonly,
     Extends,
     Implements,
 
@@ -247,6 +248,7 @@ impl fmt::Display for Token {
             Token::Super => write!(f, "super"),
             Token::Static => write!(f, "static"),
             Token::Abstract => write!(f, "abstract"),
+            Token::Readonly => write!(f, "readonly"),
             Token::Extends => write!(f, "extends"),
             Token::Implements => write!(f, "implements"),
             Token::Typeof => write!(f, "typeof"),
@@ -367,6 +369,7 @@ impl Token {
                 | Token::Super
                 | Token::Static
                 | Token::Abstract
+                | Token::Readonly
                 | Token::Extends
                 | Token::Implements
                 | Token::Typeof

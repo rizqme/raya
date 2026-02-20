@@ -65,6 +65,7 @@ pub enum ClassMemberSignature {
         type_annotation: Option<TypeAnnotation>,
         visibility: Visibility,
         is_static: bool,
+        is_readonly: bool,
         span: Span,
     },
     /// Method signature (no body)
@@ -316,6 +317,7 @@ impl TypeDefParser {
                         type_annotation: field.type_annotation.clone(),
                         visibility: field.visibility,
                         is_static: field.is_static,
+                        is_readonly: field.is_readonly,
                         span: field.span.clone(),
                     });
                 }

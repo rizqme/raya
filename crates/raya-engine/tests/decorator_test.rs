@@ -323,7 +323,7 @@ fn test_parse_class_with_decorated_members() {
 fn test_parse_multiple_decorators_on_member() {
     let source = r#"
         class Foo {
-            @readonly
+            @observable
             @validate
             name: string;
         }

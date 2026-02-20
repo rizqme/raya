@@ -105,6 +105,18 @@ pub enum Pattern {
 }
 ```
 
+## Class Field Modifiers
+
+`FieldDecl` supports these modifiers:
+- `visibility`: `Public` (default), `Protected`, `Private`
+- `is_static`: `static` keyword
+- `is_readonly`: `readonly` keyword — field can only be assigned in the constructor
+
+`ObjectTypeProperty` supports `readonly: bool` for readonly properties in object type annotations:
+```typescript
+type Config = { readonly host: string; port: number; }
+```
+
 ## Annotations
 
 AST nodes can have annotations (for features like JSON field mapping):

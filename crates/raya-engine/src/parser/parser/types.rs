@@ -433,6 +433,14 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
         let annotations = parse_property_annotations(parser)?;
         let start_span = parser.current_span();
 
+        // Check for readonly modifier
+        let readonly = if parser.check(&Token::Readonly) {
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
         // Parse property/method name
         let name = if let Token::Identifier(n) = parser.current() {
             let id = Identifier {
@@ -482,6 +490,7 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
                 name,
                 ty,
                 optional,
+                readonly,
                 annotations,
                 span,
             }));

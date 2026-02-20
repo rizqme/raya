@@ -266,7 +266,7 @@ pub enum Visibility {
 /// Field declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldDecl {
-    /// Decorators (@validate, @readonly, etc.)
+    /// Decorators (@validate, etc.)
     pub decorators: Vec<Decorator>,
 
     /// Compiler annotations (//@@tag value)
@@ -279,6 +279,7 @@ pub struct FieldDecl {
     pub type_annotation: Option<TypeAnnotation>,
     pub initializer: Option<Expression>,
     pub is_static: bool,
+    pub is_readonly: bool,
     pub span: Span,
 }
 
