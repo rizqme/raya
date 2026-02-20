@@ -77,9 +77,9 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::INDEX_OF => {
-                if arg_count != 1 {
+                if arg_count < 1 || arg_count > 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.indexOf expects 1 argument, got {}", arg_count
+                        "String.indexOf expects 1-2 arguments, got {}", arg_count
                     )));
                 }
                 let search_val = args[0];
@@ -88,7 +88,16 @@ impl<'a> Interpreter<'a> {
                 } else {
                     String::new()
                 };
-                let result = s.find(&search_str).map(|i| i as i32).unwrap_or(-1);
+                let from_index = if arg_count == 2 {
+                    args[1].as_i32().unwrap_or(0).max(0) as usize
+                } else {
+                    0
+                };
+                let result = if from_index >= s.len() {
+                    -1
+                } else {
+                    s[from_index..].find(&search_str).map(|i| (i + from_index) as i32).unwrap_or(-1)
+                };
                 stack.push(Value::i32(result))?;
                 Ok(())
             }
@@ -221,9 +230,9 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::LAST_INDEX_OF => {
-                if arg_count != 1 {
+                if arg_count < 1 || arg_count > 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.lastIndexOf expects 1 argument, got {}", arg_count
+                        "String.lastIndexOf expects 1-2 arguments, got {}", arg_count
                     )));
                 }
                 let search_val = args[0];
@@ -232,7 +241,13 @@ impl<'a> Interpreter<'a> {
                 } else {
                     String::new()
                 };
-                let result = s.rfind(&search_str).map(|i| i as i32).unwrap_or(-1);
+                let result = if arg_count == 2 {
+                    let end_index = args[1].as_i32().unwrap_or(s.len() as i32).max(0) as usize;
+                    let end = (end_index + search_str.len()).min(s.len());
+                    s[..end].rfind(&search_str).map(|i| i as i32).unwrap_or(-1)
+                } else {
+                    s.rfind(&search_str).map(|i| i as i32).unwrap_or(-1)
+                };
                 stack.push(Value::i32(result))?;
                 Ok(())
             }

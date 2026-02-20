@@ -37,6 +37,8 @@ pub struct SymbolFlags {
     pub is_async: bool,
     /// Is this a readonly property?
     pub is_readonly: bool,
+    /// Is this symbol imported from another module?
+    pub is_imported: bool,
 }
 
 impl Default for SymbolFlags {
@@ -46,6 +48,7 @@ impl Default for SymbolFlags {
             is_const: false,
             is_async: false,
             is_readonly: false,
+            is_imported: false,
         }
     }
 }
@@ -161,17 +164,21 @@ impl SymbolTable {
 
     /// Define a symbol in the current scope
     ///
-    /// Returns an error if a symbol with the same name already exists in this scope.
+    /// Returns an error if a symbol with the same name already exists in this scope,
+    /// unless the existing symbol is imported (allowing user code to shadow imports).
     pub fn define(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         let scope = &mut self.scopes[self.current_scope.0 as usize];
 
         // Check for duplicate
         if let Some(existing) = scope.symbols.get(&symbol.name) {
-            return Err(DuplicateSymbolError {
-                name: symbol.name.clone(),
-                original: existing.span,
-                duplicate: symbol.span,
-            });
+            // Allow shadowing of imported symbols
+            if !existing.flags.is_imported {
+                return Err(DuplicateSymbolError {
+                    name: symbol.name.clone(),
+                    original: existing.span,
+                    duplicate: symbol.span,
+                });
+            }
         }
 
         // Set the scope ID
@@ -184,17 +191,21 @@ impl SymbolTable {
 
     /// Define a symbol in a specific scope
     ///
-    /// Returns an error if a symbol with the same name already exists in that scope.
+    /// Returns an error if a symbol with the same name already exists in that scope,
+    /// unless the existing symbol is imported (allowing user code to shadow imports).
     pub fn define_in_scope(&mut self, scope_id: ScopeId, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
         let scope = &mut self.scopes[scope_id.0 as usize];
 
         // Check for duplicate
         if let Some(existing) = scope.symbols.get(&symbol.name) {
-            return Err(DuplicateSymbolError {
-                name: symbol.name.clone(),
-                original: existing.span,
-                duplicate: symbol.span,
-            });
+            // Allow shadowing of imported symbols
+            if !existing.flags.is_imported {
+                return Err(DuplicateSymbolError {
+                    name: symbol.name.clone(),
+                    original: existing.span,
+                    duplicate: symbol.span,
+                });
+            }
         }
 
         // Set the scope ID
@@ -314,7 +325,9 @@ impl SymbolTable {
     /// Define a symbol as imported (in the global scope)
     ///
     /// This is used to inject symbols from imported modules.
-    pub fn define_imported(&mut self, symbol: Symbol) -> Result<(), DuplicateSymbolError> {
+    /// Imported symbols can be shadowed by user-defined symbols.
+    pub fn define_imported(&mut self, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
+        symbol.flags.is_imported = true;
         self.define_in_scope(ScopeId(0), symbol)
     }
 
@@ -542,5 +555,44 @@ mod tests {
         let table = SymbolTable::new();
         let resolved = table.resolve("nonexistent");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn test_shadow_imported_symbol() {
+        let mut table = SymbolTable::new();
+        let mut ctx = TypeContext::new();
+        let num_ty = ctx.number_type();
+        let str_ty = ctx.string_type();
+
+        // Define imported symbol in global scope
+        let imported = Symbol {
+            name: "logger".to_string(),
+            kind: SymbolKind::Variable,
+            ty: num_ty,
+            flags: SymbolFlags {
+                is_imported: true,
+                ..SymbolFlags::default()
+            },
+            scope_id: ScopeId(0),
+            span: Span::new(0, 0, 0, 0),
+            referenced: false,
+        };
+        table.define_imported(imported).unwrap();
+
+        // User-defined symbol with same name should shadow the import
+        let user_sym = Symbol {
+            name: "logger".to_string(),
+            kind: SymbolKind::Variable,
+            ty: str_ty,
+            flags: SymbolFlags::default(),
+            scope_id: ScopeId(0),
+            span: Span::new(10, 20, 1, 10),
+            referenced: false,
+        };
+        table.define(user_sym).unwrap();
+
+        // Should resolve to user-defined symbol (string type)
+        let resolved = table.resolve("logger").unwrap();
+        assert_eq!(resolved.ty, str_ty);
     }
 }

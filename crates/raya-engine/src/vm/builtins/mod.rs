@@ -485,6 +485,17 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         }],
         functions: &[],
     },
+    // Number utility functions (global)
+    BuiltinSignatures {
+        name: "NumberUtils",
+        classes: &[],
+        functions: &[
+            FunctionSig { name: "parseInt", type_params: &[], params: &[("value", "string")], return_type: "number" },
+            FunctionSig { name: "parseFloat", type_params: &[], params: &[("value", "string")], return_type: "number" },
+            FunctionSig { name: "isNaN", type_params: &[], params: &[("value", "number")], return_type: "boolean" },
+            FunctionSig { name: "isFinite", type_params: &[], params: &[("value", "number")], return_type: "boolean" },
+        ],
+    },
     // RegExpMatch
     BuiltinSignatures {
         name: "RegExpMatch",

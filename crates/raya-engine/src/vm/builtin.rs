@@ -1220,6 +1220,14 @@ pub mod number {
     pub const TO_PRECISION: u16 = 0x0F01;
     /// `number.toString(radix?)` - Convert to string with optional radix
     pub const TO_STRING_RADIX: u16 = 0x0F02;
+    /// `parseInt(value)` - Parse string to integer
+    pub const PARSE_INT: u16 = 0x0F03;
+    /// `parseFloat(value)` - Parse string to float
+    pub const PARSE_FLOAT: u16 = 0x0F04;
+    /// `isNaN(value)` - Check if value is NaN
+    pub const IS_NAN: u16 = 0x0F05;
+    /// `isFinite(value)` - Check if value is finite
+    pub const IS_FINITE: u16 = 0x0F06;
 }
 
 /// Look up built-in method ID by type and method name

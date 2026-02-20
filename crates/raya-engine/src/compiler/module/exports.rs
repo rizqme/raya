@@ -62,6 +62,7 @@ impl ExportedSymbol {
                 is_const: self.is_const,
                 is_async: self.is_async,
                 is_readonly: false,
+                is_imported: false,
             },
             scope_id,
             span: Span::new(0, 0, 0, 0), // Imported symbols don't have a local span

@@ -1057,6 +1057,16 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             }))
         }
 
+        // Contextual keywords usable as identifiers in expressions
+        Token::From => {
+            let name = parser.intern("from");
+            parser.advance();
+            Ok(Expression::Identifier(Identifier {
+                name,
+                span: start_span,
+            }))
+        }
+
         // Grouped expression or arrow function
         Token::LeftParen => {
             parser.advance();

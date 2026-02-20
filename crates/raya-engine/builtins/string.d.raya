@@ -35,11 +35,11 @@ export class string {
     /** Remove whitespace from the end */
     trimEnd(): string;
 
-    /** Find the first occurrence of searchStr, or -1 if not found */
-    indexOf(searchStr: string): number;
+    /** Find the first occurrence of searchStr starting from fromIndex, or -1 if not found */
+    indexOf(searchStr: string, fromIndex?: number): number;
 
-    /** Find the last occurrence of searchStr, or -1 if not found */
-    lastIndexOf(searchStr: string): number;
+    /** Find the last occurrence of searchStr searching backwards from fromIndex, or -1 if not found */
+    lastIndexOf(searchStr: string, fromIndex?: number): number;
 
     /** Check if the string contains the search string */
     includes(searchStr: string): boolean;
