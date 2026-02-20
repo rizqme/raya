@@ -206,6 +206,8 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
     parent_class: Option<ClassId>,
+    /// Type arg substitutions for generic parent (param_name → concrete TypeId)
+    extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
     method_slot_count: u16,
     /// Class-level decorators (applied bottom-to-top)
@@ -401,6 +403,8 @@ pub struct Lowerer<'a> {
     native_function_map: FxHashMap<String, u16>,
     /// JSX compilation options (None = JSX not enabled)
     jsx_options: Option<JsxOptions>,
+    /// Type parameter names for generic classes (ClassId → ["T", "E", ...])
+    class_type_params: FxHashMap<ClassId, Vec<String>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -471,6 +475,7 @@ impl<'a> Lowerer<'a> {
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
             jsx_options: None,
+            class_type_params: FxHashMap::default(),
         }
     }
 
@@ -1352,9 +1357,27 @@ impl<'a> Lowerer<'a> {
         // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
 
+        // Store type parameter names for generic classes
+        if let Some(ref type_params) = class.type_params {
+            if !type_params.is_empty() {
+                let param_names: Vec<String> = type_params.iter()
+                    .map(|tp| self.interner.resolve(tp.name.name).to_string())
+                    .collect();
+                self.class_type_params.insert(class_id, param_names);
+            }
+        }
+
         // Resolve parent class if extends clause is present
+        let mut extends_type_args: Option<Vec<TypeId>> = None;
         let parent_class = if let Some(ref extends) = class.extends {
             if let ast::Type::Reference(type_ref) = &extends.ty {
+                // Extract type arguments from extends clause (e.g., Base<string>)
+                if let Some(ref type_args) = type_ref.type_args {
+                    let resolved: Vec<TypeId> = type_args.iter()
+                        .map(|ta| self.resolve_type_annotation(ta))
+                        .collect();
+                    extends_type_args = Some(resolved);
+                }
                 self.class_map.get(&type_ref.name.name).copied()
             } else {
                 None
@@ -1368,11 +1391,39 @@ impl<'a> Lowerer<'a> {
         let mut static_fields = Vec::new();
 
         // Start field index after ALL ancestor fields (not just immediate parent)
-        let parent_fields = if let Some(parent_id) = parent_class {
+        let mut parent_fields = if let Some(parent_id) = parent_class {
             self.get_all_fields(parent_id)
         } else {
             Vec::new()
         };
+
+        // If extends has type args (e.g., extends Base<string>), build substitution
+        // map and substitute parent field types with concrete types
+        let extends_type_subs = if let Some(ref type_args) = extends_type_args {
+            if let Some(parent_id) = parent_class {
+                if let Some(parent_type_params) = self.class_type_params.get(&parent_id).cloned() {
+                    if parent_type_params.len() == type_args.len() {
+                        // Build TypeVar name → concrete TypeId mapping
+                        let subs: std::collections::HashMap<String, TypeId> = parent_type_params.iter()
+                            .zip(type_args.iter())
+                            .map(|(name, &ty)| (name.clone(), ty))
+                            .collect();
+
+                        // Substitute type parameter field types with concrete types
+                        // Uses field.type_name (original type annotation name) since
+                        // the lowerer maps unknown type refs to TypeId(7), not TypeVar
+                        for field in &mut parent_fields {
+                            if let Some(ref name) = field.type_name {
+                                if let Some(&concrete_ty) = subs.get(name.as_str()) {
+                                    field.ty = concrete_ty;
+                                }
+                            }
+                        }
+                        Some(subs)
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
         let mut field_index = parent_fields.len() as u16;
 
         for member in &class.members {
@@ -1627,6 +1678,7 @@ impl<'a> Lowerer<'a> {
                 static_fields,
                 static_methods: static_methods_vec,
                 parent_class,
+                extends_type_subs,
                 method_slot_count,
                 class_decorators,
                 method_decorators,

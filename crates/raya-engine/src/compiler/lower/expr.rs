@@ -3802,13 +3802,27 @@ impl<'a> Lowerer<'a> {
 
     /// Get all fields for a class, including inherited fields from parent classes.
     /// Returns fields in order: parent fields first, then child fields.
+    /// When a child extends a generic parent (e.g., `extends Base<string>`),
+    /// parent field types are substituted with concrete type arguments.
     pub(super) fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
         let mut all_fields = Vec::new();
 
-        // First, get parent fields (recursively)
         if let Some(class_info) = self.class_info_map.get(&class_id) {
             if let Some(parent_id) = class_info.parent_class {
-                all_fields.extend(self.get_all_fields(parent_id));
+                let mut parent_fields = self.get_all_fields(parent_id);
+                // Apply type substitutions for generic parent classes
+                // Uses field.type_name (original type annotation name) since
+                // the lowerer maps unknown type refs to TypeId(7), not TypeVar
+                if let Some(ref subs) = class_info.extends_type_subs {
+                    for field in &mut parent_fields {
+                        if let Some(ref name) = field.type_name {
+                            if let Some(&concrete_ty) = subs.get(name.as_str()) {
+                                field.ty = concrete_ty;
+                            }
+                        }
+                    }
+                }
+                all_fields.extend(parent_fields);
             }
             // Then add this class's fields
             all_fields.extend(class_info.fields.clone());

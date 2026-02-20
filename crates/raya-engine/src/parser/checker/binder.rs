@@ -1766,6 +1766,38 @@ impl<'a> Binder<'a> {
                 let new_elem = self.substitute_type_vars(arr.element, subs);
                 self.type_ctx.array_type(new_elem)
             }
+            Some(Type::Class(class)) => {
+                let new_props: Vec<_> = class.properties.iter().map(|p| {
+                    PropertySignature {
+                        name: p.name.clone(),
+                        ty: self.substitute_type_vars(p.ty, subs),
+                        optional: p.optional,
+                        readonly: p.readonly,
+                        visibility: p.visibility.clone(),
+                    }
+                }).collect();
+                let new_methods: Vec<_> = class.methods.iter().map(|m| {
+                    MethodSignature {
+                        name: m.name.clone(),
+                        ty: self.substitute_type_vars(m.ty, subs),
+                        type_params: m.type_params.clone(),
+                        visibility: m.visibility.clone(),
+                    }
+                }).collect();
+                let new_extends = class.extends.map(|e| self.substitute_type_vars(e, subs));
+                let new_class = ClassType {
+                    name: class.name.clone(),
+                    type_params: vec![], // Specialized class has no type params
+                    properties: new_props,
+                    methods: new_methods,
+                    static_properties: class.static_properties.clone(),
+                    static_methods: class.static_methods.clone(),
+                    extends: new_extends,
+                    implements: class.implements.clone(),
+                    is_abstract: class.is_abstract,
+                };
+                self.type_ctx.intern(Type::Class(new_class))
+            }
             _ => ty,
         }
     }
@@ -1837,9 +1869,23 @@ impl<'a> Binder<'a> {
                         || symbol.kind == SymbolKind::Class {
                         let template_ty = symbol.ty;
 
-                        // Check if this is a generic type alias with type arguments
+                        // Check if this is a generic type with type arguments
                         if let Some(ref type_args) = type_ref.type_args {
-                            if let Some(param_names) = self.generic_type_alias_params.get(&name).cloned() {
+                            // Try type alias params first
+                            let param_names = if let Some(names) = self.generic_type_alias_params.get(&name).cloned() {
+                                Some(names)
+                            } else if let Some(Type::Class(class_ty)) = self.type_ctx.get(template_ty).cloned() {
+                                // For classes, read type_params from the ClassType
+                                if !class_ty.type_params.is_empty() {
+                                    Some(class_ty.type_params.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            if let Some(param_names) = param_names {
                                 if type_args.len() == param_names.len() {
                                     // Resolve each type argument
                                     let mut resolved_args = Vec::new();

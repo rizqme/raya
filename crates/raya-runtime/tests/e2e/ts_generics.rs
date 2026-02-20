@@ -193,7 +193,6 @@ fn test_generic_class_extends() {
 }
 
 #[test]
-#[ignore = "generic class specialization in extends not yet supported"]
 fn test_generic_class_extends_specialized() {
     expect_string(
         "class Base<T> {
