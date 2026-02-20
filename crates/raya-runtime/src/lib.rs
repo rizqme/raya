@@ -30,6 +30,7 @@ pub mod compile;
 pub mod deps;
 pub mod error;
 pub mod loader;
+pub mod session;
 mod vm_setup;
 
 // Re-export key types from raya-engine for convenience
@@ -41,6 +42,7 @@ pub use raya_stdlib::StdNativeHandler;
 pub use raya_stdlib_posix::register_posix;
 
 pub use error::RuntimeError;
+pub use session::Session;
 
 use raya_engine::parser::Interner;
 use std::path::Path;

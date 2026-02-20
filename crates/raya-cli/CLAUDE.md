@@ -27,7 +27,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 | `raya bench` | — | Run benchmarks | Stub |
 | `raya fmt` | — | Format source files | Stub |
 | `raya lint` | — | Lint source files | Stub |
-| `raya repl` | — | Interactive REPL | Stub |
+| `raya repl` | — | Interactive REPL | **Implemented** — persistent session, multi-line, history, dot-commands |
 | `raya bundle` | — | AOT compile to native bundle | **Implemented** — requires `--features aot` |
 | `raya doc` | — | Generate documentation | Stub |
 | `raya lsp` | — | Start Language Server | Stub |
@@ -67,6 +67,7 @@ src/
     │   ├── set_url.rs    # Registry URL management (project + global)
     │   ├── whoami.rs     # Current user info
     │   └── info.rs       # Package info (stub)
+    ├── repl.rs           # Interactive REPL (rustyline, Session, multi-line, dot-commands)
     ├── init.rs           # Project initialization (called by pkg dispatch)
     ├── install.rs        # Dependency installation (called by pkg dispatch)
     ├── add.rs            # Add dependency (called by pkg dispatch)
@@ -106,20 +107,28 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 - `anyhow`: Error handling
 - `toml`: Config file parsing
 - `dirs`: Platform-specific directories (~/.raya)
+- `rustyline`: Line editing, history, Ctrl-C/Ctrl-D for REPL
 
 ## Integration Tests
 
-19 tests in `tests/cli_integration.rs` covering:
+26 tests in `tests/cli_integration.rs` covering:
 - Run .raya file, compile .raya file, run .ryb file, bytecode roundtrip
 - Run with manifest (raya.toml), local path dependencies, URL deps (cached + error)
 - Package dep resolution, mixed deps (ryb + source), .ryb with separate library
 - Eval expressions, eval functions, eval complex expressions
 - Script manifest parsing, script file targets
 - Build to .ryb, runtime with options, runtime defaults
+- Session: eval, variable persistence, function persistence, reset, format_value, multiple evals
+
+13 unit tests in `src/commands/repl.rs` covering:
+- `is_incomplete()`: braces, strings, comments, nesting, escapes
+- `needs_wrapping()`: bare expressions vs declarations
 
 ## For AI Assistants
 
-- `run`, `build`, `eval` are fully wired through `raya-runtime::Runtime`
+- `run`, `build`, `eval`, `repl` are fully wired through `raya-runtime::Runtime`/`Session`
+- `repl.rs` uses `raya_runtime::Session` which accumulates declarations and re-compiles each eval
+- REPL supports: dot-commands (.help, .clear, .load, .type, .exit), multi-line input, colored output, history (~/.raya/repl_history)
 - `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
 - `pkg` is the canonical PM namespace — all PM commands live in `PkgCommands` enum
 - Top-level `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade` are aliases that delegate to the same implementations
