@@ -30,6 +30,8 @@ pub struct Binder<'a> {
     /// When true, builtin source files are prepended to user code, so duplicate
     /// class/function names between builtins and user code are expected (user shadows).
     detect_top_level_duplicates: bool,
+    /// Tracks type parameter names for generic type aliases (e.g., Container<T> → ["T"])
+    generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl<'a> Binder<'a> {
@@ -42,6 +44,7 @@ impl<'a> Binder<'a> {
             bound_classes: std::collections::HashMap::new(),
             bound_functions: std::collections::HashMap::new(),
             detect_top_level_duplicates: true,
+            generic_type_alias_params: std::collections::HashMap::new(),
         }
     }
 
@@ -1090,8 +1093,14 @@ impl<'a> Binder<'a> {
         if let Some(ref type_params) = func.type_params {
             for type_param in type_params {
                 let param_name = self.resolve(type_param.name.name);
+                // Resolve constraint if present (e.g., T extends HasLength)
+                let constraint_ty = if let Some(ref constraint) = type_param.constraint {
+                    self.resolve_type_annotation(constraint).ok()
+                } else {
+                    None
+                };
                 // Create a type variable for this type parameter
-                let type_var = self.type_ctx.type_variable(param_name.clone());
+                let type_var = self.type_ctx.type_variable_with_constraint(param_name.clone(), constraint_ty);
 
                 let tp_symbol = Symbol {
                     name: param_name,
@@ -1393,6 +1402,28 @@ impl<'a> Binder<'a> {
                         methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params));
                     }
                 }
+                ClassMember::Constructor(ctor) => {
+                    // Register constructor parameter properties (e.g., `constructor(public x: number)`)
+                    for param in &ctor.params {
+                        if let Some(vis) = param.visibility {
+                            if let crate::parser::ast::Pattern::Identifier(ident) = &param.pattern {
+                                let field_name = self.resolve(ident.name);
+                                let field_ty = if let Some(ref ann) = param.type_annotation {
+                                    self.resolve_type_annotation(ann)?
+                                } else {
+                                    self.type_ctx.unknown_type()
+                                };
+                                properties.push(PropertySignature {
+                                    name: field_name,
+                                    ty: field_ty,
+                                    optional: false,
+                                    readonly: false,
+                                    visibility: vis,
+                                });
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -1493,11 +1524,42 @@ impl<'a> Binder<'a> {
 
     /// Bind type alias declaration
     fn bind_type_alias(&mut self, alias: &TypeAliasDecl) -> Result<(), BindError> {
-        // Resolve the type annotation
+        let alias_name = self.resolve(alias.name.name);
+
+        // If the type alias has type parameters, register them in a nested scope
+        let has_type_params = alias.type_params.as_ref().map_or(false, |p| !p.is_empty());
+        let mut type_param_names = Vec::new();
+
+        if has_type_params {
+            self.symbols.push_scope(ScopeKind::Function);
+            for type_param in alias.type_params.as_ref().unwrap() {
+                let param_name = self.resolve(type_param.name.name);
+                let type_var = self.type_ctx.type_variable(param_name.clone());
+                let sym = Symbol {
+                    name: param_name.clone(),
+                    kind: SymbolKind::TypeAlias,
+                    ty: type_var,
+                    flags: SymbolFlags::default(),
+                    scope_id: self.symbols.current_scope_id(),
+                    span: Span { start: 0, end: 0, line: 0, column: 0 },
+                    referenced: false,
+                };
+                let _ = self.symbols.define(sym);
+                type_param_names.push(param_name);
+            }
+        }
+
+        // Resolve the type annotation (TypeVars will be resolved from the nested scope)
         let ty = self.resolve_type_annotation(&alias.type_annotation)?;
 
+        if has_type_params {
+            self.symbols.pop_scope();
+            // Store type param names for later substitution during type reference resolution
+            self.generic_type_alias_params.insert(alias_name.clone(), type_param_names);
+        }
+
         let symbol = Symbol {
-            name: self.resolve(alias.name.name),
+            name: alias_name,
             kind: SymbolKind::TypeAlias,
             ty,
             flags: SymbolFlags::default(),
@@ -1664,6 +1726,82 @@ impl<'a> Binder<'a> {
         self.resolve_type(&ty_annot.ty, ty_annot.span)
     }
 
+    /// Recursively substitute TypeVars in a type according to a substitution map
+    fn substitute_type_vars(&mut self, ty: TypeId, subs: &std::collections::HashMap<String, TypeId>) -> TypeId {
+        let type_info = self.type_ctx.get(ty).cloned();
+        match type_info {
+            Some(Type::TypeVar(tv)) => {
+                if let Some(&sub) = subs.get(&tv.name) {
+                    sub
+                } else {
+                    ty
+                }
+            }
+            Some(Type::Object(obj)) => {
+                let new_props: Vec<_> = obj.properties.iter().map(|p| {
+                    PropertySignature {
+                        name: p.name.clone(),
+                        ty: self.substitute_type_vars(p.ty, subs),
+                        optional: p.optional,
+                        readonly: p.readonly,
+                        visibility: p.visibility.clone(),
+                    }
+                }).collect();
+                self.type_ctx.object_type(new_props)
+            }
+            Some(Type::Union(union)) => {
+                let new_members: Vec<_> = union.members.iter().map(|&m| {
+                    self.substitute_type_vars(m, subs)
+                }).collect();
+                self.type_ctx.union_type(new_members)
+            }
+            Some(Type::Function(func)) => {
+                let new_params: Vec<_> = func.params.iter().map(|&p| {
+                    self.substitute_type_vars(p, subs)
+                }).collect();
+                let new_ret = self.substitute_type_vars(func.return_type, subs);
+                self.type_ctx.function_type(new_params, new_ret, func.is_async)
+            }
+            Some(Type::Array(arr)) => {
+                let new_elem = self.substitute_type_vars(arr.element, subs);
+                self.type_ctx.array_type(new_elem)
+            }
+            Some(Type::Class(class)) => {
+                let new_props: Vec<_> = class.properties.iter().map(|p| {
+                    PropertySignature {
+                        name: p.name.clone(),
+                        ty: self.substitute_type_vars(p.ty, subs),
+                        optional: p.optional,
+                        readonly: p.readonly,
+                        visibility: p.visibility.clone(),
+                    }
+                }).collect();
+                let new_methods: Vec<_> = class.methods.iter().map(|m| {
+                    MethodSignature {
+                        name: m.name.clone(),
+                        ty: self.substitute_type_vars(m.ty, subs),
+                        type_params: m.type_params.clone(),
+                        visibility: m.visibility.clone(),
+                    }
+                }).collect();
+                let new_extends = class.extends.map(|e| self.substitute_type_vars(e, subs));
+                let new_class = ClassType {
+                    name: class.name.clone(),
+                    type_params: vec![], // Specialized class has no type params
+                    properties: new_props,
+                    methods: new_methods,
+                    static_properties: class.static_properties.clone(),
+                    static_methods: class.static_methods.clone(),
+                    extends: new_extends,
+                    implements: class.implements.clone(),
+                    is_abstract: class.is_abstract,
+                };
+                self.type_ctx.intern(Type::Class(new_class))
+            }
+            _ => ty,
+        }
+    }
+
     /// Resolve type to TypeId
     fn resolve_type(&mut self, ty: &crate::parser::ast::Type, span: crate::parser::Span) -> Result<TypeId, BindError> {
         use crate::parser::ast::Type as AstType;
@@ -1729,7 +1867,43 @@ impl<'a> Binder<'a> {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter
                         || symbol.kind == SymbolKind::Class {
-                        Ok(symbol.ty)
+                        let template_ty = symbol.ty;
+
+                        // Check if this is a generic type with type arguments
+                        if let Some(ref type_args) = type_ref.type_args {
+                            // Try type alias params first
+                            let param_names = if let Some(names) = self.generic_type_alias_params.get(&name).cloned() {
+                                Some(names)
+                            } else if let Some(Type::Class(class_ty)) = self.type_ctx.get(template_ty).cloned() {
+                                // For classes, read type_params from the ClassType
+                                if !class_ty.type_params.is_empty() {
+                                    Some(class_ty.type_params.clone())
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                            if let Some(param_names) = param_names {
+                                if type_args.len() == param_names.len() {
+                                    // Resolve each type argument
+                                    let mut resolved_args = Vec::new();
+                                    for arg in type_args {
+                                        resolved_args.push(self.resolve_type_annotation(arg)?);
+                                    }
+                                    // Build substitution map: param_name → concrete type
+                                    let mut subs = std::collections::HashMap::new();
+                                    for (param_name, arg_ty) in param_names.iter().zip(resolved_args.iter()) {
+                                        subs.insert(param_name.clone(), *arg_ty);
+                                    }
+                                    // Apply substitution to the template type
+                                    return Ok(self.substitute_type_vars(template_ty, &subs));
+                                }
+                            }
+                        }
+
+                        Ok(template_ty)
                     } else {
                         Err(BindError::NotAType {
                             name,
@@ -1765,6 +1939,30 @@ impl<'a> Binder<'a> {
                     .map(|t| self.resolve_type_annotation(t))
                     .collect();
                 Ok(self.type_ctx.union_type(member_tys?))
+            }
+
+            AstType::Intersection(intersection) => {
+                // Resolve all constituent types and merge their properties into a single Object type
+                let mut merged_properties = Vec::new();
+                for ty_annot in &intersection.types {
+                    let ty_id = self.resolve_type_annotation(ty_annot)?;
+                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
+                        match ty {
+                            crate::parser::types::Type::Object(obj) => {
+                                for prop in &obj.properties {
+                                    if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                        merged_properties.push(prop.clone());
+                                    }
+                                }
+                            }
+                            _ => {
+                                // For non-object types, just return the first resolved type
+                                // (intersection of non-objects is complex and not yet needed)
+                            }
+                        }
+                    }
+                }
+                Ok(self.type_ctx.object_type(merged_properties))
             }
 
             AstType::Function(func) => {

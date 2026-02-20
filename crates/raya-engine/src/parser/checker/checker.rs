@@ -27,6 +27,7 @@ fn get_guard_var(guard: &TypeGuard) -> &String {
         TypeGuard::IsNaN { var, .. } => var,
         TypeGuard::IsFinite { var, .. } => var,
         TypeGuard::TypePredicate { var, .. } => var,
+        TypeGuard::Truthiness { var, .. } => var,
     }
 }
 
@@ -87,6 +88,10 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
         TypeGuard::TypePredicate { var, predicate, negated } => TypeGuard::TypePredicate {
             var: var.clone(),
             predicate: predicate.clone(),
+            negated: !negated,
+        },
+        TypeGuard::Truthiness { var, negated } => TypeGuard::Truthiness {
+            var: var.clone(),
             negated: !negated,
         },
     }
@@ -290,6 +295,13 @@ impl<'a> TypeChecker<'a> {
             Statement::ClassDecl(class) => {
                 // Check class declaration including decorators
                 self.check_class(class);
+            }
+            Statement::TypeAliasDecl(alias) => {
+                // Sync scope for generic type aliases (binder creates a scope for type params)
+                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                    self.enter_scope();
+                    self.exit_scope();
+                }
             }
             _ => {}
         }
@@ -564,6 +576,13 @@ impl<'a> TypeChecker<'a> {
             Statement::ClassDecl(class) => {
                 self.sync_class_scopes(class);
             }
+            Statement::TypeAliasDecl(alias) => {
+                // Sync scope for generic type aliases (binder creates a scope for type params)
+                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                    self.enter_scope();
+                    self.exit_scope();
+                }
+            }
             // Other statements don't create scopes
             _ => {}
         }
@@ -729,10 +748,20 @@ impl<'a> TypeChecker<'a> {
 
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
-        // Check condition is boolean
+        // Check condition — allow any type (truthiness), not just boolean
         let cond_ty = self.check_expr(&if_stmt.condition);
         let bool_ty = self.type_ctx.boolean_type();
-        self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
+        // Only enforce boolean for non-union, non-nullable types
+        // TypeScript allows any expression in if-conditions (truthiness)
+        let is_union_or_nullable = matches!(
+            self.type_ctx.get(cond_ty),
+            Some(crate::parser::types::Type::Union(_))
+                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::String))
+                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::Number))
+        );
+        if !is_union_or_nullable {
+            self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
+        }
 
         // Try to extract type guard from condition
         let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
@@ -1107,6 +1136,7 @@ impl<'a> TypeChecker<'a> {
                 // Add can be either numeric or string concatenation
                 let string_ty = self.type_ctx.string_type();
                 let number_ty = self.type_ctx.number_type();
+                let int_ty = self.type_ctx.int_type();
 
                 // Check if either operand IS a string type (exact match or assignable)
                 let left_is_string = left_ty == string_ty;
@@ -1117,8 +1147,11 @@ impl<'a> TypeChecker<'a> {
                     self.check_assignable(left_ty, string_ty, *bin.left.span());
                     self.check_assignable(right_ty, string_ty, *bin.right.span());
                     string_ty
+                } else if left_ty == int_ty && right_ty == int_ty {
+                    // int + int = int
+                    int_ty
                 } else {
-                    // Numeric addition
+                    // Numeric addition (mixed int/number promotes to number)
                     self.check_assignable(left_ty, number_ty, *bin.left.span());
                     self.check_assignable(right_ty, number_ty, *bin.right.span());
                     number_ty
@@ -1130,11 +1163,17 @@ impl<'a> TypeChecker<'a> {
             | BinaryOperator::Divide
             | BinaryOperator::Modulo
             | BinaryOperator::Exponent => {
-                // Arithmetic operations require number operands
+                // Arithmetic operations require numeric operands
                 let number_ty = self.type_ctx.number_type();
-                self.check_assignable(left_ty, number_ty, *bin.left.span());
-                self.check_assignable(right_ty, number_ty, *bin.right.span());
-                number_ty
+                let int_ty = self.type_ctx.int_type();
+                if left_ty == int_ty && right_ty == int_ty {
+                    // int op int = int
+                    int_ty
+                } else {
+                    self.check_assignable(left_ty, number_ty, *bin.left.span());
+                    self.check_assignable(right_ty, number_ty, *bin.right.span());
+                    number_ty
+                }
             }
 
             BinaryOperator::Equal
@@ -1155,11 +1194,11 @@ impl<'a> TypeChecker<'a> {
             | BinaryOperator::LeftShift
             | BinaryOperator::RightShift
             | BinaryOperator::UnsignedRightShift => {
-                // Bitwise operations require number operands
+                // Bitwise operations require numeric operands and produce int
                 let number_ty = self.type_ctx.number_type();
                 self.check_assignable(left_ty, number_ty, *bin.left.span());
                 self.check_assignable(right_ty, number_ty, *bin.right.span());
-                number_ty
+                self.type_ctx.int_type()
             }
         }
     }
@@ -2125,9 +2164,20 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Handle Union types: if the union contains a class and null, look up member on the class
+        // Check for object type properties (from type aliases like `type Point = { x: number }`)
+        if let Some(crate::parser::types::Type::Object(obj)) = &obj_type {
+            for prop in &obj.properties {
+                if prop.name == property_name {
+                    return prop.ty;
+                }
+            }
+        }
+
+        // Handle Union types: look up member on any union variant that has it
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();
+
+            // Try Class members first (nullable class unions)
             let class_members: Vec<_> = union.members.iter()
                 .filter(|&&m| m != null_ty)
                 .filter_map(|&m| {
@@ -2139,6 +2189,47 @@ impl<'a> TypeChecker<'a> {
             if class_members.len() == 1 {
                 if let Some((ty, _vis)) = self.lookup_class_member(&class_members[0], &property_name) {
                     return ty;
+                }
+            }
+
+            // Try Object members (for discriminated unions: type X = | { a: T } | { b: U })
+            let mut found_types = Vec::new();
+            for &member_id in &union.members {
+                if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(member_id) {
+                    for prop in &obj.properties {
+                        if prop.name == property_name && !found_types.contains(&prop.ty) {
+                            found_types.push(prop.ty);
+                        }
+                    }
+                }
+            }
+            if found_types.len() == 1 {
+                return found_types[0];
+            } else if found_types.len() > 1 {
+                return self.type_ctx.union_type(found_types);
+            }
+        }
+
+        // Handle TypeVar with constraint: delegate member access to the constraint type
+        if let Some(crate::parser::types::Type::TypeVar(tv)) = &obj_type {
+            if let Some(constraint_id) = tv.constraint {
+                if let Some(constraint_type) = self.type_ctx.get(constraint_id).cloned() {
+                    // Look up member on the constraint type (Object or Class)
+                    match &constraint_type {
+                        crate::parser::types::Type::Object(obj) => {
+                            for prop in &obj.properties {
+                                if prop.name == property_name {
+                                    return prop.ty;
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Class(class) => {
+                            if let Some((ty, _vis)) = self.lookup_class_member(class, &property_name) {
+                                return ty;
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -2402,8 +2493,8 @@ impl<'a> TypeChecker<'a> {
             "toFixed" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
             // toPrecision(precision: number) -> string
             "toPrecision" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toString(radix: number) -> string
-            "toString" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // toString(radix?: number) -> string
+            "toString" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             _ => None,
         }
     }
@@ -2612,13 +2703,13 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.array_type(never);
         }
 
-        // Find first non-None element to infer type
-        let first_ty = arr.elements.iter()
-            .find_map(|elem_opt| {
-                elem_opt.as_ref().map(|elem| match elem {
+        // Collect all distinct element types to compute a unified element type
+        let mut elem_types = Vec::new();
+        for elem_opt in &arr.elements {
+            if let Some(elem) = elem_opt {
+                let elem_ty = match elem {
                     ArrayElement::Expression(expr) => self.check_expr(expr),
                     ArrayElement::Spread(expr) => {
-                        // For spread, extract element type from the array type
                         let spread_ty = self.check_expr(expr);
                         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
                             arr_ty.element
@@ -2626,31 +2717,23 @@ impl<'a> TypeChecker<'a> {
                             spread_ty
                         }
                     }
-                })
-            })
-            .unwrap_or_else(|| self.type_ctx.unknown_type());
-
-        // Check all elements have compatible types
-        for elem_opt in &arr.elements {
-            if let Some(elem) = elem_opt {
-                let (elem_ty, elem_span) = match elem {
-                    ArrayElement::Expression(expr) => (self.check_expr(expr), *expr.span()),
-                    ArrayElement::Spread(expr) => {
-                        let spread_ty = self.check_expr(expr);
-                        let resolved = if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
-                            arr_ty.element
-                        } else {
-                            spread_ty
-                        };
-                        (resolved, *expr.span())
-                    }
                 };
-                // TODO: Compute union type instead of requiring exact match
-                self.check_assignable(elem_ty, first_ty, elem_span);
+                if !elem_types.contains(&elem_ty) {
+                    elem_types.push(elem_ty);
+                }
             }
         }
 
-        self.type_ctx.array_type(first_ty)
+        // If all elements are the same type, use that; otherwise create a union
+        let unified_ty = if elem_types.len() == 1 {
+            elem_types[0]
+        } else if elem_types.is_empty() {
+            self.type_ctx.unknown_type()
+        } else {
+            self.type_ctx.union_type(elem_types)
+        };
+
+        self.type_ctx.array_type(unified_ty)
     }
 
     /// Check object literal
@@ -2922,6 +3005,24 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.resolve_type_annotation(t))
                     .collect();
                 self.type_ctx.union_type(member_tys)
+            }
+
+            AstType::Intersection(intersection) => {
+                // Merge constituent types into a single Object type
+                let mut merged_properties = Vec::new();
+                for ty_annot in &intersection.types {
+                    let ty_id = self.resolve_type_annotation(ty_annot);
+                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
+                        if let crate::parser::types::Type::Object(obj) = ty {
+                            for prop in &obj.properties {
+                                if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                    merged_properties.push(prop.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                self.type_ctx.object_type(merged_properties)
             }
 
             AstType::Function(func) => {

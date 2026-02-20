@@ -31,6 +31,9 @@ pub enum Type {
     /// Union type: number | string | null
     Union(UnionType),
 
+    /// Intersection type: A & B
+    Intersection(IntersectionType),
+
     /// Function type: (x: number) => number
     Function(FunctionType),
 
@@ -154,6 +157,12 @@ impl TypeReference {
 /// Union type: A | B | C
 #[derive(Debug, Clone, PartialEq)]
 pub struct UnionType {
+    pub types: Vec<TypeAnnotation>,
+}
+
+/// Intersection type: A & B & C
+#[derive(Debug, Clone, PartialEq)]
+pub struct IntersectionType {
     pub types: Vec<TypeAnnotation>,
 }
 

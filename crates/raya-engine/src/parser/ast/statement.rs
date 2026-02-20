@@ -184,6 +184,9 @@ pub struct Parameter {
     /// Decorators (@inject, @validate, etc.)
     pub decorators: Vec<Decorator>,
 
+    /// Visibility modifier for constructor parameter properties (e.g., `public x: number`)
+    pub visibility: Option<Visibility>,
+
     pub pattern: Pattern,
     pub type_annotation: Option<TypeAnnotation>,
     /// Default value for the parameter (e.g., `x: number = 10`)

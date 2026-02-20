@@ -3,7 +3,7 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{Type, TypeId};
+use super::ty::{PrimitiveType, Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Context for checking subtyping relationships
@@ -53,8 +53,30 @@ impl<'a> SubtypingContext<'a> {
             // Everything is subtype of Unknown (Unknown is top type)
             (_, Type::Unknown) => true,
 
-            // Primitive subtyping (only reflexive)
-            (Type::Primitive(p1), Type::Primitive(p2)) => p1 == p2,
+            // Primitive subtyping (reflexive + int <-> number interop)
+            (Type::Primitive(p1), Type::Primitive(p2)) => {
+                p1 == p2
+                    || matches!(
+                        (p1, p2),
+                        (PrimitiveType::Int, PrimitiveType::Number)
+                            | (PrimitiveType::Number, PrimitiveType::Int)
+                    )
+            }
+
+            // Literal type subtyping: "ok" <: string, 42 <: number, true <: boolean
+            (Type::StringLiteral(_), Type::Primitive(PrimitiveType::String)) => true,
+            (Type::NumberLiteral(_), Type::Primitive(PrimitiveType::Number)) => true,
+            (Type::BooleanLiteral(_), Type::Primitive(PrimitiveType::Boolean)) => true,
+
+            // Widening: string <: "ok" (allows assignment of string values to literal types)
+            (Type::Primitive(PrimitiveType::String), Type::StringLiteral(_)) => true,
+            (Type::Primitive(PrimitiveType::Number), Type::NumberLiteral(_)) => true,
+            (Type::Primitive(PrimitiveType::Boolean), Type::BooleanLiteral(_)) => true,
+
+            // Literal type reflexivity (same literal values)
+            (Type::StringLiteral(a), Type::StringLiteral(b)) => a == b,
+            (Type::NumberLiteral(a), Type::NumberLiteral(b)) => a == b,
+            (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
 
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
             (_, Type::Union(union)) => {
@@ -117,6 +139,34 @@ impl<'a> SubtypingContext<'a> {
                             && p1.optional == p2.optional
                             && (!p2.readonly || p1.readonly) // readonly in sup => readonly in sub
                             && self.is_subtype(p1.ty, p2.ty)
+                    })
+                })
+            }
+
+            // Class <: Object (structural): class instance <: object type
+            (Type::Class(c), Type::Object(o)) => {
+                o.properties.iter().all(|op| {
+                    // Check class properties
+                    c.properties.iter().any(|cp| {
+                        cp.name == op.name
+                            && cp.optional == op.optional
+                            && (!op.readonly || cp.readonly)
+                            && self.is_subtype(cp.ty, op.ty)
+                    })
+                    // Also check class methods (methods are stored separately from properties)
+                    || c.methods.iter().any(|cm| {
+                        cm.name == op.name && self.is_subtype(cm.ty, op.ty)
+                    })
+                })
+            }
+
+            // Object <: Object-like Class (structural)
+            (Type::Object(o), Type::Class(c)) => {
+                c.properties.iter().all(|cp| {
+                    o.properties.iter().any(|op| {
+                        op.name == cp.name
+                            && op.optional == cp.optional
+                            && self.is_subtype(op.ty, cp.ty)
                     })
                 })
             }

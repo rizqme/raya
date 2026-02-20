@@ -112,6 +112,25 @@ pub fn apply_type_guard(
         TypeGuard::TypePredicate { predicate, negated, .. } => {
             apply_type_predicate_guard(ctx, ty, predicate, *negated)
         }
+        TypeGuard::Truthiness { negated, .. } => {
+            // Truthiness narrows by removing null (and potentially other falsy types)
+            let null_ty = ctx.null_type();
+            if !negated {
+                // Truthy branch: remove null from union
+                remove_from_union(ctx, ty, null_ty)
+            } else {
+                // Falsy branch: narrow to null (or keep as-is for non-nullable)
+                if let Some(Type::Union(union)) = ctx.get(ty) {
+                    if union.members.contains(&null_ty) {
+                        Some(null_ty)
+                    } else {
+                        Some(ty)
+                    }
+                } else {
+                    Some(ty)
+                }
+            }
+        }
     }
 }
 
@@ -226,17 +245,20 @@ fn apply_discriminant_guard(
 
     match type_def {
         Type::Union(union_ty) => {
-            // Filter union members based on discriminant
+            // Filter union members based on discriminant value
             let mut matching_members = Vec::new();
 
             for member_id in &union_ty.members {
                 if let Some(Type::Object(obj)) = ctx.get(*member_id) {
                     // Check if this member has the discriminant field
                     if let Some(prop) = obj.properties.iter().find(|p| p.name == field) {
-                        // For now, we assume discriminant fields match by property name
-                        // In a full implementation, we'd check the actual value
-                        // Since we don't have string literal types yet, we just check field existence
-                        if !negated {
+                        // Check if the discriminant field's type is a string literal matching the variant
+                        let matches_variant = match ctx.get(prop.ty) {
+                            Some(Type::StringLiteral(lit_val)) => lit_val == variant,
+                            _ => true, // Non-literal type: can't narrow precisely, include it
+                        };
+
+                        if (!negated && matches_variant) || (negated && !matches_variant) {
                             matching_members.push(*member_id);
                         }
                     } else if negated {

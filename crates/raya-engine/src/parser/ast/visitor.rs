@@ -579,6 +579,11 @@ pub fn walk_type_annotation<V: Visitor>(visitor: &mut V, ty: &TypeAnnotation) {
             }
         }
         Type::Union(union) => visitor.visit_union_type(union),
+        Type::Intersection(intersection) => {
+            for ty in &intersection.types {
+                visitor.visit_type_annotation(ty);
+            }
+        }
         Type::Function(func) => visitor.visit_function_type(func),
         Type::Array(arr) => visitor.visit_type_annotation(&arr.element_type),
         Type::Tuple(tuple) => {

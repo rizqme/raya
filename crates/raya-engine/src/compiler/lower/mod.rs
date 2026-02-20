@@ -206,6 +206,8 @@ struct ClassInfo {
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
     parent_class: Option<ClassId>,
+    /// Type arg substitutions for generic parent (param_name → concrete TypeId)
+    extends_type_subs: Option<std::collections::HashMap<String, TypeId>>,
     /// Number of vtable method slots (including inherited)
     method_slot_count: u16,
     /// Class-level decorators (applied bottom-to-top)
@@ -401,6 +403,8 @@ pub struct Lowerer<'a> {
     native_function_map: FxHashMap<String, u16>,
     /// JSX compilation options (None = JSX not enabled)
     jsx_options: Option<JsxOptions>,
+    /// Type parameter names for generic classes (ClassId → ["T", "E", ...])
+    class_type_params: FxHashMap<ClassId, Vec<String>>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -471,6 +475,7 @@ impl<'a> Lowerer<'a> {
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
             jsx_options: None,
+            class_type_params: FxHashMap::default(),
         }
     }
 
@@ -1352,9 +1357,27 @@ impl<'a> Lowerer<'a> {
         // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
 
+        // Store type parameter names for generic classes
+        if let Some(ref type_params) = class.type_params {
+            if !type_params.is_empty() {
+                let param_names: Vec<String> = type_params.iter()
+                    .map(|tp| self.interner.resolve(tp.name.name).to_string())
+                    .collect();
+                self.class_type_params.insert(class_id, param_names);
+            }
+        }
+
         // Resolve parent class if extends clause is present
+        let mut extends_type_args: Option<Vec<TypeId>> = None;
         let parent_class = if let Some(ref extends) = class.extends {
             if let ast::Type::Reference(type_ref) = &extends.ty {
+                // Extract type arguments from extends clause (e.g., Base<string>)
+                if let Some(ref type_args) = type_ref.type_args {
+                    let resolved: Vec<TypeId> = type_args.iter()
+                        .map(|ta| self.resolve_type_annotation(ta))
+                        .collect();
+                    extends_type_args = Some(resolved);
+                }
                 self.class_map.get(&type_ref.name.name).copied()
             } else {
                 None
@@ -1368,11 +1391,39 @@ impl<'a> Lowerer<'a> {
         let mut static_fields = Vec::new();
 
         // Start field index after ALL ancestor fields (not just immediate parent)
-        let parent_fields = if let Some(parent_id) = parent_class {
+        let mut parent_fields = if let Some(parent_id) = parent_class {
             self.get_all_fields(parent_id)
         } else {
             Vec::new()
         };
+
+        // If extends has type args (e.g., extends Base<string>), build substitution
+        // map and substitute parent field types with concrete types
+        let extends_type_subs = if let Some(ref type_args) = extends_type_args {
+            if let Some(parent_id) = parent_class {
+                if let Some(parent_type_params) = self.class_type_params.get(&parent_id).cloned() {
+                    if parent_type_params.len() == type_args.len() {
+                        // Build TypeVar name → concrete TypeId mapping
+                        let subs: std::collections::HashMap<String, TypeId> = parent_type_params.iter()
+                            .zip(type_args.iter())
+                            .map(|(name, &ty)| (name.clone(), ty))
+                            .collect();
+
+                        // Substitute type parameter field types with concrete types
+                        // Uses field.type_name (original type annotation name) since
+                        // the lowerer maps unknown type refs to TypeId(7), not TypeVar
+                        for field in &mut parent_fields {
+                            if let Some(ref name) = field.type_name {
+                                if let Some(&concrete_ty) = subs.get(name.as_str()) {
+                                    field.ty = concrete_ty;
+                                }
+                            }
+                        }
+                        Some(subs)
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
         let mut field_index = parent_fields.len() as u16;
 
         for member in &class.members {
@@ -1438,6 +1489,34 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Add fields from constructor parameter properties (e.g., `constructor(public x: number)`)
+        for member in &class.members {
+            if let ast::ClassMember::Constructor(ctor) = member {
+                for param in &ctor.params {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| self.resolve_type_annotation(t))
+                                .unwrap_or(TypeId::new(0));
+                            let idx = field_index;
+                            field_index += 1;
+                            fields.push(ClassFieldInfo {
+                                name: ident.name,
+                                index: idx,
+                                ty,
+                                initializer: None,
+                                class_type: None,
+                                type_name: None,
+                            });
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
         // Collect instance and static method information
         let mut methods = Vec::new();
         let mut static_methods_vec = Vec::new();
@@ -1482,6 +1561,20 @@ impl<'a> Lowerer<'a> {
             .and_then(|pid| self.class_info_map.get(&pid))
             .map_or(0, |info| info.method_slot_count);
         let mut next_slot = parent_slot_count;
+
+        // Reserve vtable slots for abstract methods first (they have no body
+        // but need slots so derived classes override at the correct position)
+        for member in &class.members {
+            if let ast::ClassMember::Method(method) = member {
+                if method.body.is_none() && !method.is_static {
+                    let method_name = method.name.name;
+                    let slot = self.find_parent_method_slot(parent_class, method_name)
+                        .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
+                    self.method_slot_map.insert((class_id, method_name), slot);
+                }
+            }
+        }
+
         for method_info in &methods {
             let slot = self.find_parent_method_slot(parent_class, method_info.name)
                 .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
@@ -1585,6 +1678,7 @@ impl<'a> Lowerer<'a> {
                 static_fields,
                 static_methods: static_methods_vec,
                 parent_class,
+                extends_type_subs,
                 method_slot_count,
                 class_decorators,
                 method_decorators,
@@ -1825,6 +1919,36 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Add fields from constructor parameter properties (e.g., `constructor(public x: number)`)
+        for member in &class.members {
+            if let ast::ClassMember::Constructor(ctor) = member {
+                for param in &ctor.params {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            let field_name = self.interner.resolve(ident.name);
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| self.resolve_type_annotation(t))
+                                .unwrap_or(TypeId::new(0));
+                            let index = class_info
+                                .as_ref()
+                                .and_then(|info| {
+                                    info.fields
+                                        .iter()
+                                        .find(|f| f.name == ident.name)
+                                        .map(|f| f.index)
+                                })
+                                .unwrap_or(0);
+                            let ir_field = IrField::new(field_name, ty, index);
+                            ir_class.add_field(ir_field);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
         // Lower methods (instance methods have 'this' as first parameter, static methods don't)
         for member in &class.members {
             if let ast::ClassMember::Method(method) = member {
@@ -1988,6 +2112,16 @@ impl<'a> Lowerer<'a> {
                     params.push(reg);
                 }
 
+                // Collect parameter property registers before params is moved
+                let mut param_prop_regs: Vec<(Symbol, Register)> = Vec::new();
+                for (i, param) in ctor.params.iter().enumerate() {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            param_prop_regs.push((ident.name, params[i + 1].clone()));
+                        }
+                    }
+                }
+
                 // Constructors implicitly return void
                 let return_ty = TypeId::new(0);
 
@@ -2003,6 +2137,21 @@ impl<'a> Lowerer<'a> {
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
+
+                // Emit field assignments for constructor parameter properties
+                for (param_name, param_reg) in &param_prop_regs {
+                    let field_name_str = self.interner.resolve(*param_name);
+                    let all_fields = self.get_all_fields(class_id);
+                    if let Some(fi) = all_fields.iter().find(|f| self.interner.resolve(f.name) == field_name_str) {
+                        let field_idx = fi.index;
+                        let this_reg = self.this_register.clone().unwrap();
+                        self.emit(IrInstr::StoreField {
+                            object: this_reg,
+                            field: field_idx,
+                            value: param_reg.clone(),
+                        });
+                    }
+                }
 
                 // Lower constructor body
                 for stmt in &ctor.body.statements {

@@ -44,5 +44,15 @@ mod narrowing;
 mod inheritance;
 mod scope_analysis;
 
+// TypeScript conformance test adaptations
+mod ts_type_aliases;
+mod ts_generics;
+mod ts_abstract_classes;
+mod ts_discriminated_unions;
+mod ts_intersection_types;
+mod ts_advanced_classes;
+mod ts_narrowing;
+mod ts_int_number;
+
 
 pub use harness::*;

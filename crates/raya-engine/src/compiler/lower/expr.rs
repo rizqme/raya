@@ -445,6 +445,17 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
+        // Check if this is a named function used as a value (function reference)
+        if let Some(&func_id) = self.function_map.get(&ident.name) {
+            let dest = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::MakeClosure {
+                dest: dest.clone(),
+                func: func_id,
+                captures: vec![],
+            });
+            return dest;
+        }
+
         // Unknown variable - could be a global or error
         // For now, return a null placeholder
         self.lower_null_literal()
@@ -1060,6 +1071,17 @@ impl<'a> Lowerer<'a> {
                             args: method_args,
                         });
                     }
+                    return dest;
+                } else if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name_symbol)) {
+                    // Abstract method with vtable slot - use virtual dispatch.
+                    // The actual implementation is provided by a derived class.
+                    let object = self.lower_expr(&member.object);
+                    self.emit(IrInstr::CallMethod {
+                        dest: Some(dest.clone()),
+                        object,
+                        method: slot,
+                        args,
+                    });
                     return dest;
                 }
             }
@@ -2540,7 +2562,35 @@ impl<'a> Lowerer<'a> {
                 }
                 _ => None,
             };
-            (obj_field_idx.unwrap_or(0), TypeId::new(0))
+
+            if let Some(idx) = obj_field_idx {
+                (idx, TypeId::new(0))
+            } else {
+                // Fall back to type-based field resolution (for function parameters typed as object types)
+                let expr_ty = self.get_expr_type(&member.object);
+                let type_field_idx = self.type_ctx.get(expr_ty).and_then(|ty| {
+                    if let crate::parser::types::ty::Type::Object(obj) = ty {
+                        obj.properties.iter().enumerate().find_map(|(i, p)| {
+                            if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
+                        })
+                    } else if let crate::parser::types::ty::Type::Union(union) = ty {
+                        // Search union members for the property
+                        for &member_id in &union.members {
+                            if let Some(crate::parser::types::ty::Type::Object(obj)) = self.type_ctx.get(member_id) {
+                                if let Some(result) = obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                    if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
+                                }) {
+                                    return Some(result);
+                                }
+                            }
+                        }
+                        None
+                    } else {
+                        None
+                    }
+                });
+                type_field_idx.unwrap_or((0, TypeId::new(0)))
+            }
         };
 
         // Fall back to field access for objects
@@ -3752,13 +3802,27 @@ impl<'a> Lowerer<'a> {
 
     /// Get all fields for a class, including inherited fields from parent classes.
     /// Returns fields in order: parent fields first, then child fields.
+    /// When a child extends a generic parent (e.g., `extends Base<string>`),
+    /// parent field types are substituted with concrete type arguments.
     pub(super) fn get_all_fields(&self, class_id: ClassId) -> Vec<ClassFieldInfo> {
         let mut all_fields = Vec::new();
 
-        // First, get parent fields (recursively)
         if let Some(class_info) = self.class_info_map.get(&class_id) {
             if let Some(parent_id) = class_info.parent_class {
-                all_fields.extend(self.get_all_fields(parent_id));
+                let mut parent_fields = self.get_all_fields(parent_id);
+                // Apply type substitutions for generic parent classes
+                // Uses field.type_name (original type annotation name) since
+                // the lowerer maps unknown type refs to TypeId(7), not TypeVar
+                if let Some(ref subs) = class_info.extends_type_subs {
+                    for field in &mut parent_fields {
+                        if let Some(ref name) = field.type_name {
+                            if let Some(&concrete_ty) = subs.get(name.as_str()) {
+                                field.ty = concrete_ty;
+                            }
+                        }
+                    }
+                }
+                all_fields.extend(parent_fields);
             }
             // Then add this class's fields
             all_fields.extend(class_info.fields.clone());
@@ -4022,10 +4086,13 @@ impl<'a> Lowerer<'a> {
         if op.is_comparison() || op.is_logical() {
             TypeId::new(2) // Boolean type
         } else {
-            // Mixed int+number promotes to number (f64)
             let l = left.ty.as_u32();
             let r = right.ty.as_u32();
-            if l == 0 || r == 0 {
+            // String concatenation: if either operand is a string, result is string
+            if matches!(op, BinaryOp::Add) && (l == 1 || r == 1) {
+                TypeId::new(1) // String type
+            } else if l == 0 || r == 0 {
+                // Mixed int+number promotes to number (f64)
                 TypeId::new(0) // number (f64)
             } else {
                 left.ty
