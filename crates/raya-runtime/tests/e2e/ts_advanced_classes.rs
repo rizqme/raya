@@ -18,7 +18,6 @@ use super::harness::*;
 // ============================================================================
 
 #[test]
-#[ignore = "constructor parameter properties (public x: T) not yet parsed"]
 fn test_constructor_parameter_property_public() {
     expect_i32(
         "class Point {
@@ -31,7 +30,6 @@ fn test_constructor_parameter_property_public() {
 }
 
 #[test]
-#[ignore = "constructor parameter properties (public x: T) not yet parsed"]
 fn test_constructor_parameter_property_mixed() {
     expect_string(
         "class User {
@@ -44,7 +42,6 @@ fn test_constructor_parameter_property_mixed() {
 }
 
 #[test]
-#[ignore = "constructor parameter properties (public x: T) not yet parsed"]
 fn test_constructor_param_props_with_body() {
     expect_i32(
         "class Counter {
@@ -70,7 +67,6 @@ fn test_constructor_param_props_with_body() {
 // ============================================================================
 
 #[test]
-#[ignore = "constructor parameter properties (public x: T) not yet parsed"]
 fn test_param_props_with_inheritance() {
     expect_i32(
         "class Base {

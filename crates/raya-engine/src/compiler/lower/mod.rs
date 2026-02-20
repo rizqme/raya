@@ -1438,6 +1438,34 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Add fields from constructor parameter properties (e.g., `constructor(public x: number)`)
+        for member in &class.members {
+            if let ast::ClassMember::Constructor(ctor) = member {
+                for param in &ctor.params {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| self.resolve_type_annotation(t))
+                                .unwrap_or(TypeId::new(0));
+                            let idx = field_index;
+                            field_index += 1;
+                            fields.push(ClassFieldInfo {
+                                name: ident.name,
+                                index: idx,
+                                ty,
+                                initializer: None,
+                                class_type: None,
+                                type_name: None,
+                            });
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
         // Collect instance and static method information
         let mut methods = Vec::new();
         let mut static_methods_vec = Vec::new();
@@ -1839,6 +1867,36 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        // Add fields from constructor parameter properties (e.g., `constructor(public x: number)`)
+        for member in &class.members {
+            if let ast::ClassMember::Constructor(ctor) = member {
+                for param in &ctor.params {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            let field_name = self.interner.resolve(ident.name);
+                            let ty = param
+                                .type_annotation
+                                .as_ref()
+                                .map(|t| self.resolve_type_annotation(t))
+                                .unwrap_or(TypeId::new(0));
+                            let index = class_info
+                                .as_ref()
+                                .and_then(|info| {
+                                    info.fields
+                                        .iter()
+                                        .find(|f| f.name == ident.name)
+                                        .map(|f| f.index)
+                                })
+                                .unwrap_or(0);
+                            let ir_field = IrField::new(field_name, ty, index);
+                            ir_class.add_field(ir_field);
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
         // Lower methods (instance methods have 'this' as first parameter, static methods don't)
         for member in &class.members {
             if let ast::ClassMember::Method(method) = member {
@@ -2002,6 +2060,16 @@ impl<'a> Lowerer<'a> {
                     params.push(reg);
                 }
 
+                // Collect parameter property registers before params is moved
+                let mut param_prop_regs: Vec<(Symbol, Register)> = Vec::new();
+                for (i, param) in ctor.params.iter().enumerate() {
+                    if param.visibility.is_some() {
+                        if let ast::Pattern::Identifier(ident) = &param.pattern {
+                            param_prop_regs.push((ident.name, params[i + 1].clone()));
+                        }
+                    }
+                }
+
                 // Constructors implicitly return void
                 let return_ty = TypeId::new(0);
 
@@ -2017,6 +2085,21 @@ impl<'a> Lowerer<'a> {
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);
+
+                // Emit field assignments for constructor parameter properties
+                for (param_name, param_reg) in &param_prop_regs {
+                    let field_name_str = self.interner.resolve(*param_name);
+                    let all_fields = self.get_all_fields(class_id);
+                    if let Some(fi) = all_fields.iter().find(|f| self.interner.resolve(f.name) == field_name_str) {
+                        let field_idx = fi.index;
+                        let this_reg = self.this_register.clone().unwrap();
+                        self.emit(IrInstr::StoreField {
+                            object: this_reg,
+                            field: field_idx,
+                            value: param_reg.clone(),
+                        });
+                    }
+                }
 
                 // Lower constructor body
                 for stmt in &ctor.body.statements {

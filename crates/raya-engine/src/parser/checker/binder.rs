@@ -1393,6 +1393,28 @@ impl<'a> Binder<'a> {
                         methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params));
                     }
                 }
+                ClassMember::Constructor(ctor) => {
+                    // Register constructor parameter properties (e.g., `constructor(public x: number)`)
+                    for param in &ctor.params {
+                        if let Some(vis) = param.visibility {
+                            if let crate::parser::ast::Pattern::Identifier(ident) = &param.pattern {
+                                let field_name = self.resolve(ident.name);
+                                let field_ty = if let Some(ref ann) = param.type_annotation {
+                                    self.resolve_type_annotation(ann)?
+                                } else {
+                                    self.type_ctx.unknown_type()
+                                };
+                                properties.push(PropertySignature {
+                                    name: field_name,
+                                    ty: field_ty,
+                                    optional: false,
+                                    readonly: false,
+                                    visibility: vis,
+                                });
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
         }
