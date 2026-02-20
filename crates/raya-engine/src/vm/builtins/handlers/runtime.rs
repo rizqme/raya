@@ -225,6 +225,8 @@ struct VmInstanceEntry {
     is_alive: bool,
     /// Permission policy
     permissions: VmPermissions,
+    /// Debug state for debugger coordination (None = no debugger)
+    debug_state: Option<std::sync::Arc<crate::vm::interpreter::DebugState>>,
 }
 
 /// Global registry of VM instances
@@ -260,6 +262,7 @@ impl VmInstanceRegistry {
             children: Vec::new(),
             is_alive: true,
             permissions: VmPermissions::root(),
+            debug_state: None,
         });
         id
     }
@@ -277,6 +280,7 @@ impl VmInstanceRegistry {
             children: Vec::new(),
             is_alive: true,
             permissions: VmPermissions::child_default(),
+            debug_state: None,
         });
         // Register child in parent
         if let Some(parent) = self.instances.get_mut(&parent_id) {
@@ -1000,9 +1004,17 @@ pub fn call_runtime_method(
 
             let registry = VM_INSTANCE_REGISTRY.lock();
             let is_root = registry.root_id == Some(handle);
+            let has_debug = registry.instances.get(&handle)
+                .map(|e| e.debug_state.is_some())
+                .unwrap_or(false);
             drop(registry);
 
-            let module = compile_source(&source)?;
+            // When debug mode is enabled, compile with sourcemap for line mapping
+            let module = if has_debug {
+                compile_source_debug(&source)?
+            } else {
+                compile_source(&source)?
+            };
 
             if is_root {
                 // Root delegates to global registry
@@ -1342,6 +1354,401 @@ pub fn call_runtime_method(
             Value::bool(has)
         }
 
+        // =================================================================
+        // VmInstance Debug Control (0x3070-0x3081)
+        // =================================================================
+
+        runtime::VM_ENABLE_DEBUG => {
+            // instance.enableDebug(): activate DebugState for child VM
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("enableDebug requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let mut registry = VM_INSTANCE_REGISTRY.lock();
+            let entry = registry.instances.get_mut(&handle)
+                .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+            if !entry.is_alive {
+                return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+            }
+
+            let ds = std::sync::Arc::new(crate::vm::interpreter::DebugState::new());
+
+            // Attach to child VM's SharedVmState so interpreter can see it
+            if let Some(ref vm) = entry.vm {
+                *vm.shared_state().debug_state.lock() = Some(ds.clone());
+            }
+            entry.debug_state = Some(ds);
+            Value::null()
+        }
+
+        runtime::VM_DEBUG_RUN => {
+            // instance.debugRun(moduleId): run module in debug mode
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("debugRun requires 2 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let module_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))? as u32;
+
+            // Take Vm, module, and debug state from registry
+            let (module, mut vm, ds) = {
+                let mut registry = VM_INSTANCE_REGISTRY.lock();
+                let entry = registry.instances.get_mut(&handle)
+                    .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                if !entry.is_alive {
+                    return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                }
+                let module = entry.modules.get(module_id)
+                    .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?
+                    .clone();
+                let vm = entry.vm.take()
+                    .ok_or_else(|| VmError::RuntimeError("VM instance is currently in use".to_string()))?;
+                let ds = entry.debug_state.clone()
+                    .ok_or_else(|| VmError::RuntimeError("Debug not enabled — call enableDebug() first".to_string()))?;
+                (module, vm, ds)
+            };
+
+            ds.active.store(true, std::sync::atomic::Ordering::Release);
+
+            // Register module & spawn main task in child scheduler
+            let module_arc = std::sync::Arc::new(module.clone());
+            vm.shared_state().register_module(module_arc.clone())
+                .map_err(|e| VmError::RuntimeError(e))?;
+
+            let main_fn_id = module.functions.iter()
+                .position(|f| f.name == "main")
+                .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
+
+            let main_task = std::sync::Arc::new(
+                crate::vm::scheduler::Task::new(main_fn_id, module_arc, None)
+            );
+            vm.scheduler().spawn(main_task)
+                .ok_or_else(|| VmError::RuntimeError("Failed to spawn main task".to_string()))?;
+
+            // Block parent thread until child pauses or completes
+            let phase = ds.wait_for_pause();
+
+            // Park Vm back in registry (child worker is blocked on condvar)
+            {
+                let mut registry = VM_INSTANCE_REGISTRY.lock();
+                if let Some(entry) = registry.instances.get_mut(&handle) {
+                    entry.vm = Some(vm);
+                }
+            }
+
+            debug_phase_to_value(ctx, phase)?
+        }
+
+        runtime::VM_DEBUG_CONTINUE => {
+            // instance.debugContinue(): resume until next pause
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugContinue requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            ds.signal_resume(crate::vm::interpreter::debug_state::StepMode::None);
+            let phase = ds.wait_for_pause();
+            debug_phase_to_value(ctx, phase)?
+        }
+
+        runtime::VM_DEBUG_STEP_OVER => {
+            // instance.debugStepOver(): step to next line at same or lower depth
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugStepOver requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let depth = ds.pause_depth.load(std::sync::atomic::Ordering::Acquire) as usize;
+            let line = ds.pause_line.load(std::sync::atomic::Ordering::Acquire);
+            ds.signal_resume(crate::vm::interpreter::debug_state::StepMode::Over {
+                target_depth: depth,
+                start_line: line,
+            });
+            let phase = ds.wait_for_pause();
+            debug_phase_to_value(ctx, phase)?
+        }
+
+        runtime::VM_DEBUG_STEP_INTO => {
+            // instance.debugStepInto(): step to next line at any depth
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugStepInto requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let line = ds.pause_line.load(std::sync::atomic::Ordering::Acquire);
+            ds.signal_resume(crate::vm::interpreter::debug_state::StepMode::Into {
+                start_line: line,
+            });
+            let phase = ds.wait_for_pause();
+            debug_phase_to_value(ctx, phase)?
+        }
+
+        runtime::VM_DEBUG_STEP_OUT => {
+            // instance.debugStepOut(): run until current function returns
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugStepOut requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let depth = ds.pause_depth.load(std::sync::atomic::Ordering::Acquire) as usize;
+            ds.signal_resume(crate::vm::interpreter::debug_state::StepMode::Out {
+                target_depth: depth,
+            });
+            let phase = ds.wait_for_pause();
+            debug_phase_to_value(ctx, phase)?
+        }
+
+        runtime::VM_SET_BREAKPOINT => {
+            // instance.setBreakpoint(file, line): returns bp_id
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError("setBreakpoint requires 3 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let file = get_string(args[1])?;
+            let line = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for line".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+
+            // Get module from child's registry for line table lookup
+            let module = get_child_module(handle)?;
+            let (func_id, offset) = ds.resolve_breakpoint(&module, &file, line)
+                .map_err(|e| VmError::RuntimeError(e))?;
+            let bp_id = ds.add_breakpoint(func_id, offset, file, line);
+            Value::i32(bp_id as i32)
+        }
+
+        runtime::VM_REMOVE_BREAKPOINT => {
+            // instance.removeBreakpoint(bpId)
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("removeBreakpoint requires 2 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let bp_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            ds.remove_breakpoint(bp_id);
+            Value::null()
+        }
+
+        runtime::VM_LIST_BREAKPOINTS => {
+            // instance.listBreakpoints(): JSON string
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("listBreakpoints requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let registry = ds.bp_registry.read();
+            let mut entries: Vec<String> = Vec::new();
+            for entry in registry.values() {
+                entries.push(format!(
+                    r#"{{"id":{},"file":"{}","line":{},"enabled":{},"hitCount":{}}}"#,
+                    entry.id, entry.file.replace('"', "\\\""), entry.line,
+                    entry.enabled, entry.hit_count,
+                ));
+            }
+            let json = format!("[{}]", entries.join(","));
+            allocate_string(ctx, json)
+        }
+
+        runtime::VM_DEBUG_STACK_TRACE => {
+            // instance.debugStackTrace(): JSON array of stack frames
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugStackTrace requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let pause_info = ds.pause_info.lock().unwrap();
+            if let Some(info) = pause_info.as_ref() {
+                // Build single-frame trace from pause info
+                // TODO: extend with full call frame stack when child task stack is accessible
+                let json = format!(
+                    r#"[{{"functionName":"{}","file":"{}","line":{},"column":{},"frameIndex":0}}]"#,
+                    info.function_name.replace('"', "\\\""),
+                    info.source_file.replace('"', "\\\""),
+                    info.line,
+                    info.column,
+                );
+                allocate_string(ctx, json)
+            } else {
+                allocate_string(ctx, "[]".to_string())
+            }
+        }
+
+        runtime::VM_DEBUG_GET_LOCALS => {
+            // instance.debugGetLocals(frameIndex): JSON array of locals
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("debugGetLocals requires 2 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let _frame_index = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for frameIndex".to_string()))?;
+
+            // Ensure debugger is attached and paused
+            let _ds = get_debug_state(handle)?;
+
+            // TODO: Read locals from paused task's stack once we expose task reference.
+            // For now, return empty array as a placeholder.
+            allocate_string(ctx, "[]".to_string())
+        }
+
+        runtime::VM_DEBUG_EVALUATE => {
+            // instance.debugEvaluate(expression): eval in paused context
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("debugEvaluate requires 2 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let _expr = get_string(args[1])?;
+
+            let _ds = get_debug_state(handle)?;
+
+            // TODO: Compile expression in child context, inject temporary task
+            allocate_string(ctx, "\"(evaluate not yet implemented)\"".to_string())
+        }
+
+        runtime::VM_DEBUG_LOCATION => {
+            // instance.debugLocation(): JSON with current pause location
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugLocation requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let pause_info = ds.pause_info.lock().unwrap();
+            if let Some(info) = pause_info.as_ref() {
+                let reason_str = match &info.reason {
+                    crate::vm::interpreter::debug_state::PauseReason::Breakpoint(id) => format!("breakpoint({})", id),
+                    crate::vm::interpreter::debug_state::PauseReason::Step => "step".to_string(),
+                    crate::vm::interpreter::debug_state::PauseReason::DebuggerStatement => "debugger".to_string(),
+                    crate::vm::interpreter::debug_state::PauseReason::Entry => "entry".to_string(),
+                };
+                let json = format!(
+                    r#"{{"file":"{}","line":{},"column":{},"functionName":"{}","reason":"{}"}}"#,
+                    info.source_file.replace('"', "\\\""),
+                    info.line,
+                    info.column,
+                    info.function_name.replace('"', "\\\""),
+                    reason_str,
+                );
+                allocate_string(ctx, json)
+            } else {
+                allocate_string(ctx, r#"{"error":"not paused"}"#.to_string())
+            }
+        }
+
+        runtime::VM_DEBUG_GET_SOURCE => {
+            // instance.debugGetSource(file, startLine, endLine): source text
+            if args.len() < 4 {
+                return Err(VmError::RuntimeError("debugGetSource requires 4 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let file = get_string(args[1])?;
+            let start_line = args[2].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for startLine".to_string()))? as usize;
+            let end_line = args[3].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for endLine".to_string()))? as usize;
+
+            let ds = get_debug_state(handle)?;
+
+            // Try source cache first, then fall back to filesystem
+            let source = {
+                let cache = ds.source_cache.read();
+                cache.get(&file).cloned()
+            }.or_else(|| std::fs::read_to_string(&file).ok());
+
+            if let Some(source) = source {
+                let lines: Vec<&str> = source.lines().collect();
+                let start = start_line.saturating_sub(1).min(lines.len());
+                let end = end_line.min(lines.len());
+                let selected: Vec<&str> = lines[start..end].to_vec();
+                allocate_string(ctx, selected.join("\n"))
+            } else {
+                allocate_string(ctx, format!("(source file '{}' not found)", file))
+            }
+        }
+
+        runtime::VM_DEBUG_IS_PAUSED => {
+            // instance.debugIsPaused(): boolean
+            if args.is_empty() {
+                return Err(VmError::RuntimeError("debugIsPaused requires handle".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            let ds = get_debug_state(handle)?;
+            let phase = ds.phase_lock.lock().unwrap();
+            let paused = matches!(*phase, crate::vm::interpreter::debug_state::DebugPhase::Paused);
+            Value::bool(paused)
+        }
+
+        runtime::VM_DEBUG_GET_VARIABLES => {
+            // instance.debugGetVariables(frameIndex): same as getLocals for now
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("debugGetVariables requires 2 arguments".to_string()));
+            }
+            let _handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+
+            // TODO: Read from paused task's stack
+            allocate_string(ctx, "[]".to_string())
+        }
+
+        runtime::VM_SET_BP_CONDITION => {
+            // instance.setBreakpointCondition(bpId, condition): set condition
+            if args.len() < 3 {
+                return Err(VmError::RuntimeError("setBreakpointCondition requires 3 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let bp_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))? as u32;
+            let condition = get_string(args[2])?;
+
+            let ds = get_debug_state(handle)?;
+            let mut registry = ds.bp_registry.write();
+            if let Some(entry) = registry.get_mut(&bp_id) {
+                entry.condition = Some(condition);
+            }
+            Value::null()
+        }
+
+        runtime::VM_DEBUG_BREAK_AT_ENTRY => {
+            // instance.debugBreakAtEntry(moduleId): break at first instruction
+            if args.len() < 2 {
+                return Err(VmError::RuntimeError("debugBreakAtEntry requires 2 arguments".to_string()));
+            }
+            let handle = args[0].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let _module_id = args[1].as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))?;
+
+            let ds = get_debug_state(handle)?;
+            ds.break_at_entry.store(true, std::sync::atomic::Ordering::Release);
+            Value::null()
+        }
+
         _ => {
             return Err(VmError::RuntimeError(format!(
                 "Unknown runtime method: {:#06x}",
@@ -1357,6 +1764,43 @@ pub fn call_runtime_method(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/// Get the DebugState for a VM instance handle.
+fn get_debug_state(handle: u32) -> Result<std::sync::Arc<crate::vm::interpreter::DebugState>, VmError> {
+    let registry = VM_INSTANCE_REGISTRY.lock();
+    let entry = registry.instances.get(&handle)
+        .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+    entry.debug_state.clone()
+        .ok_or_else(|| VmError::RuntimeError("Debug not enabled — call enableDebug() first".to_string()))
+}
+
+/// Get the first compiled module from a child VM instance.
+fn get_child_module(handle: u32) -> Result<Module, VmError> {
+    let registry = VM_INSTANCE_REGISTRY.lock();
+    let entry = registry.instances.get(&handle)
+        .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+    // Return the most recently compiled module (highest ID)
+    entry.modules.modules.values().next().cloned()
+        .ok_or_else(|| VmError::RuntimeError("No modules compiled in child VM".to_string()))
+}
+
+/// Convert a DebugPhaseSnapshot to a Raya string value ("paused", "completed", "error").
+fn debug_phase_to_value(
+    ctx: &RuntimeHandlerContext,
+    phase: crate::vm::interpreter::debug_state::DebugPhaseSnapshot,
+) -> Result<Value, VmError> {
+    match phase {
+        crate::vm::interpreter::debug_state::DebugPhaseSnapshot::Paused => {
+            Ok(allocate_string(ctx, "paused".to_string()))
+        }
+        crate::vm::interpreter::debug_state::DebugPhaseSnapshot::Completed(_) => {
+            Ok(allocate_string(ctx, "completed".to_string()))
+        }
+        crate::vm::interpreter::debug_state::DebugPhaseSnapshot::Failed(msg) => {
+            Ok(allocate_string(ctx, format!("error:{}", msg)))
+        }
+    }
+}
 
 /// Allocate a string on the GC heap and return as Value
 fn allocate_string(ctx: &RuntimeHandlerContext, s: String) -> Value {
@@ -1407,12 +1851,21 @@ fn typecheck_ast(ast: ast::Module, interner: Interner) -> Result<TypedAstEntry, 
 
 /// Compile Raya source code to a Module (full pipeline)
 fn compile_source(source: &str) -> Result<Module, VmError> {
+    compile_source_impl(source, false)
+}
+
+fn compile_source_debug(source: &str) -> Result<Module, VmError> {
+    compile_source_impl(source, true)
+}
+
+fn compile_source_impl(source: &str, sourcemap: bool) -> Result<Module, VmError> {
     let (ast, interner) = parse_source(source)?;
     let typed = typecheck_ast(ast, interner)?;
 
     let TypedAstEntry { ast, interner, type_ctx, symbols: _, expr_types } = typed;
     let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(expr_types);
+        .with_expr_types(expr_types)
+        .with_sourcemap(sourcemap);
     compiler.compile_via_ir(&ast).map_err(|e| {
         VmError::RuntimeError(format!("Compile error: {}", e))
     })

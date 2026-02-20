@@ -72,6 +72,9 @@ pub enum Statement {
     /// and arrow function bodies. This variant should not be constructed by the parser.
     Block(BlockStatement),
 
+    /// Debugger statement: debugger;
+    Debugger(Span),
+
     /// Empty statement (;)
     Empty(Span),
 }
@@ -99,6 +102,7 @@ impl Statement {
             Statement::Throw(s) => &s.span,
             Statement::Try(s) => &s.span,
             Statement::Block(s) => &s.span,
+            Statement::Debugger(span) => span,
             Statement::Empty(span) => span,
         }
     }

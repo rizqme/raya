@@ -206,7 +206,7 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
             }
         }
         Statement::Block(stmt) => visitor.visit_block_statement(stmt),
-        Statement::Empty(_) => {}
+        Statement::Debugger(_) | Statement::Empty(_) => {}
     }
 }
 

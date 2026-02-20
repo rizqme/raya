@@ -102,6 +102,9 @@ pub struct Interpreter<'a> {
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) current_func_id_for_profiling: usize,
 
+    /// Debug state for debugger coordination (None = no debugger attached)
+    pub(in crate::vm::interpreter) debug_state: Option<Arc<super::debug_state::DebugState>>,
+
     /// Sampling profiler (None when profiling is disabled).
     pub(in crate::vm::interpreter) profiler: Option<Arc<crate::profiler::Profiler>>,
 
@@ -140,6 +143,7 @@ impl<'a> Interpreter<'a> {
             resolved_natives,
             io_submit_tx,
             max_preemptions,
+            debug_state: None,
             #[cfg(feature = "jit")]
             code_cache: None,
             #[cfg(feature = "jit")]
@@ -153,6 +157,11 @@ impl<'a> Interpreter<'a> {
             profiler: None,
             profiler_func_id: 0,
         }
+    }
+
+    /// Set the debug state for debugger coordination.
+    pub fn set_debug_state(&mut self, debug_state: Option<Arc<super::debug_state::DebugState>>) {
+        self.debug_state = debug_state;
     }
 
     /// Set the profiler for sampling.
@@ -336,6 +345,22 @@ impl<'a> Interpreter<'a> {
             }};
         }
 
+        // Debug: break at entry point if requested
+        if let Some(ref ds) = self.debug_state {
+            if ds.break_at_entry.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                let bytecode_offset = ip as u32;
+                let current_line = self.lookup_line(module, current_func_id, bytecode_offset);
+                let info = self.build_pause_info(
+                    module,
+                    current_func_id,
+                    bytecode_offset,
+                    current_line,
+                    super::debug_state::PauseReason::Entry,
+                );
+                ds.signal_pause(info);
+            }
+        }
+
         // Main execution loop
         loop {
             // Safepoint poll for GC
@@ -400,6 +425,31 @@ impl<'a> Interpreter<'a> {
             };
 
             ip += 1;
+
+            // Debug check: test breakpoints, step modes, and debugger statements
+            // when a debugger is attached. The fast path (no debugger) is a single
+            // atomic relaxed load.
+            if let Some(ref ds) = self.debug_state {
+                if ds.active.load(std::sync::atomic::Ordering::Relaxed) {
+                    let bytecode_offset = (ip - 1) as u32;
+                    let current_line = self.lookup_line(module, current_func_id, bytecode_offset);
+
+                    // Check for `debugger;` statement first
+                    let pause_reason = if opcode == Opcode::Debugger {
+                        Some(super::debug_state::PauseReason::DebuggerStatement)
+                    } else {
+                        ds.should_break(current_func_id, bytecode_offset, frames.len() + 1, current_line)
+                    };
+
+                    if let Some(reason) = pause_reason {
+                        if let super::debug_state::PauseReason::Breakpoint(bp_id) = &reason {
+                            ds.increment_hit_count(*bp_id);
+                        }
+                        let info = self.build_pause_info(module, current_func_id, bytecode_offset, current_line, reason);
+                        ds.signal_pause(info);
+                    }
+                }
+            }
 
             // Execute the opcode
             match self.execute_opcode(
@@ -848,6 +898,15 @@ impl<'a> Interpreter<'a> {
             }
 
             // =========================================================
+            // Debugger Statement
+            // =========================================================
+            Opcode::Debugger => {
+                // The actual pause is handled in the main loop via the
+                // `debugger_pause` flag. This handler is a no-op.
+                OpcodeResult::Continue
+            }
+
+            // =========================================================
             // Catch-all for unimplemented opcodes
             // =========================================================
             _ => OpcodeResult::Error(VmError::RuntimeError(format!(
@@ -1007,6 +1066,74 @@ impl<'a> Interpreter<'a> {
                 module_profile: profile.clone(),
             };
             compiler.try_submit(request);
+        }
+    }
+
+    /// Look up the source line for a bytecode offset in a function.
+    /// Returns 0 if debug info is unavailable.
+    #[inline]
+    fn lookup_line(&self, module: &Module, func_id: usize, bytecode_offset: u32) -> u32 {
+        module.debug_info.as_ref()
+            .and_then(|di| di.functions.get(func_id))
+            .and_then(|fd| fd.lookup_location(bytecode_offset))
+            .map(|entry| entry.line)
+            .unwrap_or(0)
+    }
+
+    /// Build a PauseInfo struct from the current execution state.
+    fn build_pause_info(
+        &self,
+        module: &Module,
+        func_id: usize,
+        bytecode_offset: u32,
+        current_line: u32,
+        reason: super::debug_state::PauseReason,
+    ) -> super::debug_state::PauseInfo {
+        let (source_file, column) = module.debug_info.as_ref()
+            .and_then(|di| {
+                let fd = di.functions.get(func_id)?;
+                let entry = fd.lookup_location(bytecode_offset)?;
+                let file = di.source_files.get(fd.source_file_index as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                Some((file, entry.column))
+            })
+            .unwrap_or_else(|| (String::new(), 0));
+
+        let function_name = module.functions.get(func_id)
+            .map(|f| f.name.clone())
+            .unwrap_or_else(|| format!("<func_{}>", func_id));
+
+        super::debug_state::PauseInfo {
+            func_id,
+            bytecode_offset,
+            source_file,
+            line: current_line,
+            column,
+            reason,
+            function_name,
+        }
+    }
+
+    /// Signal debug completion or failure after a task finishes.
+    ///
+    /// Called by the reactor after `run()` returns a terminal result (Completed or Failed).
+    /// Suspended tasks don't signal — they'll signal on final completion.
+    pub fn signal_debug_result(&self, result: &ExecutionResult) {
+        if let Some(ref ds) = self.debug_state {
+            if ds.active.load(std::sync::atomic::Ordering::Relaxed) {
+                match result {
+                    ExecutionResult::Completed(value) => {
+                        ds.signal_completed(value.raw() as i64);
+                    }
+                    ExecutionResult::Failed(err) => {
+                        ds.signal_failed(err.to_string());
+                    }
+                    ExecutionResult::Suspended(_) => {
+                        // Don't signal on suspend — task will resume later
+                    }
+                }
+            }
         }
     }
 

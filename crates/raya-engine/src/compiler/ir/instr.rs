@@ -385,6 +385,9 @@ pub enum IrInstr {
     /// Allows other tasks to run
     Yield,
 
+    /// Debugger breakpoint — pause if debugger is attached, no-op otherwise
+    Debugger,
+
     /// Create a new mutex
     /// Returns a mutex reference
     NewMutex {
@@ -480,6 +483,7 @@ impl IrInstr {
             | IrInstr::EndTry
             | IrInstr::Sleep { .. }
             | IrInstr::Yield
+            | IrInstr::Debugger
             | IrInstr::MutexLock { .. }
             | IrInstr::MutexUnlock { .. }
             | IrInstr::TaskCancel { .. } => None,
@@ -520,6 +524,7 @@ impl IrInstr {
                 | IrInstr::EndTry
                 | IrInstr::Sleep { .. }
                 | IrInstr::Yield
+                | IrInstr::Debugger
                 | IrInstr::NewMutex { .. }
                 | IrInstr::NewChannel { .. }
                 | IrInstr::MutexLock { .. }

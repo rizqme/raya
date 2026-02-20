@@ -906,6 +906,11 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::Yield);
             }
 
+            IrInstr::Debugger => {
+                // Emit debugger opcode — no-op when no debugger attached
+                ctx.emit(Opcode::Debugger);
+            }
+
             IrInstr::NewMutex { dest } => {
                 // Emit NewMutex opcode - pushes mutex reference onto stack
                 ctx.emit(Opcode::NewMutex);

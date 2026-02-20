@@ -344,6 +344,9 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::Sleep { duration_ms } => {
             format!("sleep {}", duration_ms)
         }
+        IrInstr::Debugger => {
+            "debugger".to_string()
+        }
         IrInstr::Yield => {
             "yield".to_string()
         }

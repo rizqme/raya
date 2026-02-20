@@ -10,6 +10,10 @@ class Io {
         return __NATIVE_CALL<string>("io.readAll");
     }
 
+    readExact(n: number): string {
+        return __NATIVE_CALL<string>("io.readExact", n);
+    }
+
     write(data: string): void {
         __NATIVE_CALL("io.write", data);
     }

@@ -105,6 +105,16 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             }))
         }
 
+        Token::Debugger => {
+            let span = parser.current_span();
+            parser.advance();
+            // Optional semicolon
+            if parser.check(&Token::Semicolon) {
+                parser.advance();
+            }
+            Ok(Statement::Debugger(span))
+        }
+
         Token::Semicolon => {
             let span = parser.current_span();
             parser.advance();

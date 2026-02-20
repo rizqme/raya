@@ -114,7 +114,9 @@ pub enum Opcode {
     /// Float modulo: pop b, pop a, push a % b
     Fmod = 0x36,
 
-    // ===== 0x40-0x4F: Reserved =====
+    // ===== Debug (0x40-0x4F) =====
+    /// Debugger breakpoint: pause execution if a debugger is attached
+    Debugger = 0x40,
 
     // ===== Integer Comparison (0x50-0x5F) =====
     /// Integer equality: pop b, pop a, push a == b
@@ -433,6 +435,9 @@ impl Opcode {
             0x35 => Some(Self::Fpow),
             0x36 => Some(Self::Fmod),
 
+            // Debug
+            0x40 => Some(Self::Debugger),
+
             // Integer comparison
             0x50 => Some(Self::Ieq),
             0x51 => Some(Self::Ine),
@@ -623,6 +628,7 @@ impl Opcode {
             Self::Fneg => "FNEG",
             Self::Fpow => "FPOW",
             Self::Fmod => "FMOD",
+            Self::Debugger => "DEBUGGER",
             Self::Ieq => "IEQ",
             Self::Ine => "INE",
             Self::Ilt => "ILT",
@@ -805,6 +811,7 @@ mod tests {
             Opcode::Spawn,
             Opcode::Await,
             Opcode::Yield,
+            Opcode::Debugger,
             Opcode::Return,
             Opcode::Call,
         ];
@@ -844,6 +851,7 @@ mod tests {
         assert_eq!(Opcode::Spawn.name(), "SPAWN");
         assert_eq!(Opcode::Return.name(), "RETURN");
         assert_eq!(Opcode::MakeClosure.name(), "MAKE_CLOSURE");
+        assert_eq!(Opcode::Debugger.name(), "DEBUGGER");
     }
 
     #[test]
@@ -928,6 +936,7 @@ mod tests {
             Opcode::LoadModule, Opcode::LoadGlobal, Opcode::StoreGlobal, Opcode::SetClosureCapture,
             Opcode::Throw, Opcode::Try, Opcode::EndTry, Opcode::Rethrow, Opcode::Trap, Opcode::NativeCall,
             Opcode::ModuleNativeCall,
+            Opcode::Debugger,
         ];
 
         for opcode in &all_opcodes {
