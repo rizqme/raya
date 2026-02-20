@@ -250,6 +250,20 @@ impl Diagnostic {
                     .with_help("Readonly properties can only be assigned in the constructor")
             }
 
+            ConstReassignment { name, span } => {
+                Diagnostic::error(format!("Cannot assign to const variable '{}'", name))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "const variable")
+                    .with_help("Declare the variable with 'let' if it needs to be reassigned")
+            }
+
+            NewNonClass { name, span } => {
+                Diagnostic::error(format!("Cannot use 'new' with non-class type '{}'", name))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "not a class")
+                    .with_help("'new' can only be used with class types")
+            }
+
             // Decorator errors
             InvalidDecorator { ty, expected, span } => {
                 Diagnostic::error(format!("Invalid decorator: type '{}' is not a valid decorator", ty))
@@ -461,6 +475,8 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         UndefinedMember { .. } => ErrorCode("E2016"),
         AbstractClassInstantiation { .. } => ErrorCode("E2017"),
         ReadonlyAssignment { .. } => ErrorCode("E2018"),
+        ConstReassignment { .. } => ErrorCode("E2019"),
+        NewNonClass { .. } => ErrorCode("E2020"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

@@ -688,6 +688,45 @@ impl<'a> TypeChecker<'a> {
         None
     }
 
+    /// Try to extract an instanceof guard from a condition expression.
+    /// Returns (variable_name, class_type_id) if the condition is `var instanceof ClassName`.
+    fn try_extract_instanceof_guard(&self, expr: &Expression) -> Option<(String, TypeId)> {
+        let instanceof = match expr {
+            Expression::InstanceOf(inst) => inst,
+            _ => return None,
+        };
+        // Object must be an identifier
+        let var_name = match &*instanceof.object {
+            Expression::Identifier(ident) => self.resolve(ident.name),
+            _ => return None,
+        };
+        // Resolve class name from type annotation
+        let class_name = match &instanceof.type_name.ty {
+            crate::parser::ast::types::Type::Reference(type_ref) => self.resolve(type_ref.name.name),
+            _ => return None,
+        };
+        // Look up the class type in the symbol table
+        let class_sym = self.symbols.resolve(&class_name)?;
+        Some((var_name, class_sym.ty))
+    }
+
+    /// Returns true if the statement definitely exits (return/throw).
+    fn stmt_definitely_returns(stmt: &Statement) -> bool {
+        match stmt {
+            Statement::Return(_) | Statement::Throw(_) => true,
+            Statement::Block(block) => {
+                block.statements.last().map_or(false, Self::stmt_definitely_returns)
+            }
+            Statement::If(if_stmt) => {
+                let then_returns = Self::stmt_definitely_returns(&if_stmt.then_branch);
+                let else_returns = if_stmt.else_branch.as_ref()
+                    .map_or(false, |e| Self::stmt_definitely_returns(e));
+                then_returns && else_returns
+            }
+            _ => false,
+        }
+    }
+
     /// Check if statement
     fn check_if(&mut self, if_stmt: &IfStatement) {
         // Check condition is boolean
@@ -697,6 +736,9 @@ impl<'a> TypeChecker<'a> {
 
         // Try to extract type guard from condition
         let type_guard = extract_type_guard(&if_stmt.condition, self.interner);
+
+        // Try to extract instanceof guard (needs symbol table, so done in checker)
+        let instanceof_guard = self.try_extract_instanceof_guard(&if_stmt.condition);
 
         // Save current environment
         let saved_env = self.type_env.clone();
@@ -710,11 +752,18 @@ impl<'a> TypeChecker<'a> {
                     self.type_env.set(var_name.clone(), narrowed_ty);
                 }
             }
+        } else if let Some((ref var_name, class_ty)) = instanceof_guard {
+            // instanceof narrows variable to the target class type
+            self.type_env.set(var_name.clone(), class_ty);
         }
 
         // Check then branch
         self.check_stmt(&if_stmt.then_branch);
         let then_env = self.type_env.clone();
+
+        // Check if the then-branch definitely exits (return/throw).
+        // If so, code after the if can only be reached when condition was false.
+        let then_returns = Self::stmt_definitely_returns(&if_stmt.then_branch);
 
         // Restore environment and apply negated guard for else branch
         self.type_env = saved_env.clone();
@@ -724,7 +773,6 @@ impl<'a> TypeChecker<'a> {
                 // Apply negated guard
                 let negated_guard = negate_guard(guard);
                 let var_name = get_guard_var(&negated_guard);
-                // Get the actual type of the variable (including inferred types)
                 if let Some(var_ty) = self.get_var_type(var_name) {
                     if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &negated_guard) {
                         self.type_env.set(var_name.clone(), narrowed_ty);
@@ -733,12 +781,30 @@ impl<'a> TypeChecker<'a> {
             }
 
             self.check_stmt(else_branch);
+        } else if then_returns {
+            // No else branch but then-branch always returns.
+            // Code after the if-statement can only run when the condition was false,
+            // so apply the negated guard to narrow the continuation.
+            if let Some(ref guard) = type_guard {
+                let negated_guard = negate_guard(guard);
+                let var_name = get_guard_var(&negated_guard);
+                if let Some(var_ty) = self.get_var_type(var_name) {
+                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &negated_guard) {
+                        self.type_env.set(var_name.clone(), narrowed_ty);
+                    }
+                }
+            }
         }
 
         let else_env = self.type_env.clone();
 
-        // Merge environments from both branches
-        self.type_env = then_env.merge(&else_env, self.type_ctx);
+        if then_returns && if_stmt.else_branch.is_none() {
+            // Then-branch always exits, no else: continuation uses the narrowed env
+            self.type_env = else_env;
+        } else {
+            // Normal merge of both branches
+            self.type_env = then_env.merge(&else_env, self.type_ctx);
+        }
     }
 
     /// Check while loop
@@ -1217,8 +1283,8 @@ impl<'a> TypeChecker<'a> {
         // Check if callee is a function type
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
-                // Check argument count (allow fewer args for optional params)
-                if arg_types.len() > func.params.len() {
+                // Check argument count (too many or too few required)
+                if arg_types.len() > func.params.len() || arg_types.len() < func.min_params {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
                         actual: arg_types.len(),
@@ -1716,6 +1782,16 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     return symbol.ty;
+                } else {
+                    // Symbol exists but is not a class — cannot use 'new' on it
+                    self.errors.push(CheckError::NewNonClass {
+                        name: name.clone(),
+                        span: new_expr.span,
+                    });
+                    for arg in &new_expr.arguments {
+                        self.check_expr(arg);
+                    }
+                    return self.type_ctx.unknown_type();
                 }
             }
         }
@@ -2014,13 +2090,60 @@ impl<'a> TypeChecker<'a> {
             let class_to_use = actual_class.as_ref().unwrap_or(class);
 
             // Look up the member in the class hierarchy (including parent classes)
-            if let Some(ty) = self.lookup_class_member(class_to_use, &property_name) {
+            if let Some((ty, vis)) = self.lookup_class_member(class_to_use, &property_name) {
+                // Check visibility: private members can only be accessed from within the same class
+                if vis == crate::parser::ast::Visibility::Private {
+                    // Check if we're inside the same class
+                    let accessing_own_class = self.current_class_type.map_or(false, |ct| {
+                        if let Some(crate::parser::types::Type::Class(cur_class)) = self.type_ctx.get(ct) {
+                            cur_class.name == class_to_use.name
+                        } else {
+                            false
+                        }
+                    });
+                    if !accessing_own_class {
+                        self.errors.push(CheckError::PropertyNotFound {
+                            property: format!("private member '{}'", property_name),
+                            ty: class_to_use.name.clone(),
+                            span: member.span,
+                        });
+                        return self.type_ctx.unknown_type();
+                    }
+                }
                 return ty;
+            }
+
+            // If we have a class type and the member was not found, emit an error
+            // (unless the class has no properties/methods, which means it's a placeholder)
+            if !class_to_use.properties.is_empty() || !class_to_use.methods.is_empty() {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name.clone(),
+                    ty: format!("class {}", class_to_use.name),
+                    span: member.span,
+                });
+                return self.type_ctx.unknown_type();
+            }
+        }
+
+        // Handle Union types: if the union contains a class and null, look up member on the class
+        if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
+            let null_ty = self.type_ctx.null_type();
+            let class_members: Vec<_> = union.members.iter()
+                .filter(|&&m| m != null_ty)
+                .filter_map(|&m| {
+                    self.type_ctx.get(m).and_then(|t| {
+                        if let crate::parser::types::Type::Class(c) = t { Some(c.clone()) } else { None }
+                    })
+                })
+                .collect();
+            if class_members.len() == 1 {
+                if let Some((ty, _vis)) = self.lookup_class_member(&class_members[0], &property_name) {
+                    return ty;
+                }
             }
         }
 
         // For now, return unknown for other member access
-        // TODO: Implement property type lookup for interfaces and other types
         self.type_ctx.unknown_type()
     }
 
@@ -2040,13 +2163,13 @@ impl<'a> TypeChecker<'a> {
         // Substitute in properties
         let properties: Vec<PropertySignature> = class.properties.iter().map(|prop| {
             let ty = gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty);
-            PropertySignature { name: prop.name.clone(), ty, optional: prop.optional, readonly: prop.readonly }
+            PropertySignature { name: prop.name.clone(), ty, optional: prop.optional, readonly: prop.readonly, visibility: prop.visibility }
         }).collect();
 
         // Substitute in methods
         let methods: Vec<MethodSignature> = class.methods.iter().map(|method| {
             let ty = gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty);
-            MethodSignature { name: method.name.clone(), ty, type_params: method.type_params.clone() }
+            MethodSignature { name: method.name.clone(), ty, type_params: method.type_params.clone(), visibility: method.visibility }
         }).collect();
 
         // Create the instantiated class type (clear type_params since they're resolved)
@@ -2065,17 +2188,17 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.intern(crate::parser::types::Type::Class(instantiated))
     }
 
-    fn lookup_class_member(&self, class: &crate::parser::types::ty::ClassType, property_name: &str) -> Option<TypeId> {
+    fn lookup_class_member(&self, class: &crate::parser::types::ty::ClassType, property_name: &str) -> Option<(TypeId, crate::parser::ast::Visibility)> {
         // Check own properties first
         for prop in &class.properties {
             if prop.name == property_name {
-                return Some(prop.ty);
+                return Some((prop.ty, prop.visibility));
             }
         }
         // Check own methods
         for method in &class.methods {
             if method.name == property_name {
-                return Some(method.ty);
+                return Some((method.ty, method.visibility));
             }
         }
 
@@ -2159,7 +2282,7 @@ impl<'a> TypeChecker<'a> {
             // sort(compareFn?: (a: T, b: T) => number) -> Array<T>
             "sort" => {
                 let compare_fn_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], number_ty, false);
-                Some(self.type_ctx.function_type(vec![compare_fn_ty], array_ty, false))
+                Some(self.type_ctx.function_type_with_min_params(vec![compare_fn_ty], array_ty, false, 0))
             }
             // map(fn: (elem: T) => T) -> Array<T> (simplified - without generic U)
             "map" => {
@@ -2172,7 +2295,7 @@ impl<'a> TypeChecker<'a> {
                 Some(self.type_ctx.function_type(vec![callback_ty, elem_ty], elem_ty, false))
             }
             // fill(value: T, start?: number, end?: number) -> Array<T>
-            "fill" => Some(self.type_ctx.function_type(vec![elem_ty, number_ty, number_ty], array_ty, false)),
+            "fill" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty, number_ty], array_ty, false, 1)),
             // flat() -> Array<T> (simplified - single level flatten)
             "flat" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
             _ => None,
@@ -2190,8 +2313,8 @@ impl<'a> TypeChecker<'a> {
             "length" => Some(number_ty),
             // charAt(index: number) -> string
             "charAt" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // substring(start: number, end: number) -> string
-            "substring" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], string_ty, false)),
+            // substring(start: number, end?: number) -> string
+            "substring" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], string_ty, false, 1)),
             // toUpperCase() -> string
             "toUpperCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // toLowerCase() -> string
@@ -2211,10 +2334,7 @@ impl<'a> TypeChecker<'a> {
                 let regexp_ty = self.type_ctx.regexp_type();
                 let search_ty = self.type_ctx.union_type(vec![string_ty, regexp_ty]);
                 let arr_ty = self.type_ctx.array_type(string_ty);
-                // With RegExp, limit is required (but 0 means no limit)
-                // For simplicity, we allow (string) or (string|RegExp, number)
-                // The call site handling will check argument count
-                Some(self.type_ctx.function_type(vec![search_ty, number_ty], arr_ty, false))
+                Some(self.type_ctx.function_type_with_min_params(vec![search_ty, number_ty], arr_ty, false, 1))
             }
             // replace(search: string | RegExp, replacement: string) -> string
             "replace" => {
@@ -2232,10 +2352,10 @@ impl<'a> TypeChecker<'a> {
             "trimStart" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // trimEnd() -> string
             "trimEnd" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
-            // padStart(length: number, pad: string) -> string
-            "padStart" => Some(self.type_ctx.function_type(vec![number_ty, string_ty], string_ty, false)),
-            // padEnd(length: number, pad: string) -> string
-            "padEnd" => Some(self.type_ctx.function_type(vec![number_ty, string_ty], string_ty, false)),
+            // padStart(length: number, pad?: string) -> string
+            "padStart" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, string_ty], string_ty, false, 1)),
+            // padEnd(length: number, pad?: string) -> string
+            "padEnd" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, string_ty], string_ty, false, 1)),
             // match(pattern: RegExp) -> string[] | null
             // Returns array of matches or null if no match
             "match" => {
@@ -2327,9 +2447,7 @@ impl<'a> TypeChecker<'a> {
             // split(str: string, limit?: number) -> string[]
             "split" => {
                 let array_ty = self.type_ctx.array_type(string_ty);
-                // Allow 1 or 2 arguments - use function_type_variadic or check in call handler
-                // For now, define with 2 params, but allow 1 in practice
-                Some(self.type_ctx.function_type(vec![string_ty, number_ty], array_ty, false))
+                Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], array_ty, false, 1))
             }
             // source property -> string
             "source" => Some(string_ty),
@@ -2555,6 +2673,7 @@ impl<'a> TypeChecker<'a> {
                         ty: value_ty,
                         optional: false,
                         readonly: false,
+                        visibility: Default::default(),
                     });
                 }
                 ObjectProperty::Spread(_) => {
@@ -2610,21 +2729,38 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check const reassignment for simple identifiers
+        if let Expression::Identifier(ident) = &*assign.left {
+            let name = self.resolve(ident.name);
+            if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                if symbol.flags.is_const {
+                    self.errors.push(CheckError::ConstReassignment {
+                        name: name.clone(),
+                        span: assign.span,
+                    });
+                }
+            }
+        }
+
         // For simple identifier assignments, use the declared type (not narrowed)
         // so that reassignment back to the original wider type is allowed.
         // e.g., inside `while (val != null)`, `val = ch.tryReceive()` should work
         // even though `val` was narrowed from `T | null` to `T`.
-        let left_ty = if let Expression::Identifier(ident) = &*assign.left {
+        let (left_ty, clear_var) = if let Expression::Identifier(ident) = &*assign.left {
             let name = self.resolve(ident.name);
             let declared_ty = self.get_var_declared_type(&name)
                 .unwrap_or_else(|| self.check_expr(&assign.left));
-            // Clear narrowing for this variable since it's being reassigned
-            self.type_env.remove(&name);
-            declared_ty
+            (declared_ty, Some(name))
         } else {
-            self.check_expr(&assign.left)
+            (self.check_expr(&assign.left), None)
         };
+        // Evaluate RHS before clearing narrowing so `current = current.next`
+        // can use the narrowed type of `current` when evaluating `current.next`.
         let right_ty = self.check_expr(&assign.right);
+        // Clear narrowing after RHS evaluation since the variable is being reassigned.
+        if let Some(name) = clear_var {
+            self.type_env.remove(&name);
+        }
 
         self.check_assignable(right_ty, left_ty, *assign.right.span());
 

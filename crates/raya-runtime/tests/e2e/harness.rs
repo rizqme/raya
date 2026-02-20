@@ -171,6 +171,8 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
         // When including builtin sources, just register intrinsics (__NATIVE_CALL, etc.)
         let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
         binder.register_builtins(&empty_sigs);
+        // Disable duplicate detection since user code may shadow builtin class/function names
+        binder.skip_top_level_duplicate_detection();
     } else {
         // Normal mode: register type signatures from precompiled builtins
         let builtin_sigs = raya_engine::builtins::to_checker_signatures();

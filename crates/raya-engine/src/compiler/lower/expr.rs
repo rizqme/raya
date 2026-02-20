@@ -366,7 +366,7 @@ impl<'a> Lowerer<'a> {
         if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
             let ty = self.captures[idx].ty;
             let is_refcell = self.captures[idx].is_refcell;
-            let capture_idx = idx as u16;
+            let capture_idx = self.captures[idx].capture_idx;
 
             if is_refcell {
                 // Load the RefCell pointer from captured
@@ -399,9 +399,8 @@ impl<'a> Lowerer<'a> {
                 // Variable is from an enclosing scope - capture it
                 let ty = ancestor_var.ty;
                 let is_refcell = ancestor_var.is_refcell;
-                // Offset by 1 if `this` is captured (this is always at index 0)
-                let this_offset = if self.this_captured_idx.is_some() { 1 } else { 0 };
-                let capture_idx = self.captures.len() as u16 + this_offset;
+                let capture_idx = self.next_capture_slot;
+                self.next_capture_slot += 1;
                 self.captures.push(super::CaptureInfo {
                     symbol: ident.name,
                     source: ancestor_var.source,
@@ -1008,6 +1007,7 @@ impl<'a> Lowerer<'a> {
                     let object = self.lower_expr(&member.object);
                     let field_info = all_fields
                         .iter()
+                        .rev()
                         .find(|f| self.interner.resolve(f.name) == method_name)
                         .unwrap();
                     let field_reg = self.alloc_register(TypeId::new(0));
@@ -2515,8 +2515,10 @@ impl<'a> Lowerer<'a> {
         let (field_index, field_ty) = if let Some(class_id) = class_id {
             // Get all fields including parent fields
             let all_fields = self.get_all_fields(class_id);
+            // Use .rev() so child fields shadow parent fields with the same name
             if let Some(field) = all_fields
                 .iter()
+                .rev()
                 .find(|f| self.interner.resolve(f.name) == prop_name)
             {
                 (field.index, field.ty)
@@ -2852,7 +2854,7 @@ impl<'a> Lowerer<'a> {
                 } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
                     // Variable is captured - handle assignment to captured variable
                     let is_refcell = self.captures[idx].is_refcell;
-                    let capture_idx = idx as u16;
+                    let capture_idx = self.captures[idx].capture_idx;
 
                     if is_refcell {
                         // Load the RefCell pointer from captured
@@ -2879,9 +2881,8 @@ impl<'a> Lowerer<'a> {
                     if let Some(ancestor_var) = ancestors.get(&ident.name) {
                         let ty = ancestor_var.ty;
                         let is_refcell = ancestor_var.is_refcell;
-                        // Offset by 1 if `this` is captured (this is always at index 0)
-                        let this_offset = if self.this_captured_idx.is_some() { 1 } else { 0 };
-                        let capture_idx = self.captures.len() as u16 + this_offset;
+                        let capture_idx = self.next_capture_slot;
+                        self.next_capture_slot += 1;
                         self.captures.push(super::CaptureInfo {
                             symbol: ident.name,
                             source: ancestor_var.source,
@@ -2960,6 +2961,7 @@ impl<'a> Lowerer<'a> {
                 let field_index = if let Some(class_id) = class_id {
                     self.get_all_fields(class_id)
                         .iter()
+                        .rev()
                         .find(|f| self.interner.resolve(f.name) == prop_name)
                         .map(|f| f.index)
                         .unwrap_or(0)
@@ -3062,6 +3064,7 @@ impl<'a> Lowerer<'a> {
         let saved_current_block = self.current_block;
         let saved_ancestor_variables = self.ancestor_variables.take();
         let saved_captures = std::mem::take(&mut self.captures);
+        let saved_next_capture_slot = self.next_capture_slot;
         let saved_this_register = self.this_register.take();
         let saved_this_ancestor_info = self.this_ancestor_info.take();
         let saved_this_captured_idx = self.this_captured_idx.take();
@@ -3107,6 +3110,7 @@ impl<'a> Lowerer<'a> {
 
         self.ancestor_variables = Some(new_ancestor_vars);
         self.captures.clear();
+        self.next_capture_slot = 0;
 
         // Set up this_ancestor_info for the arrow function
         // If parent has this_register, `this` is at local slot 0 (implicit first param in methods)
@@ -3151,10 +3155,8 @@ impl<'a> Lowerer<'a> {
                 // Track class type for parameters with class type annotations
                 // so method calls can be statically resolved
                 if let Some(type_ann) = &param.type_annotation {
-                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                            self.variable_class_map.insert(ident.name, class_id);
-                        }
+                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                        self.variable_class_map.insert(ident.name, class_id);
                     }
                 }
             }
@@ -3221,14 +3223,15 @@ impl<'a> Lowerer<'a> {
         self.current_block = saved_current_block;
         self.ancestor_variables = saved_ancestor_variables;
         self.captures = saved_captures;
+        self.next_capture_slot = saved_next_capture_slot;
         self.this_register = saved_this_register;
         self.this_ancestor_info = saved_this_ancestor_info;
         self.this_captured_idx = saved_this_captured_idx;
 
         // Load captured variables and build captures list for MakeClosure
-        // If `this` is captured, it goes at index 0 (prepended before regular captures)
+        // `this` (if captured) is inserted at its assigned slot index
         let mut capture_regs = Vec::new();
-        if child_this_captured_idx.is_some() {
+        let this_reg_for_closure = if child_this_captured_idx.is_some() {
             let this_reg = self.alloc_register(TypeId::new(0)); // Object type
 
             // Check where `this` comes from
@@ -3264,8 +3267,10 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            capture_regs.push(this_reg); // index 0
-        }
+            Some(this_reg)
+        } else {
+            None
+        };
         for cap in &captured_vars {
             let ty = cap.ty;
             let cap_reg = self.alloc_register(ty);
@@ -3346,7 +3351,11 @@ impl<'a> Lowerer<'a> {
             capture_regs.push(cap_reg);
         }
 
-        // (`this` capture was already prepended at index 0 above)
+        // Insert `this` at its assigned capture slot index
+        if let Some(this_reg) = this_reg_for_closure {
+            let idx = child_this_captured_idx.unwrap() as usize;
+            capture_regs.insert(idx, this_reg);
+        }
 
         // Create closure: emit MakeClosure instruction with captures
         let closure_ty = TypeId::new(0); // Generic function type
@@ -3637,14 +3646,15 @@ impl<'a> Lowerer<'a> {
 
         // Check if `this` is available from ancestor scope (we're inside an arrow in a method)
         if let Some(ref _ancestor_info) = self.this_ancestor_info {
-            // Record that we need to capture `this`
-            // `this` is always at capture index 0 (prepended before regular captures)
-            self.this_captured_idx = Some(0);
+            // Record that we need to capture `this` - claim next available slot
+            let idx = self.next_capture_slot;
+            self.next_capture_slot += 1;
+            self.this_captured_idx = Some(idx);
 
             let dest = self.alloc_register(TypeId::new(0));
             self.emit(IrInstr::LoadCaptured {
                 dest: dest.clone(),
-                index: 0,
+                index: idx,
             });
             return dest;
         }
@@ -3771,7 +3781,7 @@ impl<'a> Lowerer<'a> {
                 // Look up the field type
                 let field_name = self.interner.resolve(member.property.name);
                 let all_fields = self.get_all_fields(obj_class_id);
-                for field in all_fields {
+                for field in all_fields.into_iter().rev() {
                     let fname = self.interner.resolve(field.name);
                     if fname == field_name {
                         // Check if the field has a known class type

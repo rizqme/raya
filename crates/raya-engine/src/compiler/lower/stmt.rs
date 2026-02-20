@@ -696,10 +696,8 @@ impl<'a> Lowerer<'a> {
             if let Some(init) = &decl.initializer {
                 // Track class type from type annotation (same as local path)
                 if let Some(type_ann) = &decl.type_annotation {
-                    if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                        if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                            self.variable_class_map.insert(name, class_id);
-                        }
+                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                        self.variable_class_map.insert(name, class_id);
                     }
                     if let ast::Type::Array(arr_ty) = &type_ann.ty {
                         if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
@@ -758,10 +756,8 @@ impl<'a> Lowerer<'a> {
             // This must come before other inference to override stale entries from other scopes
             // (variable_class_map is a flat map without scope tracking).
             if let Some(type_ann) = &decl.type_annotation {
-                if let ast::Type::Reference(type_ref) = &type_ann.ty {
-                    if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                        self.variable_class_map.insert(name, class_id);
-                    }
+                if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                    self.variable_class_map.insert(name, class_id);
                 }
                 // Track array element class type (e.g., `let items: Item[] = [...]`)
                 if let ast::Type::Array(arr_ty) = &type_ann.ty {
@@ -963,6 +959,19 @@ impl<'a> Lowerer<'a> {
             else_block: else_target,
         });
 
+        // If condition is `a instanceof Bird`, temporarily update variable_class_map
+        // so that field access on `a` resolves to Bird's fields in the then-branch.
+        let instanceof_save = if let ast::Expression::InstanceOf(inst) = &if_stmt.condition {
+            if let ast::Expression::Identifier(ident) = &*inst.object {
+                if let ast::types::Type::Reference(type_ref) = &inst.type_name.ty {
+                    if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
+                        let old = self.variable_class_map.insert(ident.name, class_id);
+                        Some((ident.name, old))
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
+
         // Lower then branch
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::new(then_block));
@@ -970,6 +979,15 @@ impl<'a> Lowerer<'a> {
         self.lower_stmt(&if_stmt.then_branch);
         if !self.current_block_is_terminated() {
             self.set_terminator(Terminator::Jump(merge_block));
+        }
+
+        // Restore variable_class_map after then-branch
+        if let Some((name, old_class)) = instanceof_save {
+            if let Some(old) = old_class {
+                self.variable_class_map.insert(name, old);
+            } else {
+                self.variable_class_map.remove(&name);
+            }
         }
 
         // Lower else branch if exists
@@ -1407,13 +1425,15 @@ impl<'a> Lowerer<'a> {
         // Push switch exit so break inside case bodies targets this switch
         self.switch_stack.push(exit_block);
 
-        // Collect case blocks and values, separating int cases from string cases
+        // Pre-allocate all case blocks so we know the next block for fall-through
         let mut int_cases = Vec::new();
         let mut string_cases: Vec<(String, BasicBlockId)> = Vec::new();
         let mut default_block = None;
+        let mut case_blocks = Vec::new();
 
         for case in &switch.cases {
             let case_block = self.alloc_block();
+            case_blocks.push(case_block);
 
             if let Some(test) = &case.test {
                 match test {
@@ -1427,11 +1447,13 @@ impl<'a> Lowerer<'a> {
                     _ => {}
                 }
             } else {
-                // Default case
                 default_block = Some(case_block);
             }
+        }
 
-            // Lower case body
+        // Lower case bodies with fall-through support
+        for (i, case) in switch.cases.iter().enumerate() {
+            let case_block = case_blocks[i];
             self.current_function_mut()
                 .add_block(crate::ir::BasicBlock::new(case_block));
             self.current_block = case_block;
@@ -1439,8 +1461,9 @@ impl<'a> Lowerer<'a> {
                 self.lower_stmt(stmt);
             }
             if !self.current_block_is_terminated() {
-                // Fall through to exit
-                self.set_terminator(Terminator::Jump(exit_block));
+                // No break: fall through to next case body, or exit if last case
+                let target = case_blocks.get(i + 1).copied().unwrap_or(exit_block);
+                self.set_terminator(Terminator::Jump(target));
             }
         }
 

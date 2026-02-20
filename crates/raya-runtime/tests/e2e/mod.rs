@@ -39,6 +39,10 @@ mod io;
 mod fs;
 mod process;
 mod module_vars;
+mod type_checker;
+mod narrowing;
+mod inheritance;
+mod scope_analysis;
 
 
 pub use harness::*;

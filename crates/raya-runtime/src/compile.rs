@@ -50,6 +50,7 @@ pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> 
     // are included in the source text, so their types come from parsing.
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
+    binder.skip_top_level_duplicate_detection();
 
     let mut symbols = binder
         .bind_module(&ast)
@@ -97,6 +98,7 @@ pub fn check_source(source: &str) -> Result<CheckDiagnostics, RuntimeError> {
     let mut binder = Binder::new(&mut type_ctx, &interner);
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
+    binder.skip_top_level_duplicate_detection();
 
     let bind_result = binder.bind_module(&ast);
 

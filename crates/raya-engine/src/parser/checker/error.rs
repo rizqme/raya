@@ -236,6 +236,24 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// Cannot assign to const variable
+    #[error("Cannot assign to const variable '{name}'")]
+    ConstReassignment {
+        /// Variable name
+        name: String,
+        /// Location of assignment
+        span: Span,
+    },
+
+    /// Cannot use 'new' on a non-class type
+    #[error("Cannot use 'new' with non-class type '{name}'")]
+    NewNonClass {
+        /// Name of the non-class identifier
+        name: String,
+        /// Location of new expression
+        span: Span,
+    },
+
     // ========================================================================
     // Decorator Errors
     // ========================================================================
@@ -296,6 +314,8 @@ impl CheckError {
             CheckError::AbstractClassInstantiation { span, .. } => *span,
             CheckError::UndefinedMember { span, .. } => *span,
             CheckError::ReadonlyAssignment { span, .. } => *span,
+            CheckError::ConstReassignment { span, .. } => *span,
+            CheckError::NewNonClass { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,
             CheckError::DecoratorReturnMismatch { span, .. } => *span,

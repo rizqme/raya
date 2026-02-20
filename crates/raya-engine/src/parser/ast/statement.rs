@@ -252,7 +252,7 @@ pub enum ClassMember {
 /// | Private  | ✅         | ❌        | ❌             |
 /// | Protected| ✅         | ✅        | ❌             |
 /// | Public   | ✅         | ✅        | ✅             |
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Visibility {
     /// Private - only accessible within the same class
     Private,

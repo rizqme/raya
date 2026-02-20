@@ -21,6 +21,15 @@ pub struct Binder<'a> {
     symbols: SymbolTable,
     type_ctx: &'a mut TypeContext,
     interner: &'a Interner,
+    /// Tracks class names that have been fully bound (in bind_class).
+    /// Used to detect duplicate class declarations in user code.
+    bound_classes: std::collections::HashMap<String, crate::parser::Span>,
+    /// Tracks function names that have been fully bound (in bind_function).
+    /// Used to detect duplicate function declarations in user code.
+    bound_functions: std::collections::HashMap<String, crate::parser::Span>,
+    /// When true, builtin source files are prepended to user code, so duplicate
+    /// class/function names between builtins and user code are expected (user shadows).
+    detect_top_level_duplicates: bool,
 }
 
 impl<'a> Binder<'a> {
@@ -30,7 +39,17 @@ impl<'a> Binder<'a> {
             symbols: SymbolTable::new(),
             type_ctx,
             interner,
+            bound_classes: std::collections::HashMap::new(),
+            bound_functions: std::collections::HashMap::new(),
+            detect_top_level_duplicates: true,
         }
+    }
+
+    /// Disable top-level duplicate class/function detection.
+    /// Call this when builtin source files are prepended to user code,
+    /// since user code may legitimately shadow builtin class names.
+    pub fn skip_top_level_duplicate_detection(&mut self) {
+        self.detect_top_level_duplicates = false;
     }
 
     /// Register builtin type signatures
@@ -303,21 +322,25 @@ impl<'a> Binder<'a> {
                 name: "stringify".to_string(),
                 ty: self.type_ctx.function_type(vec![any_ty], string_ty, false),
                 type_params: vec![],
+                visibility: Default::default(),
             },
             MethodSignature {
                 name: "parse".to_string(),
                 ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
                 type_params: vec![],
+                visibility: Default::default(),
             },
             MethodSignature {
                 name: "encode".to_string(),
                 ty: self.type_ctx.function_type(vec![any_ty], string_ty, false),
                 type_params: vec!["T".to_string()],
+                visibility: Default::default(),
             },
             MethodSignature {
                 name: "decode".to_string(),
                 ty: self.type_ctx.function_type(vec![string_ty], json_ty, false),
                 type_params: vec!["T".to_string()],
+                visibility: Default::default(),
             },
         ];
 
@@ -379,12 +402,14 @@ impl<'a> Binder<'a> {
                     ty: string_ty,
                     optional: false,
                     readonly: true,
+                    visibility: Default::default(),
                 },
                 PropertySignature {
                     name: "prototype".to_string(),
                     ty: t_var,
                     optional: false,
                     readonly: true,
+                    visibility: Default::default(),
                 },
             ],
             methods: vec![],
@@ -515,6 +540,7 @@ impl<'a> Binder<'a> {
                 ty: self.parse_type_string(&p.ty, &type_params),
                 optional: false,
                 readonly: false,
+                visibility: Default::default(),
             })
             .collect();
 
@@ -525,6 +551,7 @@ impl<'a> Binder<'a> {
                 ty: self.parse_type_string(&p.ty, &type_params),
                 optional: false,
                 readonly: false,
+                visibility: Default::default(),
             })
             .collect();
 
@@ -541,6 +568,7 @@ impl<'a> Binder<'a> {
                     name: m.name.clone(),
                     ty: func_ty,
                     type_params: vec![], // Builtin methods don't have method-level type params
+                    visibility: Default::default(),
                 }
             })
             .collect();
@@ -557,6 +585,7 @@ impl<'a> Binder<'a> {
                     name: m.name.clone(),
                     ty: func_ty,
                     type_params: vec![], // Builtin methods don't have method-level type params
+                    visibility: Default::default(),
                 }
             })
             .collect();
@@ -749,7 +778,8 @@ impl<'a> Binder<'a> {
     fn prepass_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
         let class_name = self.resolve(class.name.name);
 
-        // Skip if already defined (e.g., from builtin signatures)
+        // If a symbol with this name already exists (from builtins or forward declaration),
+        // skip re-registration. Duplicate detection happens in bind_class.
         if self.symbols.resolve(&class_name).is_some() {
             return Ok(());
         }
@@ -798,7 +828,8 @@ impl<'a> Binder<'a> {
     fn prepass_function(&mut self, func: &FunctionDecl) -> Result<(), BindError> {
         let func_name = self.resolve(func.name.name);
 
-        // Skip if already defined
+        // If a symbol with this name already exists (from builtins or forward declaration),
+        // skip re-registration. Duplicate detection happens in bind_function.
         if self.symbols.resolve(&func_name).is_some() {
             return Ok(());
         }
@@ -1035,6 +1066,20 @@ impl<'a> Binder<'a> {
 
     /// Bind function declaration
     fn bind_function(&mut self, func: &FunctionDecl) -> Result<(), BindError> {
+        let func_name = self.resolve(func.name.name);
+
+        // Detect duplicate function declarations
+        if self.detect_top_level_duplicates {
+            if let Some(&original_span) = self.bound_functions.get(&func_name) {
+                return Err(BindError::DuplicateSymbol {
+                    name: func_name,
+                    original: original_span,
+                    duplicate: func.name.span,
+                });
+            }
+            self.bound_functions.insert(func_name.clone(), func.name.span);
+        }
+
         // Get parent scope ID before pushing (for defining function symbol)
         let parent_scope_id = self.symbols.current_scope_id();
 
@@ -1082,11 +1127,12 @@ impl<'a> Binder<'a> {
             None => self.type_ctx.void_type(),
         };
 
-        let func_ty = self.type_ctx.function_type(param_types.clone(), return_ty, func.is_async);
+        // Count required params (those without default values)
+        let min_params = func.params.iter().filter(|p| p.default_value.is_none()).count();
+        let func_ty = self.type_ctx.function_type_with_min_params(param_types.clone(), return_ty, func.is_async, min_params);
 
         // Define function symbol in parent scope (so it can be called recursively)
         // If pre-registered by the pre-pass, update the type instead of re-defining
-        let func_name = self.resolve(func.name.name);
         if self.symbols.resolve(&func_name).is_some() {
             self.symbols.update_type(parent_scope_id, &func_name, func_ty);
         } else {
@@ -1126,7 +1172,7 @@ impl<'a> Binder<'a> {
                 ty: param_types[i],
                 flags: SymbolFlags {
                     is_exported: false,
-                    is_const: true,
+                    is_const: false, // function parameters are mutable
                     is_async: false,
                     is_readonly: false,
                 },
@@ -1156,6 +1202,18 @@ impl<'a> Binder<'a> {
         use crate::parser::types::ty::{ClassType, PropertySignature, MethodSignature, Type};
 
         let class_name = self.resolve(class.name.name);
+
+        // Detect duplicate class declarations using the bound_classes set.
+        if self.detect_top_level_duplicates {
+            if let Some(&original_span) = self.bound_classes.get(&class_name) {
+                return Err(BindError::DuplicateSymbol {
+                    name: class_name,
+                    original: original_span,
+                    duplicate: class.name.span,
+                });
+            }
+            self.bound_classes.insert(class_name.clone(), class.name.span);
+        }
 
         // Collect type parameters (K, V, T, etc.)
         let type_param_names: Vec<String> = class.type_params
@@ -1231,10 +1289,24 @@ impl<'a> Binder<'a> {
         let mut static_properties = Vec::new();
         let mut static_methods = Vec::new();
 
+        // Track seen field/method names for duplicate detection
+        let mut seen_fields: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
+        let mut seen_methods: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
+
         for member in &class.members {
             match member {
                 ClassMember::Field(field) => {
                     let field_name = self.resolve(field.name.name);
+
+                    // Check for duplicate field names
+                    if let Some(original_span) = seen_fields.get(&field_name) {
+                        return Err(BindError::DuplicateSymbol {
+                            name: field_name,
+                            original: *original_span,
+                            duplicate: field.name.span,
+                        });
+                    }
+                    seen_fields.insert(field_name.clone(), field.name.span);
                     let field_ty = if let Some(ref ann) = field.type_annotation {
                         self.resolve_type_annotation(ann)?
                     } else {
@@ -1245,6 +1317,7 @@ impl<'a> Binder<'a> {
                         ty: field_ty,
                         optional: false,
                         readonly: field.is_readonly,
+                        visibility: field.visibility,
                     };
                     if field.is_static {
                         static_properties.push(prop);
@@ -1254,6 +1327,16 @@ impl<'a> Binder<'a> {
                 }
                 ClassMember::Method(method) => {
                     let method_name = self.resolve(method.name.name);
+
+                    // Check for duplicate method names
+                    if let Some(original_span) = seen_methods.get(&method_name) {
+                        return Err(BindError::DuplicateSymbol {
+                            name: method_name,
+                            original: *original_span,
+                            duplicate: method.name.span,
+                        });
+                    }
+                    seen_methods.insert(method_name.clone(), method.name.span);
 
                     // Extract method-level type parameters (e.g., withLock<R>)
                     let method_type_params: Vec<String> = method
@@ -1303,10 +1386,11 @@ impl<'a> Binder<'a> {
                         self.symbols.pop_scope();
                     }
 
+                    let min_params = method.params.iter().filter(|p| p.default_value.is_none()).count();
                     if method.is_static {
-                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone()));
+                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone(), method.visibility, min_params));
                     } else {
-                        methods.push((method_name, params, return_ty, method.is_async, method_type_params));
+                        methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params));
                     }
                 }
                 _ => {}
@@ -1320,18 +1404,18 @@ impl<'a> Binder<'a> {
         // First pass: create instance method signatures
         let method_sigs: Vec<MethodSignature> = methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params)| {
-                let func_ty = self.type_ctx.function_type(params, return_ty, is_async);
-                MethodSignature { name, ty: func_ty, type_params: method_type_params }
+            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params)| {
+                let func_ty = self.type_ctx.function_type_with_min_params(params, return_ty, is_async, min_params);
+                MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
             })
             .collect();
 
         // Create static method signatures
         let static_method_sigs: Vec<MethodSignature> = static_methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params)| {
-                let func_ty = self.type_ctx.function_type(params, return_ty, is_async);
-                MethodSignature { name, ty: func_ty, type_params: method_type_params }
+            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params)| {
+                let func_ty = self.type_ctx.function_type_with_min_params(params, return_ty, is_async, min_params);
+                MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
             })
             .collect();
 
@@ -1354,11 +1438,10 @@ impl<'a> Binder<'a> {
             implements: vec![],
             is_abstract: class.is_abstract,
         };
-        let full_class_ty = self.type_ctx.intern(Type::Class(full_class_type));
-
-        // Update the symbol's type with the full class type
-        // Note: We need to update in the parent scope where the class was defined
-        self.symbols.update_type(class_definition_scope, &class_name, full_class_ty);
+        // Replace the placeholder type in-place so that all existing references
+        // (e.g., self-referential fields like `next: Node | null`) automatically
+        // see the full class type without needing to update every TypeId.
+        self.type_ctx.replace_type(class_ty, Type::Class(full_class_type));
 
         // Bind class members in the already-entered class scope
         // (scope was pushed earlier for type parameters)
@@ -1711,6 +1794,7 @@ impl<'a> Binder<'a> {
                                 ty: prop_type,
                                 optional: prop.optional,
                                 readonly: prop.readonly,
+                                visibility: Default::default(),
                             });
                         }
                         ObjectTypeMember::Method(method) => {
@@ -1729,6 +1813,7 @@ impl<'a> Binder<'a> {
                                 ty: func_ty,
                                 optional: false,
                                 readonly: false,
+                                visibility: Default::default(),
                             });
                         }
                     }

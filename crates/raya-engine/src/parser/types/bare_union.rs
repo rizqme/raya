@@ -189,12 +189,14 @@ impl<'a> BareUnionTransform<'a> {
                     ty: type_literal,
                     optional: false,
                     readonly: true, // $type is immutable
+                    visibility: Default::default(),
                 },
                 PropertySignature {
                     name: "$value".to_string(),
                     ty: value_type,
                     optional: false,
                     readonly: false,
+                    visibility: Default::default(),
                 },
             ],
             index_signature: None,

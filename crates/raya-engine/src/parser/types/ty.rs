@@ -118,6 +118,8 @@ pub struct FunctionType {
     pub return_type: TypeId,
     /// Whether this is an async function (returns Task<R>)
     pub is_async: bool,
+    /// Minimum number of required parameters (params without default values)
+    pub min_params: usize,
 }
 
 /// Array type: T[]
@@ -175,6 +177,8 @@ pub struct PropertySignature {
     pub optional: bool,
     /// Whether the property is readonly
     pub readonly: bool,
+    /// Visibility (private/protected/public) — only meaningful for class fields
+    pub visibility: crate::parser::ast::Visibility,
 }
 
 /// Object type: { prop1: T1, prop2: T2, ... }
@@ -195,6 +199,8 @@ pub struct MethodSignature {
     pub ty: TypeId,
     /// Type parameters for generic methods (e.g., `withLock<R>`)
     pub type_params: Vec<String>,
+    /// Visibility (private/protected/public)
+    pub visibility: crate::parser::ast::Visibility,
 }
 
 /// Class type (nominal typing)
