@@ -186,7 +186,6 @@ fn test_abstract_generic_with_concrete_method() {
 // ============================================================================
 
 #[test]
-#[ignore = "abstract class array polymorphism not yet supported"]
 fn test_abstract_polymorphic_call() {
     expect_i32(
         "abstract class Shape {
