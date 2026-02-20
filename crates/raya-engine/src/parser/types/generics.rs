@@ -12,6 +12,9 @@ use super::subtyping::SubtypingContext;
 use super::ty::{Type, TypeId};
 use rustc_hash::FxHashMap;
 
+/// Maximum recursion depth for type substitution to guard against infinite types
+const MAX_SUBSTITUTION_DEPTH: u32 = 64;
+
 /// Context for generic type operations
 #[derive(Debug)]
 pub struct GenericContext<'a> {
@@ -20,6 +23,9 @@ pub struct GenericContext<'a> {
 
     /// Current type variable substitutions
     substitutions: FxHashMap<String, TypeId>,
+
+    /// Current substitution recursion depth (guards against infinite types)
+    depth: u32,
 }
 
 impl<'a> GenericContext<'a> {
@@ -28,6 +34,7 @@ impl<'a> GenericContext<'a> {
         GenericContext {
             type_ctx,
             substitutions: FxHashMap::default(),
+            depth: 0,
         }
     }
 
@@ -49,7 +56,22 @@ impl<'a> GenericContext<'a> {
     /// Apply substitutions to a type
     ///
     /// Replaces all type variables with their substitutions.
+    /// Guards against infinite recursion from self-referential substitutions
+    /// (e.g., T → TypeVar(T) when a generic class references another generic with the same param).
     pub fn apply_substitution(&mut self, ty: TypeId) -> Result<TypeId, TypeError> {
+        self.depth += 1;
+        if self.depth > MAX_SUBSTITUTION_DEPTH {
+            self.depth -= 1;
+            return Err(TypeError::Generic {
+                message: "Type substitution depth exceeded (possible infinite type)".into(),
+            });
+        }
+        let result = self.apply_substitution_inner(ty);
+        self.depth -= 1;
+        result
+    }
+
+    fn apply_substitution_inner(&mut self, ty: TypeId) -> Result<TypeId, TypeError> {
         // Clone the type data to avoid borrow checker issues
         let ty_data = self.type_ctx.get(ty).ok_or_else(|| TypeError::Generic {
             message: format!("Invalid type ID: {:?}", ty),
@@ -59,8 +81,15 @@ impl<'a> GenericContext<'a> {
             Type::TypeVar(tv) => {
                 // Check if we have a substitution for this type variable
                 if let Some(substitution) = self.substitutions.get(&tv.name) {
+                    let sub = *substitution;
+                    // If the substitution maps back to the same type, break the cycle.
+                    // This happens when instantiating e.g. NegatedExpectation<T> inside
+                    // Expectation<T> — the substitution is T → TypeVar(T).
+                    if sub == ty {
+                        return Ok(ty);
+                    }
                     // Recursively apply substitutions
-                    return self.apply_substitution(*substitution);
+                    return self.apply_substitution(sub);
                 }
                 Ok(ty)
             }
@@ -584,6 +613,56 @@ mod tests {
         // Should unify with T = number
         assert!(gen_ctx.unify(tuple1, tuple2).unwrap());
         assert_eq!(gen_ctx.get_substitution("T"), Some(num));
+    }
+
+    #[test]
+    fn test_self_referential_substitution() {
+        // Regression: T → TypeVar(T) must not cause infinite recursion.
+        // This happens when instantiating NegatedExpectation<T> inside Expectation<T>.
+        let mut ctx = TypeContext::new();
+
+        let t_var = ctx.intern(Type::TypeVar(TypeVar {
+            name: "T".to_string(),
+            constraint: None,
+            default: None,
+        }));
+
+        let mut gen_ctx = GenericContext::new(&mut ctx);
+        // Map T to itself (the same TypeId)
+        gen_ctx.add_substitution("T".to_string(), t_var);
+
+        // Must not stack overflow — should return the TypeVar unchanged
+        let result = gen_ctx.apply_substitution(t_var).unwrap();
+        assert_eq!(result, t_var);
+    }
+
+    #[test]
+    fn test_self_referential_in_function_type() {
+        // A function type (T) => T where T substitutes to itself
+        let mut ctx = TypeContext::new();
+
+        let t_var = ctx.intern(Type::TypeVar(TypeVar {
+            name: "T".to_string(),
+            constraint: None,
+            default: None,
+        }));
+        let func = ctx.function_type(vec![t_var], t_var, false);
+
+        let mut gen_ctx = GenericContext::new(&mut ctx);
+        gen_ctx.add_substitution("T".to_string(), t_var);
+
+        // Must not stack overflow
+        let result = gen_ctx.apply_substitution(func).unwrap();
+
+        // Result should be a function type with the same TypeVar
+        match ctx.get(result) {
+            Some(Type::Function(f)) => {
+                assert_eq!(f.params.len(), 1);
+                assert_eq!(f.params[0], t_var);
+                assert_eq!(f.return_type, t_var);
+            }
+            _ => panic!("Expected function type"),
+        }
     }
 
     #[test]

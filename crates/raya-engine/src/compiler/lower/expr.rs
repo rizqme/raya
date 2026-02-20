@@ -4221,11 +4221,13 @@ impl<'a> Lowerer<'a> {
         for attr in attributes {
             match attr {
                 ast::JsxAttribute::Spread { argument, .. } => {
-                    // Lower the spread source and copy its properties
-                    // For now, emit a NativeCall to a runtime helper that merges objects
-                    // TODO: Implement proper object spread in IR
-                    let _spread_reg = self.lower_expr(argument);
-                    // Spread handling would need runtime support — skip for now
+                    // Lower the spread source and merge its properties into the dest object
+                    let spread_reg = self.lower_expr(argument);
+                    self.emit(IrInstr::NativeCall {
+                        dest: Some(dest.clone()),
+                        native_id: crate::compiler::native_id::JSON_MERGE,
+                        args: vec![dest.clone(), spread_reg],
+                    });
                 }
                 ast::JsxAttribute::Attribute { name, value, .. } => {
                     let key = self.jsx_attr_name_string(name);

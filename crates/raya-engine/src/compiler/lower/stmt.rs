@@ -81,8 +81,15 @@ impl<'a> Lowerer<'a> {
             Statement::ImportDecl(_) => {
                 // Handled at module level
             }
-            Statement::ExportDecl(_) => {
-                // Handled at module level
+            Statement::ExportDecl(export) => {
+                match export {
+                    ast::ExportDecl::Declaration(inner) => self.lower_stmt(inner),
+                    ast::ExportDecl::Default { expression, .. } => {
+                        // Lower as expression statement (side effects only)
+                        self.lower_expr(expression);
+                    }
+                    _ => {} // Named/All exports are module-level metadata only
+                }
             }
             Statement::Empty(_) => {
                 // No code to emit

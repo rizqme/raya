@@ -720,13 +720,33 @@ impl<'a> Interpreter<'a> {
                     }
                     // Error native calls
                     id if id == 0x0600u16 => {
-                        // ERROR_STACK: return stack trace string
-                        // The stack trace is captured at throw time and stored in the error object
-                        // For now, return an empty string as placeholder
-                        let s = RayaString::new(String::new());
-                        let gc_ptr = self.gc.lock().allocate(s);
-                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
-                        if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
+                        // ERROR_STACK (0x0600): return stack trace from error object.
+                        // Stack traces are populated at throw time in exceptions.rs
+                        // (task.build_stack_trace → obj.fields[2]).
+                        // Normal e.stack access uses LoadField directly; this native
+                        // handler serves as a fallback if called explicitly.
+                        let result = if !args.is_empty() {
+                            let error_val = args[0];
+                            if let Some(obj_ptr) = unsafe { error_val.as_ptr::<Object>() } {
+                                let obj = unsafe { &*obj_ptr.as_ptr() };
+                                if obj.fields.len() > 2 {
+                                    obj.fields[2]
+                                } else {
+                                    let s = RayaString::new(String::new());
+                                    let gc_ptr = self.gc.lock().allocate(s);
+                                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                                }
+                            } else {
+                                let s = RayaString::new(String::new());
+                                let gc_ptr = self.gc.lock().allocate(s);
+                                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                            }
+                        } else {
+                            let s = RayaString::new(String::new());
+                            let gc_ptr = self.gc.lock().allocate(s);
+                            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                        };
+                        if let Err(e) = stack.push(result) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
                     // Date native calls
@@ -1356,6 +1376,56 @@ impl<'a> Interpreter<'a> {
                         drop(gc); // Release lock before push
 
                         if let Err(e) = stack.push(result) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+
+                    // JSON.merge(dest, source) - copy all properties from source to dest
+                    0x0C03 => {
+                        use crate::vm::json::{self, JsonValue};
+
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::RuntimeError(
+                                "JSON.merge requires 2 arguments (dest, source)".to_string()
+                            ));
+                        }
+                        let dest_val = args[0];
+                        let source_val = args[1];
+
+                        // If source is null/non-object, just push dest unchanged
+                        if !source_val.is_ptr() {
+                            if let Err(e) = stack.push(dest_val) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+
+                        // Get source as JsonValue object
+                        let source_ptr = unsafe { source_val.as_ptr::<JsonValue>() };
+                        if let Some(source_json_ptr) = source_ptr {
+                            let source_json = unsafe { &*source_json_ptr.as_ptr() };
+                            if let Some(source_obj_ptr) = source_json.as_object() {
+                                // Get dest as JsonValue object
+                                if dest_val.is_ptr() {
+                                    let dest_ptr = unsafe { dest_val.as_ptr::<JsonValue>() };
+                                    if let Some(dest_json_ptr) = dest_ptr {
+                                        let dest_json = unsafe { &*dest_json_ptr.as_ptr() };
+                                        if let Some(dest_obj_ptr) = dest_json.as_object() {
+                                            let source_map = unsafe { &*source_obj_ptr.as_ptr() };
+                                            let dest_map = unsafe { &mut *dest_obj_ptr.as_ptr() };
+                                            // Copy all properties from source to dest
+                                            for (key, value) in source_map.iter() {
+                                                dest_map.insert(key.clone(), value.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Push dest back (it's been mutated in place)
+                        if let Err(e) = stack.push(dest_val) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
