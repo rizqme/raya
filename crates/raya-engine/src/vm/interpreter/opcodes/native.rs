@@ -666,6 +666,67 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
+                    id if id == 0x0F03u16 => {
+                        // PARSE_INT: parse string to integer
+                        let result = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
+                            let s = unsafe { &*ptr.as_ptr() }.data.trim();
+                            // Parse integer, handling leading whitespace and optional sign
+                            s.parse::<i64>().map(|v| v as f64)
+                                .or_else(|_| s.parse::<f64>().map(|v| v.trunc()))
+                                .unwrap_or(f64::NAN)
+                        } else if let Some(n) = args[0].as_f64() {
+                            n.trunc()
+                        } else if let Some(n) = args[0].as_i32() {
+                            n as f64
+                        } else {
+                            f64::NAN
+                        };
+                        if result.fract() == 0.0 && result.is_finite() && result.abs() < i32::MAX as f64 {
+                            if let Err(e) = stack.push(Value::i32(result as i32)) { return OpcodeResult::Error(e); }
+                        } else {
+                            if let Err(e) = stack.push(Value::f64(result)) { return OpcodeResult::Error(e); }
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0F04u16 => {
+                        // PARSE_FLOAT: parse string to float
+                        let result = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
+                            let s = unsafe { &*ptr.as_ptr() }.data.trim();
+                            s.parse::<f64>().unwrap_or(f64::NAN)
+                        } else if let Some(n) = args[0].as_f64() {
+                            n
+                        } else if let Some(n) = args[0].as_i32() {
+                            n as f64
+                        } else {
+                            f64::NAN
+                        };
+                        if let Err(e) = stack.push(Value::f64(result)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0F05u16 => {
+                        // IS_NAN: check if value is NaN
+                        let is_nan = if let Some(n) = args[0].as_f64() {
+                            n.is_nan()
+                        } else if args[0].as_i32().is_some() {
+                            false // integers are never NaN
+                        } else {
+                            true // non-numbers are treated as NaN
+                        };
+                        if let Err(e) = stack.push(Value::bool(is_nan)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == 0x0F06u16 => {
+                        // IS_FINITE: check if value is finite
+                        let is_finite = if let Some(n) = args[0].as_f64() {
+                            n.is_finite()
+                        } else if args[0].as_i32().is_some() {
+                            true // integers are always finite
+                        } else {
+                            false
+                        };
+                        if let Err(e) = stack.push(Value::bool(is_finite)) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
                     // Object native calls
                     id if id == 0x0001u16 => {
                         // OBJECT_TO_STRING: return "[object Object]"

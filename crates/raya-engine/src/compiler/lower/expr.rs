@@ -743,6 +743,23 @@ impl<'a> Lowerer<'a> {
                 return dest;
             }
 
+            // Global number utility functions
+            if name == "parseInt" || name == "parseFloat" || name == "isNaN" || name == "isFinite" {
+                let native_id = match name {
+                    "parseInt" => crate::vm::builtin::number::PARSE_INT,
+                    "parseFloat" => crate::vm::builtin::number::PARSE_FLOAT,
+                    "isNaN" => crate::vm::builtin::number::IS_NAN,
+                    "isFinite" => crate::vm::builtin::number::IS_FINITE,
+                    _ => unreachable!(),
+                };
+                self.emit(IrInstr::NativeCall {
+                    dest: Some(dest.clone()),
+                    native_id,
+                    args,
+                });
+                return dest;
+            }
+
             // Check if it's a direct function call
             if let Some(&func_id) = self.function_map.get(&ident.name) {
                 // Check if this is an async function - emit Spawn instead of Call

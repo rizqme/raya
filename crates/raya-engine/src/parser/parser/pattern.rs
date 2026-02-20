@@ -47,6 +47,17 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
             }))
         }
 
+        // Contextual keywords usable as identifiers in patterns
+        // (e.g. `from` is only a keyword in import statements)
+        Token::From => {
+            let name = parser.intern("from");
+            parser.advance();
+            Ok(Pattern::Identifier(Identifier {
+                name,
+                span: start_span,
+            }))
+        }
+
         _ => Err(parser.unexpected_token(&[
             Token::Identifier(Symbol::dummy()),
             Token::LeftBracket,

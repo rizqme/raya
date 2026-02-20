@@ -14,6 +14,6 @@ export class number {
     /** Format to the specified number of significant digits */
     toPrecision(precision: number): string;
 
-    /** Convert to string with the given radix (base 2-36) */
-    toString(radix: number): string;
+    /** Convert to string with the given radix (base 2-36, default 10) */
+    toString(radix?: number): string;
 }
