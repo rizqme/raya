@@ -492,6 +492,37 @@ impl ModuleResolver {
         checksum_arr.copy_from_slice(&checksum_bytes);
 
         let cache_package_dir = config.cache_dir.join(&checksum);
+
+        // 4a. For URL/git deps: try module.ryb first, fall back to source entry point
+        if dep.is_url() || dep.is_git() {
+            let module_path = cache_package_dir.join("module.ryb");
+            if module_path.exists() {
+                return Ok(ResolvedModule {
+                    path: module_path,
+                    is_index: false,
+                    package_info: Some(ResolvedPackageInfo {
+                        name: pkg.name.clone(),
+                        version,
+                        checksum: checksum_arr,
+                    }),
+                    url_info: None,
+                });
+            }
+            // Source package — find entry point like path deps
+            let entry_point = self.find_package_entry_point(&cache_package_dir)?;
+            return Ok(ResolvedModule {
+                path: entry_point,
+                is_index: false,
+                package_info: Some(ResolvedPackageInfo {
+                    name: pkg.name.clone(),
+                    version,
+                    checksum: checksum_arr,
+                }),
+                url_info: None,
+            });
+        }
+
+        // 4b. Registry package — requires module.ryb + module.d.raya
         let module_path = cache_package_dir.join("module.ryb");
 
         // Verify required files exist

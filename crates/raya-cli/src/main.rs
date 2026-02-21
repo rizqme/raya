@@ -223,8 +223,11 @@ enum Commands {
     /// Add a dependency
     #[command(alias = "a")]
     Add {
-        /// Package specifier (e.g., "logging", "logging@1.2.0")
+        /// Package specifier, name, or URL (e.g., "logging", "logging@1.2.0", "https://...")
         package: String,
+        /// Optional URL (when providing name + url, e.g., "raya add my-lib https://...")
+        #[arg(required = false)]
+        url: Option<String>,
         /// Add as dev dependency
         #[arg(short = 'D', long)]
         dev: bool,
@@ -391,8 +394,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         Commands::Init { path, name, template, yes } =>
             commands::init::execute(path, name, template, yes),
 
-        Commands::Add { package, dev, exact, no_install } =>
-            commands::add::execute(package, dev, exact, no_install),
+        Commands::Add { package, url, dev, exact, no_install } =>
+            commands::add::execute(package, url, dev, exact, no_install),
 
         Commands::Remove { package } =>
             commands::remove::execute(package),

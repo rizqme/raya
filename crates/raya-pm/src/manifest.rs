@@ -265,6 +265,10 @@ pub enum Dependency {
         #[serde(skip_serializing_if = "Option::is_none")]
         git: Option<String>,
 
+        /// Direct URL to archive (.tar.gz, .tgz, .zip)
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+
         /// Git branch
         #[serde(skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -397,11 +401,27 @@ impl Dependency {
         )
     }
 
+    /// Get the URL (if this is a URL dependency)
+    pub fn url(&self) -> Option<&str> {
+        match self {
+            Dependency::Detailed { url: Some(u), .. } => Some(u.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a URL dependency
+    pub fn is_url(&self) -> bool {
+        matches!(
+            self,
+            Dependency::Detailed { url: Some(_), .. }
+        )
+    }
+
     /// Check if this is a registry dependency
     pub fn is_registry(&self) -> bool {
         match self {
             Dependency::Simple(_) => true,
-            Dependency::Detailed { version: Some(_), path: None, git: None, .. } => true,
+            Dependency::Detailed { version: Some(_), path: None, git: None, url: None, .. } => true,
             _ => false,
         }
     }
@@ -468,26 +488,27 @@ fn validate_dependency(name: &str, dep: &Dependency) -> Result<(), ManifestError
             version,
             path,
             git,
+            url,
             ..
         } => {
             // Must have at least one source specified
-            if version.is_none() && path.is_none() && git.is_none() {
+            if version.is_none() && path.is_none() && git.is_none() && url.is_none() {
                 return Err(ManifestError::ValidationError(format!(
-                    "Dependency '{}' must specify version, path, or git",
+                    "Dependency '{}' must specify version, path, git, or url",
                     name
                 )));
             }
 
             // Cannot have multiple sources
             let source_count =
-                [version.is_some(), path.is_some(), git.is_some()]
+                [version.is_some(), path.is_some(), git.is_some(), url.is_some()]
                     .iter()
                     .filter(|&&x| x)
                     .count();
 
             if source_count > 1 {
                 return Err(ManifestError::ValidationError(format!(
-                    "Dependency '{}' cannot specify multiple sources (version, path, git)",
+                    "Dependency '{}' cannot specify multiple sources (version, path, git, url)",
                     name
                 )));
             }
@@ -631,6 +652,56 @@ version = "1.0.0"
 
 [dependencies]
 bad = { version = "^1.0.0", path = "../local" }
+"#;
+
+        let result = PackageManifest::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_url_dependency() {
+        let toml = r#"
+[package]
+name = "main"
+version = "1.0.0"
+
+[dependencies]
+remote = { url = "https://example.com/lib-1.0.0.tar.gz" }
+"#;
+
+        let manifest = PackageManifest::from_str(toml).unwrap();
+        let remote_dep = &manifest.dependencies["remote"];
+        assert!(remote_dep.is_url());
+        assert!(!remote_dep.is_path());
+        assert!(!remote_dep.is_git());
+        assert!(!remote_dep.is_registry());
+        assert_eq!(remote_dep.url(), Some("https://example.com/lib-1.0.0.tar.gz"));
+    }
+
+    #[test]
+    fn test_dependency_url_and_git_error() {
+        let toml = r#"
+[package]
+name = "pkg"
+version = "1.0.0"
+
+[dependencies]
+bad = { url = "https://example.com/lib.tar.gz", git = "https://github.com/user/repo" }
+"#;
+
+        let result = PackageManifest::from_str(toml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dependency_url_and_version_error() {
+        let toml = r#"
+[package]
+name = "pkg"
+version = "1.0.0"
+
+[dependencies]
+bad = { url = "https://example.com/lib.tar.gz", version = "^1.0.0" }
 "#;
 
         let result = PackageManifest::from_str(toml);

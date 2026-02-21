@@ -48,8 +48,11 @@ pub enum PkgCommands {
     /// Add a dependency
     #[command(alias = "a")]
     Add {
-        /// Package specifier (e.g., "logging", "logging@1.2.0")
+        /// Package specifier, name, or URL (e.g., "logging", "logging@1.2.0", "https://...")
         package: String,
+        /// Optional URL (when providing name + url, e.g., "raya add my-lib https://...")
+        #[arg(required = false)]
+        url: Option<String>,
         /// Add as dev dependency
         #[arg(short = 'D', long)]
         dev: bool,
@@ -150,8 +153,8 @@ pub fn execute(cmd: PkgCommands) -> anyhow::Result<()> {
             super::init::execute(path, name, template, yes),
         PkgCommands::Install { production, frozen, force } =>
             super::install::execute(production, frozen, force),
-        PkgCommands::Add { package, dev, exact, no_install } =>
-            super::add::execute(package, dev, exact, no_install),
+        PkgCommands::Add { package, url, dev, exact, no_install } =>
+            super::add::execute(package, url, dev, exact, no_install),
         PkgCommands::Remove { package } =>
             super::remove::execute(package),
         PkgCommands::Update { package } =>

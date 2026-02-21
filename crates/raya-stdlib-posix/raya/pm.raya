@@ -10,6 +10,8 @@ import archive from "std:archive";
 import crypto from "std:crypto";
 import semver from "std:semver";
 import encoding from "std:encoding";
+import glob from "std:glob";
+import process from "std:process";
 
 // ── Constants ──
 
@@ -282,6 +284,244 @@ function isDependencyGit(dep: JsonValue): boolean {
     return false;
 }
 
+function isDependencyUrl(dep: JsonValue): boolean {
+    if (dep.type() == "object") {
+        const u = dep.get("url");
+        return !u.isNull() && u.type() == "string";
+    }
+    return false;
+}
+
+function getDependencyUrl(dep: JsonValue): string {
+    return dep.get("url").string();
+}
+
+function getDependencyGitRef(dep: JsonValue): string {
+    const tag = dep.get("tag");
+    if (!tag.isNull()) return tag.string();
+    const branch = dep.get("branch");
+    if (!branch.isNull()) return branch.string();
+    const rev = dep.get("rev");
+    if (!rev.isNull()) return rev.string();
+    return "HEAD";
+}
+
+function isUrl(s: string): boolean {
+    return s.startsWith("http://") || s.startsWith("https://");
+}
+
+function isGitUrl(s: string): boolean {
+    if (s.endsWith(".git")) return true;
+    if (s.startsWith("git@")) return true;
+    if (isUrl(s) && (s.indexOf("github.com") >= 0 || s.indexOf("gitlab.com") >= 0 || s.indexOf("bitbucket.org") >= 0)) return true;
+    return false;
+}
+
+// ── Download Helpers ──
+
+class DownloadResult {
+    checksum: string;
+    wasCached: boolean;
+    constructor(checksum: string, wasCached: boolean) {
+        this.checksum = checksum;
+        this.wasCached = wasCached;
+    }
+}
+
+function downloadFromUrl(url: string, cache: Cache): DownloadResult {
+    const res = fetch.get(url);
+    if (!res.ok()) {
+        const status = res.status();
+        res.release();
+        throw new Error("Failed to download " + url + " (status " + status.toString() + ")");
+    }
+    const archiveBytes = res.bytes();
+    res.release();
+
+    const checksum = crypto.toHex(crypto.hashBytes("sha256", archiveBytes));
+
+    if (cache.exists(checksum)) {
+        return new DownloadResult(checksum, true);
+    }
+
+    const targetDir = cache.modulePath(checksum);
+    fs.mkdirRecursive(targetDir);
+    const tmpFile = fs.tempFile("raya-url-");
+    fs.writeFile(tmpFile, archiveBytes);
+
+    if (url.endsWith(".zip")) {
+        archive.zipExtract(tmpFile, targetDir);
+    } else {
+        archive.tgzExtract(tmpFile, targetDir);
+    }
+    fs.remove(tmpFile);
+
+    return new DownloadResult(checksum, false);
+}
+
+function cloneFromGit(gitUrl: string, ref: string, cache: Cache): DownloadResult {
+    const tmpDir = fs.tempFile("raya-git-") + "-clone";
+    fs.mkdirRecursive(tmpDir);
+
+    let cloneCmd = "git clone --depth 1";
+    if (ref != "HEAD") {
+        cloneCmd = cloneCmd + " --branch " + ref;
+    }
+    cloneCmd = cloneCmd + " " + gitUrl + " " + tmpDir;
+
+    const handle = process.exec(cloneCmd);
+    const exitCode = process.execGetCode(handle);
+    if (exitCode != 0) {
+        const stderr = process.execGetStderr(handle);
+        process.execRelease(handle);
+        throw new Error("git clone failed: " + stderr);
+    }
+    process.execRelease(handle);
+
+    // Remove .git directory (not needed in cache)
+    const gitDir = path.join(tmpDir, ".git");
+    if (fs.isDir(gitDir)) {
+        process.run("rm -rf " + gitDir);
+    }
+
+    // Checksum the content
+    const tmpArchive = fs.tempFile("raya-git-archive-");
+    archive.tgzCreate(tmpArchive, [tmpDir]);
+    const archiveBytes = fs.readFile(tmpArchive);
+    const checksum = crypto.toHex(crypto.hashBytes("sha256", archiveBytes));
+    fs.remove(tmpArchive);
+
+    if (cache.exists(checksum)) {
+        process.run("rm -rf " + tmpDir);
+        return new DownloadResult(checksum, true);
+    }
+
+    // Move clone to cache
+    const targetDir = cache.modulePath(checksum);
+    fs.rename(tmpDir, targetDir);
+
+    return new DownloadResult(checksum, false);
+}
+
+function readCachedVersion(cache: Cache, checksum: string): string {
+    const tomlPath = path.join(cache.modulePath(checksum), "raya.toml");
+    if (fs.exists(tomlPath)) {
+        const manifest = encoding.toml.parse(fs.readTextFile(tomlPath));
+        const pkg = manifest.get("package");
+        if (!pkg.isNull()) {
+            const v = pkg.get("version");
+            if (!v.isNull()) {
+                const result = v.string();
+                manifest.release();
+                return result;
+            }
+        }
+        manifest.release();
+    }
+    return "0.0.0";
+}
+
+function readCachedName(cache: Cache, checksum: string, fallbackUrl: string): string {
+    const tomlPath = path.join(cache.modulePath(checksum), "raya.toml");
+    if (fs.exists(tomlPath)) {
+        const manifest = encoding.toml.parse(fs.readTextFile(tomlPath));
+        const pkg = manifest.get("package");
+        if (!pkg.isNull()) {
+            const n = pkg.get("name");
+            if (!n.isNull()) {
+                const result = n.string();
+                manifest.release();
+                return result;
+            }
+        }
+        manifest.release();
+    }
+    // Derive from URL: last path segment, strip extension
+    const parts = fallbackUrl.split("/");
+    let name = parts[parts.length - 1];
+    if (name.endsWith(".tar.gz")) {
+        name = name.substring(0, name.length - 7);
+    } else if (name.endsWith(".tgz")) {
+        name = name.substring(0, name.length - 4);
+    } else if (name.endsWith(".zip")) {
+        name = name.substring(0, name.length - 4);
+    } else if (name.endsWith(".git")) {
+        name = name.substring(0, name.length - 4);
+    }
+    return name;
+}
+
+function buildUrlPkg(name: string, version: string, checksum: string, url: string, wasCached: boolean): JsonValue {
+    const pkg = encoding.json.newObject();
+    pkg.set("name", encoding.json.fromString(name));
+    pkg.set("version", encoding.json.fromString(version));
+    pkg.set("checksum", encoding.json.fromString(checksum));
+    const source = encoding.json.newObject();
+    source.set("type", encoding.json.fromString("url"));
+    source.set("url", encoding.json.fromString(url));
+    pkg.set("source", source);
+    pkg.set("dependencies", encoding.json.newArray());
+    pkg.set("_cached", encoding.json.fromBool(wasCached));
+    return pkg;
+}
+
+function buildGitPkg(name: string, version: string, checksum: string, gitUrl: string, wasCached: boolean): JsonValue {
+    const pkg = encoding.json.newObject();
+    pkg.set("name", encoding.json.fromString(name));
+    pkg.set("version", encoding.json.fromString(version));
+    pkg.set("checksum", encoding.json.fromString(checksum));
+    const source = encoding.json.newObject();
+    source.set("type", encoding.json.fromString("git"));
+    source.set("url", encoding.json.fromString(gitUrl));
+    source.set("rev", encoding.json.fromString(checksum));
+    pkg.set("source", source);
+    pkg.set("dependencies", encoding.json.newArray());
+    pkg.set("_cached", encoding.json.fromBool(wasCached));
+    return pkg;
+}
+
+// ── Import Scanning ──
+
+function scanForUrlImports(dir: string): string[] {
+    const urls: string[] = [];
+    const srcDir = path.join(dir, "src");
+    if (!fs.isDir(srcDir)) return urls;
+
+    const files = glob.findInDir("**/*.raya", srcDir);
+    let i = 0;
+    while (i < files.length) {
+        const content = fs.readTextFile(files[i]);
+        const lines = content.split("\n");
+        let j = 0;
+        while (j < lines.length) {
+            const line = lines[j].trim();
+            if (line.startsWith("import ")) {
+                const fromIdx = line.indexOf("from ");
+                if (fromIdx >= 0) {
+                    const rest = line.substring(fromIdx + 5).trim();
+                    const url = extractQuotedString(rest);
+                    if (url != null && isUrl(url)) {
+                        if (!urls.includes(url)) {
+                            urls.push(url);
+                        }
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return urls;
+}
+
+function extractQuotedString(s: string): string | null {
+    if (s.startsWith("\"")) {
+        const end = s.indexOf("\"", 1);
+        if (end > 0) return s.substring(1, end);
+    }
+    return null;
+}
+
 function resolveVersions(
     name: string,
     constraint: string,
@@ -418,6 +658,43 @@ function install(startDir: string, production: boolean, force: boolean, update: 
         i = i + 1;
     }
 
+    // Scan source files for URL imports
+    const urlImports = scanForUrlImports(dir);
+    let u = 0;
+    while (u < urlImports.length) {
+        const importUrl = urlImports[u];
+        // Check if already handled by a dependency
+        let alreadyHandled = false;
+        let k = 0;
+        while (k < packages.length()) {
+            const p = packages.at(k);
+            const src = p.get("source");
+            if (!src.isNull()) {
+                const srcType = src.get("type").string();
+                if (srcType == "url") {
+                    const srcUrl = src.get("url").string();
+                    if (srcUrl == importUrl) {
+                        alreadyHandled = true;
+                    }
+                }
+            }
+            k = k + 1;
+        }
+
+        if (!alreadyHandled) {
+            const dlResult = downloadFromUrl(importUrl, cache);
+            const urlName = readCachedName(cache, dlResult.checksum, importUrl);
+            const urlVersion = readCachedVersion(cache, dlResult.checksum);
+            packages.push(buildUrlPkg(urlName, urlVersion, dlResult.checksum, importUrl, dlResult.wasCached));
+            if (dlResult.wasCached) {
+                cached = cached + 1;
+            } else {
+                installed = installed + 1;
+            }
+        }
+        u = u + 1;
+    }
+
     // Save lockfile
     LockfileUtil.save(dir, newLock);
 
@@ -458,19 +735,45 @@ function installDependency(
         return pkg;
     }
 
-    // Git dependency — not yet supported in download
+    // URL dependency — download archive
+    if (isDependencyUrl(dep)) {
+        const depUrl = getDependencyUrl(dep);
+
+        // Check lockfile first
+        if (lockfile != null && !force) {
+            const locked = LockfileUtil.findPackage(lockfile, name);
+            if (locked != null) {
+                const checksum = locked.get("checksum").string();
+                if (checksum.length > 0 && cache.exists(checksum)) {
+                    return buildUrlPkg(name, locked.get("version").string(), checksum, depUrl, true);
+                }
+            }
+        }
+
+        const result = downloadFromUrl(depUrl, cache);
+        const version = readCachedVersion(cache, result.checksum);
+        return buildUrlPkg(name, version, result.checksum, depUrl, result.wasCached);
+    }
+
+    // Git dependency — clone repo
     if (isDependencyGit(dep)) {
-        const pkg = encoding.json.newObject();
-        pkg.set("name", encoding.json.fromString(name));
-        pkg.set("version", encoding.json.fromString("0.0.0"));
-        pkg.set("checksum", encoding.json.fromString(""));
-        const source = encoding.json.newObject();
-        source.set("type", encoding.json.fromString("git"));
-        source.set("url", dep.get("git"));
-        pkg.set("source", source);
-        pkg.set("dependencies", encoding.json.newArray());
-        pkg.set("_cached", encoding.json.fromBool(true));
-        return pkg;
+        const gitUrl = dep.get("git").string();
+        const ref = getDependencyGitRef(dep);
+
+        // Check lockfile first
+        if (lockfile != null && !force) {
+            const locked = LockfileUtil.findPackage(lockfile, name);
+            if (locked != null) {
+                const checksum = locked.get("checksum").string();
+                if (checksum.length > 0 && cache.exists(checksum)) {
+                    return buildGitPkg(name, locked.get("version").string(), checksum, gitUrl, true);
+                }
+            }
+        }
+
+        const result = cloneFromGit(gitUrl, ref, cache);
+        const version = readCachedVersion(cache, result.checksum);
+        return buildGitPkg(name, version, result.checksum, gitUrl, result.wasCached);
     }
 
     // Registry dependency
@@ -552,83 +855,113 @@ class InstallResult {
 function add(
     startDir: string,
     spec: string,
+    urlArg: string | null,
     dev: boolean,
     exact: boolean,
     noInstall: boolean
 ): void {
     const dir = findProjectRoot(startDir);
     const manifest = Manifest.load(dir);
+    const cache = new Cache();
+    cache.init();
 
-    // Parse package specifier: name or name@version or @org/name@version
     let pkgName = spec;
-    let versionSpec: string | null = null;
+    let depValue: JsonValue;
 
-    // Find the last @ that's not at position 0 (scoped package)
-    let searchStart = 0;
-    if (spec.startsWith("@")) searchStart = 1;
-    const atIdx = spec.indexOf("@", searchStart);
+    // Determine if this is a URL-based add
+    const effectiveUrl = urlArg != null ? urlArg : (isUrl(spec) ? spec : null);
 
-    if (atIdx >= 0) {
-        pkgName = spec.substring(0, atIdx);
-        versionSpec = spec.substring(atIdx + 1);
-    }
-
-    // Determine version constraint
-    let constraint: string;
-    if (versionSpec != null && versionSpec.length > 0) {
-        // User provided version
-        if (exact) {
-            constraint = versionSpec;
-        } else if (
-            versionSpec.startsWith("^") ||
-            versionSpec.startsWith("~") ||
-            versionSpec.startsWith(">") ||
-            versionSpec.startsWith("<") ||
-            versionSpec.startsWith("=")
-        ) {
-            constraint = versionSpec;
+    if (effectiveUrl != null) {
+        // URL-based dependency
+        if (isGitUrl(effectiveUrl)) {
+            const result = cloneFromGit(effectiveUrl, "HEAD", cache);
+            if (urlArg == null || isUrl(spec)) {
+                // Name not provided — resolve from downloaded raya.toml
+                pkgName = readCachedName(cache, result.checksum, effectiveUrl);
+            }
+            depValue = encoding.json.newObject();
+            depValue.set("git", encoding.json.fromString(effectiveUrl));
         } else {
-            constraint = "^" + versionSpec;
+            const result = downloadFromUrl(effectiveUrl, cache);
+            if (urlArg == null || isUrl(spec)) {
+                pkgName = readCachedName(cache, result.checksum, effectiveUrl);
+            }
+            depValue = encoding.json.newObject();
+            depValue.set("url", encoding.json.fromString(effectiveUrl));
         }
     } else {
-        // No version — fetch latest from registry
-        const registryConfig = manifest.get("registry");
-        let registryUrl = DEFAULT_REGISTRY;
-        if (!registryConfig.isNull() && registryConfig.type() == "object") {
-            const url = registryConfig.get("url");
-            if (!url.isNull()) registryUrl = url.string();
-        }
-        const registry = new Registry(registryUrl);
-        const versions = registry.getVersions(pkgName);
+        // Registry-based add (existing logic)
+        // Parse package specifier: name or name@version or @org/name@version
+        let versionSpec: string | null = null;
 
-        // Find latest non-prerelease version
-        let latest: string | null = null;
-        let j = 0;
-        while (j < versions.length) {
-            const v = versions[j];
-            if (semver.valid(v)) {
-                const sv = semver.parse(v);
-                const pre = sv.prerelease();
-                sv.release();
-                if (pre.length == 0) {
-                    if (latest == null || semver.gt(v, latest)) {
-                        latest = v;
+        // Find the last @ that's not at position 0 (scoped package)
+        let searchStart = 0;
+        if (spec.startsWith("@")) searchStart = 1;
+        const atIdx = spec.indexOf("@", searchStart);
+
+        if (atIdx >= 0) {
+            pkgName = spec.substring(0, atIdx);
+            versionSpec = spec.substring(atIdx + 1);
+        }
+
+        // Determine version constraint
+        let constraint: string;
+        if (versionSpec != null && versionSpec.length > 0) {
+            if (exact) {
+                constraint = versionSpec;
+            } else if (
+                versionSpec.startsWith("^") ||
+                versionSpec.startsWith("~") ||
+                versionSpec.startsWith(">") ||
+                versionSpec.startsWith("<") ||
+                versionSpec.startsWith("=")
+            ) {
+                constraint = versionSpec;
+            } else {
+                constraint = "^" + versionSpec;
+            }
+        } else {
+            // No version — fetch latest from registry
+            const registryConfig = manifest.get("registry");
+            let registryUrl = DEFAULT_REGISTRY;
+            if (!registryConfig.isNull() && registryConfig.type() == "object") {
+                const url = registryConfig.get("url");
+                if (!url.isNull()) registryUrl = url.string();
+            }
+            const registry = new Registry(registryUrl);
+            const versions = registry.getVersions(pkgName);
+
+            // Find latest non-prerelease version
+            let latest: string | null = null;
+            let j = 0;
+            while (j < versions.length) {
+                const v = versions[j];
+                if (semver.valid(v)) {
+                    const sv = semver.parse(v);
+                    const pre = sv.prerelease();
+                    sv.release();
+                    if (pre.length == 0) {
+                        if (latest == null || semver.gt(v, latest)) {
+                            latest = v;
+                        }
                     }
                 }
+                j = j + 1;
             }
-            j = j + 1;
+
+            if (latest == null) {
+                manifest.release();
+                throw new Error("No versions found for package " + pkgName);
+            }
+
+            if (exact) {
+                constraint = latest;
+            } else {
+                constraint = "^" + latest;
+            }
         }
 
-        if (latest == null) {
-            manifest.release();
-            throw new Error("No versions found for package " + pkgName);
-        }
-
-        if (exact) {
-            constraint = latest;
-        } else {
-            constraint = "^" + latest;
-        }
+        depValue = encoding.json.fromString(constraint);
     }
 
     // Add to manifest
@@ -638,7 +971,7 @@ function add(
         deps = encoding.json.newObject();
         manifest.set(depsKey, deps);
     }
-    deps.set(pkgName, encoding.json.fromString(constraint));
+    deps.set(pkgName, depValue);
 
     // Save manifest
     Manifest.save(dir, manifest);
@@ -730,8 +1063,8 @@ class PackageManager {
         return install(startDir, production, force, update);
     }
 
-    add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void {
-        add(startDir, spec, dev, exact, noInstall);
+    add(startDir: string, spec: string, urlArg: string | null, dev: boolean, exact: boolean, noInstall: boolean): void {
+        add(startDir, spec, urlArg, dev, exact, noInstall);
     }
 
     remove(startDir: string, pkgName: string): void {

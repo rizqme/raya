@@ -27,7 +27,7 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
     }
 
     println!("Raya v{} REPL", env!("CARGO_PKG_VERSION"));
-    println!("Type .help for help, .exit to quit\n");
+    println!("Type help for help, exit to quit\n");
 
     let mut buffer = String::new();
 
@@ -51,13 +51,8 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
                     continue;
                 }
 
-                // Handle exit commands
-                if buffer.is_empty() && matches!(trimmed, "exit" | "quit") {
-                    break;
-                }
-
-                // Handle dot-commands (only when not in multi-line mode)
-                if buffer.is_empty() && trimmed.starts_with('.') {
+                // Handle REPL commands (only when not in multi-line mode)
+                if buffer.is_empty() && is_command(trimmed) {
                     let _ = editor.add_history_entry(&line);
                     if handle_command(trimmed, &mut session, &options) {
                         break; // .exit
@@ -131,26 +126,34 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Handle dot-commands. Returns true if REPL should exit.
+/// Check if input looks like a REPL command.
+fn is_command(input: &str) -> bool {
+    matches!(
+        input.split_whitespace().next(),
+        Some("exit" | "quit" | "help" | "clear" | "load" | "type")
+    )
+}
+
+/// Handle REPL commands. Returns true if REPL should exit.
 fn handle_command(cmd: &str, session: &mut Session, options: &RuntimeOptions) -> bool {
     match cmd {
-        ".exit" | ".quit" | ".q" => return true,
-        ".help" | ".h" => {
+        "exit" | "quit" => return true,
+        "help" => {
             println!("Commands:");
-            println!("  .help           Show this help");
-            println!("  .clear          Reset session (discard all state)");
-            println!("  .load <file>    Load and execute a Raya file");
-            println!("  .type <expr>    Show the type of an expression");
-            println!("  .exit           Exit the REPL (also Ctrl-D)");
+            println!("  help            Show this help");
+            println!("  clear           Reset session (discard all state)");
+            println!("  load <file>     Load and execute a Raya file");
+            println!("  type <expr>     Show the type of an expression");
+            println!("  exit            Exit the REPL (also Ctrl-D)");
         }
-        ".clear" => {
+        "clear" => {
             session.reset(options);
             println!("Session cleared.");
         }
-        _ if cmd.starts_with(".load ") => {
-            let path = cmd.strip_prefix(".load ").unwrap().trim();
+        _ if cmd.starts_with("load ") => {
+            let path = cmd.strip_prefix("load ").unwrap().trim();
             if path.is_empty() {
-                print_error("Usage: .load <file.raya>");
+                print_error("Usage: load <file.raya>");
             } else {
                 match std::fs::read_to_string(path) {
                     Ok(source) => match session.eval(&source) {
@@ -161,10 +164,10 @@ fn handle_command(cmd: &str, session: &mut Session, options: &RuntimeOptions) ->
                 }
             }
         }
-        _ if cmd.starts_with(".type ") => {
-            let expr = cmd.strip_prefix(".type ").unwrap().trim();
+        _ if cmd.starts_with("type ") => {
+            let expr = cmd.strip_prefix("type ").unwrap().trim();
             if expr.is_empty() {
-                print_error("Usage: .type <expression>");
+                print_error("Usage: type <expression>");
             } else {
                 let code = format!("return {};", expr);
                 match session.eval(&code) {
@@ -175,7 +178,7 @@ fn handle_command(cmd: &str, session: &mut Session, options: &RuntimeOptions) ->
         }
         _ => {
             print_error(&format!("Unknown command: {}", cmd));
-            eprintln!("Type .help for available commands.");
+            eprintln!("Type help for available commands.");
         }
     }
     false

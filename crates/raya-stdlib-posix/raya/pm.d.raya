@@ -117,12 +117,13 @@ declare class PackageManager {
     /**
      * Add a dependency to the project.
      * @param startDir - Directory to start searching for raya.toml
-     * @param spec - Package specifier (name, name@version, @org/name@version)
+     * @param spec - Package specifier (name, name@version, @org/name@version, or URL)
+     * @param urlArg - Optional URL (when providing name + url separately)
      * @param dev - If true, add to dev-dependencies
      * @param exact - If true, use exact version (no ^ prefix)
      * @param noInstall - If true, skip running install after adding
      */
-    add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void;
+    add(startDir: string, spec: string, urlArg: string | null, dev: boolean, exact: boolean, noInstall: boolean): void;
 
     /**
      * Remove a dependency from the project.

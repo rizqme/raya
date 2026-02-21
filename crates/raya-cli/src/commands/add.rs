@@ -4,6 +4,7 @@ use raya_runtime::Runtime;
 
 pub fn execute(
     package: String,
+    url: Option<String>,
     dev: bool,
     exact: bool,
     no_install: bool,
@@ -15,9 +16,13 @@ pub fn execute(
         .replace('\\', "/")
         .replace('"', "\\\"");
     let pkg = package.replace('"', "\\\"");
+    let url_str = match &url {
+        Some(u) => format!(", \"{}\"", u.replace('"', "\\\"")),
+        None => ", null".to_string(),
+    };
     let script = format!(
-        r#"pm.add("{}", "{}", {}, {}, {})"#,
-        cwd, pkg, dev, exact, no_install
+        r#"pm.add("{}", "{}"{}, {}, {}, {})"#,
+        cwd, pkg, url_str, dev, exact, no_install
     );
     match rt.eval(&script) {
         Ok(_) => {

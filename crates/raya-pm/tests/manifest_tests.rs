@@ -342,6 +342,7 @@ fn test_roundtrip_complex() {
             version: None,
             path: Some("../local".to_string()),
             git: None,
+            url: None,
             branch: None,
             tag: None,
             rev: None,
