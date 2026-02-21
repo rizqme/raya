@@ -82,6 +82,9 @@ pub struct Interpreter<'a> {
     /// Maximum consecutive preemptions before killing a task
     pub(in crate::vm::interpreter) max_preemptions: u32,
 
+    /// Stack pool for reusing Stack allocations across spawned tasks
+    pub(in crate::vm::interpreter) stack_pool: &'a crate::vm::scheduler::StackPool,
+
     /// JIT code cache for native dispatch (None when JIT is disabled)
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) code_cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
@@ -128,6 +131,7 @@ impl<'a> Interpreter<'a> {
         resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
         io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
         max_preemptions: u32,
+        stack_pool: &'a crate::vm::scheduler::StackPool,
     ) -> Self {
         Self {
             gc,
@@ -143,6 +147,7 @@ impl<'a> Interpreter<'a> {
             resolved_natives,
             io_submit_tx,
             max_preemptions,
+            stack_pool,
             debug_state: None,
             #[cfg(feature = "jit")]
             code_cache: None,

@@ -1,4 +1,15 @@
 //! Task structure and execution state
+//!
+//! Uses grouped `parking_lot::Mutex` locks to reduce per-task overhead.
+//! Field grouping is based on access-pattern analysis:
+//!
+//! | Group           | Fields                                                          | Accessed by          |
+//! |-----------------|-----------------------------------------------------------------|----------------------|
+//! | LifecycleState  | state, suspend_reason, resume_value, start_time, result,        | Reactor + VM workers |
+//! |                 | waiters, awaiting_task                                          |                      |
+//! | ExceptionState  | current_exception, caught_exception, exception_handlers         | VM workers only      |
+//! | CallState       | closure_stack, call_stack, execution_frames                     | VM workers only      |
+//! | InitState       | initial_args, held_mutexes                                     | VM workers only      |
 
 use crate::vm::interpreter::execution::ExecutionFrame;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
@@ -8,7 +19,7 @@ use crate::vm::value::Value;
 use parking_lot::Condvar as ParkingCondvar;
 use parking_lot::Mutex as ParkingMutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 /// Reason why a task is suspended
@@ -116,13 +127,51 @@ pub struct ExceptionHandler {
     pub mutex_count: usize,
 }
 
+// ============================================================================
+// Grouped state structs
+// ============================================================================
+
+/// Lifecycle and scheduling state (accessed by both reactor and VM workers)
+struct LifecycleState {
+    state: TaskState,
+    suspend_reason: Option<SuspendReason>,
+    resume_value: Option<Value>,
+    start_time: Option<Instant>,
+    result: Option<Value>,
+    waiters: Vec<TaskId>,
+    awaiting_task: Option<TaskId>,
+}
+
+/// Exception handling state (VM worker only)
+struct ExceptionState {
+    current_exception: Option<Value>,
+    caught_exception: Option<Value>,
+    exception_handlers: Vec<ExceptionHandler>,
+}
+
+/// Call stack state (VM worker only)
+struct CallState {
+    closure_stack: Vec<Value>,
+    call_stack: Vec<usize>,
+    execution_frames: Vec<ExecutionFrame>,
+}
+
+/// Initialization and mutex state (VM worker only, rare access)
+struct InitState {
+    initial_args: Vec<Value>,
+    held_mutexes: Vec<MutexId>,
+}
+
+// ============================================================================
+// Task
+// ============================================================================
+
 /// A lightweight green thread
 pub struct Task {
+    // -- Immutable (set at creation, never changes) --
+
     /// Unique identifier
     id: TaskId,
-
-    /// Current state
-    state: Mutex<TaskState>,
 
     /// Function to execute
     function_id: usize,
@@ -130,20 +179,13 @@ pub struct Task {
     /// Module containing the function
     module: Arc<crate::compiler::Module>,
 
-    /// Execution stack
-    stack: Mutex<Stack>,
+    /// Parent task (if spawned from another Task)
+    parent: Option<TaskId>,
+
+    // -- Atomics (lock-free) --
 
     /// Instruction pointer
     ip: AtomicUsize,
-
-    /// Result value (if completed)
-    result: Mutex<Option<Value>>,
-
-    /// Tasks waiting for this Task to complete
-    waiters: Mutex<Vec<TaskId>>,
-
-    /// Parent task (if spawned from another Task)
-    parent: Option<TaskId>,
 
     /// Asynchronous preemption flag (like Go's preemption)
     preempt_requested: AtomicBool,
@@ -151,48 +193,8 @@ pub struct Task {
     /// Consecutive preemption count (for infinite loop detection)
     preempt_count: AtomicU32,
 
-    /// When this task started executing (for preemption monitoring)
-    start_time: Mutex<Option<Instant>>,
-
-    /// Exception handler stack (for try-catch-finally)
-    exception_handlers: Mutex<Vec<ExceptionHandler>>,
-
-    /// Currently thrown exception (if any)
-    current_exception: Mutex<Option<Value>>,
-
-    /// Caught exception (for Rethrow - preserved even after catch entry clears current_exception)
-    caught_exception: Mutex<Option<Value>>,
-
-    /// Mutexes currently held by this Task (for auto-unlock on exception)
-    held_mutexes: Mutex<Vec<MutexId>>,
-
-    /// Stack of currently executing closures (for LoadCaptured access)
-    closure_stack: Mutex<Vec<Value>>,
-
-    /// Call stack for stack traces (function IDs)
-    call_stack: Mutex<Vec<usize>>,
-
-    /// Reason for suspension (when state is Suspended)
-    suspend_reason: Mutex<Option<SuspendReason>>,
-
-    /// Value to push on resume (e.g., received channel value)
-    resume_value: Mutex<Option<Value>>,
-
-    /// Initial arguments passed to this task when spawned
-    initial_args: Mutex<Vec<Value>>,
-
-    /// Task ID this task is waiting for (when suspended on await)
-    awaiting_task: Mutex<Option<TaskId>>,
-
     /// Whether this task has been cancelled
     cancelled: AtomicBool,
-
-    /// Completion tracking for blocking wait (using parking_lot for efficiency)
-    /// The bool indicates whether the task has finished (completed or failed)
-    completion_lock: ParkingMutex<bool>,
-
-    /// Condvar for blocking until task completes
-    completion_condvar: ParkingCondvar,
 
     /// Current function being executed (may differ from function_id during nested calls)
     current_func_id: AtomicUsize,
@@ -200,8 +202,30 @@ pub struct Task {
     /// Current locals base offset in the stack
     current_locals_base: AtomicUsize,
 
-    /// Execution frame stack for frame-based interpreter (saved across suspend/resume)
-    execution_frames: Mutex<Vec<ExecutionFrame>>,
+    // -- Grouped Mutexes (parking_lot::Mutex — ~8 bytes each) --
+
+    /// Lifecycle and scheduling state
+    lifecycle: ParkingMutex<LifecycleState>,
+
+    /// Exception handling state
+    exceptions: ParkingMutex<ExceptionState>,
+
+    /// Call stack and frame state
+    calls: ParkingMutex<CallState>,
+
+    /// Initialization args and held mutexes
+    init: ParkingMutex<InitState>,
+
+    // -- Separate locks (special reasons) --
+
+    /// Execution stack (held for full interpreter run duration — std::sync::Mutex)
+    stack: StdMutex<Stack>,
+
+    /// Completion tracking for blocking wait
+    completion_lock: ParkingMutex<bool>,
+
+    /// Condvar for blocking until task completes
+    completion_condvar: ParkingCondvar,
 }
 
 impl Task {
@@ -223,54 +247,57 @@ impl Task {
     ) -> Self {
         Self {
             id: TaskId::new(),
-            state: Mutex::new(TaskState::Created),
             function_id,
             module,
-            stack: Mutex::new(Stack::new()),
-            ip: AtomicUsize::new(0),
-            result: Mutex::new(None),
-            waiters: Mutex::new(Vec::new()),
             parent,
+
+            ip: AtomicUsize::new(0),
             preempt_requested: AtomicBool::new(false),
             preempt_count: AtomicU32::new(0),
-            start_time: Mutex::new(None),
-            exception_handlers: Mutex::new(Vec::new()),
-            current_exception: Mutex::new(None),
-            caught_exception: Mutex::new(None),
-            held_mutexes: Mutex::new(Vec::new()),
-            closure_stack: Mutex::new(Vec::new()),
-            call_stack: Mutex::new(Vec::new()),
-            suspend_reason: Mutex::new(None),
-            resume_value: Mutex::new(None),
-            initial_args: Mutex::new(args),
-            awaiting_task: Mutex::new(None),
             cancelled: AtomicBool::new(false),
-            completion_lock: ParkingMutex::new(false),
-            completion_condvar: ParkingCondvar::new(),
             current_func_id: AtomicUsize::new(function_id),
             current_locals_base: AtomicUsize::new(0),
-            execution_frames: Mutex::new(Vec::new()),
+
+            lifecycle: ParkingMutex::new(LifecycleState {
+                state: TaskState::Created,
+                suspend_reason: None,
+                resume_value: None,
+                start_time: None,
+                result: None,
+                waiters: Vec::new(),
+                awaiting_task: None,
+            }),
+
+            exceptions: ParkingMutex::new(ExceptionState {
+                current_exception: None,
+                caught_exception: None,
+                exception_handlers: Vec::new(),
+            }),
+
+            calls: ParkingMutex::new(CallState {
+                closure_stack: Vec::new(),
+                call_stack: Vec::new(),
+                execution_frames: Vec::new(),
+            }),
+
+            init: ParkingMutex::new(InitState {
+                initial_args: args,
+                held_mutexes: Vec::new(),
+            }),
+
+            stack: StdMutex::new(Stack::new()),
+            completion_lock: ParkingMutex::new(false),
+            completion_condvar: ParkingCondvar::new(),
         }
     }
 
-    /// Take the initial arguments (consumes them)
-    pub fn take_initial_args(&self) -> Vec<Value> {
-        std::mem::take(&mut *self.initial_args.lock().unwrap())
-    }
+    // =========================================================================
+    // Immutable accessors
+    // =========================================================================
 
     /// Get the Task's unique ID
     pub fn id(&self) -> TaskId {
         self.id
-    }
-
-    /// Get the current state
-    pub fn state(&self) -> TaskState {
-        *self.state.lock().unwrap()
-    }
-
-    /// Set the current state
-    pub fn set_state(&self, state: TaskState) {
-        *self.state.lock().unwrap() = state;
     }
 
     /// Get the function ID this task is executing
@@ -283,6 +310,15 @@ impl Task {
         &self.module
     }
 
+    /// Get the parent task ID (if any)
+    pub fn parent(&self) -> Option<TaskId> {
+        self.parent
+    }
+
+    // =========================================================================
+    // Atomic accessors
+    // =========================================================================
+
     /// Get the instruction pointer
     pub fn ip(&self) -> usize {
         self.ip.load(Ordering::Relaxed)
@@ -291,97 +327,6 @@ impl Task {
     /// Set the instruction pointer
     pub fn set_ip(&self, ip: usize) {
         self.ip.store(ip, Ordering::Relaxed);
-    }
-
-    /// Get the parent task ID (if any)
-    pub fn parent(&self) -> Option<TaskId> {
-        self.parent
-    }
-
-    /// Complete the task with a result
-    pub fn complete(&self, result: Value) {
-        *self.result.lock().unwrap() = Some(result);
-        self.set_state(TaskState::Completed);
-        // Signal completion to any waiters
-        self.signal_completion();
-    }
-
-    /// Mark the task as failed
-    pub fn fail(&self) {
-        self.set_state(TaskState::Failed);
-        // Signal completion to any waiters (failure is also a completion)
-        self.signal_completion();
-    }
-
-    /// Mark this task as failed with an error message stored as exception
-    pub fn fail_with_error(&self, error: &crate::vm::VmError) {
-        // Store the error message as a string in current_exception
-        // so extract_exception_message can find it
-        let msg = error.to_string();
-        let raya_str = crate::vm::RayaString::new(msg);
-        // Use GC-bypass: allocate on heap directly (this is a fatal error path)
-        let boxed = Box::new(raya_str);
-        let ptr = Box::into_raw(boxed);
-        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr).unwrap()) };
-        self.set_exception(val);
-        self.fail();
-    }
-
-    /// Signal that the task has completed (either success or failure)
-    fn signal_completion(&self) {
-        let mut done = self.completion_lock.lock();
-        *done = true;
-        self.completion_condvar.notify_all();
-    }
-
-    /// Block until this task completes (either successfully or with failure)
-    /// Returns the task state after completion
-    pub fn wait_completion(&self) -> TaskState {
-        let mut done = self.completion_lock.lock();
-        while !*done {
-            self.completion_condvar.wait(&mut done);
-        }
-        self.state()
-    }
-
-    /// Block until this task completes, with a timeout
-    /// Returns the task state (may still be Running if timeout occurred)
-    pub fn wait_completion_timeout(&self, timeout: std::time::Duration) -> TaskState {
-        let mut done = self.completion_lock.lock();
-        if !*done {
-            self.completion_condvar.wait_for(&mut done, timeout);
-        }
-        self.state()
-    }
-
-    /// Get the result (if completed)
-    pub fn result(&self) -> Option<Value> {
-        *self.result.lock().unwrap()
-    }
-
-    /// Add a task that is waiting for this task to complete
-    pub fn add_waiter(&self, waiter_id: TaskId) {
-        self.waiters.lock().unwrap().push(waiter_id);
-    }
-
-    /// Take all waiting tasks (used when task completes)
-    pub fn take_waiters(&self) -> Vec<TaskId> {
-        std::mem::take(&mut *self.waiters.lock().unwrap())
-    }
-
-    /// Set the task this task is waiting for (await)
-    pub fn set_awaiting(&self, task_id: TaskId) {
-        *self.awaiting_task.lock().unwrap() = Some(task_id);
-    }
-
-    /// Get and clear the task this task was waiting for
-    pub fn take_awaiting(&self) -> Option<TaskId> {
-        self.awaiting_task.lock().unwrap().take()
-    }
-
-    /// Get the execution stack (for execution)
-    pub fn stack(&self) -> &Mutex<Stack> {
-        &self.stack
     }
 
     /// Request asynchronous preemption (like Go's preemption)
@@ -419,174 +364,6 @@ impl Task {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    /// Record when task started executing
-    pub fn set_start_time(&self, time: Instant) {
-        *self.start_time.lock().unwrap() = Some(time);
-    }
-
-    /// Get task execution start time
-    pub fn start_time(&self) -> Option<Instant> {
-        *self.start_time.lock().unwrap()
-    }
-
-    /// Clear start time (when task yields or completes)
-    pub fn clear_start_time(&self) {
-        *self.start_time.lock().unwrap() = None;
-    }
-
-    /// Push an exception handler onto the stack
-    pub fn push_exception_handler(&self, handler: ExceptionHandler) {
-        self.exception_handlers.lock().unwrap().push(handler);
-    }
-
-    /// Pop an exception handler from the stack
-    pub fn pop_exception_handler(&self) -> Option<ExceptionHandler> {
-        self.exception_handlers.lock().unwrap().pop()
-    }
-
-    /// Get the topmost exception handler without removing it
-    pub fn peek_exception_handler(&self) -> Option<ExceptionHandler> {
-        self.exception_handlers.lock().unwrap().last().cloned()
-    }
-
-    /// Get the current exception (if any)
-    pub fn current_exception(&self) -> Option<Value> {
-        *self.current_exception.lock().unwrap()
-    }
-
-    /// Set the current exception
-    pub fn set_exception(&self, exception: Value) {
-        *self.current_exception.lock().unwrap() = Some(exception);
-    }
-
-    /// Clear the current exception
-    pub fn clear_exception(&self) {
-        *self.current_exception.lock().unwrap() = None;
-    }
-
-    /// Check if there is an active exception
-    pub fn has_exception(&self) -> bool {
-        self.current_exception.lock().unwrap().is_some()
-    }
-
-    /// Get the caught exception (for Rethrow)
-    pub fn caught_exception(&self) -> Option<Value> {
-        *self.caught_exception.lock().unwrap()
-    }
-
-    /// Set the caught exception (when entering catch block)
-    pub fn set_caught_exception(&self, exception: Value) {
-        *self.caught_exception.lock().unwrap() = Some(exception);
-    }
-
-    /// Clear the caught exception
-    pub fn clear_caught_exception(&self) {
-        *self.caught_exception.lock().unwrap() = None;
-    }
-
-    /// Get the exception handler count (for debugging)
-    pub fn exception_handler_count(&self) -> usize {
-        self.exception_handlers.lock().unwrap().len()
-    }
-
-    // =========================================================================
-    // Closure Stack
-    // =========================================================================
-
-    /// Push a closure onto the closure stack
-    pub fn push_closure(&self, closure: Value) {
-        self.closure_stack.lock().unwrap().push(closure);
-    }
-
-    /// Pop a closure from the closure stack
-    pub fn pop_closure(&self) -> Option<Value> {
-        self.closure_stack.lock().unwrap().pop()
-    }
-
-    /// Get the current closure (top of stack)
-    pub fn current_closure(&self) -> Option<Value> {
-        self.closure_stack.lock().unwrap().last().copied()
-    }
-
-    /// Get the closure stack (for execution)
-    pub fn closure_stack(&self) -> &Mutex<Vec<Value>> {
-        &self.closure_stack
-    }
-
-    // =========================================================================
-    // Call Stack (for stack traces)
-    // =========================================================================
-
-    /// Push a function ID onto the call stack
-    pub fn push_call_frame(&self, function_id: usize) {
-        self.call_stack.lock().unwrap().push(function_id);
-    }
-
-    /// Pop a function ID from the call stack
-    pub fn pop_call_frame(&self) -> Option<usize> {
-        self.call_stack.lock().unwrap().pop()
-    }
-
-    /// Get the current call stack (for building stack traces)
-    pub fn get_call_stack(&self) -> Vec<usize> {
-        self.call_stack.lock().unwrap().clone()
-    }
-
-    /// Build a stack trace string from the current call stack
-    pub fn build_stack_trace(&self, error_name: &str, error_message: &str) -> String {
-        let call_stack = self.call_stack.lock().unwrap();
-        let execution_frames = self.execution_frames.lock().unwrap();
-        let module = &self.module;
-        let debug_info = module.debug_info.as_ref();
-
-        let mut trace = if error_message.is_empty() {
-            error_name.to_string()
-        } else {
-            format!("{}: {}", error_name, error_message)
-        };
-
-        // Build a map of func_id → bytecode offset from execution frames
-        // The current frame's IP comes from self.ip, caller frames come from execution_frames
-        let current_ip = self.ip.load(std::sync::atomic::Ordering::Relaxed);
-
-        // Add each frame to the stack trace (most recent first)
-        for (i, &func_id) in call_stack.iter().rev().enumerate() {
-            if let Some(func) = module.functions.get(func_id) {
-                // Try to get bytecode offset: first frame uses current ip,
-                // subsequent frames use execution_frames (which are in reverse order)
-                let ip = if i == 0 {
-                    Some(current_ip)
-                } else {
-                    // Execution frames are pushed in call order, so reverse iteration
-                    // matches the call_stack reverse iteration
-                    let frame_idx = execution_frames.len().checked_sub(i);
-                    frame_idx.and_then(|idx| execution_frames.get(idx)).map(|f| f.ip)
-                };
-
-                // Try to look up source location from debug info
-                let location = ip.and_then(|offset| {
-                    debug_info.and_then(|di| {
-                        di.functions.get(func_id).and_then(|fdi| {
-                            fdi.lookup_location(offset as u32)
-                        })
-                    })
-                });
-
-                if let Some(loc) = location {
-                    trace.push_str(&format!("\n    at {} (line {}:{})", func.name, loc.line, loc.column));
-                } else {
-                    trace.push_str(&format!("\n    at {}", func.name));
-                }
-            }
-        }
-
-        trace
-    }
-
-    // =========================================================================
-    // Execution Frames (frame-based interpreter)
-    // =========================================================================
-
     /// Get the current function ID being executed
     pub fn current_func_id(&self) -> usize {
         self.current_func_id.load(Ordering::Relaxed)
@@ -607,19 +384,138 @@ impl Task {
         self.current_locals_base.store(base, Ordering::Relaxed);
     }
 
-    /// Take the execution frames (drains them from the task)
-    pub fn take_execution_frames(&self) -> Vec<ExecutionFrame> {
-        std::mem::take(&mut *self.execution_frames.lock().unwrap())
+    // =========================================================================
+    // Stack (std::sync::Mutex — held for full interpreter run)
+    // =========================================================================
+
+    /// Get the execution stack (for execution)
+    pub fn stack(&self) -> &StdMutex<Stack> {
+        &self.stack
     }
 
-    /// Get a snapshot of the execution frames (non-draining clone, for profiling).
-    pub fn get_execution_frames(&self) -> Vec<ExecutionFrame> {
-        self.execution_frames.lock().unwrap().clone()
+    /// Take the initial arguments (consumes them)
+    pub fn take_initial_args(&self) -> Vec<Value> {
+        std::mem::take(&mut self.init.lock().initial_args)
     }
 
-    /// Save execution frames (for suspend)
-    pub fn save_execution_frames(&self, frames: Vec<ExecutionFrame>) {
-        *self.execution_frames.lock().unwrap() = frames;
+    /// Replace the task's stack with a pre-allocated one (for pool reuse).
+    /// Must be called before the task starts executing.
+    pub fn replace_stack(&self, stack: Stack) {
+        *self.stack.lock().unwrap() = stack;
+    }
+
+    /// Take the stack out of this task, replacing it with an empty one.
+    /// Used to return the stack to a pool after task completion.
+    pub fn take_stack(&self) -> Stack {
+        std::mem::replace(&mut *self.stack.lock().unwrap(), Stack::new())
+    }
+
+    // =========================================================================
+    // Lifecycle state (scheduling, suspend/resume, completion)
+    // =========================================================================
+
+    /// Get the current state
+    pub fn state(&self) -> TaskState {
+        self.lifecycle.lock().state
+    }
+
+    /// Set the current state
+    pub fn set_state(&self, state: TaskState) {
+        self.lifecycle.lock().state = state;
+    }
+
+    /// Complete the task with a result
+    pub fn complete(&self, result: Value) {
+        {
+            let mut lc = self.lifecycle.lock();
+            lc.result = Some(result);
+            lc.state = TaskState::Completed;
+        }
+        self.signal_completion();
+    }
+
+    /// Mark the task as failed
+    pub fn fail(&self) {
+        self.lifecycle.lock().state = TaskState::Failed;
+        self.signal_completion();
+    }
+
+    /// Mark this task as failed with an error message stored as exception
+    pub fn fail_with_error(&self, error: &crate::vm::VmError) {
+        let msg = error.to_string();
+        let raya_str = crate::vm::RayaString::new(msg);
+        let boxed = Box::new(raya_str);
+        let ptr = Box::into_raw(boxed);
+        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(ptr).unwrap()) };
+        self.set_exception(val);
+        self.fail();
+    }
+
+    /// Signal that the task has completed (either success or failure)
+    fn signal_completion(&self) {
+        let mut done = self.completion_lock.lock();
+        *done = true;
+        self.completion_condvar.notify_all();
+    }
+
+    /// Block until this task completes (either successfully or with failure)
+    /// Returns the task state after completion
+    pub fn wait_completion(&self) -> TaskState {
+        let mut done = self.completion_lock.lock();
+        while !*done {
+            self.completion_condvar.wait(&mut done);
+        }
+        self.lifecycle.lock().state
+    }
+
+    /// Block until this task completes, with a timeout
+    /// Returns the task state (may still be Running if timeout occurred)
+    pub fn wait_completion_timeout(&self, timeout: std::time::Duration) -> TaskState {
+        let mut done = self.completion_lock.lock();
+        if !*done {
+            self.completion_condvar.wait_for(&mut done, timeout);
+        }
+        self.lifecycle.lock().state
+    }
+
+    /// Get the result (if completed)
+    pub fn result(&self) -> Option<Value> {
+        self.lifecycle.lock().result
+    }
+
+    /// Add a task that is waiting for this task to complete
+    pub fn add_waiter(&self, waiter_id: TaskId) {
+        self.lifecycle.lock().waiters.push(waiter_id);
+    }
+
+    /// Take all waiting tasks (used when task completes)
+    pub fn take_waiters(&self) -> Vec<TaskId> {
+        std::mem::take(&mut self.lifecycle.lock().waiters)
+    }
+
+    /// Set the task this task is waiting for (await)
+    pub fn set_awaiting(&self, task_id: TaskId) {
+        self.lifecycle.lock().awaiting_task = Some(task_id);
+    }
+
+    /// Get and clear the task this task was waiting for
+    pub fn take_awaiting(&self) -> Option<TaskId> {
+        self.lifecycle.lock().awaiting_task.take()
+    }
+
+    /// Record when task started executing
+    pub fn set_start_time(&self, time: Instant) {
+        self.lifecycle.lock().start_time = Some(time);
+    }
+
+    /// Get task execution start time
+    pub fn start_time(&self) -> Option<Instant> {
+        self.lifecycle.lock().start_time
+    }
+
+    /// Clear start time (when task yields or completes)
+    pub fn clear_start_time(&self) {
+        self.lifecycle.lock().start_time = None;
     }
 
     // =========================================================================
@@ -628,8 +524,9 @@ impl Task {
 
     /// Set the suspension reason
     pub fn suspend(&self, reason: SuspendReason) {
-        self.set_state(TaskState::Suspended);
-        *self.suspend_reason.lock().unwrap() = Some(reason);
+        let mut lc = self.lifecycle.lock();
+        lc.state = TaskState::Suspended;
+        lc.suspend_reason = Some(reason);
     }
 
     /// Conditionally suspend only if the task is still Running.
@@ -638,11 +535,10 @@ impl Task {
     /// (e.g., by a MutexUnlock on another VM worker that already woke this task).
     /// This prevents the reactor from overwriting a Resumed state back to Suspended.
     pub fn try_suspend(&self, reason: SuspendReason) -> bool {
-        let mut state = self.state.lock().unwrap();
-        if *state == TaskState::Running {
-            *state = TaskState::Suspended;
-            drop(state);
-            *self.suspend_reason.lock().unwrap() = Some(reason);
+        let mut lc = self.lifecycle.lock();
+        if lc.state == TaskState::Running {
+            lc.state = TaskState::Suspended;
+            lc.suspend_reason = Some(reason);
             true
         } else {
             false
@@ -651,47 +547,201 @@ impl Task {
 
     /// Get the suspension reason
     pub fn suspend_reason(&self) -> Option<SuspendReason> {
-        self.suspend_reason.lock().unwrap().clone()
+        self.lifecycle.lock().suspend_reason.clone()
     }
 
     /// Clear the suspension reason (when resuming)
     pub fn clear_suspend_reason(&self) {
-        *self.suspend_reason.lock().unwrap() = None;
+        self.lifecycle.lock().suspend_reason = None;
     }
 
     /// Set the value to push when resuming (e.g., channel receive result)
     pub fn set_resume_value(&self, value: Value) {
-        *self.resume_value.lock().unwrap() = Some(value);
+        self.lifecycle.lock().resume_value = Some(value);
     }
 
     /// Take the resume value (consumes it)
     pub fn take_resume_value(&self) -> Option<Value> {
-        self.resume_value.lock().unwrap().take()
+        self.lifecycle.lock().resume_value.take()
     }
+
+    // =========================================================================
+    // Exception state
+    // =========================================================================
+
+    /// Push an exception handler onto the stack
+    pub fn push_exception_handler(&self, handler: ExceptionHandler) {
+        self.exceptions.lock().exception_handlers.push(handler);
+    }
+
+    /// Pop an exception handler from the stack
+    pub fn pop_exception_handler(&self) -> Option<ExceptionHandler> {
+        self.exceptions.lock().exception_handlers.pop()
+    }
+
+    /// Get the topmost exception handler without removing it
+    pub fn peek_exception_handler(&self) -> Option<ExceptionHandler> {
+        self.exceptions.lock().exception_handlers.last().cloned()
+    }
+
+    /// Get the current exception (if any)
+    pub fn current_exception(&self) -> Option<Value> {
+        self.exceptions.lock().current_exception
+    }
+
+    /// Set the current exception
+    pub fn set_exception(&self, exception: Value) {
+        self.exceptions.lock().current_exception = Some(exception);
+    }
+
+    /// Clear the current exception
+    pub fn clear_exception(&self) {
+        self.exceptions.lock().current_exception = None;
+    }
+
+    /// Check if there is an active exception
+    pub fn has_exception(&self) -> bool {
+        self.exceptions.lock().current_exception.is_some()
+    }
+
+    /// Get the caught exception (for Rethrow)
+    pub fn caught_exception(&self) -> Option<Value> {
+        self.exceptions.lock().caught_exception
+    }
+
+    /// Set the caught exception (when entering catch block)
+    pub fn set_caught_exception(&self, exception: Value) {
+        self.exceptions.lock().caught_exception = Some(exception);
+    }
+
+    /// Clear the caught exception
+    pub fn clear_caught_exception(&self) {
+        self.exceptions.lock().caught_exception = None;
+    }
+
+    /// Get the exception handler count (for debugging)
+    pub fn exception_handler_count(&self) -> usize {
+        self.exceptions.lock().exception_handlers.len()
+    }
+
+    // =========================================================================
+    // Call state (closures, call stack, execution frames)
+    // =========================================================================
+
+    /// Push a closure onto the closure stack
+    pub fn push_closure(&self, closure: Value) {
+        self.calls.lock().closure_stack.push(closure);
+    }
+
+    /// Pop a closure from the closure stack
+    pub fn pop_closure(&self) -> Option<Value> {
+        self.calls.lock().closure_stack.pop()
+    }
+
+    /// Get the current closure (top of stack)
+    pub fn current_closure(&self) -> Option<Value> {
+        self.calls.lock().closure_stack.last().copied()
+    }
+
+    /// Push a function ID onto the call stack
+    pub fn push_call_frame(&self, function_id: usize) {
+        self.calls.lock().call_stack.push(function_id);
+    }
+
+    /// Pop a function ID from the call stack
+    pub fn pop_call_frame(&self) -> Option<usize> {
+        self.calls.lock().call_stack.pop()
+    }
+
+    /// Get the current call stack (for building stack traces)
+    pub fn get_call_stack(&self) -> Vec<usize> {
+        self.calls.lock().call_stack.clone()
+    }
+
+    /// Take the execution frames (drains them from the task)
+    pub fn take_execution_frames(&self) -> Vec<ExecutionFrame> {
+        std::mem::take(&mut self.calls.lock().execution_frames)
+    }
+
+    /// Get a snapshot of the execution frames (non-draining clone, for profiling).
+    pub fn get_execution_frames(&self) -> Vec<ExecutionFrame> {
+        self.calls.lock().execution_frames.clone()
+    }
+
+    /// Save execution frames (for suspend)
+    pub fn save_execution_frames(&self, frames: Vec<ExecutionFrame>) {
+        self.calls.lock().execution_frames = frames;
+    }
+
+    /// Build a stack trace string from the current call stack
+    pub fn build_stack_trace(&self, error_name: &str, error_message: &str) -> String {
+        let cs = self.calls.lock();
+        let module = &self.module;
+        let debug_info = module.debug_info.as_ref();
+
+        let mut trace = if error_message.is_empty() {
+            error_name.to_string()
+        } else {
+            format!("{}: {}", error_name, error_message)
+        };
+
+        let current_ip = self.ip.load(std::sync::atomic::Ordering::Relaxed);
+
+        for (i, &func_id) in cs.call_stack.iter().rev().enumerate() {
+            if let Some(func) = module.functions.get(func_id) {
+                let ip = if i == 0 {
+                    Some(current_ip)
+                } else {
+                    let frame_idx = cs.execution_frames.len().checked_sub(i);
+                    frame_idx.and_then(|idx| cs.execution_frames.get(idx)).map(|f| f.ip)
+                };
+
+                let location = ip.and_then(|offset| {
+                    debug_info.and_then(|di| {
+                        di.functions.get(func_id).and_then(|fdi| {
+                            fdi.lookup_location(offset as u32)
+                        })
+                    })
+                });
+
+                if let Some(loc) = location {
+                    trace.push_str(&format!("\n    at {} (line {}:{})", func.name, loc.line, loc.column));
+                } else {
+                    trace.push_str(&format!("\n    at {}", func.name));
+                }
+            }
+        }
+
+        trace
+    }
+
+    // =========================================================================
+    // Init state (held mutexes)
+    // =========================================================================
 
     /// Record that this task has acquired a mutex
     pub fn add_held_mutex(&self, mutex_id: MutexId) {
-        self.held_mutexes.lock().unwrap().push(mutex_id);
+        self.init.lock().held_mutexes.push(mutex_id);
     }
 
     /// Record that this task has released a mutex
     pub fn remove_held_mutex(&self, mutex_id: MutexId) {
-        let mut mutexes = self.held_mutexes.lock().unwrap();
-        if let Some(pos) = mutexes.iter().position(|&id| id == mutex_id) {
-            mutexes.remove(pos);
+        let mut is = self.init.lock();
+        if let Some(pos) = is.held_mutexes.iter().position(|&id| id == mutex_id) {
+            is.held_mutexes.remove(pos);
         }
     }
 
     /// Get the number of mutexes currently held
     pub fn held_mutex_count(&self) -> usize {
-        self.held_mutexes.lock().unwrap().len()
+        self.init.lock().held_mutexes.len()
     }
 
     /// Take all mutexes held after a certain count (for exception unwinding)
     pub fn take_mutexes_since(&self, count: usize) -> Vec<MutexId> {
-        let mut mutexes = self.held_mutexes.lock().unwrap();
-        if mutexes.len() > count {
-            mutexes.drain(count..).collect()
+        let mut is = self.init.lock();
+        if is.held_mutexes.len() > count {
+            is.held_mutexes.drain(count..).collect()
         } else {
             Vec::new()
         }
@@ -699,7 +749,7 @@ impl Task {
 
     /// Get all held mutexes (for debugging)
     pub fn get_held_mutexes(&self) -> Vec<MutexId> {
-        self.held_mutexes.lock().unwrap().clone()
+        self.init.lock().held_mutexes.clone()
     }
 
     // =========================================================================
@@ -709,14 +759,16 @@ impl Task {
     /// Serialize this task into a `SerializedTask` for snapshot persistence.
     ///
     /// Must only be called when the task is paused (not actively executing on a worker).
-    /// Typically invoked during a stop-the-world safepoint or when the scheduler is idle.
     pub fn to_serialized(&self) -> SerializedTask {
-        let state = *self.state.lock().unwrap();
+        let lc = self.lifecycle.lock();
+        let state = lc.state;
+        let result = lc.result;
+        let suspend_reason = lc.suspend_reason.clone();
+        drop(lc);
+
         let ip = self.ip.load(Ordering::Relaxed);
         let stack_values = self.stack.lock().unwrap().as_slice().to_vec();
-        let result = self.result.lock().unwrap().clone();
-        let suspend_reason = self.suspend_reason.lock().unwrap().clone();
-        let execution_frames = self.execution_frames.lock().unwrap().clone();
+        let execution_frames = self.calls.lock().execution_frames.clone();
 
         // Map ExecutionFrame -> SerializedFrame
         let frames: Vec<SerializedFrame> = execution_frames
@@ -725,7 +777,7 @@ impl Task {
                 function_index: ef.func_id,
                 return_ip: ef.ip,
                 base_pointer: ef.locals_base,
-                locals: Vec::new(), // locals live on the shared stack, not per-frame
+                locals: Vec::new(),
             })
             .collect();
 
@@ -775,7 +827,7 @@ impl Task {
                 func_id: sf.function_index,
                 ip: sf.return_ip,
                 locals_base: sf.base_pointer,
-                is_closure: false, // not persisted — closures are on the stack
+                is_closure: false,
                 return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
             })
             .collect();
@@ -792,10 +844,9 @@ impl Task {
             BlockedReason::AwaitingMutex(id) => SuspendReason::MutexLock {
                 mutex_id: MutexId::from_u64(id),
             },
-            BlockedReason::Other(_) => SuspendReason::IoWait, // best-effort for non-resumable reasons
+            BlockedReason::Other(_) => SuspendReason::IoWait,
         });
 
-        // Determine current_func_id from the topmost execution frame or the root function
         let current_func_id = execution_frames
             .last()
             .map(|f| f.func_id)
@@ -808,33 +859,47 @@ impl Task {
 
         Self {
             id: serialized.task_id,
-            state: Mutex::new(serialized.state),
             function_id: serialized.function_index,
             module,
-            stack: Mutex::new(stack),
-            ip: AtomicUsize::new(serialized.ip),
-            result: Mutex::new(serialized.result),
-            waiters: Mutex::new(Vec::new()),
             parent: serialized.parent,
+
+            ip: AtomicUsize::new(serialized.ip),
             preempt_requested: AtomicBool::new(false),
             preempt_count: AtomicU32::new(0),
-            start_time: Mutex::new(None),
-            exception_handlers: Mutex::new(Vec::new()),
-            current_exception: Mutex::new(None),
-            caught_exception: Mutex::new(None),
-            held_mutexes: Mutex::new(Vec::new()),
-            closure_stack: Mutex::new(Vec::new()),
-            call_stack: Mutex::new(Vec::new()),
-            suspend_reason: Mutex::new(suspend_reason),
-            resume_value: Mutex::new(None),
-            initial_args: Mutex::new(Vec::new()),
-            awaiting_task: Mutex::new(None),
             cancelled: AtomicBool::new(false),
-            completion_lock: ParkingMutex::new(false),
-            completion_condvar: ParkingCondvar::new(),
             current_func_id: AtomicUsize::new(current_func_id),
             current_locals_base: AtomicUsize::new(current_locals_base),
-            execution_frames: Mutex::new(execution_frames),
+
+            lifecycle: ParkingMutex::new(LifecycleState {
+                state: serialized.state,
+                suspend_reason,
+                resume_value: None,
+                start_time: None,
+                result: serialized.result,
+                waiters: Vec::new(),
+                awaiting_task: None,
+            }),
+
+            exceptions: ParkingMutex::new(ExceptionState {
+                current_exception: None,
+                caught_exception: None,
+                exception_handlers: Vec::new(),
+            }),
+
+            calls: ParkingMutex::new(CallState {
+                closure_stack: Vec::new(),
+                call_stack: Vec::new(),
+                execution_frames,
+            }),
+
+            init: ParkingMutex::new(InitState {
+                initial_args: Vec::new(),
+                held_mutexes: Vec::new(),
+            }),
+
+            stack: StdMutex::new(stack),
+            completion_lock: ParkingMutex::new(false),
+            completion_condvar: ParkingCondvar::new(),
         }
     }
 }

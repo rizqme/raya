@@ -7,7 +7,7 @@ use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
-use crate::vm::scheduler::{IoSubmission, Task, TaskId};
+use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
 use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
@@ -47,6 +47,9 @@ pub struct SharedVmState {
 
     /// Mutex registry for task synchronization
     pub mutex_registry: MutexRegistry,
+
+    /// Stack pool for reusing Stack allocations across task lifetimes
+    pub stack_pool: StackPool,
 
     /// IO submission sender (set by reactor on start, used by Interpreter for NativeCallResult::Suspend)
     pub io_submit_tx: Mutex<Option<Sender<IoSubmission>>>,
@@ -127,6 +130,7 @@ impl SharedVmState {
             tasks,
             injector,
             mutex_registry: MutexRegistry::new(),
+            stack_pool: StackPool::new(num_cpus::get() * 2),
             io_submit_tx: Mutex::new(None),
             metadata: Mutex::new(MetadataStore::new()),
             class_metadata: RwLock::new(ClassMetadataRegistry::new()),

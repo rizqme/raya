@@ -343,6 +343,7 @@ impl Reactor {
                 &state.resolved_natives,
                 Some(&io_submit_tx),
                 state.max_preemptions,
+                &state.stack_pool,
             );
 
             // Wire JIT code cache and profiling for native dispatch
@@ -685,6 +686,8 @@ impl Reactor {
             ExecutionResult::Completed(value) => {
                 vr.task.complete(value);
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                // Return the stack to the pool for reuse by future tasks
+                shared_state.stack_pool.release(vr.task.take_stack());
             }
             ExecutionResult::Suspended(reason) => {
                 if matches!(reason, SuspendReason::MutexLock { .. }) {
@@ -730,6 +733,8 @@ impl Reactor {
             ExecutionResult::Failed(e) => {
                 vr.task.fail_with_error(&e);
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                // Return the stack to the pool for reuse by future tasks
+                shared_state.stack_pool.release(vr.task.take_stack());
             }
         }
     }

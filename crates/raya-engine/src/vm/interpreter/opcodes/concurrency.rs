@@ -47,6 +47,7 @@ impl<'a> Interpreter<'a> {
                     Some(task.id()),
                     args,
                 ));
+                new_task.replace_stack(self.stack_pool.acquire());
 
                 let task_id = new_task.id();
                 self.tasks.write().insert(task_id, new_task.clone());
@@ -91,6 +92,7 @@ impl<'a> Interpreter<'a> {
                     Some(task.id()),
                     args,
                 ));
+                new_task.replace_stack(self.stack_pool.acquire());
 
                 // Push the closure onto the spawned task's closure stack
                 // so LoadCaptured can find it when the task starts executing

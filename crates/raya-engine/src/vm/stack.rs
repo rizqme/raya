@@ -142,14 +142,29 @@ impl Stack {
     }
 
     /// Create a stack with specific capacity
+    ///
+    /// The operand and frame vectors start empty and grow on demand,
+    /// avoiding ~22KB of upfront allocation per task.
     pub fn with_capacity(max_size: usize) -> Self {
         Self {
-            slots: Vec::with_capacity(1024),
-            frames: Vec::with_capacity(256),
+            slots: Vec::new(),
+            frames: Vec::new(),
             sp: 0,
             fp: 0,
             max_size,
         }
+    }
+
+    /// Reset the stack for reuse (keeps allocated capacity).
+    ///
+    /// This makes the stack logically empty while preserving the underlying
+    /// Vec allocations, so a recycled stack avoids re-allocation.
+    pub fn reset(&mut self) {
+        self.sp = 0;
+        self.fp = 0;
+        self.frames.clear();
+        // Clear slots to avoid retaining stale GC pointers
+        self.slots.clear();
     }
 
     // ========================================================================
