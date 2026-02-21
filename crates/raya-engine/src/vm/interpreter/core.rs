@@ -830,7 +830,7 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             Opcode::New | Opcode::LoadField | Opcode::StoreField |
             Opcode::OptionalField | Opcode::LoadFieldFast | Opcode::StoreFieldFast |
-            Opcode::ObjectLiteral | Opcode::InitObject => {
+            Opcode::ObjectLiteral | Opcode::InitObject | Opcode::BindMethod => {
                 self.exec_object_ops(stack, ip, code, opcode)
             }
 

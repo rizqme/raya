@@ -741,6 +741,16 @@ impl<'a> Lowerer<'a> {
                     closure,
                     args,
                 });
+
+                // Propagate return type for bound method calls
+                if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name)) {
+                        if ret_ty != UNRESOLVED {
+                            dest.ty = ret_ty;
+                        }
+                    }
+                }
+
                 return dest;
             }
 
@@ -756,6 +766,16 @@ impl<'a> Lowerer<'a> {
                     closure,
                     args,
                 });
+
+                // Propagate return type for bound method calls (global variable path)
+                if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name)) {
+                        if ret_ty != UNRESOLVED {
+                            dest.ty = ret_ty;
+                        }
+                    }
+                }
+
                 return dest;
             }
         }
@@ -1287,8 +1307,17 @@ impl<'a> Lowerer<'a> {
             {
                 (field.index, field.ty)
             } else {
-                // Field not found in class — don't emit LoadField with bogus index.
-                // Fall through to the non-class path below.
+                // Field not found — check if it's a method (bound method extraction)
+                if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
+                    let dest = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::BindMethod {
+                        dest: dest.clone(),
+                        object,
+                        method: slot,
+                    });
+                    return dest;
+                }
+                // Not a field or method — fall through to the non-class path below.
                 (0, UNRESOLVED)
             }
         } else {
@@ -2904,8 +2933,15 @@ impl<'a> Lowerer<'a> {
                         return Some(ret_class_id);
                     }
                 }
-                // Standalone function call: check function return class
+                // Standalone function/bound method call: check return class
                 if let Expression::Identifier(ident) = &*call.callee {
+                    // Check if callee is a bound method variable
+                    if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
+                        if let Some(&ret_class_id) = self.method_return_class_map.get(&(class_id, method_name)) {
+                            return Some(ret_class_id);
+                        }
+                    }
+                    // Check function return class
                     if let Some(&ret_class_id) = self.function_return_class_map.get(&ident.name) {
                         return Some(ret_class_id);
                     }

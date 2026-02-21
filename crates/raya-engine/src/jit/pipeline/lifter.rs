@@ -1126,6 +1126,16 @@ fn lift_instruction(
 
         // ===== Trap =====
         Opcode::Trap => {}
+
+        // ===== Debug =====
+        Opcode::Debugger => {
+            // No-op in JIT — debugger breakpoints are not supported in compiled code
+        }
+
+        // ===== Bound Methods =====
+        Opcode::BindMethod => {
+            // Falls back to interpreter — bound method creation requires GC allocation
+        }
     }
 
     Ok(())

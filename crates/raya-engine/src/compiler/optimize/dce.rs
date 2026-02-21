@@ -236,6 +236,9 @@ impl DeadCodeEliminator {
             IrInstr::SetupTry { .. } | IrInstr::EndTry | IrInstr::PopToLocal { .. } => {
                 // No register uses
             }
+            IrInstr::BindMethod { object, .. } => {
+                used.insert(object.id);
+            }
         }
     }
 

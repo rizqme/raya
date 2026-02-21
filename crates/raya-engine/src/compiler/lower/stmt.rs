@@ -756,6 +756,15 @@ impl<'a> Lowerer<'a> {
                     }
                 }
 
+                // Track bound method variables (e.g., `let f = obj.method`)
+                if let ast::Expression::Member(member) = init {
+                    if let Some(class_id) = self.infer_class_id(&member.object) {
+                        if self.method_slot_map.contains_key(&(class_id, member.property.name)) {
+                            self.bound_method_vars.insert(name, (class_id, member.property.name));
+                        }
+                    }
+                }
+
                 let value = self.lower_expr(init);
 
                 // Track the global's type so LoadGlobal preserves it
@@ -818,6 +827,15 @@ impl<'a> Lowerer<'a> {
             if !self.variable_class_map.contains_key(&name) {
                 if let Some(class_id) = self.infer_class_id(init) {
                     self.variable_class_map.insert(name, class_id);
+                }
+            }
+
+            // Track bound method variables (e.g., `let f = obj.method`)
+            if let ast::Expression::Member(member) = init {
+                if let Some(class_id) = self.infer_class_id(&member.object) {
+                    if self.method_slot_map.contains_key(&(class_id, member.property.name)) {
+                        self.bound_method_vars.insert(name, (class_id, member.property.name));
+                    }
                 }
             }
 

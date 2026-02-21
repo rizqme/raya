@@ -107,6 +107,9 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::InstanceOf
         | Opcode::Cast => 1,
 
+        // u16 operand (BindMethod: opcode + u16 method_slot)
+        Opcode::BindMethod => 1 + 2,
+
         // u16 operand
         Opcode::LoadLocal
         | Opcode::StoreLocal

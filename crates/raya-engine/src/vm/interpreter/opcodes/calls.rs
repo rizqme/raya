@@ -2,7 +2,8 @@
 
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Closure, Object, RayaString};
+use crate::vm::gc::GcHeader;
+use crate::vm::object::{BoundMethod, Closure, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -46,28 +47,59 @@ impl<'a> Interpreter<'a> {
                         Ok(v) => v,
                         Err(e) => return OpcodeResult::Error(e),
                     };
-                    // Push args back (they become the callee's locals)
-                    for arg in args_tmp.into_iter().rev() {
-                        if let Err(e) = stack.push(arg) {
-                            return OpcodeResult::Error(e);
-                        }
-                    }
 
                     if !closure_val.is_ptr() {
                         return OpcodeResult::Error(VmError::TypeError(
-                            "Expected closure".to_string(),
+                            "Expected closure or bound method".to_string(),
                         ));
                     }
-                    let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
-                    let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
-                    let closure_func_id = closure.func_id();
 
-                    OpcodeResult::PushFrame {
-                        func_id: closure_func_id,
-                        arg_count,
-                        is_closure: true,
-                        closure_val: Some(closure_val),
-                        return_action: ReturnAction::PushReturnValue,
+                    // Check GcHeader to distinguish BoundMethod from Closure
+                    let header = unsafe {
+                        let hp = (closure_val.as_ptr::<u8>().unwrap().as_ptr())
+                            .sub(std::mem::size_of::<GcHeader>());
+                        &*(hp as *const GcHeader)
+                    };
+
+                    if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                        // BoundMethod call — prepend receiver as `this` (locals[0])
+                        let bm = unsafe { &*closure_val.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+                        // Push receiver first (becomes this = locals[0])
+                        if let Err(e) = stack.push(bm.receiver) {
+                            return OpcodeResult::Error(e);
+                        }
+                        // Push args on top of receiver
+                        for arg in args_tmp.into_iter().rev() {
+                            if let Err(e) = stack.push(arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
+                        OpcodeResult::PushFrame {
+                            func_id: bm.func_id,
+                            arg_count: arg_count + 1, // +1 for receiver
+                            is_closure: false,
+                            closure_val: None,
+                            return_action: ReturnAction::PushReturnValue,
+                        }
+                    } else {
+                        // Closure call - push args back (they become the callee's locals)
+                        for arg in args_tmp.into_iter().rev() {
+                            if let Err(e) = stack.push(arg) {
+                                return OpcodeResult::Error(e);
+                            }
+                        }
+
+                        let closure_ptr = unsafe { closure_val.as_ptr::<Closure>() };
+                        let closure = unsafe { &*closure_ptr.unwrap().as_ptr() };
+                        let closure_func_id = closure.func_id();
+
+                        OpcodeResult::PushFrame {
+                            func_id: closure_func_id,
+                            arg_count,
+                            is_closure: true,
+                            closure_val: Some(closure_val),
+                            return_action: ReturnAction::PushReturnValue,
+                        }
                     }
                 } else {
                     // Regular function call - args are already on the stack

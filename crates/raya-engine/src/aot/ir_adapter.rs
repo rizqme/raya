@@ -563,6 +563,31 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![],
                 });
             }
+
+            // === Late-bound member (should be resolved before AOT) ===
+            IrInstr::LateBoundMember { dest, object, .. } => {
+                // LateBoundMember should be resolved by monomorphization before reaching AOT.
+                // Emit a generic field load as fallback.
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::ObjectGetField,
+                    args: vec![Self::reg(object), 0],
+                });
+            }
+
+            // === Debug ===
+            IrInstr::Debugger => {
+                // No-op in AOT — debugger breakpoints are not supported in compiled code
+            }
+
+            IrInstr::BindMethod { dest, object, method } => {
+                // Bound method creation requires GC allocation — stub as field load fallback
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::ObjectGetField,
+                    args: vec![Self::reg(object), *method as u32],
+                });
+            }
         }
     }
 

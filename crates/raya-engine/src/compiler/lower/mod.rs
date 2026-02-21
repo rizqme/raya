@@ -387,6 +387,12 @@ pub struct Lowerer<'a> {
     method_return_class_map: FxHashMap<(ClassId, Symbol), ClassId>,
     /// Function return type class mapping (for method dispatch on objects returned from standalone function calls)
     function_return_class_map: FxHashMap<Symbol, ClassId>,
+    /// Method return TypeId mapping (for ALL return types, not just class types)
+    /// Populated during class registration. Used for bound method return type propagation.
+    method_return_type_map: FxHashMap<(ClassId, Symbol), TypeId>,
+    /// Tracks variables holding bound methods: var_name → (class_id, method_name)
+    /// Used to propagate return types when calling bound method variables.
+    bound_method_vars: FxHashMap<Symbol, (ClassId, Symbol)>,
     /// Next global variable index (for static fields and module-level variables)
     next_global_index: u16,
     /// Module-level variable name to global index mapping.
@@ -773,6 +779,8 @@ impl<'a> Lowerer<'a> {
             static_method_map: FxHashMap::default(),
             method_return_class_map: FxHashMap::default(),
             function_return_class_map: FxHashMap::default(),
+            method_return_type_map: FxHashMap::default(),
+            bound_method_vars: FxHashMap::default(),
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             function_depth: 0,
@@ -1423,6 +1431,9 @@ impl<'a> Lowerer<'a> {
                                 self.method_return_class_map.insert((class_id, method.name.name), ret_class_id);
                             }
                         }
+                        // Store full return TypeId for all return types (bound method propagation)
+                        let type_id = self.resolve_type_annotation(ret_type);
+                        self.method_return_type_map.insert((class_id, method.name.name), type_id);
                     }
                 }
             }

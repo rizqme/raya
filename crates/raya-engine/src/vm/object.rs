@@ -355,6 +355,18 @@ impl Closure {
     }
 }
 
+/// A method bound to its receiver object (heap-allocated).
+///
+/// Created when accessing `obj.method` as a value (not a call).
+/// When called, the receiver is automatically passed as `this` (locals[0]).
+#[derive(Debug, Clone)]
+pub struct BoundMethod {
+    /// The receiver object (becomes `this`)
+    pub receiver: Value,
+    /// Function ID of the method (resolved from vtable at bind time)
+    pub func_id: usize,
+}
+
 /// RefCell - A heap-allocated mutable cell for capture-by-reference semantics
 ///
 /// When a variable is captured by a closure AND modified (either in the closure

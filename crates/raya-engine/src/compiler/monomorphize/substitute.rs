@@ -384,6 +384,11 @@ impl TypeSubstitution {
             },
             IrInstr::EndTry => IrInstr::EndTry,
             IrInstr::PopToLocal { index } => IrInstr::PopToLocal { index: *index },
+            IrInstr::BindMethod { dest, object, method } => IrInstr::BindMethod {
+                dest: self.apply_register(dest),
+                object: self.apply_register(object),
+                method: *method,
+            },
         }
     }
 

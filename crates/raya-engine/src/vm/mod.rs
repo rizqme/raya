@@ -64,7 +64,7 @@ pub use abi::{
 
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
-pub use object::{Array, Class, Object, RayaString, VTable};
+pub use object::{Array, BoundMethod, Class, Object, RayaString, VTable};
 pub use scheduler::Scheduler;
 pub use snapshot::{SnapshotReader, SnapshotWriter};
 pub use stack::{CallFrame, Stack, StackStats};

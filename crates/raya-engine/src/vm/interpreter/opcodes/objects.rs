@@ -1,9 +1,9 @@
-//! Object opcode handlers: New, LoadField, StoreField, OptionalField, LoadFieldFast, StoreFieldFast, ObjectLiteral, InitObject
+//! Object opcode handlers: New, LoadField, StoreField, OptionalField, LoadFieldFast, StoreFieldFast, ObjectLiteral, InitObject, BindMethod
 
 use crate::compiler::Opcode;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::Object;
+use crate::vm::object::{BoundMethod, Object};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
@@ -272,6 +272,58 @@ impl<'a> Interpreter<'a> {
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Err(e) = obj.set_field(field_offset, value) {
                     return OpcodeResult::Error(VmError::RuntimeError(e));
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::BindMethod => {
+                let method_slot = match Self::read_u16(code, ip) {
+                    Ok(v) => v as usize,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let obj_val = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                if !obj_val.is_ptr() {
+                    return OpcodeResult::Error(VmError::TypeError(
+                        "Expected object for method binding".to_string(),
+                    ));
+                }
+
+                let obj = unsafe { &*obj_val.as_ptr::<Object>().unwrap().as_ptr() };
+                let classes = self.classes.read();
+                let class = match classes.get_class(obj.class_id) {
+                    Some(c) => c,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid class index: {}",
+                            obj.class_id
+                        )));
+                    }
+                };
+                let func_id = match class.vtable.get_method(method_slot) {
+                    Some(fid) => fid,
+                    None => {
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Invalid method slot: {} for class {}",
+                            method_slot, class.name
+                        )));
+                    }
+                };
+                drop(classes);
+
+                let bm = BoundMethod {
+                    receiver: obj_val,
+                    func_id,
+                };
+                let gc_ptr = self.gc.lock().allocate(bm);
+                let value = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                };
+                if let Err(e) = stack.push(value) {
+                    return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue
             }

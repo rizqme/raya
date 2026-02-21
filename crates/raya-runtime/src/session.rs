@@ -15,10 +15,15 @@
 //! assert_eq!(value.as_i32(), Some(84));
 //! ```
 
-use raya_engine::vm::{RayaString, Vm, Value};
+use std::any::TypeId;
+
+use raya_engine::vm::{Object, RayaString, Vm, Value};
+use raya_engine::vm::gc::GcHeader;
+use raya_engine::vm::object::{Array, BoundMethod, Closure, MapObject, SetObject, Buffer, DateObject, ChannelObject, RegExpObject};
 
 use crate::{compile, vm_setup, RuntimeOptions};
 use crate::error::RuntimeError;
+
 
 /// A persistent evaluation session that maintains state across evals.
 ///
@@ -74,8 +79,8 @@ impl Session {
 
     /// Format a Value to a human-readable display string.
     ///
-    /// Handles primitives directly and reads strings from the GC heap
-    /// of the most recent eval's VM.
+    /// Handles primitives directly and reads heap objects (strings, objects,
+    /// arrays, closures, etc.) using the GC header type info and class registry.
     pub fn format_value(&self, value: &Value) -> String {
         if value.is_null() {
             return "null".to_string();
@@ -92,8 +97,12 @@ impl Session {
             }
             return f.to_string();
         }
-        // Attempt to read as string from the last VM's GC heap
+        // For heap pointers, use GcHeader type_id to determine the actual type
         if value.is_ptr() {
+            if let Some(vm) = &self.last_vm {
+                return format_heap_value(value, vm);
+            }
+            // No VM available — try legacy string read
             if let Some(s) = try_read_string(value) {
                 return format!("\"{}\"", s);
             }
@@ -119,6 +128,97 @@ fn is_declaration(code: &str) -> bool {
         || trimmed.starts_with("class ")
         || trimmed.starts_with("import ")
         || trimmed.starts_with("export ")
+}
+
+/// Read the GcHeader for a heap-allocated Value.
+///
+/// # Safety
+/// The Value must be a valid heap pointer that hasn't been freed.
+unsafe fn read_gc_header(value: &Value) -> Option<&GcHeader> {
+    let ptr = value.as_ptr::<u8>()?;
+    let header_ptr = (ptr.as_ptr()).sub(std::mem::size_of::<GcHeader>());
+    Some(&*(header_ptr as *const GcHeader))
+}
+
+/// Format a heap-allocated value using GcHeader type info and the VM's class registry.
+fn format_heap_value(value: &Value, vm: &Vm) -> String {
+    let header = unsafe { read_gc_header(value) };
+    let Some(header) = header else {
+        return format!("{:?}", value);
+    };
+
+    let tid = header.type_id();
+
+    // String
+    if tid == TypeId::of::<RayaString>() {
+        if let Some(s) = try_read_string(value) {
+            return format!("\"{}\"", s);
+        }
+    }
+
+    // Object (class instance)
+    if tid == TypeId::of::<Object>() {
+        let obj = unsafe { &*(value.as_ptr::<Object>().unwrap().as_ptr()) };
+        let classes = vm.shared_state().classes.read();
+        if let Some(class) = classes.get_class(obj.class_id) {
+            return format!("[object {}]", class.name);
+        }
+        return format!("[object #{}]", obj.class_id);
+    }
+
+    // Array
+    if tid == TypeId::of::<Array>() {
+        let arr = unsafe { &*(value.as_ptr::<Array>().unwrap().as_ptr()) };
+        return format!("[Array({})]", arr.len());
+    }
+
+    // Closure
+    if tid == TypeId::of::<Closure>() {
+        return "[Function]".to_string();
+    }
+
+    // BoundMethod
+    if tid == TypeId::of::<BoundMethod>() {
+        return "[Function (bound)]".to_string();
+    }
+
+    // Map
+    if tid == TypeId::of::<MapObject>() {
+        let map = unsafe { &*(value.as_ptr::<MapObject>().unwrap().as_ptr()) };
+        return format!("[Map({})]", map.size());
+    }
+
+    // Set
+    if tid == TypeId::of::<SetObject>() {
+        let set = unsafe { &*(value.as_ptr::<SetObject>().unwrap().as_ptr()) };
+        return format!("[Set({})]", set.size());
+    }
+
+    // Buffer
+    if tid == TypeId::of::<Buffer>() {
+        let buf = unsafe { &*(value.as_ptr::<Buffer>().unwrap().as_ptr()) };
+        return format!("[Buffer({})]", buf.length());
+    }
+
+    // Date
+    if tid == TypeId::of::<DateObject>() {
+        let date = unsafe { &*(value.as_ptr::<DateObject>().unwrap().as_ptr()) };
+        return date.to_iso_string();
+    }
+
+    // RegExp
+    if tid == TypeId::of::<RegExpObject>() {
+        let re = unsafe { &*(value.as_ptr::<RegExpObject>().unwrap().as_ptr()) };
+        return format!("/{}/{}", re.pattern, re.flags);
+    }
+
+    // Channel
+    if tid == TypeId::of::<ChannelObject>() {
+        let ch = unsafe { &*(value.as_ptr::<ChannelObject>().unwrap().as_ptr()) };
+        return format!("[Channel(cap: {})]", ch.capacity());
+    }
+
+    format!("{:?}", value)
 }
 
 /// Try to read a string value from a GC heap pointer.

@@ -115,7 +115,8 @@ fn decode_operands(
         | Opcode::TupleGet
         | Opcode::NewRefCell | Opcode::LoadRefCell | Opcode::StoreRefCell
         | Opcode::ArrayPush | Opcode::ArrayPop
-        | Opcode::InstanceOf | Opcode::Cast => Ok(Operands::None),
+        | Opcode::InstanceOf | Opcode::Cast
+        | Opcode::Debugger => Ok(Operands::None),
 
         // u16 operand (3 bytes total)
         Opcode::LoadLocal | Opcode::StoreLocal
@@ -127,7 +128,7 @@ fn decode_operands(
         | Opcode::LoadCaptured | Opcode::StoreCaptured
         | Opcode::SetClosureCapture
         | Opcode::InitObject | Opcode::InitArray | Opcode::InitTuple
-        | Opcode::Trap => {
+        | Opcode::Trap | Opcode::BindMethod => {
             let v = read_u16(code, pos, offset)?;
             Ok(Operands::U16(v))
         }

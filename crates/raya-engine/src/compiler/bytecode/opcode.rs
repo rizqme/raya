@@ -211,6 +211,10 @@ pub enum Opcode {
     CallSuper = 0xA5,
     /// Call static method (operands: u32 methodIndex, u16 argCount)
     CallStatic = 0xA6,
+    /// Bind a method to its receiver, creating a callable BoundMethod value.
+    /// Stack: [object] → [bound_method]
+    /// Operands: u16 method_slot (vtable index)
+    BindMethod = 0xA7,
 
     // ===== Object Operations (0xB0-0xBF) =====
     /// Allocate new object (operand: u32 classIndex)
@@ -490,6 +494,7 @@ impl Opcode {
             0xA4 => Some(Self::CallConstructor),
             0xA5 => Some(Self::CallSuper),
             0xA6 => Some(Self::CallStatic),
+            0xA7 => Some(Self::BindMethod),
 
             // Object operations
             0xB0 => Some(Self::New),
@@ -737,6 +742,7 @@ impl Opcode {
             Self::Trap => "TRAP",
             Self::NativeCall => "NATIVE_CALL",
             Self::ModuleNativeCall => "MODULE_NATIVE_CALL",
+            Self::BindMethod => "BIND_METHOD",
         }
     }
 

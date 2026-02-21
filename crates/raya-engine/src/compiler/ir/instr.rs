@@ -105,6 +105,14 @@ pub enum IrInstr {
         args: Vec<Register>,
     },
 
+    /// Bind a method to its receiver, creating a callable BoundMethod.
+    /// dest = bind_method(object, method_slot)
+    BindMethod {
+        dest: Register,
+        object: Register,
+        method: u16,
+    },
+
     /// Native function call: dest = native_call(native_id, args)
     /// Used for engine-internal methods (reflect, runtime, built-in types)
     NativeCall {
@@ -474,7 +482,8 @@ impl IrInstr {
             | IrInstr::NewChannel { dest, .. }
             | IrInstr::InstanceOf { dest, .. }
             | IrInstr::Cast { dest, .. }
-            | IrInstr::LateBoundMember { dest, .. } => Some(dest),
+            | IrInstr::LateBoundMember { dest, .. }
+            | IrInstr::BindMethod { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
             | IrInstr::NativeCall { dest, .. }
@@ -541,6 +550,7 @@ impl IrInstr {
                 | IrInstr::MutexLock { .. }
                 | IrInstr::MutexUnlock { .. }
                 | IrInstr::TaskCancel { .. }
+                | IrInstr::BindMethod { .. }
         )
     }
 }

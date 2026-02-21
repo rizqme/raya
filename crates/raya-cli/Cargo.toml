@@ -13,6 +13,8 @@ name = "raya"
 path = "src/main.rs"
 
 [features]
+default = ["jit", "aot"]
+jit = ["raya-engine/jit"]
 aot = ["raya-engine/aot"]
 
 [dependencies]

@@ -559,3 +559,103 @@ fn test_cast_upcast_always_succeeds() {
     );
 }
 
+// ============================================================================
+// Bound Method Extraction
+// ============================================================================
+
+#[test]
+fn test_bound_method_basic() {
+    expect_i32(
+        "class Counter {
+             value: number;
+             constructor(v: number) { this.value = v; }
+             get(): number { return this.value; }
+         }
+         let c = new Counter(42);
+         let f = c.get;
+         return f();",
+        42,
+    );
+}
+
+#[test]
+fn test_bound_method_preserves_this() {
+    expect_string(
+        "class Dog {
+             name: string;
+             constructor(name: string) { this.name = name; }
+             bark(): string { return this.name + \" says woof!\"; }
+         }
+         let dog = new Dog(\"Rex\");
+         let bark = dog.bark;
+         return bark();",
+        "Rex says woof!",
+    );
+}
+
+#[test]
+fn test_bound_method_with_args() {
+    expect_i32(
+        "class Math {
+             base: number;
+             constructor(b: number) { this.base = b; }
+             add(x: number): number { return this.base + x; }
+         }
+         let m = new Math(10);
+         let add = m.add;
+         return add(32);",
+        42,
+    );
+}
+
+#[test]
+fn test_bound_method_return_value_field() {
+    expect_i32(
+        "class Factory {
+             value: number;
+             constructor(v: number) { this.value = v; }
+             make(): Factory { return new Factory(this.value * 2); }
+         }
+         let f = new Factory(10);
+         let maker = f.make;
+         let result = maker();
+         return result.value;",
+        20,
+    );
+}
+
+#[test]
+fn test_bound_method_return_value_method_call() {
+    // Calling a method on the return value of a bound method call
+    expect_i32(
+        "class Box {
+             value: number;
+             constructor(v: number) { this.value = v; }
+             make(): Box { return new Box(this.value * 2); }
+             get(): number { return this.value; }
+         }
+         let b = new Box(10);
+         let maker = b.make;
+         let result = maker();
+         return result.get();",
+        20,
+    );
+}
+
+#[test]
+fn test_bound_method_different_instances() {
+    expect_string(
+        "class Greeter {
+             name: string;
+             constructor(name: string) { this.name = name; }
+             greet(): string { return \"Hello, \" + this.name; }
+         }
+         let a = new Greeter(\"Alice\");
+         let b = new Greeter(\"Bob\");
+         let greetA = a.greet;
+         let greetB = b.greet;
+         return greetA() + \" and \" + greetB();",
+        "Hello, Alice and Hello, Bob",
+    );
+}
+

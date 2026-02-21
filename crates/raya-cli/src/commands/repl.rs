@@ -51,6 +51,11 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
                     continue;
                 }
 
+                // Handle exit commands
+                if buffer.is_empty() && matches!(trimmed, "exit" | "quit") {
+                    break;
+                }
+
                 // Handle dot-commands (only when not in multi-line mode)
                 if buffer.is_empty() && trimmed.starts_with('.') {
                     let _ = editor.add_history_entry(&line);
@@ -95,10 +100,12 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: discard multi-line buffer or ignore
+                // Ctrl-C: discard multi-line buffer or hint exit
                 if !buffer.is_empty() {
                     buffer.clear();
                     println!();
+                } else {
+                    println!("\n(To exit, press Ctrl+D or type exit)");
                 }
                 continue;
             }

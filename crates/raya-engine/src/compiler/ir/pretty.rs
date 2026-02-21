@@ -378,6 +378,9 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::EndTry => {
             "end_try".to_string()
         }
+        IrInstr::BindMethod { dest, object, method } => {
+            format!("{} = bind_method {}.method{}", dest, object, method)
+        }
     }
 }
 

@@ -593,6 +593,14 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
+            IrInstr::BindMethod { dest, object, method } => {
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::BindMethod);
+                ctx.emit_u16(*method);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
             IrInstr::StoreField { object, field, value } => {
                 // VM expects: [object, value] with value on top
                 // VM pops: value first, then object

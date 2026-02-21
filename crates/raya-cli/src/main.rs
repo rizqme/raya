@@ -181,43 +181,6 @@ enum Commands {
         color: String,
     },
 
-    /// Run benchmarks
-    Bench {
-        /// Benchmark name pattern to match
-        filter: Option<String>,
-        /// Warmup iterations
-        #[arg(long, default_value = "100")]
-        warmup: usize,
-        /// Benchmark iterations
-        #[arg(long, default_value = "1000")]
-        iterations: usize,
-        /// Save results to JSON file
-        #[arg(long)]
-        save: Option<String>,
-        /// Compare against saved results
-        #[arg(long)]
-        compare: Option<String>,
-        /// Output raw JSON
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Format source files
-    Fmt {
-        /// Files or directories to format
-        #[arg(default_value = ".")]
-        files: Vec<String>,
-        /// Check formatting without writing
-        #[arg(long)]
-        check: bool,
-        /// Show diff of formatting changes
-        #[arg(long)]
-        diff: bool,
-        /// Read from stdin, write to stdout
-        #[arg(long)]
-        stdin: bool,
-    },
-
     /// Lint source files
     Lint {
         /// Files or directories to lint
@@ -313,12 +276,6 @@ enum Commands {
         access: String,
     },
 
-    /// Package management (init, install, add, remove, login, ...)
-    Pkg {
-        #[command(subcommand)]
-        command: commands::pkg::PkgCommands,
-    },
-
     /// Create standalone executable
     Bundle {
         /// Input file
@@ -343,38 +300,6 @@ enum Commands {
         no_runtime: bool,
     },
 
-    /// Generate documentation
-    Doc {
-        /// Output directory
-        #[arg(short, long, default_value = "docs/api")]
-        out_dir: String,
-        /// Start documentation server
-        #[arg(long)]
-        serve: bool,
-        /// Open in browser
-        #[arg(long)]
-        open: bool,
-        /// Output format
-        #[arg(long, default_value = "html")]
-        format: String,
-    },
-
-    /// Start Language Server
-    Lsp {
-        /// Communication via stdin/stdout (default)
-        #[arg(long)]
-        stdio: bool,
-        /// TCP port
-        #[arg(long)]
-        port: Option<u16>,
-    },
-
-    /// Generate shell completions
-    Completions {
-        /// Shell type (bash, zsh, fish, powershell)
-        shell: String,
-    },
-
     /// Clear caches and build artifacts
     Clean {
         /// Only clear bytecode cache
@@ -387,9 +312,6 @@ enum Commands {
         #[arg(long)]
         all: bool,
     },
-
-    /// Display environment and project info
-    Info,
 
     /// Upgrade Raya installation
     Upgrade {
@@ -460,12 +382,6 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             concurrency, reporter, file, update_snapshots, color,
         }),
 
-        Commands::Bench { filter, warmup, iterations, save, compare, json } =>
-            commands::bench::execute(filter, warmup, iterations, save, compare, json),
-
-        Commands::Fmt { files, check, diff, stdin } =>
-            commands::fmt::execute(files, check, diff, stdin),
-
         Commands::Lint { files, fix, format, watch } =>
             commands::lint::execute(files, fix, format, watch),
 
@@ -490,26 +406,11 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
         Commands::Publish { tag, dry_run, access } =>
             commands::publish::execute(tag, dry_run, access),
 
-        Commands::Pkg { command } =>
-            commands::pkg::execute(command),
-
         Commands::Bundle { file, output, target, release, strip, compress, no_runtime } =>
             commands::bundle::execute(file, output, target, release, strip, compress, no_runtime),
 
-        Commands::Doc { out_dir, serve, open, format } =>
-            commands::doc::execute(out_dir, serve, open, format),
-
-        Commands::Lsp { stdio, port } =>
-            commands::lsp::execute(stdio, port),
-
-        Commands::Completions { shell } =>
-            commands::completions::execute(shell),
-
         Commands::Clean { cache, dist, all } =>
             commands::clean::execute(cache, dist, all),
-
-        Commands::Info =>
-            commands::info::execute(),
 
         Commands::Upgrade { version, check, force } =>
             commands::upgrade::execute(version, check, force),

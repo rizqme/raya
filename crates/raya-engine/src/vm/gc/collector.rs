@@ -308,6 +308,12 @@ impl GarbageCollector {
                     // Strings have no GC pointers
                     return;
                 }
+                "BoundMethod" => {
+                    // Trace the receiver (it's a GC-allocated object)
+                    let bm = unsafe { &*(ptr as *const crate::vm::object::BoundMethod) };
+                    self.mark_value(bm.receiver);
+                    return;
+                }
                 "JsonValue" => {
                     // Cast to JsonValue and mark recursively
                     let json = unsafe { &*(ptr as *const crate::vm::json::JsonValue) };

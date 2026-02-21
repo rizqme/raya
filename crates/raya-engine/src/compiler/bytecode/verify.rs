@@ -263,6 +263,9 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::InstanceOf
         | Opcode::Cast => 0,
 
+        // BindMethod has 2-byte operand (u16 method_slot)
+        Opcode::BindMethod => 2,
+
         // 2-byte operands (u16)
         Opcode::LoadLocal
         | Opcode::StoreLocal
@@ -519,6 +522,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
 
         // Debugger has no stack effect
         Opcode::Debugger => (0, 0),
+
+        // BindMethod: pop object, push bound_method
+        Opcode::BindMethod => (1, 1),
     }
 }
 
