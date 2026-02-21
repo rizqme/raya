@@ -263,7 +263,7 @@ impl<'a> Interpreter<'a> {
                     }
 
                     // Buffer native calls
-                    id if id == buffer::NEW as u16 => {
+                    id if id == buffer::NEW => {
                         let size = args[0].as_i32().unwrap_or(0) as usize;
                         let buf = Buffer::new(size);
                         let gc_ptr = self.gc.lock().allocate(buf);
@@ -273,7 +273,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::LENGTH as u16 => {
+                    id if id == buffer::LENGTH => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -285,7 +285,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::GET_BYTE as u16 => {
+                    id if id == buffer::GET_BYTE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
@@ -299,7 +299,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::SET_BYTE as u16 => {
+                    id if id == buffer::SET_BYTE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_i32().unwrap_or(0) as u8;
@@ -316,7 +316,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::GET_INT32 as u16 => {
+                    id if id == buffer::GET_INT32 => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
@@ -330,7 +330,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::SET_INT32 as u16 => {
+                    id if id == buffer::SET_INT32 => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_i32().unwrap_or(0);
@@ -347,7 +347,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::GET_FLOAT64 as u16 => {
+                    id if id == buffer::GET_FLOAT64 => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
@@ -361,7 +361,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::SET_FLOAT64 as u16 => {
+                    id if id == buffer::SET_FLOAT64 => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let index = args[1].as_i32().unwrap_or(0) as usize;
                         let value = args[2].as_f64().unwrap_or(0.0);
@@ -378,7 +378,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::SLICE as u16 => {
+                    id if id == buffer::SLICE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let start = args[1].as_i32().unwrap_or(0) as usize;
                         let end = args[2].as_i32().unwrap_or(0) as usize;
@@ -395,7 +395,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::COPY as u16 => {
+                    id if id == buffer::COPY => {
                         // copy(srcHandle, targetHandle, targetStart, sourceStart, sourceEnd)
                         let src_handle = args[0].as_u64().unwrap_or(0);
                         let tgt_handle = args[1].as_u64().unwrap_or(0);
@@ -419,7 +419,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::TO_STRING as u16 => {
+                    id if id == buffer::TO_STRING => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
@@ -434,7 +434,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == buffer::FROM_STRING as u16 => {
+                    id if id == buffer::FROM_STRING => {
                         // args[0] = string pointer, args[1] = encoding (ignored, utf8)
                         if !args[0].is_ptr() {
                             return OpcodeResult::Error(VmError::TypeError("Expected string".to_string()));
@@ -455,7 +455,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Mutex native calls
-                    id if id == mutex::TRY_LOCK as u16 => {
+                    id if id == mutex::TRY_LOCK => {
                         let mutex_id = MutexId::from_u64(args[0].as_i64().unwrap_or(0) as u64);
                         if let Some(mutex) = self.mutex_registry.get(mutex_id) {
                             match mutex.try_lock(task.id()) {
@@ -478,7 +478,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == mutex::IS_LOCKED as u16 => {
+                    id if id == mutex::IS_LOCKED => {
                         let mutex_id = MutexId::from_u64(args[0].as_i64().unwrap_or(0) as u64);
                         if let Some(mutex) = self.mutex_registry.get(mutex_id) {
                             let is_locked = mutex.is_locked();
@@ -493,7 +493,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Map native calls
-                    id if id == map::NEW as u16 => {
+                    id if id == map::NEW => {
                         let map = MapObject::new();
                         let gc_ptr = self.gc.lock().allocate(map);
                         let handle = gc_ptr.as_ptr() as u64;
@@ -502,7 +502,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::SIZE as u16 => {
+                    id if id == map::SIZE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -514,7 +514,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::GET as u16 => {
+                    id if id == map::GET => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let key = args[1];
                         let map_ptr = handle as *const MapObject;
@@ -528,7 +528,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::SET as u16 => {
+                    id if id == map::SET => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let key = args[1];
                         let value = args[2];
@@ -543,7 +543,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::HAS as u16 => {
+                    id if id == map::HAS => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let key = args[1];
                         let map_ptr = handle as *const MapObject;
@@ -556,7 +556,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::DELETE as u16 => {
+                    id if id == map::DELETE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let key = args[1];
                         let map_ptr = handle as *mut MapObject;
@@ -570,7 +570,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::CLEAR as u16 => {
+                    id if id == map::CLEAR => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let map_ptr = handle as *mut MapObject;
                         if map_ptr.is_null() {
@@ -583,7 +583,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::KEYS as u16 => {
+                    id if id == map::KEYS => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -604,7 +604,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::VALUES as u16 => {
+                    id if id == map::VALUES => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -625,7 +625,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == map::ENTRIES as u16 => {
+                    id if id == map::ENTRIES => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let map_ptr = handle as *const MapObject;
                         if map_ptr.is_null() {
@@ -654,7 +654,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Set native calls
-                    id if id == set::NEW as u16 => {
+                    id if id == set::NEW => {
                         let set_obj = SetObject::new();
                         let gc_ptr = self.gc.lock().allocate(set_obj);
                         let handle = gc_ptr.as_ptr() as u64;
@@ -663,7 +663,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::SIZE as u16 => {
+                    id if id == set::SIZE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let set_ptr = handle as *const SetObject;
                         if set_ptr.is_null() {
@@ -675,7 +675,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::ADD as u16 => {
+                    id if id == set::ADD => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
                         let set_ptr = handle as *mut SetObject;
@@ -689,7 +689,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::HAS as u16 => {
+                    id if id == set::HAS => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
                         let set_ptr = handle as *const SetObject;
@@ -702,7 +702,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::DELETE as u16 => {
+                    id if id == set::DELETE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let value = args[1];
                         let set_ptr = handle as *mut SetObject;
@@ -716,7 +716,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::CLEAR as u16 => {
+                    id if id == set::CLEAR => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let set_ptr = handle as *mut SetObject;
                         if set_ptr.is_null() {
@@ -729,7 +729,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::VALUES as u16 => {
+                    id if id == set::VALUES => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let set_ptr = handle as *const SetObject;
                         if set_ptr.is_null() {
@@ -750,7 +750,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::UNION as u16 => {
+                    id if id == set::UNION => {
                         let handle_a = args[0].as_u64().unwrap_or(0);
                         let handle_b = args[1].as_u64().unwrap_or(0);
                         let set_a_ptr = handle_a as *const SetObject;
@@ -774,7 +774,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::INTERSECTION as u16 => {
+                    id if id == set::INTERSECTION => {
                         let handle_a = args[0].as_u64().unwrap_or(0);
                         let handle_b = args[1].as_u64().unwrap_or(0);
                         let set_a_ptr = handle_a as *const SetObject;
@@ -797,7 +797,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == set::DIFFERENCE as u16 => {
+                    id if id == set::DIFFERENCE => {
                         let handle_a = args[0].as_u64().unwrap_or(0);
                         let handle_b = args[1].as_u64().unwrap_or(0);
                         let set_a_ptr = handle_a as *const SetObject;
@@ -821,7 +821,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Number native calls
-                    id if id == 0x0F00u16 => {
+                    0x0F00u16 => {
                         // NUMBER_TO_FIXED: format number with fixed decimal places
                         // args[0] = number value, args[1] = digits
                         let value = args[0].as_f64()
@@ -835,7 +835,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F01u16 => {
+                    0x0F01u16 => {
                         // NUMBER_TO_PRECISION: format with N significant digits
                         let value = args[0].as_f64()
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
@@ -858,13 +858,13 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F02u16 => {
+                    0x0F02u16 => {
                         // NUMBER_TO_STRING_RADIX: convert to string with radix
                         let value = args[0].as_f64()
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0);
                         let radix = args.get(1).and_then(|v| v.as_i32()).unwrap_or(10);
-                        let formatted = if radix == 10 || radix < 2 || radix > 36 {
+                        let formatted = if radix == 10 || !(2..=36).contains(&radix) {
                             if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
                                 format!("{}", value as i64)
                             } else {
@@ -903,7 +903,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F03u16 => {
+                    0x0F03u16 => {
                         // PARSE_INT: parse string to integer
                         let result = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
                             let s = unsafe { &*ptr.as_ptr() }.data.trim();
@@ -920,12 +920,10 @@ impl<'a> Interpreter<'a> {
                         };
                         if result.fract() == 0.0 && result.is_finite() && result.abs() < i32::MAX as f64 {
                             if let Err(e) = stack.push(Value::i32(result as i32)) { return OpcodeResult::Error(e); }
-                        } else {
-                            if let Err(e) = stack.push(Value::f64(result)) { return OpcodeResult::Error(e); }
-                        }
+                        } else if let Err(e) = stack.push(Value::f64(result)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F04u16 => {
+                    0x0F04u16 => {
                         // PARSE_FLOAT: parse string to float
                         let result = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
                             let s = unsafe { &*ptr.as_ptr() }.data.trim();
@@ -940,7 +938,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(Value::f64(result)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F05u16 => {
+                    0x0F05u16 => {
                         // IS_NAN: check if value is NaN
                         let is_nan = if let Some(n) = args[0].as_f64() {
                             n.is_nan()
@@ -952,7 +950,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(Value::bool(is_nan)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0F06u16 => {
+                    0x0F06u16 => {
                         // IS_FINITE: check if value is finite
                         let is_finite = if let Some(n) = args[0].as_f64() {
                             n.is_finite()
@@ -965,7 +963,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Object native calls
-                    id if id == 0x0001u16 => {
+                    0x0001u16 => {
                         // OBJECT_TO_STRING: return "[object Object]"
                         let s = RayaString::new("[object Object]".to_string());
                         let gc_ptr = self.gc.lock().allocate(s);
@@ -973,7 +971,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0002u16 => {
+                    0x0002u16 => {
                         // OBJECT_HASH_CODE: return identity hash from object pointer
                         let hash = if !args.is_empty() {
                             // Use the raw bits of the value as a hash
@@ -985,7 +983,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(Value::i32(hash)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0003u16 => {
+                    0x0003u16 => {
                         // OBJECT_EQUAL: reference equality
                         let equal = if args.len() >= 2 {
                             args[0].as_u64() == args[1].as_u64()
@@ -996,7 +994,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Task native calls
-                    id if id == 0x0500u16 => {
+                    0x0500u16 => {
                         // TASK_IS_DONE: check if task completed
                         let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
                         let tasks = self.tasks.read();
@@ -1006,7 +1004,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(Value::bool(is_done)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == 0x0501u16 => {
+                    0x0501u16 => {
                         // TASK_IS_CANCELLED: check if task cancelled
                         let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
                         let tasks = self.tasks.read();
@@ -1017,7 +1015,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Error native calls
-                    id if id == 0x0600u16 => {
+                    0x0600u16 => {
                         // ERROR_STACK (0x0600): return stack trace from error object.
                         // Stack traces are populated at throw time in exceptions.rs
                         // (task.build_stack_trace → obj.fields[2]).
@@ -1048,7 +1046,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Date native calls
-                    id if id == date::NOW as u16 => {
+                    id if id == date::NOW => {
                         use std::time::{SystemTime, UNIX_EPOCH};
                         let now = SystemTime::now()
                             .duration_since(UNIX_EPOCH)
@@ -1059,7 +1057,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_FULL_YEAR as u16 => {
+                    id if id == date::GET_FULL_YEAR => {
                         // args[0] is the timestamp in milliseconds (as f64 number)
                         let timestamp = args[0].as_f64()
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
@@ -1071,7 +1069,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_MONTH as u16 => {
+                    id if id == date::GET_MONTH => {
                         let timestamp = args[0].as_f64()
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
@@ -1082,7 +1080,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_DATE as u16 => {
+                    id if id == date::GET_DATE => {
                         let timestamp = args[0].as_f64()
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
@@ -1093,7 +1091,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_DAY as u16 => {
+                    id if id == date::GET_DAY => {
                         let timestamp = args[0].as_f64()
                             .or_else(|| args[0].as_i64().map(|v| v as f64))
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
@@ -1104,74 +1102,74 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_HOURS as u16 => {
+                    id if id == date::GET_HOURS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_hours())) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_MINUTES as u16 => {
+                    id if id == date::GET_MINUTES => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_minutes())) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_SECONDS as u16 => {
+                    id if id == date::GET_SECONDS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_seconds())) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::GET_MILLISECONDS as u16 => {
+                    id if id == date::GET_MILLISECONDS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::i32(date.get_milliseconds())) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
                     // Date setters: args[0]=timestamp, args[1]=new value, returns new timestamp as f64
-                    id if id == date::SET_FULL_YEAR as u16 => {
+                    id if id == date::SET_FULL_YEAR => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_full_year(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_MONTH as u16 => {
+                    id if id == date::SET_MONTH => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_month(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_DATE as u16 => {
+                    id if id == date::SET_DATE => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(1);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_date(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_HOURS as u16 => {
+                    id if id == date::SET_HOURS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_hours(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_MINUTES as u16 => {
+                    id if id == date::SET_MINUTES => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_minutes(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_SECONDS as u16 => {
+                    id if id == date::SET_SECONDS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
                         if let Err(e) = stack.push(Value::f64(date.set_seconds(val) as f64)) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::SET_MILLISECONDS as u16 => {
+                    id if id == date::SET_MILLISECONDS => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let val = args[1].as_i32().unwrap_or(0);
                         let date = DateObject::from_timestamp(timestamp);
@@ -1179,7 +1177,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Date string formatting: args[0]=timestamp, returns string
-                    id if id == date::TO_STRING as u16 => {
+                    id if id == date::TO_STRING => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_string_repr());
@@ -1188,7 +1186,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::TO_ISO_STRING as u16 => {
+                    id if id == date::TO_ISO_STRING => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_iso_string());
@@ -1197,7 +1195,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::TO_DATE_STRING as u16 => {
+                    id if id == date::TO_DATE_STRING => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_date_string());
@@ -1206,7 +1204,7 @@ impl<'a> Interpreter<'a> {
                         if let Err(e) = stack.push(value) { return OpcodeResult::Error(e); }
                         OpcodeResult::Continue
                     }
-                    id if id == date::TO_TIME_STRING as u16 => {
+                    id if id == date::TO_TIME_STRING => {
                         let timestamp = args[0].as_f64().or_else(|| args[0].as_i64().map(|v| v as f64)).or_else(|| args[0].as_i32().map(|v| v as f64)).unwrap_or(0.0) as i64;
                         let date = DateObject::from_timestamp(timestamp);
                         let s = RayaString::new(date.to_time_string());
@@ -1216,7 +1214,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // Date.parse: args[0]=string, returns timestamp f64 (NaN on failure)
-                    id if id == date::PARSE as u16 => {
+                    id if id == date::PARSE => {
                         let input = if !args.is_empty() && args[0].is_ptr() {
                             if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -1230,7 +1228,7 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     // RegExp native calls
-                    id if id == regexp::NEW as u16 => {
+                    id if id == regexp::NEW => {
                         let pattern = if args[0].is_ptr() {
                             if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
                                 unsafe { &*s.as_ptr() }.data.clone()
@@ -1259,11 +1257,11 @@ impl<'a> Interpreter<'a> {
                                 OpcodeResult::Continue
                             }
                             Err(e) => {
-                                return OpcodeResult::Error(VmError::RuntimeError(format!("Invalid regex: {}", e)));
+                                OpcodeResult::Error(VmError::RuntimeError(format!("Invalid regex: {}", e)))
                             }
                         }
                     }
-                    id if id == regexp::TEST as u16 => {
+                    id if id == regexp::TEST => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
@@ -1284,7 +1282,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == regexp::EXEC as u16 => {
+                    id if id == regexp::EXEC => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
@@ -1334,7 +1332,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == regexp::EXEC_ALL as u16 => {
+                    id if id == regexp::EXEC_ALL => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
@@ -1384,7 +1382,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == regexp::REPLACE as u16 => {
+                    id if id == regexp::REPLACE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
@@ -1420,7 +1418,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == regexp::SPLIT as u16 => {
+                    id if id == regexp::SPLIT => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let input = if args[1].is_ptr() {
                             if let Some(s) = unsafe { args[1].as_ptr::<RayaString>() } {
@@ -1460,7 +1458,7 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
-                    id if id == regexp::REPLACE_MATCHES as u16 => {
+                    id if id == regexp::REPLACE_MATCHES => {
                         // REGEXP_REPLACE_MATCHES: Get match data for replaceWith intrinsic
                         // Args: regexp handle, input string
                         // Returns: array of [matched_text, start_index] arrays, respecting 'g' flag
@@ -1497,22 +1495,20 @@ impl<'a> Interpreter<'a> {
                                 };
                                 result_arr.push(match_arr_val);
                             }
-                        } else {
-                            if let Some(m) = re.compiled.find(&input) {
-                                let mut match_arr = Array::new(0, 0);
-                                let match_str = RayaString::new(m.as_str().to_string());
-                                let gc_ptr = self.gc.lock().allocate(match_str);
-                                let match_val = unsafe {
-                                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                                };
-                                match_arr.push(match_val);
-                                match_arr.push(Value::i32(m.start() as i32));
-                                let match_arr_gc = self.gc.lock().allocate(match_arr);
-                                let match_arr_val = unsafe {
-                                    Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
-                                };
-                                result_arr.push(match_arr_val);
-                            }
+                        } else if let Some(m) = re.compiled.find(&input) {
+                            let mut match_arr = Array::new(0, 0);
+                            let match_str = RayaString::new(m.as_str().to_string());
+                            let gc_ptr = self.gc.lock().allocate(match_str);
+                            let match_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
+                            match_arr.push(match_val);
+                            match_arr.push(Value::i32(m.start() as i32));
+                            let match_arr_gc = self.gc.lock().allocate(match_arr);
+                            let match_arr_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
+                            };
+                            result_arr.push(match_arr_val);
                         }
                         let arr_gc = self.gc.lock().allocate(result_arr);
                         let arr_val = unsafe {
@@ -1748,10 +1744,10 @@ impl<'a> Interpreter<'a> {
 
 
                         // Other native calls not yet implemented
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                        OpcodeResult::Error(VmError::RuntimeError(format!(
                             "NativeCall {:#06x} not yet implemented in Interpreter (args={})",
                             native_id, args.len()
-                        )));
+                        )))
                     }
                 }
             }
@@ -1809,16 +1805,16 @@ impl<'a> Interpreter<'a> {
                                 request: io_request,
                             });
                         }
-                        return OpcodeResult::Suspend(SuspendReason::IoWait);
+                        OpcodeResult::Suspend(SuspendReason::IoWait)
                     }
                     NativeCallResult::Unhandled => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                        OpcodeResult::Error(VmError::RuntimeError(format!(
                             "ModuleNativeCall index {} unhandled",
                             local_idx
-                        )));
+                        )))
                     }
                     NativeCallResult::Error(msg) => {
-                        return OpcodeResult::Error(VmError::RuntimeError(msg));
+                        OpcodeResult::Error(VmError::RuntimeError(msg))
                     }
                 }
             }

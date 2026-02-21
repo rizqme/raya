@@ -349,7 +349,7 @@ fn check_permission(perm_name: &str) -> Result<(), VmError> {
 
 /// Handle built-in runtime methods (std:runtime)
 pub fn call_runtime_method(
-    ctx: &RuntimeHandlerContext,
+    ctx: &RuntimeHandlerContext<'_>,
     stack: &mut Stack,
     method_id: u16,
     arg_count: usize,
@@ -1394,7 +1394,7 @@ pub fn call_runtime_method(
                 .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))? as u32;
 
             // Take Vm, module, and debug state from registry
-            let (module, mut vm, ds) = {
+            let (module, vm, ds) = {
                 let mut registry = VM_INSTANCE_REGISTRY.lock();
                 let entry = registry.instances.get_mut(&handle)
                     .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
@@ -1416,7 +1416,7 @@ pub fn call_runtime_method(
             // Register module & spawn main task in child scheduler
             let module_arc = std::sync::Arc::new(module.clone());
             vm.shared_state().register_module(module_arc.clone())
-                .map_err(|e| VmError::RuntimeError(e))?;
+                .map_err(VmError::RuntimeError)?;
 
             let main_fn_id = module.functions.iter()
                 .position(|f| f.name == "main")
@@ -1525,7 +1525,7 @@ pub fn call_runtime_method(
             // Get module from child's registry for line table lookup
             let module = get_child_module(handle)?;
             let (func_id, offset) = ds.resolve_breakpoint(&module, &file, line)
-                .map_err(|e| VmError::RuntimeError(e))?;
+                .map_err(VmError::RuntimeError)?;
             let bp_id = ds.add_breakpoint(func_id, offset, file, line);
             Value::i32(bp_id as i32)
         }
@@ -1786,7 +1786,7 @@ fn get_child_module(handle: u32) -> Result<Module, VmError> {
 
 /// Convert a DebugPhaseSnapshot to a Raya string value ("paused", "completed", "error").
 fn debug_phase_to_value(
-    ctx: &RuntimeHandlerContext,
+    ctx: &RuntimeHandlerContext<'_>,
     phase: crate::vm::interpreter::debug_state::DebugPhaseSnapshot,
 ) -> Result<Value, VmError> {
     match phase {
@@ -1803,7 +1803,7 @@ fn debug_phase_to_value(
 }
 
 /// Allocate a string on the GC heap and return as Value
-fn allocate_string(ctx: &RuntimeHandlerContext, s: String) -> Value {
+fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
     let raya_str = RayaString::new(s);
     let gc_ptr = ctx.gc.lock().allocate(raya_str);
     unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }

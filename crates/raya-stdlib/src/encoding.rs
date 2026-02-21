@@ -77,11 +77,11 @@ struct XmlNodeData {
 
 /// Global registry for CSV table handles
 static CSV_TABLES: LazyLock<HandleRegistry<CsvTableData>> =
-    LazyLock::new(|| HandleRegistry::new());
+    LazyLock::new(HandleRegistry::new);
 
 /// Global registry for XML node handles
 static XML_NODES: LazyLock<HandleRegistry<XmlNodeData>> =
-    LazyLock::new(|| HandleRegistry::new());
+    LazyLock::new(HandleRegistry::new);
 
 // ============================================================================
 // Helper

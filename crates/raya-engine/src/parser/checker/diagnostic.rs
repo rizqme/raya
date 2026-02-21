@@ -65,7 +65,7 @@ impl Diagnostic {
 
     /// Add a primary label (main error location)
     pub fn with_primary_label(mut self, file_id: usize, span: Span, message: impl Into<String>) -> Self {
-        let label = Label::primary(file_id, span.start as usize..span.end as usize)
+        let label = Label::primary(file_id, span.start..span.end)
             .with_message(message);
         self.inner = self.inner.with_labels(vec![label]);
         self
@@ -73,7 +73,7 @@ impl Diagnostic {
 
     /// Add a secondary label (related location)
     pub fn with_secondary_label(mut self, file_id: usize, span: Span, message: impl Into<String>) -> Self {
-        let label = Label::secondary(file_id, span.start as usize..span.end as usize)
+        let label = Label::secondary(file_id, span.start..span.end)
             .with_message(message);
         // Clone the existing diagnostic and add the new label
         let existing_labels = std::mem::take(&mut self.inner.labels);
@@ -235,7 +235,7 @@ impl Diagnostic {
                 .with_code(error_code(error))
                 .with_primary_label(file_id, *span, "forbidden field access")
                 .with_note("Bare unions use typeof for type narrowing")
-                .with_help(format!("Use typeof instead: typeof x === \"string\""))
+                .with_help("Use typeof instead: typeof x === \"string\"".to_string())
             }
 
             AbstractClassInstantiation { name, span } => {

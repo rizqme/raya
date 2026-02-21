@@ -27,7 +27,7 @@ impl StackPool {
 
     /// Get a stack from the pool, or create a new one.
     pub fn acquire(&self) -> Stack {
-        self.stacks.lock().pop().unwrap_or_else(Stack::new)
+        self.stacks.lock().pop().unwrap_or_default()
     }
 
     /// Return a stack to the pool for reuse.

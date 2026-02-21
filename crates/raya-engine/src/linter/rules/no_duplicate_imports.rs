@@ -27,7 +27,7 @@ impl LintRule for NoDuplicateImports {
     fn check_module(
         &self,
         module: &ast::Module,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut diagnostics = Vec::new();
@@ -46,7 +46,7 @@ impl LintRule for NoDuplicateImports {
                     rule: META.name,
                     code: META.code,
                     message: format!("'{}' is imported multiple times", source_str),
-                    span: import.span.clone(),
+                    span: import.span,
                     severity: META.default_severity,
                     fix: None,
                     notes: vec![format!(

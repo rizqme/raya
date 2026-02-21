@@ -27,6 +27,11 @@ use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext};
 ///
 /// Layout: [AotFrame struct][u64 * local_count]
 /// The `locals` pointer points to the inline storage right after the struct.
+///
+/// # Safety
+///
+/// Caller must ensure `local_count` produces a valid allocation size and
+/// that the returned pointer is freed with the matching layout.
 unsafe extern "C" fn helper_alloc_frame(
     func_id: u32,
     local_count: u32,

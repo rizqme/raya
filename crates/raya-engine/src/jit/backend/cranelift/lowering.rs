@@ -29,7 +29,7 @@ pub struct LoweringContext<'a> {
 
 /// The five parameters of the JIT entry function ABI
 struct FunctionParams {
-    args_ptr: ir::Value,
+    _args_ptr: ir::Value,
     _arg_count: ir::Value,
     locals_ptr: ir::Value,
     _local_count: ir::Value,
@@ -74,7 +74,7 @@ impl<'a> LoweringContext<'a> {
     /// Takes ownership of the FunctionBuilder since finalize() consumes it.
     pub fn lower(
         func: &'a JitFunction,
-        mut builder: FunctionBuilder,
+        mut builder: FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
         // Create Cranelift blocks for each JIT block
         let mut block_map = FxHashMap::default();
@@ -101,7 +101,7 @@ impl<'a> LoweringContext<'a> {
 
         // Extract parameters
         let params = FunctionParams {
-            args_ptr: builder.block_params(entry_block)[0],
+            _args_ptr: builder.block_params(entry_block)[0],
             _arg_count: builder.block_params(entry_block)[1],
             locals_ptr: builder.block_params(entry_block)[2],
             _local_count: builder.block_params(entry_block)[3],
@@ -149,7 +149,7 @@ impl<'a> LoweringContext<'a> {
     }
 
     /// Declare all JIT registers as Cranelift variables
-    fn declare_all_regs(&mut self, builder: &mut FunctionBuilder) {
+    fn declare_all_regs(&mut self, builder: &mut FunctionBuilder<'_>) {
         for reg_idx in 0..self.func.next_reg {
             let reg = Reg(reg_idx);
 
@@ -173,12 +173,12 @@ impl<'a> LoweringContext<'a> {
     }
 
     /// Read a JIT register as a Cranelift value
-    fn use_reg(&self, builder: &mut FunctionBuilder, reg: Reg) -> ir::Value {
+    fn use_reg(&self, builder: &mut FunctionBuilder<'_>, reg: Reg) -> ir::Value {
         builder.use_var(self.var_for(reg))
     }
 
     /// Write a Cranelift value to a JIT register
-    fn def_reg(&self, builder: &mut FunctionBuilder, reg: Reg, val: ir::Value) {
+    fn def_reg(&self, builder: &mut FunctionBuilder<'_>, reg: Reg, val: ir::Value) {
         builder.def_var(self.var_for(reg), val);
     }
 
@@ -186,7 +186,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_block(
         &mut self,
         block_id: JitBlockId,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
         let block = self.func.block(block_id);
         let instrs = block.instrs.clone();
@@ -215,7 +215,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_instr(
         &mut self,
         instr: &JitInstr,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
         match instr {
             // ===== Constants =====
@@ -536,7 +536,7 @@ impl<'a> LoweringContext<'a> {
     /// Lower an integer comparison
     fn lower_icmp(
         &self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         cc: condcodes::IntCC,
         dest: Reg,
         left: Reg,
@@ -551,7 +551,7 @@ impl<'a> LoweringContext<'a> {
     /// Lower a float comparison
     fn lower_fcmp(
         &self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         cc: condcodes::FloatCC,
         dest: Reg,
         left: Reg,
@@ -567,7 +567,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_terminator(
         &self,
         term: &JitTerminator,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
         match term {
             JitTerminator::Return(Some(reg)) => {

@@ -113,7 +113,7 @@ impl CodeCache {
         }
         // Safety: entry_offset is within code bounds (verified at finalize time)
         let fn_ptr = unsafe { entry.code.code_ptr.add(entry.code.entry_offset) };
-        Some(unsafe { std::mem::transmute(fn_ptr) })
+        Some(unsafe { std::mem::transmute::<*const u8, JitEntryFn>(fn_ptr) })
     }
 
     /// Invalidate a cached function (e.g., when deoptimizing)

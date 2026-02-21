@@ -93,12 +93,12 @@ pub trait LintRule: Send + Sync {
     fn meta(&self) -> &RuleMeta;
 
     /// Check a top-level module.
-    fn check_module(&self, _module: &ast::Module, _ctx: &LintContext) -> Vec<LintDiagnostic> {
+    fn check_module(&self, _module: &ast::Module, _ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         vec![]
     }
 
     /// Check a statement node.
-    fn check_statement(&self, _stmt: &ast::Statement, _ctx: &LintContext) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, _stmt: &ast::Statement, _ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         vec![]
     }
 
@@ -106,7 +106,7 @@ pub trait LintRule: Send + Sync {
     fn check_expression(
         &self,
         _expr: &ast::Expression,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         vec![]
     }
@@ -115,7 +115,7 @@ pub trait LintRule: Send + Sync {
     fn check_class_member(
         &self,
         _member: &ast::ClassMember,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         vec![]
     }

@@ -574,8 +574,8 @@ fn extract_opcode_properties(source: &str) -> Vec<(String, OpcodeKind)> {
 
             if let Some(kind) = kind {
                 // Next non-empty line should be the property declaration
-                for j in (i + 1)..lines.len() {
-                    let next = lines[j].trim();
+                for line in lines.iter().skip(i + 1) {
+                    let next = line.trim();
                     if next.is_empty() {
                         continue;
                     }
@@ -754,12 +754,7 @@ fn try_extract_method_name(chars: &[char], pos: usize) -> Option<(String, usize)
 
 /// Find the first occurrence of `ch` after position `start`.
 fn find_char_after(chars: &[char], start: usize, ch: char) -> Option<usize> {
-    for i in start..chars.len() {
-        if chars[i] == ch {
-            return Some(i);
-        }
-    }
-    None
+    (start..chars.len()).find(|&i| chars[i] == ch)
 }
 
 /// Find matching closing paren for an opening paren at `open`.
@@ -829,8 +824,8 @@ pub(crate) fn extract_class_method_names(source: &str) -> Vec<String> {
         let trimmed = lines[i].trim();
         if trimmed == "//@@class_method" {
             // Next non-empty line should be the method declaration
-            for j in (i + 1)..lines.len() {
-                let next = lines[j].trim();
+            for line in lines.iter().skip(i + 1) {
+                let next = line.trim();
                 if next.is_empty() {
                     continue;
                 }

@@ -376,7 +376,7 @@ enum LogosToken {
 }
 
 // Helper parsing functions
-fn lex_block_comment(lex: &mut logos::Lexer<LogosToken>) -> logos::Skip {
+fn lex_block_comment(lex: &mut logos::Lexer<'_, LogosToken>) -> logos::Skip {
     // We've already consumed "/*", now find "*/"
     let remainder = lex.remainder();
 
@@ -391,36 +391,36 @@ fn lex_block_comment(lex: &mut logos::Lexer<LogosToken>) -> logos::Skip {
     logos::Skip
 }
 
-fn parse_hex(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
+fn parse_hex(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     let s = lex.slice()[2..].replace('_', "");
     i64::from_str_radix(&s, 16).ok()
 }
 
-fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
+fn parse_binary(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     let s = lex.slice()[2..].replace('_', "");
     i64::from_str_radix(&s, 2).ok()
 }
 
-fn parse_octal(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
+fn parse_octal(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     let s = lex.slice()[2..].replace('_', "");
     i64::from_str_radix(&s, 8).ok()
 }
 
-fn parse_int(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
+fn parse_int(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<i64> {
     lex.slice().replace('_', "").parse().ok()
 }
 
-fn parse_float(lex: &mut logos::Lexer<LogosToken>) -> Option<f64> {
+fn parse_float(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<f64> {
     lex.slice().replace('_', "").parse().ok()
 }
 
-fn parse_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
+fn parse_string(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<String> {
     let s = lex.slice();
     let inner = &s[1..s.len() - 1]; // Remove quotes
     Some(unescape_string(inner))
 }
 
-fn parse_annotation(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
+fn parse_annotation(lex: &mut logos::Lexer<'_, LogosToken>) -> Option<String> {
     let s = lex.slice();
     // Skip "//@@" prefix to get the annotation content (tag + optional value)
     // e.g., "//@@json user_name" -> "json user_name"
@@ -600,6 +600,8 @@ impl<'a> Lexer<'a> {
             .join("\n")
     }
 
+    // Compound return carries token stream + interner together; splitting would add indirection.
+    #[allow(clippy::type_complexity)]
     pub fn tokenize(mut self) -> Result<(Vec<(Token, Span)>, Interner), Vec<LexError>> {
         let mut pos = 0;
         let mut line = 1u32;
@@ -1142,7 +1144,7 @@ impl LexError {
 
         // Source context: show the line with the error
         if let Some(error_line) = source.lines().nth((span.line - 1) as usize) {
-            result.push_str(&format!("  |\n"));
+            result.push_str("  |\n");
             result.push_str(&format!("{:3} | {}\n", span.line, error_line));
             result.push_str(&format!("  | {}{}\n", " ".repeat(span.column as usize - 1), "^"));
         }

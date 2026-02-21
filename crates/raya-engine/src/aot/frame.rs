@@ -31,8 +31,10 @@ pub type AotEntryFn = unsafe extern "C" fn(
 /// Reason why an AOT function suspended execution.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub enum SuspendReason {
     /// Not suspended (initial state)
+    #[default]
     None = 0,
     /// Awaiting a spawned task to complete. Payload: task handle (NaN-boxed).
     AwaitTask = 1,
@@ -243,11 +245,6 @@ impl AotFrame {
     }
 }
 
-impl Default for SuspendReason {
-    fn default() -> Self {
-        SuspendReason::None
-    }
-}
 
 #[cfg(test)]
 mod tests {

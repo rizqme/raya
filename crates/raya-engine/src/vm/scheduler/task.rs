@@ -407,7 +407,7 @@ impl Task {
     /// Take the stack out of this task, replacing it with an empty one.
     /// Used to return the stack to a pool after task completion.
     pub fn take_stack(&self) -> Stack {
-        std::mem::replace(&mut *self.stack.lock().unwrap(), Stack::new())
+        std::mem::take(&mut *self.stack.lock().unwrap())
     }
 
     // =========================================================================

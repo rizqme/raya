@@ -272,8 +272,7 @@ impl IrCodeGenerator {
 
         // Add debug info (source map) if collected
         if self.emit_sourcemap && !func_debug_infos.is_empty() {
-            let mut debug_info = DebugInfo::default();
-            debug_info.functions = func_debug_infos;
+            let debug_info = DebugInfo { functions: func_debug_infos, ..Default::default() };
             bytecode_module.flags |= flags::HAS_DEBUG_INFO;
             bytecode_module.debug_info = Some(debug_info);
         }

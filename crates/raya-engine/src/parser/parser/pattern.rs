@@ -39,7 +39,7 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
 
         // Simple identifier: x
         Token::Identifier(name) => {
-            let name = name.clone();
+            let name = *name;
             parser.advance();
             Ok(Pattern::Identifier(Identifier {
                 name,
@@ -163,7 +163,7 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
             parser.advance();
             if let Token::Identifier(name) = parser.current() {
                 rest = Some(Identifier {
-                    name: name.clone(),
+                    name: *name,
                     span: parser.current_span(),
                 });
                 parser.advance();
@@ -187,7 +187,7 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         // Parse key
         let key = if let Token::Identifier(name) = parser.current() {
             let id = Identifier {
-                name: name.clone(),
+                name: *name,
                 span: parser.current_span(),
             };
             parser.advance();
@@ -203,8 +203,8 @@ fn parse_object_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
         } else {
             // Shorthand: { x } is equivalent to { x: x }
             Pattern::Identifier(Identifier {
-                name: key.name.clone(),
-                span: key.span.clone(),
+                name: key.name,
+                span: key.span,
             })
         };
 

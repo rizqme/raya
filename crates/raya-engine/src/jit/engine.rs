@@ -236,7 +236,7 @@ impl JitEngine {
         let code_ptr = self.jit_module.get_finalized_function(func_id);
 
         let executable = ExecutableCode {
-            code_ptr: code_ptr as *const u8,
+            code_ptr,
             code_size,
             entry_offset: 0,
             stack_maps: vec![],
@@ -287,8 +287,7 @@ impl JitEngine {
                 while let Ok(req) = rx.recv() {
                     // Skip if already compiled (another request may have beaten us)
                     if engine.code_cache.contains(req.module_id, req.func_index as u32) {
-                        req.module_profile.get(req.func_index)
-                            .map(|fp| fp.finish_compile());
+                        if let Some(fp) = req.module_profile.get(req.func_index) { fp.finish_compile() }
                         continue;
                     }
 

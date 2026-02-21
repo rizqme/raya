@@ -15,7 +15,7 @@ use crate::compiler::type_registry::{BUILTIN_PRIMITIVE_SOURCES, extract_class_me
 
 /// Compiled class method IrFunctions, lazily initialized from `.raya` sources.
 static COMPILED_BUILTINS: LazyLock<CompiledBuiltins> =
-    LazyLock::new(|| CompiledBuiltins::init());
+    LazyLock::new(CompiledBuiltins::init);
 
 struct CompiledBuiltins {
     /// (type_name, method_name) → IrFunction
@@ -51,7 +51,7 @@ fn compile_and_extract(
     source: &str,
     class_method_names: &[String],
 ) -> Option<Vec<(String, IrFunction)>> {
-    use crate::parser::{Parser, TypeContext, Interner};
+    use crate::parser::{Parser, TypeContext};
     use crate::parser::checker::{Binder, TypeChecker};
     use crate::compiler::lower::Lowerer;
 
@@ -97,7 +97,7 @@ fn compile_and_extract(
     }
 
     // 3. Type check (errors are non-fatal — we still get expr_types)
-    let mut checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
     let check_result = match checker.check_module(&module) {
         Ok(result) => result,
         Err(_errors) => {

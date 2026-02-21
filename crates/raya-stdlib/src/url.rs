@@ -52,11 +52,11 @@ impl<T> HandleRegistry<T> {
 
 /// Global registry for parsed URL objects
 static URL_HANDLES: LazyLock<HandleRegistry<url::Url>> =
-    LazyLock::new(|| HandleRegistry::new());
+    LazyLock::new(HandleRegistry::new);
 
 /// Global registry for URLSearchParams objects
 static PARAMS_HANDLES: LazyLock<HandleRegistry<Vec<(String, String)>>> =
-    LazyLock::new(|| HandleRegistry::new());
+    LazyLock::new(HandleRegistry::new);
 
 // ============================================================================
 // Helper

@@ -113,10 +113,10 @@ impl<T> Clone for GcPtr<T> {
 // Copy allows bitwise copying
 impl<T> Copy for GcPtr<T> {}
 
-// Equality based on pointer address
+// Equality based on pointer address (data pointer only, ignoring vtable metadata)
 impl<T: ?Sized> PartialEq for GcPtr<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.ptr == other.ptr
+        std::ptr::addr_eq(self.ptr.as_ptr(), other.ptr.as_ptr())
     }
 }
 

@@ -307,10 +307,10 @@ fn read_http_response<R: Read>(reader: BufReader<R>) -> Result<HttpResponseData,
 }
 
 fn parse_url(url: &str) -> Result<ParsedUrl, String> {
-    let (remainder, is_tls) = if url.starts_with("https://") {
-        (&url[8..], true)
-    } else if url.starts_with("http://") {
-        (&url[7..], false)
+    let (remainder, is_tls) = if let Some(stripped) = url.strip_prefix("https://") {
+        (stripped, true)
+    } else if let Some(stripped) = url.strip_prefix("http://") {
+        (stripped, false)
     } else {
         (url, false)
     };

@@ -202,7 +202,7 @@ impl<'a> Interpreter<'a> {
                         0x0F02 => {
                             // toString(radix?)
                             let radix = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(10);
-                            if radix == 10 || radix < 2 || radix > 36 {
+                            if radix == 10 || !(2..=36).contains(&radix) {
                                 if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
                                     format!("{}", value as i64)
                                 } else {

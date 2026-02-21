@@ -26,7 +26,7 @@ impl LintRule for AwaitInLoop {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         // Check if this statement is a loop; if so, scan its body for awaits.
         let body: &ast::Statement = match stmt {
@@ -58,7 +58,7 @@ impl Visitor for AwaitInBodyFinder {
                 rule: META.name,
                 code: META.code,
                 message: "'await' inside a loop runs sequentially; consider batching".to_string(),
-                span: await_expr.span.clone(),
+                span: await_expr.span,
                 severity: META.default_severity,
                 fix: None,
                 notes: vec![],
@@ -67,7 +67,7 @@ impl Visitor for AwaitInBodyFinder {
 
         // Don't descend into nested functions/arrows.
         match expr {
-            ast::Expression::Arrow(_) => return,
+            ast::Expression::Arrow(_) => (),
             _ => walk_expression(self, expr),
         }
     }

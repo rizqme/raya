@@ -74,10 +74,7 @@ impl ResolvedModule {
     /// Get the path to the type definition file (.d.raya)
     /// Returns None for local modules (they have source), Some for cached packages
     pub fn typedef_path(&self) -> Option<PathBuf> {
-        if self.package_info.is_none() {
-            // Local module - no separate type definitions
-            return None;
-        }
+        self.package_info.as_ref()?;
 
         // For cached packages, look for module.d.raya alongside module.ryb
         let parent = self.path.parent()?;
@@ -98,9 +95,7 @@ impl ResolvedModule {
     /// Get the path to the package manifest (raya.toml)
     /// Returns None for local modules, Some for cached packages
     pub fn manifest_path(&self) -> Option<PathBuf> {
-        if self.package_info.is_none() {
-            return None;
-        }
+        self.package_info.as_ref()?;
 
         let parent = self.path.parent()?;
         let manifest_path = parent.join("raya.toml");
@@ -115,9 +110,7 @@ impl ResolvedModule {
     /// Get the path to the README file
     /// Returns None if no README exists
     pub fn readme_path(&self) -> Option<PathBuf> {
-        if self.package_info.is_none() {
-            return None;
-        }
+        self.package_info.as_ref()?;
 
         let parent = self.path.parent()?;
         let readme_path = parent.join("README.md");

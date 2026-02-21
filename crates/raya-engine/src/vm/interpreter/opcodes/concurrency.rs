@@ -136,30 +136,30 @@ impl<'a> Interpreter<'a> {
                             if let Err(e) = stack.push(result) {
                                 return OpcodeResult::Error(e);
                             }
-                            return OpcodeResult::Continue;
+                            OpcodeResult::Continue
                         }
                         TaskState::Failed => {
                             // Propagate exception
                             if let Some(exc) = awaited_task.current_exception() {
                                 task.set_exception(exc);
                             }
-                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            OpcodeResult::Error(VmError::RuntimeError(format!(
                                 "Awaited task {:?} failed",
                                 awaited_id
-                            )));
+                            )))
                         }
                         _ => {
                             // Not done yet - register as waiter and suspend
                             awaited_task.add_waiter(task.id());
-                            return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                            OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id))
                         }
                     }
                 } else {
                     drop(tasks_guard);
-                    return OpcodeResult::Error(VmError::RuntimeError(format!(
+                    OpcodeResult::Error(VmError::RuntimeError(format!(
                         "Task {:?} not found",
                         awaited_id
-                    )));
+                    )))
                 }
             }
 

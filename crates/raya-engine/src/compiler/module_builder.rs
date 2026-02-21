@@ -98,7 +98,7 @@ impl FunctionBuilder {
             return Ok(index);
         }
 
-        if self.local_count >= 65535 {
+        if self.local_count == 65535 {
             return Err(CompileError::TooManyLocals);
         }
 

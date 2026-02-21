@@ -22,12 +22,12 @@ pub const I32_TAG_BASE: u64 = NAN_BOX_BASE | TAG_I32;
 pub const BOOL_TAG_BASE: u64 = NAN_BOX_BASE | TAG_BOOL;
 pub const NULL_VALUE: u64 = NAN_BOX_BASE | TAG_NULL;
 pub const TRUE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL | 1;
-pub const FALSE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL | 0;
+pub const FALSE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL;
 
 /// Box an i32 value into a NaN-boxed u64.
 ///
 /// Cranelift IR equivalent of: `NAN_BOX_BASE | TAG_I32 | ((i32 as i64) as u64 & PAYLOAD_MASK)`
-pub fn emit_box_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_i32(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
 
     // Sign-extend i32 to i64
@@ -43,7 +43,7 @@ pub fn emit_box_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value 
 /// Unbox an i32 from a NaN-boxed u64.
 ///
 /// Cranelift IR equivalent of: `(val & PAYLOAD_MASK_32) as i32`
-pub fn emit_unbox_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_i32(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let i32_type = ir::types::I32;
 
@@ -58,7 +58,7 @@ pub fn emit_unbox_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Valu
 ///
 /// f64 values are stored as raw bits. If the bits collide with our NaN-box base
 /// (negative quiet NaN), we canonicalize to positive quiet NaN.
-pub fn emit_box_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
 
     // Bitcast f64 to i64
@@ -79,7 +79,7 @@ pub fn emit_box_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value 
 /// Unbox an f64 from a NaN-boxed u64.
 ///
 /// f64 values are stored directly as bits (not tagged), so just bitcast.
-pub fn emit_unbox_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let f64_type = ir::types::F64;
     builder.ins().bitcast(f64_type, ir::MemFlags::new(), val)
 }
@@ -87,7 +87,7 @@ pub fn emit_unbox_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Valu
 /// Box a boolean into a NaN-boxed u64.
 ///
 /// Cranelift IR equivalent of: `NAN_BOX_BASE | TAG_BOOL | (b as u64)`
-pub fn emit_box_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_bool(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
 
     // Zero-extend i8 bool to i64
@@ -100,7 +100,7 @@ pub fn emit_box_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value
 /// Unbox a boolean from a NaN-boxed u64.
 ///
 /// Cranelift IR equivalent of: `(val & 1) != 0`
-pub fn emit_unbox_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_bool(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let i8_type = ir::types::I8;
 
@@ -110,17 +110,17 @@ pub fn emit_unbox_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Val
 }
 
 /// Emit a null constant (NaN-boxed).
-pub fn emit_null(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_null(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, NULL_VALUE as i64)
 }
 
 /// Emit a true constant (NaN-boxed).
-pub fn emit_true(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_true(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, TRUE_VALUE as i64)
 }
 
 /// Emit a false constant (NaN-boxed).
-pub fn emit_false(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_false(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, FALSE_VALUE as i64)
 }
 

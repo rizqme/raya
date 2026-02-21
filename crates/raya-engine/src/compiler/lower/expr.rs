@@ -13,8 +13,6 @@ use crate::parser::{TypeContext as TC, TypeId};
 use rustc_hash::FxHashMap;
 
 // Re-export VM builtin method IDs (canonical source of truth)
-use crate::vm::builtin::array as builtin_array;
-use crate::vm::builtin::string as builtin_string;
 #[allow(unused_imports)]
 use crate::vm::builtin::number as builtin_number;
 use crate::vm::builtin::regexp as builtin_regexp;
@@ -55,10 +53,6 @@ impl<'a> Lowerer<'a> {
             Expression::TypeCast(cast) => self.lower_type_cast(cast),
             Expression::JsxElement(jsx) => self.lower_jsx_element(jsx),
             Expression::JsxFragment(jsx) => self.lower_jsx_fragment(jsx),
-            _ => {
-                // For unhandled expressions, emit a null placeholder
-                self.lower_null_literal()
-            }
         }
     }
 
@@ -463,7 +457,7 @@ impl<'a> Lowerer<'a> {
                     // Check for string literal first → ModuleNativeCall
                     if let Expression::StringLiteral(lit) = first_arg {
                         let fn_name = self.interner.resolve(lit.value);
-                        let local_idx = self.resolve_native_name(&fn_name);
+                        let local_idx = self.resolve_native_name(fn_name);
 
                         let native_args: Vec<Register> = call.arguments[1..]
                             .iter()
@@ -662,7 +656,7 @@ impl<'a> Lowerer<'a> {
                 let effective_func_id = if call.type_args.is_some() {
                     let needs_specialization = self.generic_function_asts.get(&ident.name)
                         .map(|func_ast| {
-                            func_ast.type_params.as_ref().map_or(false, |tps| {
+                            func_ast.type_params.as_ref().is_some_and(|tps| {
                                 tps.iter().any(|tp| tp.constraint.is_some())
                             })
                         })
@@ -1082,25 +1076,23 @@ impl<'a> Lowerer<'a> {
 
             // For no-arg calls like length(), check registry properties (opcode dispatch)
             if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
-                if let Some(action) = self.type_registry.lookup_property(obj_type_id, method_name) {
-                    if let crate::compiler::type_registry::DispatchAction::Opcode(kind) = action {
-                        let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                        match kind {
-                            crate::compiler::type_registry::OpcodeKind::StringLen => {
-                                self.emit(IrInstr::StringLen {
-                                    dest: len_dest.clone(),
-                                    string: object,
-                                });
-                            }
-                            crate::compiler::type_registry::OpcodeKind::ArrayLen => {
-                                self.emit(IrInstr::ArrayLen {
-                                    dest: len_dest.clone(),
-                                    array: object,
-                                });
-                            }
+                if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) = self.type_registry.lookup_property(obj_type_id, method_name) {
+                    let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                    match kind {
+                        crate::compiler::type_registry::OpcodeKind::StringLen => {
+                            self.emit(IrInstr::StringLen {
+                                dest: len_dest.clone(),
+                                string: object,
+                            });
                         }
-                        return len_dest;
+                        crate::compiler::type_registry::OpcodeKind::ArrayLen => {
+                            self.emit(IrInstr::ArrayLen {
+                                dest: len_dest.clone(),
+                                array: object,
+                            });
+                        }
                     }
+                    return len_dest;
                 }
             }
 
@@ -1371,11 +1363,11 @@ impl<'a> Lowerer<'a> {
         // so the post-monomorphization pass can resolve to the correct opcode.
         if obj_ty_id == UNRESOLVED_TYPE_ID && class_id.is_none() {
             let expr_ty = self.get_expr_type(&member.object);
-            let is_typevar = self.type_ctx.get(expr_ty).map_or(false, |ty| {
+            let is_typevar = self.type_ctx.get(expr_ty).is_some_and(|ty| {
                 matches!(ty, crate::parser::types::ty::Type::TypeVar(_))
             });
             // Also check register type for TypeVar
-            let is_typevar = is_typevar || self.type_ctx.get(object.ty).map_or(false, |ty| {
+            let is_typevar = is_typevar || self.type_ctx.get(object.ty).is_some_and(|ty| {
                 matches!(ty, crate::parser::types::ty::Type::TypeVar(_))
             });
 
@@ -1441,77 +1433,75 @@ impl<'a> Lowerer<'a> {
                 elem_ty: TypeId::new(NUMBER_TYPE_ID),
             });
 
-            for elem_opt in &array.elements {
-                if let Some(elem) = elem_opt {
-                    match elem {
-                        ast::ArrayElement::Expression(expr) => {
-                            let val = self.lower_expr(expr);
-                            self.emit(IrInstr::ArrayPush {
-                                array: dest.clone(),
-                                element: val,
-                            });
-                        }
-                        ast::ArrayElement::Spread(spread_expr) => {
-                            let src_arr = self.lower_expr(spread_expr);
-                            // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
-                            let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
-                            self.emit(IrInstr::ArrayLen {
-                                dest: len.clone(),
-                                array: src_arr.clone(),
-                            });
-                            let i = self.emit_i32_const(0);
+            for elem in array.elements.iter().flatten() {
+                match elem {
+                    ast::ArrayElement::Expression(expr) => {
+                        let val = self.lower_expr(expr);
+                        self.emit(IrInstr::ArrayPush {
+                            array: dest.clone(),
+                            element: val,
+                        });
+                    }
+                    ast::ArrayElement::Spread(spread_expr) => {
+                        let src_arr = self.lower_expr(spread_expr);
+                        // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
+                        let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
+                        self.emit(IrInstr::ArrayLen {
+                            dest: len.clone(),
+                            array: src_arr.clone(),
+                        });
+                        let i = self.emit_i32_const(0);
 
-                            let header = self.alloc_block();
-                            let body = self.alloc_block();
-                            let exit = self.alloc_block();
+                        let header = self.alloc_block();
+                        let body = self.alloc_block();
+                        let exit = self.alloc_block();
 
-                            self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+                        self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
 
-                            // Header: i < len?
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(header, "spread.hdr"));
-                            self.current_block = header;
-                            let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
-                            self.emit(IrInstr::BinaryOp {
-                                dest: cond.clone(),
-                                op: BinaryOp::Less,
-                                left: i.clone(),
-                                right: len.clone(),
-                            });
-                            self.set_terminator(crate::compiler::ir::Terminator::Branch {
-                                cond,
-                                then_block: body,
-                                else_block: exit,
-                            });
+                        // Header: i < len?
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(header, "spread.hdr"));
+                        self.current_block = header;
+                        let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                        self.emit(IrInstr::BinaryOp {
+                            dest: cond.clone(),
+                            op: BinaryOp::Less,
+                            left: i.clone(),
+                            right: len.clone(),
+                        });
+                        self.set_terminator(crate::compiler::ir::Terminator::Branch {
+                            cond,
+                            then_block: body,
+                            else_block: exit,
+                        });
 
-                            // Body: elem = src_arr[i]; dest.push(elem); i++
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(body, "spread.body"));
-                            self.current_block = body;
-                            let elem = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                            self.emit(IrInstr::LoadElement {
-                                dest: elem.clone(),
-                                array: src_arr.clone(),
-                                index: i.clone(),
-                            });
-                            self.emit(IrInstr::ArrayPush {
-                                array: dest.clone(),
-                                element: elem,
-                            });
-                            let one = self.emit_i32_const(1);
-                            self.emit(IrInstr::BinaryOp {
-                                dest: i.clone(),
-                                op: BinaryOp::Add,
-                                left: i.clone(),
-                                right: one,
-                            });
-                            self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
+                        // Body: elem = src_arr[i]; dest.push(elem); i++
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(body, "spread.body"));
+                        self.current_block = body;
+                        let elem = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::LoadElement {
+                            dest: elem.clone(),
+                            array: src_arr.clone(),
+                            index: i.clone(),
+                        });
+                        self.emit(IrInstr::ArrayPush {
+                            array: dest.clone(),
+                            element: elem,
+                        });
+                        let one = self.emit_i32_const(1);
+                        self.emit(IrInstr::BinaryOp {
+                            dest: i.clone(),
+                            op: BinaryOp::Add,
+                            left: i.clone(),
+                            right: one,
+                        });
+                        self.set_terminator(crate::compiler::ir::Terminator::Jump(header));
 
-                            // Exit
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(exit, "spread.exit"));
-                            self.current_block = exit;
-                        }
+                        // Exit
+                        self.current_function_mut()
+                            .add_block(crate::ir::BasicBlock::with_label(exit, "spread.exit"));
+                        self.current_block = exit;
                     }
                 }
             }
@@ -1519,14 +1509,12 @@ impl<'a> Lowerer<'a> {
         } else {
             // No spread: use efficient ArrayLiteral path
             let mut elements = Vec::new();
-            for elem_opt in &array.elements {
-                if let Some(elem) = elem_opt {
-                    match elem {
-                        ast::ArrayElement::Expression(expr) => {
-                            elements.push(self.lower_expr(expr));
-                        }
-                        ast::ArrayElement::Spread(_) => unreachable!(),
+            for elem in array.elements.iter().flatten() {
+                match elem {
+                    ast::ArrayElement::Expression(expr) => {
+                        elements.push(self.lower_expr(expr));
                     }
+                    ast::ArrayElement::Spread(_) => unreachable!(),
                 }
             }
             let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(NUMBER_TYPE_ID));

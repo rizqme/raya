@@ -16,8 +16,8 @@ impl CodegenBackend for StubBackend {
 
     fn compile_function(
         &self,
-        func: &JitFunction,
-        _ctx: &ModuleContext,
+        _func: &JitFunction,
+        _ctx: &ModuleContext<'_>,
     ) -> Result<CompiledCode, CodegenError> {
         // Emit a single-byte trap instruction as placeholder
         let trap_byte = match self.target_info().arch {

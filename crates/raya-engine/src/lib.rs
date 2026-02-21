@@ -32,22 +32,17 @@
 
 #![warn(missing_docs)]
 #![warn(rust_2018_idioms)]
-// TODO: Fix these clippy warnings properly
-#![cfg_attr(test, allow(clippy::approx_constant))]
-#![cfg_attr(test, allow(clippy::identity_op))]
-#![cfg_attr(test, allow(clippy::unnecessary_cast))]
-#![cfg_attr(test, allow(clippy::single_char_add_str))]
-#![cfg_attr(test, allow(unused_variables))]
-#![cfg_attr(test, allow(unused_imports))]
-#![allow(clippy::approx_constant)]
-#![allow(clippy::identity_op)]
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::arc_with_non_send_sync)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::unnecessary_lazy_evaluations)]
-#![allow(clippy::needless_return)]
+// Test-only: allow approximate constants (PI/E in tests) and identity ops (clarity)
+#![cfg_attr(test, allow(clippy::approx_constant, clippy::identity_op))]
+#![cfg_attr(test, allow(unused_variables, unused_imports))]
+// ParseError is large by design (carries source spans + messages); boxing would add
+// indirection on every error path. Same applies to large AST enum variants.
+#![allow(clippy::result_large_err)]
+#![allow(clippy::large_enum_variant)]
+// Intentional: raw pointer operations in GC/unsafe code
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(ambiguous_wide_pointer_comparisons)]
+// Intentional: module structure mirrors the language concepts
+#![allow(clippy::module_inception)]
 
 // ============================================================================
 // Core Modules

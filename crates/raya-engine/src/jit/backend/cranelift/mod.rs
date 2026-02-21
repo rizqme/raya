@@ -60,7 +60,7 @@ impl CodegenBackend for CraneliftBackend {
     fn compile_function(
         &self,
         func: &JitFunction,
-        _ctx: &ModuleContext,
+        _ctx: &ModuleContext<'_>,
     ) -> Result<CompiledCode, CodegenError> {
         let mut codegen_ctx = Context::new();
         let mut func_builder_ctx = FunctionBuilderContext::new();

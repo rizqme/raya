@@ -12,7 +12,7 @@ use crate::compiler::ir::{
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
-use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression, walk_statement};
+use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -472,10 +472,8 @@ fn collect_pattern_names(pattern: &ast::Pattern, names: &mut FxHashSet<Symbol>) 
             names.insert(id.name);
         }
         Pattern::Array(arr) => {
-            for elem in &arr.elements {
-                if let Some(e) = elem {
-                    collect_pattern_names(&e.pattern, names);
-                }
+            for e in arr.elements.iter().flatten() {
+                collect_pattern_names(&e.pattern, names);
             }
             if let Some(rest) = &arr.rest {
                 collect_pattern_names(rest, names);
@@ -561,7 +559,7 @@ fn recurse_into_body(body: &ast::Statement, locals: &mut FxHashSet<Symbol>) {
     if let Statement::Block(block) = body {
         collect_block_local_names(&block.statements, locals);
     } else {
-        collect_block_local_names(&[body.clone()], locals);
+        collect_block_local_names(std::slice::from_ref(body), locals);
     }
 }
 
@@ -1040,7 +1038,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     // Store AST for generic functions (needed for call-site specialization)
-                    if func.type_params.as_ref().map_or(false, |tp| !tp.is_empty()) {
+                    if func.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
                         self.generic_function_asts.insert(func.name.name, func.clone());
                     }
                 }
@@ -1073,6 +1071,7 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     // Track class type from new expression (e.g., `const math = new Math()`)
+                    #[allow(clippy::collapsible_match)]
                     if !self.variable_class_map.contains_key(&name) {
                         if let Some(init) = &decl.initializer {
                             if let ast::Expression::New(new_expr) = init {
@@ -1160,7 +1159,7 @@ impl<'a> Lowerer<'a> {
         // Add ALL pending functions (including main and class methods) sorted by func_id
         // This ensures functions are added to the module in the order of their pre-assigned IDs
         self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
-        for (id, func) in self.pending_arrow_functions.drain(..) {
+        for (_id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
         }
 
@@ -1753,7 +1752,7 @@ impl<'a> Lowerer<'a> {
             if let Some(parent_id) = info.parent_class {
                 // Recursively get all parent fields
                 fn add_parent_fields(
-                    lowerer: &Lowerer,
+                    lowerer: &Lowerer<'_>,
                     ir_class: &mut IrClass,
                     parent_id: ClassId,
                 ) {
@@ -2351,6 +2350,7 @@ impl<'a> Lowerer<'a> {
 
         // Collect all decorator applications (clone to avoid borrow issues)
         // Structure: (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators)
+        #[allow(clippy::type_complexity)] // Tuple groups related decorator info; a dedicated struct would add boilerplate for a single use-site.
         let decorator_apps: Vec<(
             ClassId,
             String,
@@ -2671,7 +2671,7 @@ impl<'a> Lowerer<'a> {
                 let mut resolved = UNRESOLVED;
                 for member in &union.types {
                     let member_ty = self.resolve_type_annotation(member);
-                    if null_id.map_or(true, |nid| member_ty != nid) {
+                    if null_id != Some(member_ty) {
                         if resolved == UNRESOLVED {
                             resolved = member_ty;
                         } else if resolved != member_ty {

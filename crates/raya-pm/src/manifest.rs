@@ -287,6 +287,7 @@ impl PackageManifest {
     }
 
     /// Parse a manifest from a string
+    #[allow(clippy::should_implement_trait)] // Returns ManifestError, not FromStr::Err
     pub fn from_str(content: &str) -> Result<Self, ManifestError> {
         let manifest: PackageManifest = toml::from_str(content)?;
         manifest.validate()?;
@@ -399,11 +400,7 @@ impl Dependency {
 
     /// Check if this is a registry dependency
     pub fn is_registry(&self) -> bool {
-        match self {
-            Dependency::Simple(_) => true,
-            Dependency::Detailed { version: Some(_), path: None, git: None, .. } => true,
-            _ => false,
-        }
+        matches!(self, Dependency::Simple(_) | Dependency::Detailed { version: Some(_), path: None, git: None, .. })
     }
 }
 

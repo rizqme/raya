@@ -538,6 +538,8 @@ impl ContextRegistry {
     /// Register a new context
     pub fn register(&self, context: VmContext) -> Arc<RwLock<VmContext>> {
         let id = context.id();
+        // VmContext is intentionally !Send; Arc is used for shared ownership via DashMap, not cross-thread transfer.
+        #[allow(clippy::arc_with_non_send_sync)]
         let context = Arc::new(RwLock::new(context));
         self.contexts.insert(id, context.clone());
         context

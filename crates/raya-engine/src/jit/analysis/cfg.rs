@@ -152,12 +152,12 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
     // Step 4: Set terminators and build exception scopes
     let mut exception_scopes: Vec<ExceptionScope> = Vec::new();
 
-    for block_idx in 0..block_count {
-        let block_instrs = &blocks[block_idx].instrs;
+    for (block_idx, block) in blocks.iter_mut().enumerate().take(block_count) {
+        let block_instrs = &block.instrs;
         if block_instrs.is_empty() {
             // Empty block falls through to next if there is one
             if block_idx + 1 < block_count {
-                blocks[block_idx].terminator =
+                block.terminator =
                     CfgTerminator::Fallthrough(BlockId((block_idx + 1) as u32));
             }
             continue;
@@ -175,7 +175,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
                         .get(&target)
                         .copied()
                         .unwrap_or(BlockId(0));
-                    blocks[block_idx].terminator = CfgTerminator::Jump(target_block);
+                    block.terminator = CfgTerminator::Jump(target_block);
                 }
             }
 
@@ -200,7 +200,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
                     };
 
                     // then_block = jump target, else_block = fallthrough
-                    blocks[block_idx].terminator = CfgTerminator::Branch {
+                    block.terminator = CfgTerminator::Branch {
                         kind,
                         then_block: target_block,
                         else_block: fallthrough_block,
@@ -209,15 +209,15 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
             }
 
             Opcode::Return => {
-                blocks[block_idx].terminator = CfgTerminator::Return;
+                block.terminator = CfgTerminator::Return;
             }
 
             Opcode::ReturnVoid => {
-                blocks[block_idx].terminator = CfgTerminator::ReturnVoid;
+                block.terminator = CfgTerminator::ReturnVoid;
             }
 
             Opcode::Throw | Opcode::Rethrow => {
-                blocks[block_idx].terminator = CfgTerminator::Throw;
+                block.terminator = CfgTerminator::Throw;
             }
 
             Opcode::Trap => {
@@ -226,7 +226,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
                 } else {
                     0
                 };
-                blocks[block_idx].terminator = CfgTerminator::Trap(trap_code);
+                block.terminator = CfgTerminator::Trap(trap_code);
             }
 
             Opcode::Try => {
@@ -258,7 +258,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
 
                 // Fallthrough to next block
                 if let Some(&next_block) = offset_to_block.get(&next_offset) {
-                    blocks[block_idx].terminator = CfgTerminator::Fallthrough(next_block);
+                    block.terminator = CfgTerminator::Fallthrough(next_block);
                 }
             }
 
@@ -266,9 +266,9 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
                 // Non-terminator: fallthrough to next block
                 if block_idx + 1 < block_count {
                     if let Some(&next_block) = offset_to_block.get(&next_offset) {
-                        blocks[block_idx].terminator = CfgTerminator::Fallthrough(next_block);
+                        block.terminator = CfgTerminator::Fallthrough(next_block);
                     } else {
-                        blocks[block_idx].terminator =
+                        block.terminator =
                             CfgTerminator::Fallthrough(BlockId((block_idx + 1) as u32));
                     }
                 }

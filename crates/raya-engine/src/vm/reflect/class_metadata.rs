@@ -207,7 +207,7 @@ impl ClassMetadataRegistry {
 
     /// Get or create metadata for a class
     pub fn get_or_create(&mut self, class_id: usize) -> &mut ClassMetadata {
-        self.metadata.entry(class_id).or_insert_with(ClassMetadata::new)
+        self.metadata.entry(class_id).or_default()
     }
 
     /// Check if a class has metadata

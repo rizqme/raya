@@ -47,7 +47,7 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
             types.push(next_type);
         }
 
-        let end_span = types.last().unwrap().span.clone();
+        let end_span = types.last().unwrap().span;
         let span = parser.combine_spans(&start_span, &end_span);
 
         let result = TypeAnnotation {
@@ -78,7 +78,7 @@ fn parse_intersection_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseE
             types.push(next_type);
         }
 
-        let end_span = types.last().unwrap().span.clone();
+        let end_span = types.last().unwrap().span;
         let span = parser.combine_spans(&start_span, &end_span);
 
         Ok(TypeAnnotation {
@@ -198,7 +198,7 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
                 parser.expect(Token::RightParen)?;
                 parser.expect(Token::Arrow)?;
                 let return_type = Box::new(parse_type_annotation(parser)?);
-                let end_span = return_type.span.clone();
+                let end_span = return_type.span;
                 let span = parser.combine_spans(&start_span, &end_span);
 
                 TypeAnnotation {
@@ -421,7 +421,7 @@ fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypePar
         guard.check()?;
         let (name, optional) = if let Token::Identifier(n) = parser.current() {
             let identifier = Identifier {
-                name: n.clone(),
+                name: *n,
                 span: parser.current_span(),
             };
             parser.advance();
@@ -489,7 +489,7 @@ fn parse_object_type_members(parser: &mut Parser) -> Result<Vec<ObjectTypeMember
         // Parse property/method name (identifiers and contextual keywords like `type`)
         let name = if let Token::Identifier(n) = parser.current() {
             let id = Identifier {
-                name: n.clone(),
+                name: *n,
                 span: parser.current_span(),
             };
             parser.advance();
@@ -583,7 +583,7 @@ fn parse_property_annotations(parser: &mut Parser) -> Result<Vec<Annotation>, Pa
         guard.check()?;
         let span = parser.current_span();
         if let Token::Annotation(sym) = parser.current() {
-            let content = parser.resolve(sym.clone()).to_string();
+            let content = parser.resolve(*sym).to_string();
             parser.advance();
             annotations.push(Annotation::from_content(&content, span));
         }

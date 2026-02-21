@@ -26,7 +26,7 @@ impl LintRule for NamingConvention {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         match stmt {
             // Variable: camelCase (or UPPER_SNAKE_CASE for const)
@@ -49,7 +49,7 @@ impl LintRule for NamingConvention {
                         rule: META.name,
                         code: META.code,
                         message: format!("Variable '{}' should be camelCase", name),
-                        span: decl.span.clone(),
+                        span: decl.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![],
@@ -67,7 +67,7 @@ impl LintRule for NamingConvention {
                         rule: META.name,
                         code: META.code,
                         message: format!("Function '{}' should be camelCase", name),
-                        span: decl.name.span.clone(),
+                        span: decl.name.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![],
@@ -85,7 +85,7 @@ impl LintRule for NamingConvention {
                         rule: META.name,
                         code: META.code,
                         message: format!("Class '{}' should be PascalCase", name),
-                        span: decl.name.span.clone(),
+                        span: decl.name.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![],
@@ -103,7 +103,7 @@ impl LintRule for NamingConvention {
                         rule: META.name,
                         code: META.code,
                         message: format!("Type '{}' should be PascalCase", name),
-                        span: decl.name.span.clone(),
+                        span: decl.name.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![],

@@ -28,7 +28,7 @@ impl LintRule for NoFloatingTask {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let expr_stmt = match stmt {
             ast::Statement::Expression(e) => e,
@@ -50,7 +50,7 @@ impl LintRule for NoFloatingTask {
             rule: META.name,
             code: META.code,
             message: "Task result from 'async' call is discarded".to_string(),
-            span: async_call.span.clone(),
+            span: async_call.span,
             severity: META.default_severity,
             fix: None,
             notes: vec![

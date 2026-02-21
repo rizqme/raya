@@ -84,7 +84,7 @@ impl<'a> EngineContext<'a> {
     /// Allocate a GC pointer and wrap as NativeValue
     fn alloc_ptr<T: 'static>(&self, obj: T) -> NativeValue {
         let gc_ptr = self.gc.lock().allocate(obj);
-        let ptr = unsafe { NonNull::new(gc_ptr.as_ptr()).unwrap() };
+        let ptr = NonNull::new(gc_ptr.as_ptr()).unwrap();
         value_to_native(unsafe { Value::from_ptr(ptr) })
     }
 }
@@ -212,7 +212,7 @@ impl NativeContext for EngineContext<'_> {
         }
         let obj_ptr = unsafe { v.as_ptr::<Object>() }
             .ok_or_else(|| "Expected Object".to_string())?;
-        let obj = unsafe { &mut *(obj_ptr.as_ptr() as *mut Object) };
+        let obj = unsafe { &mut *obj_ptr.as_ptr() };
         let _ = obj.set_field(index, native_to_value(value));
         Ok(())
     }
@@ -506,7 +506,7 @@ pub fn object_set_field(val: NativeValue, field_index: usize, value: NativeValue
     }
     let obj_ptr = unsafe { v.as_ptr::<Object>() }
         .ok_or_else(|| "Expected Object".to_string())?;
-    let obj = unsafe { &mut *(obj_ptr.as_ptr() as *mut Object) };
+    let obj = unsafe { &mut *obj_ptr.as_ptr() };
     let _ = obj.set_field(field_index, native_to_value(value));
     Ok(())
 }
@@ -523,19 +523,19 @@ pub fn object_class_id(val: NativeValue) -> AbiResult<usize> {
 }
 
 /// Allocate a new Object
-pub fn object_allocate(ctx: &EngineContext, class_id: usize, field_count: usize) -> NativeValue {
+pub fn object_allocate(ctx: &EngineContext<'_>, class_id: usize, field_count: usize) -> NativeValue {
     let obj = Object::new(class_id, field_count);
     ctx.alloc_ptr(obj)
 }
 
 /// Get class information by ID
-pub fn class_get_info(ctx: &EngineContext, class_id: usize) -> AbiResult<ClassInfo> {
+pub fn class_get_info(ctx: &EngineContext<'_>, class_id: usize) -> AbiResult<ClassInfo> {
     ctx.class_info(class_id)
 }
 
 /// Spawn a new task (TODO)
 pub fn task_spawn(
-    _ctx: &EngineContext,
+    _ctx: &EngineContext<'_>,
     _function_id: usize,
     _args: &[NativeValue],
 ) -> AbiResult<u64> {
@@ -543,11 +543,11 @@ pub fn task_spawn(
 }
 
 /// Cancel a task (TODO)
-pub fn task_cancel(_ctx: &EngineContext, _task_id: u64) -> AbiResult<()> {
+pub fn task_cancel(_ctx: &EngineContext<'_>, _task_id: u64) -> AbiResult<()> {
     Err("task_cancel not yet implemented".into())
 }
 
 /// Check if a task is done (TODO)
-pub fn task_is_done(_ctx: &EngineContext, _task_id: u64) -> AbiResult<bool> {
+pub fn task_is_done(_ctx: &EngineContext<'_>, _task_id: u64) -> AbiResult<bool> {
     Err("task_is_done not yet implemented".into())
 }

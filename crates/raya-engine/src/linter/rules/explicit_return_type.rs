@@ -25,14 +25,13 @@ impl LintRule for ExplicitReturnType {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         // Check exported function declarations.
-        if let ast::Statement::ExportDecl(export) = stmt {
-            if let ast::ExportDecl::Declaration(inner) = export {
-                if let ast::Statement::FunctionDecl(func) = inner.as_ref() {
-                    return check_function(func, ctx);
-                }
+        #[allow(clippy::collapsible_match)]
+        if let ast::Statement::ExportDecl(ast::ExportDecl::Declaration(inner)) = stmt {
+            if let ast::Statement::FunctionDecl(func) = inner.as_ref() {
+                return check_function(func, ctx);
             }
         }
 
@@ -45,7 +44,7 @@ impl LintRule for ExplicitReturnType {
     }
 }
 
-fn check_function(func: &ast::FunctionDecl, ctx: &LintContext) -> Vec<LintDiagnostic> {
+fn check_function(func: &ast::FunctionDecl, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
     if func.return_type.is_some() {
         return vec![];
     }
@@ -61,7 +60,7 @@ fn check_function(func: &ast::FunctionDecl, ctx: &LintContext) -> Vec<LintDiagno
         rule: META.name,
         code: META.code,
         message: format!("Function '{}' is missing an explicit return type", name),
-        span: func.name.span.clone(),
+        span: func.name.span,
         severity: META.default_severity,
         fix: None,
         notes: vec!["Add a return type annotation for better readability".to_string()],

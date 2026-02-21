@@ -96,87 +96,87 @@ impl NativeHandler for StdNativeHandler {
 
             // Math methods (0x2000-0x2016)
             0x2000 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::abs(x))
             }
             0x2001 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::sign(x))
             }
             0x2002 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::floor(x))
             }
             0x2003 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::ceil(x))
             }
             0x2004 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::round(x))
             }
             0x2005 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::trunc(x))
             }
             0x2006 => {
-                let a = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let a = args.first().map(Self::get_f64).unwrap_or(0.0);
                 let b = args.get(1).map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::min(a, b))
             }
             0x2007 => {
-                let a = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let a = args.first().map(Self::get_f64).unwrap_or(0.0);
                 let b = args.get(1).map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::max(a, b))
             }
             0x2008 => {
-                let base = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let base = args.first().map(Self::get_f64).unwrap_or(0.0);
                 let exp = args.get(1).map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::pow(base, exp))
             }
             0x2009 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::sqrt(x))
             }
             0x200A => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::sin(x))
             }
             0x200B => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::cos(x))
             }
             0x200C => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::tan(x))
             }
             0x200D => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::asin(x))
             }
             0x200E => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::acos(x))
             }
             0x200F => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::atan(x))
             }
             0x2010 => {
-                let y = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let y = args.first().map(Self::get_f64).unwrap_or(0.0);
                 let x = args.get(1).map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::atan2(y, x))
             }
             0x2011 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::exp(x))
             }
             0x2012 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::log(x))
             }
             0x2013 => {
-                let x = args.get(0).map(Self::get_f64).unwrap_or(0.0);
+                let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::log10(x))
             }
             0x2014 => {

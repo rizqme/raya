@@ -89,7 +89,7 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             array::INDEX_OF => {
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "Array.indexOf expects 1-2 arguments, got {}", arg_count
                     )));
@@ -215,7 +215,7 @@ impl<'a> Interpreter<'a> {
             }
             array::LAST_INDEX_OF => {
                 // lastIndexOf(value, fromIndex?): find last occurrence
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "Array.lastIndexOf expects 1-2 arguments, got {}", arg_count
                     )));
@@ -250,7 +250,7 @@ impl<'a> Interpreter<'a> {
             }
             array::FILL => {
                 // fill(value, start?, end?): fill with value
-                if arg_count < 1 || arg_count > 3 {
+                if !(1..=3).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "Array.fill expects 1-3 arguments, got {}", arg_count
                     )));
@@ -299,13 +299,14 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
-                fn flatten(gc: &parking_lot::Mutex<crate::vm::gc::Gc>, arr: &Array, depth: usize) -> Array {
+                // `_gc` will be needed when flatten allocates GC-managed sub-arrays.
+                fn flatten(_gc: &parking_lot::Mutex<crate::vm::gc::GarbageCollector>, arr: &Array, depth: usize) -> Array {
                     let mut result = Array::new(0, 0);
                     for elem in arr.elements.iter() {
                         if depth > 0 && elem.is_ptr() {
                             if let Some(ptr) = unsafe { elem.as_ptr::<Array>() } {
                                 let inner = unsafe { &*ptr.as_ptr() };
-                                let flattened = flatten(gc, inner, depth - 1);
+                                let flattened = flatten(_gc, inner, depth - 1);
                                 for inner_elem in flattened.elements {
                                     result.push(inner_elem);
                                 }
@@ -317,7 +318,7 @@ impl<'a> Interpreter<'a> {
                     result
                 }
 
-                let result = flatten(&self.gc, arr, depth);
+                let result = flatten(self.gc, arr, depth);
                 let gc_ptr = self.gc.lock().allocate(result);
                 let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;

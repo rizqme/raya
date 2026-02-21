@@ -48,7 +48,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
     let mut arg_names = Vec::new();
     let mut arg_types = Vec::new();
 
-    for (_i, arg) in inputs.iter().enumerate() {
+    for arg in inputs.iter() {
         match arg {
             syn::FnArg::Typed(pat_type) => {
                 if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {

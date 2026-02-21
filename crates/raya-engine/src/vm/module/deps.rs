@@ -40,7 +40,7 @@ impl DependencyGraph {
     /// # Arguments
     /// * `module` - The module name
     pub fn add_module(&mut self, module: String) {
-        self.edges.entry(module).or_insert_with(Vec::new);
+        self.edges.entry(module).or_default();
     }
 
     /// Add a dependency edge to the graph
@@ -60,11 +60,11 @@ impl DependencyGraph {
     pub fn add_dependency(&mut self, module: String, depends_on: String) {
         self.edges
             .entry(module)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(depends_on.clone());
 
         // Ensure the depended-on module exists in the graph
-        self.edges.entry(depends_on).or_insert_with(Vec::new);
+        self.edges.entry(depends_on).or_default();
     }
 
     /// Detect if there are any cycles in the dependency graph
@@ -173,7 +173,7 @@ impl DependencyGraph {
         // Initialize all nodes with 0 in-degree
         for module in self.edges.keys() {
             in_degree.entry(module.clone()).or_insert(0);
-            reverse_edges.entry(module.clone()).or_insert_with(Vec::new);
+            reverse_edges.entry(module.clone()).or_default();
         }
 
         // Build reverse edges and calculate in-degrees
@@ -183,7 +183,7 @@ impl DependencyGraph {
                 // module depends on dep, so dep has an outgoing edge to module in reverse
                 reverse_edges
                     .entry(dep.clone())
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(module.clone());
                 // module has an incoming edge in the original graph
                 *in_degree.entry(module.clone()).or_insert(0) += 1;

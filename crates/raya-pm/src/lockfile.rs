@@ -125,6 +125,7 @@ impl Lockfile {
     }
 
     /// Parse a lockfile from a string
+    #[allow(clippy::should_implement_trait)] // Returns LockfileError, not FromStr::Err
     pub fn from_str(content: &str) -> Result<Self, LockfileError> {
         let lockfile: Lockfile = toml::from_str(content)?;
         lockfile.validate()?;

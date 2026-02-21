@@ -477,10 +477,7 @@ pub fn close_with_code(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
         .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(1000.0) as u16;
-    let reason = match ctx.read_string(args[2]) {
-        Ok(s) => s,
-        Err(_) => String::new(),
-    };
+    let reason = ctx.read_string(args[2]).unwrap_or_default();
 
     if let Some(ws_handle) = WS_HANDLES.get(handle) {
         if let Ok(mut ws) = ws_handle.ws.lock() {

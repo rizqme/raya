@@ -828,12 +828,7 @@ impl<'a> Binder<'a> {
         match stmt {
             Statement::ClassDecl(class) => self.prepass_class(class),
             Statement::FunctionDecl(func) => self.prepass_function(func),
-            Statement::ExportDecl(export) => {
-                match export {
-                    ExportDecl::Declaration(inner_stmt) => self.prepass_stmt(inner_stmt),
-                    _ => Ok(()),
-                }
-            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.prepass_stmt(inner_stmt),
             _ => Ok(()),
         }
     }
@@ -990,7 +985,7 @@ impl<'a> Binder<'a> {
                                 is_imported: false,
                             },
                             scope_id: self.symbols.current_scope_id(),
-                            span: span.clone(),
+                            span: *span,
                             referenced: false,
                         };
                         let _ = self.symbols.define(default_sym);
@@ -1011,7 +1006,7 @@ impl<'a> Binder<'a> {
                             is_imported: false,
                         },
                         scope_id: self.symbols.current_scope_id(),
-                        span: span.clone(),
+                        span: *span,
                         referenced: false,
                     };
                     let _ = self.symbols.define(default_sym);
@@ -1077,10 +1072,8 @@ impl<'a> Binder<'a> {
             }
             Pattern::Array(array_pat) => {
                 let elem_ty = self.type_ctx.unknown_type();
-                for elem_opt in &array_pat.elements {
-                    if let Some(elem) = elem_opt {
-                        self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
-                    }
+                for elem in array_pat.elements.iter().flatten() {
+                    self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
                 }
                 if let Some(rest) = &array_pat.rest {
                     self.bind_pattern_names(rest, ty, is_const)?;
@@ -1500,7 +1493,6 @@ impl<'a> Binder<'a> {
                         }
                     }
                 }
-                _ => {}
             }
         }
 
@@ -1603,7 +1595,7 @@ impl<'a> Binder<'a> {
         let alias_name = self.resolve(alias.name.name);
 
         // If the type alias has type parameters, register them in a nested scope
-        let has_type_params = alias.type_params.as_ref().map_or(false, |p| !p.is_empty());
+        let has_type_params = alias.type_params.as_ref().is_some_and(|p| !p.is_empty());
         let mut type_param_names = Vec::new();
 
         if has_type_params {
@@ -1843,7 +1835,7 @@ impl<'a> Binder<'a> {
                         ty: self.substitute_type_vars(p.ty, subs),
                         optional: p.optional,
                         readonly: p.readonly,
-                        visibility: p.visibility.clone(),
+                        visibility: p.visibility,
                     }
                 }).collect();
                 self.type_ctx.object_type(new_props)
@@ -1872,7 +1864,7 @@ impl<'a> Binder<'a> {
                         ty: self.substitute_type_vars(p.ty, subs),
                         optional: p.optional,
                         readonly: p.readonly,
-                        visibility: p.visibility.clone(),
+                        visibility: p.visibility,
                     }
                 }).collect();
                 let new_methods: Vec<_> = class.methods.iter().map(|m| {
@@ -1880,7 +1872,7 @@ impl<'a> Binder<'a> {
                         name: m.name.clone(),
                         ty: self.substitute_type_vars(m.ty, subs),
                         type_params: m.type_params.clone(),
-                        visibility: m.visibility.clone(),
+                        visibility: m.visibility,
                     }
                 }).collect();
                 let new_extends = class.extends.map(|e| self.substitute_type_vars(e, subs));
@@ -2046,18 +2038,10 @@ impl<'a> Binder<'a> {
                 let mut merged_properties = Vec::new();
                 for ty_annot in &intersection.types {
                     let ty_id = self.resolve_type_annotation(ty_annot)?;
-                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
-                        match ty {
-                            crate::parser::types::Type::Object(obj) => {
-                                for prop in &obj.properties {
-                                    if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
-                                        merged_properties.push(prop.clone());
-                                    }
-                                }
-                            }
-                            _ => {
-                                // For non-object types, just return the first resolved type
-                                // (intersection of non-objects is complex and not yet needed)
+                    if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(ty_id).cloned() {
+                        for prop in &obj.properties {
+                            if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                merged_properties.push(prop.clone());
                             }
                         }
                     }

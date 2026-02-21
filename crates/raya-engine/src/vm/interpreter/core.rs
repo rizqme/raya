@@ -117,6 +117,7 @@ pub struct Interpreter<'a> {
 
 impl<'a> Interpreter<'a> {
     /// Create a new task interpreter
+    #[allow(clippy::too_many_arguments)] // Interpreter borrows many VM subsystems; a config struct would just move the problem.
     pub fn new(
         gc: &'a parking_lot::Mutex<GarbageCollector>,
         classes: &'a RwLock<ClassRegistry>,
@@ -262,7 +263,7 @@ impl<'a> Interpreter<'a> {
             match self.handle_exception(task, &mut stack_guard, &mut ip) {
                 Ok(()) => {}
                 Err(()) => {
-                    let exc = task.current_exception().unwrap_or_else(|| Value::null());
+                    let exc = task.current_exception().unwrap_or_else(Value::null);
                     task.set_ip(ip);
                     drop(stack_guard);
                     return ExecutionResult::Failed(VmError::RuntimeError(format!(
@@ -285,7 +286,7 @@ impl<'a> Interpreter<'a> {
 
             let initial_args = task.take_initial_args();
             for (i, arg) in initial_args.into_iter().enumerate() {
-                if i < function.local_count as usize {
+                if i < function.local_count {
                     if let Err(e) = stack_guard.set_at(i, arg) {
                         return ExecutionResult::Failed(e);
                     }
@@ -407,9 +408,9 @@ impl<'a> Interpreter<'a> {
 
             // Bounds check - implicit return at end of function
             if ip >= code.len() {
-                let local_count = module.functions[current_func_id].local_count as usize;
+                let local_count = module.functions[current_func_id].local_count;
                 let return_value = if stack_guard.depth() > locals_base + local_count {
-                    stack_guard.pop().unwrap_or(Value::null())
+                    stack_guard.pop().unwrap_or_default()
                 } else {
                     Value::null()
                 };
@@ -459,7 +460,7 @@ impl<'a> Interpreter<'a> {
             // Execute the opcode
             match self.execute_opcode(
                 task,
-                &mut *stack_guard,
+                &mut stack_guard,
                 &mut ip,
                 code,
                 module,
@@ -513,18 +514,14 @@ impl<'a> Interpreter<'a> {
                                     .map(|i| {
                                         stack_guard
                                             .peek_at(stack_guard.depth() - arg_count + i)
-                                            .unwrap_or(Value::null())
+                                            .unwrap_or_default()
                                             .raw()
                                     })
                                     .collect();
 
                                 let func = &module.functions[func_id];
-                                let local_count = func.local_count as usize;
-                                let extra_locals = if local_count > arg_count {
-                                    local_count - arg_count
-                                } else {
-                                    0
-                                };
+                                let local_count = func.local_count;
+                                let extra_locals = local_count.saturating_sub(arg_count);
                                 let mut locals_buf = vec![0u64; extra_locals];
 
                                 // Call the JIT-compiled function (no RuntimeContext for pure functions)
@@ -574,7 +571,7 @@ impl<'a> Interpreter<'a> {
                             )));
                         }
                     };
-                    let new_local_count = new_func.local_count as usize;
+                    let new_local_count = new_func.local_count;
 
                     // Save caller's frame
                     frames.push(ExecutionFrame {
@@ -630,7 +627,7 @@ impl<'a> Interpreter<'a> {
                         task.set_exception(exc_val);
                     }
 
-                    let exception = task.current_exception().unwrap_or_else(|| Value::null());
+                    let exception = task.current_exception().unwrap_or_else(Value::null);
 
                     // Frame-aware exception handling: search for handlers,
                     // unwinding frames as needed to find a catch/finally block.
@@ -706,7 +703,7 @@ impl<'a> Interpreter<'a> {
     fn handle_exception(
         &mut self,
         task: &Arc<Task>,
-        stack: &mut std::sync::MutexGuard<Stack>,
+        stack: &mut std::sync::MutexGuard<'_, Stack>,
         ip: &mut usize,
     ) -> Result<(), ()> {
         // Get exception value - if not set, create a placeholder
@@ -1021,7 +1018,7 @@ impl<'a> Interpreter<'a> {
         _module: &Module,
     ) -> Result<(), VmError> {
         let ctx = RuntimeHandlerContext {
-            gc: &self.gc,
+            gc: self.gc,
         };
 
         // Push args back onto stack so the handler can pop them

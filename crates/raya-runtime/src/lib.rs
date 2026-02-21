@@ -249,7 +249,7 @@ impl Runtime {
             let shared = vm.shared_state();
             shared
                 .register_module(Arc::new(dep.module.clone()))
-                .map_err(|e| RuntimeError::Dependency(e))?;
+                .map_err(RuntimeError::Dependency)?;
         }
 
         self.maybe_enable_profiling(&vm);

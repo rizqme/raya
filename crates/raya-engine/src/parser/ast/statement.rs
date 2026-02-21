@@ -424,7 +424,7 @@ impl Annotation {
 
     /// Check if this json annotation has the "omitempty" option
     pub fn has_omitempty(&self) -> bool {
-        self.value.as_ref().map_or(false, |v| v.contains("omitempty"))
+        self.value.as_ref().is_some_and(|v| v.contains("omitempty"))
     }
 
     /// Get the proto field number if this is a proto annotation
@@ -608,7 +608,7 @@ pub struct CatchClause {
 /// - Function bodies (FunctionDeclaration.body)
 /// - Control flow constructs (if/while/for/try statements)
 /// - Arrow function bodies (ArrowBody::Block)
-/// At the statement level, { } is always parsed as an object literal expression.
+///   At the statement level, { } is always parsed as an object literal expression.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockStatement {
     pub statements: Vec<Statement>,

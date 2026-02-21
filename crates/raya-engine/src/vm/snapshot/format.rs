@@ -58,6 +58,7 @@ pub const fn is_big_endian() -> bool {
 /// * `Ok(true)` - Byte-swapping is needed (different endianness)
 /// * `Ok(false)` - No byte-swapping needed (same endianness)
 /// * `Err(())` - Invalid marker (corrupted snapshot)
+#[allow(clippy::result_unit_err)] // () error is sufficient: only indicates a corrupted marker with no extra context.
 pub fn needs_byte_swap(marker: u32) -> Result<bool, ()> {
     match marker {
         ENDIANNESS_MARKER => Ok(false),        // Same endianness

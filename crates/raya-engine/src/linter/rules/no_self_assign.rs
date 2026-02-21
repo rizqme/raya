@@ -25,7 +25,7 @@ impl LintRule for NoSelfAssign {
     fn check_expression(
         &self,
         expr: &ast::Expression,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let assign = match expr {
             ast::Expression::Assignment(a) => a,
@@ -53,7 +53,7 @@ impl LintRule for NoSelfAssign {
                 rule: META.name,
                 code: META.code,
                 message: format!("'{}' is assigned to itself", name),
-                span: assign.span.clone(),
+                span: assign.span,
                 severity: META.default_severity,
                 fix: None,
                 notes: vec![],

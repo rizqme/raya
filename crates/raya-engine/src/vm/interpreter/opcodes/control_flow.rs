@@ -94,10 +94,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Return => {
-                let value = match stack.pop() {
-                    Ok(v) => v,
-                    Err(_) => Value::null(),
-                };
+                let value = stack.pop().unwrap_or_default();
                 OpcodeResult::Return(value)
             }
 

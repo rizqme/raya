@@ -47,7 +47,7 @@ pub fn parse_jsx(parser: &mut Parser) -> Result<Expression, ParseError> {
     // Parse closing tag
     let closing = parse_jsx_closing_element(parser, &opening.name)?;
 
-    let end_span = closing.span.clone();
+    let end_span = closing.span;
     let span = parser.combine_spans(&start_span, &end_span);
 
     Ok(Expression::JsxElement(JsxElement {
@@ -161,7 +161,7 @@ fn parse_jsx_closing_element(
 fn parse_jsx_element_name(parser: &mut Parser) -> Result<JsxElementName, ParseError> {
     if let Token::Identifier(name) = parser.current() {
         let id = Identifier {
-            name: name.clone(),
+            name: *name,
             span: parser.current_span(),
         };
         parser.advance();
@@ -171,7 +171,7 @@ fn parse_jsx_element_name(parser: &mut Parser) -> Result<JsxElementName, ParseEr
             parser.advance();
             if let Token::Identifier(local_name) = parser.current() {
                 let local = Identifier {
-                    name: local_name.clone(),
+                    name: *local_name,
                     span: parser.current_span(),
                 };
                 parser.advance();
@@ -190,7 +190,7 @@ fn parse_jsx_element_name(parser: &mut Parser) -> Result<JsxElementName, ParseEr
             parser.advance();
             if let Token::Identifier(prop_name) = parser.current() {
                 let property = Identifier {
-                    name: prop_name.clone(),
+                    name: *prop_name,
                     span: parser.current_span(),
                 };
                 parser.advance();
@@ -280,7 +280,7 @@ fn parse_jsx_attribute_name(parser: &mut Parser) -> Result<JsxAttributeName, Par
             parser.advance();
             if let Token::Identifier(local_name) = parser.current() {
                 let local_id = Identifier {
-                    name: local_name.clone(),
+                    name: *local_name,
                     span: parser.current_span(),
                 };
                 parser.advance();
@@ -304,7 +304,7 @@ fn parse_jsx_attribute_value(parser: &mut Parser) -> Result<JsxAttributeValue, P
     match parser.current() {
         Token::StringLiteral(s) => {
             let value = StringLiteral {
-                value: s.clone(),
+                value: *s,
                 span: parser.current_span(),
             };
             parser.advance();

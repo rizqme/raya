@@ -333,6 +333,7 @@ fn find_substr(haystack: &[u8], start: usize, needle: &[u8]) -> Option<usize> {
 ///
 /// `data` is the root data object. `context_stack` provides scoped
 /// lookup for nested sections (closest scope first when searching).
+#[allow(clippy::only_used_in_recursion)] // data is the root context, passed through for lookups
 fn render_tokens(
     tokens: &[TemplateToken],
     data: &JsonValue,

@@ -122,11 +122,9 @@ fn discover_test_files(file_filter: Option<&str>) -> anyhow::Result<Vec<PathBuf>
 
     if let Some(filter) = file_filter {
         // User-specified glob
-        for entry in glob::glob(filter)? {
-            if let Ok(path) = entry {
-                if path.extension().and_then(|e| e.to_str()) == Some("raya") {
-                    files.push(path);
-                }
+        for path in (glob::glob(filter)?).flatten() {
+            if path.extension().and_then(|e| e.to_str()) == Some("raya") {
+                files.push(path);
             }
         }
     } else {
@@ -141,16 +139,14 @@ fn discover_test_files(file_filter: Option<&str>) -> anyhow::Result<Vec<PathBuf>
         for pattern in &patterns {
             let full_pattern = cwd.join(pattern);
             if let Ok(entries) = glob::glob(full_pattern.to_str().unwrap_or("")) {
-                for entry in entries {
-                    if let Ok(path) = entry {
-                        // Check excludes
-                        let path_str = path.to_string_lossy();
-                        if excludes.iter().any(|ex| path_str.contains(ex)) {
-                            continue;
-                        }
-                        if !files.contains(&path) {
-                            files.push(path);
-                        }
+                for path in entries.flatten() {
+                    // Check excludes
+                    let path_str = path.to_string_lossy();
+                    if excludes.iter().any(|ex| path_str.contains(ex)) {
+                        continue;
+                    }
+                    if !files.contains(&path) {
+                        files.push(path);
                     }
                 }
             }

@@ -541,7 +541,7 @@ impl JsxElementName {
     pub fn is_intrinsic(&self, interner: &crate::parser::interner::Interner) -> bool {
         match self {
             JsxElementName::Identifier(id) => {
-                interner.resolve(id.name).chars().next().map_or(false, |c| c.is_lowercase())
+                interner.resolve(id.name).chars().next().is_some_and(|c| c.is_lowercase())
             }
             _ => false,
         }

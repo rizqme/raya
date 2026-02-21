@@ -266,7 +266,7 @@ impl DynamicClassBuilder {
         }
 
         // Create metadata
-        let metadata = self.build_metadata(class_id, &definition);
+        let metadata = self.build_metadata(class_id, definition);
 
         (class, metadata)
     }
@@ -408,8 +408,7 @@ impl DynamicClassBuilder {
             }
         }
 
-        let mut method_index = 0;
-        for method_def in &definition.methods {
+        for (method_index, method_def) in definition.methods.iter().enumerate() {
             let method_info = MethodInfo {
                 name: method_def.name.clone(),
                 return_type: method_def.return_type.clone(),
@@ -427,7 +426,6 @@ impl DynamicClassBuilder {
                 is_async: method_def.is_async,
             };
             metadata.add_method_info(method_info);
-            method_index += 1;
         }
 
         // Add interfaces

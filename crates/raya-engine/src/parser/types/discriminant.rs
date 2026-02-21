@@ -83,7 +83,7 @@ pub enum DiscriminantError {
 }
 
 impl fmt::Display for DiscriminantError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DiscriminantError::NoCommonLiteralFields { variants } => {
                 write!(

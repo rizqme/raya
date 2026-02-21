@@ -343,12 +343,7 @@ impl DynamicModuleRegistry {
 
     /// Get the module containing a function
     pub fn get_module_for_function(&self, function_id: usize) -> Option<&DynamicModule> {
-        for module in self.modules.values() {
-            if module.functions.contains_key(&function_id) {
-                return Some(module);
-            }
-        }
-        None
+        self.modules.values().find(|&module| module.functions.contains_key(&function_id)).map(|v| v as _)
     }
 }
 
