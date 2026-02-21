@@ -55,6 +55,9 @@ impl<'a> Lowerer<'a> {
                     let saved_local_map = self.local_map.clone();
                     let saved_local_registers = self.local_registers.clone();
                     let saved_refcell_registers = self.refcell_registers.clone();
+                    let saved_refcell_inner_types = self.refcell_inner_types.clone();
+                    let saved_refcell_vars = self.refcell_vars.clone();
+                    let saved_loop_captured_vars = self.loop_captured_vars.clone();
                     let saved_next_local = self.next_local;
                     let saved_function = self.current_function.take();
                     let saved_current_block = self.current_block;
@@ -70,6 +73,9 @@ impl<'a> Lowerer<'a> {
                     self.local_map = saved_local_map;
                     self.local_registers = saved_local_registers;
                     self.refcell_registers = saved_refcell_registers;
+                    self.refcell_inner_types = saved_refcell_inner_types;
+                    self.refcell_vars = saved_refcell_vars;
+                    self.loop_captured_vars = saved_loop_captured_vars;
                     self.next_local = saved_next_local;
                     self.current_function = saved_function;
                     self.current_block = saved_current_block;
@@ -330,6 +336,7 @@ impl<'a> Lowerer<'a> {
         if is_captured {
             if let Some(var_name) = loop_var_name {
                 if let (Some(&local_idx), Some(value_reg)) = (self.local_map.get(&var_name), elem_for_refcell) {
+                    let inner_ty = value_reg.ty;
                     let refcell_ty = TypeId::new(0);
                     let refcell_reg = self.alloc_register(refcell_ty);
                     self.emit(IrInstr::NewRefCell {
@@ -338,6 +345,7 @@ impl<'a> Lowerer<'a> {
                     });
                     self.local_registers.insert(local_idx, refcell_reg.clone());
                     self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_inner_types.insert(local_idx, inner_ty);
                     self.emit(IrInstr::StoreLocal {
                         index: local_idx,
                         value: refcell_reg,
@@ -405,11 +413,27 @@ impl<'a> Lowerer<'a> {
         match pattern {
             ast::Pattern::Identifier(ident) => {
                 let local_idx = self.allocate_local(ident.name);
-                self.local_registers.insert(local_idx, value_reg.clone());
-                self.emit(IrInstr::StoreLocal {
-                    index: local_idx,
-                    value: value_reg,
-                });
+                if self.refcell_vars.contains(&ident.name) {
+                    // Wrap in RefCell for capture-by-reference semantics
+                    let refcell_reg = self.alloc_register(TypeId::new(0));
+                    self.emit(IrInstr::NewRefCell {
+                        dest: refcell_reg.clone(),
+                        initial_value: value_reg.clone(),
+                    });
+                    self.local_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_inner_types.insert(local_idx, value_reg.ty);
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: refcell_reg,
+                    });
+                } else {
+                    self.local_registers.insert(local_idx, value_reg.clone());
+                    self.emit(IrInstr::StoreLocal {
+                        index: local_idx,
+                        value: value_reg,
+                    });
+                }
             }
             ast::Pattern::Array(array_pat) => {
                 for (i, elem_opt) in array_pat.elements.iter().enumerate() {
@@ -833,6 +857,7 @@ impl<'a> Lowerer<'a> {
                 // Store the RefCell pointer as the local
                 self.local_registers.insert(local_idx, refcell_reg.clone());
                 self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_inner_types.insert(local_idx, value.ty);
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
                     value: refcell_reg,
@@ -881,6 +906,7 @@ impl<'a> Lowerer<'a> {
                 let typed_reg = Register { id: refcell_reg.id, ty: refcell_ty };
                 self.local_registers.insert(local_idx, typed_reg.clone());
                 self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_inner_types.insert(local_idx, UNRESOLVED);
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
                     value: refcell_reg,

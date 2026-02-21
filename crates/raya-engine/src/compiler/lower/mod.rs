@@ -12,7 +12,7 @@ use crate::compiler::ir::{
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
-use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
+use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression, walk_statement};
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -441,6 +441,279 @@ pub struct Lowerer<'a> {
     type_param_substitutions: FxHashMap<String, TypeId>,
     /// Cache of already-specialized generic functions: "funcName$typeId1_typeId2" → FunctionId
     specialized_function_cache: FxHashMap<String, FunctionId>,
+    /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
+    refcell_inner_types: FxHashMap<u16, TypeId>,
+}
+
+// ─── Standalone helpers for closure capture pre-scan ───────────────────────
+
+/// Recursively extract all bound identifier names from a pattern.
+/// Handles Identifier, Array destructuring, Object destructuring, and Rest patterns.
+fn collect_pattern_names(pattern: &ast::Pattern, names: &mut FxHashSet<Symbol>) {
+    match pattern {
+        Pattern::Identifier(id) => {
+            names.insert(id.name);
+        }
+        Pattern::Array(arr) => {
+            for elem in &arr.elements {
+                if let Some(e) = elem {
+                    collect_pattern_names(&e.pattern, names);
+                }
+            }
+            if let Some(rest) = &arr.rest {
+                collect_pattern_names(rest, names);
+            }
+        }
+        Pattern::Object(obj) => {
+            for prop in &obj.properties {
+                collect_pattern_names(&prop.value, names);
+            }
+            if let Some(rest) = &obj.rest {
+                names.insert(rest.name);
+            }
+        }
+        Pattern::Rest(rest) => {
+            collect_pattern_names(&rest.argument, names);
+        }
+    }
+}
+
+/// Recursively collect all local variable names from statements, including nested scopes.
+/// Handles all pattern types and binding forms (destructuring, catch params, function names, etc.).
+fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Symbol>) {
+    for stmt in stmts {
+        match stmt {
+            Statement::VariableDecl(var) => {
+                collect_pattern_names(&var.pattern, locals);
+            }
+            Statement::FunctionDecl(func) => {
+                // Function name is a local binding in the enclosing scope
+                locals.insert(func.name.name);
+            }
+            Statement::For(for_stmt) => {
+                if let Some(ast::ForInit::VariableDecl(var)) = &for_stmt.init {
+                    collect_pattern_names(&var.pattern, locals);
+                }
+                recurse_into_body(&for_stmt.body, locals);
+            }
+            Statement::ForOf(for_of) => {
+                match &for_of.left {
+                    ast::ForOfLeft::VariableDecl(var) => {
+                        collect_pattern_names(&var.pattern, locals);
+                    }
+                    ast::ForOfLeft::Pattern(pat) => {
+                        collect_pattern_names(pat, locals);
+                    }
+                }
+                recurse_into_body(&for_of.body, locals);
+            }
+            Statement::Try(try_stmt) => {
+                collect_block_local_names(&try_stmt.body.statements, locals);
+                if let Some(catch) = &try_stmt.catch_clause {
+                    if let Some(param) = &catch.param {
+                        collect_pattern_names(param, locals);
+                    }
+                    collect_block_local_names(&catch.body.statements, locals);
+                }
+                if let Some(finally) = &try_stmt.finally_clause {
+                    collect_block_local_names(&finally.statements, locals);
+                }
+            }
+            Statement::Switch(sw) => {
+                for case in &sw.cases {
+                    collect_block_local_names(&case.consequent, locals);
+                }
+            }
+            Statement::While(w) => recurse_into_body(&w.body, locals),
+            Statement::DoWhile(dw) => recurse_into_body(&dw.body, locals),
+            Statement::If(if_stmt) => {
+                recurse_into_body(&if_stmt.then_branch, locals);
+                if let Some(else_br) = &if_stmt.else_branch {
+                    recurse_into_body(else_br, locals);
+                }
+            }
+            Statement::Block(block) => {
+                collect_block_local_names(&block.statements, locals);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn recurse_into_body(body: &ast::Statement, locals: &mut FxHashSet<Symbol>) {
+    if let Statement::Block(block) = body {
+        collect_block_local_names(&block.statements, locals);
+    } else {
+        collect_block_local_names(&[body.clone()], locals);
+    }
+}
+
+// ─── Visitor-based closure capture analysis ────────────────────────────────
+
+/// Walks an enclosing scope to find closure-creating constructs (arrows + nested function decls).
+/// When found, delegates to `CapturedRefAnalyzer` to analyze what outer variables the closure references.
+/// Uses `walk_*` functions from the Visitor trait for complete AST coverage.
+struct ArrowCaptureFinder<'a> {
+    outer_locals: &'a FxHashSet<Symbol>,
+    refcell_vars: &'a mut FxHashSet<Symbol>,
+    loop_captured_vars: &'a mut FxHashSet<Symbol>,
+}
+
+impl<'a> ArrowCaptureFinder<'a> {
+    /// Analyze a closure body (block form) for captured references to outer variables.
+    /// Also scans default parameter expressions.
+    fn analyze_closure_body(
+        &mut self,
+        params: &[ast::Parameter],
+        body: &ast::BlockStatement,
+    ) {
+        let mut closure_locals = FxHashSet::default();
+        for param in params {
+            collect_pattern_names(&param.pattern, &mut closure_locals);
+        }
+        collect_block_local_names(&body.statements, &mut closure_locals);
+
+        let mut analyzer = CapturedRefAnalyzer {
+            outer_locals: self.outer_locals,
+            arrow_locals: &closure_locals,
+            refcell_vars: self.refcell_vars,
+            loop_captured_vars: self.loop_captured_vars,
+        };
+        for stmt in &body.statements {
+            analyzer.visit_statement(stmt);
+        }
+        // Scan default parameter expressions for captures (Bug #5)
+        for param in params {
+            if let Some(default_expr) = &param.default_value {
+                analyzer.visit_expression(default_expr);
+            }
+        }
+    }
+}
+
+impl Visitor for ArrowCaptureFinder<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if let Expression::Arrow(arrow) = expr {
+            // Arrow function — analyze body for captures
+            match &arrow.body {
+                ast::ArrowBody::Expression(body_expr) => {
+                    let mut closure_locals = FxHashSet::default();
+                    for param in &arrow.params {
+                        collect_pattern_names(&param.pattern, &mut closure_locals);
+                    }
+                    let mut analyzer = CapturedRefAnalyzer {
+                        outer_locals: self.outer_locals,
+                        arrow_locals: &closure_locals,
+                        refcell_vars: self.refcell_vars,
+                        loop_captured_vars: self.loop_captured_vars,
+                    };
+                    analyzer.visit_expression(body_expr);
+                    for param in &arrow.params {
+                        if let Some(default_expr) = &param.default_value {
+                            analyzer.visit_expression(default_expr);
+                        }
+                    }
+                }
+                ast::ArrowBody::Block(block) => {
+                    self.analyze_closure_body(&arrow.params, block);
+                }
+            }
+            return; // Don't walk into arrow body — it's a separate scope
+        }
+        walk_expression(self, expr);
+    }
+
+    fn visit_function_decl(&mut self, func: &ast::FunctionDecl) {
+        // Nested function declaration — creates a closure scope (lowered as synthetic arrow).
+        // Analyze its body + default params for captures, then STOP.
+        self.analyze_closure_body(&func.params, &func.body);
+        // Don't call walk_function_decl — it's a scope boundary
+    }
+
+    fn visit_class_decl(&mut self, _: &ast::ClassDecl) {
+        // Class declarations are separate scopes — methods/constructors get their OWN
+        // scan_for_captured_vars call. Don't descend from the enclosing scope's scan.
+    }
+}
+
+/// Walks inside a closure body to find identifiers that reference outer-scope variables.
+/// - Read captures: any outer-scope identifier → `loop_captured_vars`
+/// - Write captures: assignments to outer-scope identifiers → `refcell_vars`
+struct CapturedRefAnalyzer<'a> {
+    outer_locals: &'a FxHashSet<Symbol>,
+    arrow_locals: &'a FxHashSet<Symbol>,
+    refcell_vars: &'a mut FxHashSet<Symbol>,
+    loop_captured_vars: &'a mut FxHashSet<Symbol>,
+}
+
+impl Visitor for CapturedRefAnalyzer<'_> {
+    fn visit_identifier(&mut self, id: &ast::Identifier) {
+        if self.outer_locals.contains(&id.name) && !self.arrow_locals.contains(&id.name) {
+            self.loop_captured_vars.insert(id.name);
+        }
+    }
+
+    fn visit_expression(&mut self, expr: &Expression) {
+        // Track write captures — these need RefCell wrapping
+        if let Expression::Assignment(assign) = expr {
+            if let Expression::Identifier(ident) = &*assign.left {
+                if self.outer_locals.contains(&ident.name)
+                    && !self.arrow_locals.contains(&ident.name)
+                {
+                    self.refcell_vars.insert(ident.name);
+                }
+            }
+        }
+        // Nested arrow = new scope boundary — delegate back to ArrowCaptureFinder
+        if let Expression::Arrow(_) = expr {
+            let mut finder = ArrowCaptureFinder {
+                outer_locals: self.outer_locals,
+                refcell_vars: self.refcell_vars,
+                loop_captured_vars: self.loop_captured_vars,
+            };
+            finder.visit_expression(expr);
+            return;
+        }
+        walk_expression(self, expr);
+    }
+
+    fn visit_function_decl(&mut self, func: &ast::FunctionDecl) {
+        // Nested function inside closure body — also a scope boundary
+        let mut finder = ArrowCaptureFinder {
+            outer_locals: self.outer_locals,
+            refcell_vars: self.refcell_vars,
+            loop_captured_vars: self.loop_captured_vars,
+        };
+        finder.visit_function_decl(func);
+    }
+
+    fn visit_class_decl(&mut self, _: &ast::ClassDecl) {
+        // Don't descend into nested class declarations
+    }
+}
+
+/// Collects all variable names that appear as assignment targets in a scope.
+/// Does NOT descend into arrow/function/class bodies (they are separate scopes).
+struct ScopeAssignmentCollector<'a> {
+    assigned: &'a mut FxHashSet<Symbol>,
+}
+
+impl Visitor for ScopeAssignmentCollector<'_> {
+    fn visit_expression(&mut self, expr: &Expression) {
+        if let Expression::Assignment(assign) = expr {
+            if let Expression::Identifier(ident) = &*assign.left {
+                self.assigned.insert(ident.name);
+            }
+        }
+        if matches!(expr, Expression::Arrow(_)) {
+            return; // Don't enter separate scopes
+        }
+        walk_expression(self, expr);
+    }
+
+    fn visit_arrow_function(&mut self, _: &ast::ArrowFunction) {}
+    fn visit_function_decl(&mut self, _: &ast::FunctionDecl) {}
+    fn visit_class_decl(&mut self, _: &ast::ClassDecl) {}
 }
 
 impl<'a> Lowerer<'a> {
@@ -488,6 +761,7 @@ impl<'a> Lowerer<'a> {
             refcell_vars: FxHashSet::default(),
             refcell_registers: FxHashMap::default(),
             loop_captured_vars: FxHashSet::default(),
+            refcell_inner_types: FxHashMap::default(),
             variable_class_map: FxHashMap::default(),
             array_element_class_map: FxHashMap::default(),
             current_class: None,
@@ -877,19 +1151,39 @@ impl<'a> Lowerer<'a> {
         ir_module
     }
 
-    /// Pre-scan statements to identify variables that will be captured by closures
-    /// These variables need RefCell wrapping for capture-by-reference semantics
-    fn scan_for_captured_vars(&mut self, stmts: &[ast::Statement], locals: &FxHashSet<Symbol>) {
+    /// Pre-scan statements to identify variables that will be captured by closures.
+    /// These variables need RefCell wrapping for capture-by-reference semantics.
+    /// Uses Visitor-based traversal for complete AST coverage.
+    fn scan_for_captured_vars(
+        &mut self,
+        stmts: &[ast::Statement],
+        params: &[ast::Parameter],
+        locals: &FxHashSet<Symbol>,
+    ) {
+        // Phase 1: Find closures (arrows + nested functions) and analyze their captures
+        let mut finder = ArrowCaptureFinder {
+            outer_locals: locals,
+            refcell_vars: &mut self.refcell_vars,
+            loop_captured_vars: &mut self.loop_captured_vars,
+        };
         for stmt in stmts {
-            self.scan_stmt_for_captures(stmt, locals);
+            finder.visit_statement(stmt);
+        }
+        // Also scan default parameter expressions for closures (Bug #5)
+        for param in params {
+            if let Some(default_expr) = &param.default_value {
+                finder.visit_expression(default_expr);
+            }
         }
 
-        // After scanning closures, check if any captured (read-only) variables are
-        // assigned anywhere in the enclosing scope. If so, they need RefCell wrapping
-        // to ensure closures see the live value, not a stale copy.
+        // Phase 2: Promote read-captured vars to RefCell if assigned in enclosing scope.
+        // This ensures closures see the live value, not a stale copy.
         if !self.loop_captured_vars.is_empty() {
             let mut assigned = FxHashSet::default();
-            self.collect_scope_assignments(stmts, &mut assigned);
+            let mut collector = ScopeAssignmentCollector { assigned: &mut assigned };
+            for stmt in stmts {
+                collector.visit_statement(stmt);
+            }
             for var in self.loop_captured_vars.clone() {
                 if assigned.contains(&var) {
                     self.refcell_vars.insert(var);
@@ -898,546 +1192,11 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    /// Collect all variable names that are assigned in the given statements.
-    /// Does NOT descend into arrow function bodies (those are separate scopes).
-    fn collect_scope_assignments(&self, stmts: &[ast::Statement], assigned: &mut FxHashSet<Symbol>) {
-        
-        for stmt in stmts {
-            self.collect_assignments_in_stmt(stmt, assigned);
-        }
-    }
-
-    fn collect_assignments_in_stmt(&self, stmt: &ast::Statement, assigned: &mut FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-        match stmt {
-            Statement::Expression(expr) => {
-                self.collect_assignments_in_expr(&expr.expression, assigned);
-            }
-            Statement::VariableDecl(_) => {}
-            Statement::If(if_stmt) => {
-                self.collect_assignments_in_expr(&if_stmt.condition, assigned);
-                self.collect_assignments_in_stmt(&if_stmt.then_branch, assigned);
-                if let Some(else_br) = &if_stmt.else_branch {
-                    self.collect_assignments_in_stmt(else_br, assigned);
-                }
-            }
-            Statement::While(w) => {
-                self.collect_assignments_in_expr(&w.condition, assigned);
-                self.collect_assignments_in_stmt(&w.body, assigned);
-            }
-            Statement::DoWhile(dw) => {
-                self.collect_assignments_in_expr(&dw.condition, assigned);
-                self.collect_assignments_in_stmt(&dw.body, assigned);
-            }
-            Statement::For(f) => {
-                if let Some(ForInit::Expression(e)) = &f.init {
-                    self.collect_assignments_in_expr(e, assigned);
-                }
-                if let Some(test) = &f.test {
-                    self.collect_assignments_in_expr(test, assigned);
-                }
-                if let Some(update) = &f.update {
-                    self.collect_assignments_in_expr(update, assigned);
-                }
-                self.collect_assignments_in_stmt(&f.body, assigned);
-            }
-            Statement::ForOf(fo) => {
-                self.collect_assignments_in_expr(&fo.right, assigned);
-                self.collect_assignments_in_stmt(&fo.body, assigned);
-            }
-            Statement::Block(block) => {
-                for s in &block.statements {
-                    self.collect_assignments_in_stmt(s, assigned);
-                }
-            }
-            Statement::Return(ret) => {
-                if let Some(e) = &ret.value {
-                    self.collect_assignments_in_expr(e, assigned);
-                }
-            }
-            Statement::Try(try_stmt) => {
-                for s in &try_stmt.body.statements {
-                    self.collect_assignments_in_stmt(s, assigned);
-                }
-                if let Some(catch) = &try_stmt.catch_clause {
-                    for s in &catch.body.statements {
-                        self.collect_assignments_in_stmt(s, assigned);
-                    }
-                }
-                if let Some(finally) = &try_stmt.finally_clause {
-                    for s in &finally.statements {
-                        self.collect_assignments_in_stmt(s, assigned);
-                    }
-                }
-            }
-            Statement::Switch(sw) => {
-                self.collect_assignments_in_expr(&sw.discriminant, assigned);
-                for case in &sw.cases {
-                    for s in &case.consequent {
-                        self.collect_assignments_in_stmt(s, assigned);
-                    }
-                }
-            }
-            Statement::Throw(t) => {
-                self.collect_assignments_in_expr(&t.value, assigned);
-            }
-            _ => {}
-        }
-    }
-
-    fn collect_assignments_in_expr(&self, expr: &ast::Expression, assigned: &mut FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-        match expr {
-            Expression::Assignment(a) => {
-                if let Expression::Identifier(ident) = &*a.left {
-                    assigned.insert(ident.name);
-                }
-                self.collect_assignments_in_expr(&a.left, assigned);
-                self.collect_assignments_in_expr(&a.right, assigned);
-            }
-            Expression::Binary(b) => {
-                self.collect_assignments_in_expr(&b.left, assigned);
-                self.collect_assignments_in_expr(&b.right, assigned);
-            }
-            Expression::Unary(u) => {
-                self.collect_assignments_in_expr(&u.operand, assigned);
-            }
-            Expression::Call(c) => {
-                self.collect_assignments_in_expr(&c.callee, assigned);
-                for arg in &c.arguments {
-                    self.collect_assignments_in_expr(arg, assigned);
-                }
-            }
-            Expression::Member(m) => {
-                self.collect_assignments_in_expr(&m.object, assigned);
-            }
-            Expression::Parenthesized(p) => {
-                self.collect_assignments_in_expr(&p.expression, assigned);
-            }
-            Expression::Conditional(c) => {
-                self.collect_assignments_in_expr(&c.test, assigned);
-                self.collect_assignments_in_expr(&c.consequent, assigned);
-                self.collect_assignments_in_expr(&c.alternate, assigned);
-            }
-            // Do NOT descend into arrow functions - they are separate scopes
-            Expression::Arrow(_) => {}
-            _ => {}
-        }
-    }
-
-    /// Scan a single statement for arrow functions that capture outer variables
-    fn scan_stmt_for_captures(&mut self, stmt: &ast::Statement, locals: &FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-
-        match stmt {
-            Statement::VariableDecl(var) => {
-                // Check the initializer for arrow functions
-                if let Some(init) = &var.initializer {
-                    self.scan_expr_for_captures(init, locals);
-                }
-            }
-            Statement::Expression(expr) => {
-                self.scan_expr_for_captures(&expr.expression, locals);
-            }
-            Statement::If(if_stmt) => {
-                self.scan_expr_for_captures(&if_stmt.condition, locals);
-                self.scan_stmt_for_captures(&if_stmt.then_branch, locals);
-                if let Some(else_branch) = &if_stmt.else_branch {
-                    self.scan_stmt_for_captures(else_branch, locals);
-                }
-            }
-            Statement::While(while_stmt) => {
-                self.scan_expr_for_captures(&while_stmt.condition, locals);
-                self.scan_stmt_for_captures(&while_stmt.body, locals);
-            }
-            Statement::For(for_stmt) => {
-                if let Some(init) = &for_stmt.init {
-                    if let ast::ForInit::Expression(e) = init {
-                        self.scan_expr_for_captures(e, locals);
-                    }
-                }
-                if let Some(cond) = &for_stmt.test {
-                    self.scan_expr_for_captures(cond, locals);
-                }
-                if let Some(update) = &for_stmt.update {
-                    self.scan_expr_for_captures(update, locals);
-                }
-                self.scan_stmt_for_captures(&for_stmt.body, locals);
-            }
-            Statement::Return(ret) => {
-                if let Some(e) = &ret.value {
-                    self.scan_expr_for_captures(e, locals);
-                }
-            }
-            Statement::Block(block) => {
-                for s in &block.statements {
-                    self.scan_stmt_for_captures(s, locals);
-                }
-            }
-            Statement::ForOf(for_of) => {
-                let mut inner_locals = locals.clone();
-                match &for_of.left {
-                    ast::ForOfLeft::VariableDecl(var) => {
-                        if let Pattern::Identifier(ident) = &var.pattern {
-                            inner_locals.insert(ident.name);
-                        }
-                    }
-                    ast::ForOfLeft::Pattern(Pattern::Identifier(ident)) => {
-                        inner_locals.insert(ident.name);
-                    }
-                    _ => {}
-                }
-                self.scan_expr_for_captures(&for_of.right, locals);
-                self.scan_stmt_for_captures(&for_of.body, &inner_locals);
-            }
-            Statement::DoWhile(do_while) => {
-                self.scan_expr_for_captures(&do_while.condition, locals);
-                self.scan_stmt_for_captures(&do_while.body, locals);
-            }
-            Statement::Switch(switch_stmt) => {
-                self.scan_expr_for_captures(&switch_stmt.discriminant, locals);
-                for case in &switch_stmt.cases {
-                    if let Some(test) = &case.test {
-                        self.scan_expr_for_captures(test, locals);
-                    }
-                    for s in &case.consequent {
-                        self.scan_stmt_for_captures(s, locals);
-                    }
-                }
-            }
-            Statement::Try(try_stmt) => {
-                for s in &try_stmt.body.statements {
-                    self.scan_stmt_for_captures(s, locals);
-                }
-                if let Some(catch_clause) = &try_stmt.catch_clause {
-                    let mut catch_locals = locals.clone();
-                    if let Some(Pattern::Identifier(ident)) = &catch_clause.param {
-                        catch_locals.insert(ident.name);
-                    }
-                    for s in &catch_clause.body.statements {
-                        self.scan_stmt_for_captures(s, &catch_locals);
-                    }
-                }
-                if let Some(finally_clause) = &try_stmt.finally_clause {
-                    for s in &finally_clause.statements {
-                        self.scan_stmt_for_captures(s, locals);
-                    }
-                }
-            }
-            Statement::Throw(throw_stmt) => {
-                self.scan_expr_for_captures(&throw_stmt.value, locals);
-            }
-            _ => {}
-        }
-    }
-
-    /// Scan an expression for arrow functions that capture outer variables
-    fn scan_expr_for_captures(&mut self, expr: &ast::Expression, locals: &FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-
-        match expr {
-            Expression::Arrow(arrow) => {
-                // Found an arrow function - scan its body for outer variable references
-                self.scan_arrow_for_captures(arrow, locals);
-            }
-            Expression::Binary(binary) => {
-                self.scan_expr_for_captures(&binary.left, locals);
-                self.scan_expr_for_captures(&binary.right, locals);
-            }
-            Expression::Unary(unary) => {
-                self.scan_expr_for_captures(&unary.operand, locals);
-            }
-            Expression::Assignment(assign) => {
-                self.scan_expr_for_captures(&assign.left, locals);
-                self.scan_expr_for_captures(&assign.right, locals);
-            }
-            Expression::Call(call) => {
-                self.scan_expr_for_captures(&call.callee, locals);
-                for arg in &call.arguments {
-                    self.scan_expr_for_captures(arg, locals);
-                }
-            }
-            Expression::Member(member) => {
-                self.scan_expr_for_captures(&member.object, locals);
-            }
-            Expression::Parenthesized(paren) => {
-                self.scan_expr_for_captures(&paren.expression, locals);
-            }
-            Expression::Conditional(cond) => {
-                self.scan_expr_for_captures(&cond.test, locals);
-                self.scan_expr_for_captures(&cond.consequent, locals);
-                self.scan_expr_for_captures(&cond.alternate, locals);
-            }
-            _ => {}
-        }
-    }
-
-    /// Scan an arrow function body for references to outer variables
-    fn scan_arrow_for_captures(&mut self, arrow: &ast::ArrowFunction, outer_locals: &FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-
-        // Collect parameter names (these are local to the arrow, not captures)
-        let mut arrow_locals: FxHashSet<Symbol> = FxHashSet::default();
-        for param in &arrow.params {
-            if let Pattern::Identifier(ident) = &param.pattern {
-                arrow_locals.insert(ident.name);
-            }
-        }
-
-        // Scan the body for references to outer_locals
-        match &arrow.body {
-            ArrowBody::Expression(expr) => {
-                self.find_captured_refs(expr, outer_locals, &arrow_locals);
-            }
-            ArrowBody::Block(block) => {
-                // Also scan for local declarations in the block
-                let mut block_locals = arrow_locals.clone();
-                for stmt in &block.statements {
-                    if let Statement::VariableDecl(var) = stmt {
-                        if let Pattern::Identifier(ident) = &var.pattern {
-                            block_locals.insert(ident.name);
-                        }
-                    }
-                }
-
-                for stmt in &block.statements {
-                    self.find_captured_refs_in_stmt(stmt, outer_locals, &block_locals);
-                }
-            }
-        }
-    }
-
-    /// Find captured variable references in an expression that are MODIFIED (assigned to)
-    /// Only these variables need RefCell wrapping - read-only captures use copy semantics
-    /// Also tracks ALL captured variables (read or write) in loop_captured_vars for per-iteration bindings
-    fn find_captured_refs(&mut self, expr: &ast::Expression, outer_locals: &FxHashSet<Symbol>, arrow_locals: &FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-
-        match expr {
-            Expression::Identifier(ident) => {
-                // Track that this outer variable is captured (even read-only)
-                // Used for per-iteration bindings in loops
-                if outer_locals.contains(&ident.name) && !arrow_locals.contains(&ident.name) {
-                    self.loop_captured_vars.insert(ident.name);
-                }
-            }
-            Expression::Binary(binary) => {
-                self.find_captured_refs(&binary.left, outer_locals, arrow_locals);
-                self.find_captured_refs(&binary.right, outer_locals, arrow_locals);
-            }
-            Expression::Unary(unary) => {
-                self.find_captured_refs(&unary.operand, outer_locals, arrow_locals);
-            }
-            Expression::Assignment(assign) => {
-                // Check if we're assigning to a captured outer variable
-                if let Expression::Identifier(ident) = &*assign.left {
-                    // If this identifier is from outer scope (not an arrow local), it needs RefCell
-                    if outer_locals.contains(&ident.name) && !arrow_locals.contains(&ident.name) {
-                        self.refcell_vars.insert(ident.name);
-                    }
-                }
-                // Also check if nested expressions might have captures
-                self.find_captured_refs(&assign.left, outer_locals, arrow_locals);
-                self.find_captured_refs(&assign.right, outer_locals, arrow_locals);
-            }
-            Expression::Call(call) => {
-                self.find_captured_refs(&call.callee, outer_locals, arrow_locals);
-                for arg in &call.arguments {
-                    self.find_captured_refs(arg, outer_locals, arrow_locals);
-                }
-            }
-            Expression::Member(member) => {
-                self.find_captured_refs(&member.object, outer_locals, arrow_locals);
-            }
-            Expression::Parenthesized(paren) => {
-                self.find_captured_refs(&paren.expression, outer_locals, arrow_locals);
-            }
-            Expression::Conditional(cond) => {
-                self.find_captured_refs(&cond.test, outer_locals, arrow_locals);
-                self.find_captured_refs(&cond.consequent, outer_locals, arrow_locals);
-                self.find_captured_refs(&cond.alternate, outer_locals, arrow_locals);
-            }
-            Expression::Arrow(nested_arrow) => {
-                // Nested arrow - recurse with updated locals
-                self.scan_arrow_for_captures(nested_arrow, outer_locals);
-            }
-            _ => {}
-        }
-    }
-
-    /// Find captured variable references in a statement
-    fn find_captured_refs_in_stmt(&mut self, stmt: &ast::Statement, outer_locals: &FxHashSet<Symbol>, arrow_locals: &FxHashSet<Symbol>) {
-        use crate::parser::ast::*;
-
-        match stmt {
-            Statement::VariableDecl(var) => {
-                if let Some(init) = &var.initializer {
-                    self.find_captured_refs(init, outer_locals, arrow_locals);
-                }
-            }
-            Statement::Expression(expr) => {
-                self.find_captured_refs(&expr.expression, outer_locals, arrow_locals);
-            }
-            Statement::If(if_stmt) => {
-                self.find_captured_refs(&if_stmt.condition, outer_locals, arrow_locals);
-                self.find_captured_refs_in_stmt(&if_stmt.then_branch, outer_locals, arrow_locals);
-                if let Some(else_branch) = &if_stmt.else_branch {
-                    self.find_captured_refs_in_stmt(else_branch, outer_locals, arrow_locals);
-                }
-            }
-            Statement::While(while_stmt) => {
-                self.find_captured_refs(&while_stmt.condition, outer_locals, arrow_locals);
-                self.find_captured_refs_in_stmt(&while_stmt.body, outer_locals, arrow_locals);
-            }
-            Statement::Return(ret) => {
-                if let Some(e) = &ret.value {
-                    self.find_captured_refs(e, outer_locals, arrow_locals);
-                }
-            }
-            Statement::Block(block) => {
-                for s in &block.statements {
-                    self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
-                }
-            }
-            Statement::ForOf(for_of) => {
-                self.find_captured_refs(&for_of.right, outer_locals, arrow_locals);
-                self.find_captured_refs_in_stmt(&for_of.body, outer_locals, arrow_locals);
-            }
-            Statement::DoWhile(do_while) => {
-                self.find_captured_refs(&do_while.condition, outer_locals, arrow_locals);
-                self.find_captured_refs_in_stmt(&do_while.body, outer_locals, arrow_locals);
-            }
-            Statement::Switch(switch_stmt) => {
-                self.find_captured_refs(&switch_stmt.discriminant, outer_locals, arrow_locals);
-                for case in &switch_stmt.cases {
-                    if let Some(test) = &case.test {
-                        self.find_captured_refs(test, outer_locals, arrow_locals);
-                    }
-                    for s in &case.consequent {
-                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
-                    }
-                }
-            }
-            Statement::Try(try_stmt) => {
-                for s in &try_stmt.body.statements {
-                    self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
-                }
-                if let Some(catch_clause) = &try_stmt.catch_clause {
-                    for s in &catch_clause.body.statements {
-                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
-                    }
-                }
-                if let Some(finally_clause) = &try_stmt.finally_clause {
-                    for s in &finally_clause.statements {
-                        self.find_captured_refs_in_stmt(s, outer_locals, arrow_locals);
-                    }
-                }
-            }
-            Statement::Throw(throw_stmt) => {
-                self.find_captured_refs(&throw_stmt.value, outer_locals, arrow_locals);
-            }
-            Statement::For(for_stmt) => {
-                if let Some(init) = &for_stmt.init {
-                    if let ast::ForInit::Expression(e) = init {
-                        self.find_captured_refs(e, outer_locals, arrow_locals);
-                    }
-                }
-                if let Some(cond) = &for_stmt.test {
-                    self.find_captured_refs(cond, outer_locals, arrow_locals);
-                }
-                if let Some(update) = &for_stmt.update {
-                    self.find_captured_refs(update, outer_locals, arrow_locals);
-                }
-                self.find_captured_refs_in_stmt(&for_stmt.body, outer_locals, arrow_locals);
-            }
-            _ => {}
-        }
-    }
-
     /// Collect all local variable names declared in statements
     fn collect_local_names(&self, stmts: &[ast::Statement]) -> FxHashSet<Symbol> {
         let mut locals = FxHashSet::default();
-        self.collect_local_names_recursive(stmts, &mut locals);
+        collect_block_local_names(stmts, &mut locals);
         locals
-    }
-
-    /// Recursively collect all local variable names from statements, including nested scopes
-    fn collect_local_names_recursive(&self, stmts: &[ast::Statement], locals: &mut FxHashSet<Symbol>) {
-        for stmt in stmts {
-            match stmt {
-                ast::Statement::VariableDecl(var) => {
-                    if let Pattern::Identifier(ident) = &var.pattern {
-                        locals.insert(ident.name);
-                    }
-                }
-                ast::Statement::For(for_stmt) => {
-                    // Collect variable from for-loop initializer
-                    if let Some(ast::ForInit::VariableDecl(var)) = &for_stmt.init {
-                        if let Pattern::Identifier(ident) = &var.pattern {
-                            locals.insert(ident.name);
-                        }
-                    }
-                    // Recurse into body
-                    if let ast::Statement::Block(block) = &*for_stmt.body {
-                        self.collect_local_names_recursive(&block.statements, locals);
-                    } else {
-                        self.collect_local_names_recursive(&[(*for_stmt.body).clone()], locals);
-                    }
-                }
-                ast::Statement::ForOf(for_of) => {
-                    // Collect variable from for-of loop
-                    match &for_of.left {
-                        ast::ForOfLeft::VariableDecl(var) => {
-                            if let Pattern::Identifier(ident) = &var.pattern {
-                                locals.insert(ident.name);
-                            }
-                        }
-                        ast::ForOfLeft::Pattern(Pattern::Identifier(ident)) => {
-                            locals.insert(ident.name);
-                        }
-                        _ => {}
-                    }
-                    // Recurse into body
-                    if let ast::Statement::Block(block) = &*for_of.body {
-                        self.collect_local_names_recursive(&block.statements, locals);
-                    } else {
-                        self.collect_local_names_recursive(&[(*for_of.body).clone()], locals);
-                    }
-                }
-                ast::Statement::While(while_stmt) => {
-                    if let ast::Statement::Block(block) = &*while_stmt.body {
-                        self.collect_local_names_recursive(&block.statements, locals);
-                    } else {
-                        self.collect_local_names_recursive(&[(*while_stmt.body).clone()], locals);
-                    }
-                }
-                ast::Statement::DoWhile(do_while) => {
-                    if let ast::Statement::Block(block) = &*do_while.body {
-                        self.collect_local_names_recursive(&block.statements, locals);
-                    } else {
-                        self.collect_local_names_recursive(&[(*do_while.body).clone()], locals);
-                    }
-                }
-                ast::Statement::If(if_stmt) => {
-                    if let ast::Statement::Block(block) = &*if_stmt.then_branch {
-                        self.collect_local_names_recursive(&block.statements, locals);
-                    } else {
-                        self.collect_local_names_recursive(&[(*if_stmt.then_branch).clone()], locals);
-                    }
-                    if let Some(else_branch) = &if_stmt.else_branch {
-                        if let ast::Statement::Block(block) = &**else_branch {
-                            self.collect_local_names_recursive(&block.statements, locals);
-                        } else {
-                            self.collect_local_names_recursive(&[(**else_branch).clone()], locals);
-                        }
-                    }
-                }
-                ast::Statement::Block(block) => {
-                    self.collect_local_names_recursive(&block.statements, locals);
-                }
-                _ => {}
-            }
-        }
     }
 
     /// Register a class declaration (first-pass registration).
@@ -1814,17 +1573,16 @@ impl<'a> Lowerer<'a> {
         self.next_local = 0;
         self.refcell_vars.clear();
         self.refcell_registers.clear();
+        self.refcell_inner_types.clear();
         self.loop_captured_vars.clear();
 
         // Pre-scan to identify captured variables
         let mut locals = FxHashSet::default();
         for param in &func.params {
-            if let Pattern::Identifier(ident) = &param.pattern {
-                locals.insert(ident.name);
-            }
+            collect_pattern_names(&param.pattern, &mut locals);
         }
         locals.extend(self.collect_local_names(&func.body.statements));
-        self.scan_for_captured_vars(&func.body.statements, &locals);
+        self.scan_for_captured_vars(&func.body.statements, &func.params, &locals);
 
         // Get function name
         let name = self.interner.resolve(func.name.name);
@@ -1905,6 +1663,7 @@ impl<'a> Lowerer<'a> {
         self.next_local = 0;
         self.refcell_vars.clear();
         self.refcell_registers.clear();
+        self.refcell_inner_types.clear();
         self.loop_captured_vars.clear();
 
         // Pre-scan to identify captured variables
@@ -1912,7 +1671,7 @@ impl<'a> Lowerer<'a> {
         let mut locals = self.collect_local_names(&stmts_owned);
         // Remove module-level globals — they use LoadGlobal/StoreGlobal, not locals
         locals.retain(|name| !self.module_var_globals.contains_key(name));
-        self.scan_for_captured_vars(&stmts_owned, &locals);
+        self.scan_for_captured_vars(&stmts_owned, &[], &locals);
 
         // Create main function
         let ir_func = IrFunction::new("main", vec![], TypeId::new(0));
@@ -2083,6 +1842,11 @@ impl<'a> Lowerer<'a> {
                     self.next_local = 0;
                     self.local_map.clear();
                     self.local_registers.clear();
+                    // Reset capture state for this method scope
+                    self.refcell_vars.clear();
+                    self.refcell_registers.clear();
+                    self.refcell_inner_types.clear();
+                    self.loop_captured_vars.clear();
 
                     // Create parameter registers
                     let mut params = Vec::new();
@@ -2147,6 +1911,16 @@ impl<'a> Lowerer<'a> {
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(entry_block, "entry"));
 
+                    // Pre-scan method body for captured variables
+                    {
+                        let mut method_locals = FxHashSet::default();
+                        for param in &method.params {
+                            collect_pattern_names(&param.pattern, &mut method_locals);
+                        }
+                        method_locals.extend(self.collect_local_names(&body.statements));
+                        self.scan_for_captured_vars(&body.statements, &method.params, &method_locals);
+                    }
+
                     // Emit null-check + default-value for parameters with defaults
                     self.emit_default_params(&method.params);
 
@@ -2205,6 +1979,11 @@ impl<'a> Lowerer<'a> {
                 self.next_local = 0;
                 self.local_map.clear();
                 self.local_registers.clear();
+                // Reset capture state for constructor scope
+                self.refcell_vars.clear();
+                self.refcell_registers.clear();
+                self.refcell_inner_types.clear();
+                self.loop_captured_vars.clear();
 
                 // Set current class context for 'this' handling
                 self.current_class = Some(class_id);
@@ -2262,6 +2041,16 @@ impl<'a> Lowerer<'a> {
                 self.current_block = entry_block;
                 self.current_function_mut()
                     .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+                // Pre-scan constructor body for captured variables
+                {
+                    let mut ctor_locals = FxHashSet::default();
+                    for param in &ctor.params {
+                        collect_pattern_names(&param.pattern, &mut ctor_locals);
+                    }
+                    ctor_locals.extend(self.collect_local_names(&ctor.body.statements));
+                    self.scan_for_captured_vars(&ctor.body.statements, &ctor.params, &ctor_locals);
+                }
 
                 // Emit null-check + default-value for constructor parameters with defaults
                 self.emit_default_params(&ctor.params);

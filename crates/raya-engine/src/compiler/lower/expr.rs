@@ -169,16 +169,15 @@ impl<'a> Lowerer<'a> {
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
             // Check if this is a RefCell variable
             if self.refcell_registers.contains_key(&local_idx) {
+                let inner_ty = self.refcell_inner_types.get(&local_idx).copied().unwrap_or(UNRESOLVED);
                 // Load the RefCell pointer
-                let refcell_ty = TypeId::new(0);
-                let refcell_reg = self.alloc_register(refcell_ty);
+                let refcell_reg = self.alloc_register(inner_ty);
                 self.emit(IrInstr::LoadLocal {
                     dest: refcell_reg.clone(),
                     index: local_idx,
                 });
                 // Load the value from the RefCell
-                let value_ty = TypeId::new(0); // Would need to track the inner type
-                let dest = self.alloc_register(value_ty);
+                let dest = self.alloc_register(inner_ty);
                 self.emit(IrInstr::LoadRefCell {
                     dest: dest.clone(),
                     refcell: refcell_reg,
@@ -1595,6 +1594,62 @@ impl<'a> Lowerer<'a> {
                         index: global_idx,
                         value: rhs,
                     });
+                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
+                    // Captured variable from outer scope
+                    let is_refcell = self.captures[idx].is_refcell;
+                    let capture_idx = self.captures[idx].capture_idx;
+                    if is_refcell {
+                        let refcell_reg = self.alloc_register(TypeId::new(0));
+                        self.emit(IrInstr::LoadCaptured {
+                            dest: refcell_reg.clone(),
+                            index: capture_idx,
+                        });
+                        self.emit(IrInstr::StoreRefCell {
+                            refcell: refcell_reg,
+                            value: rhs,
+                        });
+                    } else {
+                        self.emit(IrInstr::StoreCaptured {
+                            index: capture_idx,
+                            value: rhs,
+                        });
+                    }
+                } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
+                    // Lazy ancestor capture (mirror from regular assignment)
+                    if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                        let ty = ancestor_var.ty;
+                        let is_refcell = ancestor_var.is_refcell;
+                        let capture_idx = self.next_capture_slot;
+                        self.next_capture_slot += 1;
+                        self.captures.push(super::CaptureInfo {
+                            symbol: ident.name,
+                            source: ancestor_var.source,
+                            capture_idx,
+                            ty,
+                            is_refcell,
+                        });
+                        if is_refcell {
+                            let refcell_reg = self.alloc_register(TypeId::new(0));
+                            self.emit(IrInstr::LoadCaptured {
+                                dest: refcell_reg.clone(),
+                                index: capture_idx,
+                            });
+                            self.emit(IrInstr::StoreRefCell {
+                                refcell: refcell_reg,
+                                value: rhs,
+                            });
+                        } else {
+                            self.emit(IrInstr::StoreCaptured {
+                                index: capture_idx,
+                                value: rhs,
+                            });
+                        }
+                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
+                            value: rhs,
+                        });
+                    }
                 }
             }
             self.set_terminator(Terminator::Jump(merge_block));
