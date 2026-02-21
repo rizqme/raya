@@ -20,14 +20,16 @@ use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
 use super::statemachine::*;
 use super::traits::AotCompilable;
 
-// Well-known TypeIds (from TypeContext::new() interning order)
-const NUMBER_TYPE_ID: u32 = 0; // f64
+use crate::parser::TypeContext;
+
+// Well-known TypeIds (from TypeContext)
+const NUMBER_TYPE_ID: u32 = TypeContext::NUMBER_TYPE_ID;
 #[allow(dead_code)]
-const STRING_TYPE_ID: u32 = 1;
-const BOOLEAN_TYPE_ID: u32 = 2;
+const STRING_TYPE_ID: u32 = TypeContext::STRING_TYPE_ID;
+const BOOLEAN_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
 #[allow(dead_code)]
-const NULL_TYPE_ID: u32 = 3;
-const INT_TYPE_ID: u32 = 16; // i32
+const NULL_TYPE_ID: u32 = TypeContext::NULL_TYPE_ID;
+const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
 
 /// Adapter that wraps an `IrFunction` to implement `AotCompilable`.
 pub struct IrFunctionAdapter<'a> {

@@ -158,12 +158,12 @@ impl StdModuleRegistry {
 
     /// Check if an import specifier is a standard library import
     pub fn is_std_import(specifier: &str) -> bool {
-        specifier.starts_with("std:")
+        specifier.starts_with(super::STD_MODULE_PREFIX)
     }
 
     /// Extract the module name from a `std:xxx` specifier
     pub fn module_name(specifier: &str) -> Option<&str> {
-        specifier.strip_prefix("std:")
+        specifier.strip_prefix(super::STD_MODULE_PREFIX)
     }
 
     /// Get all registered module names

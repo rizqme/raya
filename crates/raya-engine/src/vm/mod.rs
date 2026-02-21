@@ -28,6 +28,7 @@
 
 pub mod abi;
 pub mod builtin;
+pub mod defaults;
 pub mod builtins;
 pub mod ffi;
 pub mod gc;

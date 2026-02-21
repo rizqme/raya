@@ -310,7 +310,7 @@ impl ModuleResolver {
     /// 2. Resolve to local package entry point
     pub fn resolve(&self, specifier: &str, from_file: &Path) -> Result<ResolvedModule, ResolveError> {
         // Check for std: namespace imports (handled by StdModuleRegistry, not file resolution)
-        if specifier.starts_with("std:") {
+        if specifier.starts_with(super::STD_MODULE_PREFIX) {
             return Err(ResolveError::StdModule(specifier.to_string()));
         }
 

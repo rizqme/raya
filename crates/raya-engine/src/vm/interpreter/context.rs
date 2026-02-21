@@ -70,8 +70,8 @@ impl Default for ResourceLimits {
             max_heap_bytes: None,
             max_tasks: None,
             max_step_budget: None,
-            max_preemptions: 1000,
-            preempt_threshold_ms: 10,
+            max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
+            preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
         }
     }
 }
@@ -210,7 +210,7 @@ impl Default for VmOptions {
     fn default() -> Self {
         Self {
             limits: ResourceLimits::default(),
-            gc_threshold: 1024 * 1024, // 1 MB
+            gc_threshold: crate::vm::defaults::DEFAULT_GC_THRESHOLD,
             type_registry: Arc::new(crate::vm::types::create_standard_registry()),
             capabilities: CapabilityRegistry::new(),
         }

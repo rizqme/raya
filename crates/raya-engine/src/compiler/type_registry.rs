@@ -233,7 +233,7 @@ impl TypeRegistry {
         let class_methods = extract_class_method_names(source);
 
         // Step 6: Register in dispatch tables
-        if type_name == "Array" {
+        if type_name == crate::parser::TypeContext::ARRAY_TYPE_NAME {
             // Array has special dispatch: matches any array TypeId
             for (prop_name, kind) in &opcode_props {
                 self.array_properties.insert(prop_name.clone(), DispatchAction::Opcode(*kind));

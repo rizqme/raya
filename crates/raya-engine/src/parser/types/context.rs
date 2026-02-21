@@ -76,7 +76,7 @@ impl TypeContext {
         ctx.register_named_type("Buffer".into(), buffer);
 
         // Pre-intern generic types with Unknown type parameters
-        let unknown_id = TypeId(6); // Unknown type ID
+        let unknown_id = unknown;
 
         let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
         ctx.register_named_type("Task".into(), task);
@@ -100,14 +100,61 @@ impl TypeContext {
         let array = ctx.intern(Type::Array(super::ty::ArrayType { element: unknown_id }));
         ctx.register_named_type("Array".into(), array);
 
+        // Validate that interning order matches the well-known constants.
+        debug_assert_eq!(number.0, Self::NUMBER_TYPE_ID, "NUMBER_TYPE_ID mismatch");
+        debug_assert_eq!(string.0, Self::STRING_TYPE_ID, "STRING_TYPE_ID mismatch");
+        debug_assert_eq!(boolean.0, Self::BOOLEAN_TYPE_ID, "BOOLEAN_TYPE_ID mismatch");
+        debug_assert_eq!(null.0, Self::NULL_TYPE_ID, "NULL_TYPE_ID mismatch");
+        debug_assert_eq!(void.0, Self::VOID_TYPE_ID, "VOID_TYPE_ID mismatch");
+        debug_assert_eq!(never.0, Self::NEVER_TYPE_ID, "NEVER_TYPE_ID mismatch");
+        debug_assert_eq!(unknown.0, Self::UNKNOWN_TYPE_ID, "UNKNOWN_TYPE_ID mismatch");
+        debug_assert_eq!(mutex.0, Self::MUTEX_TYPE_ID, "MUTEX_TYPE_ID mismatch");
+        debug_assert_eq!(regexp.0, Self::REGEXP_TYPE_ID, "REGEXP_TYPE_ID mismatch");
+        debug_assert_eq!(date.0, Self::DATE_TYPE_ID, "DATE_TYPE_ID mismatch");
+        debug_assert_eq!(buffer.0, Self::BUFFER_TYPE_ID, "BUFFER_TYPE_ID mismatch");
+        debug_assert_eq!(task.0, Self::TASK_TYPE_ID, "TASK_TYPE_ID mismatch");
+        debug_assert_eq!(channel.0, Self::CHANNEL_TYPE_ID, "CHANNEL_TYPE_ID mismatch");
+        debug_assert_eq!(map.0, Self::MAP_TYPE_ID, "MAP_TYPE_ID mismatch");
+        debug_assert_eq!(set.0, Self::SET_TYPE_ID, "SET_TYPE_ID mismatch");
+        debug_assert_eq!(json.0, Self::JSON_TYPE_ID, "JSON_TYPE_ID mismatch");
+        debug_assert_eq!(int.0, Self::INT_TYPE_ID, "INT_TYPE_ID mismatch");
+        debug_assert_eq!(array.0, Self::ARRAY_TYPE_ID, "ARRAY_TYPE_ID mismatch");
+
         ctx
     }
 
-    /// Well-known TypeId for Int primitive type
+    // Well-known TypeId constants (determined by interning order in TypeContext::new).
+    // These MUST match the order of `ctx.intern()` calls above.
+    pub const NUMBER_TYPE_ID: u32 = 0;
+    pub const STRING_TYPE_ID: u32 = 1;
+    pub const BOOLEAN_TYPE_ID: u32 = 2;
+    pub const NULL_TYPE_ID: u32 = 3;
+    pub const VOID_TYPE_ID: u32 = 4;
+    pub const NEVER_TYPE_ID: u32 = 5;
+    pub const UNKNOWN_TYPE_ID: u32 = 6;
+    pub const MUTEX_TYPE_ID: u32 = 7;
+    pub const REGEXP_TYPE_ID: u32 = 8;
+    pub const DATE_TYPE_ID: u32 = 9;
+    pub const BUFFER_TYPE_ID: u32 = 10;
+    pub const TASK_TYPE_ID: u32 = 11;
+    pub const CHANNEL_TYPE_ID: u32 = 12;
+    pub const MAP_TYPE_ID: u32 = 13;
+    pub const SET_TYPE_ID: u32 = 14;
+    pub const JSON_TYPE_ID: u32 = 15;
     pub const INT_TYPE_ID: u32 = 16;
-
-    /// Well-known TypeId for Array<Unknown> (canonical array dispatch type)
     pub const ARRAY_TYPE_ID: u32 = 17;
+
+    // Well-known builtin type names (must match the names registered above).
+    pub const ARRAY_TYPE_NAME: &str = "Array";
+    pub const MAP_TYPE_NAME: &str = "Map";
+    pub const SET_TYPE_NAME: &str = "Set";
+    pub const TASK_TYPE_NAME: &str = "Task";
+    pub const CHANNEL_TYPE_NAME: &str = "Channel";
+    pub const REGEXP_TYPE_NAME: &str = "RegExp";
+    pub const BUFFER_TYPE_NAME: &str = "Buffer";
+    pub const DATE_TYPE_NAME: &str = "Date";
+    pub const MUTEX_TYPE_NAME: &str = "Mutex";
+    pub const JSON_TYPE_NAME: &str = "Json";
 
     /// Intern a type, returning its TypeId
     ///
@@ -160,7 +207,7 @@ impl TypeContext {
     /// Get a generic Task<Unknown> type ID for use when the specific Task<T> is not known
     pub fn generic_task_type(&self) -> Option<TypeId> {
         // Task<Unknown> was pre-interned in TypeContext::new()
-        let unknown_id = TypeId(6); // Unknown type ID
+        let unknown_id = TypeId(Self::UNKNOWN_TYPE_ID);
         self.lookup(&Type::Task(super::ty::TaskType { result: unknown_id }))
     }
 

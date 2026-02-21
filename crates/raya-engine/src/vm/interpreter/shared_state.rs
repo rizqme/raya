@@ -135,8 +135,8 @@ impl SharedVmState {
             native_registry: RwLock::new(NativeFunctionRegistry::new()),
             module_registry: RwLock::new(ModuleRegistry::new()),
             debug_state: Mutex::new(None),
-            max_preemptions: 1000,
-            preempt_threshold_ms: 10,
+            max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
+            preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
             profiler: Mutex::new(None),
             #[cfg(feature = "jit")]
             code_cache: Mutex::new(None),

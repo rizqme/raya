@@ -2,11 +2,14 @@
 //!
 //! Converts AST expressions to IR instructions.
 
-use super::{ClassFieldInfo, ConstantValue, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID};
+use super::{ClassFieldInfo, ConstantValue, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID,
+    NUMBER_TYPE_ID, STRING_TYPE_ID, BOOLEAN_TYPE_ID, NULL_TYPE_ID,
+    UNKNOWN_TYPE_ID, REGEXP_TYPE_ID, TASK_TYPE_ID, CHANNEL_TYPE_ID,
+    INT_TYPE_ID, JSON_TYPE_ID};
 use crate::compiler::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp};
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
-use crate::parser::TypeId;
+use crate::parser::{TypeContext as TC, TypeId};
 use rustc_hash::FxHashMap;
 
 // Re-export VM builtin method IDs (canonical source of truth)
@@ -60,8 +63,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_int_literal(&mut self, lit: &ast::IntLiteral) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, ..., 16=Int
-        let ty = TypeId::new(16); // Int type (i32)
+        let ty = TypeId::new(INT_TYPE_ID);
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -71,8 +73,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_float_literal(&mut self, lit: &ast::FloatLiteral) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        let ty = TypeId::new(0); // Number type
+        let ty = TypeId::new(NUMBER_TYPE_ID);
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -82,8 +83,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_string_literal(&mut self, lit: &ast::StringLiteral) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        let ty = TypeId::new(1); // String type
+        let ty = TypeId::new(STRING_TYPE_ID);
         let dest = self.alloc_register(ty);
         let string_value = self.interner.resolve(lit.value).to_string();
         self.emit(IrInstr::Assign {
@@ -94,8 +94,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_bool_literal(&mut self, lit: &ast::BooleanLiteral) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        let ty = TypeId::new(2); // Boolean type
+        let ty = TypeId::new(BOOLEAN_TYPE_ID);
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -105,8 +104,7 @@ impl<'a> Lowerer<'a> {
     }
 
     pub(super) fn lower_null_literal(&mut self) -> Register {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        let ty = TypeId::new(3); // Null type
+        let ty = TypeId::new(NULL_TYPE_ID);
         let dest = self.alloc_register(ty);
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
@@ -120,7 +118,7 @@ impl<'a> Lowerer<'a> {
     fn emit_constant_value(&mut self, const_val: &ConstantValue) -> Register {
         match const_val {
             ConstantValue::I64(v) => {
-                let ty = TypeId::new(0); // Number type
+                let ty = TypeId::new(NUMBER_TYPE_ID); // Number type
                 let dest = self.alloc_register(ty);
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
@@ -129,7 +127,7 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             ConstantValue::F64(v) => {
-                let ty = TypeId::new(0); // Number type
+                let ty = TypeId::new(NUMBER_TYPE_ID); // Number type
                 let dest = self.alloc_register(ty);
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
@@ -138,7 +136,7 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             ConstantValue::String(s) => {
-                let ty = TypeId::new(1); // String type
+                let ty = TypeId::new(STRING_TYPE_ID); // String type
                 let dest = self.alloc_register(ty);
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
@@ -147,7 +145,7 @@ impl<'a> Lowerer<'a> {
                 dest
             }
             ConstantValue::Bool(v) => {
-                let ty = TypeId::new(2); // Boolean type
+                let ty = TypeId::new(BOOLEAN_TYPE_ID); // Boolean type
                 let dest = self.alloc_register(ty);
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
@@ -210,7 +208,7 @@ impl<'a> Lowerer<'a> {
 
             if is_refcell {
                 // Load the RefCell pointer from captured
-                let refcell_ty = TypeId::new(0);
+                let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
                 let refcell_reg = self.alloc_register(refcell_ty);
                 self.emit(IrInstr::LoadCaptured {
                     dest: refcell_reg.clone(),
@@ -251,7 +249,7 @@ impl<'a> Lowerer<'a> {
 
                 if is_refcell {
                     // Load the RefCell pointer from captured
-                    let refcell_ty = TypeId::new(0);
+                    let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
                     let refcell_reg = self.alloc_register(refcell_ty);
                     self.emit(IrInstr::LoadCaptured {
                         dest: refcell_reg.clone(),
@@ -288,7 +286,7 @@ impl<'a> Lowerer<'a> {
 
         // Check if this is a named function used as a value (function reference)
         if let Some(&func_id) = self.function_map.get(&ident.name) {
-            let dest = self.alloc_register(TypeId::new(0));
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::MakeClosure {
                 dest: dest.clone(),
                 func: func_id,
@@ -352,13 +350,13 @@ impl<'a> Lowerer<'a> {
         let old_value = self.lower_expr(&unary.operand);
 
         // Create the ±1 constant based on operand type
-        let int_ty = TypeId::new(16);
+        let int_ty = TypeId::new(INT_TYPE_ID);
         let one = if old_value.ty == int_ty {
             let r = self.alloc_register(int_ty);
             self.emit(IrInstr::Assign { dest: r.clone(), value: IrValue::Constant(IrConstant::I32(1)) });
             r
         } else {
-            let num_ty = TypeId::new(0);
+            let num_ty = TypeId::new(NUMBER_TYPE_ID);
             let r = self.alloc_register(num_ty);
             self.emit(IrInstr::Assign { dest: r.clone(), value: IrValue::Constant(IrConstant::F64(1.0)) });
             r
@@ -531,7 +529,7 @@ impl<'a> Lowerer<'a> {
                 let capacity = if !call.arguments.is_empty() {
                     self.lower_expr(&call.arguments[0])
                 } else {
-                    let zero_reg = self.alloc_register(TypeId::new(1));
+                    let zero_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
                         dest: zero_reg.clone(),
                         value: IrValue::Constant(IrConstant::I32(0)),
@@ -682,7 +680,7 @@ impl<'a> Lowerer<'a> {
                 // Check if this is an async function - emit Spawn instead of Call
                 if self.async_functions.contains(&effective_func_id) {
                     // Use proper Task type for the destination register
-                    let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                    let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
                     let task_dest = self.alloc_register(task_ty);
                     self.emit(IrInstr::Spawn {
                         dest: task_dest.clone(),
@@ -707,7 +705,7 @@ impl<'a> Lowerer<'a> {
                     .local_registers
                     .get(&local_idx)
                     .map(|r| r.ty)
-                    .unwrap_or(TypeId::new(0));
+                    .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
                 let closure_raw = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadLocal {
                     dest: closure_raw.clone(),
@@ -716,7 +714,7 @@ impl<'a> Lowerer<'a> {
 
                 // Unwrap RefCell if the variable is captured and externally modified
                 let closure = if self.refcell_registers.contains_key(&local_idx) {
-                    let val = self.alloc_register(TypeId::new(0));
+                    let val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                     self.emit(IrInstr::LoadRefCell {
                         dest: val.clone(),
                         refcell: closure_raw,
@@ -760,7 +758,7 @@ impl<'a> Lowerer<'a> {
 
             // Check for closure stored in a module-level global variable
             if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-                let closure = self.alloc_register(TypeId::new(0));
+                let closure = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadGlobal {
                     dest: closure.clone(),
                     index: global_idx,
@@ -810,7 +808,7 @@ impl<'a> Lowerer<'a> {
                             "parse" => {
                                 // JSON.parse(json) -> native call returning json type
                                 // JSON type is TypeId 15 (pre-interned in context.rs)
-                                const JSON_TYPE_ID: u32 = 15;
+
                                 let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
                                 self.emit(IrInstr::NativeCall {
                                     dest: Some(json_dest.clone()),
@@ -852,7 +850,7 @@ impl<'a> Lowerer<'a> {
 
                                 // Fallback to generic parse if no type info available
                                 // Returns json type (TypeId 15) for duck typing support
-                                const JSON_TYPE_ID: u32 = 15;
+
                                 let json_dest = self.alloc_register(TypeId::new(JSON_TYPE_ID));
                                 self.emit(IrInstr::NativeCall {
                                     dest: Some(json_dest.clone()),
@@ -916,7 +914,7 @@ impl<'a> Lowerer<'a> {
                         // Static method call - no 'this' parameter
                         // Check if async method - emit Spawn instead of Call
                         if self.async_functions.contains(&func_id) {
-                            let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                            let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
                             let task_dest = self.alloc_register(task_ty);
                             self.emit(IrInstr::Spawn {
                                 dest: task_dest.clone(),
@@ -940,16 +938,16 @@ impl<'a> Lowerer<'a> {
             let mut class_id = self.infer_class_id(&member.object);
 
             // If class_id is not found, check if this is a Channel type parameter
-            // Parameters with Channel<T> type annotation get TypeId(100) but aren't in variable_class_map
+            // Parameters with Channel<T> type annotation aren't in variable_class_map
             if class_id.is_none() {
                 if let Expression::Identifier(ident) = &*member.object {
-                    // Check if this identifier is a local variable with Channel type (TypeId 100)
+                    // Check if this identifier is a local variable with Channel type
                     if let Some(&local_idx) = self.local_map.get(&ident.name) {
                         if let Some(reg) = self.local_registers.get(&local_idx) {
-                            if reg.ty.as_u32() == 100 {
+                            if reg.ty.as_u32() == CHANNEL_TYPE_ID {
                                 // This is a Channel type - look up Channel class by finding it in class_map
                                 for (&sym, &cid) in &self.class_map {
-                                    if self.interner.resolve(sym) == "Channel" {
+                                    if self.interner.resolve(sym) == TC::CHANNEL_TYPE_NAME {
                                         class_id = Some(cid);
                                         break;
                                     }
@@ -992,7 +990,7 @@ impl<'a> Lowerer<'a> {
                         .rev()
                         .find(|f| self.interner.resolve(f.name) == method_name)
                         .unwrap();
-                    let field_reg = self.alloc_register(TypeId::new(0));
+                    let field_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                     self.emit(IrInstr::LoadField {
                         dest: field_reg.clone(),
                         object,
@@ -1014,7 +1012,7 @@ impl<'a> Lowerer<'a> {
                     if self.async_functions.contains(&func_id) {
                         let mut method_args = vec![object];
                         method_args.extend(args);
-                        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+                        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
                         let task_dest = self.alloc_register(task_ty);
                         self.emit(IrInstr::Spawn {
                             dest: task_dest.clone(),
@@ -1086,7 +1084,7 @@ impl<'a> Lowerer<'a> {
             if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
                 if let Some(action) = self.type_registry.lookup_property(obj_type_id, method_name) {
                     if let crate::compiler::type_registry::DispatchAction::Opcode(kind) = action {
-                        let len_dest = self.alloc_register(TypeId::new(16));
+                        let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
                         match kind {
                             crate::compiler::type_registry::OpcodeKind::StringLen => {
                                 self.emit(IrInstr::StringLen {
@@ -1112,7 +1110,7 @@ impl<'a> Lowerer<'a> {
                     match action {
                         crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
                             // Special handling: string methods with RegExp argument
-                            if obj_type_id == 1 && !args.is_empty() && args[0].ty.as_u32() == 8 {
+                            if obj_type_id == STRING_TYPE_ID && !args.is_empty() && args[0].ty.as_u32() == REGEXP_TYPE_ID {
                                 use crate::vm::builtin::string as bs;
                                 match method_name {
                                     "replace" => id = bs::REPLACE_REGEXP,
@@ -1195,7 +1193,7 @@ impl<'a> Lowerer<'a> {
 
     /// Helper: emit an i32 constant into a register.
     pub(super) fn emit_i32_const(&mut self, value: i32) -> Register {
-        let reg = self.alloc_register(TypeId::new(16)); // int type
+        let reg = self.alloc_register(TypeId::new(INT_TYPE_ID)); // int type
         self.emit(IrInstr::Assign {
             dest: reg.clone(),
             value: IrValue::Constant(IrConstant::I32(value)),
@@ -1221,7 +1219,7 @@ impl<'a> Lowerer<'a> {
 
                 if let Some(index) = global_index {
                     // Found a static field - emit LoadGlobal
-                    let dest = self.alloc_register(TypeId::new(0));
+                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                     self.emit(IrInstr::LoadGlobal {
                         dest: dest.clone(),
                         index,
@@ -1255,7 +1253,6 @@ impl<'a> Lowerer<'a> {
         };
 
         // Check for JSON type - use duck typing with dynamic property access
-        const JSON_TYPE_ID: u32 = 15;
         if obj_ty_id == JSON_TYPE_ID {
             let json_type = TypeId::new(JSON_TYPE_ID);
             let dest = self.alloc_register(json_type);
@@ -1272,7 +1269,7 @@ impl<'a> Lowerer<'a> {
             if let Some(action) = self.type_registry.lookup_property(obj_ty_id, prop_name) {
                 match action {
                     crate::compiler::type_registry::DispatchAction::Opcode(kind) => {
-                        let dest = self.alloc_register(TypeId::new(16)); // length returns int
+                        let dest = self.alloc_register(TypeId::new(INT_TYPE_ID)); // length returns int
                         match kind {
                             crate::compiler::type_registry::OpcodeKind::StringLen => {
                                 self.emit(IrInstr::StringLen {
@@ -1313,7 +1310,7 @@ impl<'a> Lowerer<'a> {
             } else {
                 // Field not found — check if it's a method (bound method extraction)
                 if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
-                    let dest = self.alloc_register(TypeId::new(0));
+                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                     self.emit(IrInstr::BindMethod {
                         dest: dest.clone(),
                         object,
@@ -1441,7 +1438,7 @@ impl<'a> Lowerer<'a> {
             self.emit(IrInstr::NewArray {
                 dest: dest.clone(),
                 len: zero,
-                elem_ty: TypeId::new(0),
+                elem_ty: TypeId::new(NUMBER_TYPE_ID),
             });
 
             for elem_opt in &array.elements {
@@ -1457,7 +1454,7 @@ impl<'a> Lowerer<'a> {
                         ast::ArrayElement::Spread(spread_expr) => {
                             let src_arr = self.lower_expr(spread_expr);
                             // Inline for-loop: for i in 0..src_arr.length { dest.push(src_arr[i]) }
-                            let len = self.alloc_register(TypeId::new(16));
+                            let len = self.alloc_register(TypeId::new(INT_TYPE_ID));
                             self.emit(IrInstr::ArrayLen {
                                 dest: len.clone(),
                                 array: src_arr.clone(),
@@ -1474,7 +1471,7 @@ impl<'a> Lowerer<'a> {
                             self.current_function_mut()
                                 .add_block(crate::ir::BasicBlock::with_label(header, "spread.hdr"));
                             self.current_block = header;
-                            let cond = self.alloc_register(TypeId::new(2));
+                            let cond = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
                             self.emit(IrInstr::BinaryOp {
                                 dest: cond.clone(),
                                 op: BinaryOp::Less,
@@ -1491,7 +1488,7 @@ impl<'a> Lowerer<'a> {
                             self.current_function_mut()
                                 .add_block(crate::ir::BasicBlock::with_label(body, "spread.body"));
                             self.current_block = body;
-                            let elem = self.alloc_register(TypeId::new(0));
+                            let elem = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                             self.emit(IrInstr::LoadElement {
                                 dest: elem.clone(),
                                 array: src_arr.clone(),
@@ -1532,7 +1529,7 @@ impl<'a> Lowerer<'a> {
                     }
                 }
             }
-            let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(0));
+            let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(NUMBER_TYPE_ID));
             let dest = self.alloc_register(array_ty);
             self.emit(IrInstr::ArrayLiteral {
                 dest: dest.clone(),
@@ -1544,7 +1541,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_object(&mut self, object: &ast::ObjectExpression) -> Register {
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         let mut fields = Vec::new();
         let mut field_layout = Vec::new();
 
@@ -1606,7 +1603,7 @@ impl<'a> Lowerer<'a> {
             if let Expression::Identifier(ident) = &*assign.left {
                 if let Some(&local_idx) = self.local_map.get(&ident.name) {
                     if self.refcell_registers.contains_key(&local_idx) {
-                        let refcell_reg = self.alloc_register(TypeId::new(0));
+                        let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                         self.emit(IrInstr::LoadLocal {
                             dest: refcell_reg.clone(),
                             index: local_idx,
@@ -1632,7 +1629,7 @@ impl<'a> Lowerer<'a> {
                     let is_refcell = self.captures[idx].is_refcell;
                     let capture_idx = self.captures[idx].capture_idx;
                     if is_refcell {
-                        let refcell_reg = self.alloc_register(TypeId::new(0));
+                        let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                         self.emit(IrInstr::LoadCaptured {
                             dest: refcell_reg.clone(),
                             index: capture_idx,
@@ -1662,7 +1659,7 @@ impl<'a> Lowerer<'a> {
                             is_refcell,
                         });
                         if is_refcell {
-                            let refcell_reg = self.alloc_register(TypeId::new(0));
+                            let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                             self.emit(IrInstr::LoadCaptured {
                                 dest: refcell_reg.clone(),
                                 index: capture_idx,
@@ -1718,7 +1715,7 @@ impl<'a> Lowerer<'a> {
         let value = if let Some(op) = binary_op {
             // Compound assignment: load current value, apply operation
             let current = self.lower_expr(&assign.left);
-            let dest = self.alloc_register(TypeId::new(0));
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::BinaryOp {
                 dest: dest.clone(),
                 op,
@@ -1736,7 +1733,7 @@ impl<'a> Lowerer<'a> {
                     // Check if this is a RefCell variable
                     if self.refcell_registers.contains_key(&local_idx) {
                         // Load the RefCell pointer
-                        let refcell_ty = TypeId::new(0);
+                        let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
                         let refcell_reg = self.alloc_register(refcell_ty);
                         self.emit(IrInstr::LoadLocal {
                             dest: refcell_reg.clone(),
@@ -1782,7 +1779,7 @@ impl<'a> Lowerer<'a> {
 
                     if is_refcell {
                         // Load the RefCell pointer from captured
-                        let refcell_ty = TypeId::new(0);
+                        let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
                         let refcell_reg = self.alloc_register(refcell_ty);
                         self.emit(IrInstr::LoadCaptured {
                             dest: refcell_reg.clone(),
@@ -1817,7 +1814,7 @@ impl<'a> Lowerer<'a> {
 
                         if is_refcell {
                             // Load the RefCell pointer from captured
-                            let refcell_ty = TypeId::new(0);
+                            let refcell_ty = TypeId::new(NUMBER_TYPE_ID);
                             let refcell_reg = self.alloc_register(refcell_ty);
                             self.emit(IrInstr::LoadCaptured {
                                 dest: refcell_reg.clone(),
@@ -2003,7 +2000,7 @@ impl<'a> Lowerer<'a> {
             let ty = saved_local_registers
                 .get(&local_idx)
                 .map(|r| r.ty)
-                .unwrap_or(TypeId::new(0));
+                .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
             let is_refcell = saved_refcell_registers.contains_key(&local_idx);
             new_ancestor_vars.insert(
                 *sym,
@@ -2069,7 +2066,7 @@ impl<'a> Lowerer<'a> {
                 .type_annotation
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
-                .unwrap_or(TypeId::new(0));
+                .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
             let reg = self.alloc_register(ty);
 
             if let ast::Pattern::Identifier(ident) = &param.pattern {
@@ -2092,7 +2089,7 @@ impl<'a> Lowerer<'a> {
             .return_type
             .as_ref()
             .map(|t| self.resolve_type_annotation(t))
-            .unwrap_or_else(|| TypeId::new(0));
+            .unwrap_or_else(|| TypeId::new(NUMBER_TYPE_ID));
 
         // Create the arrow function
         let mut ir_func = crate::ir::IrFunction::new(&arrow_name, params, return_ty);
@@ -2159,7 +2156,7 @@ impl<'a> Lowerer<'a> {
         // `this` (if captured) is inserted at its assigned slot index
         let mut capture_regs = Vec::new();
         let this_reg_for_closure = if child_this_captured_idx.is_some() {
-            let this_reg = self.alloc_register(TypeId::new(0)); // Object type
+            let this_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Object type
 
             // Check where `this` comes from
             if let Some(ref _parent_this) = self.this_register {
@@ -2285,7 +2282,7 @@ impl<'a> Lowerer<'a> {
         }
 
         // Create closure: emit MakeClosure instruction with captures
-        let closure_ty = TypeId::new(0); // Generic function type
+        let closure_ty = TypeId::new(NUMBER_TYPE_ID); // Generic function type
         let dest = self.alloc_register(closure_ty);
         self.emit(IrInstr::MakeClosure {
             dest: dest.clone(),
@@ -2307,7 +2304,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
         let operand = self.lower_expr(&typeof_expr.argument);
-        let dest = self.alloc_register(TypeId::new(1)); // String type (TypeId 1)
+        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type (TypeId 1)
 
         self.emit(IrInstr::Typeof {
             dest: dest.clone(),
@@ -2317,22 +2314,22 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_new(&mut self, new_expr: &ast::NewExpression) -> Register {
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
 
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
-            if name == "RegExp" {
+            if name == TC::REGEXP_TYPE_NAME {
                 // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
                 // Use TypeId 8 for RegExp
-                let regexp_dest = self.alloc_register(TypeId::new(8));
+                let regexp_dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
                 let mut args = Vec::new();
                 for arg in &new_expr.arguments {
                     args.push(self.lower_expr(arg));
                 }
                 // If flags not provided, pass empty string
                 if args.len() == 1 {
-                    let empty_flags = self.alloc_register(TypeId::new(1)); // String type
+                    let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type
                     self.emit(IrInstr::Assign {
                         dest: empty_flags.clone(),
                         value: IrValue::Constant(IrConstant::String(String::new())),
@@ -2437,15 +2434,15 @@ impl<'a> Lowerer<'a> {
             }).collect();
 
             // Create the array of tasks
-            let tasks_array = self.alloc_register(TypeId::new(0)); // Task[] type
+            let tasks_array = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Task[] type
             self.emit(IrInstr::ArrayLiteral {
                 dest: tasks_array.clone(),
                 elements,
-                elem_ty: TypeId::new(0), // Task type
+                elem_ty: TypeId::new(NUMBER_TYPE_ID), // Task type
             });
 
             // Emit await_all instruction
-            let dest = self.alloc_register(TypeId::new(0)); // Result array type
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Result array type
             self.emit(IrInstr::AwaitAll {
                 dest: dest.clone(),
                 tasks: tasks_array,
@@ -2457,7 +2454,7 @@ impl<'a> Lowerer<'a> {
         let task = self.lower_expr(&await_expr.argument);
 
         // Emit await instruction
-        let dest = self.alloc_register(TypeId::new(0)); // Result type
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Result type
         self.emit(IrInstr::Await {
             dest: dest.clone(),
             task,
@@ -2470,7 +2467,7 @@ impl<'a> Lowerer<'a> {
         let args: Vec<Register> = async_call.arguments.iter().map(|a| self.lower_expr(a)).collect();
 
         // Destination for the Task handle - use proper Task type
-        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(11));
+        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
         let dest = self.alloc_register(task_ty);
 
         // Handle different callee types
@@ -2491,7 +2488,7 @@ impl<'a> Lowerer<'a> {
                     .local_registers
                     .get(&local_idx)
                     .map(|r| r.ty)
-                    .unwrap_or(TypeId::new(0));
+                    .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
                 let closure = self.alloc_register(closure_ty);
                 self.emit(IrInstr::LoadLocal {
                     dest: closure.clone(),
@@ -2563,7 +2560,7 @@ impl<'a> Lowerer<'a> {
 
         // Check if we've already captured `this`
         if let Some(capture_idx) = self.this_captured_idx {
-            let dest = self.alloc_register(TypeId::new(0));
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::LoadCaptured {
                 dest: dest.clone(),
                 index: capture_idx,
@@ -2578,7 +2575,7 @@ impl<'a> Lowerer<'a> {
             self.next_capture_slot += 1;
             self.this_captured_idx = Some(idx);
 
-            let dest = self.alloc_register(TypeId::new(0));
+            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
             self.emit(IrInstr::LoadCaptured {
                 dest: dest.clone(),
                 index: idx,
@@ -2605,7 +2602,7 @@ impl<'a> Lowerer<'a> {
         let class_id = self.resolve_class_from_type(&instanceof.type_name);
 
         // Allocate register for boolean result
-        let dest = self.alloc_register(TypeId::new(2)); // Boolean type
+        let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID)); // Boolean type
 
         self.emit(IrInstr::InstanceOf {
             dest: dest.clone(),
@@ -2631,7 +2628,7 @@ impl<'a> Lowerer<'a> {
         let class_id = self.resolve_class_from_type(&cast.target_type);
 
         // Allocate register for the casted object (same type as target)
-        let dest = self.alloc_register(TypeId::new(6)); // Unknown type - will be refined by type checker
+        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID)); // Unknown type - will be refined by type checker
 
         self.emit(IrInstr::Cast {
             dest: dest.clone(),
@@ -2785,7 +2782,7 @@ impl<'a> Lowerer<'a> {
             .find(|(&_sym, &id)| id == class_id)
             .map(|(&sym, _)| self.interner.resolve(sym).to_string());
         let class_name = match class_name {
-            Some(name) if name == "Map" || name == "Set" => name,
+            Some(name) if name == TC::MAP_TYPE_NAME || name == TC::SET_TYPE_NAME => name,
             _ => return,
         };
 
@@ -2804,7 +2801,7 @@ impl<'a> Lowerer<'a> {
             },
             "Set" => match method_name {
                 "values" => { dest.ty = TypeId::new(super::ARRAY_TYPE_ID); }
-                "has" => { dest.ty = TypeId::new(2); } // boolean
+                "has" => { dest.ty = TypeId::new(BOOLEAN_TYPE_ID); } // boolean
                 _ => {}
             },
             _ => {}
@@ -3045,7 +3042,7 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_template_literal(&mut self, template: &ast::TemplateLiteral) -> Register {
-        let string_ty = TypeId::new(3); // string type
+        let string_ty = TypeId::new(NULL_TYPE_ID); // string type
 
         // If no parts, return empty string
         if template.parts.is_empty() {
@@ -3094,7 +3091,7 @@ impl<'a> Lowerer<'a> {
                 TemplatePart::Expression(expr) => {
                     let expr_reg = self.lower_expr(expr);
                     // Convert to string if not already a string
-                    if expr_reg.ty.as_u32() == 3 {
+                    if expr_reg.ty.as_u32() == STRING_TYPE_ID {
                         // Already a string
                         part_registers.push(expr_reg);
                     } else {
@@ -3169,18 +3166,17 @@ impl<'a> Lowerer<'a> {
 
     /// Infer result type for binary operation
     fn infer_binary_result_type(&self, op: &BinaryOp, left: &Register, right: &Register) -> TypeId {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown, 16=Int
         if op.is_comparison() || op.is_logical() {
-            TypeId::new(2) // Boolean type
+            TypeId::new(BOOLEAN_TYPE_ID)
         } else {
             let l = left.ty.as_u32();
             let r = right.ty.as_u32();
             // String concatenation: if either operand is a string, result is string
-            if matches!(op, BinaryOp::Add) && (l == 1 || r == 1) {
-                TypeId::new(1) // String type
-            } else if l == 0 || r == 0 {
+            if matches!(op, BinaryOp::Add) && (l == STRING_TYPE_ID || r == STRING_TYPE_ID) {
+                TypeId::new(STRING_TYPE_ID)
+            } else if l == NUMBER_TYPE_ID || r == NUMBER_TYPE_ID {
                 // Mixed int+number promotes to number (f64)
-                TypeId::new(0) // number (f64)
+                TypeId::new(NUMBER_TYPE_ID)
             } else {
                 left.ty
             }
@@ -3254,7 +3250,7 @@ impl<'a> Lowerer<'a> {
             ast::JsxElementName::Identifier(ident) if name.is_intrinsic(self.interner) => {
                 // Intrinsic HTML element → string: "div", "span"
                 let tag_name = self.interner.resolve(ident.name).to_string();
-                let dest = self.alloc_register(TypeId::new(1)); // String
+                let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
                     value: IrValue::Constant(IrConstant::String(tag_name)),
@@ -3274,7 +3270,7 @@ impl<'a> Lowerer<'a> {
                 let ns = self.interner.resolve(namespace.name);
                 let n = self.interner.resolve(name.name);
                 let tag_name = format!("{}:{}", ns, n);
-                let dest = self.alloc_register(TypeId::new(1)); // String
+                let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
                     value: IrValue::Constant(IrConstant::String(tag_name)),
@@ -3300,7 +3296,7 @@ impl<'a> Lowerer<'a> {
         };
 
         // Emit field access: obj.property
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         let field_name = self.interner.resolve(property.name).to_string();
         self.emit(IrInstr::JsonLoadProperty {
             dest: dest.clone(),
@@ -3315,7 +3311,7 @@ impl<'a> Lowerer<'a> {
         // Try to resolve as an existing identifier in scope
         if let Some(sym) = self.interner.lookup(fragment_name) {
             if let Some(&local_idx) = self.local_map.get(&sym) {
-                let dest = self.alloc_register(TypeId::new(0));
+                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadLocal {
                     dest: dest.clone(),
                     index: local_idx,
@@ -3356,7 +3352,7 @@ impl<'a> Lowerer<'a> {
             }
         }
 
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         self.emit(IrInstr::ObjectLiteral {
             dest: dest.clone(),
             class: ClassId::new(0),
@@ -3375,7 +3371,7 @@ impl<'a> Lowerer<'a> {
     /// preserving attribute evaluation order.
     fn lower_jsx_props_with_spread(&mut self, attributes: &[ast::JsxAttribute]) -> Register {
         // Start with an empty object
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
         self.emit(IrInstr::ObjectLiteral {
             dest: dest.clone(),
             class: ClassId::new(0),
@@ -3425,7 +3421,7 @@ impl<'a> Lowerer<'a> {
             }
             None => {
                 // Boolean attribute: <input disabled /> → true
-                let dest = self.alloc_register(TypeId::new(2)); // Boolean
+                let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID)); // Boolean
                 self.emit(IrInstr::Assign {
                     dest: dest.clone(),
                     value: IrValue::Constant(IrConstant::Boolean(true)),
@@ -3461,7 +3457,7 @@ impl<'a> Lowerer<'a> {
                     // Skip whitespace-only text nodes
                     let trimmed = text.value.trim();
                     if !trimmed.is_empty() {
-                        let dest = self.alloc_register(TypeId::new(1)); // String
+                        let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String
                         self.emit(IrInstr::Assign {
                             dest: dest.clone(),
                             value: IrValue::Constant(IrConstant::String(trimmed.to_string())),
@@ -3502,7 +3498,7 @@ impl<'a> Lowerer<'a> {
         let mut args = vec![tag, props];
         args.extend(children);
 
-        let dest = self.alloc_register(TypeId::new(0));
+        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
 
         // Try to resolve factory by symbol in the interner
         if let Some(factory_sym) = self.interner.lookup(factory_name) {
@@ -3518,7 +3514,7 @@ impl<'a> Lowerer<'a> {
 
             // Check if it's a local variable (imported function / closure)
             if let Some(&local_idx) = self.local_map.get(&factory_sym) {
-                let closure = self.alloc_register(TypeId::new(0));
+                let closure = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                 self.emit(IrInstr::LoadLocal {
                     dest: closure.clone(),
                     index: local_idx,

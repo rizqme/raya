@@ -1885,7 +1885,8 @@ impl<'a> Binder<'a> {
                 let name = self.resolve(type_ref.name.name);
 
                 // Handle built-in generic types
-                if name == "Array" {
+                use crate::parser::TypeContext as TC;
+                if name == TC::ARRAY_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let elem_ty = self.resolve_type_annotation(&type_args[0])?;
@@ -1901,7 +1902,7 @@ impl<'a> Binder<'a> {
                 }
 
                 // Handle Task<T> for async functions
-                if name == "Task" {
+                if name == TC::TASK_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0])?;
@@ -1917,7 +1918,7 @@ impl<'a> Binder<'a> {
                 }
 
                 // Handle Channel<T> for channel communication
-                if name == "Channel" {
+                if name == TC::CHANNEL_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let message_ty = self.resolve_type_annotation(&type_args[0])?;

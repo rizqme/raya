@@ -488,8 +488,8 @@ impl<'a> Interpreter<'a> {
                     if !is_closure {
                         if let Some(ref profile) = self.module_profile {
                             let count = profile.record_call(func_id);
-                            // Check compilation policy every 256 calls to amortize overhead
-                            if count & 0xFF == 0 {
+                            // Check compilation policy periodically to amortize overhead
+                            if count & crate::vm::defaults::JIT_POLICY_CHECK_MASK == 0 {
                                 if let Some(mid) = jit_module_id {
                                     self.maybe_request_compilation(func_id, task.module(), mid);
                                 }

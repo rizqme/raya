@@ -141,7 +141,7 @@ impl GarbageCollector {
         Self {
             heap: Heap::new(context_id, type_registry),
             roots: RootSet::new(),
-            threshold: 1024 * 1024, // 1 MB initial threshold
+            threshold: crate::vm::defaults::DEFAULT_GC_THRESHOLD,
             stats: GcStats::default(),
         }
     }
@@ -221,7 +221,7 @@ impl GarbageCollector {
 
         // Adjust threshold (grow by 2x current usage)
         let current_usage = self.heap.allocated_bytes();
-        self.threshold = (current_usage * 2).max(1024 * 1024); // At least 1MB
+        self.threshold = (current_usage * 2).max(crate::vm::defaults::DEFAULT_GC_THRESHOLD);
     }
 
     /// Mark phase: mark all reachable objects

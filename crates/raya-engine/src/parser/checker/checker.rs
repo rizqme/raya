@@ -2936,7 +2936,8 @@ impl<'a> TypeChecker<'a> {
                 let name = self.resolve(type_ref.name.name);
 
                 // Handle built-in generic types
-                if name == "Array" {
+                use crate::parser::TypeContext as TC;
+                if name == TC::ARRAY_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let elem_ty = self.resolve_type_annotation(&type_args[0]);
@@ -2948,7 +2949,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Handle Task<T> for async functions
-                if name == "Task" {
+                if name == TC::TASK_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0]);
@@ -2961,16 +2962,16 @@ impl<'a> TypeChecker<'a> {
 
                 // Handle built-in types
                 // Note: Mutex is now a normal class from Mutex.raya
-                if name == "RegExp" {
+                if name == TC::REGEXP_TYPE_NAME {
                     return self.type_ctx.regexp_type();
                 }
-                if name == "Channel" {
+                if name == TC::CHANNEL_TYPE_NAME {
                     return self.type_ctx.channel_type();
                 }
-                if name == "Map" {
+                if name == TC::MAP_TYPE_NAME {
                     return self.type_ctx.map_type();
                 }
-                if name == "Set" {
+                if name == TC::SET_TYPE_NAME {
                     return self.type_ctx.set_type();
                 }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table

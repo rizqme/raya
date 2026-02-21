@@ -23,8 +23,19 @@ use rustc_hash::{FxHashMap, FxHashSet};
 pub(super) const UNRESOLVED_TYPE_ID: u32 = super::type_registry::UNRESOLVED_TYPE_ID;
 pub(super) const UNRESOLVED: TypeId = TypeId::new(UNRESOLVED_TYPE_ID);
 
-/// TypeId for generic array types (string[], number[], etc.)
-/// Defined in TypeContext as the pre-interned Array<Unknown> type.
+// Well-known TypeId constants re-exported from TypeContext for use in lowering submodules.
+pub(super) const NUMBER_TYPE_ID: u32 = TypeContext::NUMBER_TYPE_ID;
+pub(super) const STRING_TYPE_ID: u32 = TypeContext::STRING_TYPE_ID;
+pub(super) const BOOLEAN_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
+pub(super) const NULL_TYPE_ID: u32 = TypeContext::NULL_TYPE_ID;
+pub(super) const UNKNOWN_TYPE_ID: u32 = TypeContext::UNKNOWN_TYPE_ID;
+pub(super) const REGEXP_TYPE_ID: u32 = TypeContext::REGEXP_TYPE_ID;
+pub(super) const TASK_TYPE_ID: u32 = TypeContext::TASK_TYPE_ID;
+pub(super) const CHANNEL_TYPE_ID: u32 = TypeContext::CHANNEL_TYPE_ID;
+pub(super) const MAP_TYPE_ID: u32 = TypeContext::MAP_TYPE_ID;
+pub(super) const SET_TYPE_ID: u32 = TypeContext::SET_TYPE_ID;
+pub(super) const JSON_TYPE_ID: u32 = TypeContext::JSON_TYPE_ID;
+pub(super) const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
 pub(super) const ARRAY_TYPE_ID: u32 = TypeContext::ARRAY_TYPE_ID;
 
 /// Collects identifiers referenced in a function body that match module-level variable names.

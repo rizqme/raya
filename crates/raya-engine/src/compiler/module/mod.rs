@@ -17,6 +17,9 @@ mod resolver;
 mod std_modules;
 mod typedef;
 
+/// The import specifier prefix for standard library modules (e.g., `"std:io"`).
+pub const STD_MODULE_PREFIX: &str = "std:";
+
 pub use cache::ModuleCache;
 pub use compiler::{CompiledModule, ModuleCompiler, ModuleCompileError};
 pub use exports::{ExportedSymbol, ExportRegistry, ModuleExports};

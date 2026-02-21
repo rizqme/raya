@@ -39,8 +39,8 @@ impl Default for SchedulerLimits {
             max_concurrent_tasks: None,
             max_stack_size: None,
             max_heap_size: None,
-            max_preemptions: 1000,
-            preempt_threshold_ms: 10,
+            max_preemptions: crate::vm::defaults::DEFAULT_MAX_PREEMPTIONS,
+            preempt_threshold_ms: crate::vm::defaults::DEFAULT_PREEMPT_THRESHOLD_MS,
         }
     }
 }
