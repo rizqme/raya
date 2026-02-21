@@ -26,7 +26,7 @@ impl LintRule for NoFallthrough {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let switch = match stmt {
             ast::Statement::Switch(s) => s,
@@ -50,7 +50,7 @@ impl LintRule for NoFallthrough {
                         rule: META.name,
                         code: META.code,
                         message: "Switch case falls through to the next case".to_string(),
-                        span: case.span.clone(),
+                        span: case.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec!["Add 'break', 'return', or 'throw' to prevent fallthrough".to_string()],

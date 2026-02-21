@@ -204,7 +204,7 @@ pub fn get_class_id(obj: Value) -> Option<usize> {
 }
 
 /// Get class by ID from registry
-pub fn get_class<'a>(registry: &'a ClassRegistry, class_id: usize) -> Option<&'a Class> {
+pub fn get_class(registry: &ClassRegistry, class_id: usize) -> Option<&Class> {
     registry.get_class(class_id)
 }
 

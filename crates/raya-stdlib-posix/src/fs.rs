@@ -278,10 +278,8 @@ pub fn read_dir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
             match std::fs::read_dir(&path) {
                 Ok(entries) => {
                     let mut items = Vec::new();
-                    for entry in entries {
-                        if let Ok(entry) = entry {
-                            items.push(entry.file_name().to_string_lossy().into_owned());
-                        }
+                    for entry in entries.flatten() {
+                        items.push(entry.file_name().to_string_lossy().into_owned());
                     }
                     IoCompletion::StringArray(items)
                 }

@@ -969,7 +969,7 @@ impl DateObject {
     /// Recompose from (year, month[0-11], day[1-31], hour, min, sec, ms) to timestamp_ms
     fn recompose(y: i32, m: i32, d: i32, h: i32, min: i32, sec: i32, ms: i32) -> i64 {
         let days = Self::days_from_civil(y, m + 1, d);
-        days * 86400_000 + h as i64 * 3600_000 + min as i64 * 60_000 + sec as i64 * 1000 + ms as i64
+        days * 86_400_000 + h as i64 * 3_600_000 + min as i64 * 60_000 + sec as i64 * 1000 + ms as i64
     }
 
     // ---- Getters ----

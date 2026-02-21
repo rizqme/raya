@@ -193,30 +193,26 @@ impl TypeDefParser {
         let mut exports = Vec::new();
 
         for stmt in &program.statements {
-            match stmt {
-                Statement::ExportDecl(export) => {
-                    match export {
-                        ExportDecl::Declaration(inner) => {
-                            if let Some(export) = self.convert_declaration(inner)? {
-                                exports.push(export);
-                            }
-                        }
-                        ExportDecl::Named { specifiers, .. } => {
-                            // Named exports reference other declarations
-                            // For now, we skip these - they should reference declared items
-                            let _ = specifiers;
-                        }
-                        ExportDecl::All { .. } => {
-                            // Re-exports from other modules
-                        }
-                        ExportDecl::Default { .. } => {
-                            // Default exports — type information comes from the expression
-                            // For .d.raya files, default exports are handled via named "default" symbol
+            if let Statement::ExportDecl(export) = stmt {
+                match export {
+                    ExportDecl::Declaration(inner) => {
+                        if let Some(export) = self.convert_declaration(inner)? {
+                            exports.push(export);
                         }
                     }
+                    ExportDecl::Named { specifiers, .. } => {
+                        // Named exports reference other declarations
+                        // For now, we skip these - they should reference declared items
+                        let _ = specifiers;
+                    }
+                    ExportDecl::All { .. } => {
+                        // Re-exports from other modules
+                    }
+                    ExportDecl::Default { .. } => {
+                        // Default exports — type information comes from the expression
+                        // For .d.raya files, default exports are handled via named "default" symbol
+                    }
                 }
-                // Non-exported declarations are ignored in .d.raya files
-                _ => {}
             }
         }
 
@@ -238,7 +234,7 @@ impl TypeDefParser {
                     params: func.params.clone(),
                     return_type: func.return_type.clone(),
                     is_async: func.is_async,
-                    span: func.span.clone(),
+                    span: func.span,
                 };
                 Ok(Some(TypeDefExport::Function(sig)))
             }
@@ -252,7 +248,7 @@ impl TypeDefParser {
                     implements: class.implements.clone(),
                     members,
                     is_abstract: class.is_abstract,
-                    span: class.span.clone(),
+                    span: class.span,
                 };
                 Ok(Some(TypeDefExport::Class(sig)))
             }
@@ -262,7 +258,7 @@ impl TypeDefParser {
                     name: self.interner.resolve(alias.name.name).to_string(),
                     type_params: alias.type_params.clone(),
                     type_annotation: alias.type_annotation.clone(),
-                    span: alias.span.clone(),
+                    span: alias.span,
                 };
                 Ok(Some(TypeDefExport::TypeAlias(sig)))
             }
@@ -273,7 +269,7 @@ impl TypeDefParser {
                     TypeDefError::MissingTypeAnnotation {
                         message: "Variable declarations in .d.raya files must have type annotations"
                             .to_string(),
-                        span: var.span.clone(),
+                        span: var.span,
                     }
                 })?;
 
@@ -284,7 +280,7 @@ impl TypeDefParser {
                         return Err(TypeDefError::InvalidDeclaration {
                             message: "Destructuring patterns not supported in .d.raya files"
                                 .to_string(),
-                            span: var.span.clone(),
+                            span: var.span,
                         })
                     }
                 };
@@ -293,7 +289,7 @@ impl TypeDefParser {
                     name,
                     type_annotation,
                     is_const: var.kind == VariableKind::Const,
-                    span: var.span.clone(),
+                    span: var.span,
                 };
                 Ok(Some(TypeDefExport::Variable(sig)))
             }
@@ -318,7 +314,7 @@ impl TypeDefParser {
                         visibility: field.visibility,
                         is_static: field.is_static,
                         is_readonly: field.is_readonly,
-                        span: field.span.clone(),
+                        span: field.span,
                     });
                 }
 
@@ -332,14 +328,14 @@ impl TypeDefParser {
                         is_static: method.is_static,
                         is_async: method.is_async,
                         is_abstract: method.is_abstract,
-                        span: method.span.clone(),
+                        span: method.span,
                     });
                 }
 
                 ClassMember::Constructor(ctor) => {
                     sigs.push(ClassMemberSignature::Constructor {
                         params: ctor.params.clone(),
-                        span: ctor.span.clone(),
+                        span: ctor.span,
                     });
                 }
             }

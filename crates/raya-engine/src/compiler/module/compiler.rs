@@ -178,8 +178,8 @@ impl ModuleCompiler {
     }
 
     /// Discover all modules reachable from the given entry point
-    fn discover_modules(&mut self, entry_path: &PathBuf) -> ModuleCompileResult<()> {
-        let mut to_visit = vec![entry_path.clone()];
+    fn discover_modules(&mut self, entry_path: &Path) -> ModuleCompileResult<()> {
+        let mut to_visit = vec![entry_path.to_path_buf()];
         let mut visited = HashSet::new();
 
         while let Some(path) = to_visit.pop() {
@@ -324,7 +324,7 @@ impl ModuleCompiler {
     fn inject_imports(
         &self,
         ast: &AstModule,
-        current_path: &PathBuf,
+        current_path: &Path,
         binder: &mut Binder<'_>,
         interner: &Interner,
     ) -> ModuleCompileResult<()> {
@@ -412,8 +412,8 @@ impl ModuleCompiler {
     }
 
     /// Extract exported symbols from a compiled module's symbol table
-    fn extract_exports(&self, path: &PathBuf, symbols: &crate::parser::checker::SymbolTable) -> ModuleExports {
-        let mut exports = ModuleExports::new(path.clone());
+    fn extract_exports(&self, path: &Path, symbols: &crate::parser::checker::SymbolTable) -> ModuleExports {
+        let mut exports = ModuleExports::new(path.to_path_buf());
 
         for symbol in symbols.get_exported_symbols() {
             exports.add_symbol(ExportedSymbol::from_symbol(symbol));

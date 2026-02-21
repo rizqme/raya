@@ -493,8 +493,8 @@ pub fn transform_to_state_machine(
 
 /// Internal state for the state machine transformation.
 struct StateMachineTransformer<'a> {
-    function_id: u32,
-    local_count: u32,
+    _function_id: u32,
+    _local_count: u32,
     #[allow(dead_code)]
     param_count: u32,
     analysis: &'a SuspensionAnalysis,
@@ -517,14 +517,14 @@ impl<'a> StateMachineTransformer<'a> {
         let max_block = blocks.iter().map(|b| b.id.0).max().unwrap_or(0);
 
         Self {
-            function_id,
-            local_count,
+            _function_id: function_id,
+            _local_count: local_count,
             param_count,
             analysis,
             input_blocks: blocks,
             output_blocks: Vec::new(),
             next_block_id: max_block + 1,
-            next_temp_reg: (local_count as u32 + 1) * 2 + 100,
+            next_temp_reg: (local_count + 1) * 2 + 100,
         }
     }
 

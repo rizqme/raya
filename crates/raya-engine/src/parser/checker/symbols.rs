@@ -28,6 +28,7 @@ pub enum SymbolKind {
 
 /// Symbol flags for additional metadata
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Default)]
 pub struct SymbolFlags {
     /// Is this symbol exported from the module?
     pub is_exported: bool,
@@ -41,17 +42,6 @@ pub struct SymbolFlags {
     pub is_imported: bool,
 }
 
-impl Default for SymbolFlags {
-    fn default() -> Self {
-        SymbolFlags {
-            is_exported: false,
-            is_const: false,
-            is_async: false,
-            is_readonly: false,
-            is_imported: false,
-        }
-    }
-}
 
 /// Symbol information
 #[derive(Debug, Clone)]
@@ -233,10 +223,7 @@ impl SymbolTable {
             scope_id = ScopeId((self.scopes.len() - 1) as u32);
         }
         loop {
-            let scope = match self.scopes.get(scope_id.0 as usize) {
-                Some(s) => s,
-                None => return None,
-            };
+            let scope = self.scopes.get(scope_id.0 as usize)?;
 
             // Check if symbol exists in this scope
             if let Some(symbol) = scope.symbols.get(name) {

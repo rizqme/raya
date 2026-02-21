@@ -242,9 +242,9 @@ fn is_excluded(path: &str, exclude: &[String]) -> bool {
     for pattern in exclude {
         if pattern.contains("**") {
             let suffix = pattern.trim_start_matches("**/");
-            if suffix.starts_with('*') {
+            if let Some(ext) = suffix.strip_prefix('*') {
                 // e.g. *.tmp → match extension
-                let ext = &suffix[1..]; // ".tmp"
+                // ".tmp"
                 if path.ends_with(ext) {
                     return true;
                 }

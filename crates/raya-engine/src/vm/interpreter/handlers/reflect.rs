@@ -41,7 +41,7 @@ impl<'a> Interpreter<'a> {
                         "defineMetadata requires 3 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let value = args[1];
                 let target = args[2];
 
@@ -57,10 +57,10 @@ impl<'a> Interpreter<'a> {
                         "defineMetadata with property requires 4 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let value = args[1];
                 let target = args[2];
-                let property_key = get_string(args[3].clone())?;
+                let property_key = get_string(args[3])?;
 
                 let mut metadata = self.metadata.lock();
                 metadata.define_metadata_property(key, value, target, property_key);
@@ -74,11 +74,11 @@ impl<'a> Interpreter<'a> {
                         "getMetadata requires 2 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
 
                 let metadata = self.metadata.lock();
-                metadata.get_metadata(&key, target).unwrap_or(Value::null())
+                metadata.get_metadata(&key, target).unwrap_or_default()
             }
 
             reflect::GET_METADATA_PROP => {
@@ -88,12 +88,12 @@ impl<'a> Interpreter<'a> {
                         "getMetadata with property requires 3 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
-                let property_key = get_string(args[2].clone())?;
+                let property_key = get_string(args[2])?;
 
                 let metadata = self.metadata.lock();
-                metadata.get_metadata_property(&key, target, &property_key).unwrap_or(Value::null())
+                metadata.get_metadata_property(&key, target, &property_key).unwrap_or_default()
             }
 
             reflect::HAS_METADATA => {
@@ -103,7 +103,7 @@ impl<'a> Interpreter<'a> {
                         "hasMetadata requires 2 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
 
                 let metadata = self.metadata.lock();
@@ -117,9 +117,9 @@ impl<'a> Interpreter<'a> {
                         "hasMetadata with property requires 3 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
-                let property_key = get_string(args[2].clone())?;
+                let property_key = get_string(args[2])?;
 
                 let metadata = self.metadata.lock();
                 Value::bool(metadata.has_metadata_property(&key, target, &property_key))
@@ -159,7 +159,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1].clone())?;
+                let property_key = get_string(args[1])?;
 
                 let metadata = self.metadata.lock();
                 let keys = metadata.get_metadata_keys_property(target, &property_key);
@@ -185,7 +185,7 @@ impl<'a> Interpreter<'a> {
                         "deleteMetadata requires 2 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
 
                 let mut metadata = self.metadata.lock();
@@ -199,9 +199,9 @@ impl<'a> Interpreter<'a> {
                         "deleteMetadata with property requires 3 arguments".to_string()
                     ));
                 }
-                let key = get_string(args[0].clone())?;
+                let key = get_string(args[0])?;
                 let target = args[1];
-                let property_key = get_string(args[2].clone())?;
+                let property_key = get_string(args[2])?;
 
                 let mut metadata = self.metadata.lock();
                 Value::bool(metadata.delete_metadata_property(&key, target, &property_key))
@@ -231,7 +231,7 @@ impl<'a> Interpreter<'a> {
                         "getClassByName requires 1 argument".to_string()
                     ));
                 }
-                let name = get_string(args[0].clone())?;
+                let name = get_string(args[0])?;
                 let classes = self.classes.read();
                 if let Some(class) = classes.get_class_by_name(&name) {
                     Value::i32(class.id as i32)
@@ -370,7 +370,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1].clone())?;
+                let property_key = get_string(args[1])?;
 
                 if !target.is_ptr() {
                     return Err(VmError::TypeError("get: target must be an object".to_string()));
@@ -404,7 +404,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1].clone())?;
+                let property_key = get_string(args[1])?;
                 let value = args[2];
 
                 if !target.is_ptr() {
@@ -442,7 +442,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1].clone())?;
+                let property_key = get_string(args[1])?;
 
                 if !target.is_ptr() {
                     Value::bool(false)
@@ -497,7 +497,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let property_key = get_string(args[1].clone())?;
+                let property_key = get_string(args[1])?;
 
                 if !target.is_ptr() {
                     Value::null()
@@ -690,7 +690,7 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
                 let target = args[0];
-                let method_name = get_string(args[1].clone())?;
+                let method_name = get_string(args[1])?;
 
                 if !target.is_ptr() {
                     Value::bool(false)
@@ -886,7 +886,7 @@ impl<'a> Interpreter<'a> {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError("typeOf requires 1 argument".to_string()));
                 }
-                let type_name = get_string(args[0].clone())?;
+                let type_name = get_string(args[0])?;
 
                 // Check primitive types
                 let (kind, class_id) = match type_name.as_str() {
@@ -899,7 +899,7 @@ impl<'a> Interpreter<'a> {
                             ("class".to_string(), Some(class.id))
                         } else {
                             // Unknown type
-                            return Ok(stack.push(Value::null())?);
+                            return stack.push(Value::null());
                         }
                     }
                 };
@@ -936,8 +936,8 @@ impl<'a> Interpreter<'a> {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError("isAssignableTo requires 2 arguments".to_string()));
                 }
-                let source = get_string(args[0].clone())?;
-                let target = get_string(args[1].clone())?;
+                let source = get_string(args[0])?;
+                let target = get_string(args[1])?;
 
                 // Same type is always assignable
                 if source == target {
@@ -1003,7 +1003,7 @@ impl<'a> Interpreter<'a> {
                     return Err(VmError::RuntimeError("implements requires 2 arguments".to_string()));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
-                let interface_name = get_string(args[1].clone())?;
+                let interface_name = get_string(args[1])?;
 
                 let class_metadata = self.class_metadata.read();
                 if let Some(meta) = class_metadata.get(class_id) {
@@ -1087,7 +1087,7 @@ impl<'a> Interpreter<'a> {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError("getImplementors requires 1 argument".to_string()));
                 }
-                let interface_name = get_string(args[0].clone())?;
+                let interface_name = get_string(args[0])?;
 
                 let class_metadata = self.class_metadata.read();
                 let implementors = class_metadata.get_implementors(&interface_name);
@@ -1196,7 +1196,7 @@ impl<'a> Interpreter<'a> {
                         desc.push_str(&format!("  // {} fields\n", class.field_count));
                     }
 
-                    desc.push_str("}");
+                    desc.push('}');
                     desc
                 } else {
                     format!("Unknown class {}", class_id)
@@ -1359,7 +1359,7 @@ impl<'a> Interpreter<'a> {
                 let target_id = if let Some(ptr) = unsafe { target.as_ptr::<u8>() } {
                     ptr.as_ptr() as usize
                 } else {
-                    return Ok(stack.push(Value::null())?);
+                    return stack.push(Value::null());
                 };
 
                 // Scan all allocations for references to target
@@ -1570,11 +1570,7 @@ impl<'a> Interpreter<'a> {
                     Value::null()
                 } else if let Some(ref debug_info) = module.debug_info {
                     // Find the class and method
-                    let class_def = module.classes.get(class_id);
-                    if class_def.is_none() {
-                        Value::null()
-                    } else {
-                        let class_def = class_def.unwrap();
+                    if let Some(class_def) = module.classes.get(class_id) {
                         // Find the method by name
                         let method = class_def.methods.iter()
                             .find(|m| m.name == method_name);
@@ -1614,6 +1610,8 @@ impl<'a> Interpreter<'a> {
                             // Method not found
                             Value::null()
                         }
+                    } else {
+                        Value::null()
                     }
                 } else {
                     Value::null()
@@ -1728,11 +1726,11 @@ impl<'a> Interpreter<'a> {
                         "BytecodeBuilder requires 3 arguments (name, paramCount, returnType)".to_string()
                     ));
                 }
-                let name = get_string(args[0].clone())?;
+                let name = get_string(args[0])?;
                 let param_count = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
                     as usize;
-                let return_type = get_string(args[2].clone())?;
+                let return_type = get_string(args[2])?;
                 let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name, param_count, return_type);
                 Value::i32(builder_id as i32)
@@ -1874,7 +1872,7 @@ impl<'a> Interpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let type_name = get_string(args[1].clone())?;
+                let type_name = get_string(args[1])?;
                 let stack_type = match type_name.as_str() {
                     "number" | "i32" | "i64" | "int" => crate::vm::reflect::StackType::Integer,
                     "f64" | "float" => crate::vm::reflect::StackType::Float,
@@ -2013,7 +2011,7 @@ impl<'a> Interpreter<'a> {
                         "newClassBuilder requires 1 argument (name)".to_string()
                     ));
                 }
-                let name = get_string(args[0].clone())?;
+                let name = get_string(args[0])?;
                 let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name);
                 Value::i32(builder_id as i32)
@@ -2028,8 +2026,8 @@ impl<'a> Interpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let name = get_string(args[1].clone())?;
-                let type_name = get_string(args[2].clone())?;
+                let name = get_string(args[1])?;
+                let type_name = get_string(args[2])?;
                 let is_static = args[3].as_bool().unwrap_or(false);
                 let is_readonly = args[4].as_bool().unwrap_or(false);
                 let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
@@ -2048,7 +2046,7 @@ impl<'a> Interpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let name = get_string(args[1].clone())?;
+                let name = get_string(args[1])?;
                 let function_id = args[2].as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as usize;
@@ -2108,7 +2106,7 @@ impl<'a> Interpreter<'a> {
                 let builder_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let interface_name = get_string(args[1].clone())?;
+                let interface_name = get_string(args[1])?;
                 let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder = registry.get_mut(builder_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
@@ -2178,7 +2176,7 @@ impl<'a> Interpreter<'a> {
                         "createModule requires 1 argument (name)".to_string()
                     ));
                 }
-                let name = get_string(args[0].clone())?;
+                let name = get_string(args[0])?;
                 let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module_id = registry.create_module(name)?;
                 Value::i32(module_id as i32)
@@ -2223,7 +2221,7 @@ impl<'a> Interpreter<'a> {
                 let class_id = args[1].as_i32()
                     .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
                     as usize;
-                let name = get_string(args[2].clone())?;
+                let name = get_string(args[2])?;
                 let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)
                     .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
@@ -2240,7 +2238,7 @@ impl<'a> Interpreter<'a> {
                 let module_id = args[0].as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
-                let name = get_string(args[1].clone())?;
+                let name = get_string(args[1])?;
                 let value = args[2];
                 let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module = registry.get_mut(module_id)

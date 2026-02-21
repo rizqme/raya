@@ -25,7 +25,7 @@ impl LintRule for NoDuplicateCase {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let switch = match stmt {
             ast::Statement::Switch(s) => s,
@@ -51,7 +51,7 @@ impl LintRule for NoDuplicateCase {
                     rule: META.name,
                     code: META.code,
                     message: format!("Duplicate case value: {}", key.display()),
-                    span: test.span().clone(),
+                    span: *test.span(),
                     severity: META.default_severity,
                     fix: None,
                     notes: vec![format!("First occurrence at line {}", first_line)],
@@ -83,7 +83,7 @@ impl CaseKey {
     }
 }
 
-fn case_key(expr: &ast::Expression, ctx: &LintContext) -> Option<CaseKey> {
+fn case_key(expr: &ast::Expression, ctx: &LintContext<'_>) -> Option<CaseKey> {
     match expr {
         ast::Expression::IntLiteral(i) => Some(CaseKey::Int(i.value)),
         ast::Expression::StringLiteral(s) => {

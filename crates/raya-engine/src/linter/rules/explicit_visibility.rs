@@ -31,7 +31,7 @@ impl LintRule for ExplicitVisibility {
     fn check_class_member(
         &self,
         member: &ast::ClassMember,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         match member {
             ast::ClassMember::Field(f) => {
@@ -41,7 +41,7 @@ impl LintRule for ExplicitVisibility {
                         rule: META.name,
                         code: META.code,
                         message: format!("Field '{}' is missing an explicit visibility modifier", name),
-                        span: f.name.span.clone(),
+                        span: f.name.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec!["Add 'public', 'private', or 'protected' before the field".to_string()],
@@ -57,7 +57,7 @@ impl LintRule for ExplicitVisibility {
                         rule: META.name,
                         code: META.code,
                         message: format!("Method '{}' is missing an explicit visibility modifier", name),
-                        span: m.name.span.clone(),
+                        span: m.name.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec!["Add 'public', 'private', or 'protected' before the method".to_string()],

@@ -7,24 +7,7 @@
 //! - Object model and memory management
 //! - Synchronization primitives (Mutex)
 
-#![warn(missing_docs)]
-#![warn(rust_2018_idioms)]
-// TODO: Fix these clippy warnings properly
-#![cfg_attr(test, allow(clippy::approx_constant))]
-#![cfg_attr(test, allow(clippy::identity_op))]
-#![cfg_attr(test, allow(clippy::unnecessary_cast))]
-#![cfg_attr(test, allow(clippy::single_char_add_str))]
-#![cfg_attr(test, allow(unused_variables))]
-#![cfg_attr(test, allow(unused_imports))]
-#![allow(clippy::approx_constant)]
-#![allow(clippy::identity_op)]
-#![allow(clippy::derivable_impls)]
-#![allow(clippy::arc_with_non_send_sync)]
-#![allow(clippy::redundant_closure)]
-#![allow(clippy::unnecessary_lazy_evaluations)]
-#![allow(clippy::needless_return)]
-#![allow(clippy::not_unsafe_ptr_arg_deref)]
-#![allow(ambiguous_wide_pointer_comparisons)]
+// Note: clippy allows are configured at the crate level in lib.rs
 
 pub mod abi;
 pub mod builtin;

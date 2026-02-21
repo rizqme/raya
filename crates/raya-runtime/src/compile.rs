@@ -11,16 +11,12 @@ use crate::error::RuntimeError;
 
 /// Options controlling compilation output.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct CompileOptions {
     /// Include source map (bytecode offset → source location) in output.
     pub sourcemap: bool,
 }
 
-impl Default for CompileOptions {
-    fn default() -> Self {
-        Self { sourcemap: false }
-    }
-}
 
 /// Diagnostics returned from a check-only pass (no codegen).
 pub struct CheckDiagnostics {
@@ -216,7 +212,7 @@ fn compute_user_line(byte_offset: usize, user_offset: usize, full_source: &str) 
 /// Format a CheckError with line number relative to user code.
 fn format_check_error(error: &CheckError, user_offset: usize, full_source: &str) -> String {
     let span = error.span();
-    let line = compute_user_line(span.start as usize, user_offset, full_source);
+    let line = compute_user_line(span.start, user_offset, full_source);
     if line > 0 {
         format!("{} (line {})", error, line)
     } else {
@@ -227,7 +223,7 @@ fn format_check_error(error: &CheckError, user_offset: usize, full_source: &str)
 /// Format a BindError with line number relative to user code.
 fn format_bind_error(error: &BindError, user_offset: usize, full_source: &str) -> String {
     let span = error.span();
-    let line = compute_user_line(span.start as usize, user_offset, full_source);
+    let line = compute_user_line(span.start, user_offset, full_source);
     if line > 0 {
         format!("{} (line {})", error, line)
     } else {

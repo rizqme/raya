@@ -164,7 +164,7 @@ pub trait CodegenBackend: Send + Sync {
     fn compile_function(
         &self,
         func: &JitFunction,
-        ctx: &ModuleContext,
+        ctx: &ModuleContext<'_>,
     ) -> Result<CompiledCode, CodegenError>;
 
     /// Apply relocations and produce executable code

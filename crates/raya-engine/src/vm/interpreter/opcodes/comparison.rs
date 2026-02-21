@@ -109,11 +109,11 @@ impl<'a> Interpreter<'a> {
             // Float Comparisons
             // =========================================================
             Opcode::Feq => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -124,11 +124,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fne => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -139,11 +139,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Flt => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -154,11 +154,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fle => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -169,11 +169,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fgt => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -184,11 +184,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fge => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

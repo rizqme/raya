@@ -70,7 +70,7 @@ pub struct AotRunResult {
 pub unsafe fn run_aot_function(
     frame: *mut AotFrame,
     ctx: *mut AotTaskContext,
-    max_preemptions: u32,
+    _max_preemptions: u32,
 ) -> AotRunResult {
     debug_assert!(!frame.is_null(), "AOT frame must not be null");
     debug_assert!(!ctx.is_null(), "AOT context must not be null");
@@ -142,6 +142,11 @@ pub unsafe fn run_aot_function(
 /// Allocate a root frame for a function's first invocation.
 ///
 /// Loads initial arguments into the frame's locals.
+///
+/// # Safety
+///
+/// Caller must ensure `helpers.alloc_frame` is a valid function pointer and
+/// that `args.len()` does not exceed `local_count`.
 pub unsafe fn allocate_initial_frame(
     function_id: u32,
     local_count: u32,
@@ -172,6 +177,10 @@ pub unsafe fn allocate_initial_frame(
 ///
 /// Sets the resume value in the context. The frame's `resume_point` is
 /// already set by the compiled code before it returned AOT_SUSPEND.
+///
+/// # Safety
+///
+/// Caller must ensure `ctx` is a valid, non-null pointer to an initialized `AotTaskContext`.
 pub unsafe fn prepare_resume(
     ctx: *mut AotTaskContext,
     resume_value: Option<Value>,

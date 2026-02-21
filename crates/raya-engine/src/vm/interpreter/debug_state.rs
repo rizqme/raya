@@ -106,6 +106,12 @@ pub struct BreakpointEntry {
     pub hit_count: u32,
 }
 
+impl Default for DebugState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DebugState {
     /// Create a new debug state (inactive by default).
     pub fn new() -> Self {
@@ -288,7 +294,7 @@ impl DebugState {
         // Add to fast-lookup map
         self.breakpoints.write()
             .entry(func_id)
-            .or_insert_with(FxHashSet::default)
+            .or_default()
             .insert(offset);
 
         // Add to registry

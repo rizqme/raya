@@ -35,7 +35,7 @@ impl LintRule for NoInvalidTypeof {
     fn check_expression(
         &self,
         expr: &ast::Expression,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let bin = match expr {
             ast::Expression::Binary(b) => b,
@@ -106,9 +106,9 @@ fn is_typeof(expr: &ast::Expression) -> bool {
     matches!(expr, ast::Expression::Typeof(_))
 }
 
-fn extract_string(expr: &ast::Expression, ctx: &LintContext) -> Option<(String, crate::parser::token::Span)> {
+fn extract_string(expr: &ast::Expression, ctx: &LintContext<'_>) -> Option<(String, crate::parser::token::Span)> {
     if let ast::Expression::StringLiteral(s) = expr {
-        Some((ctx.interner.resolve(s.value).to_string(), s.span.clone()))
+        Some((ctx.interner.resolve(s.value).to_string(), s.span))
     } else {
         None
     }

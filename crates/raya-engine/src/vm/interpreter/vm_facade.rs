@@ -152,7 +152,7 @@ impl Vm {
         self.scheduler
             .shared_state()
             .register_module(Arc::new(module))
-            .map_err(|e| VmError::RuntimeError(e))?;
+            .map_err(VmError::RuntimeError)?;
 
         Ok(())
     }
@@ -235,11 +235,11 @@ impl Vm {
     /// scheduling with proper suspension for await, sleep, mutex, and channel operations.
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
         // Validate module
-        module.validate().map_err(|e| VmError::RuntimeError(e))?;
+        module.validate().map_err(VmError::RuntimeError)?;
 
         // Register module: classes, native linkage, and module registry
         self.scheduler.shared_state().register_module(Arc::new(module.clone()))
-            .map_err(|e| VmError::RuntimeError(e))?;
+            .map_err(VmError::RuntimeError)?;
 
         // JIT: start background thread and submit prewarm candidates (non-blocking)
         #[cfg(feature = "jit")]
@@ -307,7 +307,7 @@ impl Vm {
 
         match final_state {
             TaskState::Completed => {
-                Ok(main_task.result().unwrap_or(Value::null()))
+                Ok(main_task.result().unwrap_or_default())
             }
             TaskState::Failed => {
                 let msg = Self::extract_exception_message(&main_task);

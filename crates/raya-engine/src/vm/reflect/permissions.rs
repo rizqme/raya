@@ -111,6 +111,7 @@ impl ReflectionPermission {
     }
 
     /// Parse from string representation
+    #[allow(clippy::should_implement_trait)] // Returns Option, not Result; std FromStr is not a good fit here.
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
             "NONE" => Some(Self::NONE),
@@ -140,24 +141,24 @@ impl ReflectionPermission {
     }
 
     /// Convert to string representation
-    pub fn to_string(&self) -> String {
+    fn display_name(&self) -> &'static str {
         match *self {
-            Self::NONE => "NONE".to_string(),
-            Self::READ_PUBLIC => "READ_PUBLIC".to_string(),
-            Self::READ_PRIVATE => "READ_PRIVATE".to_string(),
-            Self::WRITE_PUBLIC => "WRITE_PUBLIC".to_string(),
-            Self::WRITE_PRIVATE => "WRITE_PRIVATE".to_string(),
-            Self::INVOKE_PUBLIC => "INVOKE_PUBLIC".to_string(),
-            Self::INVOKE_PRIVATE => "INVOKE_PRIVATE".to_string(),
-            Self::CREATE_TYPES => "CREATE_TYPES".to_string(),
-            Self::GENERATE_CODE => "GENERATE_CODE".to_string(),
-            Self::READ_ALL => "READ_ALL".to_string(),
-            Self::WRITE_ALL => "WRITE_ALL".to_string(),
-            Self::INVOKE_ALL => "INVOKE_ALL".to_string(),
-            Self::PUBLIC_ONLY => "PUBLIC_ONLY".to_string(),
-            Self::FULL_ACCESS => "FULL_ACCESS".to_string(),
-            Self::ALL => "ALL".to_string(),
-            _ => format!("0x{:02X}", self.0),
+            Self::NONE => "NONE",
+            Self::READ_PUBLIC => "READ_PUBLIC",
+            Self::READ_PRIVATE => "READ_PRIVATE",
+            Self::WRITE_PUBLIC => "WRITE_PUBLIC",
+            Self::WRITE_PRIVATE => "WRITE_PRIVATE",
+            Self::INVOKE_PUBLIC => "INVOKE_PUBLIC",
+            Self::INVOKE_PRIVATE => "INVOKE_PRIVATE",
+            Self::CREATE_TYPES => "CREATE_TYPES",
+            Self::GENERATE_CODE => "GENERATE_CODE",
+            Self::READ_ALL => "READ_ALL",
+            Self::WRITE_ALL => "WRITE_ALL",
+            Self::INVOKE_ALL => "INVOKE_ALL",
+            Self::PUBLIC_ONLY => "PUBLIC_ONLY",
+            Self::FULL_ACCESS => "FULL_ACCESS",
+            Self::ALL => "ALL",
+            _ => "",
         }
     }
 
@@ -180,7 +181,12 @@ impl Default for ReflectionPermission {
 
 impl std::fmt::Display for ReflectionPermission {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_string())
+        let name = self.display_name();
+        if name.is_empty() {
+            write!(f, "0x{:02X}", self.0)
+        } else {
+            write!(f, "{}", name)
+        }
     }
 }
 

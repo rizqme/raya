@@ -205,14 +205,14 @@ fn build_warning_config(
 // fall within the builtin/stdlib prefix are skipped (return None).
 
 fn adjust_span(span: Span, offset: usize) -> Option<Span> {
-    let start = span.start as usize;
-    let end = span.end as usize;
+    let start = span.start;
+    let end = span.end;
 
     if end <= offset {
         return None; // Entirely in builtin/stdlib
     }
 
-    let new_start = if start >= offset { start - offset } else { 0 };
+    let new_start = start.saturating_sub(offset);
     let new_end = end - offset;
 
     Some(Span::new(new_start, new_end, span.line, span.column))
@@ -220,7 +220,7 @@ fn adjust_span(span: Span, offset: usize) -> Option<Span> {
 
 fn adjust_check_error(err: &CheckError, offset: usize) -> Option<CheckError> {
     let span = err.span();
-    if (span.end as usize) <= offset {
+    if span.end <= offset {
         return None;
     }
 
@@ -263,7 +263,7 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
 
 fn adjust_bind_error(err: &BindError, offset: usize) -> Option<BindError> {
     let span = err.span();
-    if (span.end as usize) <= offset {
+    if span.end <= offset {
         return None;
     }
 
@@ -285,7 +285,7 @@ fn adjust_bind_error(err: &BindError, offset: usize) -> Option<BindError> {
 
 fn adjust_warning(warn: &CheckWarning, offset: usize) -> Option<CheckWarning> {
     let span = warn.span();
-    if (span.end as usize) <= offset {
+    if span.end <= offset {
         return None;
     }
 

@@ -25,7 +25,7 @@ impl LintRule for NoConstantCondition {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         match stmt {
             ast::Statement::If(if_stmt) => check_condition(&if_stmt.condition, "if"),
@@ -38,7 +38,7 @@ impl LintRule for NoConstantCondition {
     fn check_expression(
         &self,
         expr: &ast::Expression,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         // Ternary: `true ? a : b`
         if let ast::Expression::Conditional(cond) = expr {
@@ -67,7 +67,7 @@ fn check_condition(condition: &ast::Expression, context: &str) -> Vec<LintDiagno
             rule: META.name,
             code: META.code,
             message: format!("Constant condition in '{}' statement", context),
-            span: condition.span().clone(),
+            span: *condition.span(),
             severity: META.default_severity,
             fix: None,
             notes: vec![format!("This condition will always evaluate to the same value")],

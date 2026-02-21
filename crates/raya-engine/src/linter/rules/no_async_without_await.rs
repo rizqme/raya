@@ -27,7 +27,7 @@ impl LintRule for NoAsyncWithoutAwait {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let func = match stmt {
             ast::Statement::FunctionDecl(f) => f,
@@ -47,7 +47,7 @@ impl LintRule for NoAsyncWithoutAwait {
                 rule: META.name,
                 code: META.code,
                 message: format!("Async function '{}' does not use 'await'", name),
-                span: func.span.clone(),
+                span: func.span,
                 severity: META.default_severity,
                 fix: None,
                 notes: vec!["In Raya, async functions run as concurrent tasks even without await. Remove 'async' if concurrency is not intended".to_string()],
@@ -60,7 +60,7 @@ impl LintRule for NoAsyncWithoutAwait {
     fn check_expression(
         &self,
         expr: &ast::Expression,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         // Also check async arrow functions
         let arrow = match expr {
@@ -83,7 +83,7 @@ impl LintRule for NoAsyncWithoutAwait {
                 rule: META.name,
                 code: META.code,
                 message: "Async arrow function does not use 'await'".to_string(),
-                span: arrow.span.clone(),
+                span: arrow.span,
                 severity: META.default_severity,
                 fix: None,
                 notes: vec!["In Raya, async functions run as concurrent tasks even without await. Remove 'async' if concurrency is not intended".to_string()],
@@ -110,7 +110,7 @@ impl Visitor for AwaitFinder {
         }
         // Don't descend into nested function/arrow (they have their own async scope).
         match expr {
-            ast::Expression::Arrow(_) => return,
+            ast::Expression::Arrow(_) => (),
             _ => walk_expression(self, expr),
         }
     }

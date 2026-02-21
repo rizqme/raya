@@ -46,6 +46,7 @@ impl SnapshotValue {
     }
 
     /// Check if two values are equal
+    #[allow(clippy::should_implement_trait)] // Custom NaN-aware equality; PartialEq derive would not handle floats correctly.
     pub fn eq(&self, other: &SnapshotValue) -> bool {
         match (self, other) {
             (SnapshotValue::Null, SnapshotValue::Null) => true,

@@ -400,7 +400,7 @@ impl TypeContext {
             let primitives = detector.extract_primitives(&normalized_members);
 
             // Validate no duplicates
-            if let Err(_) = detector.validate_no_duplicates(&primitives) {
+            if detector.validate_no_duplicates(&primitives).is_err() {
                 // If there are duplicates, treat as regular union (will error later)
                 let disc = {
                     let inference = DiscriminantInference::new(self);

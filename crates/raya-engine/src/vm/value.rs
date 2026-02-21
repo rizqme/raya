@@ -68,7 +68,7 @@ impl Value {
     // Special values (NaN-boxed)
     const NULL: u64 = Self::NAN_BOX_BASE | Self::TAG_NULL;
     const TRUE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL | 1;
-    const FALSE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL | 0;
+    const FALSE: u64 = Self::NAN_BOX_BASE | Self::TAG_BOOL;
 
     /// Check if this value is NaN-boxed (tagged)
     #[inline]

@@ -714,7 +714,7 @@ impl Task {
         let state = *self.state.lock().unwrap();
         let ip = self.ip.load(Ordering::Relaxed);
         let stack_values = self.stack.lock().unwrap().as_slice().to_vec();
-        let result = self.result.lock().unwrap().clone();
+        let result = *self.result.lock().unwrap();
         let suspend_reason = self.suspend_reason.lock().unwrap().clone();
         let execution_frames = self.execution_frames.lock().unwrap().clone();
 

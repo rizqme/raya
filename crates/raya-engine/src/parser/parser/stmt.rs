@@ -231,7 +231,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 
     // Parse function name
     let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = name.clone();
+        let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
         Identifier {
@@ -359,7 +359,7 @@ fn parse_type_parameters(parser: &mut Parser) -> Result<Vec<TypeParameter>, Pars
         let start_span = parser.current_span();
 
         let name = if let Token::Identifier(name) = parser.current() {
-            let name_str = name.clone();
+            let name_str = *name;
             parser.advance();
             Identifier {
                 name: name_str,
@@ -593,7 +593,7 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
             None
         };
 
-        let span = pattern.span().clone();
+        let span = *pattern.span();
 
         let decl = VariableDecl {
             kind,
@@ -642,7 +642,7 @@ fn pattern_to_expression(pattern: Pattern) -> Result<Expression, ParseError> {
                 kind: ParseErrorKind::InvalidSyntax {
                     reason: "Cannot use destructuring pattern in for loop initializer expression".to_string(),
                 },
-                span: pattern.span().clone(),
+                span: *pattern.span(),
                 message: "Invalid for loop initializer".to_string(),
                 suggestion: Some("Use a simple identifier or add a semicolon".to_string()),
             })
@@ -665,7 +665,7 @@ fn parse_expression_from_base(parser: &mut Parser, base: Expression) -> Result<E
     };
 
     if let Some(op) = operator {
-        let start_span = base.span().clone();
+        let start_span = *base.span();
         parser.advance();
         let right = super::expr::parse_expression(parser)?;
         let span = parser.combine_spans(&start_span, right.span());
@@ -841,7 +841,7 @@ fn parse_type_alias_declaration(
 
     // Parse type name
     let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = name.clone();
+        let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
         Identifier {
@@ -935,7 +935,7 @@ fn parse_switch_statement(parser: &mut Parser) -> Result<Statement, ParseError> 
         }
 
         let case_end = if let Some(last) = consequent.last() {
-            last.span().clone()
+            *last.span()
         } else {
             parser.current_span()
         };
@@ -1027,11 +1027,11 @@ fn parse_try_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     }
 
     let end_span = if let Some(ref fin) = finally_clause {
-        fin.span.clone()
+        fin.span
     } else if let Some(ref catch) = catch_clause {
-        catch.span.clone()
+        catch.span
     } else {
-        body.span.clone()
+        body.span
     };
 
     let span = parser.combine_spans(&start_span, &end_span);
@@ -1078,7 +1078,7 @@ fn parse_class_declaration_with_annotations(
 
     // Parse class name
     let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = name.clone();
+        let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
         Identifier {
@@ -1213,7 +1213,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
     // Parse member name - allow keywords that are valid as method names (like JavaScript/TypeScript)
     let name = if let Token::Identifier(name) = parser.current() {
-        let name_str = name.clone();
+        let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
         Identifier {
@@ -1270,9 +1270,9 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         };
 
         let end_span = if let Some(ref b) = body {
-            b.span.clone()
+            b.span
         } else if let Some(ref rt) = return_type {
-            rt.span.clone()
+            rt.span
         } else {
             parser.current_span()
         };
@@ -1314,11 +1314,11 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         }
 
         let end_span = if let Some(ref init) = initializer {
-            init.span().clone()
+            *init.span()
         } else if let Some(ref ta) = type_annotation {
-            ta.span.clone()
+            ta.span
         } else {
-            name.span.clone()
+            name.span
         };
 
         let span = parser.combine_spans(&start_span, &end_span);
@@ -1379,7 +1379,7 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
 
     // Parse decorator expression: identifier, member access, or call
     let mut expression = if let Token::Identifier(name) = parser.current() {
-        let name_sym = name.clone();
+        let name_sym = *name;
         let ident_span = parser.current_span();
         parser.advance();
 
@@ -1395,11 +1395,11 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
     while parser.check(&Token::Dot) {
         parser.advance();
         if let Token::Identifier(name) = parser.current() {
-            let name_sym = name.clone();
+            let name_sym = *name;
             let member_span = parser.current_span();
             parser.advance();
 
-            let end_span = member_span.clone();
+            let end_span = member_span;
             let span = parser.combine_spans(expression.span(), &end_span);
 
             expression = Expression::Member(MemberExpression {
@@ -1418,7 +1418,7 @@ fn parse_decorator(parser: &mut Parser) -> Result<Decorator, ParseError> {
 
     // Check for call(s): @decorator(args) or chained @decorator(args1)(args2)...
     while parser.check(&Token::LeftParen) {
-        let call_start = expression.span().clone();
+        let call_start = *expression.span();
         parser.advance();
 
         let mut arguments = Vec::new();
@@ -1474,7 +1474,7 @@ fn parse_annotation(parser: &mut Parser) -> Result<Annotation, ParseError> {
     let span = parser.current_span();
 
     if let Token::Annotation(sym) = parser.current() {
-        let content = parser.resolve(sym.clone()).to_string();
+        let content = parser.resolve(*sym).to_string();
         parser.advance();
         Ok(Annotation::from_content(&content, span))
     } else {
@@ -1505,7 +1505,7 @@ fn parse_import_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         parser.expect(Token::As)?;
 
         let alias = if let Token::Identifier(name) = parser.current() {
-            let name_str = name.clone();
+            let name_str = *name;
             let name_span = parser.current_span();
             parser.advance();
             Identifier {
@@ -1519,7 +1519,7 @@ fn parse_import_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         specifiers.push(ImportSpecifier::Namespace(alias));
     } else if let Token::Identifier(name) = parser.current() {
         // import foo from "module" (default import)
-        let name_str = name.clone();
+        let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
 
@@ -1551,7 +1551,7 @@ fn parse_import_declaration(parser: &mut Parser) -> Result<Statement, ParseError
 
     // Parse module source
     let source = if let Token::StringLiteral(s) = parser.current() {
-        let s_value = s.clone();
+        let s_value = *s;
         let s_span = parser.current_span();
         parser.advance();
         StringLiteral {
@@ -1585,7 +1585,7 @@ fn parse_named_imports(parser: &mut Parser) -> Result<Vec<ImportSpecifier>, Pars
         guard.check()?;
 
         let name = if let Token::Identifier(name) = parser.current() {
-            let name_str = name.clone();
+            let name_str = *name;
             let name_span = parser.current_span();
             parser.advance();
             Identifier {
@@ -1600,7 +1600,7 @@ fn parse_named_imports(parser: &mut Parser) -> Result<Vec<ImportSpecifier>, Pars
         let alias = if parser.check(&Token::As) {
             parser.advance();
             if let Token::Identifier(alias_name) = parser.current() {
-                let alias_str = alias_name.clone();
+                let alias_str = *alias_name;
                 let alias_span = parser.current_span();
                 parser.advance();
                 Some(Identifier {
@@ -1642,7 +1642,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         parser.expect(Token::From)?;
 
         let source = if let Token::StringLiteral(s) = parser.current() {
-            let s_value = s.clone();
+            let s_value = *s;
             let s_span = parser.current_span();
             parser.advance();
             StringLiteral {
@@ -1670,7 +1670,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         let source = if parser.check(&Token::From) {
             parser.advance();
             if let Token::StringLiteral(s) = parser.current() {
-                let s_value = s.clone();
+                let s_value = *s;
                 let s_span = parser.current_span();
                 parser.advance();
                 Some(StringLiteral {
@@ -1689,7 +1689,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
         }
 
         let end_span = if let Some(ref src) = source {
-            src.span.clone()
+            src.span
         } else {
             parser.current_span()
         };
@@ -1753,7 +1753,7 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
         guard.check()?;
 
         let name = if let Token::Identifier(name) = parser.current() {
-            let name_str = name.clone();
+            let name_str = *name;
             let name_span = parser.current_span();
             parser.advance();
             Identifier {
@@ -1768,7 +1768,7 @@ fn parse_export_specifiers(parser: &mut Parser) -> Result<Vec<ExportSpecifier>, 
         let alias = if parser.check(&Token::As) {
             parser.advance();
             if let Token::Identifier(alias_name) = parser.current() {
-                let alias_str = alias_name.clone();
+                let alias_str = *alias_name;
                 let alias_span = parser.current_span();
                 parser.advance();
                 Some(Identifier {

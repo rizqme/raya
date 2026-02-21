@@ -146,7 +146,7 @@ fn format_message(level: u8, message: &str, data: Option<&str>) {
 
 /// Log a debug message to stdout
 pub fn debug(message: &str) {
-    if LOG_LEVEL.load(Ordering::Relaxed) <= LEVEL_DEBUG {
+    if LOG_LEVEL.load(Ordering::Relaxed) == LEVEL_DEBUG {
         format_message(LEVEL_DEBUG, message, None);
     }
 }
@@ -174,7 +174,7 @@ pub fn error(message: &str) {
 
 /// Log a debug message with structured data
 pub fn debug_data(message: &str, data: &str) {
-    if LOG_LEVEL.load(Ordering::Relaxed) <= LEVEL_DEBUG {
+    if LOG_LEVEL.load(Ordering::Relaxed) == LEVEL_DEBUG {
         format_message(LEVEL_DEBUG, message, Some(data));
     }
 }

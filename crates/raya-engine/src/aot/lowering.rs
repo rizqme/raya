@@ -11,11 +11,13 @@ use std::collections::HashMap;
 
 use cranelift_codegen::ir::{self, types, condcodes, AbiParam, InstBuilder, MemFlags, Value};
 use cranelift_codegen::isa::CallConv;
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, Variable};
+#[cfg(test)]
+use cranelift_frontend::FunctionBuilderContext;
 
 use super::abi;
 use super::statemachine::{
-    SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp,
+    SmBlock, SmBlockId, SmCmpOp, SmF64BinOp, SmI32BinOp,
     SmInstr, SmTerminator, StateMachineFunction, HelperCall,
 };
 
@@ -70,7 +72,7 @@ impl std::error::Error for LoweringError {}
 /// 4. On return: returns the NaN-boxed result value
 pub fn lower_function(
     sm_func: &StateMachineFunction,
-    mut builder: FunctionBuilder,
+    mut builder: FunctionBuilder<'_>,
 ) -> Result<(), LoweringError> {
     let call_conv = builder.func.signature.call_conv;
 
@@ -283,63 +285,62 @@ struct LoweringCtx {
 impl LoweringCtx {
     // ---- Register access ----
 
-    fn use_reg(&self, builder: &mut FunctionBuilder, reg: u32) -> Value {
+    fn use_reg(&self, builder: &mut FunctionBuilder<'_>, reg: u32) -> Value {
         let var = self.reg_vars[&reg];
         builder.use_var(var)
     }
 
-    fn def_reg(&self, builder: &mut FunctionBuilder, reg: u32, val: Value) {
+    fn def_reg(&self, builder: &mut FunctionBuilder<'_>, reg: u32, val: Value) {
         let var = self.reg_vars[&reg];
         builder.def_var(var, val);
     }
 
     /// Ensure a register variable exists, declaring it with a default type if needed.
-    fn ensure_reg(&mut self, builder: &mut FunctionBuilder, reg: u32, ty: ir::types::Type) {
-        if !self.reg_vars.contains_key(&reg) {
-            let var = builder.declare_var(ty);
-            self.reg_vars.insert(reg, var);
-        }
+    fn ensure_reg(&mut self, builder: &mut FunctionBuilder<'_>, reg: u32, ty: ir::types::Type) {
+        self.reg_vars.entry(reg).or_insert_with(|| {
+            builder.declare_var(ty)
+        });
     }
 
     // ---- Frame / context access ----
 
-    fn frame_ptr(&self, builder: &mut FunctionBuilder) -> Value {
+    fn frame_ptr(&self, builder: &mut FunctionBuilder<'_>) -> Value {
         builder.use_var(self.frame_var)
     }
 
-    fn ctx_ptr(&self, builder: &mut FunctionBuilder) -> Value {
+    fn ctx_ptr(&self, builder: &mut FunctionBuilder<'_>) -> Value {
         builder.use_var(self.ctx_var)
     }
 
-    fn load_frame_field(&self, builder: &mut FunctionBuilder, offset: i32, ty: ir::types::Type) -> Value {
+    fn load_frame_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, ty: ir::types::Type) -> Value {
         let fp = self.frame_ptr(builder);
         builder.ins().load(ty, MemFlags::trusted(), fp, offset)
     }
 
-    fn store_frame_field(&self, builder: &mut FunctionBuilder, offset: i32, val: Value) {
+    fn store_frame_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, val: Value) {
         let fp = self.frame_ptr(builder);
         builder.ins().store(MemFlags::trusted(), val, fp, offset);
     }
 
-    fn load_ctx_field(&self, builder: &mut FunctionBuilder, offset: i32, ty: ir::types::Type) -> Value {
+    fn load_ctx_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, ty: ir::types::Type) -> Value {
         let cp = self.ctx_ptr(builder);
         builder.ins().load(ty, MemFlags::trusted(), cp, offset)
     }
 
-    fn store_ctx_field(&self, builder: &mut FunctionBuilder, offset: i32, val: Value) {
+    fn store_ctx_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, val: Value) {
         let cp = self.ctx_ptr(builder);
         builder.ins().store(MemFlags::trusted(), val, cp, offset);
     }
 
     /// Load the locals pointer from the frame, then load a local at the given index.
-    fn load_local(&self, builder: &mut FunctionBuilder, index: u32) -> Value {
+    fn load_local(&self, builder: &mut FunctionBuilder<'_>, index: u32) -> Value {
         let locals_ptr = self.load_frame_field(builder, frame_offsets::LOCALS_PTR, types::I64);
         let offset = (index as i32) * 8;
         builder.ins().load(types::I64, MemFlags::trusted(), locals_ptr, offset)
     }
 
     /// Load the locals pointer from the frame, then store a value at the given index.
-    fn store_local(&self, builder: &mut FunctionBuilder, index: u32, val: Value) {
+    fn store_local(&self, builder: &mut FunctionBuilder<'_>, index: u32, val: Value) {
         let locals_ptr = self.load_frame_field(builder, frame_offsets::LOCALS_PTR, types::I64);
         let offset = (index as i32) * 8;
         builder.ins().store(MemFlags::trusted(), val, locals_ptr, offset);
@@ -348,7 +349,7 @@ impl LoweringCtx {
     // ---- Helper function pointer loading ----
 
     /// Load a helper function pointer from the AotHelperTable.
-    fn load_helper_fn_ptr(&self, builder: &mut FunctionBuilder, helper: &HelperCall) -> Option<Value> {
+    fn load_helper_fn_ptr(&self, builder: &mut FunctionBuilder<'_>, helper: &HelperCall) -> Option<Value> {
         let offset = helper_table_field_offset(helper)?;
         let combined_offset = ctx_offsets::HELPERS + offset;
         let cp = self.ctx_ptr(builder);
@@ -359,7 +360,7 @@ impl LoweringCtx {
     /// Import a helper call signature and emit call_indirect.
     fn call_helper_indirect(
         &self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         fn_ptr: Value,
         sig: ir::Signature,
         args: &[Value],
@@ -370,7 +371,7 @@ impl LoweringCtx {
 
     // ---- Block lowering ----
 
-    fn lower_block(&mut self, block: &SmBlock, builder: &mut FunctionBuilder) -> Result<(), LoweringError> {
+    fn lower_block(&mut self, block: &SmBlock, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
         // Lower instructions (skip Phi nodes — handled via resolution map)
         for instr in &block.instructions {
             if matches!(instr, SmInstr::Phi { .. }) {
@@ -393,7 +394,7 @@ impl LoweringCtx {
 
     // ---- Instruction lowering ----
 
-    fn lower_instr(&mut self, instr: &SmInstr, builder: &mut FunctionBuilder) -> Result<(), LoweringError> {
+    fn lower_instr(&mut self, instr: &SmInstr, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
         match instr {
             // ===== Frame / State access =====
             SmInstr::LoadLocal { dest, index } => {
@@ -632,7 +633,7 @@ impl LoweringCtx {
 
     // ---- Terminator lowering ----
 
-    fn lower_terminator(&self, term: &SmTerminator, builder: &mut FunctionBuilder) -> Result<(), LoweringError> {
+    fn lower_terminator(&self, term: &SmTerminator, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
         match term {
             SmTerminator::Jump(target) => {
                 let cl_block = self.resolve_block(*target)?;
@@ -682,7 +683,7 @@ impl LoweringCtx {
     /// For small state counts, this is efficient and avoids jump table complexity.
     fn emit_dispatch_chain(
         &self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         index_val: Value,
         targets: &[SmBlockId],
         default: SmBlockId,
@@ -731,7 +732,7 @@ impl LoweringCtx {
 
     // ---- i32 binary operations ----
 
-    fn lower_i32_binop(&self, builder: &mut FunctionBuilder, op: SmI32BinOp, l: Value, r: Value) -> Value {
+    fn lower_i32_binop(&self, builder: &mut FunctionBuilder<'_>, op: SmI32BinOp, l: Value, r: Value) -> Value {
         match op {
             SmI32BinOp::Add => builder.ins().iadd(l, r),
             SmI32BinOp::Sub => builder.ins().isub(l, r),
@@ -755,7 +756,7 @@ impl LoweringCtx {
 
     // ---- f64 binary operations ----
 
-    fn lower_f64_binop(&self, builder: &mut FunctionBuilder, op: SmF64BinOp, l: Value, r: Value) -> Value {
+    fn lower_f64_binop(&self, builder: &mut FunctionBuilder<'_>, op: SmF64BinOp, l: Value, r: Value) -> Value {
         match op {
             SmF64BinOp::Add => builder.ins().fadd(l, r),
             SmF64BinOp::Sub => builder.ins().fsub(l, r),
@@ -780,7 +781,7 @@ impl LoweringCtx {
 
     fn lower_helper_call(
         &mut self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         dest: Option<u32>,
         helper: &HelperCall,
         args: &[u32],
@@ -839,7 +840,7 @@ impl LoweringCtx {
     }
 
     /// Build the full argument list for a helper call (including implicit ctx/frame).
-    fn build_helper_args(&self, builder: &mut FunctionBuilder, helper: &HelperCall, args: &[u32]) -> Vec<Value> {
+    fn build_helper_args(&self, builder: &mut FunctionBuilder<'_>, helper: &HelperCall, args: &[u32]) -> Vec<Value> {
         let ctx = self.ctx_ptr(builder);
 
         match helper {
@@ -981,7 +982,7 @@ impl LoweringCtx {
     /// frame, call through it, and store the result.
     fn lower_aot_call(
         &self,
-        builder: &mut FunctionBuilder,
+        builder: &mut FunctionBuilder<'_>,
         dest: u32,
         func_id: u32,
         callee_frame: u32,

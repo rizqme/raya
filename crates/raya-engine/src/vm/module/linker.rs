@@ -186,8 +186,8 @@ impl ModuleLinker {
     /// - "@org/package@^2.0.0" → "@org/package"
     fn extract_module_name(specifier: &str) -> String {
         // For scoped packages, find @ after the first character
-        if specifier.starts_with('@') {
-            if let Some(at_pos) = specifier[1..].find('@') {
+        if let Some(stripped) = specifier.strip_prefix('@') {
+            if let Some(at_pos) = stripped.find('@') {
                 return specifier[..at_pos + 1].to_string();
             }
             return specifier.to_string();

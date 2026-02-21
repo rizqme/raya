@@ -77,7 +77,7 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::INDEX_OF => {
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "String.indexOf expects 1-2 arguments, got {}", arg_count
                     )));
@@ -165,7 +165,7 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::SPLIT => {
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "String.split expects 1-2 arguments, got {}", arg_count
                     )));
@@ -230,7 +230,7 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::LAST_INDEX_OF => {
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "String.lastIndexOf expects 1-2 arguments, got {}", arg_count
                     )));
@@ -485,7 +485,7 @@ impl<'a> Interpreter<'a> {
             }
             string::SPLIT_REGEXP => {
                 // split(regexp, limit?): split string by regexp
-                if arg_count < 1 || arg_count > 2 {
+                if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
                         "String.split expects 1-2 arguments, got {}", arg_count
                     )));

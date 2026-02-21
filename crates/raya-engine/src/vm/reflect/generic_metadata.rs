@@ -249,7 +249,7 @@ pub fn looks_like_monomorphized(class_name: &str) -> bool {
     // Simple heuristic: contains underscore and first part is capitalized
     if let Some(idx) = class_name.find('_') {
         let prefix = &class_name[..idx];
-        prefix.chars().next().map_or(false, |c| c.is_uppercase())
+        prefix.chars().next().is_some_and(|c| c.is_uppercase())
     } else {
         false
     }

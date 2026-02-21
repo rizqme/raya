@@ -125,13 +125,13 @@ fn create_zip_impl(output_path: &str, input_paths: &[String]) -> io::Result<()> 
                 .unwrap_or(path.as_os_str())
                 .to_string_lossy();
             zip.start_file(name.as_ref(), options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             let mut f = File::open(path)?;
             io::copy(&mut f, &mut zip)?;
         }
     }
     zip.finish()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     Ok(())
 }
 
@@ -151,11 +151,11 @@ fn add_dir_to_zip<W: Write + io::Seek>(
             .into_owned();
         if path.is_dir() {
             zip.add_directory(&name, options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             add_dir_to_zip(zip, base, &path, options)?;
         } else {
             zip.start_file(&name, options)
-                .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+                .map_err(io::Error::other)?;
             let mut f = File::open(&path)?;
             io::copy(&mut f, zip)?;
         }
@@ -166,13 +166,13 @@ fn add_dir_to_zip<W: Write + io::Seek>(
 fn extract_zip_impl(archive_path: &str, output_dir: &str) -> io::Result<()> {
     let file = File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     let out = Path::new(output_dir);
 
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         let entry_path = match entry.enclosed_name() {
             Some(p) => out.join(p),
             None => continue,
@@ -194,12 +194,12 @@ fn extract_zip_impl(archive_path: &str, output_dir: &str) -> io::Result<()> {
 fn list_zip_impl(archive_path: &str) -> io::Result<Vec<String>> {
     let file = File::open(archive_path)?;
     let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        .map_err(io::Error::other)?;
     let mut entries = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let entry = archive
             .by_index_raw(i)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         entries.push(entry.name().to_owned());
     }
     Ok(entries)

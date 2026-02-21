@@ -40,14 +40,14 @@ pub const NULL_VALUE: u64 = NAN_BOX_BASE | TAG_NULL;
 /// NaN-boxed true value
 pub const TRUE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL | 1;
 /// NaN-boxed false value
-pub const FALSE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL | 0;
+pub const FALSE_VALUE: u64 = NAN_BOX_BASE | TAG_BOOL;
 
 // ============================================================================
 // Cranelift IR emit helpers
 // ============================================================================
 
 /// Box an i32 value into a NaN-boxed u64.
-pub fn emit_box_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_i32(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let extended = builder.ins().sextend(i64_type, val);
     let mask = builder.ins().iconst(i64_type, PAYLOAD_MASK as i64);
@@ -57,7 +57,7 @@ pub fn emit_box_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value 
 }
 
 /// Unbox an i32 from a NaN-boxed u64.
-pub fn emit_unbox_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_i32(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let i32_type = ir::types::I32;
     let mask = builder.ins().iconst(i64_type, PAYLOAD_MASK_32 as i64);
@@ -66,7 +66,7 @@ pub fn emit_unbox_i32(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Valu
 }
 
 /// Box an f64 value into a NaN-boxed u64.
-pub fn emit_box_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let bits = builder.ins().bitcast(i64_type, ir::MemFlags::new(), val);
     let nan_base = builder.ins().iconst(i64_type, NAN_BOX_BASE as i64);
@@ -77,13 +77,13 @@ pub fn emit_box_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value 
 }
 
 /// Unbox an f64 from a NaN-boxed u64.
-pub fn emit_unbox_f64(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let f64_type = ir::types::F64;
     builder.ins().bitcast(f64_type, ir::MemFlags::new(), val)
 }
 
 /// Box a boolean into a NaN-boxed u64.
-pub fn emit_box_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_box_bool(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let extended = builder.ins().uextend(i64_type, val);
     let tag_base = builder.ins().iconst(i64_type, BOOL_TAG_BASE as i64);
@@ -91,7 +91,7 @@ pub fn emit_box_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value
 }
 
 /// Unbox a boolean from a NaN-boxed u64.
-pub fn emit_unbox_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_unbox_bool(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let i64_type = ir::types::I64;
     let i8_type = ir::types::I8;
     let one = builder.ins().iconst(i64_type, 1);
@@ -100,27 +100,27 @@ pub fn emit_unbox_bool(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Val
 }
 
 /// Emit a null constant (NaN-boxed).
-pub fn emit_null(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_null(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, NULL_VALUE as i64)
 }
 
 /// Emit a true constant (NaN-boxed).
-pub fn emit_true(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_true(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, TRUE_VALUE as i64)
 }
 
 /// Emit a false constant (NaN-boxed).
-pub fn emit_false(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_false(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, FALSE_VALUE as i64)
 }
 
 /// Emit the AOT_SUSPEND sentinel constant.
-pub fn emit_aot_suspend(builder: &mut FunctionBuilder) -> ir::Value {
+pub fn emit_aot_suspend(builder: &mut FunctionBuilder<'_>) -> ir::Value {
     builder.ins().iconst(ir::types::I64, super::frame::AOT_SUSPEND as i64)
 }
 
 /// Check if a value equals AOT_SUSPEND: (val) -> i8 (0 or 1)
-pub fn emit_is_suspend(builder: &mut FunctionBuilder, val: ir::Value) -> ir::Value {
+pub fn emit_is_suspend(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let suspend = emit_aot_suspend(builder);
     builder.ins().icmp(ir::condcodes::IntCC::Equal, val, suspend)
 }

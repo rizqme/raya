@@ -430,6 +430,7 @@ impl CheckWarning {
 
 /// Configuration for which warnings are enabled/disabled
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct WarningConfig {
     /// Disabled warning codes (suppressed)
     pub disabled: std::collections::HashSet<WarningCode>,
@@ -439,15 +440,6 @@ pub struct WarningConfig {
     pub strict: bool,
 }
 
-impl Default for WarningConfig {
-    fn default() -> Self {
-        Self {
-            disabled: std::collections::HashSet::new(),
-            deny: std::collections::HashSet::new(),
-            strict: false,
-        }
-    }
-}
 
 impl WarningConfig {
     /// Strict mode — all warnings are errors

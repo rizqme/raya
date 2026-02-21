@@ -489,12 +489,10 @@ pub fn walk_member_expression<V: Visitor>(visitor: &mut V, expr: &MemberExpressi
 }
 
 pub fn walk_array_expression<V: Visitor>(visitor: &mut V, expr: &ArrayExpression) {
-    for elem in &expr.elements {
-        if let Some(elem) = elem {
-            match elem {
-                ArrayElement::Expression(e) => visitor.visit_expression(e),
-                ArrayElement::Spread(e) => visitor.visit_expression(e),
-            }
+    for elem in expr.elements.iter().flatten() {
+        match elem {
+            ArrayElement::Expression(e) => visitor.visit_expression(e),
+            ArrayElement::Spread(e) => visitor.visit_expression(e),
         }
     }
 }
@@ -641,12 +639,10 @@ pub fn walk_pattern<V: Visitor>(visitor: &mut V, pattern: &Pattern) {
     match pattern {
         Pattern::Identifier(id) => visitor.visit_identifier(id),
         Pattern::Array(arr) => {
-            for elem in &arr.elements {
-                if let Some(elem) = elem {
-                    visitor.visit_pattern(&elem.pattern);
-                    if let Some(default) = &elem.default {
-                        visitor.visit_expression(default);
-                    }
+            for elem in arr.elements.iter().flatten() {
+                visitor.visit_pattern(&elem.pattern);
+                if let Some(default) = &elem.default {
+                    visitor.visit_expression(default);
                 }
             }
             if let Some(rest) = &arr.rest {

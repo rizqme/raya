@@ -1405,26 +1405,24 @@ impl<'a> Lowerer<'a> {
         if let Some(catch_clause) = &try_stmt.catch_clause {
             // Bind the exception parameter if present
             // The VM pushes the exception value onto the stack when jumping to catch
-            if let Some(param) = &catch_clause.param {
-                if let ast::Pattern::Identifier(ident) = param {
-                    // Allocate local for exception parameter
-                    let local_idx = self.allocate_local(ident.name);
-                    // Pop exception from stack directly into local
-                    // The VM pushes the exception before jumping to catch block
-                    self.emit(IrInstr::PopToLocal { index: local_idx });
-                    // Create a register for subsequent uses of the catch parameter
-                    let exc_ty = TypeId::new(0); // Exception type (unknown)
-                    let exc_reg = self.alloc_register(exc_ty);
-                    self.local_registers.insert(local_idx, exc_reg);
+            if let Some(ast::Pattern::Identifier(ident)) = &catch_clause.param {
+                // Allocate local for exception parameter
+                let local_idx = self.allocate_local(ident.name);
+                // Pop exception from stack directly into local
+                // The VM pushes the exception before jumping to catch block
+                self.emit(IrInstr::PopToLocal { index: local_idx });
+                // Create a register for subsequent uses of the catch parameter
+                let exc_ty = TypeId::new(0); // Exception type (unknown)
+                let exc_reg = self.alloc_register(exc_ty);
+                self.local_registers.insert(local_idx, exc_reg);
 
-                    // Add catch parameter to variable_class_map for method resolution
-                    // Look up Error class so e.toString() etc. can be resolved
-                    // Find the Error class by iterating through class_map
-                    for (&symbol, &class_id) in &self.class_map {
-                        if self.interner.resolve(symbol) == "Error" {
-                            self.variable_class_map.insert(ident.name, class_id);
-                            break;
-                        }
+                // Add catch parameter to variable_class_map for method resolution
+                // Look up Error class so e.toString() etc. can be resolved
+                // Find the Error class by iterating through class_map
+                for (&symbol, &class_id) in &self.class_map {
+                    if self.interner.resolve(symbol) == "Error" {
+                        self.variable_class_map.insert(ident.name, class_id);
+                        break;
                     }
                 }
             }

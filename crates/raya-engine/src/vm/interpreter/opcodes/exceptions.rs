@@ -27,7 +27,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let catch_abs = if catch_rel >= 0 {
-                    (*ip as i32 + catch_rel) as i32
+                    *ip as i32 + catch_rel
                 } else {
                     -1
                 };
@@ -37,7 +37,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 let finally_abs = if finally_rel > 0 {
-                    (*ip as i32 + finally_rel) as i32
+                    *ip as i32 + finally_rel
                 } else {
                     -1
                 };
@@ -127,7 +127,7 @@ impl<'a> Interpreter<'a> {
                 let error_msg = if exception.is_ptr() {
                     if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
-                        if obj.fields.len() >= 1 {
+                        if !obj.fields.is_empty() {
                             if let Some(msg_ptr) =
                                 unsafe { obj.fields[0].as_ptr::<RayaString>() }
                             {

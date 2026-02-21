@@ -61,7 +61,7 @@ pub fn free_memory(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCal
 
 /// Get system uptime in seconds
 pub fn uptime(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    NativeCallResult::f64(get_uptime() as f64)
+    NativeCallResult::f64(get_uptime())
 }
 
 /// Get OS line ending
@@ -376,6 +376,7 @@ fn get_free_memory() -> u64 {
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
         let mut vm_stat: libc::vm_statistics64 = unsafe { mem::zeroed() };
         let mut info_count = (mem::size_of::<libc::vm_statistics64>() / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+        #[allow(deprecated)] // libc deprecates in favor of mach2 crate, but we use libc
         let ret = unsafe {
             libc::host_statistics64(
                 libc::mach_host_self(),

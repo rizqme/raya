@@ -25,7 +25,7 @@ impl LintRule for NoEmptyBlock {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         match stmt {
             // if (...) {}
@@ -58,7 +58,7 @@ impl LintRule for NoEmptyBlock {
                     rule: META.name,
                     code: META.code,
                     message: "Empty function body".to_string(),
-                    span: func.body.span.clone(),
+                    span: func.body.span,
                     severity: META.default_severity,
                     fix: None,
                     notes: vec![],
@@ -72,7 +72,7 @@ impl LintRule for NoEmptyBlock {
                         rule: META.name,
                         code: META.code,
                         message: "Empty try body".to_string(),
-                        span: try_stmt.body.span.clone(),
+                        span: try_stmt.body.span,
                         severity: META.default_severity,
                         fix: None,
                         notes: vec![],
@@ -95,7 +95,7 @@ fn check_empty_body(stmt: &ast::Statement, meta: &RuleMeta) -> Vec<LintDiagnosti
                 rule: meta.name,
                 code: meta.code,
                 message: "Empty block statement".to_string(),
-                span: block.span.clone(),
+                span: block.span,
                 severity: meta.default_severity,
                 fix: None,
                 notes: vec![],

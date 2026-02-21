@@ -51,7 +51,6 @@ pub struct CheckResult {
 }
 
 /// Negate a type guard
-
 fn negate_guard(guard: &TypeGuard) -> TypeGuard {
     match guard {
         TypeGuard::TypeOf { var, type_name, negated } => TypeGuard::TypeOf {
@@ -298,15 +297,12 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::TypeAliasDecl(alias) => {
                 // Sync scope for generic type aliases (binder creates a scope for type params)
-                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                if alias.type_params.as_ref().is_some_and(|p| !p.is_empty()) {
                     self.enter_scope();
                     self.exit_scope();
                 }
             }
-            Statement::ExportDecl(export) => match export {
-                ExportDecl::Declaration(inner_stmt) => self.check_stmt(inner_stmt),
-                _ => {}
-            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.check_stmt(inner_stmt),
             _ => {}
         }
     }
@@ -380,10 +376,8 @@ impl<'a> TypeChecker<'a> {
                     self.type_ctx.unknown_type()
                 };
 
-                for elem_opt in &array_pat.elements {
-                    if let Some(elem) = elem_opt {
-                        self.check_destructure_pattern(&elem.pattern, elem_ty);
-                    }
+                for elem in array_pat.elements.iter().flatten() {
+                    self.check_destructure_pattern(&elem.pattern, elem_ty);
                 }
                 if let Some(rest) = &array_pat.rest {
                     // Rest element gets the same array type
@@ -476,7 +470,7 @@ impl<'a> TypeChecker<'a> {
         // (binder lines 743-778)
         for member in &class.members {
             if let crate::parser::ast::ClassMember::Method(method) = member {
-                if method.type_params.as_ref().map_or(false, |tps| !tps.is_empty()) {
+                if method.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
                     self.enter_scope();
                     self.exit_scope();
                 }
@@ -582,15 +576,12 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::TypeAliasDecl(alias) => {
                 // Sync scope for generic type aliases (binder creates a scope for type params)
-                if alias.type_params.as_ref().map_or(false, |p| !p.is_empty()) {
+                if alias.type_params.as_ref().is_some_and(|p| !p.is_empty()) {
                     self.enter_scope();
                     self.exit_scope();
                 }
             }
-            Statement::ExportDecl(export) => match export {
-                ExportDecl::Declaration(inner_stmt) => self.sync_stmt_scopes(inner_stmt),
-                _ => {}
-            }
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.sync_stmt_scopes(inner_stmt),
             // Other statements don't create scopes
             _ => {}
         }
@@ -633,7 +624,6 @@ impl<'a> TypeChecker<'a> {
                 crate::parser::ast::ClassMember::Field(field) => {
                     self.check_field_decorators(field);
                 }
-                _ => {}
             }
         }
 
@@ -742,12 +732,12 @@ impl<'a> TypeChecker<'a> {
         match stmt {
             Statement::Return(_) | Statement::Throw(_) => true,
             Statement::Block(block) => {
-                block.statements.last().map_or(false, Self::stmt_definitely_returns)
+                block.statements.last().is_some_and(Self::stmt_definitely_returns)
             }
             Statement::If(if_stmt) => {
                 let then_returns = Self::stmt_definitely_returns(&if_stmt.then_branch);
                 let else_returns = if_stmt.else_branch.as_ref()
-                    .map_or(false, |e| Self::stmt_definitely_returns(e));
+                    .is_some_and(|e| Self::stmt_definitely_returns(e));
                 then_returns && else_returns
             }
             _ => false,
@@ -1426,12 +1416,10 @@ impl<'a> TypeChecker<'a> {
                 self.collect_free_vars_expr(&idx.index, collector);
             }
             Expression::Array(arr) => {
-                for elem_opt in &arr.elements {
-                    if let Some(elem) = elem_opt {
-                        match elem {
-                            ArrayElement::Expression(e) => self.collect_free_vars_expr(e, collector),
-                            ArrayElement::Spread(e) => self.collect_free_vars_expr(e, collector),
-                        }
+                for elem in arr.elements.iter().flatten() {
+                    match elem {
+                        ArrayElement::Expression(e) => self.collect_free_vars_expr(e, collector),
+                        ArrayElement::Spread(e) => self.collect_free_vars_expr(e, collector),
                     }
                 }
             }
@@ -1592,10 +1580,8 @@ impl<'a> TypeChecker<'a> {
                 self.collect_free_vars_block(&try_stmt.body, collector);
                 if let Some(ref catch) = try_stmt.catch_clause {
                     // Catch variable is bound in catch block
-                    if let Some(ref param) = catch.param {
-                        if let Pattern::Identifier(ident) = param {
-                            collector.bind(self.resolve(ident.name));
-                        }
+                    if let Some(Pattern::Identifier(ident)) = catch.param.as_ref() {
+                        collector.bind(self.resolve(ident.name));
                     }
                     self.collect_free_vars_block(&catch.body, collector);
                 }
@@ -1701,13 +1687,13 @@ impl<'a> TypeChecker<'a> {
                 // For async arrows, unwrap Task<T> → T so return statements
                 // are checked against T (same logic as check_function)
                 let effective_return_ty = if arrow.is_async {
-                    declared_return_ty.and_then(|ty| {
+                    declared_return_ty.map(|ty| {
                         if let Some(crate::parser::types::Type::Task(task_ty)) =
                             self.type_ctx.get(ty)
                         {
-                            Some(task_ty.result)
+                            task_ty.result
                         } else {
-                            Some(ty)
+                            ty
                         }
                     })
                 } else {
@@ -1991,13 +1977,13 @@ impl<'a> TypeChecker<'a> {
         let _object_ty = self.check_expr(&cast.object);
 
         // Resolve the target type from the type annotation
-        let target_ty = self.resolve_type_annotation(&cast.target_type);
+        
 
         // TODO: Validate that the cast is safe (object type is related to target type)
         // For now, we allow all casts (like TypeScript's `as` keyword)
 
         // Return the target type
-        target_ty
+        self.resolve_type_annotation(&cast.target_type)
     }
 
     /// Check member access
@@ -2145,7 +2131,7 @@ impl<'a> TypeChecker<'a> {
                 // Check visibility: private members can only be accessed from within the same class
                 if vis == crate::parser::ast::Visibility::Private {
                     // Check if we're inside the same class
-                    let accessing_own_class = self.current_class_type.map_or(false, |ct| {
+                    let accessing_own_class = self.current_class_type.is_some_and(|ct| {
                         if let Some(crate::parser::types::Type::Class(cur_class)) = self.type_ctx.get(ct) {
                             cur_class.name == class_to_use.name
                         } else {
@@ -2717,22 +2703,20 @@ impl<'a> TypeChecker<'a> {
 
         // Collect all distinct element types to compute a unified element type
         let mut elem_types = Vec::new();
-        for elem_opt in &arr.elements {
-            if let Some(elem) = elem_opt {
-                let elem_ty = match elem {
-                    ArrayElement::Expression(expr) => self.check_expr(expr),
-                    ArrayElement::Spread(expr) => {
-                        let spread_ty = self.check_expr(expr);
-                        if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
-                            arr_ty.element
-                        } else {
-                            spread_ty
-                        }
+        for elem in arr.elements.iter().flatten() {
+            let elem_ty = match elem {
+                ArrayElement::Expression(expr) => self.check_expr(expr),
+                ArrayElement::Spread(expr) => {
+                    let spread_ty = self.check_expr(expr);
+                    if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
+                        arr_ty.element
+                    } else {
+                        spread_ty
                     }
-                };
-                if !elem_types.contains(&elem_ty) {
-                    elem_types.push(elem_ty);
                 }
+            };
+            if !elem_types.contains(&elem_ty) {
+                elem_types.push(elem_ty);
             }
         }
 
@@ -3024,12 +3008,10 @@ impl<'a> TypeChecker<'a> {
                 let mut merged_properties = Vec::new();
                 for ty_annot in &intersection.types {
                     let ty_id = self.resolve_type_annotation(ty_annot);
-                    if let Some(ty) = self.type_ctx.get(ty_id).cloned() {
-                        if let crate::parser::types::Type::Object(obj) = ty {
-                            for prop in &obj.properties {
-                                if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
-                                    merged_properties.push(prop.clone());
-                                }
+                    if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(ty_id).cloned() {
+                        for prop in &obj.properties {
+                            if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                                merged_properties.push(prop.clone());
                             }
                         }
                     }
@@ -3217,7 +3199,6 @@ impl<'a> TypeChecker<'a> {
                                 span: decorator.span,
                             });
                         }
-                        return;
                     }
                 }
 

@@ -26,7 +26,7 @@ impl LintRule for PreferConst {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        ctx: &LintContext,
+        ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let decl = match stmt {
             ast::Statement::VariableDecl(d) => d,
@@ -62,7 +62,7 @@ impl LintRule for PreferConst {
                 "'{}' is never reassigned; use 'const' instead of 'let'",
                 name_str
             ),
-            span: decl.span.clone(),
+            span: decl.span,
             severity: META.default_severity,
             fix: Some(LintFix {
                 span: Span::new(

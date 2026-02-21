@@ -256,10 +256,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                     old_vtime = 0;
                 }
 
-                let n = match handle.read(&mut seq) {
-                    Ok(n) => n,
-                    Err(_) => 0,
-                };
+                let n: usize = handle.read(&mut seq).unwrap_or_default();
 
                 // Restore original VMIN/VTIME
                 if got_termios {
@@ -282,10 +279,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                         unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) };
                     }
 
-                    let n2 = match handle.read(&mut final_byte) {
-                        Ok(n) => n,
-                        Err(_) => 0,
-                    };
+                    let n2: usize = handle.read(&mut final_byte).unwrap_or_default();
 
                     if got_termios {
                         termios.c_cc[libc::VMIN] = old_vmin;
@@ -317,10 +311,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                                             };
                                         }
 
-                                        let n3 = match handle.read(&mut tilde) {
-                                            Ok(n) => n,
-                                            Err(_) => 0,
-                                        };
+                                        let n3: usize = handle.read(&mut tilde).unwrap_or_default();
 
                                         if got_termios {
                                             termios.c_cc[libc::VMIN] = old_vmin;
@@ -367,10 +358,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                         unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) };
                     }
 
-                    let n2 = match handle.read(&mut final_byte) {
-                        Ok(n) => n,
-                        Err(_) => 0,
-                    };
+                    let n2: usize = handle.read(&mut final_byte).unwrap_or_default();
 
                     if got_termios {
                         termios.c_cc[libc::VMIN] = old_vmin;

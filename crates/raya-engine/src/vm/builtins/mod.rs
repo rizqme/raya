@@ -165,7 +165,7 @@ pub fn builtin_count() -> usize {
 
 /// Get all builtin type signatures for injection into the type checker
 pub fn get_all_signatures() -> &'static [BuiltinSignatures] {
-    &BUILTIN_SIGS
+    BUILTIN_SIGS
 }
 
 /// Get signatures for a specific builtin

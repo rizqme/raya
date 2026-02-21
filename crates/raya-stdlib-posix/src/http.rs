@@ -540,6 +540,7 @@ fn parse_tls_request(
     })
 }
 
+#[allow(clippy::type_complexity)] // Returns parsed HTTP request components
 fn parse_http_request_from_reader<R: Read>(
     reader: &mut BufReader<R>,
 ) -> Result<

@@ -266,23 +266,23 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     };
 
                     let span = parser.combine_spans(&start_span, &body_span);
-                    return Ok(Expression::Arrow(ArrowFunction {
+                    Ok(Expression::Arrow(ArrowFunction {
                         params,
                         return_type,
                         body,
                         is_async: true,
                         span,
-                    }));
+                    }))
                 } else {
                     // Not an arrow function - this is a parse error since we consumed the parens
-                    return Err(ParseError {
+                    Err(ParseError {
                         kind: ParseErrorKind::InvalidSyntax {
                             reason: "Expected => after async function parameters".to_string(),
                         },
                         span: parser.current_span(),
                         message: "Expected arrow (=>) for async arrow function".to_string(),
                         suggestion: Some("Use: async () => expression".to_string()),
-                    });
+                    })
                 }
             } else if matches!(parser.current(), Token::Identifier(_)) {
                 // Could be: async x => ... or async foo()
@@ -330,13 +330,13 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     };
 
                     let span = parser.combine_spans(&start_span, &body_span);
-                    return Ok(Expression::Arrow(ArrowFunction {
+                    Ok(Expression::Arrow(ArrowFunction {
                         params: vec![param],
                         return_type: None,
                         body,
                         is_async: true,
                         span,
-                    }));
+                    }))
                 } else {
                     // Not an arrow - need to "put back" the identifier and parse as call
                     // Since we already advanced, we need to construct the identifier expr
@@ -359,22 +359,22 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     match &callee {
                         Expression::Call(call_expr) => {
                             let span = parser.combine_spans(&start_span, &call_expr.span);
-                            return Ok(Expression::AsyncCall(AsyncCallExpression {
+                            Ok(Expression::AsyncCall(AsyncCallExpression {
                                 callee: call_expr.callee.clone(),
                                 type_args: call_expr.type_args.clone(),
                                 arguments: call_expr.arguments.clone(),
                                 span,
-                            }));
+                            }))
                         }
                         _ => {
-                            return Err(ParseError {
+                            Err(ParseError {
                                 kind: ParseErrorKind::InvalidSyntax {
                                     reason: "async keyword must be followed by a function call or arrow function".to_string(),
                                 },
                                 span: start_span,
                                 message: "Expected function call or arrow function after async".to_string(),
                                 suggestion: Some("Use: async foo() or async () => expr".to_string()),
-                            });
+                            })
                         }
                     }
                 }
@@ -410,14 +410,14 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // delete and void (TODO: not yet implemented)
         Token::Delete | Token::Void => {
-            return Err(ParseError {
+            Err(ParseError {
                 kind: ParseErrorKind::InvalidSyntax {
                     reason: "delete and void operators not yet implemented".to_string(),
                 },
                 span: start_span,
                 message: "delete/void not supported yet".to_string(),
                 suggestion: None,
-            });
+            })
         }
 
         // new operator
@@ -877,7 +877,7 @@ fn parse_new_callee(parser: &mut Parser) -> Result<Expression, ParseError> {
             span,
         })
     } else if let Token::Identifier(name) = parser.current() {
-        let name = name.clone();
+        let name = *name;
         parser.advance();
         Expression::Identifier(Identifier {
             name,
@@ -1004,7 +1004,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // String literal
         Token::StringLiteral(s) => {
-            let value = s.clone();
+            let value = *s;
             parser.advance();
             Ok(Expression::StringLiteral(StringLiteral {
                 value,
@@ -1025,7 +1025,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         // Arrow function (simplified - single parameter without parens): x => ...
         Token::Identifier(_) if matches!(parser.peek(), Some(Token::Arrow)) => {
             let param_name = if let Token::Identifier(name) = parser.current() {
-                name.clone()
+                *name
             } else {
                 unreachable!()
             };
@@ -1049,7 +1049,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // Identifier
         Token::Identifier(name) => {
-            let name = name.clone();
+            let name = *name;
             parser.advance();
             Ok(Expression::Identifier(Identifier {
                 name,
@@ -1204,14 +1204,14 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
         // Function expression (TODO: not in AST yet)
         Token::Function => {
-            return Err(ParseError {
+            Err(ParseError {
                 kind: ParseErrorKind::InvalidSyntax {
                     reason: "Function expressions not yet implemented".to_string(),
                 },
                 span: start_span,
                 message: "Function expressions not supported yet".to_string(),
                 suggestion: Some("Use arrow functions instead".to_string()),
-            });
+            })
         }
 
         // JSX element or fragment: <div>...</div> or <>...</>
@@ -1275,7 +1275,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
 
     // Property key (identifiers and contextual keywords like `type`, `class`, etc.)
     let key = if let Token::Identifier(name) = parser.current() {
-        let name = name.clone();
+        let name = *name;
         parser.advance();
         PropertyKey::Identifier(Identifier {
             name,
@@ -1289,7 +1289,7 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
             span: start_span,
         })
     } else if let Token::StringLiteral(s) = parser.current() {
-        let s = s.clone();
+        let s = *s;
         parser.advance();
         PropertyKey::StringLiteral(StringLiteral {
             value: s,
@@ -1533,7 +1533,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
         let decorators = super::stmt::parse_decorators(parser)?;
 
         if let Token::Identifier(name) = parser.current() {
-            let name = name.clone();
+            let name = *name;
             parser.advance();
 
             let type_annotation = if parser.check(&Token::Colon) {

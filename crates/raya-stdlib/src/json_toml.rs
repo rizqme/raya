@@ -75,7 +75,7 @@ pub fn json_parse(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 /// encoding.jsonStringify(handle) -> string
 pub fn json_stringify(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
-    match VALUES.with(handle, |val| serde_json::to_string(val)) {
+    match VALUES.with(handle, serde_json::to_string) {
         Some(Ok(s)) => NativeCallResult::Value(ctx.create_string(&s)),
         Some(Err(e)) => NativeCallResult::Error(format!("encoding.jsonStringify: {}", e)),
         None => NativeCallResult::Error("encoding.jsonStringify: invalid handle".into()),
@@ -85,7 +85,7 @@ pub fn json_stringify(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
 /// encoding.jsonStringifyPretty(handle) -> string
 pub fn json_stringify_pretty(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
-    match VALUES.with(handle, |val| serde_json::to_string_pretty(val)) {
+    match VALUES.with(handle, serde_json::to_string_pretty) {
         Some(Ok(s)) => NativeCallResult::Value(ctx.create_string(&s)),
         Some(Err(e)) => NativeCallResult::Error(format!("encoding.jsonStringifyPretty: {}", e)),
         None => NativeCallResult::Error("encoding.jsonStringifyPretty: invalid handle".into()),

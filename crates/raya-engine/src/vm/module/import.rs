@@ -109,9 +109,9 @@ impl ImportResolver {
         // Otherwise, it's a package import
         // Format: name@version or just name
         // For scoped packages like @org/name@1.0.0, we need to skip the first @ if it's at position 0
-        let at_pos = if spec.starts_with('@') {
+        let at_pos = if let Some(stripped) = spec.strip_prefix('@') {
             // Scoped package - find @ after the first one
-            spec[1..].rfind('@').map(|pos| pos + 1)
+            stripped.rfind('@').map(|pos| pos + 1)
         } else {
             // Regular package - find any @
             spec.rfind('@')

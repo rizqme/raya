@@ -255,11 +255,11 @@ impl<'a> Interpreter<'a> {
             // Float Arithmetic
             // =========================================================
             Opcode::Fadd => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -270,11 +270,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fsub => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -285,11 +285,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fmul => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -300,11 +300,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fdiv => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -315,7 +315,7 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fneg => {
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -326,11 +326,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fpow => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -341,11 +341,11 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Fmod => {
-                let b = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let b = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = match stack.pop().and_then(|v| value_to_f64(v)) {
+                let a = match stack.pop().and_then(value_to_f64) {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

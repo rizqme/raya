@@ -182,7 +182,7 @@ pub fn create_native_isa() -> Result<Arc<dyn TargetIsa>, AotError> {
 /// machine code is concatenated into a contiguous blob with 16-byte alignment
 /// between functions.
 pub fn compile_functions(
-    functions: &[CompilableFunction],
+    functions: &[CompilableFunction<'_>],
     isa: Arc<dyn TargetIsa>,
 ) -> Result<AotBundle, AotError> {
     let target_triple = isa.triple().to_string();
@@ -239,7 +239,7 @@ pub fn compile_functions(
 
         // 4. Align to FUNC_ALIGN boundary
         let padding = (FUNC_ALIGN - (code_blob.len() % FUNC_ALIGN)) % FUNC_ALIGN;
-        code_blob.extend(std::iter::repeat(0u8).take(padding));
+        code_blob.extend(std::iter::repeat_n(0u8, padding));
 
         let code_offset = code_blob.len() as u64;
         let code_size = machine_code.len() as u64;

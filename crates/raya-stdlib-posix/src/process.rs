@@ -285,12 +285,14 @@ pub fn heap_total(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCall
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Signal flags — indexed by signal number. Max signal number on most Unix is 64.
+#[allow(clippy::declare_interior_mutable_const)] // Const used to initialize static array
 static SIGNAL_FLAGS: [AtomicBool; 64] = {
     const INIT: AtomicBool = AtomicBool::new(false);
     [INIT; 64]
 };
 
 /// Which signals we are trapping (to distinguish "not received" from "not trapped")
+#[allow(clippy::declare_interior_mutable_const)] // Const used to initialize static array
 static SIGNAL_TRAPPED: [AtomicBool; 64] = {
     const INIT: AtomicBool = AtomicBool::new(false);
     [INIT; 64]
@@ -437,6 +439,7 @@ fn get_memory_usage() -> u64 {
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
         let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
             / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+        #[allow(deprecated)] // libc deprecates in favor of mach2 crate, but we use libc
         let ret = unsafe {
             libc::task_info(
                 libc::mach_task_self(),

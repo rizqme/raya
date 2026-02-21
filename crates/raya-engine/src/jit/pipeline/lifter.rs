@@ -46,7 +46,7 @@ impl StackState {
         self.stack.last().copied()
     }
 
-    fn depth(&self) -> usize {
+    fn _depth(&self) -> usize {
         self.stack.len()
     }
 
@@ -151,8 +151,7 @@ fn merge_stacks(
     }
 
     let mut merged = Vec::with_capacity(depth);
-    for slot in 0..depth {
-        let first_reg = exit_stacks[&available[0]][slot];
+    for (slot, &first_reg) in exit_stacks[&available[0]].iter().enumerate().take(depth) {
         let all_same = available.iter().all(|p| exit_stacks[p][slot] == first_reg);
 
         if all_same {
@@ -186,8 +185,8 @@ pub fn lift_function(
     } else {
         func.name.clone()
     };
-    let param_count = func.param_count as usize;
-    let local_count = func.local_count as usize;
+    let param_count = func.param_count;
+    let local_count = func.local_count;
 
     let mut jit_func = JitFunction::new(func_index, name, param_count, local_count);
 
@@ -377,7 +376,7 @@ fn lift_instruction(
     func: &mut JitFunction,
     block: JitBlockId,
     stack: &mut StackState,
-    cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
+    _cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
 ) -> Result<(), LiftError> {
     match instr.opcode {
         // ===== Stack Manipulation =====
@@ -648,7 +647,7 @@ fn lift_instruction(
         Opcode::InstanceOf => {
             // InstanceOf pops object, pushes bool; class_id on stack below
             let object = stack.pop(instr.offset)?;
-            let class_val = stack.pop(instr.offset)?;
+            let _class_val = stack.pop(instr.offset)?;
             // The class ID is typically encoded differently, but for now treat as value
             let dest = func.alloc_reg(JitType::Bool);
             func.block_mut(block).instrs.push(JitInstr::InstanceOf { dest, object, class_id: 0 });
@@ -1012,8 +1011,8 @@ fn lift_instruction(
         // ===== Exception Handling =====
         Opcode::Try => {
             if let Operands::Try { catch_offset, finally_offset } = instr.operands {
-                let catch_target = ((instr.offset as i64) + (catch_offset as i64)) as usize;
-                let finally_target = if finally_offset > 0 {
+                let _catch_target = ((instr.offset as i64) + (catch_offset as i64)) as usize;
+                let _finally_target = if finally_offset > 0 {
                     Some(((instr.offset as i64) + (finally_offset as i64)) as usize)
                 } else {
                     None

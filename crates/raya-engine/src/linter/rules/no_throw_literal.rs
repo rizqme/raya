@@ -25,7 +25,7 @@ impl LintRule for NoThrowLiteral {
     fn check_statement(
         &self,
         stmt: &ast::Statement,
-        _ctx: &LintContext,
+        _ctx: &LintContext<'_>,
     ) -> Vec<LintDiagnostic> {
         let throw_stmt = match stmt {
             ast::Statement::Throw(t) => t,
@@ -37,7 +37,7 @@ impl LintRule for NoThrowLiteral {
                 rule: META.name,
                 code: META.code,
                 message: "Do not throw literals; use `throw new Error(...)` instead".to_string(),
-                span: throw_stmt.span.clone(),
+                span: throw_stmt.span,
                 severity: META.default_severity,
                 fix: None,
                 notes: vec![],
