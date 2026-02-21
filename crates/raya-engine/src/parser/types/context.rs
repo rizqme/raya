@@ -37,40 +37,77 @@ impl TypeContext {
             named_types: FxHashMap::default(),
         };
 
-        // Pre-intern common primitive types
+        // Pre-intern common primitive types and register named types for lowerer lookup.
+        // The interning order determines TypeIds (0..N), and named_types provides
+        // a name→TypeId mapping so the lowerer doesn't need hardcoded IDs.
         use super::ty::PrimitiveType;
-        ctx.intern(Type::Primitive(PrimitiveType::Number));
-        ctx.intern(Type::Primitive(PrimitiveType::String));
-        ctx.intern(Type::Primitive(PrimitiveType::Boolean));
-        ctx.intern(Type::Primitive(PrimitiveType::Null));
-        ctx.intern(Type::Primitive(PrimitiveType::Void));
-        ctx.intern(Type::Never);
-        ctx.intern(Type::Unknown);
-        ctx.intern(Type::Mutex); // Pre-intern Mutex type
-        ctx.intern(Type::RegExp); // Pre-intern RegExp type
-        ctx.intern(Type::Date); // Pre-intern Date type
-        ctx.intern(Type::Buffer); // Pre-intern Buffer type
 
-        // Pre-intern a Task<Unknown> type for generic Task detection
+        let number = ctx.intern(Type::Primitive(PrimitiveType::Number));
+        ctx.register_named_type("number".into(), number);
+
+        let string = ctx.intern(Type::Primitive(PrimitiveType::String));
+        ctx.register_named_type("string".into(), string);
+
+        let boolean = ctx.intern(Type::Primitive(PrimitiveType::Boolean));
+        ctx.register_named_type("boolean".into(), boolean);
+
+        let null = ctx.intern(Type::Primitive(PrimitiveType::Null));
+        ctx.register_named_type("null".into(), null);
+
+        let void = ctx.intern(Type::Primitive(PrimitiveType::Void));
+        ctx.register_named_type("void".into(), void);
+
+        let never = ctx.intern(Type::Never);
+        ctx.register_named_type("never".into(), never);
+
+        let unknown = ctx.intern(Type::Unknown);
+        ctx.register_named_type("unknown".into(), unknown);
+
+        let mutex = ctx.intern(Type::Mutex);
+        ctx.register_named_type("Mutex".into(), mutex);
+
+        let regexp = ctx.intern(Type::RegExp);
+        ctx.register_named_type("RegExp".into(), regexp);
+
+        let date = ctx.intern(Type::Date);
+        ctx.register_named_type("Date".into(), date);
+
+        let buffer = ctx.intern(Type::Buffer);
+        ctx.register_named_type("Buffer".into(), buffer);
+
+        // Pre-intern generic types with Unknown type parameters
         let unknown_id = TypeId(6); // Unknown type ID
-        ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
 
-        // Pre-intern Channel, Map, Set with unknown type parameters
-        ctx.intern(Type::Channel(super::ty::ChannelType { message: unknown_id }));
-        ctx.intern(Type::Map(super::ty::MapType { key: unknown_id, value: unknown_id }));
-        ctx.intern(Type::Set(super::ty::SetType { element: unknown_id }));
+        let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
+        ctx.register_named_type("Task".into(), task);
 
-        // Pre-intern Json type for JSON.parse return values
-        ctx.intern(Type::Json);
+        let channel = ctx.intern(Type::Channel(super::ty::ChannelType { message: unknown_id }));
+        ctx.register_named_type("Channel".into(), channel);
 
-        // Pre-intern Int primitive type (TypeId 16)
-        ctx.intern(Type::Primitive(PrimitiveType::Int));
+        let map = ctx.intern(Type::Map(super::ty::MapType { key: unknown_id, value: unknown_id }));
+        ctx.register_named_type("Map".into(), map);
+
+        let set = ctx.intern(Type::Set(super::ty::SetType { element: unknown_id }));
+        ctx.register_named_type("Set".into(), set);
+
+        let json = ctx.intern(Type::Json);
+        ctx.register_named_type("Json".into(), json);
+
+        let int = ctx.intern(Type::Primitive(PrimitiveType::Int));
+        ctx.register_named_type("int".into(), int);
+
+        // Pre-intern Array<Unknown> as canonical array dispatch type
+        let array = ctx.intern(Type::Array(super::ty::ArrayType { element: unknown_id }));
+        ctx.register_named_type("Array".into(), array);
 
         ctx
     }
 
     /// Well-known TypeId for Int primitive type
     pub const INT_TYPE_ID: u32 = 16;
+
+    /// Well-known TypeId for Array<Unknown> (canonical array dispatch type)
+    pub const ARRAY_TYPE_ID: u32 = 17;
 
     /// Intern a type, returning its TypeId
     ///

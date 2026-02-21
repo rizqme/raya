@@ -2,181 +2,18 @@
 //!
 //! Converts AST expressions to IR instructions.
 
-use super::{ClassFieldInfo, ConstantValue, Lowerer};
+use super::{ClassFieldInfo, ConstantValue, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID};
 use crate::compiler::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp};
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
 use crate::parser::TypeId;
 
-// ============================================================================
-// Built-in Method IDs (must match raya-core/src/builtin.rs)
-// ============================================================================
-
-/// Built-in array method IDs (must match raya-core/src/builtin.rs)
-mod builtin_array {
-    pub const PUSH: u16 = 0x0100;
-    pub const POP: u16 = 0x0101;
-    pub const SHIFT: u16 = 0x0102;
-    pub const UNSHIFT: u16 = 0x0103;
-    pub const INDEX_OF: u16 = 0x0104;
-    pub const INCLUDES: u16 = 0x0105;
-    pub const SLICE: u16 = 0x0106;
-    pub const CONCAT: u16 = 0x0107;
-    pub const REVERSE: u16 = 0x0108;
-    pub const JOIN: u16 = 0x0109;
-    pub const FOR_EACH: u16 = 0x010A;
-    pub const FILTER: u16 = 0x010B;
-    pub const FIND: u16 = 0x010C;
-    pub const FIND_INDEX: u16 = 0x010D;
-    pub const EVERY: u16 = 0x010E;
-    pub const SOME: u16 = 0x010F;
-    pub const LAST_INDEX_OF: u16 = 0x0110;
-    pub const SORT: u16 = 0x0111;
-    pub const MAP: u16 = 0x0112;
-    pub const REDUCE: u16 = 0x0113;
-    pub const FILL: u16 = 0x0114;
-    pub const FLAT: u16 = 0x0115;
-}
-
-/// Built-in string method IDs (must match raya-core/src/builtin.rs)
-mod builtin_string {
-    pub const CHAR_AT: u16 = 0x0200;
-    pub const SUBSTRING: u16 = 0x0201;
-    pub const TO_UPPER_CASE: u16 = 0x0202;
-    pub const TO_LOWER_CASE: u16 = 0x0203;
-    pub const TRIM: u16 = 0x0204;
-    pub const INDEX_OF: u16 = 0x0205;
-    pub const INCLUDES: u16 = 0x0206;
-    pub const SPLIT: u16 = 0x0207;
-    pub const STARTS_WITH: u16 = 0x0208;
-    pub const ENDS_WITH: u16 = 0x0209;
-    pub const REPLACE: u16 = 0x020A;
-    pub const REPEAT: u16 = 0x020B;
-    pub const PAD_START: u16 = 0x020C;
-    pub const PAD_END: u16 = 0x020D;
-    pub const CHAR_CODE_AT: u16 = 0x020E;
-    pub const LAST_INDEX_OF: u16 = 0x020F;
-    pub const TRIM_START: u16 = 0x0210;
-    pub const TRIM_END: u16 = 0x0211;
-    // String methods that take RegExp
-    pub const MATCH: u16 = 0x0212;
-    pub const MATCH_ALL: u16 = 0x0213;
-    pub const SEARCH: u16 = 0x0214;
-    pub const REPLACE_REGEXP: u16 = 0x0215;
-    pub const SPLIT_REGEXP: u16 = 0x0216;
-    pub const REPLACE_WITH_REGEXP: u16 = 0x0217;
-}
-
-/// Built-in Number method IDs (must match raya-core/src/builtin.rs)
-mod builtin_number {
-    pub const TO_FIXED: u16 = 0x0F00;
-    pub const TO_PRECISION: u16 = 0x0F01;
-    pub const TO_STRING_RADIX: u16 = 0x0F02;
-}
-
-/// Built-in RegExp method IDs (must match raya-core/src/builtin.rs)
-mod builtin_regexp {
-    pub const NEW: u16 = 0x0A00;
-    pub const TEST: u16 = 0x0A01;
-    pub const EXEC: u16 = 0x0A02;
-    pub const EXEC_ALL: u16 = 0x0A03;
-    pub const REPLACE: u16 = 0x0A04;
-    pub const REPLACE_WITH: u16 = 0x0A05;
-    pub const SPLIT: u16 = 0x0A06;
-    pub const REPLACE_MATCHES: u16 = 0x0A07;
-}
-
-/// Look up built-in method ID by method name and object type
-/// Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown,
-/// 7=Mutex, 8=RegExp, 9=Date, 10=Buffer, etc.
-/// Array types are interned dynamically (TypeId >= 15 typically)
-fn lookup_builtin_method(obj_type_id: u32, method_name: &str) -> Option<u16> {
-    // Number type (TypeId 0) and Int type (TypeId 16)
-    if obj_type_id == 0 || obj_type_id == 16 {
-        match method_name {
-            "toFixed" => return Some(builtin_number::TO_FIXED),
-            "toPrecision" => return Some(builtin_number::TO_PRECISION),
-            "toString" => return Some(builtin_number::TO_STRING_RADIX),
-            _ => {}
-        }
-    }
-
-    // RegExp type (TypeId 8)
-    if obj_type_id == 8 {
-        match method_name {
-            "test" => return Some(builtin_regexp::TEST),
-            "exec" => return Some(builtin_regexp::EXEC),
-            "execAll" => return Some(builtin_regexp::EXEC_ALL),
-            "replace" => return Some(builtin_regexp::REPLACE),
-            "replaceWith" => return Some(builtin_regexp::REPLACE_WITH),
-            "split" => return Some(builtin_regexp::SPLIT),
-            _ => {}
-        }
-    }
-
-    // Array types (TypeId >= 7, but skip known non-array types) or unknown (TypeId 6)
-    // Also include TypeId 0 because monomorphized generic functions create new AST nodes
-    // whose pointer addresses don't match the type checker's expr_types map, defaulting
-    // to TypeId 0. Array methods (push, pop, etc.) don't overlap with number methods.
-    if obj_type_id >= 7 || obj_type_id == 6 || obj_type_id == 0 {
-        match method_name {
-            "push" => return Some(builtin_array::PUSH),
-            "pop" => return Some(builtin_array::POP),
-            "shift" => return Some(builtin_array::SHIFT),
-            "unshift" => return Some(builtin_array::UNSHIFT),
-            "indexOf" => return Some(builtin_array::INDEX_OF),
-            "includes" => return Some(builtin_array::INCLUDES),
-            "slice" => return Some(builtin_array::SLICE),
-            "concat" => return Some(builtin_array::CONCAT),
-            "join" => return Some(builtin_array::JOIN),
-            "reverse" => return Some(builtin_array::REVERSE),
-            "forEach" => return Some(builtin_array::FOR_EACH),
-            "filter" => return Some(builtin_array::FILTER),
-            "find" => return Some(builtin_array::FIND),
-            "findIndex" => return Some(builtin_array::FIND_INDEX),
-            "every" => return Some(builtin_array::EVERY),
-            "some" => return Some(builtin_array::SOME),
-            "lastIndexOf" => return Some(builtin_array::LAST_INDEX_OF),
-            "sort" => return Some(builtin_array::SORT),
-            "map" => return Some(builtin_array::MAP),
-            "reduce" => return Some(builtin_array::REDUCE),
-            "fill" => return Some(builtin_array::FILL),
-            "flat" => return Some(builtin_array::FLAT),
-            _ => {}
-        }
-    }
-
-    // String type (TypeId 1)
-    if obj_type_id == 1 {
-        match method_name {
-            "charAt" => return Some(builtin_string::CHAR_AT),
-            "substring" => return Some(builtin_string::SUBSTRING),
-            "toUpperCase" => return Some(builtin_string::TO_UPPER_CASE),
-            "toLowerCase" => return Some(builtin_string::TO_LOWER_CASE),
-            "trim" => return Some(builtin_string::TRIM),
-            "indexOf" => return Some(builtin_string::INDEX_OF),
-            "includes" => return Some(builtin_string::INCLUDES),
-            "startsWith" => return Some(builtin_string::STARTS_WITH),
-            "endsWith" => return Some(builtin_string::ENDS_WITH),
-            "split" => return Some(builtin_string::SPLIT),
-            "replace" => return Some(builtin_string::REPLACE),
-            "repeat" => return Some(builtin_string::REPEAT),
-            "padStart" => return Some(builtin_string::PAD_START),
-            "padEnd" => return Some(builtin_string::PAD_END),
-            "charCodeAt" => return Some(builtin_string::CHAR_CODE_AT),
-            "lastIndexOf" => return Some(builtin_string::LAST_INDEX_OF),
-            "trimStart" => return Some(builtin_string::TRIM_START),
-            "trimEnd" => return Some(builtin_string::TRIM_END),
-            "match" => return Some(builtin_string::MATCH),
-            "matchAll" => return Some(builtin_string::MATCH_ALL),
-            "search" => return Some(builtin_string::SEARCH),
-            "replaceWith" => return Some(builtin_string::REPLACE_WITH_REGEXP),
-            _ => {}
-        }
-    }
-
-    None
-}
+// Re-export VM builtin method IDs (canonical source of truth)
+use crate::vm::builtin::array as builtin_array;
+use crate::vm::builtin::string as builtin_string;
+#[allow(unused_imports)]
+use crate::vm::builtin::number as builtin_number;
+use crate::vm::builtin::regexp as builtin_regexp;
 
 impl<'a> Lowerer<'a> {
     /// Lower an expression, returning the register holding its value
@@ -352,7 +189,7 @@ impl<'a> Lowerer<'a> {
                 .local_registers
                 .get(&local_idx)
                 .map(|r| r.ty)
-                .unwrap_or(TypeId::new(0));
+                .unwrap_or(UNRESOLVED);
             let dest = self.alloc_register(ty);
             self.emit(IrInstr::LoadLocal {
                 dest: dest.clone(),
@@ -440,7 +277,8 @@ impl<'a> Lowerer<'a> {
 
         // Check module-level variables (stored as globals)
         if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-            let dest = self.alloc_register(TypeId::new(0));
+            let ty = self.global_type_map.get(&global_idx).copied().unwrap_or(UNRESOLVED);
+            let dest = self.alloc_register(ty);
             self.emit(IrInstr::LoadGlobal {
                 dest: dest.clone(),
                 index: global_idx,
@@ -1107,71 +945,83 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Fall back to builtin method handling
+            // Fall back to registry-based dispatch
             let object = self.lower_expr(&member.object);
-            let obj_type_id = object.ty.as_u32();
 
-            // Handle length() on arrays and strings as property access (not method call)
-            if method_name == "length" && args.is_empty() {
-                if obj_type_id == 1 {
-                    // String length
-                    let len_dest = self.alloc_register(TypeId::new(16));
-                    self.emit(IrInstr::StringLen {
-                        dest: len_dest.clone(),
-                        string: object,
-                    });
-                    return len_dest;
+            // Resolve dispatch type: prefer register type (canonical IDs from lowerer),
+            // normalize checker type as fallback (may have dynamic union/generic IDs).
+            // Unknown (6) is treated as useless for dispatch.
+            let obj_type_id = {
+                let reg_ty = object.ty.as_u32();
+                let checker_ty = self.get_expr_type(&member.object).as_u32();
+                let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
+                let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+
+                if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != 6 {
+                    reg_dispatch
+                } else if checker_dispatch != UNRESOLVED_TYPE_ID && checker_dispatch != 6 {
+                    checker_dispatch
                 } else {
-                    // Array length (obj_type_id > 6, or 0 for unknown/number — same heuristic as property access)
-                    let len_dest = self.alloc_register(TypeId::new(16));
-                    self.emit(IrInstr::ArrayLen {
-                        dest: len_dest.clone(),
-                        array: object,
-                    });
-                    return len_dest;
+                    UNRESOLVED_TYPE_ID
+                }
+            };
+
+            // For no-arg calls like length(), check registry properties (opcode dispatch)
+            if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
+                if let Some(action) = self.dispatch_registry.lookup_property(obj_type_id, method_name) {
+                    if let super::dispatch::DispatchAction::Opcode(kind) = action {
+                        let len_dest = self.alloc_register(TypeId::new(16));
+                        match kind {
+                            super::dispatch::OpcodeKind::StringLen => {
+                                self.emit(IrInstr::StringLen {
+                                    dest: len_dest.clone(),
+                                    string: object,
+                                });
+                            }
+                            super::dispatch::OpcodeKind::ArrayLen => {
+                                self.emit(IrInstr::ArrayLen {
+                                    dest: len_dest.clone(),
+                                    array: object,
+                                });
+                            }
+                        }
+                        return len_dest;
+                    }
                 }
             }
 
-            // Note: Channel methods are NOT handled here via NativeCall.
-            // Channel methods go through normal vtable dispatch to Channel class methods,
-            // which internally use __NATIVE_CALL with the channel ID stored in the object.
-
-            // Look up builtin method ID, with special handling for string RegExp overloads
-            let method_id = if obj_type_id == 1 && !args.is_empty() && args[0].ty.as_u32() == 8 {
-                // String method with RegExp first argument - use RegExp variant
-                match method_name {
-                    "replace" => builtin_string::REPLACE_REGEXP,
-                    "split" => builtin_string::SPLIT_REGEXP,
-                    _ => lookup_builtin_method(obj_type_id, method_name).unwrap_or(0),
+            // Look up method in dispatch registry
+            let method_id = if obj_type_id != UNRESOLVED_TYPE_ID {
+                if let Some(action) = self.dispatch_registry.lookup_method(obj_type_id, method_name) {
+                    match action {
+                        super::dispatch::DispatchAction::NativeCall(mut id) => {
+                            // Special handling: string methods with RegExp argument
+                            if obj_type_id == 1 && !args.is_empty() && args[0].ty.as_u32() == 8 {
+                                use crate::vm::builtin::string as bs;
+                                match method_name {
+                                    "replace" => id = bs::REPLACE_REGEXP,
+                                    "split" => id = bs::SPLIT_REGEXP,
+                                    _ => {}
+                                }
+                            }
+                            id
+                        }
+                        super::dispatch::DispatchAction::Opcode(_) => 0, // Properties handled above
+                    }
+                } else {
+                    0 // Not in registry — fall through to vtable dispatch at runtime
                 }
             } else {
-                lookup_builtin_method(obj_type_id, method_name).unwrap_or(0)
+                0 // UNRESOLVED type — fall through to vtable dispatch at runtime
             };
 
             // Array callback methods are inlined as compiler intrinsics
-            // instead of emitting CallMethod (which would need nested execution)
-            const ARRAY_CALLBACK_METHODS: &[u16] = &[
-                builtin_array::MAP,
-                builtin_array::FILTER,
-                builtin_array::REDUCE,
-                builtin_array::FOR_EACH,
-                builtin_array::FIND,
-                builtin_array::FIND_INDEX,
-                builtin_array::SOME,
-                builtin_array::EVERY,
-                builtin_array::SORT,
-            ];
-            if ARRAY_CALLBACK_METHODS.contains(&method_id) {
+            if super::dispatch::ARRAY_INTRINSIC_METHODS.contains(&method_id) {
                 return self.lower_array_intrinsic(dest, method_id, object, args);
             }
 
             // String/RegExp replaceWith methods are inlined as compiler intrinsics
-            // instead of emitting CallMethod (which would need nested execution)
-            const REPLACE_WITH_METHODS: &[u16] = &[
-                builtin_string::REPLACE_WITH_REGEXP, // str.replaceWith(regexp, callback)
-                builtin_regexp::REPLACE_WITH,         // regexp.replaceWith(str, callback)
-            ];
-            if REPLACE_WITH_METHODS.contains(&method_id) {
+            if super::dispatch::REPLACE_WITH_INTRINSIC_METHODS.contains(&method_id) {
                 return self.lower_replace_with_intrinsic(dest, method_id, object, args);
             }
 
@@ -2532,15 +2382,29 @@ impl<'a> Lowerer<'a> {
 
         let object = self.lower_expr(&member.object);
 
+        // Resolve dispatch type: prefer register type (set by lowerer with canonical IDs),
+        // normalize checker type as fallback (may have dynamic union/generic IDs).
+        // Unknown (6) is treated as useless for dispatch — it has no registry entries.
+        let obj_ty_id = {
+            let reg_ty = object.ty.as_u32();
+            let checker_ty = self.get_expr_type(&member.object).as_u32();
+            let reg_dispatch = self.normalize_type_for_dispatch(reg_ty);
+            let checker_dispatch = self.normalize_type_for_dispatch(checker_ty);
+
+            if reg_dispatch != UNRESOLVED_TYPE_ID && reg_dispatch != 6 {
+                reg_dispatch
+            } else if checker_dispatch != UNRESOLVED_TYPE_ID && checker_dispatch != 6 {
+                checker_dispatch
+            } else {
+                UNRESOLVED_TYPE_ID
+            }
+        };
+
         // Check for JSON type - use duck typing with dynamic property access
-        // JSON type is pre-interned at TypeId 15
-        // (0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown,
-        //  7=Mutex, 8=RegExp, 9=Date, 10=Buffer, 11=Task, 12=Channel, 13=Map, 14=Set, 15=Json)
         const JSON_TYPE_ID: u32 = 15;
-        if object.ty.as_u32() == JSON_TYPE_ID {
-            // JSON duck typing - emit JsonLoadProperty which does runtime string lookup
+        if obj_ty_id == JSON_TYPE_ID {
             let json_type = TypeId::new(JSON_TYPE_ID);
-            let dest = self.alloc_register(json_type); // Result is also json
+            let dest = self.alloc_register(json_type);
             self.emit(IrInstr::JsonLoadProperty {
                 dest: dest.clone(),
                 object,
@@ -2549,32 +2413,32 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // Check for built-in properties on primitive types
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
-        if prop_name == "length" {
-            let obj_ty = object.ty.as_u32();
-
-            // String type (TypeId 1)
-            if obj_ty == 1 {
-                let dest = self.alloc_register(TypeId::new(16)); // Int result (Slen returns i32)
-                self.emit(IrInstr::StringLen {
-                    dest: dest.clone(),
-                    string: object,
-                });
-                return dest;
-            }
-
-            // Array types: TypeId > 6 (after pre-interned primitives)
-            // OR TypeId 0 (Number) because arrays are currently typed as Number in IR
-            // Numbers don't have .length, so if we're accessing .length on TypeId 0,
-            // it's most likely an array
-            if obj_ty > 6 || obj_ty == 0 {
-                let dest = self.alloc_register(TypeId::new(16)); // Int result (Alen returns i32)
-                self.emit(IrInstr::ArrayLen {
-                    dest: dest.clone(),
-                    array: object,
-                });
-                return dest;
+        // Registry-based property dispatch (replaces hardcoded .length checks)
+        if obj_ty_id != UNRESOLVED_TYPE_ID {
+            if let Some(action) = self.dispatch_registry.lookup_property(obj_ty_id, prop_name) {
+                match action {
+                    super::dispatch::DispatchAction::Opcode(kind) => {
+                        let dest = self.alloc_register(TypeId::new(16)); // length returns int
+                        match kind {
+                            super::dispatch::OpcodeKind::StringLen => {
+                                self.emit(IrInstr::StringLen {
+                                    dest: dest.clone(),
+                                    string: object,
+                                });
+                            }
+                            super::dispatch::OpcodeKind::ArrayLen => {
+                                self.emit(IrInstr::ArrayLen {
+                                    dest: dest.clone(),
+                                    array: object,
+                                });
+                            }
+                        }
+                        return dest;
+                    }
+                    super::dispatch::DispatchAction::NativeCall(_method_id) => {
+                        // Properties shouldn't use NativeCall, but handle for completeness
+                    }
+                }
             }
         }
 
@@ -2590,7 +2454,9 @@ impl<'a> Lowerer<'a> {
             {
                 (field.index, field.ty)
             } else {
-                (0, TypeId::new(0))
+                // Field not found in class — don't emit LoadField with bogus index.
+                // Fall through to the non-class path below.
+                (0, UNRESOLVED)
             }
         } else {
             // Check variable_object_fields for decoded object field layout
@@ -2609,7 +2475,7 @@ impl<'a> Lowerer<'a> {
             };
 
             if let Some(idx) = obj_field_idx {
-                (idx, TypeId::new(0))
+                (idx, UNRESOLVED)
             } else {
                 // Fall back to type-based field resolution (for function parameters typed as object types)
                 let expr_ty = self.get_expr_type(&member.object);
@@ -2634,7 +2500,7 @@ impl<'a> Lowerer<'a> {
                         None
                     }
                 });
-                type_field_idx.unwrap_or((0, TypeId::new(0)))
+                type_field_idx.unwrap_or((0, UNRESOLVED))
             }
         };
 
@@ -2668,7 +2534,13 @@ impl<'a> Lowerer<'a> {
             matches!(elem_opt, Some(ast::ArrayElement::Spread(_)))
         });
 
-        let array_ty = self.get_expr_type(full_expr);
+        let checker_ty = self.get_expr_type(full_expr);
+        // NewArray always creates an array — use ARRAY_TYPE_ID when checker type is unknown
+        let array_ty = if checker_ty.as_u32() == UNRESOLVED_TYPE_ID {
+            TypeId::new(super::ARRAY_TYPE_ID)
+        } else {
+            checker_ty
+        };
 
         if has_spread {
             // Spread present: build array imperatively with NewArray + push/loop
@@ -2932,6 +2804,14 @@ impl<'a> Lowerer<'a> {
                             index: local_idx,
                             value: value.clone(),
                         });
+
+                        // Update local register type on reassignment so subsequent
+                        // member access dispatches correctly (e.g., neighbors = [] → array type)
+                        if value.ty.as_u32() != UNRESOLVED_TYPE_ID {
+                            if let Some(entry) = self.local_registers.get_mut(&local_idx) {
+                                entry.ty = value.ty;
+                            }
+                        }
 
                         // Check for self-recursive closure: if we just assigned a closure
                         // that captured this variable, patch the closure's capture
@@ -3479,7 +3359,7 @@ impl<'a> Lowerer<'a> {
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
         let operand = self.lower_expr(&typeof_expr.argument);
-        let dest = self.alloc_register(TypeId::new(3)); // string type
+        let dest = self.alloc_register(TypeId::new(1)); // String type (TypeId 1)
 
         self.emit(IrInstr::Typeof {
             dest: dest.clone(),
@@ -3920,13 +3800,11 @@ impl<'a> Lowerer<'a> {
                 if let Expression::Member(member) = &*call.callee {
                     let obj_class_id = self.infer_class_id(&member.object)?;
                     let method_name = member.property.name;
-                    // Check if method has an explicit return class type
+                    // Only return a class if there's an explicit return class mapping.
+                    // Don't assume methods return the same class (e.g., Map.get() returns
+                    // the value type, not Map).
                     if let Some(&ret_class_id) = self.method_return_class_map.get(&(obj_class_id, method_name)) {
                         return Some(ret_class_id);
-                    }
-                    // Otherwise, if the method exists, assume it returns the same class
-                    if self.method_map.contains_key(&(obj_class_id, method_name)) {
-                        return Some(obj_class_id);
                     }
                 }
                 // Standalone function call: check function return class

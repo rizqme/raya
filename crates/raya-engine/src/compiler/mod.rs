@@ -110,7 +110,7 @@ impl<'a> Compiler<'a> {
     /// 1. AST lowering to IR
     /// 2. Monomorphization (generic specialization)
     /// 3. Optimization passes
-    pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> ir::IrModule {
+    pub fn compile_to_optimized_ir(&self, module: &ast::Module) -> CompileResult<ir::IrModule> {
         // Step 1: Lower AST to IR
         let mut lowerer = lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
             .with_sourcemap(self.emit_sourcemap);
@@ -119,6 +119,13 @@ impl<'a> Compiler<'a> {
         }
         let mut ir_module = lowerer.lower_module(module);
 
+        // Check for lowerer errors (e.g., unresolved types at dispatch points)
+        if let Some(err) = lowerer.errors().first() {
+            return Err(CompileError::InternalError {
+                message: format!("{}", err),
+            });
+        }
+
         // Step 2: Monomorphization
         let _mono_result = monomorphize::monomorphize(&mut ir_module, &self.type_ctx, self.interner);
 
@@ -126,7 +133,7 @@ impl<'a> Compiler<'a> {
         let optimizer = optimize::Optimizer::basic();
         optimizer.optimize(&mut ir_module);
 
-        ir_module
+        Ok(ir_module)
     }
 
     /// Compile a module through the full IR pipeline to bytecode
@@ -138,7 +145,7 @@ impl<'a> Compiler<'a> {
     /// 4. IR → Bytecode code generation
     pub fn compile_via_ir(&self, module: &ast::Module) -> CompileResult<Module> {
         // Get optimized IR
-        let ir_module = self.compile_to_optimized_ir(module);
+        let ir_module = self.compile_to_optimized_ir(module)?;
 
         // Generate bytecode from IR
         codegen::generate(&ir_module, self.emit_sourcemap)
@@ -174,6 +181,13 @@ impl<'a> Compiler<'a> {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
         let mut ir_module = lowerer.lower_module(module);
+
+        // Check for lowerer errors
+        if let Some(err) = lowerer.errors().first() {
+            return Err(CompileError::InternalError {
+                message: format!("{}", err),
+            });
+        }
 
         writeln!(debug, "=== IR Before Optimization ===").unwrap();
         writeln!(debug, "{}", ir_module.pretty_print()).unwrap();

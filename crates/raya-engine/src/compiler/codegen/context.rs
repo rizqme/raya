@@ -1179,8 +1179,16 @@ impl IrCodeGenerator {
         // Int: both operands are int (TypeId 16)
         let is_int = left_ty == INT_TYPE_ID && right_ty == INT_TYPE_ID;
 
-        let opcode = if is_string {
-            // String operations
+        let opcode = if (left_ty == 3 || right_ty == 3) && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+            // Null comparison — use generic Eq/Ne. Seq returns false for null==null
+            // (neither is a pointer), so null checks must use raw bit comparison.
+            match op {
+                BinaryOp::Equal => Opcode::Eq,
+                BinaryOp::NotEqual => Opcode::Ne,
+                _ => unreachable!(),
+            }
+        } else if is_string {
+            // String operations — safe here because neither operand is null (TypeId 3).
             match op {
                 BinaryOp::Add | BinaryOp::Concat => Opcode::Sconcat,
                 BinaryOp::Equal => Opcode::Seq,

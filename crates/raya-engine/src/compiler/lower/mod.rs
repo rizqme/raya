@@ -3,6 +3,7 @@
 //! Converts the type-checked AST into the IR representation.
 
 mod control_flow;
+pub(super) mod dispatch;
 mod expr;
 mod stmt;
 
@@ -15,6 +16,17 @@ use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, Varia
 use crate::parser::token::Span;
 use crate::parser::{Interner, Symbol, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
+
+/// Sentinel TypeId for when the lowerer cannot determine the type.
+/// Distinct from TypeId(0) (Number) and TypeId(6) (Unknown).
+/// Indicates a compiler limitation — the type IS known to the checker,
+/// but the lowerer failed to read it.
+pub(super) const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
+pub(super) const UNRESOLVED: TypeId = TypeId::new(UNRESOLVED_TYPE_ID);
+
+/// TypeId for generic array types (string[], number[], etc.)
+/// Defined in TypeContext as the pre-interned Array<Unknown> type.
+pub(super) const ARRAY_TYPE_ID: u32 = TypeContext::ARRAY_TYPE_ID;
 
 /// Collects identifiers referenced in a function body that match module-level variable names.
 /// Used to determine which module-level variables need global promotion (LoadGlobal/StoreGlobal).
@@ -388,6 +400,8 @@ pub struct Lowerer<'a> {
     closure_locals: FxHashMap<u16, FunctionId>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
+    /// Type map for module-level globals (preserves initializer types through LoadGlobal)
+    global_type_map: FxHashMap<u16, TypeId>,
     /// Compile-time constant values (for constant folding)
     /// Maps symbol to its constant value (only for literals)
     constant_map: FxHashMap<Symbol, ConstantValue>,
@@ -410,6 +424,10 @@ pub struct Lowerer<'a> {
     emit_sourcemap: bool,
     /// Current source span (set at statement/expression boundaries, used by emit/set_terminator)
     current_span: Span,
+    /// Compile errors collected during lowering (e.g., UNRESOLVED type at dispatch)
+    errors: Vec<super::error::CompileError>,
+    /// Registry for type-specific method/property dispatch
+    dispatch_registry: dispatch::DispatchRegistry,
 }
 
 impl<'a> Lowerer<'a> {
@@ -474,6 +492,7 @@ impl<'a> Lowerer<'a> {
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
             expr_types,
+            global_type_map: FxHashMap::default(),
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
@@ -483,6 +502,8 @@ impl<'a> Lowerer<'a> {
             class_type_params: FxHashMap::default(),
             emit_sourcemap: false,
             current_span: Span::default(),
+            errors: Vec::new(),
+            dispatch_registry: dispatch::DispatchRegistry::new(type_ctx),
         }
     }
 
@@ -496,6 +517,23 @@ impl<'a> Lowerer<'a> {
     pub fn with_jsx(mut self, options: JsxOptions) -> Self {
         self.jsx_options = Some(options);
         self
+    }
+
+    /// Report an unresolved type error at a dispatch point.
+    /// Mimics TypeScript's strict type errors — never silently emit incorrect bytecode.
+    fn report_unresolved_type(&mut self, context: &str, property: &str) {
+        self.errors.push(super::error::CompileError::InternalError {
+            message: format!(
+                "Cannot resolve type for '{}' access on '{}'. \
+                 This is a compiler bug — the type should be known at compile time.",
+                context, property
+            ),
+        });
+    }
+
+    /// Get collected compile errors
+    pub fn errors(&self) -> &[super::error::CompileError] {
+        &self.errors
     }
 
     /// Resolve a native function name to a module-local index.
@@ -541,11 +579,83 @@ impl<'a> Lowerer<'a> {
         self.constant_map.get(&name)
     }
 
-    /// Get the TypeId for an expression from the type checker's expr_types map
-    /// Falls back to TypeId(0) (Number) if not found
+    /// Get the TypeId for an expression from the type checker's expr_types map.
+    /// Falls back to UNRESOLVED if not found (compiler couldn't determine type).
     fn get_expr_type(&self, expr: &Expression) -> TypeId {
         let expr_id = expr as *const _ as usize;
-        self.expr_types.get(&expr_id).copied().unwrap_or(TypeId::new(0))
+        self.expr_types.get(&expr_id).copied().unwrap_or(UNRESOLVED)
+    }
+
+    /// Normalize a TypeId for dispatch purposes.
+    ///
+    /// The type checker and lowerer use different TypeId representations:
+    /// - Pre-interned canonical IDs (0–17) are directly dispatch-compatible
+    /// - Dynamically interned IDs (> 17) represent unions, generics, etc.
+    ///
+    /// This method maps dynamic IDs back to canonical dispatch IDs by
+    /// querying the TypeContext. For example:
+    /// - `Array<number>` (TypeId 18+) → ARRAY_TYPE_ID (17)
+    /// - `string | null` union → String (1) via dominant non-null member
+    fn normalize_type_for_dispatch(&self, type_id: u32) -> u32 {
+        use crate::parser::types::ty::Type;
+
+        // Canonical pre-interned types (0..=ARRAY_TYPE_ID) are already dispatch-compatible
+        if type_id <= ARRAY_TYPE_ID || type_id == UNRESOLVED_TYPE_ID {
+            return type_id;
+        }
+
+        // Look up the actual type in TypeContext and map back to canonical dispatch ID
+        let Some(ty) = self.type_ctx.get(TypeId::new(type_id)) else {
+            return UNRESOLVED_TYPE_ID;
+        };
+
+        // Map structural types back to their canonical pre-interned TypeId.
+        // Uses TypeContext.lookup() to find the canonical ID without hardcoding numbers.
+        let canonical = match ty {
+            Type::Array(_) | Type::Tuple(_) => self.type_ctx.lookup_named_type("Array"),
+            Type::Primitive(p) => {
+                use crate::parser::types::ty::PrimitiveType as P;
+                let name = match p {
+                    P::Number => "number",
+                    P::String => "string",
+                    P::Boolean => "boolean",
+                    P::Null => "null",
+                    P::Void => "void",
+                    P::Int => "int",
+                };
+                self.type_ctx.lookup_named_type(name)
+            }
+            Type::Json => self.type_ctx.lookup_named_type("Json"),
+            Type::RegExp => self.type_ctx.lookup_named_type("RegExp"),
+            Type::Mutex => self.type_ctx.lookup_named_type("Mutex"),
+            Type::Date => self.type_ctx.lookup_named_type("Date"),
+            Type::Buffer => self.type_ctx.lookup_named_type("Buffer"),
+            Type::Task(_) => self.type_ctx.lookup_named_type("Task"),
+            Type::Channel(_) => self.type_ctx.lookup_named_type("Channel"),
+            Type::Map(_) => self.type_ctx.lookup_named_type("Map"),
+            Type::Set(_) => self.type_ctx.lookup_named_type("Set"),
+            Type::Union(union) => {
+                // Find dominant non-null member
+                let null_id = self.type_ctx.lookup_named_type("null")
+                    .map(|id| id.as_u32())
+                    .unwrap_or(UNRESOLVED_TYPE_ID);
+                let mut resolved = UNRESOLVED_TYPE_ID;
+                for &member_id in &union.members {
+                    let member_dispatch = self.normalize_type_for_dispatch(member_id.as_u32());
+                    if member_dispatch != null_id && member_dispatch != UNRESOLVED_TYPE_ID {
+                        if resolved == UNRESOLVED_TYPE_ID {
+                            resolved = member_dispatch;
+                        } else if resolved != member_dispatch {
+                            return UNRESOLVED_TYPE_ID; // Ambiguous union
+                        }
+                    }
+                }
+                return resolved;
+            }
+            _ => None,
+        };
+
+        canonical.map(|id| id.as_u32()).unwrap_or(UNRESOLVED_TYPE_ID)
     }
 
     /// Unwrap `ExportDecl::Declaration` to get the inner statement.
@@ -1736,7 +1846,7 @@ impl<'a> Lowerer<'a> {
                 .type_annotation
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
-                .unwrap_or(TypeId::new(0));
+                .unwrap_or(UNRESOLVED);
             let reg = self.alloc_register(ty);
 
             // Extract parameter name from pattern
@@ -1760,7 +1870,7 @@ impl<'a> Lowerer<'a> {
             .return_type
             .as_ref()
             .map(|t| self.resolve_type_annotation(t))
-            .unwrap_or_else(|| TypeId::new(0)); // void
+            .unwrap_or(UNRESOLVED);
 
         // Create function
         let mut ir_func = IrFunction::new(name, params, return_ty);
@@ -2006,7 +2116,7 @@ impl<'a> Lowerer<'a> {
                             .type_annotation
                             .as_ref()
                             .map(|t| self.resolve_type_annotation(t))
-                            .unwrap_or(TypeId::new(0));
+                            .unwrap_or(UNRESOLVED);
                         let reg = self.alloc_register(ty);
 
                         if let Pattern::Identifier(ident) = &param.pattern {
@@ -2028,7 +2138,7 @@ impl<'a> Lowerer<'a> {
                         .return_type
                         .as_ref()
                         .map(|t| self.resolve_type_annotation(t))
-                        .unwrap_or_else(|| TypeId::new(0));
+                        .unwrap_or(UNRESOLVED);
 
                     // Create function with mangled name
                     let mut ir_func = IrFunction::new(&full_name, params, return_ty);
@@ -2121,7 +2231,7 @@ impl<'a> Lowerer<'a> {
                         .type_annotation
                         .as_ref()
                         .map(|t| self.resolve_type_annotation(t))
-                        .unwrap_or(TypeId::new(0));
+                        .unwrap_or(UNRESOLVED);
                     let reg = self.alloc_register(ty);
 
                     if let Pattern::Identifier(ident) = &param.pattern {
@@ -2263,7 +2373,7 @@ impl<'a> Lowerer<'a> {
                 if let Pattern::Identifier(ident) = &param.pattern {
                     if let Some(&local_idx) = self.local_map.get(&ident.name) {
                         // Load the parameter value
-                        let param_reg = self.alloc_register(TypeId::new(0));
+                        let param_reg = self.alloc_register(UNRESOLVED);
                         self.emit(IrInstr::LoadLocal {
                             dest: param_reg.clone(),
                             index: local_idx,
@@ -2721,38 +2831,59 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a type annotation to a TypeId
     fn resolve_type_annotation(&self, ty: &ast::TypeAnnotation) -> TypeId {
-        // Pre-interned TypeIds: 0=Number, 1=String, 2=Boolean, 3=Null, 4=Void, 5=Never, 6=Unknown
+        use crate::parser::types::ty::{Type as TyType, PrimitiveType as TyPrim};
+
         match &ty.ty {
             ast::Type::Primitive(prim) => {
-                // PrimitiveType is an enum, match on it directly
-                match prim {
-                    ast::PrimitiveType::Number => TypeId::new(0),
-                    ast::PrimitiveType::Int => TypeId::new(16),
-                    ast::PrimitiveType::String => TypeId::new(1),
-                    ast::PrimitiveType::Boolean => TypeId::new(2),
-                    ast::PrimitiveType::Null => TypeId::new(3),
-                    ast::PrimitiveType::Void => TypeId::new(4),
-                }
+                let ty_prim = match prim {
+                    ast::PrimitiveType::Number => TyPrim::Number,
+                    ast::PrimitiveType::Int => TyPrim::Int,
+                    ast::PrimitiveType::String => TyPrim::String,
+                    ast::PrimitiveType::Boolean => TyPrim::Boolean,
+                    ast::PrimitiveType::Null => TyPrim::Null,
+                    ast::PrimitiveType::Void => TyPrim::Void,
+                };
+                self.type_ctx.lookup(&TyType::Primitive(ty_prim)).unwrap_or(UNRESOLVED)
             }
             ast::Type::Reference(type_ref) => {
                 let name = self.interner.resolve(type_ref.name.name);
-                match name {
-                    "number" => TypeId::new(0),
-                    "string" => TypeId::new(1),
-                    "boolean" => TypeId::new(2),
-                    "null" => TypeId::new(3),
-                    "void" => TypeId::new(4),
-                    "never" => TypeId::new(5),
-                    "unknown" => TypeId::new(6),
-                    // Use a special TypeId for Channel types so they can be detected during lowering
-                    // TypeId(100) is used as a marker for Channel types
-                    "Channel" => TypeId::new(100),
-                    // For class types, we return a high TypeId (could be improved)
-                    _ => TypeId::new(7),
-                }
+                self.type_ctx.lookup_named_type(name).unwrap_or(UNRESOLVED)
             }
-            // For other type forms (function, union, etc.), default to 0
-            _ => TypeId::new(0),
+            // Array types: string[], number[], T[]
+            // Tuple types: [string, number] — arrays at runtime
+            ast::Type::Array(_) | ast::Type::Tuple(_) => {
+                self.type_ctx.lookup_named_type("Array").unwrap_or(UNRESOLVED)
+            }
+            // Union types: resolve to dominant non-null member
+            ast::Type::Union(union) => {
+                let null_id = self.type_ctx.lookup(&TyType::Primitive(TyPrim::Null));
+                let mut resolved = UNRESOLVED;
+                for member in &union.types {
+                    let member_ty = self.resolve_type_annotation(member);
+                    if null_id.map_or(true, |nid| member_ty != nid) {
+                        if resolved == UNRESOLVED {
+                            resolved = member_ty;
+                        } else if resolved != member_ty {
+                            return UNRESOLVED;
+                        }
+                    }
+                }
+                resolved
+            }
+            // Literal types → their primitive
+            ast::Type::StringLiteral(_) => {
+                self.type_ctx.lookup(&TyType::Primitive(TyPrim::String)).unwrap_or(UNRESOLVED)
+            }
+            ast::Type::NumberLiteral(_) => {
+                self.type_ctx.lookup(&TyType::Primitive(TyPrim::Number)).unwrap_or(UNRESOLVED)
+            }
+            ast::Type::BooleanLiteral(_) => {
+                self.type_ctx.lookup(&TyType::Primitive(TyPrim::Boolean)).unwrap_or(UNRESOLVED)
+            }
+            // Parenthesized: unwrap
+            ast::Type::Parenthesized(inner) => self.resolve_type_annotation(inner),
+            // Function, Object, Intersection, Typeof → UNRESOLVED
+            _ => UNRESOLVED,
         }
     }
 

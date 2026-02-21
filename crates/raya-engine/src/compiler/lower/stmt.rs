@@ -2,7 +2,7 @@
 //!
 //! Converts AST statements to IR instructions.
 
-use super::Lowerer;
+use super::{Lowerer, UNRESOLVED};
 use crate::compiler::ir::{
     BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
 };
@@ -512,7 +512,7 @@ impl<'a> Lowerer<'a> {
 
                     // Build rest array: for i in start..len { rest.push(arr[i]) }
                     let zero = self.emit_i32_const(0);
-                    let rest_arr = self.alloc_register(TypeId::new(0));
+                    let rest_arr = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
                     self.emit(IrInstr::NewArray {
                         dest: rest_arr.clone(),
                         len: zero,
@@ -734,6 +734,9 @@ impl<'a> Lowerer<'a> {
 
                 let value = self.lower_expr(init);
 
+                // Track the global's type so LoadGlobal preserves it
+                self.global_type_map.insert(global_idx, value.ty);
+
                 // Transfer object field layout from register to variable
                 if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
                     self.variable_object_fields.insert(name, fields);
@@ -857,12 +860,12 @@ impl<'a> Lowerer<'a> {
                 });
             }
         } else {
-            // No initializer - get type from annotation or default to number
+            // No initializer - get type from annotation or UNRESOLVED
             let ty = decl
                 .type_annotation
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
-                .unwrap_or(TypeId::new(0));
+                .unwrap_or(UNRESOLVED);
             // Store null for uninitialized variables
             let null_reg = self.lower_null_literal();
 
