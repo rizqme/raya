@@ -6,7 +6,7 @@
 //! channel waiters, and checks preemption — all in one loop iteration.
 
 use crate::vm::interpreter::{ExecutionResult, Interpreter, SharedVmState};
-use crate::vm::object::{Buffer, ChannelObject, RayaString};
+use crate::vm::object::{Buffer, ChannelObject, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
 use crate::vm::abi::native_to_value;
@@ -834,12 +834,30 @@ impl Reactor {
     ) {
         let value = match completion.result {
             IoCompletion::Bytes(data) => {
+                // Create raw Buffer on heap (same as BUFFER_NEW native call)
                 let mut buffer = Buffer::new(data.len());
                 for (i, &byte) in data.iter().enumerate() {
                     let _ = buffer.set_byte(i, byte);
                 }
-                let gc_ptr = shared_state.gc.lock().allocate(buffer);
-                unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                let mut gc = shared_state.gc.lock();
+                let gc_ptr = gc.allocate(buffer);
+                let handle = gc_ptr.as_ptr() as u64;
+
+                // Wrap in a proper Object with Buffer class_id so vtable dispatch works
+                let classes = shared_state.classes.read();
+                if let Some(buffer_class) = classes.get_class_by_name("Buffer") {
+                    let class_id = buffer_class.id;
+                    let field_count = buffer_class.field_count;
+                    drop(classes);
+                    let mut obj = Object::new(class_id, field_count);
+                    obj.fields[0] = Value::u64(handle); // bufferPtr field
+                    let obj_ptr = gc.allocate(obj);
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
+                } else {
+                    drop(classes);
+                    // Fallback: return raw buffer pointer (no class dispatch)
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
+                }
             }
             IoCompletion::String(s) => {
                 let raya_str = RayaString::new(s);

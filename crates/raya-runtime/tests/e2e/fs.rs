@@ -160,6 +160,32 @@ fn test_fs_read_dir() {
 }
 
 #[test]
+fn test_fs_read_file_buffer_length() {
+    expect_bool_with_builtins(r#"
+        import fs from "std:fs";
+        const fp: string = fs.tempFile("raya_test_buf_");
+        fs.writeTextFile(fp, "hello");
+        let buf: Buffer = fs.readFile(fp);
+        let len: number = buf.length();
+        fs.remove(fp);
+        return len == 5;
+    "#, true);
+}
+
+#[test]
+fn test_fs_read_file_buffer_to_string() {
+    expect_string_with_builtins(r#"
+        import fs from "std:fs";
+        const fp: string = fs.tempFile("raya_test_buf_ts_");
+        fs.writeTextFile(fp, "raya test");
+        let buf: Buffer = fs.readFile(fp);
+        let txt: string = buf.toString("utf8");
+        fs.remove(fp);
+        return txt;
+    "#, "raya test");
+}
+
+#[test]
 fn test_fs_stat() {
     expect_bool_with_builtins(r#"
         import fs from "std:fs";

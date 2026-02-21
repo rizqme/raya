@@ -378,6 +378,82 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    id if id == buffer::SLICE as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let start = args[1].as_i32().unwrap_or(0) as usize;
+                        let end = args[2].as_i32().unwrap_or(0) as usize;
+                        let buf_ptr = handle as *const Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &*buf_ptr };
+                        let sliced = buf.slice(start, end);
+                        let gc_ptr = self.gc.lock().allocate(sliced);
+                        let new_handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(new_handle)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::COPY as u16 => {
+                        // copy(srcHandle, targetHandle, targetStart, sourceStart, sourceEnd)
+                        let src_handle = args[0].as_u64().unwrap_or(0);
+                        let tgt_handle = args[1].as_u64().unwrap_or(0);
+                        let tgt_start = args[2].as_i32().unwrap_or(0) as usize;
+                        let src_start = args[3].as_i32().unwrap_or(0) as usize;
+                        let src_end = args[4].as_i32().unwrap_or(0) as usize;
+                        let src_ptr = src_handle as *const Buffer;
+                        let tgt_ptr = tgt_handle as *mut Buffer;
+                        if src_ptr.is_null() || tgt_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let src = unsafe { &*src_ptr };
+                        let tgt = unsafe { &mut *tgt_ptr };
+                        let src_end = src_end.min(src.data.len());
+                        let src_start = src_start.min(src_end);
+                        let bytes = &src.data[src_start..src_end];
+                        let copy_len = bytes.len().min(tgt.data.len().saturating_sub(tgt_start));
+                        tgt.data[tgt_start..tgt_start + copy_len].copy_from_slice(&bytes[..copy_len]);
+                        if let Err(e) = stack.push(Value::i32(copy_len as i32)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::TO_STRING as u16 => {
+                        let handle = args[0].as_u64().unwrap_or(0);
+                        let buf_ptr = handle as *const Buffer;
+                        if buf_ptr.is_null() {
+                            return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
+                        }
+                        let buf = unsafe { &*buf_ptr };
+                        // encoding argument (args[1]) — currently only utf8/ascii supported
+                        let text = String::from_utf8_lossy(&buf.data).into_owned();
+                        let s = RayaString::new(text);
+                        let gc_ptr = self.gc.lock().allocate(s);
+                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                        OpcodeResult::Continue
+                    }
+                    id if id == buffer::FROM_STRING as u16 => {
+                        // args[0] = string pointer, args[1] = encoding (ignored, utf8)
+                        if !args[0].is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError("Expected string".to_string()));
+                        }
+                        let str_ptr = unsafe { args[0].as_ptr::<RayaString>() };
+                        let s = match str_ptr {
+                            Some(p) => unsafe { &*p.as_ptr() },
+                            None => return OpcodeResult::Error(VmError::TypeError("Expected string".to_string())),
+                        };
+                        let bytes = s.data.as_bytes();
+                        let mut buf = Buffer::new(bytes.len());
+                        buf.data.copy_from_slice(bytes);
+                        let gc_ptr = self.gc.lock().allocate(buf);
+                        let new_handle = gc_ptr.as_ptr() as u64;
+                        if let Err(e) = stack.push(Value::u64(new_handle)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Mutex native calls
                     id if id == mutex::TRY_LOCK as u16 => {
                         let mutex_id = MutexId::from_u64(args[0].as_i64().unwrap_or(0) as u64);

@@ -477,6 +477,8 @@ impl<'a> Lowerer<'a> {
                             local_idx,
                             args: native_args,
                         });
+                        // Apply type argument to dest register if provided
+                        self.apply_native_call_type_args(call, &mut dest);
                         return dest;
                     }
 
@@ -518,6 +520,8 @@ impl<'a> Lowerer<'a> {
                         native_id,
                         args: native_args,
                     });
+                    // Apply type argument to dest register if provided
+                    self.apply_native_call_type_args(call, &mut dest);
                     return dest;
                 }
             }
@@ -2935,6 +2939,15 @@ impl<'a> Lowerer<'a> {
                 }
                 // Standalone function/bound method call: check return class
                 if let Expression::Identifier(ident) = &*call.callee {
+                    // Check __NATIVE_CALL<Type> type arguments
+                    let name = self.interner.resolve(ident.name);
+                    if name == "__NATIVE_CALL" {
+                        if let Some(type_args) = &call.type_args {
+                            if let Some(first_ty) = type_args.first() {
+                                return self.try_extract_class_from_type(first_ty);
+                            }
+                        }
+                    }
                     // Check if callee is a bound method variable
                     if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
                         if let Some(&ret_class_id) = self.method_return_class_map.get(&(class_id, method_name)) {
@@ -2956,6 +2969,20 @@ impl<'a> Lowerer<'a> {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// Apply type arguments from __NATIVE_CALL<Type> to the dest register.
+    /// This lets the compiler know the return type of native calls, enabling
+    /// subsequent method dispatch on the result (e.g., Buffer.length()).
+    fn apply_native_call_type_args(&mut self, call: &ast::CallExpression, dest: &mut Register) {
+        if let Some(type_args) = &call.type_args {
+            if let Some(first_ty) = type_args.first() {
+                let resolved_ty = self.resolve_type_annotation(first_ty);
+                if resolved_ty != UNRESOLVED {
+                    dest.ty = resolved_ty;
+                }
+            }
         }
     }
 
