@@ -419,16 +419,24 @@ fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypePar
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
-        let name = if let Token::Identifier(n) = parser.current() {
+        let (name, optional) = if let Token::Identifier(n) = parser.current() {
             let identifier = Identifier {
                 name: n.clone(),
                 span: parser.current_span(),
             };
             parser.advance();
 
+            // Parse optional marker (param?: Type)
+            let opt = if parser.check(&Token::Question) {
+                parser.advance();
+                true
+            } else {
+                false
+            };
+
             if parser.check(&Token::Colon) {
                 parser.advance();
-                Some(identifier)
+                (Some(identifier), opt)
             } else {
                 // No colon means this is just a type, not a named parameter
                 // Backtrack - treat the identifier as a type reference
@@ -442,12 +450,12 @@ fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypePar
                 });
             }
         } else {
-            None
+            (None, false)
         };
 
         let ty = parse_type_annotation(parser)?;
 
-        params.push(FunctionTypeParam { name, ty });
+        params.push(FunctionTypeParam { name, optional, ty });
 
         if !parser.check(&Token::RightParen) {
             parser.expect(Token::Comma)?;

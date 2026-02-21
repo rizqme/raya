@@ -1338,6 +1338,7 @@ impl<'a> TypeChecker<'a> {
                 if arg_types.len() > func.params.len() || arg_types.len() < func.min_params {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
+                        min_expected: func.min_params,
                         actual: arg_types.len(),
                         span: call.span,
                     });
@@ -1734,9 +1735,12 @@ impl<'a> TypeChecker<'a> {
         // Restore type environment
         self.type_env = saved_env;
 
-        // Create function type
+        // Create function type with min_params for optional/default params
+        let min_params = arrow.params.iter()
+            .filter(|p| p.default_value.is_none() && !p.optional)
+            .count();
         self.type_ctx
-            .function_type(param_types, return_ty, arrow.is_async)
+            .function_type_with_min_params(param_types, return_ty, arrow.is_async, min_params)
     }
 
     /// Check index access
@@ -3400,7 +3404,10 @@ impl<'a> TypeChecker<'a> {
             self.type_ctx.void_type()
         };
 
-        self.type_ctx.function_type(param_types, return_ty, method.is_async)
+        let min_params = method.params.iter()
+            .filter(|p| p.default_value.is_none() && !p.optional)
+            .count();
+        self.type_ctx.function_type_with_min_params(param_types, return_ty, method.is_async, min_params)
     }
 }
 

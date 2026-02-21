@@ -132,15 +132,23 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "cannot be called")
             }
 
-            ArgumentCountMismatch { expected, actual, span } => {
-                Diagnostic::error(format!(
-                    "Expected {} argument{}, but got {}",
-                    expected,
-                    if *expected == 1 { "" } else { "s" },
-                    actual
-                ))
-                .with_code(error_code(error))
-                .with_primary_label(file_id, *span, "incorrect number of arguments")
+            ArgumentCountMismatch { expected, min_expected, actual, span } => {
+                let msg = if min_expected < expected {
+                    format!(
+                        "Expected {}-{} arguments, but got {}",
+                        min_expected, expected, actual
+                    )
+                } else {
+                    format!(
+                        "Expected {} argument{}, but got {}",
+                        expected,
+                        if *expected == 1 { "" } else { "s" },
+                        actual
+                    )
+                };
+                Diagnostic::error(msg)
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "incorrect number of arguments")
             }
 
             PropertyNotFound { property, ty, span } => {
@@ -322,6 +330,12 @@ impl Diagnostic {
                 Diagnostic::error(format!("Type '{}' expects {} type argument(s), got {}", name, expected, actual))
                     .with_code(ErrorCode("E3005"))
                     .with_primary_label(file_id, *span, "wrong number of type arguments")
+            }
+
+            RequiredAfterOptional { name, span } => {
+                Diagnostic::error(format!("Required parameter '{}' cannot follow an optional parameter", name))
+                    .with_code(ErrorCode("E3006"))
+                    .with_primary_label(file_id, *span, "required parameter after optional")
             }
         }
     }

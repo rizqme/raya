@@ -193,6 +193,8 @@ pub struct Parameter {
 
     pub pattern: Pattern,
     pub type_annotation: Option<TypeAnnotation>,
+    /// Whether the parameter is optional (e.g., `x?: string`)
+    pub optional: bool,
     /// Default value for the parameter (e.g., `x: number = 10`)
     pub default_value: Option<Expression>,
     pub span: Span,

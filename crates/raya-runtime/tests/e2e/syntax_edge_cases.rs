@@ -3,7 +3,7 @@
 //! Tests that exercise complex and intersecting syntax features
 //! to expose parser, type checker, and lowering bugs.
 
-use super::{expect_bool, expect_i32, expect_string};
+use super::{expect_bool, expect_compile_error, expect_i32, expect_null, expect_string};
 
 // ============================================================================
 // 1. Arrow Function Forms
@@ -1007,4 +1007,193 @@ fn test_multiple_feature_pipeline() {
         let data: Pair[] = [new Pair(5, 10), new Pair(20, 15), new Pair(7, 12)];
         return process(data);
     ", 42);  // max(5,10)=10, max(20,15)=20, max(7,12)=12 → 10+20+12=42
+}
+
+// ============================================================================
+// Optional Parameters (`?` syntax)
+// ============================================================================
+
+#[test]
+fn test_optional_param_receives_null_when_omitted() {
+    // Optional parameter receives null when not provided
+    expect_null("
+        function greet(name?: string): string | null {
+            return name;
+        }
+        return greet();
+    ");
+}
+
+#[test]
+fn test_optional_param_receives_value_when_provided() {
+    // Optional parameter receives the value when provided
+    expect_string("
+        function greet(name?: string): string | null {
+            if (name == null) {
+                return \"world\";
+            }
+            return name;
+        }
+        return greet(\"Raya\");
+    ", "Raya");
+}
+
+#[test]
+fn test_optional_param_with_null_check() {
+    // Optional parameter with null check fallback
+    expect_string("
+        function greet(name?: string): string {
+            if (name == null) {
+                return \"hello world\";
+            }
+            return \"hello \" + name;
+        }
+        return greet();
+    ", "hello world");
+}
+
+#[test]
+fn test_optional_param_mixed_with_required() {
+    // Required params followed by optional param
+    expect_i32("
+        function add(x: number, y?: number): number {
+            if (y == null) {
+                return x;
+            }
+            return x + y;
+        }
+        return add(32, 10);
+    ", 42);
+}
+
+#[test]
+fn test_optional_param_mixed_with_required_omitted() {
+    // Required params followed by optional param (omitted)
+    expect_i32("
+        function add(x: number, y?: number): number {
+            if (y == null) {
+                return x;
+            }
+            return x + y;
+        }
+        return add(42);
+    ", 42);
+}
+
+#[test]
+fn test_optional_and_default_params_together() {
+    // Mixing optional params (?) and default value params
+    expect_i32("
+        function calc(x: number, y?: number, z: number = 10): number {
+            let result = x;
+            if (y != null) {
+                result = result + y;
+            }
+            return result + z;
+        }
+        return calc(32);
+    ", 42);
+}
+
+#[test]
+fn test_class_method_optional_param() {
+    // Class method with optional parameter
+    expect_string("
+        class Greeter {
+            greet(name?: string): string {
+                if (name == null) {
+                    return \"hello\";
+                }
+                return \"hello \" + name;
+            }
+        }
+        let g = new Greeter();
+        return g.greet();
+    ", "hello");
+}
+
+#[test]
+fn test_arrow_function_with_default_param_checker() {
+    // Arrow function with default param — tests checker min_params fix
+    expect_i32("
+        let add = (x: number, y: number = 10): number => x + y;
+        return add(32);
+    ", 42);
+}
+
+#[test]
+fn test_required_after_optional_error() {
+    // Required parameter after optional parameter should be a compile error
+    expect_compile_error("
+        function bad(x?: number, y: number): number {
+            return y;
+        }
+        return bad(1, 2);
+    ", "RequiredAfterOptional");
+}
+
+#[test]
+fn test_required_after_default_error() {
+    // Required parameter after default-value parameter should be a compile error
+    expect_compile_error("
+        function bad(x: number = 10, y: number): number {
+            return y;
+        }
+        return bad(1, 2);
+    ", "RequiredAfterOptional");
+}
+
+#[test]
+fn test_constructor_optional_param() {
+    // Constructor with optional parameter
+    expect_i32("
+        class Config {
+            value: number;
+            constructor(value?: number) {
+                if (value == null) {
+                    this.value = 42;
+                } else {
+                    this.value = value;
+                }
+            }
+        }
+        let c = new Config();
+        return c.value;
+    ", 42);
+}
+
+#[test]
+fn test_multiple_optional_params() {
+    // Multiple optional parameters
+    expect_i32("
+        function sum(a: number, b?: number, c?: number): number {
+            let result = a;
+            if (b != null) {
+                result = result + b;
+            }
+            if (c != null) {
+                result = result + c;
+            }
+            return result;
+        }
+        return sum(42);
+    ", 42);
+}
+
+#[test]
+fn test_multiple_optional_params_partial() {
+    // Providing some optional parameters
+    expect_i32("
+        function sum(a: number, b?: number, c?: number): number {
+            let result = a;
+            if (b != null) {
+                result = result + b;
+            }
+            if (c != null) {
+                result = result + c;
+            }
+            return result;
+        }
+        return sum(30, 12);
+    ", 42);
 }

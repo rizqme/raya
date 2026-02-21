@@ -202,6 +202,7 @@ pub struct FunctionType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionTypeParam {
     pub name: Option<Identifier>,
+    pub optional: bool,
     pub ty: TypeAnnotation,
 }
 

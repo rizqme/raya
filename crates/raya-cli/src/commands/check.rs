@@ -276,7 +276,8 @@ fn adjust_bind_error(err: &BindError, offset: usize) -> Option<BindError> {
         BindError::UndefinedType { span, .. }
         | BindError::NotAType { span, .. }
         | BindError::InvalidTypeExpr { span, .. }
-        | BindError::InvalidTypeArguments { span, .. } => {
+        | BindError::InvalidTypeArguments { span, .. }
+        | BindError::RequiredAfterOptional { span, .. } => {
             if let Some(s) = adjust_span(*span, offset) { *span = s; }
         }
     }

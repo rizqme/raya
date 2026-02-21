@@ -303,10 +303,13 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         // Parse parameter pattern
         let pattern = super::pattern::parse_pattern(parser)?;
 
-        // Consume optional marker (param?: Type) — e.g., in builtin .raya files
-        if parser.check(&Token::Question) {
+        // Parse optional marker (param?: Type)
+        let optional = if parser.check(&Token::Question) {
             parser.advance();
-        }
+            true
+        } else {
+            false
+        };
 
         // Optional type annotation
         let type_annotation = if parser.check(&Token::Colon) {
@@ -337,6 +340,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
             visibility,
             pattern,
             type_annotation,
+            optional,
             default_value,
             span,
         });

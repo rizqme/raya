@@ -313,6 +313,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                             span: ident_span,
                         }),
                         type_annotation: None,
+                        optional: false,
                         default_value: None,
                         span: ident_span,
                     };
@@ -1040,6 +1041,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                     span: start_span,
                 }),
                 type_annotation: None,
+                optional: false,
                 default_value: None,
                 span: start_span,
             }];
@@ -1459,6 +1461,14 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
         if let Token::Identifier(name) = parser.current().clone() {
             parser.advance();
 
+            // Parse optional marker (param?: Type)
+            let optional = if parser.check(&Token::Question) {
+                parser.advance();
+                true
+            } else {
+                false
+            };
+
             // Optional type annotation
             let type_annotation = if parser.check(&Token::Colon) {
                 parser.advance();
@@ -1483,6 +1493,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
                     span: start_span,
                 }),
                 type_annotation,
+                optional,
                 default_value,
                 span: start_span,
             });
@@ -1536,6 +1547,14 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
             let name = name.clone();
             parser.advance();
 
+            // Parse optional marker (param?: Type)
+            let optional = if parser.check(&Token::Question) {
+                parser.advance();
+                true
+            } else {
+                false
+            };
+
             let type_annotation = if parser.check(&Token::Colon) {
                 parser.advance();
                 Some(super::types::parse_type_annotation(parser)?)
@@ -1559,6 +1578,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                     span: start_span,
                 }),
                 type_annotation,
+                optional,
                 default_value,
                 span: start_span,
             });

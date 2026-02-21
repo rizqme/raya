@@ -1203,8 +1203,11 @@ impl<'a> Binder<'a> {
             None => self.type_ctx.void_type(),
         };
 
-        // Count required params (those without default values)
-        let min_params = func.params.iter().filter(|p| p.default_value.is_none()).count();
+        // Validate parameter ordering: required params must come before optional/default params
+        self.validate_param_order(&func.params)?;
+
+        // Count required params (those without default values and not optional)
+        let min_params = func.params.iter().filter(|p| p.default_value.is_none() && !p.optional).count();
         let func_ty = self.type_ctx.function_type_with_min_params(param_types.clone(), return_ty, func.is_async, min_params);
 
         // Define function symbol in parent scope (so it can be called recursively)
@@ -1465,7 +1468,10 @@ impl<'a> Binder<'a> {
                         self.symbols.pop_scope();
                     }
 
-                    let min_params = method.params.iter().filter(|p| p.default_value.is_none()).count();
+                    // Validate parameter ordering
+                    self.validate_param_order(&method.params)?;
+
+                    let min_params = method.params.iter().filter(|p| p.default_value.is_none() && !p.optional).count();
                     if method.is_static {
                         static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone(), method.visibility, min_params));
                     } else {
@@ -1789,6 +1795,28 @@ impl<'a> Binder<'a> {
             }
         }
 
+        Ok(())
+    }
+
+    /// Validate that required parameters come before optional/default parameters
+    fn validate_param_order(&self, params: &[crate::parser::ast::Parameter]) -> Result<(), BindError> {
+        let mut seen_optional = false;
+        for param in params {
+            let is_optional = param.optional || param.default_value.is_some();
+            if is_optional {
+                seen_optional = true;
+            } else if seen_optional {
+                let name = if let crate::parser::ast::Pattern::Identifier(ident) = &param.pattern {
+                    self.resolve(ident.name)
+                } else {
+                    "<unknown>".to_string()
+                };
+                return Err(BindError::RequiredAfterOptional {
+                    name,
+                    span: param.span,
+                });
+            }
+        }
         Ok(())
     }
 

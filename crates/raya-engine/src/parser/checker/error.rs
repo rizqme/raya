@@ -59,6 +59,15 @@ pub enum BindError {
         /// Location of type reference
         span: Span,
     },
+
+    /// Required parameter after optional parameter
+    #[error("Required parameter '{name}' cannot follow an optional parameter")]
+    RequiredAfterOptional {
+        /// Parameter name
+        name: String,
+        /// Location of the required parameter
+        span: Span,
+    },
 }
 
 /// Errors that can occur during type checking
@@ -98,8 +107,10 @@ pub enum CheckError {
     /// Wrong number of arguments in function call
     #[error("Wrong number of arguments: expected {expected}, got {actual}")]
     ArgumentCountMismatch {
-        /// Expected number of arguments
+        /// Maximum expected number of arguments (total params)
         expected: usize,
+        /// Minimum required number of arguments (params without defaults/optional)
+        min_expected: usize,
         /// Actual number of arguments
         actual: usize,
         /// Location of call expression
@@ -332,6 +343,7 @@ impl BindError {
             BindError::NotAType { span, .. } => *span,
             BindError::InvalidTypeExpr { span, .. } => *span,
             BindError::InvalidTypeArguments { span, .. } => *span,
+            BindError::RequiredAfterOptional { span, .. } => *span,
         }
     }
 }
