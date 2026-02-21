@@ -296,6 +296,9 @@ pub struct MethodDecl {
     /// Decorators (@logged, @memoized, etc.)
     pub decorators: Vec<Decorator>,
 
+    /// Annotations (//@@class_method, etc.)
+    pub annotations: Vec<Annotation>,
+
     /// Visibility modifier (private/protected/public)
     pub visibility: Visibility,
 

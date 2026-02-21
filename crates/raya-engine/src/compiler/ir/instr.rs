@@ -198,6 +198,16 @@ pub enum IrInstr {
         value: Register,
     },
 
+    /// Late-bound member access: dest = object.property
+    /// Emitted when the object type is a TypeVar (generic constraint).
+    /// Resolved to a concrete opcode (ArrayLen, StringLen, LoadField, etc.)
+    /// after monomorphization substitutes the TypeVar with a concrete type.
+    LateBoundMember {
+        dest: Register,
+        object: Register,
+        property: String,
+    },
+
     /// Load array element: dest = array[index]
     LoadElement {
         dest: Register,
@@ -463,7 +473,8 @@ impl IrInstr {
             | IrInstr::NewMutex { dest, .. }
             | IrInstr::NewChannel { dest, .. }
             | IrInstr::InstanceOf { dest, .. }
-            | IrInstr::Cast { dest, .. } => Some(dest),
+            | IrInstr::Cast { dest, .. }
+            | IrInstr::LateBoundMember { dest, .. } => Some(dest),
             IrInstr::Call { dest, .. }
             | IrInstr::CallMethod { dest, .. }
             | IrInstr::NativeCall { dest, .. }

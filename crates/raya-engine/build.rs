@@ -9,6 +9,12 @@ use std::path::Path;
 
 /// Builtin source files to compile
 const BUILTINS: &[&str] = &[
+    // Native primitive types (//@@builtin_primitive)
+    "string",
+    "number",
+    "Array",
+    "RegExp",
+    // Builtin classes (vtable dispatch)
     "Object",
     "Error",
     "Mutex",

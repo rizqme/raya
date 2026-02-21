@@ -1,0 +1,64 @@
+//@@builtin_primitive
+
+const REGEXP_NEW: number = 0x0A00;
+const TEST: number = 0x0A01;
+const EXEC: number = 0x0A02;
+const EXEC_ALL: number = 0x0A03;
+const REGEXP_REPLACE: number = 0x0A04;
+const REGEXP_SPLIT: number = 0x0A06;
+
+// Used by replaceWith Raya loop to get all match data
+const REPLACE_MATCHES: number = 0x0A07;
+
+class RegExp {
+    source: string;
+    flags: string;
+    global: boolean;
+    ignoreCase: boolean;
+    multiline: boolean;
+    dotAll: boolean;
+    unicode: boolean;
+    lastIndex: number;
+
+    constructor(pattern: string, flags?: string) {
+        __NATIVE_CALL(REGEXP_NEW, this, pattern, flags);
+    }
+
+    test(str: string): boolean {
+        return __NATIVE_CALL(TEST, this, str);
+    }
+
+    exec(str: string): string | null {
+        return __NATIVE_CALL(EXEC, this, str);
+    }
+
+    execAll(str: string): string[] {
+        return __NATIVE_CALL(EXEC_ALL, this, str);
+    }
+
+    replace(str: string, replacement: string): string {
+        return __NATIVE_CALL(REGEXP_REPLACE, this, str, replacement);
+    }
+
+    split(str: string, limit: number): string[] {
+        return __NATIVE_CALL(REGEXP_SPLIT, this, str, limit);
+    }
+
+    //@@class_method
+    replaceWith(str: string, replacer: (match: string) => string): string {
+        let matches: (string | number)[][] = __NATIVE_CALL(REPLACE_MATCHES, this, str);
+        let result: string = "";
+        let lastIndex: int = 0;
+
+        for (let i = 0; i < matches.length; i++) {
+            let m: (string | number)[] = matches[i];
+            let matchText: string = m[0] as string;
+            let matchIndex: int = m[m.length - 1] as int;
+            result = result + str.substring(lastIndex, matchIndex) + replacer(matchText);
+            lastIndex = matchIndex + matchText.length;
+        }
+
+        result = result + str.substring(lastIndex, str.length);
+        return result;
+    }
+}

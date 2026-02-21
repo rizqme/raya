@@ -1,0 +1,171 @@
+//@@builtin_primitive
+
+const ARRAY_NEW: number = 0x0116;
+const PUSH: number = 0x0100;
+const POP: number = 0x0101;
+const SHIFT: number = 0x0102;
+const UNSHIFT: number = 0x0103;
+const INDEX_OF: number = 0x0104;
+const INCLUDES: number = 0x0105;
+const SLICE: number = 0x0106;
+const CONCAT: number = 0x0107;
+const REVERSE: number = 0x0108;
+const JOIN: number = 0x0109;
+const LAST_INDEX_OF: number = 0x0110;
+const FILL: number = 0x0114;
+const FLAT: number = 0x0115;
+
+class Array<T> {
+    //@@opcode ArrayLen
+    length: number;
+
+    constructor() {
+        __NATIVE_CALL(ARRAY_NEW, this);
+    }
+
+    // ── Atomic native operations ──────────────────────────────────────
+
+    push(element: T): number {
+        return __NATIVE_CALL(PUSH, this, element);
+    }
+
+    pop(): T {
+        return __NATIVE_CALL(POP, this);
+    }
+
+    shift(): T {
+        return __NATIVE_CALL(SHIFT, this);
+    }
+
+    unshift(element: T): number {
+        return __NATIVE_CALL(UNSHIFT, this, element);
+    }
+
+    indexOf(element: T): number {
+        return __NATIVE_CALL(INDEX_OF, this, element);
+    }
+
+    lastIndexOf(element: T): number {
+        return __NATIVE_CALL(LAST_INDEX_OF, this, element);
+    }
+
+    includes(element: T): boolean {
+        return __NATIVE_CALL(INCLUDES, this, element);
+    }
+
+    slice(start: number, end: number): T[] {
+        return __NATIVE_CALL(SLICE, this, start, end);
+    }
+
+    concat(other: T[]): T[] {
+        return __NATIVE_CALL(CONCAT, this, other);
+    }
+
+    join(separator: string): string {
+        return __NATIVE_CALL(JOIN, this, separator);
+    }
+
+    reverse(): T[] {
+        return __NATIVE_CALL(REVERSE, this);
+    }
+
+    fill(value: T, start: number, end: number): T[] {
+        return __NATIVE_CALL(FILL, this, value, start, end);
+    }
+
+    flat(): T[] {
+        return __NATIVE_CALL(FLAT, this);
+    }
+
+    // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──
+
+    //@@class_method
+    forEach(fn: (element: T) => void): void {
+        for (let i = 0; i < this.length; i++) {
+            fn(this[i]);
+        }
+    }
+
+    //@@class_method
+    map(fn: (element: T) => T): T[] {
+        let result: T[] = [];
+        for (let i = 0; i < this.length; i++) {
+            result.push(fn(this[i]));
+        }
+        return result;
+    }
+
+    //@@class_method
+    filter(predicate: (element: T) => boolean): T[] {
+        let result: T[] = [];
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                result.push(this[i]);
+            }
+        }
+        return result;
+    }
+
+    //@@class_method
+    find(predicate: (element: T) => boolean): T | null {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return this[i];
+            }
+        }
+        return null;
+    }
+
+    //@@class_method
+    findIndex(predicate: (element: T) => boolean): number {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    //@@class_method
+    every(predicate: (element: T) => boolean): boolean {
+        for (let i = 0; i < this.length; i++) {
+            if (!predicate(this[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    //@@class_method
+    some(predicate: (element: T) => boolean): boolean {
+        for (let i = 0; i < this.length; i++) {
+            if (predicate(this[i])) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    //@@class_method
+    reduce(fn: (accumulator: T, element: T) => T, initial: T): T {
+        let acc: T = initial;
+        for (let i = 0; i < this.length; i++) {
+            acc = fn(acc, this[i]);
+        }
+        return acc;
+    }
+
+    //@@class_method
+    sort(compareFn: (a: T, b: T) => number): T[] {
+        for (let i = 1; i < this.length; i++) {
+            let key: T = this[i];
+            let j: number = i - 1;
+            while (j >= 0 && compareFn(this[j], key) > 0) {
+                this[j + 1] = this[j];
+                j = j - 1;
+            }
+            this[j + 1] = key;
+        }
+        return this;
+    }
+}

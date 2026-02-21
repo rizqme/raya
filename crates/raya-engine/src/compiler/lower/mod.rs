@@ -2,8 +2,8 @@
 //!
 //! Converts the type-checked AST into the IR representation.
 
+mod class_methods;
 mod control_flow;
-pub(super) mod dispatch;
 mod expr;
 mod stmt;
 
@@ -19,9 +19,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
 /// Distinct from TypeId(0) (Number) and TypeId(6) (Unknown).
-/// Indicates a compiler limitation — the type IS known to the checker,
-/// but the lowerer failed to read it.
-pub(super) const UNRESOLVED_TYPE_ID: u32 = u32::MAX;
+/// Re-exported from type_registry for convenience.
+pub(super) const UNRESOLVED_TYPE_ID: u32 = super::type_registry::UNRESOLVED_TYPE_ID;
 pub(super) const UNRESOLVED: TypeId = TypeId::new(UNRESOLVED_TYPE_ID);
 
 /// TypeId for generic array types (string[], number[], etc.)
@@ -116,6 +115,9 @@ struct ClassFieldInfo {
     class_type: Option<ClassId>,
     /// Type name string (for looking up class by name)
     type_name: Option<String>,
+    /// For generic container fields (Map<K,V>, Set<T>): the value type's TypeId.
+    /// Used to propagate return types through .get(), .values(), etc.
+    value_type: Option<TypeId>,
 }
 
 /// Information about a class method
@@ -426,8 +428,19 @@ pub struct Lowerer<'a> {
     current_span: Span,
     /// Compile errors collected during lowering (e.g., UNRESOLVED type at dispatch)
     errors: Vec<super::error::CompileError>,
-    /// Registry for type-specific method/property dispatch
-    dispatch_registry: dispatch::DispatchRegistry,
+    /// Registry for type-specific method/property dispatch (single source of truth)
+    type_registry: super::type_registry::TypeRegistry,
+    /// Cache of compiled class method functions: "TypeName_methodName" → FunctionId
+    class_method_cache: FxHashMap<String, FunctionId>,
+    /// ASTs of generic functions (with type_params), stored for specialization at call sites.
+    /// Key: function name symbol.
+    generic_function_asts: FxHashMap<Symbol, ast::FunctionDecl>,
+    /// Active type parameter substitutions during generic function specialization.
+    /// Maps type parameter name (e.g., "T") to concrete TypeId (e.g., ARRAY_TYPE_ID).
+    /// Empty when not specializing.
+    type_param_substitutions: FxHashMap<String, TypeId>,
+    /// Cache of already-specialized generic functions: "funcName$typeId1_typeId2" → FunctionId
+    specialized_function_cache: FxHashMap<String, FunctionId>,
 }
 
 impl<'a> Lowerer<'a> {
@@ -503,7 +516,11 @@ impl<'a> Lowerer<'a> {
             emit_sourcemap: false,
             current_span: Span::default(),
             errors: Vec::new(),
-            dispatch_registry: dispatch::DispatchRegistry::new(type_ctx),
+            type_registry: super::type_registry::TypeRegistry::new(type_ctx),
+            class_method_cache: FxHashMap::default(),
+            generic_function_asts: FxHashMap::default(),
+            type_param_substitutions: FxHashMap::default(),
+            specialized_function_cache: FxHashMap::default(),
         }
     }
 
@@ -592,70 +609,22 @@ impl<'a> Lowerer<'a> {
     /// - Pre-interned canonical IDs (0–17) are directly dispatch-compatible
     /// - Dynamically interned IDs (> 17) represent unions, generics, etc.
     ///
-    /// This method maps dynamic IDs back to canonical dispatch IDs by
-    /// querying the TypeContext. For example:
+    /// Normalize a type to its canonical dispatch type via the TypeRegistry.
+    ///
+    /// Maps dynamic IDs back to canonical dispatch IDs. For example:
     /// - `Array<number>` (TypeId 18+) → ARRAY_TYPE_ID (17)
     /// - `string | null` union → String (1) via dominant non-null member
-    fn normalize_type_for_dispatch(&self, type_id: u32) -> u32 {
-        use crate::parser::types::ty::Type;
-
-        // Canonical pre-interned types (0..=ARRAY_TYPE_ID) are already dispatch-compatible
-        if type_id <= ARRAY_TYPE_ID || type_id == UNRESOLVED_TYPE_ID {
-            return type_id;
+    /// - Ambiguous unions like `string | number` → compile error
+    fn normalize_type_for_dispatch(&mut self, type_id: u32) -> u32 {
+        match self.type_registry.normalize_type(type_id, self.type_ctx) {
+            Ok(id) => id,
+            Err(msg) => {
+                self.errors.push(super::error::CompileError::InternalError {
+                    message: msg,
+                });
+                UNRESOLVED_TYPE_ID
+            }
         }
-
-        // Look up the actual type in TypeContext and map back to canonical dispatch ID
-        let Some(ty) = self.type_ctx.get(TypeId::new(type_id)) else {
-            return UNRESOLVED_TYPE_ID;
-        };
-
-        // Map structural types back to their canonical pre-interned TypeId.
-        // Uses TypeContext.lookup() to find the canonical ID without hardcoding numbers.
-        let canonical = match ty {
-            Type::Array(_) | Type::Tuple(_) => self.type_ctx.lookup_named_type("Array"),
-            Type::Primitive(p) => {
-                use crate::parser::types::ty::PrimitiveType as P;
-                let name = match p {
-                    P::Number => "number",
-                    P::String => "string",
-                    P::Boolean => "boolean",
-                    P::Null => "null",
-                    P::Void => "void",
-                    P::Int => "int",
-                };
-                self.type_ctx.lookup_named_type(name)
-            }
-            Type::Json => self.type_ctx.lookup_named_type("Json"),
-            Type::RegExp => self.type_ctx.lookup_named_type("RegExp"),
-            Type::Mutex => self.type_ctx.lookup_named_type("Mutex"),
-            Type::Date => self.type_ctx.lookup_named_type("Date"),
-            Type::Buffer => self.type_ctx.lookup_named_type("Buffer"),
-            Type::Task(_) => self.type_ctx.lookup_named_type("Task"),
-            Type::Channel(_) => self.type_ctx.lookup_named_type("Channel"),
-            Type::Map(_) => self.type_ctx.lookup_named_type("Map"),
-            Type::Set(_) => self.type_ctx.lookup_named_type("Set"),
-            Type::Union(union) => {
-                // Find dominant non-null member
-                let null_id = self.type_ctx.lookup_named_type("null")
-                    .map(|id| id.as_u32())
-                    .unwrap_or(UNRESOLVED_TYPE_ID);
-                let mut resolved = UNRESOLVED_TYPE_ID;
-                for &member_id in &union.members {
-                    let member_dispatch = self.normalize_type_for_dispatch(member_id.as_u32());
-                    if member_dispatch != null_id && member_dispatch != UNRESOLVED_TYPE_ID {
-                        if resolved == UNRESOLVED_TYPE_ID {
-                            resolved = member_dispatch;
-                        } else if resolved != member_dispatch {
-                            return UNRESOLVED_TYPE_ID; // Ambiguous union
-                        }
-                    }
-                }
-                return resolved;
-            }
-            _ => None,
-        };
-
-        canonical.map(|id| id.as_u32()).unwrap_or(UNRESOLVED_TYPE_ID)
     }
 
     /// Unwrap `ExportDecl::Declaration` to get the inner statement.
@@ -777,6 +746,10 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
+                    // Store AST for generic functions (needed for call-site specialization)
+                    if func.type_params.as_ref().map_or(false, |tp| !tp.is_empty()) {
+                        self.generic_function_asts.insert(func.name.name, func.clone());
+                    }
                 }
                 Statement::ClassDecl(class) => {
                     self.register_class(class);
@@ -894,7 +867,7 @@ impl<'a> Lowerer<'a> {
         // Add ALL pending functions (including main and class methods) sorted by func_id
         // This ensures functions are added to the module in the order of their pre-assigned IDs
         self.pending_arrow_functions.sort_by_key(|(id, _)| *id);
-        for (_id, func) in self.pending_arrow_functions.drain(..) {
+        for (id, func) in self.pending_arrow_functions.drain(..) {
             ir_module.add_function(func);
         }
 
@@ -1565,6 +1538,21 @@ impl<'a> Lowerer<'a> {
                     }
                 });
 
+                // Extract generic value type for Map<K,V> and Set<T> fields
+                let value_type = field.type_annotation.as_ref().and_then(|t| {
+                    if let ast::Type::Reference(type_ref) = &t.ty {
+                        let name = self.interner.resolve(type_ref.name.name);
+                        let type_args = type_ref.type_args.as_ref()?;
+                        match name {
+                            "Map" => type_args.get(1).map(|v| self.resolve_type_annotation(v)),
+                            "Set" => type_args.first().map(|t| self.resolve_type_annotation(t)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                });
+
                 let class_type = type_name.as_ref().and_then(|name| {
                     for (&sym, &cid) in &self.class_map {
                         if self.interner.resolve(sym) == name {
@@ -1607,6 +1595,7 @@ impl<'a> Lowerer<'a> {
                         initializer: field.initializer.clone(),
                         class_type,
                         type_name,
+                        value_type,
                     });
                 }
             }
@@ -1632,6 +1621,7 @@ impl<'a> Lowerer<'a> {
                                 initializer: None,
                                 class_type: None,
                                 type_name: None,
+                                value_type: None,
                             });
                         }
                     }
@@ -2103,8 +2093,12 @@ impl<'a> Lowerer<'a> {
                         self.this_register = None;
                     } else {
                         // Instance method - 'this' is the first parameter
+                        // Use the class's actual TypeId for correct dispatch
+                        // (e.g., Array → ArrayLen for .length, string → StringLen)
+                        let this_ty = self.type_ctx.lookup_named_type(name)
+                            .unwrap_or(TypeId::new(0));
                         self.current_class = Some(class_id);
-                        let this_reg = self.alloc_register(TypeId::new(0)); // Object type
+                        let this_reg = self.alloc_register(this_ty);
                         params.push(this_reg.clone());
                         self.this_register = Some(this_reg);
                         self.next_local = 1; // Explicit parameters start at slot 1
@@ -2218,9 +2212,11 @@ impl<'a> Lowerer<'a> {
                 // Create parameter registers - 'this' is the first parameter
                 let mut params = Vec::new();
 
-                // Add 'this' as the first parameter (object type)
+                // Add 'this' as the first parameter
                 // Reserve local slot 0 for 'this'
-                let this_reg = self.alloc_register(TypeId::new(0)); // Object type
+                let this_ty = self.type_ctx.lookup_named_type(name)
+                    .unwrap_or(TypeId::new(0));
+                let this_reg = self.alloc_register(this_ty);
                 params.push(this_reg.clone());
                 self.this_register = Some(this_reg);
                 self.next_local = 1; // Explicit parameters start at slot 1
@@ -2847,6 +2843,10 @@ impl<'a> Lowerer<'a> {
             }
             ast::Type::Reference(type_ref) => {
                 let name = self.interner.resolve(type_ref.name.name);
+                // Check active type parameter substitutions first (during generic specialization)
+                if let Some(&concrete_ty) = self.type_param_substitutions.get(name) {
+                    return concrete_ty;
+                }
                 self.type_ctx.lookup_named_type(name).unwrap_or(UNRESOLVED)
             }
             // Array types: string[], number[], T[]

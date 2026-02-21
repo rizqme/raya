@@ -66,7 +66,9 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                     parse_class_declaration_with_annotations(parser, annotations)
                 }
                 Token::Type => parse_type_alias_declaration(parser, annotations),
-                _ => Err(parser.unexpected_token(&[Token::Class, Token::Type])),
+                // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
+                // — annotations are discarded for non-class/type declarations
+                _ => parse_statement(parser),
             }
         }
         Token::If => parse_if_statement(parser),
@@ -300,6 +302,11 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
 
         // Parse parameter pattern
         let pattern = super::pattern::parse_pattern(parser)?;
+
+        // Consume optional marker (param?: Type) — e.g., in builtin .raya files
+        if parser.check(&Token::Question) {
+            parser.advance();
+        }
 
         // Optional type annotation
         let type_annotation = if parser.check(&Token::Colon) {
@@ -1274,6 +1281,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
         Ok(ClassMember::Method(MethodDecl {
             decorators,
+            annotations,
             visibility,
             is_abstract,
             name,

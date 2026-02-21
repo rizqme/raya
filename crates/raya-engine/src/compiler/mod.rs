@@ -28,6 +28,7 @@ pub mod monomorphize;
 pub mod native_id;
 #[allow(dead_code)]
 pub mod optimize;
+pub mod type_registry;
 
 pub use codegen_ast::CodeGenerator;
 pub use codegen::IrCodeGenerator;
@@ -129,6 +130,10 @@ impl<'a> Compiler<'a> {
         // Step 2: Monomorphization
         let _mono_result = monomorphize::monomorphize(&mut ir_module, &self.type_ctx, self.interner);
 
+        // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
+        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
+        monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
+
         // Step 3: Optimization passes
         let optimizer = optimize::Optimizer::basic();
         optimizer.optimize(&mut ir_module);
@@ -197,6 +202,10 @@ impl<'a> Compiler<'a> {
         writeln!(debug, "=== Monomorphization Stats ===").unwrap();
         writeln!(debug, "Functions specialized: {}", mono_result.functions_specialized).unwrap();
         writeln!(debug, "Classes specialized: {}", mono_result.classes_specialized).unwrap();
+
+        // Step 2b: Resolve late-bound member accesses (TypeVar → concrete type dispatch)
+        let type_registry = type_registry::TypeRegistry::new(&self.type_ctx);
+        monomorphize::resolve_late_bound_members(&mut ir_module, &type_registry, &self.type_ctx);
 
         // Step 3: Optimization passes
         let optimizer = optimize::Optimizer::basic();

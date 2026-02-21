@@ -1055,16 +1055,15 @@ fn test_for_loop_boundary() {
 }
 
 #[test]
-fn test_infinite_loop_detected() {
-    // i++ in for-loop update doesn't increment, causing infinite loop
-    // The VM detects this via consecutive preemption counting and kills the task
-    expect_runtime_error_fast_preempt("
+fn test_for_loop_with_increment_operator() {
+    // i++ in for-loop update increments correctly
+    expect_i32("
         let sum: number = 0;
         for (let i: number = 0; i < 5; i++) {
             sum = sum + i;
         }
         return sum;
-    ", "Maximum execution time exceeded");
+    ", 10);
 }
 
 #[test]

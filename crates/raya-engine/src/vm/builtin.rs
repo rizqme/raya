@@ -140,6 +140,8 @@ pub mod array {
     pub const FILL: u16 = 0x0114;
     /// `arr.flat()` - Flatten nested array by one level
     pub const FLAT: u16 = 0x0115;
+    /// `new Array()` - Create empty array via constructor
+    pub const NEW: u16 = 0x0116;
 }
 
 /// Built-in method IDs for strings

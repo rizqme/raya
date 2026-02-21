@@ -27,6 +27,10 @@ pub struct IrFunction {
     block_map: FxHashMap<BasicBlockId, usize>,
     /// Source span covering the function definition (default when sourcemap disabled)
     pub source_span: Span,
+    /// TypeIds representing type parameters (for generic functions).
+    /// Empty for non-generic functions. Used by monomorphization to identify
+    /// which TypeIds need substitution when specializing.
+    pub type_param_ids: Vec<TypeId>,
 }
 
 impl IrFunction {
@@ -41,6 +45,7 @@ impl IrFunction {
             entry_block: BasicBlockId(0),
             block_map: FxHashMap::default(),
             source_span: Span::default(),
+            type_param_ids: Vec::new(),
         }
     }
 

@@ -34,6 +34,8 @@ pub use specialize::Monomorphizer;
 pub use substitute::TypeSubstitution;
 
 use crate::compiler::ir::{ClassId, FunctionId, IrModule};
+use crate::compiler::ir::instr::IrInstr;
+use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
 use std::hash::Hash;
@@ -231,6 +233,64 @@ pub fn monomorphize(
 ) -> MonomorphizationResult {
     let mut monomorphizer = Monomorphizer::new(type_ctx, interner);
     monomorphizer.monomorphize(ir_module)
+}
+
+/// Resolve any `LateBoundMember` instructions in the IR module.
+///
+/// After monomorphization, TypeVar registers have been substituted with concrete types.
+/// This pass replaces `LateBoundMember` instructions with the correct concrete opcodes
+/// (e.g., ArrayLen, StringLen, LoadField) based on the now-known object type.
+pub fn resolve_late_bound_members(
+    ir_module: &mut IrModule,
+    type_registry: &TypeRegistry,
+    type_ctx: &TypeContext,
+) {
+    for func in &mut ir_module.functions {
+        for block in &mut func.blocks {
+            for instr in &mut block.instructions {
+                if let IrInstr::LateBoundMember { dest, object, property } = instr {
+                    let obj_ty = object.ty.as_u32();
+                    let dispatch_ty = type_registry.normalize_type(obj_ty, type_ctx)
+                        .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
+
+                    if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {
+                        // Still unresolved — leave as-is (will panic at codegen)
+                        continue;
+                    }
+
+                    // Try property dispatch (e.g., .length → ArrayLen/StringLen)
+                    if let Some(action) = type_registry.lookup_property(dispatch_ty, property) {
+                        use crate::compiler::type_registry::{DispatchAction, OpcodeKind};
+                        match action {
+                            DispatchAction::Opcode(OpcodeKind::ArrayLen) => {
+                                *instr = IrInstr::ArrayLen {
+                                    dest: dest.clone(),
+                                    array: object.clone(),
+                                };
+                                continue;
+                            }
+                            DispatchAction::Opcode(OpcodeKind::StringLen) => {
+                                *instr = IrInstr::StringLen {
+                                    dest: dest.clone(),
+                                    string: object.clone(),
+                                };
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Fall back to LoadField with field index 0
+                    // (for object types where the property is a regular field)
+                    *instr = IrInstr::LoadField {
+                        dest: dest.clone(),
+                        object: object.clone(),
+                        field: 0,
+                    };
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

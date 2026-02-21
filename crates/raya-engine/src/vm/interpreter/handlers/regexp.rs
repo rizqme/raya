@@ -199,6 +199,58 @@ impl<'a> Interpreter<'a> {
                     "RegExp.replaceWith is handled by compiler intrinsic, should not reach VM handler".to_string()
                 ));
             }
+            id if id == regexp::REPLACE_MATCHES => {
+                // Get match data for replaceWith class method IR.
+                // Args: input string
+                // Returns: array of [matched_text, start_index] arrays, respecting 'g' flag
+                let input = if !args.is_empty() && args[0].is_ptr() {
+                    if let Some(s) = unsafe { args[0].as_ptr::<RayaString>() } {
+                        unsafe { &*s.as_ptr() }.data.clone()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+                let is_global = re.flags.contains('g');
+                let mut result_arr = Array::new(0, 0);
+                if is_global {
+                    for m in re.compiled.find_iter(&input) {
+                        let mut match_arr = Array::new(0, 0);
+                        let match_str = RayaString::new(m.as_str().to_string());
+                        let gc_ptr = self.gc.lock().allocate(match_str);
+                        let match_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        match_arr.push(match_val);
+                        match_arr.push(Value::i32(m.start() as i32));
+                        let match_arr_gc = self.gc.lock().allocate(match_arr);
+                        let match_arr_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
+                        };
+                        result_arr.push(match_arr_val);
+                    }
+                } else if let Some(m) = re.compiled.find(&input) {
+                    let mut match_arr = Array::new(0, 0);
+                    let match_str = RayaString::new(m.as_str().to_string());
+                    let gc_ptr = self.gc.lock().allocate(match_str);
+                    let match_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    match_arr.push(match_val);
+                    match_arr.push(Value::i32(m.start() as i32));
+                    let match_arr_gc = self.gc.lock().allocate(match_arr);
+                    let match_arr_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(match_arr_gc.as_ptr()).unwrap())
+                    };
+                    result_arr.push(match_arr_val);
+                }
+                let arr_gc = self.gc.lock().allocate(result_arr);
+                let arr_val = unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
+                };
+                stack.push(arr_val)?;
+            }
             _ => {
                 return Err(VmError::RuntimeError(format!(
                     "RegExp method {:#06x} not yet implemented in Interpreter",

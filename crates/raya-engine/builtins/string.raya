@@ -1,0 +1,133 @@
+//@@builtin_primitive
+
+const CHAR_AT: number = 0x0200;
+const SUBSTRING: number = 0x0201;
+const TO_UPPER_CASE: number = 0x0202;
+const TO_LOWER_CASE: number = 0x0203;
+const TRIM: number = 0x0204;
+const INDEX_OF: number = 0x0205;
+const INCLUDES: number = 0x0206;
+const SPLIT: number = 0x0207;
+const STARTS_WITH: number = 0x0208;
+const ENDS_WITH: number = 0x0209;
+const REPLACE: number = 0x020A;
+const REPEAT: number = 0x020B;
+const PAD_START: number = 0x020C;
+const PAD_END: number = 0x020D;
+const CHAR_CODE_AT: number = 0x020E;
+const LAST_INDEX_OF: number = 0x020F;
+const TRIM_START: number = 0x0210;
+const TRIM_END: number = 0x0211;
+const STR_MATCH: number = 0x0212;
+const MATCH_ALL: number = 0x0213;
+const SEARCH: number = 0x0214;
+
+// Used by replaceWith Raya loop to get all match data from a RegExp
+const REPLACE_MATCHES: number = 0x0A07;
+
+class string {
+    //@@opcode StringLen
+    length: number;
+
+    charAt(index: number): string {
+        return __NATIVE_CALL(CHAR_AT, this, index);
+    }
+
+    charCodeAt(index: number): int {
+        return __NATIVE_CALL(CHAR_CODE_AT, this, index);
+    }
+
+    substring(start: number, end: number): string {
+        return __NATIVE_CALL(SUBSTRING, this, start, end);
+    }
+
+    toUpperCase(): string {
+        return __NATIVE_CALL(TO_UPPER_CASE, this);
+    }
+
+    toLowerCase(): string {
+        return __NATIVE_CALL(TO_LOWER_CASE, this);
+    }
+
+    trim(): string {
+        return __NATIVE_CALL(TRIM, this);
+    }
+
+    trimStart(): string {
+        return __NATIVE_CALL(TRIM_START, this);
+    }
+
+    trimEnd(): string {
+        return __NATIVE_CALL(TRIM_END, this);
+    }
+
+    indexOf(searchStr: string, fromIndex?: number): int {
+        return __NATIVE_CALL(INDEX_OF, this, searchStr, fromIndex);
+    }
+
+    lastIndexOf(searchStr: string, fromIndex?: number): int {
+        return __NATIVE_CALL(LAST_INDEX_OF, this, searchStr, fromIndex);
+    }
+
+    includes(searchStr: string): boolean {
+        return __NATIVE_CALL(INCLUDES, this, searchStr);
+    }
+
+    startsWith(prefix: string): boolean {
+        return __NATIVE_CALL(STARTS_WITH, this, prefix);
+    }
+
+    endsWith(suffix: string): boolean {
+        return __NATIVE_CALL(ENDS_WITH, this, suffix);
+    }
+
+    split(separator: string, limit?: number): string[] {
+        return __NATIVE_CALL(SPLIT, this, separator, limit);
+    }
+
+    replace(search: string, replacement: string): string {
+        return __NATIVE_CALL(REPLACE, this, search, replacement);
+    }
+
+    repeat(count: number): string {
+        return __NATIVE_CALL(REPEAT, this, count);
+    }
+
+    padStart(length: number, pad: string): string {
+        return __NATIVE_CALL(PAD_START, this, length, pad);
+    }
+
+    padEnd(length: number, pad: string): string {
+        return __NATIVE_CALL(PAD_END, this, length, pad);
+    }
+
+    match(pattern: RegExp): string[] | null {
+        return __NATIVE_CALL(STR_MATCH, this, pattern);
+    }
+
+    matchAll(pattern: RegExp): string[][] {
+        return __NATIVE_CALL(MATCH_ALL, this, pattern);
+    }
+
+    search(pattern: RegExp): int {
+        return __NATIVE_CALL(SEARCH, this, pattern);
+    }
+
+    //@@class_method
+    replaceWith(pattern: RegExp, replacer: (match: (string | number)[]) => string): string {
+        let matches: (string | number)[][] = __NATIVE_CALL(REPLACE_MATCHES, pattern, this);
+        let result: string = "";
+        let lastIndex: int = 0;
+
+        for (let i = 0; i < matches.length; i++) {
+            let m: (string | number)[] = matches[i];
+            let matchText: string = m[0] as string;
+            let matchIndex: int = m[m.length - 1] as int;
+            result = result + this.substring(lastIndex, matchIndex) + replacer(m);
+            lastIndex = matchIndex + matchText.length;
+        }
+
+        result = result + this.substring(lastIndex, this.length);
+        return result;
+    }
+}

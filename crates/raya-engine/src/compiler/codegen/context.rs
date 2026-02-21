@@ -975,6 +975,17 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::StoreLocal);
                 ctx.emit_u16(*index);
             }
+
+            IrInstr::LateBoundMember { dest, object, .. } => {
+                // Unresolved late-bound member access — the original generic function template.
+                // Specialized copies have concrete opcodes; this template is never called at runtime.
+                // Emit LoadField(0) as a safe placeholder to avoid compilation failure.
+                self.emit_load_register(ctx, object);
+                ctx.emit(Opcode::LoadField);
+                ctx.emit_u16(0);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
         }
 
         Ok(())

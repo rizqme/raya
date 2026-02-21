@@ -87,7 +87,8 @@ impl Inliner {
         })
     }
 
-    /// Check if an instruction can be inlined
+    /// Check if an instruction can be inlined.
+    /// Whitelist approach: only allow instructions the renamer knows how to handle.
     fn is_inlinable_instruction(&self, instr: &IrInstr, self_func_id: FunctionId, param_count: usize) -> bool {
         match instr {
             // Recursive calls cannot be inlined
@@ -104,8 +105,42 @@ impl Inliner {
             IrInstr::StoreLocal { .. } => false,
             // LoadLocal for non-parameter indices cannot be inlined
             IrInstr::LoadLocal { index, .. } if (*index as usize) >= param_count => false,
-            // Everything else is fine
-            _ => true,
+            // Instructions the renamer handles correctly
+            IrInstr::Assign { .. }
+            | IrInstr::BinaryOp { .. }
+            | IrInstr::UnaryOp { .. }
+            | IrInstr::Call { .. }
+            | IrInstr::CallMethod { .. }
+            | IrInstr::CallClosure { .. }
+            | IrInstr::NativeCall { .. }
+            | IrInstr::ModuleNativeCall { .. }
+            | IrInstr::LoadLocal { .. }
+            | IrInstr::LoadField { .. }
+            | IrInstr::StoreField { .. }
+            | IrInstr::LoadGlobal { .. }
+            | IrInstr::StoreGlobal { .. }
+            | IrInstr::LoadElement { .. }
+            | IrInstr::StoreElement { .. }
+            | IrInstr::ArrayLen { .. }
+            | IrInstr::ArrayPush { .. }
+            | IrInstr::ArrayPop { .. }
+            | IrInstr::StringLen { .. }
+            | IrInstr::StringCompare { .. }
+            | IrInstr::ToString { .. }
+            | IrInstr::Typeof { .. }
+            | IrInstr::NewObject { .. }
+            | IrInstr::InstanceOf { .. }
+            | IrInstr::Cast { .. }
+            | IrInstr::MakeClosure { .. }
+            | IrInstr::NewMutex { .. }
+            | IrInstr::MutexLock { .. }
+            | IrInstr::MutexUnlock { .. }
+            | IrInstr::NewChannel { .. }
+            | IrInstr::Sleep { .. }
+            | IrInstr::Yield
+            | IrInstr::TaskCancel { .. } => true,
+            // Any other instruction: not safe to inline (renamer doesn't handle it)
+            _ => false,
         }
     }
 
@@ -240,6 +275,33 @@ impl Inliner {
             IrInstr::ArrayPop { dest, array } => {
                 f(dest.id.as_u32());
                 f(array.id.as_u32());
+            }
+            IrInstr::StringLen { dest, string } => {
+                f(dest.id.as_u32());
+                f(string.id.as_u32());
+            }
+            IrInstr::StringCompare { dest, left, right, .. } => {
+                f(dest.id.as_u32());
+                f(left.id.as_u32());
+                f(right.id.as_u32());
+            }
+            IrInstr::ToString { dest, operand } => {
+                f(dest.id.as_u32());
+                f(operand.id.as_u32());
+            }
+            IrInstr::Typeof { dest, operand } => {
+                f(dest.id.as_u32());
+                f(operand.id.as_u32());
+            }
+            IrInstr::LoadElement { dest, array, index } => {
+                f(dest.id.as_u32());
+                f(array.id.as_u32());
+                f(index.id.as_u32());
+            }
+            IrInstr::StoreElement { array, index, value } => {
+                f(array.id.as_u32());
+                f(index.id.as_u32());
+                f(value.id.as_u32());
             }
             IrInstr::NativeCall { dest, args, .. }
             | IrInstr::ModuleNativeCall { dest, args, .. } => {
@@ -435,6 +497,35 @@ impl Inliner {
             IrInstr::ArrayPop { dest, array } => Some(IrInstr::ArrayPop {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 array: self.rename_register(array, reg_map),
+            }),
+            IrInstr::StringLen { dest, string } => Some(IrInstr::StringLen {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                string: self.rename_register(string, reg_map),
+            }),
+            IrInstr::StringCompare { dest, left, right, mode, negate } => Some(IrInstr::StringCompare {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                left: self.rename_register(left, reg_map),
+                right: self.rename_register(right, reg_map),
+                mode: *mode,
+                negate: *negate,
+            }),
+            IrInstr::ToString { dest, operand } => Some(IrInstr::ToString {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                operand: self.rename_register(operand, reg_map),
+            }),
+            IrInstr::Typeof { dest, operand } => Some(IrInstr::Typeof {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                operand: self.rename_register(operand, reg_map),
+            }),
+            IrInstr::LoadElement { dest, array, index } => Some(IrInstr::LoadElement {
+                dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
+                array: self.rename_register(array, reg_map),
+                index: self.rename_register(index, reg_map),
+            }),
+            IrInstr::StoreElement { array, index, value } => Some(IrInstr::StoreElement {
+                array: self.rename_register(array, reg_map),
+                index: self.rename_register(index, reg_map),
+                value: self.rename_register(value, reg_map),
             }),
             IrInstr::NewObject { dest, class } => Some(IrInstr::NewObject {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),

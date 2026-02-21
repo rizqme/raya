@@ -1835,7 +1835,6 @@ fn test_integration_expression_evaluator() {
 }
 
 #[test]
-#[ignore = "checker doesn't propagate generic return types for class-defined Map methods"]
 fn test_integration_graph_bfs() {
     // BFS on a simple adjacency-list graph
     expect_i32_with_builtins(

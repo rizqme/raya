@@ -55,6 +55,48 @@ impl<'a> Binder<'a> {
         self.detect_top_level_duplicates = false;
     }
 
+    /// Register an external class type so it can be referenced by name during binding.
+    /// Used to pre-register builtin primitive types (e.g., RegExp, Array) before
+    /// compiling a `.raya` file that cross-references them.
+    pub fn register_external_class(&mut self, name: &str) {
+        // Reuse existing TypeId if already registered (e.g., pre-interned primitives like
+        // string=1, RegExp=8, Array=17). This preserves canonical TypeIds for dispatch.
+        let type_id = if let Some(existing) = self.type_ctx.lookup_named_type(name) {
+            existing
+        } else {
+            let stub_type = Type::Class(ClassType {
+                name: name.to_string(),
+                type_params: Vec::new(),
+                properties: Vec::new(),
+                methods: Vec::new(),
+                static_properties: Vec::new(),
+                static_methods: Vec::new(),
+                extends: None,
+                implements: Vec::new(),
+                is_abstract: false,
+            });
+            let id = self.type_ctx.intern(stub_type);
+            self.type_ctx.register_named_type(name.to_string(), id);
+            id
+        };
+        let symbol = Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Class,
+            ty: type_id,
+            flags: SymbolFlags {
+                is_exported: false,
+                is_const: true,
+                is_async: false,
+                is_readonly: false,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            referenced: false,
+        };
+        let _ = self.symbols.define(symbol);
+    }
+
     /// Register builtin type signatures
     ///
     /// This registers classes and functions from builtin signatures so they

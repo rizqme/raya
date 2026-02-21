@@ -227,6 +227,9 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("json_set {}.\"{}\" = {}", object, property, value)
         }
+        IrInstr::LateBoundMember { dest, object, property } => {
+            format!("{} = late_bound {}.{}", dest, object, property)
+        }
         IrInstr::LoadElement { dest, array, index } => {
             format!("{} = load_elem {}[{}]", dest, array, index)
         }
