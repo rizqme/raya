@@ -368,17 +368,16 @@ fn test_array_join() {
     );
 }
 
-// BUG DISCOVERY: array.reverse() doesn't reverse in-place correctly.
-// After reverse(), arr[0] should be 3 but it's still 1.
-// #[test]
-// fn test_array_reverse() {
-//     expect_i32(
-//         "let arr: int[] = [3, 2, 1];
-//          arr.reverse();
-//          return arr[0] * 14;",
-//         42,
-//     );
-// }
+// FIXED: array.reverse() now correctly reverses in-place
+#[test]
+fn test_array_reverse() {
+    expect_i32(
+        "let arr: int[] = [3, 2, 1];
+         arr.reverse();
+         return arr[0] * 14;",
+        42,
+    );
+}
 
 #[test]
 fn test_array_includes() {

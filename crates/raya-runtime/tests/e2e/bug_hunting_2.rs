@@ -268,32 +268,28 @@ fn test_array_fill() {
 }
 
 // ============================================================================
-// 10. Array.splice (if supported)
+// 10. Array.splice
 // ============================================================================
 
-// BUG DISCOVERY: Array.splice() method is not recognized by the type checker.
-// Error: NotCallable { ty: "TypeId(6)" } — the method doesn't exist on arrays.
-// splice() is a standard TypeScript/JavaScript array method.
-// #[test]
-// fn test_array_splice_remove() {
-//     expect_i32(
-//         "let arr: int[] = [1, 2, 42, 4, 5];
-//          arr.splice(0, 2);
-//          return arr[0];",
-//         42,
-//     );
-// }
+#[test]
+fn test_array_splice_remove() {
+    expect_i32(
+        "let arr: int[] = [1, 2, 42, 4, 5];
+         arr.splice(0, 2);
+         return arr[0];",
+        42,
+    );
+}
 
-// BUG DISCOVERY: Same splice issue.
-// #[test]
-// fn test_array_splice_insert() {
-//     expect_i32(
-//         "let arr: int[] = [1, 2, 3];
-//          arr.splice(1, 0, 42);
-//          return arr[1];",
-//         42,
-//     );
-// }
+#[test]
+fn test_array_splice_insert() {
+    expect_i32(
+        "let arr: int[] = [1, 2, 3];
+         arr.splice(1, 0, 42);
+         return arr[1];",
+        42,
+    );
+}
 
 // ============================================================================
 // 11. Complex For Loop Patterns

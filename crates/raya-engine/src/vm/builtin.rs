@@ -142,6 +142,8 @@ pub mod array {
     pub const FLAT: u16 = 0x0115;
     /// `new Array()` - Create empty array via constructor
     pub const NEW: u16 = 0x0116;
+    /// `arr.splice(start, deleteCount, ...items)` - Remove/add elements
+    pub const SPLICE: u16 = 0x0117;
 }
 
 /// Built-in method IDs for strings
@@ -1283,6 +1285,7 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "indexOf" => Some(array::INDEX_OF),
             "includes" => Some(array::INCLUDES),
             "slice" => Some(array::SLICE),
+            "splice" => Some(array::SPLICE),
             "concat" => Some(array::CONCAT),
             "reverse" => Some(array::REVERSE),
             "join" => Some(array::JOIN),

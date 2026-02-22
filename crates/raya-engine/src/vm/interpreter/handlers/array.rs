@@ -187,6 +187,84 @@ impl<'a> Interpreter<'a> {
                 stack.push(value)?;
                 Ok(())
             }
+            array::SPLICE => {
+                // splice(start, deleteCount?, ...items): remove elements and optionally insert new ones
+                // Returns array of removed elements
+                if arg_count < 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.splice expects at least 1 argument, got {}", arg_count
+                    )));
+                }
+
+                // Pop arguments in reverse order
+                let mut items = Vec::new();
+                for _ in 2..arg_count {
+                    items.push(stack.pop()?);
+                }
+                items.reverse();
+
+                let delete_count_val = if arg_count >= 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let start_val = stack.pop()?;
+                let array_val = stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                }
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                let len = arr.len();
+                let start = start_val.as_i32().unwrap_or(0) as usize;
+                let start = if start > len { len } else { start };
+
+                // Calculate delete count (default to rest of array if not specified)
+                let delete_count = if let Some(dc_val) = delete_count_val {
+                    dc_val.as_i32().unwrap_or(0).max(0) as usize
+                } else {
+                    len.saturating_sub(start)
+                };
+
+                // Calculate actual end of deletion
+                let end = (start + delete_count).min(len);
+
+                // Collect removed elements
+                let removed_vals: Vec<Value> = (start..end)
+                    .filter_map(|i| arr.get(i))
+                    .collect();
+
+                // Build new elements list: [0..start] + [end..len] + items
+                let mut new_elements: Vec<Value> = Vec::new();
+                for i in 0..start {
+                    new_elements.push(arr.elements[i]);
+                }
+                for i in end..len {
+                    new_elements.push(arr.elements[i]);
+                }
+                for item in items {
+                    new_elements.push(item);
+                }
+
+                // Update array elements - use std::mem::take to avoid reallocation
+                let old_elements = std::mem::take(&mut arr.elements);
+                arr.elements = new_elements;
+                drop(old_elements); // Explicitly drop old elements
+
+                // Create removed array (type_id 0 like CONCAT)
+                let mut removed = Array::new(0, removed_vals.len());
+                for (i, v) in removed_vals.iter().enumerate() {
+                    removed.elements[i] = *v;
+                }
+
+                // Return removed elements
+                let gc_ptr = self.gc.lock().allocate(removed);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
             array::REVERSE => {
                 if arg_count != 0 {
                     return Err(VmError::RuntimeError(format!(

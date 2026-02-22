@@ -2440,6 +2440,9 @@ impl<'a> TypeChecker<'a> {
             "fill" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty, number_ty], array_ty, false, 1)),
             // flat() -> Array<T> (simplified - single level flatten)
             "flat" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
+            // splice(start: number, deleteCount?: number, ...items: T[]) -> Array<T>
+            // Note: simplified type signature - actual splice takes variable arguments
+            "splice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty, elem_ty, elem_ty, elem_ty, elem_ty], array_ty, false, 1)),
             _ => None,
         }
     }
