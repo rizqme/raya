@@ -580,13 +580,13 @@ impl<'a> Interpreter<'a> {
                 Ok(())
             }
             string::REPEAT => {
-                // repeat(count: number): string
-                if arg_count != 1 {
+                // repeat(count: number = 1): string
+                if arg_count > 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.repeat expects 1 argument, got {}", arg_count
+                        "String.repeat expects at most 1 argument, got {}", arg_count
                     )));
                 }
-                let count = args[0].as_i32().unwrap_or(0).max(0) as usize;
+                let count = if arg_count == 0 { 1 } else { args[0].as_i32().unwrap_or(0).max(0) as usize };
                 let result = s.repeat(count);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);

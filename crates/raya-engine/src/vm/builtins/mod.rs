@@ -222,6 +222,59 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
 }
 
 static BUILTIN_SIGS: &[BuiltinSignatures] = &[
+    // string (primitive)
+    BuiltinSignatures {
+        name: "string",
+        classes: &[ClassSig {
+            name: "string",
+            type_params: &[],
+            properties: &[
+                PropertySig { name: "length", ty: "number", is_static: false },
+            ],
+            methods: &[
+                MethodSig { name: "charAt", params: &[("index", "number")], min_params: 1, return_type: "string", is_static: false },
+                MethodSig { name: "charCodeAt", params: &[("index", "number")], min_params: 1, return_type: "int", is_static: false },
+                MethodSig { name: "substring", params: &[("start", "number"), ("end", "number")], min_params: 1, return_type: "string", is_static: false },
+                MethodSig { name: "toUpperCase", params: &[], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "toLowerCase", params: &[], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "trim", params: &[], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "trimStart", params: &[], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "trimEnd", params: &[], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "indexOf", params: &[("searchStr", "string"), ("fromIndex", "number")], min_params: 1, return_type: "int", is_static: false },
+                MethodSig { name: "lastIndexOf", params: &[("searchStr", "string"), ("fromIndex", "number")], min_params: 1, return_type: "int", is_static: false },
+                MethodSig { name: "includes", params: &[("searchStr", "string")], min_params: 1, return_type: "boolean", is_static: false },
+                MethodSig { name: "startsWith", params: &[("prefix", "string")], min_params: 1, return_type: "boolean", is_static: false },
+                MethodSig { name: "endsWith", params: &[("suffix", "string")], min_params: 1, return_type: "boolean", is_static: false },
+                MethodSig { name: "split", params: &[("separator", "string"), ("limit", "number")], min_params: 1, return_type: "string[]", is_static: false },
+                MethodSig { name: "replace", params: &[("search", "string"), ("replacement", "string")], min_params: 2, return_type: "string", is_static: false },
+                MethodSig { name: "repeat", params: &[("count", "number")], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "padStart", params: &[("length", "number"), ("pad", "string")], min_params: 1, return_type: "string", is_static: false },
+                MethodSig { name: "padEnd", params: &[("length", "number"), ("pad", "string")], min_params: 1, return_type: "string", is_static: false },
+                MethodSig { name: "match", params: &[("pattern", "RegExp")], min_params: 1, return_type: "string[] | null", is_static: false },
+                MethodSig { name: "matchAll", params: &[("pattern", "RegExp")], min_params: 1, return_type: "string[][]", is_static: false },
+                MethodSig { name: "search", params: &[("pattern", "RegExp")], min_params: 1, return_type: "int", is_static: false },
+                MethodSig { name: "slice", params: &[("start", "number"), ("end", "number")], min_params: 1, return_type: "string", is_static: false },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
+    // number (primitive)
+    BuiltinSignatures {
+        name: "number",
+        classes: &[ClassSig {
+            name: "number",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig { name: "toFixed", params: &[("digits", "number")], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "toPrecision", params: &[("precision", "number")], min_params: 0, return_type: "string", is_static: false },
+                MethodSig { name: "toString", params: &[("radix", "number")], min_params: 0, return_type: "string", is_static: false },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
     // Map<K, V>
     BuiltinSignatures {
         name: "Map",

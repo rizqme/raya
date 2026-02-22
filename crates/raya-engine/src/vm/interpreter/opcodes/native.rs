@@ -836,21 +836,30 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     0x0F01u16 => {
-                        // NUMBER_TO_PRECISION: format with N significant digits
+                        // NUMBER_TO_PRECISION: format with N significant digits (or plain if no arg)
                         let value = args[0].as_f64()
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0);
-                        let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
-                        let formatted = if value == 0.0 {
-                            format!("{:.prec$}", 0.0, prec = prec - 1)
-                        } else {
-                            let magnitude = value.abs().log10().floor() as i32;
-                            let decimal_places = if prec as i32 > magnitude + 1 {
-                                (prec as i32 - magnitude - 1) as usize
+                        let formatted = if args.get(1).is_none() {
+                            // No precision argument: return plain toString()
+                            if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                format!("{}", value as i64)
                             } else {
-                                0
-                            };
-                            format!("{:.prec$}", value, prec = decimal_places)
+                                format!("{}", value)
+                            }
+                        } else {
+                            let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                            if value == 0.0 {
+                                format!("{:.prec$}", 0.0, prec = prec - 1)
+                            } else {
+                                let magnitude = value.abs().log10().floor() as i32;
+                                let decimal_places = if prec as i32 > magnitude + 1 {
+                                    (prec as i32 - magnitude - 1) as usize
+                                } else {
+                                    0
+                                };
+                                format!("{:.prec$}", value, prec = decimal_places)
+                            }
                         };
                         let s = RayaString::new(formatted);
                         let gc_ptr = self.gc.lock().allocate(s);

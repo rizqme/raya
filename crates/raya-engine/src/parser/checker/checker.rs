@@ -2375,8 +2375,8 @@ impl<'a> TypeChecker<'a> {
             "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
             // includes(value: T) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
-            // slice(start: number, end: number) -> Array<T>
-            "slice" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], array_ty, false)),
+            // slice(start: number, end?: number) -> Array<T>
+            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], array_ty, false, 1)),
             // concat(other: Array<T>) -> Array<T>
             "concat" => Some(self.type_ctx.function_type(vec![array_ty], array_ty, false)),
             // join(separator: string) -> string
@@ -2491,8 +2491,8 @@ impl<'a> TypeChecker<'a> {
                 let search_ty = self.type_ctx.union_type(vec![string_ty, regexp_ty]);
                 Some(self.type_ctx.function_type(vec![search_ty, string_ty], string_ty, false))
             }
-            // repeat(count: number) -> string
-            "repeat" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // repeat(count: number = 1) -> string
+            "repeat" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             // charCodeAt(index: number) -> number
             "charCodeAt" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
             // lastIndexOf(searchStr: string, fromIndex?: number) -> number
@@ -2547,11 +2547,11 @@ impl<'a> TypeChecker<'a> {
         let string_ty = self.type_ctx.string_type();
 
         match method_name {
-            // toFixed(digits: number) -> string
-            "toFixed" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toPrecision(precision: number) -> string
-            "toPrecision" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toString(radix?: number) -> string
+            // toFixed(digits: number = 0) -> string
+            "toFixed" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            // toPrecision(precision?: number) -> string
+            "toPrecision" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            // toString(radix: number = 10) -> string
             "toString" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             _ => None,
         }
