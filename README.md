@@ -1,7 +1,14 @@
-# Raya Programming Language
+<div align="center">
+  <img src="raya-logo.svg" alt="Raya Logo" width="200"/>
+  <h1>Raya Programming Language</h1>
 
-[![CI](https://github.com/rizqme/raya/workflows/CI/badge.svg)](https://github.com/rizqme/raya/actions)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+  [![CI](https://github.com/rizqme/raya/workflows/CI/badge.svg)](https://github.com/rizqme/raya/actions)
+  [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
+  <p>A <strong>statically-typed language with TypeScript syntax</strong> and a custom VM built for <strong>predictable performance</strong> and <strong>goroutine-style concurrency</strong>.</p>
+</div>
+
+---
 
 Raya is a **statically-typed language with TypeScript syntax** and a custom VM built for **predictable performance** and **goroutine-style concurrency**.
 
@@ -29,30 +36,23 @@ If you like TypeScript ergonomics but want stronger compile-time guarantees and 
 ## Quick example
 
 ```typescript
-import logger from "std:logger";
-import time from "std:time";
+import io from "std:io";
 
-type Result<T> =
-  | { status: "ok"; value: T }
-  | { status: "error"; error: string };
-
-async function fetchData(): Task<Result<number>> {
-  return { status: "ok", value: 42 };
+// Async functions create lightweight Tasks
+async function fetchUser(id: number): Task<string> {
+  return `User ${id}`;
 }
 
 function main(): void {
-  const start = time.monotonic();
-
-  const task = fetchData();     // Starts immediately
-  const result = await task;    // Suspends current task
-
-  if (result.status == "ok") {
-    logger.info("value:", result.value);
-  } else {
-    logger.error("error:", result.error);
+  // Tasks start immediately - no explicit spawn
+  const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+  
+  // Await array of tasks - returns array of results
+  const users = await tasks;
+  
+  for (const user of users) {
+    io.writeln(user);
   }
-
-  logger.info("elapsed(ns):", time.elapsed(start));
 }
 ```
 
