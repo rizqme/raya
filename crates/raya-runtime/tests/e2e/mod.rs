@@ -65,6 +65,8 @@ mod type_system_edge_cases;
 mod compiler_edge_cases;
 mod missing_features;
 mod diagnostics;
+mod bug_hunting;
+mod bug_hunting_2;
 
 
 pub use harness::*;
