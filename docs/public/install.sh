@@ -86,6 +86,18 @@ detect_arch() {
   esac
 }
 
+# Validate platform combination
+validate_platform() {
+  local os=$1
+  local arch=$2
+
+  if [ "$os" = "macos" ] && [ "$arch" = "x86_64" ]; then
+    warn "macOS x86_64 (Intel) is not supported in pre-built binaries."
+    warn "Please build from source: https://github.com/rizqme/raya"
+    error "Unsupported platform: macOS x86_64"
+  fi
+}
+
 # Get latest version from GitHub
 get_latest_version() {
   info "Fetching latest version from GitHub..."
@@ -102,6 +114,9 @@ get_latest_version() {
 main() {
   OS=$(detect_os)
   ARCH=$(detect_arch)
+
+  # Validate platform combination
+  validate_platform "$OS" "$ARCH"
 
   if [ "$VERSION" = "latest" ]; then
     VERSION=$(get_latest_version)
