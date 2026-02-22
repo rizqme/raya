@@ -381,12 +381,17 @@ impl<'a> Interpreter<'a> {
                     id if id == buffer::SLICE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let start = args[1].as_i32().unwrap_or(0) as usize;
-                        let end = args[2].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
                         }
                         let buf = unsafe { &*buf_ptr };
+                        // end is optional - if not provided, use buffer length
+                        let end = if arg_count >= 3 {
+                            args[2].as_i32().unwrap_or(buf.length() as i32) as usize
+                        } else {
+                            buf.length()
+                        };
                         let sliced = buf.slice(start, end);
                         let gc_ptr = self.gc.lock().allocate(sliced);
                         let new_handle = gc_ptr.as_ptr() as u64;
@@ -396,12 +401,9 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     id if id == buffer::COPY => {
-                        // copy(srcHandle, targetHandle, targetStart, sourceStart, sourceEnd)
+                        // copy(srcHandle, targetHandle, targetStart?, sourceStart?, sourceEnd?)
                         let src_handle = args[0].as_u64().unwrap_or(0);
                         let tgt_handle = args[1].as_u64().unwrap_or(0);
-                        let tgt_start = args[2].as_i32().unwrap_or(0) as usize;
-                        let src_start = args[3].as_i32().unwrap_or(0) as usize;
-                        let src_end = args[4].as_i32().unwrap_or(0) as usize;
                         let src_ptr = src_handle as *const Buffer;
                         let tgt_ptr = tgt_handle as *mut Buffer;
                         if src_ptr.is_null() || tgt_ptr.is_null() {
@@ -409,6 +411,24 @@ impl<'a> Interpreter<'a> {
                         }
                         let src = unsafe { &*src_ptr };
                         let tgt = unsafe { &mut *tgt_ptr };
+                        
+                        // Optional parameters with defaults
+                        let tgt_start = if arg_count >= 3 {
+                            args[2].as_i32().unwrap_or(0) as usize
+                        } else {
+                            0
+                        };
+                        let src_start = if arg_count >= 4 {
+                            args[3].as_i32().unwrap_or(0) as usize
+                        } else {
+                            0
+                        };
+                        let src_end = if arg_count >= 5 {
+                            args[4].as_i32().unwrap_or(src.data.len() as i32) as usize
+                        } else {
+                            src.data.len()
+                        };
+                        
                         let src_end = src_end.min(src.data.len());
                         let src_start = src_start.min(src_end);
                         let bytes = &src.data[src_start..src_end];

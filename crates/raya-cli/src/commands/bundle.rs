@@ -116,6 +116,8 @@ mod aot_impl {
                 param_count: f.param_count as u32,
                 local_count: f.local_count as u32,
                 name: Some(f.name.clone()),
+                #[cfg(all(feature = "aot", feature = "jit"))]
+                jit_func: None,
             })
             .collect();
 

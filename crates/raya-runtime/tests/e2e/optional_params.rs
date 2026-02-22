@@ -1,6 +1,6 @@
 //! Tests for optional parameters and default values in builtins
 
-use super::{expect_i32, expect_string};
+use super::{expect_i32, expect_i32_with_builtins, expect_string, expect_string_with_builtins};
 
 // ============================================================================
 // Array Methods
@@ -211,7 +211,7 @@ fn test_number_tostring_default_radix() {
 
 #[test]
 fn test_buffer_slice_with_end() {
-    expect_i32(r#"
+    expect_i32_with_builtins(r#"
         let buf: Buffer = new Buffer(10);
         buf.setByte(5, 42);
         let sliced: Buffer = buf.slice(5, 8);
@@ -221,7 +221,7 @@ fn test_buffer_slice_with_end() {
 
 #[test]
 fn test_buffer_slice_without_end() {
-    expect_i32(r#"
+    expect_i32_with_builtins(r#"
         let buf: Buffer = new Buffer(10);
         buf.setByte(5, 99);
         let sliced: Buffer = buf.slice(5);
@@ -231,7 +231,7 @@ fn test_buffer_slice_without_end() {
 
 #[test]
 fn test_buffer_copy_all_params() {
-    expect_i32(r#"
+    expect_i32_with_builtins(r#"
         let src: Buffer = new Buffer(5);
         src.setByte(2, 55);
         let dest: Buffer = new Buffer(5);
@@ -242,7 +242,7 @@ fn test_buffer_copy_all_params() {
 
 #[test]
 fn test_buffer_copy_defaults() {
-    expect_i32(r#"
+    expect_i32_with_builtins(r#"
         let src: Buffer = new Buffer(5);
         src.setByte(0, 77);
         let dest: Buffer = new Buffer(5);
@@ -253,7 +253,7 @@ fn test_buffer_copy_defaults() {
 
 #[test]
 fn test_buffer_tostring_with_encoding() {
-    expect_string(r#"
+    expect_string_with_builtins(r#"
         let buf: Buffer = new Buffer(5);
         buf.setByte(0, 72);  // 'H'
         buf.setByte(1, 105); // 'i'
@@ -266,7 +266,7 @@ fn test_buffer_tostring_with_encoding() {
 
 #[test]
 fn test_buffer_tostring_default_encoding() {
-    expect_string(r#"
+    expect_string_with_builtins(r#"
         let buf: Buffer = new Buffer(5);
         buf.setByte(0, 72);  // 'H'
         buf.setByte(1, 105); // 'i'
