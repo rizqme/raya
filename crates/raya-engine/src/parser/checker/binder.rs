@@ -1953,7 +1953,7 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Mutex is a normal class from Mutex.raya, no special handling needed
+                // Mutex is a normal class from mutex.raya, no special handling needed
 
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias

@@ -6,23 +6,23 @@
 /// Returns the source code for all builtin classes (Object, Error, Map, Set, etc.)
 pub fn builtin_sources() -> &'static str {
     concat!(
-        include_str!("../../raya-engine/builtins/Object.raya"),
+        include_str!("../../raya-engine/builtins/object.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Error.raya"),
+        include_str!("../../raya-engine/builtins/error.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Map.raya"),
+        include_str!("../../raya-engine/builtins/map.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Set.raya"),
+        include_str!("../../raya-engine/builtins/set.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Buffer.raya"),
+        include_str!("../../raya-engine/builtins/buffer.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Date.raya"),
+        include_str!("../../raya-engine/builtins/date.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Channel.raya"),
+        include_str!("../../raya-engine/builtins/channel.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Mutex.raya"),
+        include_str!("../../raya-engine/builtins/mutex.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/Task.raya"),
+        include_str!("../../raya-engine/builtins/task.raya"),
         "\n",
     )
 }

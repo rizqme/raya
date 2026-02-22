@@ -1755,7 +1755,7 @@ impl<'a> TypeChecker<'a> {
                 .unwrap_or_default();
 
             // Check for built-in types with type parameters
-            // Note: Mutex is now a normal class from Mutex.raya, not special-cased
+            // Note: Mutex is now a normal class from mutex.raya, not special-cased
             let builtin_type = match name.as_str() {
                 "RegExp" => Some(self.type_ctx.regexp_type()),
                 "Map" => {
@@ -2064,7 +2064,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Note: Mutex methods are now resolved via normal class method lookup from Mutex.raya
+        // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
 
         // Check for built-in Task methods
         if let Some(crate::parser::types::Type::Task(_)) = &obj_type {
@@ -2501,7 +2501,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    // Note: Mutex methods are now resolved from Mutex.raya class definition
+    // Note: Mutex methods are now resolved from mutex.raya class definition
     // (get_mutex_method_type removed - no longer needed)
 
     /// Get the type of a built-in Task method
@@ -2949,7 +2949,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Handle built-in types
-                // Note: Mutex is now a normal class from Mutex.raya
+                // Note: Mutex is now a normal class from mutex.raya
                 if name == TC::REGEXP_TYPE_NAME {
                     return self.type_ctx.regexp_type();
                 }

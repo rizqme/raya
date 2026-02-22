@@ -12,19 +12,19 @@ const BUILTINS: &[&str] = &[
     // Native primitive types (//@@builtin_primitive)
     "string",
     "number",
-    "Array",
-    "RegExp",
+    "array",
+    "regexp",
     // Builtin classes (vtable dispatch)
-    "Object",
-    "Error",
-    "Mutex",
-    "Task",
-    "Channel",
-    "Map",
-    "Set",
-    "Buffer",
-    "Date",
-    "RegExpMatch",
+    "object",
+    "error",
+    "mutex",
+    "task",
+    "channel",
+    "map",
+    "set",
+    "buffer",
+    "date",
+    "regexpmatch",
 ];
 
 fn main() {

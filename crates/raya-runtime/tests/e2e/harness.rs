@@ -16,31 +16,31 @@ use std::sync::Arc;
 fn get_builtin_sources() -> &'static str {
     concat!(
         // Object class (base class)
-        include_str!("../../../raya-engine/builtins/Object.raya"),
+        include_str!("../../../raya-engine/builtins/object.raya"),
         "\n",
         // Error classes (must come before other classes that might throw)
-        include_str!("../../../raya-engine/builtins/Error.raya"),
+        include_str!("../../../raya-engine/builtins/error.raya"),
         "\n",
         // Map class
-        include_str!("../../../raya-engine/builtins/Map.raya"),
+        include_str!("../../../raya-engine/builtins/map.raya"),
         "\n",
         // Set class
-        include_str!("../../../raya-engine/builtins/Set.raya"),
+        include_str!("../../../raya-engine/builtins/set.raya"),
         "\n",
         // Buffer class
-        include_str!("../../../raya-engine/builtins/Buffer.raya"),
+        include_str!("../../../raya-engine/builtins/buffer.raya"),
         "\n",
         // Date class
-        include_str!("../../../raya-engine/builtins/Date.raya"),
+        include_str!("../../../raya-engine/builtins/date.raya"),
         "\n",
         // Channel class
-        include_str!("../../../raya-engine/builtins/Channel.raya"),
+        include_str!("../../../raya-engine/builtins/channel.raya"),
         "\n",
         // Mutex class
-        include_str!("../../../raya-engine/builtins/Mutex.raya"),
+        include_str!("../../../raya-engine/builtins/mutex.raya"),
         "\n",
         // Task class
-        include_str!("../../../raya-engine/builtins/Task.raya"),
+        include_str!("../../../raya-engine/builtins/task.raya"),
         "\n",
     )
 }

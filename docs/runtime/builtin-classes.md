@@ -1075,7 +1075,7 @@ class MyMutex extends Mutex {
 RegExpMatch is the result object returned by `RegExp.exec()` and related methods. It is a simple immutable class.
 
 ```typescript
-// stdlib/RegExpMatch.raya
+// stdlib/regexpmatch.raya
 class RegExpMatch extends Object {
     readonly match: string;           // The matched text
     readonly index: number;           // Start position in input string

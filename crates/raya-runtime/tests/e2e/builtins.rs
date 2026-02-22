@@ -1040,7 +1040,7 @@ fn test_date_to_string() {
     "#, "Thu Jan 01 1970 00:00:00");
 }
 
-// Note: Date.parse tests require adding a static parse() method to Date.raya
+// Note: Date.parse tests require adding a static parse() method to date.raya
 // The VM handler (DATE_PARSE) exists but the class method is not yet defined
 
 // ============================================================================

@@ -48,8 +48,8 @@ pub enum OpcodeKind {
 pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
     ("string", include_str!("../../builtins/string.raya")),
     ("number", include_str!("../../builtins/number.raya")),
-    ("Array", include_str!("../../builtins/Array.raya")),
-    ("RegExp", include_str!("../../builtins/RegExp.raya")),
+    ("Array", include_str!("../../builtins/array.raya")),
+    ("RegExp", include_str!("../../builtins/regexp.raya")),
 ];
 
 // ============================================================================
@@ -1115,10 +1115,10 @@ class Array<T> {
         assert_eq!(registry.lookup_return_type(0x0F01), Some(str_id));   // toPrecision → string
         assert_eq!(registry.lookup_return_type(0x0F02), Some(str_id));   // toString → string
 
-        // RegExp methods — return types from RegExp.raya
+        // RegExp methods — return types from regexp.raya
         assert_eq!(registry.lookup_return_type(0x0A01), Some(bool_id));  // test → boolean
 
-        // Array push → return type is number (from Array.raya)
+        // Array push → return type is number (from array.raya)
         assert_eq!(registry.lookup_return_type(0x0100), Some(num_id));   // push → number
     }
 

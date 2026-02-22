@@ -297,7 +297,7 @@ fn test_async_exception_in_nested_await() {
 #[test]
 fn test_throw_error_class() {
     // Test throwing Error class instances
-    // Note: Uses with_builtins because Error class is defined in builtin Error.raya
+    // Note: Uses with_builtins because Error class is defined in builtin error.raya
     expect_i32_with_builtins(
         "let result = 0;
          try {
