@@ -118,13 +118,14 @@ fn compile_and_extract(
     let mut lowerer = Lowerer::with_expr_types(&type_ctx, &interner, check_result.expr_types);
     let ir_module = lowerer.lower_module(&module);
 
-    // 5. Extract class method IrFunctions by name
-    // The lowerer names class methods as "ClassName::methodName"
+    // 5. Extract class method IrFunctions by name.
+    // Depending on parser/lowering internals, names may include generic adornments,
+    // so match by `::methodName` suffix rather than exact class prefix.
     let mut result = Vec::new();
     for method_name in class_method_names {
-        let full_name = format!("{}::{}", type_name, method_name);
+        let suffix = format!("::{}", method_name);
         for func in &ir_module.functions {
-            if func.name == full_name {
+            if func.name.ends_with(&suffix) {
                 result.push((method_name.clone(), func.clone()));
                 break;
             }
@@ -212,5 +213,25 @@ mod tests {
     fn test_regexp_replace_with_structure() {
         let func = build_class_method_ir("RegExp", "replaceWith").unwrap();
         assert_eq!(func.params.len(), 3); // this, str, replacer
+    }
+
+    #[test]
+    fn test_array_callback_methods_do_not_emit_unresolved_callmethod() {
+        use crate::compiler::ir::IrInstr;
+
+        for method_name in ["map", "filter", "reduce"] {
+            let func = build_class_method_ir("Array", method_name).unwrap();
+            for block in &func.blocks {
+                for instr in &block.instructions {
+                    if let IrInstr::CallMethod { method, .. } = instr {
+                        assert_ne!(
+                            *method, 0,
+                            "Array.{} contains CallMethod with unresolved method id 0 in block {:?}: {:?}",
+                            method_name, block.label, instr
+                        );
+                    }
+                }
+            }
+        }
     }
 }

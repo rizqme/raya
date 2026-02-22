@@ -360,6 +360,8 @@ pub enum AssignmentOperator {
     ModAssign,                // %=
     AndAssign,                // &=
     OrAssign,                 // |=
+    LogicalOrAssign,          // ||=
+    LogicalAndAssign,         // &&=
     XorAssign,                // ^=
     LeftShiftAssign,          // <<=
     RightShiftAssign,         // >>=

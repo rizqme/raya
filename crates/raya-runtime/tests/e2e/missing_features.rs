@@ -375,7 +375,7 @@ fn test_array_reverse() {
         "let arr: int[] = [3, 2, 1];
          arr.reverse();
          return arr[0] * 14;",
-        42,
+        14,
     );
 }
 

@@ -349,7 +349,7 @@ impl<'a> Interpreter<'a> {
                 } else if value.is_bool() {
                     "boolean"
                 } else if value.is_i32() {
-                    "int"
+                    "number"
                 } else if value.is_i64() || value.is_f64() {
                     "number"
                 } else if value.is_ptr() {

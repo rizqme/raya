@@ -2425,16 +2425,18 @@ impl<'a> TypeChecker<'a> {
                 Some(self.type_ctx.function_type_with_min_params(vec![compare_fn_ty], array_ty, false, 0))
             }
             // map(fn: (elem: T) => T) -> Array<T> (simplified - without generic U)
-            // TODO: Support map<U>(fn: (elem: T) => U): U[] with polymorphic function types
+            // map<U>(fn: (elem: T) => U) -> Array<U>
             "map" => {
-                let callback_ty = self.type_ctx.function_type(vec![elem_ty], elem_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], array_ty, false))
+                let map_result_ty = self.type_ctx.type_variable("__array_map_u");
+                let callback_ty = self.type_ctx.function_type(vec![elem_ty], map_result_ty, false);
+                let mapped_array_ty = self.type_ctx.array_type(map_result_ty);
+                Some(self.type_ctx.function_type(vec![callback_ty], mapped_array_ty, false))
             }
-            // reduce(fn: (acc: T, elem: T) => T, initial: T) -> T (simplified)
-            // TODO: Support reduce<U>(fn: (acc: U, elem: T) => U, initial: U): U with polymorphic function types
+            // reduce<U>(fn: (acc: U, elem: T) => U, initial: U) -> U
             "reduce" => {
-                let callback_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], elem_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty, elem_ty], elem_ty, false))
+                let acc_ty = self.type_ctx.type_variable("__array_reduce_u");
+                let callback_ty = self.type_ctx.function_type(vec![acc_ty, elem_ty], acc_ty, false);
+                Some(self.type_ctx.function_type(vec![callback_ty, acc_ty], acc_ty, false))
             }
             // fill(value: T, start?: number, end?: number) -> Array<T>
             "fill" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty, number_ty], array_ty, false, 1)),
@@ -2460,6 +2462,8 @@ impl<'a> TypeChecker<'a> {
             "charAt" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
             // substring(start: number, end?: number) -> string
             "substring" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], string_ty, false, 1)),
+            // slice(start: number, end?: number) -> string
+            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], string_ty, false, 1)),
             // toUpperCase() -> string
             "toUpperCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // toLowerCase() -> string

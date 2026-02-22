@@ -292,6 +292,12 @@ enum LogosToken {
     #[token("|=")]
     PipeEqual,
 
+    #[token("||=")]
+    PipePipeEqual,
+
+    #[token("&&=")]
+    AmpersandAmpersandEqual,
+
     #[token("^=")]
     CaretEqual,
 
@@ -848,6 +854,8 @@ impl<'a> Lexer<'a> {
             LogosToken::PercentEqual => Token::PercentEqual,
             LogosToken::AmpEqual => Token::AmpEqual,
             LogosToken::PipeEqual => Token::PipeEqual,
+            LogosToken::PipePipeEqual => Token::PipePipeEqual,
+            LogosToken::AmpersandAmpersandEqual => Token::AmpersandAmpersandEqual,
             LogosToken::CaretEqual => Token::CaretEqual,
             LogosToken::Plus => Token::Plus,
             LogosToken::Minus => Token::Minus,

@@ -873,7 +873,7 @@ fn test_array_of_strings_map_length() {
         "let words: string[] = [\"hi\", \"hello\", \"hey\"];
          let lengths = words.map((w: string): int => w.length);
          return lengths[0] + lengths[1] + lengths[2];",
-        12,
+        10,
     );
 }
 

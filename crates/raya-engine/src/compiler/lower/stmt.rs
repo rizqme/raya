@@ -887,7 +887,9 @@ impl<'a> Lowerer<'a> {
                 // but the variable should be typed as number for correct codegen (Fadd vs Iadd).
                 let typed_value = if let Some(type_ann) = &decl.type_annotation {
                     let ann_ty = self.resolve_type_annotation(type_ann);
-                    if ann_ty != value.ty {
+                    // If annotation resolves to UNRESOLVED (common for generic placeholders
+                    // in precompiled builtin class methods), keep inferred initializer type.
+                    if ann_ty != value.ty && ann_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                         use crate::compiler::ir::Register;
                         Register { id: value.id, ty: ann_ty }
                     } else {

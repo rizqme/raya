@@ -176,14 +176,14 @@ fn test_string_substring() {
 
 // BUG DISCOVERY: String.slice() method not implemented.
 // Error: NotCallable { ty: "TypeId(6)" }
-// #[test]
-// fn test_string_slice() {
-//     expect_string(
-//         "let s = \"hello world\";
-//          return s.slice(6);",
-//         "world",
-//     );
-// }
+#[test]
+fn test_string_slice() {
+    expect_string(
+        "let s = \"hello world\";
+         return s.slice(6);",
+        "world",
+    );
+}
 
 #[test]
 fn test_string_char_code_at() {

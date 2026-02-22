@@ -324,24 +324,24 @@ fn test_switch_with_fallthrough() {
 
 // BUG DISCOVERY: Parser doesn't support block bodies `{ ... }` after case labels.
 // This is a common TypeScript/JavaScript pattern for scoped variables in switch cases.
-// #[test]
-// fn test_switch_with_block_body() {
-//     expect_i32(
-//         "function test(x: int): int {
-//              switch (x) {
-//                  case 1: {
-//                      let a = 10;
-//                      let b = 32;
-//                      return a + b;
-//                  }
-//                  default:
-//                      return 0;
-//              }
-//          }
-//          return test(1);",
-//         42,
-//     );
-// }
+#[test]
+fn test_switch_with_block_body() {
+    expect_i32(
+        "function test(x: int): int {
+             switch (x) {
+                 case 1: {
+                     let a = 10;
+                     let b = 32;
+                     return a + b;
+                 }
+                 default:
+                     return 0;
+             }
+         }
+         return test(1);",
+        42,
+    );
+}
 
 // Workaround: use let declarations directly (without block scope)
 #[test]

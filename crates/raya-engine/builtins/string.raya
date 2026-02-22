@@ -21,6 +21,7 @@ const TRIM_END: number = 0x0211;
 const STR_MATCH: number = 0x0212;
 const MATCH_ALL: number = 0x0213;
 const SEARCH: number = 0x0214;
+const SLICE: number = 0x0218;
 
 // Used by replaceWith Raya loop to get all match data from a RegExp
 const REPLACE_MATCHES: number = 0x0A07;
@@ -111,6 +112,10 @@ class string {
 
     search(pattern: RegExp): int {
         return __NATIVE_CALL<int>(SEARCH, this, pattern);
+    }
+
+    slice(start: number, end: number): string {
+        return __NATIVE_CALL<string>(SLICE, this, start, end);
     }
 
     //@@class_method

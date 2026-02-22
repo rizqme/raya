@@ -132,6 +132,8 @@ pub enum Token {
     PercentEqual,
     AmpEqual,
     PipeEqual,
+    PipePipeEqual,    // ||=
+    AmpersandAmpersandEqual,  // &&=
     CaretEqual,
     LessLessEqual,
     GreaterGreaterEqual,
@@ -312,6 +314,8 @@ impl fmt::Display for Token {
             Token::LessLessEqual => write!(f, "<<="),
             Token::GreaterGreaterEqual => write!(f, ">>="),
             Token::GreaterGreaterGreaterEqual => write!(f, ">>>="),
+            Token::PipePipeEqual => write!(f, "||="),
+            Token::AmpersandAmpersandEqual => write!(f, "&&="),
             Token::Question => write!(f, "?"),
             Token::QuestionQuestion => write!(f, "??"),
             Token::QuestionQuestionEqual => write!(f, "??="),

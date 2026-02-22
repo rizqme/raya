@@ -196,6 +196,8 @@ pub mod string {
     pub const SPLIT_REGEXP: u16 = 0x0216;
     /// `str.replaceWith(regexp, replacer)` - Replace RegExp matches with callback
     pub const REPLACE_WITH_REGEXP: u16 = 0x0217;
+    /// `str.slice(start, end)` - Extract section of string
+    pub const SLICE: u16 = 0x0218;
 }
 
 /// Built-in method IDs for Mutex
@@ -1289,6 +1291,18 @@ pub fn lookup_builtin_method(type_name: &str, method_name: &str) -> Option<u16> 
             "concat" => Some(array::CONCAT),
             "reverse" => Some(array::REVERSE),
             "join" => Some(array::JOIN),
+            "forEach" => Some(array::FOR_EACH),
+            "filter" => Some(array::FILTER),
+            "find" => Some(array::FIND),
+            "findIndex" => Some(array::FIND_INDEX),
+            "every" => Some(array::EVERY),
+            "some" => Some(array::SOME),
+            "lastIndexOf" => Some(array::LAST_INDEX_OF),
+            "sort" => Some(array::SORT),
+            "map" => Some(array::MAP),
+            "reduce" => Some(array::REDUCE),
+            "fill" => Some(array::FILL),
+            "flat" => Some(array::FLAT),
             _ => None,
         },
         "String" | "string" => match method_name {

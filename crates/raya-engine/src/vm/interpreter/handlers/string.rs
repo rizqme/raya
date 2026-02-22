@@ -539,6 +539,22 @@ impl<'a> Interpreter<'a> {
                     "String.replaceWith is handled by compiler intrinsic, should not reach VM handler".to_string()
                 ))
             }
+            string::SLICE => {
+                // slice(start, end?)
+                // Similar to substring but supports negative indices (for now, same as substring)
+                let start_val = if arg_count >= 1 { args[0] } else { Value::i32(0) };
+                let end_val = if arg_count >= 2 { Some(args[1]) } else { None };
+
+                let start = start_val.as_i32().unwrap_or(0).max(0) as usize;
+                let end = end_val.and_then(|v| v.as_i32()).map(|e| e.max(0) as usize).unwrap_or(s.len());
+
+                let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
+                let raya_string = RayaString::new(result);
+                let gc_ptr = self.gc.lock().allocate(raya_string);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
             string::REPLACE => {
                 // replace(search: string, replacement: string): string
                 if arg_count != 2 {

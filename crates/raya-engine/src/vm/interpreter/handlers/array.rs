@@ -236,16 +236,16 @@ impl<'a> Interpreter<'a> {
                     .filter_map(|i| arr.get(i))
                     .collect();
 
-                // Build new elements list: [0..start] + [end..len] + items
+                // Build new elements list: [0..start] + items + [end..len]
                 let mut new_elements: Vec<Value> = Vec::new();
                 for i in 0..start {
                     new_elements.push(arr.elements[i]);
                 }
-                for i in end..len {
-                    new_elements.push(arr.elements[i]);
-                }
                 for item in items {
                     new_elements.push(item);
+                }
+                for i in end..len {
+                    new_elements.push(arr.elements[i]);
                 }
 
                 // Update array elements - use std::mem::take to avoid reallocation
@@ -253,8 +253,8 @@ impl<'a> Interpreter<'a> {
                 arr.elements = new_elements;
                 drop(old_elements); // Explicitly drop old elements
 
-                // Create removed array (type_id 0 like CONCAT)
-                let mut removed = Array::new(0, removed_vals.len());
+                // Create removed array with same element type as source array
+                let mut removed = Array::new(arr.type_id, removed_vals.len());
                 for (i, v) in removed_vals.iter().enumerate() {
                     removed.elements[i] = *v;
                 }
