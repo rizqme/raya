@@ -5,11 +5,11 @@ const TO_PRECISION: number = 0x0F01;
 const TO_STRING_RADIX: number = 0x0F02;
 
 class number {
-    toFixed(digits: number): string {
+    toFixed(digits: number = 0): string {
         return __NATIVE_CALL<string>(TO_FIXED, this, digits);
     }
 
-    toPrecision(precision: number): string {
+    toPrecision(precision?: number): string {
         return __NATIVE_CALL<string>(TO_PRECISION, this, precision);
     }
 

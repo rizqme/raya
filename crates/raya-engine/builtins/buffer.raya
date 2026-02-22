@@ -58,18 +58,18 @@ class Buffer {
     }
 
     // Create a new buffer from a slice of this buffer
-    slice(start: number, end: number): Buffer {
+    slice(start: number, end?: number): Buffer {
         return __NATIVE_CALL<Buffer>(BUFFER_SLICE, this.bufferPtr, start, end);
     }
 
     // Copy bytes from this buffer to another
     // Returns number of bytes copied
-    copy(target: Buffer, targetStart: number, sourceStart: number, sourceEnd: number): number {
+    copy(target: Buffer, targetStart: number = 0, sourceStart: number = 0, sourceEnd?: number): number {
         return __NATIVE_CALL<number>(BUFFER_COPY, this.bufferPtr, target.bufferPtr, targetStart, sourceStart, sourceEnd);
     }
 
     // Convert buffer to string using specified encoding
-    toString(encoding: string): string {
+    toString(encoding: string = "utf8"): string {
         return __NATIVE_CALL<string>(BUFFER_TO_STRING, this.bufferPtr, encoding);
     }
 

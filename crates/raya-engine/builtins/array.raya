@@ -54,7 +54,7 @@ class Array<T> {
         return __NATIVE_CALL<boolean>(INCLUDES, this, element);
     }
 
-    slice(start: number, end: number): T[] {
+    slice(start: number, end?: number): T[] {
         return __NATIVE_CALL<T[]>(SLICE, this, start, end);
     }
 
@@ -70,7 +70,7 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(REVERSE, this);
     }
 
-    fill(value: T, start: number, end: number): T[] {
+    fill(value: T, start?: number, end?: number): T[] {
         return __NATIVE_CALL<T[]>(FILL, this, value, start, end);
     }
 
@@ -78,7 +78,7 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(FLAT, this);
     }
 
-    splice(start: number, deleteCount: number): T[] {
+    splice(start: number, deleteCount?: number): T[] {
         return __NATIVE_CALL<T[]>(SPLICE, this, start, deleteCount);
     }
 
