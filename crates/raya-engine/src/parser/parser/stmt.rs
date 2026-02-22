@@ -66,7 +66,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                     parse_class_declaration_with_annotations(parser, annotations)
                 }
                 Token::Type => parse_type_alias_declaration(parser, annotations),
-                // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
+                // Allow annotations before other statements (e.g., //@@builtin_native before const)
                 // — annotations are discarded for non-class/type declarations
                 _ => parse_statement(parser),
             }

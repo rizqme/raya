@@ -1,5 +1,3 @@
-//@@builtin_primitive
-
 const REGEXP_NEW: number = 0x0A00;
 const TEST: number = 0x0A01;
 const EXEC: number = 0x0A02;
@@ -10,6 +8,7 @@ const REGEXP_SPLIT: number = 0x0A06;
 // Used by replaceWith Raya loop to get all match data
 const REPLACE_MATCHES: number = 0x0A07;
 
+//@@builtin_native
 class RegExp {
     source: string;
     flags: string;

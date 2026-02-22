@@ -1,5 +1,3 @@
-//@@builtin_primitive
-
 const CHAR_AT: number = 0x0200;
 const SUBSTRING: number = 0x0201;
 const TO_UPPER_CASE: number = 0x0202;
@@ -25,6 +23,7 @@ const SEARCH: number = 0x0214;
 // Used by replaceWith Raya loop to get all match data from a RegExp
 const REPLACE_MATCHES: number = 0x0A07;
 
+//@@builtin_native
 class string {
     //@@opcode StringLen
     length: number;

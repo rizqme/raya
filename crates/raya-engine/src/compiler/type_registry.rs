@@ -5,9 +5,10 @@
 //! and normalize_type_for_dispatch.
 //!
 //! The registry is populated at compiler init by scanning embedded `.raya` source
-//! files for `//@@builtin_primitive` classes, extracting native IDs from
+//! files for `//@@builtin_native` classes, extracting native IDs from
 //! `__NATIVE_CALL(CONST, ...)` patterns, and `//@@opcode` annotations.
 
+use std::sync::LazyLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
@@ -45,11 +46,24 @@ pub enum OpcodeKind {
 
 /// Builtin primitive `.raya` sources embedded at compile time.
 /// These are scanned at TypeRegistry init to build dispatch tables.
-pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
+pub(crate) const BUILTIN_NATIVE_SOURCES: &[(&str, &str)] = &[
     ("string", include_str!("../../builtins/string.raya")),
     ("number", include_str!("../../builtins/number.raya")),
     ("Array", include_str!("../../builtins/array.raya")),
     ("RegExp", include_str!("../../builtins/regexp.raya")),
+    ("Map", include_str!("../../builtins/map.raya")),
+    ("Set", include_str!("../../builtins/set.raya")),
+    ("Buffer", include_str!("../../builtins/buffer.raya")),
+    ("Channel", include_str!("../../builtins/channel.raya")),
+];
+
+/// Additional builtin `.raya` sources for type signature extraction.
+/// These types are not yet `//@@builtin_native` but their method signatures
+/// are needed by the checker for type resolution.
+const BUILTIN_CLASS_SOURCES: &[(&str, &str)] = &[
+    ("Date", include_str!("../../builtins/date.raya")),
+    ("Mutex", include_str!("../../builtins/mutex.raya")),
+    ("Task", include_str!("../../builtins/task.raya")),
 ];
 
 // ============================================================================
@@ -72,12 +86,14 @@ pub struct TypeRegistry {
     array_properties: FxHashMap<String, DispatchAction>,
     /// Constructor native IDs: type_name → native_id
     constructors: FxHashMap<String, u16>,
-    /// Set of type names that are `//@@builtin_primitive`
-    builtin_primitives: FxHashSet<String>,
+    /// Set of type names that are `//@@builtin_native`
+    builtin_natives: FxHashSet<String>,
     /// TypeId → type name (reverse lookup)
     type_names: FxHashMap<u32, String>,
     /// native_id → return TypeId (for return type propagation)
     method_return_types: FxHashMap<u16, u32>,
+    /// Per-type method signatures extracted from .raya AST
+    native_type_info: FxHashMap<String, NativeTypeInfo>,
 }
 
 impl TypeRegistry {
@@ -89,9 +105,10 @@ impl TypeRegistry {
             array_methods: FxHashMap::default(),
             array_properties: FxHashMap::default(),
             constructors: FxHashMap::default(),
-            builtin_primitives: FxHashSet::default(),
+            builtin_natives: FxHashSet::default(),
             type_names: FxHashMap::default(),
             method_return_types: FxHashMap::default(),
+            native_type_info: FxHashMap::default(),
         };
 
         // Build reverse name lookup from TypeContext's named types
@@ -108,8 +125,8 @@ impl TypeRegistry {
         }
 
         // Scan each builtin primitive source
-        for &(type_name, source) in BUILTIN_PRIMITIVE_SOURCES {
-            registry.scan_builtin_primitive(type_name, source, type_ctx);
+        for &(type_name, source) in BUILTIN_NATIVE_SOURCES {
+            registry.scan_builtin_native(type_name, source, type_ctx);
         }
 
         // Register return types for compiler-internal method variants.
@@ -139,6 +156,9 @@ impl TypeRegistry {
         // have .raya files yet, so their native IDs are registered programmatically.
         registry.register_builtin_class_dispatch(type_ctx);
 
+        // Use pre-extracted method signatures from lazy static
+        registry.native_type_info = NATIVE_TYPE_INFO.clone();
+
         registry
     }
 
@@ -147,35 +167,10 @@ impl TypeRegistry {
     /// These are classes whose methods are handled natively by the VM.
     /// Eventually these will be migrated to .raya files.
     fn register_builtin_class_dispatch(&mut self, type_ctx: &TypeContext) {
-        use crate::vm::builtin::{map, set, channel, buffer, date, mutex, task};
+        use crate::vm::builtin::{date, mutex, task};
 
+        // Only types still using prepended class dispatch (not yet //@@builtin_native)
         let builtin_types: &[(&str, &[(&str, u16)])] = &[
-            ("Map", &[
-                ("get", map::GET), ("set", map::SET), ("has", map::HAS),
-                ("delete", map::DELETE), ("clear", map::CLEAR), ("keys", map::KEYS),
-                ("values", map::VALUES), ("entries", map::ENTRIES),
-                ("forEach", map::FOR_EACH), ("size", map::SIZE),
-            ]),
-            ("Set", &[
-                ("add", set::ADD), ("has", set::HAS), ("delete", set::DELETE),
-                ("clear", set::CLEAR), ("values", set::VALUES),
-                ("forEach", set::FOR_EACH), ("size", set::SIZE),
-                ("union", set::UNION), ("intersection", set::INTERSECTION),
-                ("difference", set::DIFFERENCE),
-            ]),
-            ("Channel", &[
-                ("send", channel::SEND), ("receive", channel::RECEIVE),
-                ("trySend", channel::TRY_SEND), ("tryReceive", channel::TRY_RECEIVE),
-                ("close", channel::CLOSE), ("isClosed", channel::IS_CLOSED),
-                ("length", channel::LENGTH), ("capacity", channel::CAPACITY),
-            ]),
-            ("Buffer", &[
-                ("length", buffer::LENGTH), ("getByte", buffer::GET_BYTE),
-                ("setByte", buffer::SET_BYTE), ("getInt32", buffer::GET_INT32),
-                ("setInt32", buffer::SET_INT32), ("getFloat64", buffer::GET_FLOAT64),
-                ("setFloat64", buffer::SET_FLOAT64), ("slice", buffer::SLICE),
-                ("copy", buffer::COPY), ("toString", buffer::TO_STRING),
-            ]),
             ("Date", &[
                 ("getTime", date::GET_TIME), ("getFullYear", date::GET_FULL_YEAR),
                 ("getMonth", date::GET_MONTH), ("getDate", date::GET_DATE),
@@ -208,14 +203,14 @@ impl TypeRegistry {
         }
     }
 
-    /// Scan a `//@@builtin_primitive` `.raya` source and populate dispatch tables.
-    fn scan_builtin_primitive(&mut self, type_name: &str, source: &str, type_ctx: &TypeContext) {
-        // Verify the source contains //@@builtin_primitive
-        if !source.contains("//@@builtin_primitive") {
+    /// Scan a `//@@builtin_native` `.raya` source and populate dispatch tables.
+    fn scan_builtin_native(&mut self, type_name: &str, source: &str, type_ctx: &TypeContext) {
+        // Verify the source contains //@@builtin_native
+        if !source.contains("//@@builtin_native") {
             return;
         }
 
-        self.builtin_primitives.insert(type_name.to_string());
+        self.builtin_natives.insert(type_name.to_string());
 
         // Step 1: Extract const declarations → name→value map
         let constants = extract_constants(source);
@@ -349,14 +344,43 @@ impl TypeRegistry {
         self.method_return_types.get(&native_id).copied()
     }
 
-    /// Check if a type is a `//@@builtin_primitive`.
-    pub fn is_builtin_primitive(&self, type_name: &str) -> bool {
-        self.builtin_primitives.contains(type_name)
+    /// Check if a type is a `//@@builtin_native`.
+    pub fn is_builtin_native(&self, type_name: &str) -> bool {
+        self.builtin_natives.contains(type_name)
     }
 
     /// Check if a TypeId represents an array type.
     fn is_array_type_id(&self, type_id: u32) -> bool {
         type_id == TypeContext::ARRAY_TYPE_ID
+    }
+
+    /// Resolve a method type for a native type using extracted signatures.
+    ///
+    /// Given a type name (e.g., "Map"), method name (e.g., "get"), and concrete
+    /// generic args (e.g., [string_id, number_id]), returns the fully resolved
+    /// function TypeId for the method.
+    pub fn resolve_method_type(
+        &self,
+        type_name: &str,
+        method_name: &str,
+        concrete_args: &[TypeId],
+        type_ctx: &mut TypeContext,
+    ) -> Option<TypeId> {
+        let info = self.native_type_info.get(type_name)?;
+        let method = info.methods.get(method_name)?;
+
+        let resolved_params: Vec<TypeId> = method.params.iter()
+            .map(|p| resolve_typesig(p, concrete_args, type_ctx))
+            .collect();
+
+        let resolved_ret = resolve_typesig(&method.return_type, concrete_args, type_ctx);
+
+        Some(type_ctx.function_type(resolved_params, resolved_ret, method.is_async))
+    }
+
+    /// Get the NativeTypeInfo for a type.
+    pub fn native_type_info(&self, type_name: &str) -> Option<&NativeTypeInfo> {
+        self.native_type_info.get(type_name)
     }
 
     // ========================================================================
@@ -410,11 +434,17 @@ impl TypeRegistry {
                 // Map builtin primitive classes back to their canonical dispatch TypeId.
                 // Must use the pre-interned IDs (from TypeContext::new()), not lookup_named_type,
                 // because the binder may register a different ClassType under the same name.
+                // For //@@builtin_native classes (Channel, Map, Set, Buffer), we use
+                // lookup_named_type because the registry is also keyed by that same TypeId.
                 match class_type.name.as_str() {
                     "number" => Ok(0),  // Pre-interned: Primitive(Number)
                     "string" => Ok(1),  // Pre-interned: Primitive(String)
                     "RegExp" => Ok(8),  // Pre-interned: Type::RegExp
                     "Array" => Ok(TypeContext::ARRAY_TYPE_ID), // 17
+                    "Channel" => Ok(lookup_or_unresolved(type_ctx, "Channel")),
+                    "Map" => Ok(lookup_or_unresolved(type_ctx, "Map")),
+                    "Set" => Ok(lookup_or_unresolved(type_ctx, "Set")),
+                    "Buffer" => Ok(lookup_or_unresolved(type_ctx, "Buffer")),
                     _ => Ok(UNRESOLVED_TYPE_ID),
                 }
             }
@@ -798,13 +828,15 @@ fn find_matching_brace(chars: &[char], open: usize) -> Option<usize> {
 }
 
 /// Extract the native call ID from a method body string.
-/// Looks for `__NATIVE_CALL(CONST_NAME,` and resolves CONST_NAME via the constants map.
+/// Looks for `__NATIVE_CALL(CONST_NAME, ...)` or `__NATIVE_CALL(CONST_NAME)`
+/// and resolves CONST_NAME via the constants map.
 fn extract_native_call_id(body: &str, constants: &FxHashMap<String, u16>) -> Option<u16> {
     let native_call_marker = "__NATIVE_CALL(";
     if let Some(idx) = body.find(native_call_marker) {
         let after = &body[idx + native_call_marker.len()..];
-        // Extract the first argument (constant name)
-        let end = after.find(',')?;
+        // Extract the first argument (constant name) — delimited by ',' or ')'
+        let end = after.find(',')
+            .or_else(|| after.find(')'))?;
         let const_name = after[..end].trim();
         constants.get(const_name).copied()
     } else {
@@ -875,6 +907,311 @@ fn resolve_return_type_str(type_ctx: &TypeContext, return_type: &str) -> Option<
         "RegExp" => type_ctx.lookup_named_type("RegExp").map(|id| id.as_u32()),
         _ => None, // Generic types (T, U, etc.) — no propagation
     }
+}
+
+// ============================================================================
+// Type Signatures (parsed from .raya AST)
+// ============================================================================
+
+/// A type signature extracted from a `.raya` builtin file.
+///
+/// Uses index-based generic param references that are resolved lazily
+/// against a TypeContext with concrete type arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeSig {
+    /// Named type: "string", "number", "boolean", "void", "null", "Buffer", etc.
+    Named(String),
+    /// Reference to a class generic param by index into NativeTypeInfo.generic_params
+    GenericParam(usize),
+    /// Array type: T[]
+    Array(Box<TypeSig>),
+    /// Tuple type: [K, V]
+    Tuple(Vec<TypeSig>),
+    /// Union type: V | null
+    Union(Vec<TypeSig>),
+    /// Function type: (value: V, key: K) => void
+    Function { params: Vec<TypeSig>, return_type: Box<TypeSig> },
+    /// Generic type reference: Set<T>, Map<K,V>, Channel<T>
+    Generic(String, Vec<TypeSig>),
+}
+
+/// Method signature extracted from a `.raya` file.
+#[derive(Debug, Clone)]
+pub struct NativeMethodSig {
+    pub params: Vec<TypeSig>,
+    pub return_type: TypeSig,
+    pub is_async: bool,
+}
+
+/// Type info extracted from a `.raya` builtin class declaration.
+#[derive(Debug, Clone)]
+pub struct NativeTypeInfo {
+    /// Class name (e.g., "Map", "string", "Array")
+    pub name: String,
+    /// Generic type parameters (e.g., ["K", "V"] for Map, ["T"] for Set, [] for Buffer)
+    pub generic_params: Vec<String>,
+    /// Method signatures by name
+    pub methods: FxHashMap<String, NativeMethodSig>,
+    /// Constructor signature (if any)
+    pub constructor: Option<NativeMethodSig>,
+}
+
+/// Extract type information from a `.raya` builtin source file.
+///
+/// Parses the source with the real Raya Parser, finds the class declaration,
+/// and extracts generic params, method signatures, and constructor info.
+fn extract_native_type_info(source: &str) -> Option<NativeTypeInfo> {
+    use crate::parser::Parser;
+    use crate::parser::ast::{Statement, ClassMember};
+
+    let parser = Parser::new(source).ok()?;
+    let (module, interner) = parser.parse().ok()?;
+
+    // Find the first class declaration
+    let class = module.statements.iter().find_map(|stmt| {
+        if let Statement::ClassDecl(decl) = stmt { Some(decl) } else { None }
+    })?;
+
+    let name = interner.resolve(class.name.name).to_string();
+
+    // Extract generic params
+    let generic_params: Vec<String> = class.type_params.as_ref()
+        .map(|params| params.iter()
+            .map(|p| interner.resolve(p.name.name).to_string())
+            .collect())
+        .unwrap_or_default();
+
+    let mut methods = FxHashMap::default();
+    let mut constructor = None;
+
+    for member in &class.members {
+        match member {
+            ClassMember::Method(method) => {
+                if method.is_static {
+                    continue;
+                }
+                let method_name = interner.resolve(method.name.name).to_string();
+
+                let params: Vec<TypeSig> = method.params.iter()
+                    .filter_map(|p| {
+                        p.type_annotation.as_ref()
+                            .map(|ann| ast_type_to_typesig(&ann.ty, &generic_params, &interner))
+                    })
+                    .collect();
+
+                let return_type = method.return_type.as_ref()
+                    .map(|ann| ast_type_to_typesig(&ann.ty, &generic_params, &interner))
+                    .unwrap_or(TypeSig::Named("void".to_string()));
+
+                methods.insert(method_name, NativeMethodSig {
+                    params,
+                    return_type,
+                    is_async: method.is_async,
+                });
+            }
+            ClassMember::Constructor(ctor) => {
+                let params: Vec<TypeSig> = ctor.params.iter()
+                    .filter_map(|p| {
+                        p.type_annotation.as_ref()
+                            .map(|ann| ast_type_to_typesig(&ann.ty, &generic_params, &interner))
+                    })
+                    .collect();
+
+                constructor = Some(NativeMethodSig {
+                    params,
+                    return_type: TypeSig::Named("void".to_string()),
+                    is_async: false,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    Some(NativeTypeInfo {
+        name,
+        generic_params,
+        methods,
+        constructor,
+    })
+}
+
+/// Convert an AST type annotation to a TypeSig.
+fn ast_type_to_typesig(
+    ty: &crate::parser::ast::types::Type,
+    generic_params: &[String],
+    interner: &crate::parser::Interner,
+) -> TypeSig {
+    use crate::parser::ast::types::Type as AstType;
+
+    match ty {
+        AstType::Primitive(p) => TypeSig::Named(p.name().to_string()),
+
+        AstType::Reference(ref_) => {
+            let name = interner.resolve(ref_.name.name).to_string();
+            // Check if this is a generic param reference
+            if let Some(idx) = generic_params.iter().position(|p| *p == name) {
+                TypeSig::GenericParam(idx)
+            } else if let Some(args) = &ref_.type_args {
+                // Generic type reference with args: Map<K,V>, Set<T>, etc.
+                let type_args: Vec<TypeSig> = args.iter()
+                    .map(|a| ast_type_to_typesig(&a.ty, generic_params, interner))
+                    .collect();
+                TypeSig::Generic(name, type_args)
+            } else {
+                TypeSig::Named(name)
+            }
+        }
+
+        AstType::Array(arr) => {
+            TypeSig::Array(Box::new(ast_type_to_typesig(&arr.element_type.ty, generic_params, interner)))
+        }
+
+        AstType::Tuple(tup) => {
+            TypeSig::Tuple(tup.element_types.iter()
+                .map(|e| ast_type_to_typesig(&e.ty, generic_params, interner))
+                .collect())
+        }
+
+        AstType::Union(union) => {
+            TypeSig::Union(union.types.iter()
+                .map(|t| ast_type_to_typesig(&t.ty, generic_params, interner))
+                .collect())
+        }
+
+        AstType::Function(func) => {
+            let params: Vec<TypeSig> = func.params.iter()
+                .map(|p| ast_type_to_typesig(&p.ty.ty, generic_params, interner))
+                .collect();
+            let ret = ast_type_to_typesig(&func.return_type.ty, generic_params, interner);
+            TypeSig::Function { params, return_type: Box::new(ret) }
+        }
+
+        AstType::Parenthesized(inner) => {
+            ast_type_to_typesig(&inner.ty, generic_params, interner)
+        }
+
+        // Intersection, Object, Typeof, literals — unlikely in builtin .raya files
+        _ => TypeSig::Named("unknown".to_string()),
+    }
+}
+
+/// Resolve a TypeSig to a concrete TypeId given generic type arguments.
+fn resolve_typesig(
+    sig: &TypeSig,
+    concrete_args: &[TypeId],
+    type_ctx: &mut TypeContext,
+) -> TypeId {
+    match sig {
+        TypeSig::Named(name) => resolve_named_type(name, type_ctx),
+
+        TypeSig::GenericParam(idx) => {
+            concrete_args.get(*idx).copied()
+                .unwrap_or_else(|| type_ctx.unknown_type())
+        }
+
+        TypeSig::Array(inner) => {
+            let elem = resolve_typesig(inner, concrete_args, type_ctx);
+            type_ctx.array_type(elem)
+        }
+
+        TypeSig::Tuple(elems) => {
+            let resolved: Vec<TypeId> = elems.iter()
+                .map(|e| resolve_typesig(e, concrete_args, type_ctx))
+                .collect();
+            type_ctx.tuple_type(resolved)
+        }
+
+        TypeSig::Union(members) => {
+            let resolved: Vec<TypeId> = members.iter()
+                .map(|m| resolve_typesig(m, concrete_args, type_ctx))
+                .collect();
+            type_ctx.union_type(resolved)
+        }
+
+        TypeSig::Function { params, return_type } => {
+            let resolved_params: Vec<TypeId> = params.iter()
+                .map(|p| resolve_typesig(p, concrete_args, type_ctx))
+                .collect();
+            let resolved_ret = resolve_typesig(return_type, concrete_args, type_ctx);
+            type_ctx.function_type(resolved_params, resolved_ret, false)
+        }
+
+        TypeSig::Generic(name, args) => {
+            let resolved_args: Vec<TypeId> = args.iter()
+                .map(|a| resolve_typesig(a, concrete_args, type_ctx))
+                .collect();
+            resolve_generic_type(name, &resolved_args, type_ctx)
+        }
+    }
+}
+
+/// Resolve a named type string to a TypeId.
+fn resolve_named_type(name: &str, type_ctx: &mut TypeContext) -> TypeId {
+    match name {
+        "string" => type_ctx.string_type(),
+        "number" => type_ctx.number_type(),
+        "boolean" => type_ctx.boolean_type(),
+        "void" => type_ctx.void_type(),
+        "null" => type_ctx.null_type(),
+        "never" => type_ctx.never_type(),
+        "Buffer" => type_ctx.buffer_type(),
+        "Date" => type_ctx.date_type(),
+        "Mutex" => type_ctx.mutex_type(),
+        "RegExp" => type_ctx.regexp_type(),
+        _ => type_ctx.lookup_named_type(name).unwrap_or_else(|| type_ctx.unknown_type()),
+    }
+}
+
+/// Resolve a generic type with concrete args to a TypeId.
+fn resolve_generic_type(name: &str, args: &[TypeId], type_ctx: &mut TypeContext) -> TypeId {
+    match (name, args.len()) {
+        ("Set", 1) => type_ctx.set_type_with(args[0]),
+        ("Map", 2) => type_ctx.map_type_with(args[0], args[1]),
+        ("Channel", 1) => type_ctx.channel_type_with(args[0]),
+        ("Task", 1) => type_ctx.task_type(args[0]),
+        ("Array", 1) => type_ctx.array_type(args[0]),
+        _ => type_ctx.unknown_type(),
+    }
+}
+
+// ============================================================================
+// Global Type Info (lazy, shared between TypeRegistry and checker)
+// ============================================================================
+
+/// Lazily extracted type info from all builtin `.raya` files.
+/// Used by both the TypeRegistry (for dispatch) and the checker (for type resolution).
+static NATIVE_TYPE_INFO: LazyLock<FxHashMap<String, NativeTypeInfo>> = LazyLock::new(|| {
+    let mut map = FxHashMap::default();
+    for &(_name, source) in BUILTIN_NATIVE_SOURCES.iter().chain(BUILTIN_CLASS_SOURCES.iter()) {
+        if let Some(info) = extract_native_type_info(source) {
+            map.insert(info.name.clone(), info);
+        }
+    }
+    map
+});
+
+/// Resolve a method type for a native type.
+///
+/// Called by the checker to get fully resolved function TypeIds for methods
+/// on builtin types (Map, Set, Channel, Task, Buffer, Date, Mutex, etc.).
+///
+/// Returns the method's function type with generic params substituted.
+pub(crate) fn resolve_native_method_type(
+    type_name: &str,
+    method_name: &str,
+    concrete_args: &[TypeId],
+    type_ctx: &mut TypeContext,
+) -> Option<TypeId> {
+    let info = NATIVE_TYPE_INFO.get(type_name)?;
+    let method = info.methods.get(method_name)?;
+
+    let resolved_params: Vec<TypeId> = method.params.iter()
+        .map(|p| resolve_typesig(p, concrete_args, type_ctx))
+        .collect();
+
+    let resolved_ret = resolve_typesig(&method.return_type, concrete_args, type_ctx);
+
+    Some(type_ctx.function_type(resolved_params, resolved_ret, method.is_async))
 }
 
 // ============================================================================
@@ -1153,6 +1490,191 @@ class Array<T> {
 "#;
         let class_methods = extract_class_method_names(source);
         assert_eq!(class_methods, vec!["map", "filter"]);
+    }
+
+    // ====================================================================
+    // TypeSig extraction tests
+    // ====================================================================
+
+    #[test]
+    fn test_extract_map_type_info() {
+        let source = include_str!("../../builtins/map.raya");
+        let info = extract_native_type_info(source).unwrap();
+
+        assert_eq!(info.name, "Map");
+        assert_eq!(info.generic_params, vec!["K", "V"]);
+
+        // Check methods exist
+        assert!(info.methods.contains_key("get"));
+        assert!(info.methods.contains_key("set"));
+        assert!(info.methods.contains_key("has"));
+        assert!(info.methods.contains_key("delete"));
+        assert!(info.methods.contains_key("clear"));
+        assert!(info.methods.contains_key("keys"));
+        assert!(info.methods.contains_key("values"));
+        assert!(info.methods.contains_key("entries"));
+        assert!(info.methods.contains_key("size"));
+
+        // get(key: K): V | null
+        let get = &info.methods["get"];
+        assert_eq!(get.params, vec![TypeSig::GenericParam(0)]); // K
+        assert_eq!(get.return_type, TypeSig::Union(vec![
+            TypeSig::GenericParam(1), // V
+            TypeSig::Named("null".to_string()),
+        ]));
+
+        // entries(): [K, V][]
+        let entries = &info.methods["entries"];
+        assert!(entries.params.is_empty());
+        assert_eq!(entries.return_type, TypeSig::Array(Box::new(
+            TypeSig::Tuple(vec![TypeSig::GenericParam(0), TypeSig::GenericParam(1)])
+        )));
+    }
+
+    #[test]
+    fn test_extract_channel_type_info() {
+        let source = include_str!("../../builtins/channel.raya");
+        let info = extract_native_type_info(source).unwrap();
+
+        assert_eq!(info.name, "Channel");
+        assert_eq!(info.generic_params, vec!["T"]);
+
+        // send(value: T): void
+        let send = &info.methods["send"];
+        assert_eq!(send.params, vec![TypeSig::GenericParam(0)]); // T
+        assert_eq!(send.return_type, TypeSig::Named("void".to_string()));
+
+        // tryReceive(): T | null
+        let try_receive = &info.methods["tryReceive"];
+        assert!(try_receive.params.is_empty());
+        assert_eq!(try_receive.return_type, TypeSig::Union(vec![
+            TypeSig::GenericParam(0), // T
+            TypeSig::Named("null".to_string()),
+        ]));
+
+        // Constructor: constructor(capacity: number)
+        let ctor = info.constructor.as_ref().unwrap();
+        assert_eq!(ctor.params, vec![TypeSig::Named("number".to_string())]);
+    }
+
+    #[test]
+    fn test_extract_buffer_type_info() {
+        let source = include_str!("../../builtins/buffer.raya");
+        let info = extract_native_type_info(source).unwrap();
+
+        assert_eq!(info.name, "Buffer");
+        assert!(info.generic_params.is_empty()); // No generics
+
+        // length(): number
+        let length = &info.methods["length"];
+        assert!(length.params.is_empty());
+        assert_eq!(length.return_type, TypeSig::Named("number".to_string()));
+    }
+
+    #[test]
+    fn test_extract_set_type_info() {
+        let source = include_str!("../../builtins/set.raya");
+        let info = extract_native_type_info(source).unwrap();
+
+        assert_eq!(info.name, "Set");
+        assert_eq!(info.generic_params, vec!["T"]);
+
+        // union(other: Set<T>): Set<T>
+        let union_method = &info.methods["union"];
+        assert_eq!(union_method.params, vec![
+            TypeSig::Generic("Set".to_string(), vec![TypeSig::GenericParam(0)])
+        ]);
+        assert_eq!(union_method.return_type,
+            TypeSig::Generic("Set".to_string(), vec![TypeSig::GenericParam(0)])
+        );
+    }
+
+    #[test]
+    fn test_extract_all_builtin_sources() {
+        // Verify all builtin sources parse and extract successfully
+        for &(type_name, source) in BUILTIN_NATIVE_SOURCES.iter().chain(BUILTIN_CLASS_SOURCES.iter()) {
+            let info = extract_native_type_info(source);
+            assert!(info.is_some(), "Failed to extract type info from {}", type_name);
+        }
+    }
+
+    #[test]
+    fn test_resolve_method_type_map() {
+        let mut type_ctx = TypeContext::new();
+        let registry = TypeRegistry::new(&type_ctx);
+
+        let str_id = type_ctx.string_type();
+        let num_id = type_ctx.number_type();
+
+        // Map<string, number>.get(key: string) -> number | null
+        let get_type = registry.resolve_method_type("Map", "get", &[str_id, num_id], &mut type_ctx);
+        assert!(get_type.is_some(), "Map.get should resolve");
+
+        // Map<string, number>.keys() -> string[]
+        let keys_type = registry.resolve_method_type("Map", "keys", &[str_id, num_id], &mut type_ctx);
+        assert!(keys_type.is_some(), "Map.keys should resolve");
+
+        // Map<string, number>.set(key: string, value: number) -> void
+        let set_type = registry.resolve_method_type("Map", "set", &[str_id, num_id], &mut type_ctx);
+        assert!(set_type.is_some(), "Map.set should resolve");
+
+        // Map<string, number>.entries() -> [string, number][]
+        let entries_type = registry.resolve_method_type("Map", "entries", &[str_id, num_id], &mut type_ctx);
+        assert!(entries_type.is_some(), "Map.entries should resolve");
+    }
+
+    #[test]
+    fn test_resolve_method_type_channel() {
+        let mut type_ctx = TypeContext::new();
+        let registry = TypeRegistry::new(&type_ctx);
+
+        let str_id = type_ctx.string_type();
+
+        // Channel<string>.send(value: string) -> void
+        let send_type = registry.resolve_method_type("Channel", "send", &[str_id], &mut type_ctx);
+        assert!(send_type.is_some(), "Channel.send should resolve");
+
+        // Channel<string>.tryReceive() -> string | null
+        let try_recv = registry.resolve_method_type("Channel", "tryReceive", &[str_id], &mut type_ctx);
+        assert!(try_recv.is_some(), "Channel.tryReceive should resolve");
+    }
+
+    #[test]
+    fn test_resolve_method_type_set_union() {
+        let mut type_ctx = TypeContext::new();
+        let registry = TypeRegistry::new(&type_ctx);
+
+        let num_id = type_ctx.number_type();
+
+        // Set<number>.union(other: Set<number>) -> Set<number>
+        let union_type = registry.resolve_method_type("Set", "union", &[num_id], &mut type_ctx);
+        assert!(union_type.is_some(), "Set.union should resolve");
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_returns_none() {
+        let mut type_ctx = TypeContext::new();
+        let registry = TypeRegistry::new(&type_ctx);
+
+        assert!(registry.resolve_method_type("Map", "nonexistent", &[], &mut type_ctx).is_none());
+        assert!(registry.resolve_method_type("NonexistentType", "get", &[], &mut type_ctx).is_none());
+    }
+
+    #[test]
+    fn test_registry_has_type_info() {
+        let type_ctx = TypeContext::new();
+        let registry = TypeRegistry::new(&type_ctx);
+
+        // All builtin types should have type info
+        assert!(registry.native_type_info("Map").is_some());
+        assert!(registry.native_type_info("Set").is_some());
+        assert!(registry.native_type_info("Channel").is_some());
+        assert!(registry.native_type_info("Buffer").is_some());
+        assert!(registry.native_type_info("Date").is_some());
+        assert!(registry.native_type_info("Mutex").is_some());
+        assert!(registry.native_type_info("Task").is_some());
+        assert!(registry.native_type_info("string").is_some());
+        assert!(registry.native_type_info("Array").is_some());
     }
 
     #[test]

@@ -1,5 +1,3 @@
-//@@builtin_primitive
-
 const ARRAY_NEW: number = 0x0116;
 const PUSH: number = 0x0100;
 const POP: number = 0x0101;
@@ -15,6 +13,7 @@ const LAST_INDEX_OF: number = 0x0110;
 const FILL: number = 0x0114;
 const FLAT: number = 0x0115;
 
+//@@builtin_native
 class Array<T> {
     //@@opcode ArrayLen
     length: number;

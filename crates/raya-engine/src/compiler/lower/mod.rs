@@ -460,6 +460,9 @@ pub struct Lowerer<'a> {
     specialized_function_cache: FxHashMap<String, FunctionId>,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
+    /// Class IDs that belong to builtin native types (e.g., string, Buffer, Map, Set).
+    /// Used to distinguish real builtin class_ids from user classes that shadow builtin names.
+    builtin_native_class_ids: FxHashSet<ClassId>,
 }
 
 // ─── Standalone helpers for closure capture pre-scan ───────────────────────
@@ -777,6 +780,7 @@ impl<'a> Lowerer<'a> {
             refcell_registers: FxHashMap::default(),
             loop_captured_vars: FxHashSet::default(),
             refcell_inner_types: FxHashMap::default(),
+            builtin_native_class_ids: FxHashSet::default(),
             variable_class_map: FxHashMap::default(),
             array_element_class_map: FxHashMap::default(),
             current_class: None,
@@ -1229,6 +1233,13 @@ impl<'a> Lowerer<'a> {
 
         // Insert into class_map (last class with a given name wins for name-based lookups)
         self.class_map.insert(class.name.name, class_id);
+
+        // Track builtin native class_ids by checking the actual annotation on the class.
+        // Only classes from builtin .raya files have //@@builtin_native — user classes never do.
+        let has_builtin_native_annotation = class.annotations.iter().any(|a| a.tag == "builtin_native");
+        if has_builtin_native_annotation {
+            self.builtin_native_class_ids.insert(class_id);
+        }
 
         // Store type parameter names for generic classes
         if let Some(ref type_params) = class.type_params {

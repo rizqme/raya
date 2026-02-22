@@ -1,5 +1,4 @@
 // Buffer - Raw binary data buffer
-// This is a built-in type using compiler intrinsics
 
 // Native call IDs (must match raya-core/src/builtin.rs)
 const BUFFER_NEW: number = 0x0700;
@@ -15,66 +14,60 @@ const BUFFER_COPY: number = 0x0709;
 const BUFFER_TO_STRING: number = 0x070A;
 const BUFFER_FROM_STRING: number = 0x070B;
 
+//@@builtin_native
 class Buffer {
-    private bufferPtr: number;
-
     constructor(size: number) {
-        this.bufferPtr = __NATIVE_CALL(BUFFER_NEW, size);
+        __NATIVE_CALL(BUFFER_NEW, size);
     }
 
     // Get buffer length in bytes
     length(): number {
-        return __NATIVE_CALL(BUFFER_LENGTH, this.bufferPtr);
+        return __NATIVE_CALL(BUFFER_LENGTH, this);
     }
 
     // Read a single byte (0-255)
     getByte(index: number): number {
-        return __NATIVE_CALL(BUFFER_GET_BYTE, this.bufferPtr, index);
+        return __NATIVE_CALL(BUFFER_GET_BYTE, this, index);
     }
 
     // Write a single byte (0-255)
     setByte(index: number, value: number): void {
-        __NATIVE_CALL(BUFFER_SET_BYTE, this.bufferPtr, index, value);
+        __NATIVE_CALL(BUFFER_SET_BYTE, this, index, value);
     }
 
     // Read a 32-bit signed integer (little-endian)
     getInt32(index: number): number {
-        return __NATIVE_CALL(BUFFER_GET_INT32, this.bufferPtr, index);
+        return __NATIVE_CALL(BUFFER_GET_INT32, this, index);
     }
 
     // Write a 32-bit signed integer (little-endian)
     setInt32(index: number, value: number): void {
-        __NATIVE_CALL(BUFFER_SET_INT32, this.bufferPtr, index, value);
+        __NATIVE_CALL(BUFFER_SET_INT32, this, index, value);
     }
 
     // Read a 64-bit float (little-endian)
     getFloat64(index: number): number {
-        return __NATIVE_CALL(BUFFER_GET_FLOAT64, this.bufferPtr, index);
+        return __NATIVE_CALL(BUFFER_GET_FLOAT64, this, index);
     }
 
     // Write a 64-bit float (little-endian)
     setFloat64(index: number, value: number): void {
-        __NATIVE_CALL(BUFFER_SET_FLOAT64, this.bufferPtr, index, value);
+        __NATIVE_CALL(BUFFER_SET_FLOAT64, this, index, value);
     }
 
     // Create a new buffer from a slice of this buffer
     slice(start: number, end: number): Buffer {
-        return __NATIVE_CALL(BUFFER_SLICE, this.bufferPtr, start, end);
+        return __NATIVE_CALL(BUFFER_SLICE, this, start, end);
     }
 
     // Copy bytes from this buffer to another
     // Returns number of bytes copied
     copy(target: Buffer, targetStart: number, sourceStart: number, sourceEnd: number): number {
-        return __NATIVE_CALL(BUFFER_COPY, this.bufferPtr, target.bufferPtr, targetStart, sourceStart, sourceEnd);
+        return __NATIVE_CALL(BUFFER_COPY, this, target, targetStart, sourceStart, sourceEnd);
     }
 
     // Convert buffer to string using specified encoding
     toString(encoding: string): string {
-        return __NATIVE_CALL(BUFFER_TO_STRING, this.bufferPtr, encoding);
-    }
-
-    // Convert buffer to UTF-8 string (convenience method)
-    toUtf8String(): string {
-        return __NATIVE_CALL(BUFFER_TO_STRING, this.bufferPtr, "utf8");
+        return __NATIVE_CALL(BUFFER_TO_STRING, this, encoding);
     }
 }

@@ -1,9 +1,8 @@
-//@@builtin_primitive
-
 const TO_FIXED: number = 0x0F00;
 const TO_PRECISION: number = 0x0F01;
 const TO_STRING_RADIX: number = 0x0F02;
 
+//@@builtin_native
 class number {
     toFixed(digits: number): string {
         return __NATIVE_CALL(TO_FIXED, this, digits);

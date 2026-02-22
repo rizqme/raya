@@ -15,7 +15,6 @@ use rustc_hash::FxHashMap;
 // Re-export VM builtin method IDs (canonical source of truth)
 #[allow(unused_imports)]
 use crate::vm::builtin::number as builtin_number;
-use crate::vm::builtin::regexp as builtin_regexp;
 
 impl<'a> Lowerer<'a> {
     /// Lower an expression, returning the register holding its value
@@ -952,16 +951,16 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Skip class dispatch for builtin primitive types — their methods
-            // are dispatched via the type registry (native calls / class methods)
+            // Skip class dispatch for builtin native types — their methods
+            // are dispatched via the type registry (native calls / class methods).
+            // Uses builtin_native_class_ids to distinguish real builtin class_ids from
+            // user classes that shadow builtin names (e.g. `class Buffer { ... }`).
+            // Save the suppressed class_id for container return type propagation
+            // (Map.get() → value_type, Set.values() → array, etc.).
+            let mut suppressed_builtin_cid = None;
             if let Some(cid) = class_id {
-                let is_builtin = self.class_map.iter().any(|(&sym, &id)| {
-                    id == cid && matches!(
-                        self.interner.resolve(sym),
-                        "string" | "number" | "Array" | "RegExp"
-                    )
-                });
-                if is_builtin {
+                if self.builtin_native_class_ids.contains(&cid) {
+                    suppressed_builtin_cid = Some(cid);
                     class_id = None;
                 }
             }
@@ -1148,6 +1147,12 @@ impl<'a> Lowerer<'a> {
                 if let Some(ret_type) = self.type_registry.lookup_return_type(method_id) {
                     dest.ty = TypeId::new(ret_type);
                 }
+            }
+
+            // Propagate container return type for suppressed builtin native types
+            // (e.g., Map.get() → value_type from generic parameter).
+            if let Some(builtin_cid) = suppressed_builtin_cid {
+                self.propagate_container_return_type(&mut dest, builtin_cid, method_name, &member.object);
             }
 
             return dest;
@@ -2305,19 +2310,26 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
 
         if let Expression::Identifier(ident) = &*new_expr.callee {
-            // Handle built-in primitive constructors
+            // Handle native constructors (RegExp, Map, Set, Buffer, etc.)
+            // Only use native dispatch if the current class_id for this name is a
+            // builtin native class_id (not a user-defined shadow).
             let name = self.interner.resolve(ident.name);
-            if name == TC::REGEXP_TYPE_NAME {
-                // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
-                // Use TypeId 8 for RegExp
-                let regexp_dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
+            let is_builtin = self.class_map.get(&ident.name).map_or(true, |&cid| {
+                self.builtin_native_class_ids.contains(&cid)
+            });
+            if is_builtin {
+            if let Some(native_id) = self.type_registry.constructor_native_id(name) {
+                let type_id = self.type_ctx.lookup_named_type(name)
+                    .map(|id| id.as_u32())
+                    .unwrap_or(NUMBER_TYPE_ID);
+                let native_dest = self.alloc_register(TypeId::new(type_id));
                 let mut args = Vec::new();
                 for arg in &new_expr.arguments {
                     args.push(self.lower_expr(arg));
                 }
-                // If flags not provided, pass empty string
-                if args.len() == 1 {
-                    let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type
+                // RegExp special case: default empty flags
+                if name == TC::REGEXP_TYPE_NAME && args.len() == 1 {
+                    let empty_flags = self.alloc_register(TypeId::new(STRING_TYPE_ID));
                     self.emit(IrInstr::Assign {
                         dest: empty_flags.clone(),
                         value: IrValue::Constant(IrConstant::String(String::new())),
@@ -2325,11 +2337,12 @@ impl<'a> Lowerer<'a> {
                     args.push(empty_flags);
                 }
                 self.emit(IrInstr::NativeCall {
-                    dest: Some(regexp_dest.clone()),
-                    native_id: builtin_regexp::NEW,
+                    dest: Some(native_dest.clone()),
+                    native_id,
                     args,
                 });
-                return regexp_dest;
+                return native_dest;
+            }
             }
 
             // Look up class ID from class_map

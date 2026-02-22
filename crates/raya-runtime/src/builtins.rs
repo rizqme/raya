@@ -10,6 +10,8 @@ pub fn builtin_sources() -> &'static str {
         "\n",
         include_str!("../../raya-engine/builtins/error.raya"),
         "\n",
+        // Map, Set, Buffer are //@@builtin_native — still prepended for type
+        // definitions (used by stdlib), but dispatch goes through CallMethod
         include_str!("../../raya-engine/builtins/map.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/set.raya"),

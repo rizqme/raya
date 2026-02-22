@@ -277,6 +277,36 @@ impl<'a> Interpreter<'a> {
                     }
                 }
 
+                // Check for built-in map methods
+                if crate::vm::builtin::is_map_method(method_id) {
+                    match self.call_map_method(task, stack, method_id, arg_count, module) {
+                        Ok(()) => return OpcodeResult::Continue,
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+
+                // Check for built-in set methods
+                if crate::vm::builtin::is_set_method(method_id) {
+                    match self.call_set_method(task, stack, method_id, arg_count, module) {
+                        Ok(()) => return OpcodeResult::Continue,
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+
+                // Check for built-in buffer methods
+                if crate::vm::builtin::is_buffer_method(method_id) {
+                    match self.call_buffer_method(task, stack, method_id, arg_count, module) {
+                        Ok(()) => return OpcodeResult::Continue,
+                        Err(e) => return OpcodeResult::Error(e),
+                    }
+                }
+
+                // Check for built-in channel methods (returns OpcodeResult directly
+                // because send/receive can suspend)
+                if crate::vm::builtin::is_channel_method(method_id) {
+                    return self.call_channel_method(task, stack, method_id, arg_count, module);
+                }
+
                 // Fall through to vtable dispatch for user-defined methods
                 let receiver_pos = match stack.depth().checked_sub(arg_count + 1) {
                     Some(pos) => pos,

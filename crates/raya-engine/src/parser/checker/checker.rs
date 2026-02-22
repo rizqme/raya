@@ -2064,11 +2064,12 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
-
-        // Check for built-in Task methods
-        if let Some(crate::parser::types::Type::Task(_)) = &obj_type {
-            if let Some(method_type) = self.get_task_method_type(&property_name) {
+        // Check for built-in Task methods (via registry)
+        if let Some(crate::parser::types::Type::Task(task_ty)) = &obj_type {
+            let result_ty = task_ty.result;
+            if let Some(method_type) = crate::compiler::type_registry::resolve_native_method_type(
+                "Task", &property_name, &[result_ty], self.type_ctx,
+            ) {
                 return method_type;
             }
         }
@@ -2080,26 +2081,33 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Check for built-in Map methods
+        // Check for built-in Map methods (via registry)
         if let Some(crate::parser::types::Type::Map(map_ty)) = &obj_type {
-            if let Some(method_type) = self.get_map_method_type(&property_name, map_ty.key, map_ty.value) {
+            let key_ty = map_ty.key;
+            let value_ty = map_ty.value;
+            if let Some(method_type) = crate::compiler::type_registry::resolve_native_method_type(
+                "Map", &property_name, &[key_ty, value_ty], self.type_ctx,
+            ) {
                 return method_type;
             }
         }
 
-        // Check for built-in Set methods
+        // Check for built-in Set methods (via registry)
         if let Some(crate::parser::types::Type::Set(set_ty)) = &obj_type {
-            if let Some(method_type) = self.get_set_method_type(&property_name, set_ty.element) {
+            let elem_ty = set_ty.element;
+            if let Some(method_type) = crate::compiler::type_registry::resolve_native_method_type(
+                "Set", &property_name, &[elem_ty], self.type_ctx,
+            ) {
                 return method_type;
             }
         }
 
-        // Note: Buffer and Date methods are now resolved via normal class method lookup
-        // from their respective .raya file definitions
-
-        // Check for built-in Channel methods
+        // Check for built-in Channel methods (via registry)
         if let Some(crate::parser::types::Type::Channel(chan_ty)) = &obj_type {
-            if let Some(method_type) = self.get_channel_method_type(&property_name, chan_ty.message) {
+            let msg_ty = chan_ty.message;
+            if let Some(method_type) = crate::compiler::type_registry::resolve_native_method_type(
+                "Channel", &property_name, &[msg_ty], self.type_ctx,
+            ) {
                 return method_type;
             }
         }
@@ -2501,20 +2509,6 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    // Note: Mutex methods are now resolved from mutex.raya class definition
-    // (get_mutex_method_type removed - no longer needed)
-
-    /// Get the type of a built-in Task method
-    fn get_task_method_type(&mut self, method_name: &str) -> Option<TypeId> {
-        let void_ty = self.type_ctx.void_type();
-
-        match method_name {
-            // cancel() -> void
-            "cancel" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            _ => None,
-        }
-    }
-
     /// Get the type of a built-in RegExp method
     fn get_regexp_method_type(&mut self, method_name: &str) -> Option<TypeId> {
         let string_ty = self.type_ctx.string_type();
@@ -2563,134 +2557,6 @@ impl<'a> TypeChecker<'a> {
             "dotAll" => Some(boolean_ty),
             // unicode property -> boolean
             "unicode" => Some(boolean_ty),
-            _ => None,
-        }
-    }
-
-    /// Get the type of a built-in Map method
-    fn get_map_method_type(&mut self, method_name: &str, key_ty: TypeId, value_ty: TypeId) -> Option<TypeId> {
-        let number_ty = self.type_ctx.number_type();
-        let boolean_ty = self.type_ctx.boolean_type();
-        let void_ty = self.type_ctx.void_type();
-        let null_ty = self.type_ctx.null_type();
-
-        match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
-            // get(key: K) -> V | null
-            "get" => {
-                let result_ty = self.type_ctx.union_type(vec![value_ty, null_ty]);
-                Some(self.type_ctx.function_type(vec![key_ty], result_ty, false))
-            }
-            // set(key: K, value: V) -> void
-            "set" => Some(self.type_ctx.function_type(vec![key_ty, value_ty], void_ty, false)),
-            // has(key: K) -> boolean
-            "has" => Some(self.type_ctx.function_type(vec![key_ty], boolean_ty, false)),
-            // delete(key: K) -> boolean
-            "delete" => Some(self.type_ctx.function_type(vec![key_ty], boolean_ty, false)),
-            // clear() -> void
-            "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            // keys() -> Array<K>
-            "keys" => {
-                let array_ty = self.type_ctx.array_type(key_ty);
-                Some(self.type_ctx.function_type(vec![], array_ty, false))
-            }
-            // values() -> Array<V>
-            "values" => {
-                let array_ty = self.type_ctx.array_type(value_ty);
-                Some(self.type_ctx.function_type(vec![], array_ty, false))
-            }
-            // entries() -> Array<[K, V]>
-            "entries" => {
-                let tuple_ty = self.type_ctx.tuple_type(vec![key_ty, value_ty]);
-                let array_ty = self.type_ctx.array_type(tuple_ty);
-                Some(self.type_ctx.function_type(vec![], array_ty, false))
-            }
-            // forEach(fn: (value: V, key: K) => void) -> void
-            "forEach" => {
-                let callback_ty = self.type_ctx.function_type(vec![value_ty, key_ty], void_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
-            }
-            _ => None,
-        }
-    }
-
-    /// Get the type of a built-in Set method
-    fn get_set_method_type(&mut self, method_name: &str, element_ty: TypeId) -> Option<TypeId> {
-        let number_ty = self.type_ctx.number_type();
-        let boolean_ty = self.type_ctx.boolean_type();
-        let void_ty = self.type_ctx.void_type();
-
-        match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
-            // add(value: T) -> void
-            "add" => Some(self.type_ctx.function_type(vec![element_ty], void_ty, false)),
-            // has(value: T) -> boolean
-            "has" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
-            // delete(value: T) -> boolean
-            "delete" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
-            // clear() -> void
-            "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            // values() -> Array<T>
-            "values" => {
-                let array_ty = self.type_ctx.array_type(element_ty);
-                Some(self.type_ctx.function_type(vec![], array_ty, false))
-            }
-            // forEach(fn: (value: T) => void) -> void
-            "forEach" => {
-                let callback_ty = self.type_ctx.function_type(vec![element_ty], void_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
-            }
-            // union(other: Set<T>) -> Set<T>
-            "union" => {
-                let set_ty = self.type_ctx.set_type_with(element_ty);
-                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
-            }
-            // intersection(other: Set<T>) -> Set<T>
-            "intersection" => {
-                let set_ty = self.type_ctx.set_type_with(element_ty);
-                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
-            }
-            // difference(other: Set<T>) -> Set<T>
-            "difference" => {
-                let set_ty = self.type_ctx.set_type_with(element_ty);
-                Some(self.type_ctx.function_type(vec![set_ty], set_ty, false))
-            }
-            _ => None,
-        }
-    }
-
-    // Note: get_buffer_method_type and get_date_method_type removed
-    // Buffer and Date methods are now resolved from their .raya class definitions
-
-    /// Get the type of a built-in Channel method
-    fn get_channel_method_type(&mut self, method_name: &str, message_ty: TypeId) -> Option<TypeId> {
-        let number_ty = self.type_ctx.number_type();
-        let boolean_ty = self.type_ctx.boolean_type();
-        let void_ty = self.type_ctx.void_type();
-        let null_ty = self.type_ctx.null_type();
-
-        match method_name {
-            // send(value: T) -> void
-            "send" => Some(self.type_ctx.function_type(vec![message_ty], void_ty, false)),
-            // receive() -> T
-            "receive" => Some(self.type_ctx.function_type(vec![], message_ty, false)),
-            // trySend(value: T) -> boolean
-            "trySend" => Some(self.type_ctx.function_type(vec![message_ty], boolean_ty, false)),
-            // tryReceive() -> T | null
-            "tryReceive" => {
-                let result_ty = self.type_ctx.union_type(vec![message_ty, null_ty]);
-                Some(self.type_ctx.function_type(vec![], result_ty, false))
-            }
-            // close() -> void
-            "close" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            // isClosed() -> boolean
-            "isClosed" => Some(self.type_ctx.function_type(vec![], boolean_ty, false)),
-            // length() -> number
-            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
-            // capacity() -> number
-            "capacity" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
             _ => None,
         }
     }

@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use rustc_hash::FxHashMap;
 
 use crate::compiler::ir::IrFunction;
-use crate::compiler::type_registry::{BUILTIN_PRIMITIVE_SOURCES, extract_class_method_names};
+use crate::compiler::type_registry::{BUILTIN_NATIVE_SOURCES, extract_class_method_names};
 
 /// Compiled class method IrFunctions, lazily initialized from `.raya` sources.
 static COMPILED_BUILTINS: LazyLock<CompiledBuiltins> =
@@ -26,7 +26,7 @@ impl CompiledBuiltins {
     fn init() -> Self {
         let mut methods = FxHashMap::default();
 
-        for &(type_name, source) in BUILTIN_PRIMITIVE_SOURCES {
+        for &(type_name, source) in BUILTIN_NATIVE_SOURCES {
             // 1. Identify class methods from source
             let class_method_names = extract_class_method_names(source);
             if class_method_names.is_empty() {
@@ -69,7 +69,7 @@ fn compile_and_extract(
     // Save canonical TypeIds before binding — the binder will overwrite named_types
     // with ClassType IDs, but the TypeRegistry dispatch tables need canonical IDs
     let canonical_ids: Vec<(&str, crate::parser::types::TypeId)> =
-        BUILTIN_PRIMITIVE_SOURCES.iter()
+        BUILTIN_NATIVE_SOURCES.iter()
             .filter_map(|&(name, _)| {
                 type_ctx.lookup_named_type(name).map(|id| (name, id))
             })
@@ -81,7 +81,7 @@ fn compile_and_extract(
 
         // Pre-register all builtin primitive type names so cross-references resolve
         // (e.g., string.raya references RegExp, array.raya references string)
-        for &(name, _) in BUILTIN_PRIMITIVE_SOURCES {
+        for &(name, _) in BUILTIN_NATIVE_SOURCES {
             binder.register_external_class(name);
         }
 
