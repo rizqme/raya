@@ -315,6 +315,7 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                         type_annotation: None,
                         optional: false,
                         default_value: None,
+                        is_rest: false,
                         span: ident_span,
                     };
 
@@ -1043,6 +1044,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                 type_annotation: None,
                 optional: false,
                 default_value: None,
+                is_rest: false,
                 span: start_span,
             }];
 
@@ -1421,29 +1423,44 @@ fn parse_arrow_function_body_with_type(
 /// Check if the current position looks like arrow function parameters.
 /// Uses lookahead without consuming tokens.
 /// Arrow params pattern: identifier followed by `:`, `,`, or `)`
+/// Rest parameter pattern: ...identifier followed by `:`, `,`, or `)`
 /// Expression pattern: identifier followed by operators (+, -, *, /, etc.)
 fn looks_like_arrow_params(parser: &Parser) -> bool {
-    // First token must be an identifier
-    if !matches!(parser.current(), Token::Identifier(_)) {
-        return false;
-    }
-
-    // Check what follows the identifier
-    match parser.peek() {
-        // Type annotation - definitely parameters
-        Some(Token::Colon) => true,
-        // Comma - multiple params, definitely parameters
-        Some(Token::Comma) => true,
-        // Closing paren - could be either (x) expr or (x) =>
-        // Need more context - we'll parse as expression and handle single-ident case specially
-        Some(Token::RightParen) => {
-            // Lookahead further: if followed by `:` or `=>`, it's arrow params
-            // We can only look one token ahead, so assume it's expression by default
-            // The expression parsing will handle (x) correctly
+    // Check for rest parameter first: ...identifier
+    if parser.check(&Token::DotDotDot) {
+        // After ... there must be an identifier
+        // We need to look 2 tokens ahead
+        if let Some(Token::Identifier(_)) = parser.peek() {
+            // Check what follows the identifier
+            match parser.peek2() {
+                Some(Token::Colon) => true,
+                Some(Token::Comma) => true,
+                Some(Token::RightParen) => true,
+                _ => false,
+            }
+        } else {
             false
         }
-        // Any operator means it's an expression
-        _ => false,
+    } else if matches!(parser.current(), Token::Identifier(_)) {
+        // Check what follows the identifier
+        match parser.peek() {
+            // Type annotation - definitely parameters
+            Some(Token::Colon) => true,
+            // Comma - multiple params, definitely parameters
+            Some(Token::Comma) => true,
+            // Closing paren - could be either (x) expr or (x) =>
+            // Need more context - we'll parse as expression and handle single-ident case specially
+            Some(Token::RightParen) => {
+                // Lookahead further: if followed by `:` or `=>`, it's arrow params
+                // We can only look one token ahead, so assume it's expression by default
+                // The expression parsing will handle (x) correctly
+                false
+            }
+            // Any operator means it's an expression
+            _ => false,
+        }
+    } else {
+        false
     }
 }
 
@@ -1457,12 +1474,27 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
         guard.check()?;
         let start_span = parser.current_span();
 
+        // Check for rest parameter: ...identifier
+        let is_rest = if parser.check(&Token::DotDotDot) {
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
         // Parameter must start with an identifier
         if let Token::Identifier(name) = parser.current().clone() {
             parser.advance();
 
             // Parse optional marker (param?: Type)
+            // Rest parameters cannot be optional
             let optional = if parser.check(&Token::Question) {
+                if is_rest {
+                    return Err(ParseError::invalid_syntax(
+                        "Rest parameter cannot be optional",
+                        parser.current_span(),
+                    ));
+                }
                 parser.advance();
                 true
             } else {
@@ -1478,7 +1510,14 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
             };
 
             // Optional default value
+            // Rest parameters cannot have default values
             let default_value = if parser.check(&Token::Equal) {
+                if is_rest {
+                    return Err(ParseError::invalid_syntax(
+                        "Rest parameter cannot have a default value",
+                        parser.current_span(),
+                    ));
+                }
                 parser.advance();
                 Some(parse_expression(parser)?)
             } else {
@@ -1495,6 +1534,7 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
                 type_annotation,
                 optional,
                 default_value,
+                is_rest,
                 span: start_span,
             });
 
@@ -1540,6 +1580,14 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
         guard.check()?;
         let start_span = parser.current_span();
 
+        // Check for rest parameter: ...identifier
+        let is_rest = if parser.check(&Token::DotDotDot) {
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
         // Parse parameter decorators (@Inject, @Validate, etc.)
         let decorators = super::stmt::parse_decorators(parser)?;
 
@@ -1548,7 +1596,14 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
             parser.advance();
 
             // Parse optional marker (param?: Type)
+            // Rest parameters cannot be optional
             let optional = if parser.check(&Token::Question) {
+                if is_rest {
+                    return Err(ParseError::invalid_syntax(
+                        "Rest parameter cannot be optional",
+                        parser.current_span(),
+                    ));
+                }
                 parser.advance();
                 true
             } else {
@@ -1563,7 +1618,14 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
             };
 
             // Parse default value if present (e.g., `x: number = 10`)
+            // Rest parameters cannot have default values
             let default_value = if parser.check(&Token::Equal) {
+                if is_rest {
+                    return Err(ParseError::invalid_syntax(
+                        "Rest parameter cannot have a default value",
+                        parser.current_span(),
+                    ));
+                }
                 parser.advance();
                 Some(parse_expression(parser)?)
             } else {
@@ -1580,6 +1642,7 @@ pub(super) fn parse_parameter_list(parser: &mut Parser) -> Result<Vec<Parameter>
                 type_annotation,
                 optional,
                 default_value,
+                is_rest,
                 span: start_span,
             });
         } else {

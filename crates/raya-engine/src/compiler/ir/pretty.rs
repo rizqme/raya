@@ -198,6 +198,12 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreLocal { index, value } => {
             format!("store_local {} = {}", index, value)
         }
+        IrInstr::LoadArgCount { dest } => {
+            format!("{} = load_arg_count", dest)
+        }
+        IrInstr::LoadArgLocal { dest, index } => {
+            format!("{} = load_arg_local {}", dest, index)
+        }
         IrInstr::PopToLocal { index } => {
             format!("pop_to_local {}", index)
         }

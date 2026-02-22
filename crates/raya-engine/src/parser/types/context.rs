@@ -401,6 +401,7 @@ impl TypeContext {
             return_type,
             is_async,
             min_params,
+            rest_param: None,
         }))
     }
 
@@ -411,6 +412,18 @@ impl TypeContext {
             return_type,
             is_async,
             min_params,
+            rest_param: None,
+        }))
+    }
+
+    /// Create a function type with rest parameter
+    pub fn function_type_with_rest(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool, min_params: usize, rest_param: Option<TypeId>) -> TypeId {
+        self.intern(Type::Function(super::ty::FunctionType {
+            params,
+            return_type,
+            is_async,
+            min_params,
+            rest_param,
         }))
     }
 

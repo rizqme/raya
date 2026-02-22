@@ -68,6 +68,15 @@ pub enum BindError {
         /// Location of the required parameter
         span: Span,
     },
+
+    /// Invalid rest parameter
+    #[error("{message}")]
+    InvalidRestParameter {
+        /// Error message
+        message: String,
+        /// Location of the invalid rest parameter
+        span: Span,
+    },
 }
 
 /// Errors that can occur during type checking
@@ -344,6 +353,7 @@ impl BindError {
             BindError::InvalidTypeExpr { span, .. } => *span,
             BindError::InvalidTypeArguments { span, .. } => *span,
             BindError::RequiredAfterOptional { span, .. } => *span,
+            BindError::InvalidRestParameter { span, .. } => *span,
         }
     }
 }

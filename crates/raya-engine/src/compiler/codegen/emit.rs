@@ -19,6 +19,8 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         | Opcode::LoadLocal1
         | Opcode::StoreLocal0
         | Opcode::StoreLocal1
+        | Opcode::GetArgCount
+        | Opcode::LoadArgLocal
         | Opcode::Iadd
         | Opcode::Isub
         | Opcode::Imul

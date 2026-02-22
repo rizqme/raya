@@ -197,6 +197,8 @@ pub struct Parameter {
     pub optional: bool,
     /// Default value for the parameter (e.g., `x: number = 10`)
     pub default_value: Option<Expression>,
+    /// Whether the parameter is a rest parameter (e.g., `...args: string[]`)
+    pub is_rest: bool,
     pub span: Span,
 }
 

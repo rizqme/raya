@@ -179,6 +179,8 @@ fn get_operand_size(opcode: Opcode) -> usize {
         | Opcode::LoadLocal1
         | Opcode::StoreLocal0
         | Opcode::StoreLocal1
+        | Opcode::GetArgCount
+        | Opcode::LoadArgLocal
         | Opcode::Iadd
         | Opcode::Isub
         | Opcode::Imul
@@ -412,8 +414,9 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Swap => (2, 2),
         Opcode::ConstNull | Opcode::ConstTrue | Opcode::ConstFalse => (0, 1),
         Opcode::ConstI32 | Opcode::ConstF64 | Opcode::ConstStr | Opcode::LoadConst => (0, 1),
-        Opcode::LoadLocal | Opcode::LoadLocal0 | Opcode::LoadLocal1 => (0, 1),
+        Opcode::LoadLocal | Opcode::LoadLocal0 | Opcode::LoadLocal1 | Opcode::GetArgCount => (0, 1),
         Opcode::StoreLocal | Opcode::StoreLocal0 | Opcode::StoreLocal1 => (1, 0),
+        Opcode::LoadArgLocal => (1, 1), // Pops index, pushes value
         Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => (2, 1),
         Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => (2, 1),
         Opcode::Ineg | Opcode::Fneg | Opcode::Inot => (1, 1),

@@ -337,6 +337,12 @@ impl Diagnostic {
                     .with_code(ErrorCode("E3006"))
                     .with_primary_label(file_id, *span, "required parameter after optional")
             }
+
+            InvalidRestParameter { message, span } => {
+                Diagnostic::error(format!("Invalid rest parameter: {}", message))
+                    .with_code(ErrorCode("E3017"))
+                    .with_primary_label(file_id, *span, "invalid rest parameter")
+            }
         }
     }
 

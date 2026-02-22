@@ -157,6 +157,18 @@ pub enum IrInstr {
         value: Register,
     },
 
+    /// Load actual argument count at runtime: dest = arg_count
+    LoadArgCount {
+        dest: Register,
+    },
+
+    /// Load argument by dynamic index: dest = locals[dynamic_index]
+    /// Used for rest parameter collection where index is computed at runtime
+    LoadArgLocal {
+        dest: Register,
+        index: Register,
+    },
+
     /// Pop from stack to local variable (for catch parameters)
     /// The VM pushes the exception value before jumping to catch block
     PopToLocal {
@@ -455,6 +467,8 @@ impl IrInstr {
             | IrInstr::BinaryOp { dest, .. }
             | IrInstr::UnaryOp { dest, .. }
             | IrInstr::LoadLocal { dest, .. }
+            | IrInstr::LoadArgCount { dest, .. }
+            | IrInstr::LoadArgLocal { dest, .. }
             | IrInstr::LoadGlobal { dest, .. }
             | IrInstr::LoadField { dest, .. }
             | IrInstr::JsonLoadProperty { dest, .. }

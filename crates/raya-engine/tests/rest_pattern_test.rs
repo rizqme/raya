@@ -129,23 +129,21 @@ fn test_parse_rest_pattern_object_only() {
 fn test_parse_rest_parameter() {
     let source = "function sum(...nums: number[]): number { return 0; }";
     let parser = Parser::new(source).unwrap();
-    let (module, _interner) = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
             // Should have one rest parameter
             assert_eq!(func.params.len(), 1);
+            // Check is_rest flag
+            assert!(func.params[0].is_rest);
+            // Pattern should be identifier (not Pattern::Rest)
             match &func.params[0].pattern {
-                Pattern::Rest(rest) => {
-                    match rest.argument.as_ref() {
-                        Pattern::Identifier(id) => {
-                            assert!(_interner.resolve(id.name) == "nums");
-                        }
-                        _ => panic!("Expected identifier in rest pattern"),
-                    }
+                Pattern::Identifier(id) => {
+                    assert!(interner.resolve(id.name) == "nums");
                 }
-                _ => panic!("Expected rest pattern"),
+                _ => panic!("Expected identifier pattern for rest parameter"),
             }
         }
         _ => panic!("Expected function declaration"),
@@ -156,22 +154,28 @@ fn test_parse_rest_parameter() {
 fn test_parse_rest_parameter_with_other_params() {
     let source = "function log(prefix: string, ...args: string[]): void {}";
     let parser = Parser::new(source).unwrap();
-    let (module, _interner) = parser.parse().unwrap();
+    let (module, interner) = parser.parse().unwrap();
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
         Statement::FunctionDecl(func) => {
             // Should have two parameters
             assert_eq!(func.params.len(), 2);
-            // First should be identifier pattern
+            // First should NOT be rest
+            assert!(!func.params[0].is_rest);
             match &func.params[0].pattern {
-                Pattern::Identifier(_) => {}
+                Pattern::Identifier(id) => {
+                    assert!(interner.resolve(id.name) == "prefix");
+                }
                 _ => panic!("Expected identifier pattern for first param"),
             }
-            // Second should be rest pattern
+            // Second should be rest parameter
+            assert!(func.params[1].is_rest);
             match &func.params[1].pattern {
-                Pattern::Rest(_) => {}
-                _ => panic!("Expected rest pattern for second param"),
+                Pattern::Identifier(id) => {
+                    assert!(interner.resolve(id.name) == "args");
+                }
+                _ => panic!("Expected identifier pattern for second param"),
             }
         }
         _ => panic!("Expected function declaration"),

@@ -8,13 +8,13 @@ mod expr;
 mod stmt;
 
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, ClassId, FunctionId, IrClass, IrConstant, IrField, IrFunction,
+    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrClass, IrConstant, IrField, IrFunction,
     IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
     TypeAliasId,
 };
 use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
 use crate::parser::token::Span;
-use crate::parser::{Interner, Symbol, TypeContext, TypeId};
+use crate::parser::{Interner, Symbol, TypeContext, TypeId, Type};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
@@ -36,6 +36,7 @@ pub(super) const MAP_TYPE_ID: u32 = TypeContext::MAP_TYPE_ID;
 pub(super) const SET_TYPE_ID: u32 = TypeContext::SET_TYPE_ID;
 pub(super) const JSON_TYPE_ID: u32 = TypeContext::JSON_TYPE_ID;
 pub(super) const INT_TYPE_ID: u32 = TypeContext::INT_TYPE_ID;
+pub(super) const BOOL_TYPE_ID: u32 = TypeContext::BOOLEAN_TYPE_ID;
 pub(super) const ARRAY_TYPE_ID: u32 = TypeContext::ARRAY_TYPE_ID;
 
 /// Collects identifiers referenced in a function body that match module-level variable names.
@@ -1608,9 +1609,29 @@ impl<'a> Lowerer<'a> {
         // Get function name
         let name = self.interner.resolve(func.name.name);
 
-        // Create parameter registers
+        // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
+        let mut rest_param_info = None;
+        let mut fixed_param_count = 0;
+
         for param in &func.params {
+            // Skip rest parameters - they're handled separately
+            if param.is_rest {
+                // Extract rest parameter info for later processing
+                if let Pattern::Identifier(ident) = &param.pattern {
+                    let ty = param
+                        .type_annotation
+                        .as_ref()
+                        .map(|t| self.resolve_type_annotation(t))
+                        .unwrap_or(UNRESOLVED);
+
+                    rest_param_info = Some((ident.name.clone(), ty));
+                }
+                continue;
+            }
+
+            fixed_param_count += 1;
+
             let ty = param
                 .type_annotation
                 .as_ref()
@@ -1641,7 +1662,7 @@ impl<'a> Lowerer<'a> {
             .map(|t| self.resolve_type_annotation(t))
             .unwrap_or(UNRESOLVED);
 
-        // Create function
+        // Create function with fixed parameter count only
         let mut ir_func = IrFunction::new(name, params, return_ty);
         if self.emit_sourcemap {
             ir_func.source_span = func.span;
@@ -1653,6 +1674,11 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+        // Emit rest array collection code if present
+        if let Some((rest_name, rest_ty)) = rest_param_info {
+            self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+        }
 
         // Emit null-check + default-value for parameters with defaults
         self.emit_default_params(&func.params);
@@ -1871,6 +1897,8 @@ impl<'a> Lowerer<'a> {
 
                     // Create parameter registers
                     let mut params = Vec::new();
+                    let mut rest_param_info = None;
+                    let mut fixed_param_count = 0;
 
                     if method.is_static {
                         // Static method - no 'this' parameter
@@ -1887,10 +1915,27 @@ impl<'a> Lowerer<'a> {
                         params.push(this_reg.clone());
                         self.this_register = Some(this_reg);
                         self.next_local = 1; // Explicit parameters start at slot 1
+                        fixed_param_count = 1; // 'this' counts as a fixed parameter
                     }
 
-                    // Add explicit parameters
+                    // Add explicit parameters (excluding rest parameters)
                     for param in &method.params {
+                        // Skip rest parameters - they're handled separately
+                        if param.is_rest {
+                            // Extract rest parameter info for later processing
+                            if let Pattern::Identifier(ident) = &param.pattern {
+                                let ty = param
+                                    .type_annotation
+                                    .as_ref()
+                                    .map(|t| self.resolve_type_annotation(t))
+                                    .unwrap_or(TypeId::new(ARRAY_TYPE_ID));
+                                rest_param_info = Some((ident.name.clone(), ty));
+                            }
+                            continue;
+                        }
+
+                        fixed_param_count += 1;
+
                         let ty = param
                             .type_annotation
                             .as_ref()
@@ -1931,6 +1976,11 @@ impl<'a> Lowerer<'a> {
                     self.current_block = entry_block;
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+                    // Emit rest array collection code if present
+                    if let Some((rest_name, rest_ty)) = rest_param_info {
+                        self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+                    }
 
                     // Pre-scan method body for captured variables
                     {
@@ -2168,6 +2218,140 @@ impl<'a> Lowerer<'a> {
         let id = RegisterId::new(self.next_register);
         self.next_register += 1;
         Register::new(id, ty)
+    }
+
+    /// Emit rest parameter array collection code.
+    /// Collects extra arguments beyond the fixed parameters into an array.
+    /// Must be called after entry block creation and parameter registration,
+    /// before default params (rest params can't have defaults).
+    fn emit_rest_array_collection(&mut self, rest_name: Symbol, rest_array_ty: TypeId, fixed_param_count: usize) {
+        // Extract element type from array type
+        let elem_ty = if let Some(Type::Array(arr_ty)) = self.type_ctx.get(rest_array_ty) {
+            arr_ty.element
+        } else {
+            // Should not happen if type checker worked correctly
+            rest_array_ty // Fallback
+        };
+
+        // Get the actual argument count at runtime
+        let arg_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::LoadArgCount {
+            dest: arg_count_reg.clone(),
+        });
+
+        // Calculate rest count: rest_count = arg_count - fixed_count
+        let fixed_count_val = IrValue::Constant(IrConstant::I32(fixed_param_count as i32));
+        let fixed_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: fixed_count_reg.clone(),
+            value: fixed_count_val,
+        });
+        let rest_count_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: rest_count_reg.clone(),
+            op: BinaryOp::Sub,
+            left: arg_count_reg,
+            right: fixed_count_reg.clone(),
+        });
+
+        // Create array with rest_count size
+        let array_reg = self.alloc_register(rest_array_ty);
+        self.emit(IrInstr::NewArray {
+            dest: array_reg.clone(),
+            len: rest_count_reg.clone(),
+            elem_ty,
+        });
+
+        // Fill array with extra arguments using a loop
+        let loop_idx_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        let init_block = self.alloc_block();
+        let cond_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        // Initialize loop index to 0
+        self.emit(IrInstr::Assign {
+            dest: loop_idx_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(0)),
+        });
+        self.set_terminator(Terminator::Jump(init_block));
+
+        // Condition block: loop_idx < rest_count
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(init_block, "rest.init"));
+        self.current_block = init_block;
+
+        let cond_reg = self.alloc_register(TypeId::new(BOOL_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond_reg.clone(),
+            op: BinaryOp::Less,
+            left: loop_idx_reg.clone(),
+            right: rest_count_reg.clone(),
+        });
+        self.set_terminator(Terminator::Branch {
+            cond: cond_reg,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // Body block: array[loop_idx] = arg[fixed_count + loop_idx]; loop_idx++
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(body_block, "rest.body"));
+        self.current_block = body_block;
+
+        // Calculate argument index: arg_idx = fixed_count + loop_idx
+        let arg_idx_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: arg_idx_reg.clone(),
+            op: BinaryOp::Add,
+            left: fixed_count_reg.clone(),
+            right: loop_idx_reg.clone(),
+        });
+
+        // Load argument from locals by dynamic index
+        let arg_val_reg = self.alloc_register(UNRESOLVED);
+        self.emit(IrInstr::LoadArgLocal {
+            dest: arg_val_reg.clone(),
+            index: arg_idx_reg,
+        });
+
+        // Store in array
+        self.emit(IrInstr::StoreElement {
+            array: array_reg.clone(),
+            index: loop_idx_reg.clone(),
+            value: arg_val_reg,
+        });
+
+        // Increment loop index
+        let one_reg = self.alloc_register(TypeId::new(INT_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: one_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(1)),
+        });
+        self.emit(IrInstr::BinaryOp {
+            dest: loop_idx_reg.clone(),
+            op: BinaryOp::Add,
+            left: loop_idx_reg,
+            right: one_reg,
+        });
+
+        // Jump back to condition
+        self.set_terminator(Terminator::Jump(init_block));
+
+        // Exit block: store array in rest parameter local
+        self.current_function_mut()
+            .add_block(BasicBlock::with_label(exit_block, "rest.exit"));
+        self.current_block = exit_block;
+
+        // Allocate rest parameter local at a high slot to avoid conflicts with arguments
+        // Arguments occupy slots 0..N, so we use slot 100 to ensure no overlap
+        let rest_local_idx = 100u16;
+        self.local_map.insert(rest_name, rest_local_idx);
+        self.emit(IrInstr::StoreLocal {
+            index: rest_local_idx,
+            value: array_reg.clone(),
+        });
+        self.local_registers.insert(rest_local_idx, array_reg);
     }
 
     /// Emit null-check and default-value assignment for function parameters with defaults.

@@ -122,6 +122,8 @@ pub struct ExecutionFrame {
     pub is_closure: bool,
     /// What to push on the caller's stack when the callee returns
     pub return_action: ReturnAction,
+    /// Argument count for the current call (for rest parameters)
+    pub arg_count: usize,
 }
 
 impl OpcodeResult {

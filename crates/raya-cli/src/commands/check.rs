@@ -280,6 +280,9 @@ fn adjust_bind_error(err: &BindError, offset: usize) -> Option<BindError> {
         | BindError::RequiredAfterOptional { span, .. } => {
             if let Some(s) = adjust_span(*span, offset) { *span = s; }
         }
+        | BindError::InvalidRestParameter { span, .. } => {
+            if let Some(s) = adjust_span(*span, offset) { *span = s; }
+        }
     }
     Some(adjusted)
 }

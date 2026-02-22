@@ -120,6 +120,8 @@ pub struct FunctionType {
     pub is_async: bool,
     /// Minimum number of required parameters (params without default values)
     pub min_params: usize,
+    /// Rest parameter type (if present), e.g., Some(string[]) for ...args: string[]
+    pub rest_param: Option<TypeId>,
 }
 
 /// Array type: T[]

@@ -43,6 +43,7 @@ mod type_checker;
 mod narrowing;
 mod inheritance;
 mod scope_analysis;
+mod rest_params;
 
 // TypeScript conformance test adaptations
 mod ts_type_aliases;

@@ -829,6 +829,7 @@ impl Task {
                 locals_base: sf.base_pointer,
                 is_closure: false,
                 return_action: super::super::interpreter::execution::ReturnAction::PushReturnValue,
+                arg_count: 0, // Not available in serialized format (only needed for rest params)
             })
             .collect();
 
@@ -1269,6 +1270,7 @@ mod tests {
                 locals_base: 0,
                 is_closure: false,
                 return_action: ReturnAction::PushReturnValue,
+                arg_count: 0,
             },
             ExecutionFrame {
                 func_id: 1,
@@ -1276,6 +1278,7 @@ mod tests {
                 locals_base: 5,
                 is_closure: true,
                 return_action: ReturnAction::Discard,
+                arg_count: 0,
             },
         ];
         task.save_execution_frames(frames);
@@ -1330,6 +1333,7 @@ mod tests {
             locals_base: 0,
             is_closure: false,
             return_action: ReturnAction::PushReturnValue,
+            arg_count: 0,
         }]);
 
         // Serialize

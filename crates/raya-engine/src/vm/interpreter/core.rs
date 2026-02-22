@@ -250,6 +250,7 @@ impl<'a> Interpreter<'a> {
         let mut ip = task.ip();
         let mut code: &[u8] = &function.code;
         let mut locals_base = task.current_locals_base();
+        let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
 
         // Check if we're resuming from suspension
         if let Some(resume_value) = task.take_resume_value() {
@@ -329,6 +330,7 @@ impl<'a> Interpreter<'a> {
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
                     locals_base = frame.locals_base;
+                    current_arg_count = frame.arg_count; // Restore caller's arg count
 
                     // Push appropriate value onto caller's stack
                     if !matches!(frame.return_action, ReturnAction::Discard) {
@@ -467,6 +469,7 @@ impl<'a> Interpreter<'a> {
                 opcode,
                 locals_base,
                 frames.len(),
+                current_arg_count,
             ) {
                 OpcodeResult::Continue => {
                     // Continue to next instruction
@@ -580,6 +583,7 @@ impl<'a> Interpreter<'a> {
                         locals_base,
                         is_closure,
                         return_action,
+                        arg_count: current_arg_count, // Save caller's arg count
                     });
 
                     // Push call frame for stack traces
@@ -592,19 +596,14 @@ impl<'a> Interpreter<'a> {
 
                     // Set up callee's frame on the same stack
                     // Args are already on the stack from the caller
-                    if arg_count > new_local_count {
-                        // More args than locals - discard extras
-                        for _ in 0..(arg_count - new_local_count) {
-                            let _ = stack_guard.pop();
-                        }
-                        locals_base = stack_guard.depth() - new_local_count;
-                    } else {
-                        locals_base = stack_guard.depth() - arg_count;
-                        // Allocate remaining locals (initialized to null)
-                        for _ in 0..(new_local_count - arg_count) {
-                            if let Err(e) = stack_guard.push(Value::null()) {
-                                return ExecutionResult::Failed(e);
-                            }
+                    locals_base = stack_guard.depth() - arg_count;
+
+                    // Allocate remaining locals (initialized to null)
+                    // Note: If arg_count > new_local_count, we don't discard extras.
+                    // This allows rest parameters to access all arguments via LoadArgLocal.
+                    for _ in 0..(new_local_count.saturating_sub(arg_count)) {
+                        if let Err(e) = stack_guard.push(Value::null()) {
+                            return ExecutionResult::Failed(e);
                         }
                     }
 
@@ -614,6 +613,7 @@ impl<'a> Interpreter<'a> {
                     { self.current_func_id_for_profiling = current_func_id; }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
+                    current_arg_count = arg_count; // Set current arg count to callee's arg count
                     ip = 0;
                 }
                 OpcodeResult::Error(e) => {
@@ -680,6 +680,7 @@ impl<'a> Interpreter<'a> {
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
                             locals_base = frame.locals_base;
+                            current_arg_count = frame.arg_count; // Restore caller's arg count
                             // Continue searching in parent frame
                         } else {
                             // No more frames — unhandled exception
@@ -760,6 +761,7 @@ impl<'a> Interpreter<'a> {
         opcode: Opcode,
         locals_base: usize,
         frame_depth: usize,
+        arg_count: usize, // Current function's arg count (for rest parameters)
     ) -> OpcodeResult {
         match opcode {
             // =========================================================
@@ -783,8 +785,9 @@ impl<'a> Interpreter<'a> {
             Opcode::LoadLocal | Opcode::StoreLocal |
             Opcode::LoadLocal0 | Opcode::LoadLocal1 |
             Opcode::StoreLocal0 | Opcode::StoreLocal1 |
+            Opcode::GetArgCount | Opcode::LoadArgLocal |
             Opcode::LoadGlobal | Opcode::StoreGlobal => {
-                self.exec_variable_ops(stack, ip, code, locals_base, opcode)
+                self.exec_variable_ops(stack, ip, code, locals_base, opcode, arg_count)
             }
 
             // =========================================================

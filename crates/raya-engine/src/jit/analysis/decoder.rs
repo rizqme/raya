@@ -85,6 +85,7 @@ fn decode_operands(
         | Opcode::ConstNull | Opcode::ConstTrue | Opcode::ConstFalse
         | Opcode::LoadLocal0 | Opcode::LoadLocal1
         | Opcode::StoreLocal0 | Opcode::StoreLocal1
+        | Opcode::GetArgCount | Opcode::LoadArgLocal
         | Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv
         | Opcode::Imod | Opcode::Ineg | Opcode::Ipow
         | Opcode::Ishl | Opcode::Ishr | Opcode::Iushr

@@ -289,6 +289,14 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         guard.check()?;
         let start_span = parser.current_span();
 
+        // Check for rest parameter: ...identifier
+        let is_rest = if parser.check(&Token::DotDotDot) {
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
         // Parse parameter decorators (@Inject, @Validate, etc.)
         let decorators = parse_decorators(parser)?;
 
@@ -304,7 +312,14 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         let pattern = super::pattern::parse_pattern(parser)?;
 
         // Parse optional marker (param?: Type)
+        // Rest parameters cannot be optional
         let optional = if parser.check(&Token::Question) {
+            if is_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter cannot be optional",
+                    parser.current_span(),
+                ));
+            }
             parser.advance();
             true
         } else {
@@ -320,7 +335,14 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
         };
 
         // Optional default value (e.g., `x: number = 10`)
+        // Rest parameters cannot have default values
         let default_value = if parser.check(&Token::Equal) {
+            if is_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter cannot have a default value",
+                    parser.current_span(),
+                ));
+            }
             parser.advance();
             Some(super::expr::parse_expression(parser)?)
         } else {
@@ -342,6 +364,7 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
             type_annotation,
             optional,
             default_value,
+            is_rest,
             span,
         });
 

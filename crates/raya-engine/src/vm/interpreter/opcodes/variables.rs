@@ -2,6 +2,7 @@ use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
+use crate::vm::VmError;
 use crate::compiler::Opcode;
 
 impl<'a> Interpreter<'a> {
@@ -12,6 +13,7 @@ impl<'a> Interpreter<'a> {
         code: &[u8],
         locals_base: usize,
         opcode: Opcode,
+        arg_count: usize, // Current function's arg count (for rest parameters)
     ) -> OpcodeResult {
         match opcode {
             Opcode::LoadLocal => {
@@ -83,6 +85,35 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
                 if let Err(e) = stack.set_at(locals_base + 1, value) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::GetArgCount => {
+                // Push the current function's arg_count onto the stack
+                if let Err(e) = stack.push(Value::i32(arg_count as i32)) {
+                    return OpcodeResult::Error(e);
+                }
+                OpcodeResult::Continue
+            }
+
+            Opcode::LoadArgLocal => {
+                // Pop the index from the stack
+                let index_value = match stack.pop() {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                let index = match index_value.as_i32() {
+                    Some(i) if i >= 0 => i as usize,
+                    _ => return OpcodeResult::Error(VmError::RuntimeError("Invalid local index".to_string())),
+                };
+                // Load the local at that index
+                let value = match stack.peek_at(locals_base + index) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+                if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
                 OpcodeResult::Continue

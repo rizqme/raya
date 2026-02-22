@@ -1325,7 +1325,14 @@ impl<'a> TypeChecker<'a> {
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
                 // Check argument count (too many or too few required)
-                if arg_types.len() > func.params.len() || arg_types.len() < func.min_params {
+                // If rest parameter is present, allow unlimited arguments
+                let max_params = if func.rest_param.is_some() {
+                    usize::MAX // Unlimited when rest param present
+                } else {
+                    func.params.len()
+                };
+
+                if arg_types.len() > max_params || arg_types.len() < func.min_params {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
                         min_expected: func.min_params,
@@ -1338,6 +1345,15 @@ impl<'a> TypeChecker<'a> {
                 let is_generic = func.params.iter().any(|&p| contains_type_variables(self.type_ctx, p))
                     || contains_type_variables(self.type_ctx, func.return_type);
 
+                // Extract rest parameter element type if present (before gen_ctx borrow)
+                let rest_elem_ty = func.rest_param.and_then(|rest_ty| {
+                    if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(rest_ty) {
+                        Some(arr_ty.element)
+                    } else {
+                        None
+                    }
+                });
+
                 if is_generic {
                     // Use type unification for generic functions
                     let mut gen_ctx = GenericContext::new(self.type_ctx);
@@ -1347,6 +1363,9 @@ impl<'a> TypeChecker<'a> {
                         if let Some(&param_ty) = func.params.get(i) {
                             // Attempt unification
                             let _ = gen_ctx.unify(param_ty, *arg_ty);
+                        } else if let Some(elem_ty) = rest_elem_ty {
+                            // Check against rest parameter element type
+                            let _ = gen_ctx.unify(elem_ty, *arg_ty);
                         }
                     }
 
@@ -1360,6 +1379,9 @@ impl<'a> TypeChecker<'a> {
                     for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
                         if let Some(&param_ty) = func.params.get(i) {
                             self.check_assignable(*arg_ty, param_ty, *arg_span);
+                        } else if let Some(elem_ty) = rest_elem_ty {
+                            // Check against rest parameter element type
+                            self.check_assignable(*arg_ty, elem_ty, *arg_span);
                         }
                     }
                     func.return_type
@@ -1609,13 +1631,19 @@ impl<'a> TypeChecker<'a> {
                 .as_ref()
                 .map(|t| self.resolve_type_annotation(t))
                 .unwrap_or_else(|| self.type_ctx.unknown_type());
-            param_types.push(param_ty);
 
             // Add parameter to type environment so it can be resolved in body
+            // (rest parameters are included in the type environment for the body)
             if let crate::parser::ast::Pattern::Identifier(ident) = &param.pattern {
                 let name = self.resolve(ident.name);
                 param_names.push(name.clone());
                 self.type_env.set(name, param_ty);
+            }
+
+            // Add to param_types only if it's NOT a rest parameter
+            // (rest parameters are tracked separately in rest_param field)
+            if !param.is_rest {
+                param_types.push(param_ty);
             }
         }
 
@@ -1721,12 +1749,31 @@ impl<'a> TypeChecker<'a> {
         // Restore type environment
         self.type_env = saved_env;
 
+        // Check for rest parameter
+        let rest_param = arrow.params.iter()
+            .find(|p| p.is_rest)
+            .map(|param| {
+                // Get the rest parameter's type (array type)
+                param.type_annotation
+                    .as_ref()
+                    .map(|t| self.resolve_type_annotation(t))
+                    .unwrap_or_else(|| self.type_ctx.unknown_type())
+            });
+
         // Create function type with min_params for optional/default params
-        let min_params = arrow.params.iter()
-            .filter(|p| p.default_value.is_none() && !p.optional)
-            .count();
+        // If there's a rest parameter, min_params is the count of non-rest params
+        let min_params = if rest_param.is_some() {
+            arrow.params.iter()
+                .filter(|p| !p.is_rest && p.default_value.is_none() && !p.optional)
+                .count()
+        } else {
+            arrow.params.iter()
+                .filter(|p| p.default_value.is_none() && !p.optional)
+                .count()
+        };
+
         self.type_ctx
-            .function_type_with_min_params(param_types, return_ty, arrow.is_async, min_params)
+            .function_type_with_rest(param_types, return_ty, arrow.is_async, min_params, rest_param)
     }
 
     /// Check index access

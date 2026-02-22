@@ -67,6 +67,14 @@ pub enum Opcode {
     StoreLocal0 = 0x14,
     /// Store to local variable 1 (optimized, no operand)
     StoreLocal1 = 0x15,
+    /// Get actual argument count from current call frame (no operands)
+    /// Stack: [] -> [arg_count]
+    /// Used for rest parameter collection
+    GetArgCount = 0x16,
+    /// Load local variable at runtime-calculated index (no operands)
+    /// Stack: [index] -> [value]
+    /// Used for rest parameter collection to access arguments by dynamic index
+    LoadArgLocal = 0x17,
 
     // ===== Integer Arithmetic (0x20-0x2F) =====
     /// Integer addition: pop b, pop a, push a + b
@@ -413,6 +421,8 @@ impl Opcode {
             0x13 => Some(Self::LoadLocal1),
             0x14 => Some(Self::StoreLocal0),
             0x15 => Some(Self::StoreLocal1),
+            0x16 => Some(Self::GetArgCount),
+            0x17 => Some(Self::LoadArgLocal),
 
             // Integer arithmetic
             0x20 => Some(Self::Iadd),
@@ -612,6 +622,8 @@ impl Opcode {
             Self::LoadLocal1 => "LOAD_LOCAL_1",
             Self::StoreLocal0 => "STORE_LOCAL_0",
             Self::StoreLocal1 => "STORE_LOCAL_1",
+            Self::GetArgCount => "GET_ARG_COUNT",
+            Self::LoadArgLocal => "LOAD_ARG_LOCAL",
             Self::Iadd => "IADD",
             Self::Isub => "ISUB",
             Self::Imul => "IMUL",
@@ -803,6 +815,8 @@ mod tests {
             Opcode::LoadLocal1,
             Opcode::StoreLocal0,
             Opcode::StoreLocal1,
+            Opcode::GetArgCount,
+            Opcode::LoadArgLocal,
             Opcode::Iadd,
             Opcode::Isub,
             Opcode::Imul,
@@ -912,6 +926,7 @@ mod tests {
             Opcode::ConstI32, Opcode::ConstF64, Opcode::ConstStr, Opcode::LoadConst,
             Opcode::LoadLocal, Opcode::StoreLocal, Opcode::LoadLocal0,
             Opcode::LoadLocal1, Opcode::StoreLocal0, Opcode::StoreLocal1,
+            Opcode::GetArgCount, Opcode::LoadArgLocal,
             Opcode::Iadd, Opcode::Isub, Opcode::Imul, Opcode::Idiv, Opcode::Imod,
             Opcode::Ineg, Opcode::Ipow, Opcode::Ishl, Opcode::Ishr, Opcode::Iushr,
             Opcode::Iand, Opcode::Ior, Opcode::Ixor, Opcode::Inot,

@@ -189,6 +189,24 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::StoreLocal { index, value } => {
                 out.push(SmInstr::StoreLocal { index: *index as u32, src: Self::reg(value) });
             }
+            IrInstr::LoadArgCount { dest } => {
+                // LoadArgCount reads the argument count from the call frame
+                // For AOT, this needs to call a helper to read from the frame
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::GetArgCount,
+                    args: vec![],
+                });
+            }
+            IrInstr::LoadArgLocal { dest, index } => {
+                // LoadArgLocal loads from a dynamic local index
+                // For AOT, this needs to call a helper
+                out.push(SmInstr::CallHelper {
+                    dest: Some(Self::reg(dest)),
+                    helper: HelperCall::LoadArgLocal,
+                    args: vec![Self::reg(index)],
+                });
+            }
             IrInstr::PopToLocal { index } => {
                 // PopToLocal is for catch parameters — load resume value
                 out.push(SmInstr::LoadResumeValue { dest: *index as u32 });

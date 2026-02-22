@@ -2047,9 +2047,28 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.next_local = 0;
 
-        // Create parameter registers
+        // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
+        let mut rest_param_info = None;
+        let mut fixed_param_count = 0;
+
         for param in &arrow.params {
+            // Skip rest parameters - they're handled separately
+            if param.is_rest {
+                // Extract rest parameter info for later processing
+                if let ast::Pattern::Identifier(ident) = &param.pattern {
+                    let ty = param
+                        .type_annotation
+                        .as_ref()
+                        .map(|t| self.resolve_type_annotation(t))
+                        .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+                    rest_param_info = Some((ident.name.clone(), ty));
+                }
+                continue;
+            }
+
+            fixed_param_count += 1;
+
             let ty = param
                 .type_annotation
                 .as_ref()
@@ -2091,6 +2110,11 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        // Emit rest array collection code if present
+        if let Some((rest_name, rest_ty)) = rest_param_info {
+            self.emit_rest_array_collection(rest_name, rest_ty, fixed_param_count);
+        }
 
         // Emit null-check + default-value for parameters with defaults
         self.emit_default_params(&arrow.params);

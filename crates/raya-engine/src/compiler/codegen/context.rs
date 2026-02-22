@@ -571,6 +571,22 @@ impl IrCodeGenerator {
                 self.emit_store_local_index(ctx, *index);
             }
 
+            IrInstr::LoadArgCount { dest } => {
+                // Emit GET_ARG_COUNT opcode to read arg_count from call frame
+                ctx.emit(Opcode::GetArgCount);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
+            IrInstr::LoadArgLocal { dest, index } => {
+                // Load the index register (contains the dynamic local index)
+                self.emit_load_register(ctx, index);
+                // Emit LOAD_ARG_LOCAL opcode to load local at runtime index
+                ctx.emit(Opcode::LoadArgLocal);
+                let slot = ctx.get_or_alloc_slot(dest);
+                self.emit_store_local(ctx, slot);
+            }
+
             IrInstr::LoadGlobal { dest, index } => {
                 ctx.emit(Opcode::LoadGlobal);
                 ctx.emit_u32(*index as u32);

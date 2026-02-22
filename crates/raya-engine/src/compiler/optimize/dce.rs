@@ -178,8 +178,16 @@ impl DeadCodeEliminator {
                     used.insert(arg.id);
                 }
             }
-            IrInstr::LoadLocal { .. } | IrInstr::NewObject { .. } | IrInstr::LoadCaptured { .. } | IrInstr::LoadGlobal { .. } => {
+            IrInstr::LoadLocal { .. }
+            | IrInstr::LoadArgCount { .. }
+            | IrInstr::NewObject { .. }
+            | IrInstr::LoadCaptured { .. }
+            | IrInstr::LoadGlobal { .. } => {
                 // No register uses
+            }
+            IrInstr::LoadArgLocal { index, .. } => {
+                // LoadArgLocal uses the index register
+                used.insert(index.id);
             }
             IrInstr::StoreGlobal { value, .. } => {
                 used.insert(value.id);

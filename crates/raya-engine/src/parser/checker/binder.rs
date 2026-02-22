@@ -1183,7 +1183,31 @@ impl<'a> Binder<'a> {
         // Build function type from parameters and return type
         // Type parameters are now in scope, so we can resolve them in param types
         let mut param_types = Vec::new();
+        let mut rest_param_ty = None;
+
         for param in &func.params {
+            if param.is_rest {
+                // Validate and extract rest parameter type
+                if let Some(ref type_ann) = param.type_annotation {
+                    let param_ty = self.resolve_type_annotation(type_ann)?;
+                    if let Some(Type::Array(_arr_ty)) = self.type_ctx.get(param_ty) {
+                        rest_param_ty = Some(param_ty);
+                    } else {
+                        return Err(BindError::InvalidRestParameter {
+                            message: "Rest parameter type must be an array (e.g., string[] or number[])".to_string(),
+                            span: type_ann.span,
+                        });
+                    }
+                } else {
+                    return Err(BindError::InvalidRestParameter {
+                        message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
+                        span: param.span,
+                    });
+                }
+                // Skip rest parameter from regular params
+                continue;
+            }
+
             let param_ty = match &param.type_annotation {
                 Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
                 None => self.type_ctx.unknown_type(),
@@ -1199,9 +1223,26 @@ impl<'a> Binder<'a> {
         // Validate parameter ordering: required params must come before optional/default params
         self.validate_param_order(&func.params)?;
 
+        // Validate rest parameter is last and only one
+        if let Some(rest_idx) = func.params.iter().position(|p| p.is_rest) {
+            // Check rest is last
+            if rest_idx < func.params.len() - 1 {
+                return Err(BindError::InvalidRestParameter {
+                    message: "Rest parameter must be last".to_string(),
+                    span: func.params[rest_idx].span,
+                });
+            }
+        }
+
         // Count required params (those without default values and not optional)
-        let min_params = func.params.iter().filter(|p| p.default_value.is_none() && !p.optional).count();
-        let func_ty = self.type_ctx.function_type_with_min_params(param_types.clone(), return_ty, func.is_async, min_params);
+        // Exclude rest parameter from count
+        let min_params = func.params.iter()
+            .filter(|p| !p.is_rest)
+            .filter(|p| p.default_value.is_none() && !p.optional)
+            .count();
+
+        // Create function type with rest parameter
+        let func_ty = self.type_ctx.function_type_with_rest(param_types.clone(), return_ty, func.is_async, min_params, rest_param_ty);
 
         // Define function symbol in parent scope (so it can be called recursively)
         // If pre-registered by the pre-pass, update the type instead of re-defining
@@ -1232,17 +1273,39 @@ impl<'a> Binder<'a> {
 
         // Bind parameters in the function scope
         // Note: param types are already resolved above, we use param_types[i]
-        for (i, param) in func.params.iter().enumerate() {
+        // For rest parameters, we use the rest_param_ty
+        let mut non_rest_idx = 0;
+        for param in func.params.iter() {
             // Extract identifier from pattern (simplified)
             let (param_name, param_span) = match &param.pattern {
                 Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
                 _ => continue, // Skip destructuring for now
             };
 
+            // Get the type for this parameter
+            let param_ty = if param.is_rest {
+                // Use the rest parameter type
+                match rest_param_ty {
+                    Some(ty) => ty,
+                    None => self.type_ctx.unknown_type(),
+                }
+            } else {
+                // Use the regular parameter type
+                if non_rest_idx >= param_types.len() {
+                    return Err(BindError::InvalidRestParameter {
+                        message: "Parameter type index out of bounds".to_string(),
+                        span: param.span,
+                    });
+                }
+                let ty = param_types[non_rest_idx];
+                non_rest_idx += 1;
+                ty
+            };
+
             let param_symbol = Symbol {
                 name: param_name,
                 kind: SymbolKind::Variable,
-                ty: param_types[i],
+                ty: param_ty,
                 flags: SymbolFlags {
                     is_exported: false,
                     is_const: false, // function parameters are mutable
@@ -1441,7 +1504,31 @@ impl<'a> Binder<'a> {
 
                     // Create function type for the method
                     let mut params = Vec::new();
+                    let mut rest_param_ty = None;
+
                     for p in &method.params {
+                        if p.is_rest {
+                            // Validate and extract rest parameter type
+                            if let Some(ref type_ann) = p.type_annotation {
+                                let param_ty = self.resolve_type_annotation(type_ann)?;
+                                if let Some(Type::Array(_arr_ty)) = self.type_ctx.get(param_ty) {
+                                    rest_param_ty = Some(param_ty);
+                                } else {
+                                    return Err(BindError::InvalidRestParameter {
+                                        message: "Rest parameter type must be an array (e.g., string[] or number[])".to_string(),
+                                        span: type_ann.span,
+                                    });
+                                }
+                            } else {
+                                return Err(BindError::InvalidRestParameter {
+                                    message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
+                                    span: p.span,
+                                });
+                            }
+                            // Skip rest parameter from regular params
+                            continue;
+                        }
+
                         let param_ty = if let Some(ref ann) = p.type_annotation {
                             self.resolve_type_annotation(ann)?
                         } else {
@@ -1464,11 +1551,27 @@ impl<'a> Binder<'a> {
                     // Validate parameter ordering
                     self.validate_param_order(&method.params)?;
 
-                    let min_params = method.params.iter().filter(|p| p.default_value.is_none() && !p.optional).count();
+                    // Validate rest parameter is last and only one
+                    if let Some(rest_idx) = method.params.iter().position(|p| p.is_rest) {
+                        // Check rest is last
+                        if rest_idx < method.params.len() - 1 {
+                            return Err(BindError::InvalidRestParameter {
+                                message: "Rest parameter must be last".to_string(),
+                                span: method.params[rest_idx].span,
+                            });
+                        }
+                    }
+
+                    // Count required params (excluding rest parameter)
+                    let min_params = method.params.iter()
+                        .filter(|p| !p.is_rest)
+                        .filter(|p| p.default_value.is_none() && !p.optional)
+                        .count();
+
                     if method.is_static {
-                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone(), method.visibility, min_params));
+                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone(), method.visibility, min_params, rest_param_ty));
                     } else {
-                        methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params));
+                        methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params, rest_param_ty));
                     }
                 }
                 ClassMember::Constructor(ctor) => {
@@ -1503,8 +1606,8 @@ impl<'a> Binder<'a> {
         // First pass: create instance method signatures
         let method_sigs: Vec<MethodSignature> = methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params)| {
-                let func_ty = self.type_ctx.function_type_with_min_params(params, return_ty, is_async, min_params);
+            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params, rest_param)| {
+                let func_ty = self.type_ctx.function_type_with_rest(params, return_ty, is_async, min_params, rest_param);
                 MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
             })
             .collect();
@@ -1512,8 +1615,8 @@ impl<'a> Binder<'a> {
         // Create static method signatures
         let static_method_sigs: Vec<MethodSignature> = static_methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params)| {
-                let func_ty = self.type_ctx.function_type_with_min_params(params, return_ty, is_async, min_params);
+            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params, rest_param)| {
+                let func_ty = self.type_ctx.function_type_with_rest(params, return_ty, is_async, min_params, rest_param);
                 MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
             })
             .collect();

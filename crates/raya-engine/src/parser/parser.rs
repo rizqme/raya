@@ -165,6 +165,12 @@ impl Parser {
         self.tokens.get(self.pos + 1).map(|(_, span)| *span)
     }
 
+    /// Peek two tokens ahead (lookahead 2).
+    #[inline(always)]
+    pub fn peek2(&self) -> Option<&Token> {
+        self.tokens.get(self.pos + 2).map(|(tok, _)| tok)
+    }
+
     /// Advance to the next token, returning the current token.
     ///
     /// Note: This clones the token. Consider using current() + advance_without_return() if you don't need the value.

@@ -159,6 +159,13 @@ impl TypeSubstitution {
                 index: *index,
                 value: self.apply_register(value),
             },
+            IrInstr::LoadArgCount { dest } => IrInstr::LoadArgCount {
+                dest: self.apply_register(dest),
+            },
+            IrInstr::LoadArgLocal { dest, index } => IrInstr::LoadArgLocal {
+                dest: self.apply_register(dest),
+                index: self.apply_register(index),
+            },
             IrInstr::LoadGlobal { dest, index } => IrInstr::LoadGlobal {
                 dest: self.apply_register(dest),
                 index: *index,

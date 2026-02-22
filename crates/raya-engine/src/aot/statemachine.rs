@@ -307,6 +307,8 @@ pub enum HelperCall {
     LoadStringConstant,
     LoadI32Constant,
     LoadF64Constant,
+    GetArgCount,
+    LoadArgLocal,
 
     // ===== Compound operations (lowering emits specific code) =====
 

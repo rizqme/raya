@@ -105,6 +105,7 @@ fn test_function_decl_simple() {
                 }),
                 optional: false,
                 default_value: None,
+                is_rest: false,
                 span: Span::new(13, 22, 1, 14),
             },
             Parameter {
@@ -117,6 +118,7 @@ fn test_function_decl_simple() {
                 }),
                 optional: false,
                 default_value: None,
+                is_rest: false,
                 span: Span::new(24, 33, 1, 25),
             },
         ],
