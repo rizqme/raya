@@ -38,7 +38,7 @@ class string {
         return __NATIVE_CALL<int>(CHAR_CODE_AT, this, index);
     }
 
-    substring(start: number, end: number): string {
+    substring(start: number, end?: number): string {
         return __NATIVE_CALL<string>(SUBSTRING, this, start, end);
     }
 
@@ -90,15 +90,15 @@ class string {
         return __NATIVE_CALL<string>(REPLACE, this, search, replacement);
     }
 
-    repeat(count: number): string {
+    repeat(count: number = 1): string {
         return __NATIVE_CALL<string>(REPEAT, this, count);
     }
 
-    padStart(length: number, pad: string): string {
+    padStart(length: number, pad: string = " "): string {
         return __NATIVE_CALL<string>(PAD_START, this, length, pad);
     }
 
-    padEnd(length: number, pad: string): string {
+    padEnd(length: number, pad: string = " "): string {
         return __NATIVE_CALL<string>(PAD_END, this, length, pad);
     }
 
@@ -114,7 +114,7 @@ class string {
         return __NATIVE_CALL<int>(SEARCH, this, pattern);
     }
 
-    slice(start: number, end: number): string {
+    slice(start: number, end?: number): string {
         return __NATIVE_CALL<string>(SLICE, this, start, end);
     }
 

@@ -183,19 +183,28 @@ impl<'a> Interpreter<'a> {
                             format!("{:.prec$}", value, prec = digits)
                         }
                         0x0F01 => {
-                            // toPrecision(prec)
-                            let prec = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
-                            if value == 0.0 {
-                                format!("{:.prec$}", 0.0, prec = prec - 1)
-                            } else {
-                                let magnitude = value.abs().log10().floor() as i32;
-                                if prec as i32 <= magnitude + 1 {
-                                    let shift = 10f64.powi(magnitude + 1 - prec as i32);
-                                    let rounded = (value / shift).round() * shift;
-                                    format!("{}", rounded as i64)
+                            // toPrecision(prec?)
+                            if native_args.get(1).is_none() {
+                                // No precision argument: return plain toString()
+                                if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                    format!("{}", value as i64)
                                 } else {
-                                    let decimal_places = (prec as i32 - magnitude - 1) as usize;
-                                    format!("{:.prec$}", value, prec = decimal_places)
+                                    format!("{}", value)
+                                }
+                            } else {
+                                let prec = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                                if value == 0.0 {
+                                    format!("{:.prec$}", 0.0, prec = prec - 1)
+                                } else {
+                                    let magnitude = value.abs().log10().floor() as i32;
+                                    if prec as i32 <= magnitude + 1 {
+                                        let shift = 10f64.powi(magnitude + 1 - prec as i32);
+                                        let rounded = (value / shift).round() * shift;
+                                        format!("{}", rounded as i64)
+                                    } else {
+                                        let decimal_places = (prec as i32 - magnitude - 1) as usize;
+                                        format!("{:.prec$}", value, prec = decimal_places)
+                                    }
                                 }
                             }
                         }

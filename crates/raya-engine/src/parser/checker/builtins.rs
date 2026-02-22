@@ -8,6 +8,7 @@
 pub struct BuiltinMethod {
     pub name: String,
     pub params: Vec<(String, String)>, // (name, type)
+    pub min_params: usize, // Minimum required parameters (for optional params)
     pub return_type: String,
     pub is_static: bool,
     pub type_params: Vec<String>, // Method-level type parameters
@@ -92,9 +93,11 @@ impl BuiltinClass {
     }
 
     pub fn with_method(mut self, name: &str, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+        let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
             params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            min_params,
             return_type: return_type.to_string(),
             is_static: false,
             type_params: Vec::new(),
@@ -103,9 +106,11 @@ impl BuiltinClass {
     }
 
     pub fn with_method_type_params(mut self, name: &str, type_params: Vec<&str>, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+        let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
             params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            min_params,
             return_type: return_type.to_string(),
             is_static: false,
             type_params: type_params.into_iter().map(String::from).collect(),
@@ -114,9 +119,11 @@ impl BuiltinClass {
     }
 
     pub fn with_static_method(mut self, name: &str, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+        let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
             params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            min_params,
             return_type: return_type.to_string(),
             is_static: true,
             type_params: Vec::new(),

@@ -32,13 +32,13 @@ export class Buffer {
     setFloat64(index: number, value: number): void;
 
     /** Create a new buffer from a slice of this buffer */
-    slice(start: number, end: number): Buffer;
+    slice(start: number, end?: number): Buffer;
 
     /** Copy bytes from this buffer to another, returns number of bytes copied */
-    copy(target: Buffer, targetStart: number, sourceStart: number, sourceEnd: number): number;
+    copy(target: Buffer, targetStart?: number, sourceStart?: number, sourceEnd?: number): number;
 
     /** Convert buffer to string using specified encoding */
-    toString(encoding: string): string;
+    toString(encoding?: string): string;
 
     /** Convert buffer to UTF-8 string */
     toUtf8String(): string;

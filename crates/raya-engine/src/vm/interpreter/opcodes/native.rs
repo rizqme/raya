@@ -381,27 +381,55 @@ impl<'a> Interpreter<'a> {
                     id if id == buffer::SLICE => {
                         let handle = args[0].as_u64().unwrap_or(0);
                         let start = args[1].as_i32().unwrap_or(0) as usize;
-                        let end = args[2].as_i32().unwrap_or(0) as usize;
                         let buf_ptr = handle as *const Buffer;
                         if buf_ptr.is_null() {
                             return OpcodeResult::Error(VmError::RuntimeError("Invalid buffer handle".to_string()));
                         }
                         let buf = unsafe { &*buf_ptr };
+                        // end is optional - if not provided, use buffer length
+                        let end = if arg_count >= 3 {
+                            args[2].as_i32().unwrap_or(buf.length() as i32) as usize
+                        } else {
+                            buf.length()
+                        };
                         let sliced = buf.slice(start, end);
-                        let gc_ptr = self.gc.lock().allocate(sliced);
-                        let new_handle = gc_ptr.as_ptr() as u64;
-                        if let Err(e) = stack.push(Value::u64(new_handle)) {
+                        let new_handle = {
+                            let gc_ptr = self.gc.lock().allocate(sliced);
+                            gc_ptr.as_ptr() as u64
+                        };
+                        
+                        // Create Buffer object instance wrapping the handle
+                        let buffer_class_id = {
+                            let classes = self.classes.read();
+                            match classes.get_class_by_name("Buffer") {
+                                Some(class) => class.id,
+                                None => {
+                                    return OpcodeResult::Error(VmError::RuntimeError(
+                                        "Buffer class not found".to_string(),
+                                    ));
+                                }
+                            }
+                        };
+                        
+                        let mut obj = Object::new(buffer_class_id, 1);
+                        if let Err(e) = obj.set_field(0, Value::u64(new_handle)) {
+                            return OpcodeResult::Error(VmError::RuntimeError(e));
+                        }
+                        
+                        let obj_ptr = self.gc.lock().allocate(obj);
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+                        };
+                        
+                        if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue
                     }
                     id if id == buffer::COPY => {
-                        // copy(srcHandle, targetHandle, targetStart, sourceStart, sourceEnd)
+                        // copy(srcHandle, targetHandle, targetStart?, sourceStart?, sourceEnd?)
                         let src_handle = args[0].as_u64().unwrap_or(0);
                         let tgt_handle = args[1].as_u64().unwrap_or(0);
-                        let tgt_start = args[2].as_i32().unwrap_or(0) as usize;
-                        let src_start = args[3].as_i32().unwrap_or(0) as usize;
-                        let src_end = args[4].as_i32().unwrap_or(0) as usize;
                         let src_ptr = src_handle as *const Buffer;
                         let tgt_ptr = tgt_handle as *mut Buffer;
                         if src_ptr.is_null() || tgt_ptr.is_null() {
@@ -409,6 +437,24 @@ impl<'a> Interpreter<'a> {
                         }
                         let src = unsafe { &*src_ptr };
                         let tgt = unsafe { &mut *tgt_ptr };
+                        
+                        // Optional parameters with defaults
+                        let tgt_start = if arg_count >= 3 {
+                            args[2].as_i32().unwrap_or(0) as usize
+                        } else {
+                            0
+                        };
+                        let src_start = if arg_count >= 4 {
+                            args[3].as_i32().unwrap_or(0) as usize
+                        } else {
+                            0
+                        };
+                        let src_end = if arg_count >= 5 {
+                            args[4].as_i32().unwrap_or(src.data.len() as i32) as usize
+                        } else {
+                            src.data.len()
+                        };
+                        
                         let src_end = src_end.min(src.data.len());
                         let src_start = src_start.min(src_end);
                         let bytes = &src.data[src_start..src_end];
@@ -836,21 +882,30 @@ impl<'a> Interpreter<'a> {
                         OpcodeResult::Continue
                     }
                     0x0F01u16 => {
-                        // NUMBER_TO_PRECISION: format with N significant digits
+                        // NUMBER_TO_PRECISION: format with N significant digits (or plain if no arg)
                         let value = args[0].as_f64()
                             .or_else(|| args[0].as_i32().map(|v| v as f64))
                             .unwrap_or(0.0);
-                        let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
-                        let formatted = if value == 0.0 {
-                            format!("{:.prec$}", 0.0, prec = prec - 1)
-                        } else {
-                            let magnitude = value.abs().log10().floor() as i32;
-                            let decimal_places = if prec as i32 > magnitude + 1 {
-                                (prec as i32 - magnitude - 1) as usize
+                        let formatted = if args.get(1).is_none() {
+                            // No precision argument: return plain toString()
+                            if value.fract() == 0.0 && value.abs() < i64::MAX as f64 {
+                                format!("{}", value as i64)
                             } else {
-                                0
-                            };
-                            format!("{:.prec$}", value, prec = decimal_places)
+                                format!("{}", value)
+                            }
+                        } else {
+                            let prec = args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                            if value == 0.0 {
+                                format!("{:.prec$}", 0.0, prec = prec - 1)
+                            } else {
+                                let magnitude = value.abs().log10().floor() as i32;
+                                let decimal_places = if prec as i32 > magnitude + 1 {
+                                    (prec as i32 - magnitude - 1) as usize
+                                } else {
+                                    0
+                                };
+                                format!("{:.prec$}", value, prec = decimal_places)
+                            }
                         };
                         let s = RayaString::new(formatted);
                         let gc_ptr = self.gc.lock().allocate(s);

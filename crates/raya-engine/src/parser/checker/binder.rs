@@ -630,7 +630,7 @@ impl<'a> Binder<'a> {
                     .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
                     .collect();
                 let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
-                let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
+                let func_ty = self.type_ctx.function_type_with_min_params(param_types, return_ty, false, m.min_params);
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,
@@ -652,7 +652,7 @@ impl<'a> Binder<'a> {
                     .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
                     .collect();
                 let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
-                let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
+                let func_ty = self.type_ctx.function_type_with_min_params(param_types, return_ty, false, m.min_params);
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,

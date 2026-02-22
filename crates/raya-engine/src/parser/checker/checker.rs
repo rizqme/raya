@@ -2141,8 +2141,17 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Note: Buffer and Date methods are now resolved via normal class method lookup
-        // from their respective .raya file definitions
+        // Check for built-in Buffer methods
+        if let Some(crate::parser::types::Type::Class(class)) = &obj_type {
+            if class.name == "Buffer" {
+                if let Some(method_type) = self.get_buffer_method_type(&property_name, object_ty) {
+                    return method_type;
+                }
+            }
+        }
+
+        // Note: Date methods are now resolved via normal class method lookup
+        // from date.raya file definition
 
         // Check for built-in Channel methods
         if let Some(crate::parser::types::Type::Channel(chan_ty)) = &obj_type {
@@ -2375,8 +2384,8 @@ impl<'a> TypeChecker<'a> {
             "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
             // includes(value: T) -> boolean
             "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
-            // slice(start: number, end: number) -> Array<T>
-            "slice" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], array_ty, false)),
+            // slice(start: number, end?: number) -> Array<T>
+            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], array_ty, false, 1)),
             // concat(other: Array<T>) -> Array<T>
             "concat" => Some(self.type_ctx.function_type(vec![array_ty], array_ty, false)),
             // join(separator: string) -> string
@@ -2491,8 +2500,8 @@ impl<'a> TypeChecker<'a> {
                 let search_ty = self.type_ctx.union_type(vec![string_ty, regexp_ty]);
                 Some(self.type_ctx.function_type(vec![search_ty, string_ty], string_ty, false))
             }
-            // repeat(count: number) -> string
-            "repeat" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            // repeat(count: number = 1) -> string
+            "repeat" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             // charCodeAt(index: number) -> number
             "charCodeAt" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
             // lastIndexOf(searchStr: string, fromIndex?: number) -> number
@@ -2547,11 +2556,11 @@ impl<'a> TypeChecker<'a> {
         let string_ty = self.type_ctx.string_type();
 
         match method_name {
-            // toFixed(digits: number) -> string
-            "toFixed" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toPrecision(precision: number) -> string
-            "toPrecision" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
-            // toString(radix?: number) -> string
+            // toFixed(digits: number = 0) -> string
+            "toFixed" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            // toPrecision(precision?: number) -> string
+            "toPrecision" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            // toString(radix: number = 10) -> string
             "toString" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
             _ => None,
         }
@@ -2717,8 +2726,39 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    // Note: get_buffer_method_type and get_date_method_type removed
-    // Buffer and Date methods are now resolved from their .raya class definitions
+    /// Get the type of a built-in Buffer method
+    fn get_buffer_method_type(&mut self, method_name: &str, buffer_ty: TypeId) -> Option<TypeId> {
+        let number_ty = self.type_ctx.number_type();
+        let string_ty = self.type_ctx.string_type();
+        let void_ty = self.type_ctx.void_type();
+
+        match method_name {
+            // length() -> number
+            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // getByte(index: number) -> number
+            "getByte" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setByte(index: number, value: number) -> void
+            "setByte" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // getInt32(index: number) -> number
+            "getInt32" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setInt32(index: number, value: number) -> void
+            "setInt32" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // getFloat64(index: number) -> number
+            "getFloat64" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            // setFloat64(index: number, value: number) -> void
+            "setFloat64" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            // slice(start: number, end?: number) -> Buffer
+            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], buffer_ty, false, 1)),
+            // copy(target: Buffer, targetStart?: number, sourceStart?: number, sourceEnd?: number) -> number
+            "copy" => Some(self.type_ctx.function_type_with_min_params(vec![buffer_ty, number_ty, number_ty, number_ty], number_ty, false, 1)),
+            // toString(encoding?: string) -> string
+            "toString" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty], string_ty, false, 0)),
+            _ => None,
+        }
+    }
+
+    // Note: get_date_method_type removed
+    // Date methods are now resolved from their .raya class definitions
 
     /// Get the type of a built-in Channel method
     fn get_channel_method_type(&mut self, method_name: &str, message_ty: TypeId) -> Option<TypeId> {

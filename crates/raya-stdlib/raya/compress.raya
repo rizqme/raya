@@ -4,11 +4,7 @@
 class Compress {
     // ── Gzip ──
 
-    gzip(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.gzip", data, 6);
-    }
-
-    gzipLevel(data: Buffer, level: number): Buffer {
+    gzip(data: Buffer, level: number = 6): Buffer {
         return __NATIVE_CALL<Buffer>("compress.gzip", data, level);
     }
 
@@ -18,11 +14,7 @@ class Compress {
 
     // ── Raw Deflate ──
 
-    deflate(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.deflate", data, 6);
-    }
-
-    deflateLevel(data: Buffer, level: number): Buffer {
+    deflate(data: Buffer, level: number = 6): Buffer {
         return __NATIVE_CALL<Buffer>("compress.deflate", data, level);
     }
 
@@ -32,11 +24,7 @@ class Compress {
 
     // ── Zlib ──
 
-    zlibCompress(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, 6);
-    }
-
-    zlibCompressLevel(data: Buffer, level: number): Buffer {
+    zlibCompress(data: Buffer, level: number = 6): Buffer {
         return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, level);
     }
 

@@ -158,6 +158,7 @@ impl<'a> Interpreter<'a> {
             }
             array::SLICE => {
                 // slice(start, end?) - arg_count is 1 or 2
+                // Supports negative indices: -1 = last element, -2 = second-to-last, etc.
                 let end_val = if arg_count >= 2 { Some(stack.pop()?) } else { None };
                 let start_val = if arg_count >= 1 { stack.pop()? } else { Value::i32(0) };
                 let array_val = stack.pop()?;
@@ -169,10 +170,25 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
                 let len = arr.len();
-                let start = start_val.as_i32().unwrap_or(0) as usize;
-                let end = end_val.and_then(|v| v.as_i32()).map(|e| e as usize).unwrap_or(len);
-                let start = start.min(len);
-                let end = end.min(len);
+                
+                // Normalize negative indices
+                let start_raw = start_val.as_i32().unwrap_or(0);
+                let start = if start_raw < 0 {
+                    ((len as i32 + start_raw).max(0) as usize).min(len)
+                } else {
+                    (start_raw as usize).min(len)
+                };
+                
+                let end = end_val
+                    .and_then(|v| v.as_i32())
+                    .map(|e| {
+                        if e < 0 {
+                            ((len as i32 + e).max(0) as usize).min(len)
+                        } else {
+                            (e as usize).min(len)
+                        }
+                    })
+                    .unwrap_or(len);
 
                 let mut new_arr = Array::new(arr.type_id, 0);
                 if start < end {
