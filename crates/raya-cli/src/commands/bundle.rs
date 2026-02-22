@@ -111,13 +111,23 @@ mod aot_impl {
             .functions
             .iter()
             .enumerate()
-            .map(|(i, f)| LiftedFunction {
-                func_index: i as u32,
-                param_count: f.param_count as u32,
-                local_count: f.local_count as u32,
-                name: Some(f.name.clone()),
-                #[cfg(all(feature = "aot", feature = "jit"))]
-                jit_func: None,
+            .map(|(i, f)| {
+                let name = f.name.clone();
+                let param_count = f.param_count as u32;
+                let local_count = f.local_count as u32;
+                LiftedFunction {
+                    func_index: i as u32,
+                    param_count,
+                    local_count,
+                    name: Some(name.clone()),
+                    #[cfg(all(feature = "aot", feature = "jit"))]
+                    jit_func: raya_engine::jit::ir::JitFunction::new(
+                        i as u32,
+                        name,
+                        param_count as usize,
+                        local_count as usize,
+                    ),
+                }
             })
             .collect();
 
