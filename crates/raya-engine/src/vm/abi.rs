@@ -99,11 +99,46 @@ impl NativeContext for EngineContext<'_> {
     }
 
     fn create_buffer(&self, data: &[u8]) -> NativeValue {
+        // Create the raw Buffer
         let mut buffer = Buffer::new(data.len());
         for (i, &byte) in data.iter().enumerate() {
             let _ = buffer.set_byte(i, byte);
         }
-        self.alloc_ptr(buffer)
+        
+        // Look up Buffer class_id
+        let buffer_class_id = {
+            let classes = self.classes.read();
+            match classes.get_class_by_name("Buffer") {
+                Some(class) => class.id,
+                None => {
+                    // Fallback: if Buffer class not registered, return raw Buffer pointer
+                    // This maintains backward compatibility
+                    return self.alloc_ptr(buffer);
+                }
+            }
+        };
+        
+        // Allocate Buffer and Object in single GC lock
+        let obj_ptr = {
+            let mut gc = self.gc.lock();
+            
+            // Allocate raw Buffer
+            let buf_ptr = gc.allocate(buffer);
+            let handle = buf_ptr.as_ptr() as u64;
+            
+            // Create Buffer object wrapping the handle
+            let mut obj = Object::new(buffer_class_id, 1);
+            let _ = obj.set_field(0, Value::u64(handle));
+            
+            // Allocate Object
+            gc.allocate(obj)
+        };
+        
+        // Convert to NativeValue
+        let value = unsafe {
+            Value::from_ptr(NonNull::new(obj_ptr.as_ptr()).unwrap())
+        };
+        value_to_native(value)
     }
 
     fn create_array(&self, items: &[NativeValue]) -> NativeValue {
@@ -146,9 +181,26 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Buffer, got non-pointer".into());
         }
-        let buf_ptr = unsafe { v.as_ptr::<Buffer>() }
-            .ok_or_else(|| "Expected Buffer".to_string())?;
-        let buffer = unsafe { &*buf_ptr.as_ptr() };
+        
+        // Buffer is now an Object with bufferPtr field (field index 0)
+        // First get the Object, then extract the handle from field[0]
+        let obj_ptr = unsafe { v.as_ptr::<Object>() }
+            .ok_or_else(|| "Expected Buffer object".to_string())?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        
+        // Get bufferPtr from field 0
+        let handle_val = obj.get_field(0)
+            .ok_or_else(|| "Buffer object missing bufferPtr field".to_string())?;
+        let handle = handle_val.as_u64()
+            .ok_or_else(|| "Buffer bufferPtr is not a valid handle".to_string())?;
+        
+        // Dereference the handle to get the actual Buffer
+        let buf_ptr = handle as *const Buffer;
+        if buf_ptr.is_null() {
+            return Err("Invalid buffer handle (null)".into());
+        }
+        let buffer = unsafe { &*buf_ptr };
+        
         Ok((0..buffer.length())
             .filter_map(|i| buffer.get_byte(i))
             .collect())
