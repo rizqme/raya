@@ -1096,6 +1096,57 @@ fn test_optional_and_default_params_together() {
 }
 
 #[test]
+fn test_default_param_can_reference_previous_param() {
+    // Default value expression may reference an earlier parameter
+    expect_i32("
+        function mirror(x: number, y: number = x): number {
+            return y;
+        }
+        return mirror(42);
+    ", 42);
+}
+
+#[test]
+fn test_multiple_default_params_partial_call() {
+    // Multiple defaults should apply for omitted trailing arguments
+    expect_i32("
+        function total(a: number, b: number = 10, c: number = 5): number {
+            return a + b + c;
+        }
+        return total(27);
+    ", 42);
+}
+
+#[test]
+fn test_optional_param_explicit_null_type_error() {
+    // Explicit null is rejected at call site for optional number parameters
+    expect_compile_error("
+        function maybe(x: number, y?: number): number {
+            if (y == null) {
+                return x;
+            }
+            return x + y;
+        }
+        return maybe(42, null);
+    ", "TypeMismatch");
+}
+
+#[test]
+fn test_constructor_default_params_partial_override() {
+    // Constructor uses provided leading args and defaults for omitted trailing args
+    expect_i32("
+        class Config {
+            value: number;
+            constructor(base: number, extra: number = 10, bonus: number = 5) {
+                this.value = base + extra + bonus;
+            }
+        }
+        let c = new Config(27);
+        return c.value;
+    ", 42);
+}
+
+#[test]
 fn test_class_method_optional_param() {
     // Class method with optional parameter
     expect_string("
@@ -1110,6 +1161,20 @@ fn test_class_method_optional_param() {
         let g = new Greeter();
         return g.greet();
     ", "hello");
+}
+
+#[test]
+fn test_class_method_with_default_param_overridden() {
+    // Method default should be ignored when explicit argument is provided
+    expect_i32("
+        class Calc {
+            compute(x: number, y: number = 100): number {
+                return x + y;
+            }
+        }
+        let c = new Calc();
+        return c.compute(20, 22);
+    ", 42);
 }
 
 #[test]
