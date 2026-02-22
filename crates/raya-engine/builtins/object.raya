@@ -15,12 +15,12 @@ class Object {
     // Get hash code for this object (based on object identity)
     // Default implementation returns the internal object ID
     hashCode(): number {
-        return __NATIVE_CALL(OBJECT_HASH_CODE, this);
+        return __NATIVE_CALL<number>(OBJECT_HASH_CODE, this);
     }
 
     // Check equality with another object (identity comparison)
     // Default implementation compares by object identity
     equals(other: Object): boolean {
-        return __NATIVE_CALL(OBJECT_EQUALS, this, other);
+        return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
     }
 }

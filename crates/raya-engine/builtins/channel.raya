@@ -18,46 +18,46 @@ class Channel<T> {
     // Create a new channel with optional buffer capacity
     // capacity = 0 means unbuffered (synchronous send/receive)
     constructor(capacity: number) {
-        this.channelId = __NATIVE_CALL(CHANNEL_NEW, capacity);
+        this.channelId = __NATIVE_CALL<number>(CHANNEL_NEW, capacity);
     }
 
     // Send a value to the channel (blocks if buffer full)
     send(value: T): void {
-        __NATIVE_CALL(CHANNEL_SEND, this.channelId, value);
+        __NATIVE_CALL<void>(CHANNEL_SEND, this.channelId, value);
     }
 
     // Receive a value from the channel (suspends task if empty, returns null if closed)
     receive(): T {
-        return __NATIVE_CALL(CHANNEL_RECEIVE, this.channelId);
+        return __NATIVE_CALL<T>(CHANNEL_RECEIVE, this.channelId);
     }
 
     // Try to send without blocking (returns true if sent)
     trySend(value: T): boolean {
-        return __NATIVE_CALL(CHANNEL_TRY_SEND, this.channelId, value);
+        return __NATIVE_CALL<boolean>(CHANNEL_TRY_SEND, this.channelId, value);
     }
 
     // Try to receive without blocking (returns null if empty)
     tryReceive(): T | null {
-        return __NATIVE_CALL(CHANNEL_TRY_RECEIVE, this.channelId);
+        return __NATIVE_CALL<T | null>(CHANNEL_TRY_RECEIVE, this.channelId);
     }
 
     // Close the channel (no more sends allowed)
     close(): void {
-        __NATIVE_CALL(CHANNEL_CLOSE, this.channelId);
+        __NATIVE_CALL<void>(CHANNEL_CLOSE, this.channelId);
     }
 
     // Check if channel is closed
     isClosed(): boolean {
-        return __NATIVE_CALL(CHANNEL_IS_CLOSED, this.channelId);
+        return __NATIVE_CALL<boolean>(CHANNEL_IS_CLOSED, this.channelId);
     }
 
     // Get number of elements in buffer
     length(): number {
-        return __NATIVE_CALL(CHANNEL_LENGTH, this.channelId);
+        return __NATIVE_CALL<number>(CHANNEL_LENGTH, this.channelId);
     }
 
     // Get buffer capacity
     capacity(): number {
-        return __NATIVE_CALL(CHANNEL_CAPACITY, this.channelId);
+        return __NATIVE_CALL<number>(CHANNEL_CAPACITY, this.channelId);
     }
 }

@@ -30,92 +30,92 @@ class string {
     length: number;
 
     charAt(index: number): string {
-        return __NATIVE_CALL(CHAR_AT, this, index);
+        return __NATIVE_CALL<string>(CHAR_AT, this, index);
     }
 
     charCodeAt(index: number): int {
-        return __NATIVE_CALL(CHAR_CODE_AT, this, index);
+        return __NATIVE_CALL<int>(CHAR_CODE_AT, this, index);
     }
 
     substring(start: number, end: number): string {
-        return __NATIVE_CALL(SUBSTRING, this, start, end);
+        return __NATIVE_CALL<string>(SUBSTRING, this, start, end);
     }
 
     toUpperCase(): string {
-        return __NATIVE_CALL(TO_UPPER_CASE, this);
+        return __NATIVE_CALL<string>(TO_UPPER_CASE, this);
     }
 
     toLowerCase(): string {
-        return __NATIVE_CALL(TO_LOWER_CASE, this);
+        return __NATIVE_CALL<string>(TO_LOWER_CASE, this);
     }
 
     trim(): string {
-        return __NATIVE_CALL(TRIM, this);
+        return __NATIVE_CALL<string>(TRIM, this);
     }
 
     trimStart(): string {
-        return __NATIVE_CALL(TRIM_START, this);
+        return __NATIVE_CALL<string>(TRIM_START, this);
     }
 
     trimEnd(): string {
-        return __NATIVE_CALL(TRIM_END, this);
+        return __NATIVE_CALL<string>(TRIM_END, this);
     }
 
     indexOf(searchStr: string, fromIndex?: number): int {
-        return __NATIVE_CALL(INDEX_OF, this, searchStr, fromIndex);
+        return __NATIVE_CALL<int>(INDEX_OF, this, searchStr, fromIndex);
     }
 
     lastIndexOf(searchStr: string, fromIndex?: number): int {
-        return __NATIVE_CALL(LAST_INDEX_OF, this, searchStr, fromIndex);
+        return __NATIVE_CALL<int>(LAST_INDEX_OF, this, searchStr, fromIndex);
     }
 
     includes(searchStr: string): boolean {
-        return __NATIVE_CALL(INCLUDES, this, searchStr);
+        return __NATIVE_CALL<boolean>(INCLUDES, this, searchStr);
     }
 
     startsWith(prefix: string): boolean {
-        return __NATIVE_CALL(STARTS_WITH, this, prefix);
+        return __NATIVE_CALL<boolean>(STARTS_WITH, this, prefix);
     }
 
     endsWith(suffix: string): boolean {
-        return __NATIVE_CALL(ENDS_WITH, this, suffix);
+        return __NATIVE_CALL<boolean>(ENDS_WITH, this, suffix);
     }
 
     split(separator: string, limit?: number): string[] {
-        return __NATIVE_CALL(SPLIT, this, separator, limit);
+        return __NATIVE_CALL<string[]>(SPLIT, this, separator, limit);
     }
 
     replace(search: string, replacement: string): string {
-        return __NATIVE_CALL(REPLACE, this, search, replacement);
+        return __NATIVE_CALL<string>(REPLACE, this, search, replacement);
     }
 
     repeat(count: number): string {
-        return __NATIVE_CALL(REPEAT, this, count);
+        return __NATIVE_CALL<string>(REPEAT, this, count);
     }
 
     padStart(length: number, pad: string): string {
-        return __NATIVE_CALL(PAD_START, this, length, pad);
+        return __NATIVE_CALL<string>(PAD_START, this, length, pad);
     }
 
     padEnd(length: number, pad: string): string {
-        return __NATIVE_CALL(PAD_END, this, length, pad);
+        return __NATIVE_CALL<string>(PAD_END, this, length, pad);
     }
 
     match(pattern: RegExp): string[] | null {
-        return __NATIVE_CALL(STR_MATCH, this, pattern);
+        return __NATIVE_CALL<string[] | null>(STR_MATCH, this, pattern);
     }
 
     matchAll(pattern: RegExp): string[][] {
-        return __NATIVE_CALL(MATCH_ALL, this, pattern);
+        return __NATIVE_CALL<string[][]>(MATCH_ALL, this, pattern);
     }
 
     search(pattern: RegExp): int {
-        return __NATIVE_CALL(SEARCH, this, pattern);
+        return __NATIVE_CALL<int>(SEARCH, this, pattern);
     }
 
     //@@class_method
     replaceWith(pattern: RegExp, replacer: (match: (string | number)[]) => string): string {
-        let matches: (string | number)[][] = __NATIVE_CALL(REPLACE_MATCHES, pattern, this);
+        let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, pattern, this);
         let result: string = "";
         let lastIndex: int = 0;
 

@@ -800,9 +800,30 @@ fn find_matching_brace(chars: &[char], open: usize) -> Option<usize> {
 /// Extract the native call ID from a method body string.
 /// Looks for `__NATIVE_CALL(CONST_NAME,` and resolves CONST_NAME via the constants map.
 fn extract_native_call_id(body: &str, constants: &FxHashMap<String, u16>) -> Option<u16> {
-    let native_call_marker = "__NATIVE_CALL(";
+    // Look for either __NATIVE_CALL( or __NATIVE_CALL<T>(
+    let native_call_marker = "__NATIVE_CALL";
     if let Some(idx) = body.find(native_call_marker) {
         let after = &body[idx + native_call_marker.len()..];
+
+        // Skip optional type parameters like <string>, <T>, etc.
+        let after = if after.starts_with('<') {
+            // Find the closing '>'
+            if let Some(gt_idx) = after.find('>') {
+                &after[gt_idx + 1..]
+            } else {
+                return None; // Malformed type parameter
+            }
+        } else {
+            after
+        };
+
+        // Now look for the opening '('
+        if !after.starts_with('(') {
+            return None;
+        }
+
+        let after = &after[1..]; // Skip '('
+
         // Extract the first argument (constant name)
         let end = after.find(',')?;
         let const_name = after[..end].trim();

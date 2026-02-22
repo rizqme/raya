@@ -25,11 +25,11 @@ class Mutex {
     // Try to acquire the lock without blocking
     // Returns true if lock was acquired, false otherwise
     tryLock(): boolean {
-        return __NATIVE_CALL(MUTEX_TRY_LOCK, this.handle);
+        return __NATIVE_CALL<boolean>(MUTEX_TRY_LOCK, this.handle);
     }
 
     // Check if the mutex is currently locked
     isLocked(): boolean {
-        return __NATIVE_CALL(MUTEX_IS_LOCKED, this.handle);
+        return __NATIVE_CALL<boolean>(MUTEX_IS_LOCKED, this.handle);
     }
 }

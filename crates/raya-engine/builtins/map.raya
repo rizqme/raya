@@ -18,56 +18,56 @@ class Map<K, V> {
     private mapPtr: number;
 
     constructor() {
-        this.mapPtr = __NATIVE_CALL(MAP_NEW);
+        this.mapPtr = __NATIVE_CALL<number>(MAP_NEW);
     }
 
     // Get the number of entries
     size(): number {
-        return __NATIVE_CALL(MAP_SIZE, this.mapPtr);
+        return __NATIVE_CALL<number>(MAP_SIZE, this.mapPtr);
     }
 
     // Get value by key (returns null if not found)
     get(key: K): V | null {
-        return __NATIVE_CALL(MAP_GET, this.mapPtr, key);
+        return __NATIVE_CALL<V | null>(MAP_GET, this.mapPtr, key);
     }
 
     // Set a key-value pair
     set(key: K, value: V): void {
-        __NATIVE_CALL(MAP_SET, this.mapPtr, key, value);
+        __NATIVE_CALL<void>(MAP_SET, this.mapPtr, key, value);
     }
 
     // Check if key exists
     has(key: K): boolean {
-        return __NATIVE_CALL(MAP_HAS, this.mapPtr, key);
+        return __NATIVE_CALL<boolean>(MAP_HAS, this.mapPtr, key);
     }
 
     // Delete a key (returns true if existed)
     delete(key: K): boolean {
-        return __NATIVE_CALL(MAP_DELETE, this.mapPtr, key);
+        return __NATIVE_CALL<boolean>(MAP_DELETE, this.mapPtr, key);
     }
 
     // Remove all entries
     clear(): void {
-        __NATIVE_CALL(MAP_CLEAR, this.mapPtr);
+        __NATIVE_CALL<void>(MAP_CLEAR, this.mapPtr);
     }
 
     // Get all keys as an array
     keys(): K[] {
-        return __NATIVE_CALL(MAP_KEYS, this.mapPtr);
+        return __NATIVE_CALL<K[]>(MAP_KEYS, this.mapPtr);
     }
 
     // Get all values as an array
     values(): V[] {
-        return __NATIVE_CALL(MAP_VALUES, this.mapPtr);
+        return __NATIVE_CALL<V[]>(MAP_VALUES, this.mapPtr);
     }
 
     // Get all entries as array of [key, value] tuples
     entries(): [K, V][] {
-        return __NATIVE_CALL(MAP_ENTRIES, this.mapPtr);
+        return __NATIVE_CALL<[K, V][]>(MAP_ENTRIES, this.mapPtr);
     }
 
     // Iterate over all entries
     forEach(fn: (value: V, key: K) => void): void {
-        __NATIVE_CALL(MAP_FOR_EACH, this.mapPtr, fn);
+        __NATIVE_CALL<void>(MAP_FOR_EACH, this.mapPtr, fn);
     }
 }

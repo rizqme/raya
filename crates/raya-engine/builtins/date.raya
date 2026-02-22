@@ -28,7 +28,7 @@ class Date {
     private timestamp: number;
 
     constructor() {
-        this.timestamp = __NATIVE_CALL(DATE_NOW);
+        this.timestamp = __NATIVE_CALL<number>(DATE_NOW);
     }
 
     // Get timestamp in milliseconds since Unix epoch
@@ -38,42 +38,42 @@ class Date {
 
     // Get the four-digit year
     getFullYear(): number {
-        return __NATIVE_CALL(DATE_GET_FULL_YEAR, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_FULL_YEAR, this.timestamp);
     }
 
     // Get the month (0-11)
     getMonth(): number {
-        return __NATIVE_CALL(DATE_GET_MONTH, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_MONTH, this.timestamp);
     }
 
     // Get the day of month (1-31)
     getDate(): number {
-        return __NATIVE_CALL(DATE_GET_DATE, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_DATE, this.timestamp);
     }
 
     // Get the day of week (0=Sunday, 6=Saturday)
     getDay(): number {
-        return __NATIVE_CALL(DATE_GET_DAY, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_DAY, this.timestamp);
     }
 
     // Get the hours (0-23)
     getHours(): number {
-        return __NATIVE_CALL(DATE_GET_HOURS, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_HOURS, this.timestamp);
     }
 
     // Get the minutes (0-59)
     getMinutes(): number {
-        return __NATIVE_CALL(DATE_GET_MINUTES, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_MINUTES, this.timestamp);
     }
 
     // Get the seconds (0-59)
     getSeconds(): number {
-        return __NATIVE_CALL(DATE_GET_SECONDS, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_SECONDS, this.timestamp);
     }
 
     // Get the milliseconds (0-999)
     getMilliseconds(): number {
-        return __NATIVE_CALL(DATE_GET_MILLISECONDS, this.timestamp);
+        return __NATIVE_CALL<number>(DATE_GET_MILLISECONDS, this.timestamp);
     }
 
     // Set the timestamp directly
@@ -83,56 +83,56 @@ class Date {
 
     // Set the year
     setFullYear(year: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_FULL_YEAR, this.timestamp, year);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_FULL_YEAR, this.timestamp, year);
     }
 
     // Set the month (0-11)
     setMonth(month: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_MONTH, this.timestamp, month);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MONTH, this.timestamp, month);
     }
 
     // Set the day of month (1-31)
     setDate(day: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_DATE, this.timestamp, day);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_DATE, this.timestamp, day);
     }
 
     // Set the hours (0-23)
     setHours(hours: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_HOURS, this.timestamp, hours);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_HOURS, this.timestamp, hours);
     }
 
     // Set the minutes (0-59)
     setMinutes(minutes: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_MINUTES, this.timestamp, minutes);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MINUTES, this.timestamp, minutes);
     }
 
     // Set the seconds (0-59)
     setSeconds(seconds: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_SECONDS, this.timestamp, seconds);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_SECONDS, this.timestamp, seconds);
     }
 
     // Set the milliseconds (0-999)
     setMilliseconds(ms: number): void {
-        this.timestamp = __NATIVE_CALL(DATE_SET_MILLISECONDS, this.timestamp, ms);
+        this.timestamp = __NATIVE_CALL<number>(DATE_SET_MILLISECONDS, this.timestamp, ms);
     }
 
     // Convert to human-readable string
     toString(): string {
-        return __NATIVE_CALL(DATE_TO_STRING, this.timestamp);
+        return __NATIVE_CALL<string>(DATE_TO_STRING, this.timestamp);
     }
 
     // Convert to ISO 8601 format (e.g., "2024-01-15T10:30:00.000Z")
     toISOString(): string {
-        return __NATIVE_CALL(DATE_TO_ISO_STRING, this.timestamp);
+        return __NATIVE_CALL<string>(DATE_TO_ISO_STRING, this.timestamp);
     }
 
     // Get just the date portion as string
     toDateString(): string {
-        return __NATIVE_CALL(DATE_TO_DATE_STRING, this.timestamp);
+        return __NATIVE_CALL<string>(DATE_TO_DATE_STRING, this.timestamp);
     }
 
     // Get just the time portion as string
     toTimeString(): string {
-        return __NATIVE_CALL(DATE_TO_TIME_STRING, this.timestamp);
+        return __NATIVE_CALL<string>(DATE_TO_TIME_STRING, this.timestamp);
     }
 }

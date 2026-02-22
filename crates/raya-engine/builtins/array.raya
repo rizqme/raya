@@ -20,61 +20,61 @@ class Array<T> {
     length: number;
 
     constructor() {
-        __NATIVE_CALL(ARRAY_NEW, this);
+        __NATIVE_CALL<void>(ARRAY_NEW, this);
     }
 
     // ── Atomic native operations ──────────────────────────────────────
 
     push(element: T): number {
-        return __NATIVE_CALL(PUSH, this, element);
+        return __NATIVE_CALL<number>(PUSH, this, element);
     }
 
     pop(): T {
-        return __NATIVE_CALL(POP, this);
+        return __NATIVE_CALL<T>(POP, this);
     }
 
     shift(): T {
-        return __NATIVE_CALL(SHIFT, this);
+        return __NATIVE_CALL<T>(SHIFT, this);
     }
 
     unshift(element: T): number {
-        return __NATIVE_CALL(UNSHIFT, this, element);
+        return __NATIVE_CALL<number>(UNSHIFT, this, element);
     }
 
     indexOf(element: T): number {
-        return __NATIVE_CALL(INDEX_OF, this, element);
+        return __NATIVE_CALL<number>(INDEX_OF, this, element);
     }
 
     lastIndexOf(element: T): number {
-        return __NATIVE_CALL(LAST_INDEX_OF, this, element);
+        return __NATIVE_CALL<number>(LAST_INDEX_OF, this, element);
     }
 
     includes(element: T): boolean {
-        return __NATIVE_CALL(INCLUDES, this, element);
+        return __NATIVE_CALL<boolean>(INCLUDES, this, element);
     }
 
     slice(start: number, end: number): T[] {
-        return __NATIVE_CALL(SLICE, this, start, end);
+        return __NATIVE_CALL<T[]>(SLICE, this, start, end);
     }
 
     concat(other: T[]): T[] {
-        return __NATIVE_CALL(CONCAT, this, other);
+        return __NATIVE_CALL<T[]>(CONCAT, this, other);
     }
 
     join(separator: string): string {
-        return __NATIVE_CALL(JOIN, this, separator);
+        return __NATIVE_CALL<string>(JOIN, this, separator);
     }
 
     reverse(): T[] {
-        return __NATIVE_CALL(REVERSE, this);
+        return __NATIVE_CALL<T[]>(REVERSE, this);
     }
 
     fill(value: T, start: number, end: number): T[] {
-        return __NATIVE_CALL(FILL, this, value, start, end);
+        return __NATIVE_CALL<T[]>(FILL, this, value, start, end);
     }
 
     flat(): T[] {
-        return __NATIVE_CALL(FLAT, this);
+        return __NATIVE_CALL<T[]>(FLAT, this);
     }
 
     // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──

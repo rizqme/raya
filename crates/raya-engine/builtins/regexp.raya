@@ -21,32 +21,32 @@ class RegExp {
     lastIndex: number;
 
     constructor(pattern: string, flags?: string) {
-        __NATIVE_CALL(REGEXP_NEW, this, pattern, flags);
+        __NATIVE_CALL<void>(REGEXP_NEW, this, pattern, flags);
     }
 
     test(str: string): boolean {
-        return __NATIVE_CALL(TEST, this, str);
+        return __NATIVE_CALL<boolean>(TEST, this, str);
     }
 
     exec(str: string): string | null {
-        return __NATIVE_CALL(EXEC, this, str);
+        return __NATIVE_CALL<string | null>(EXEC, this, str);
     }
 
     execAll(str: string): string[] {
-        return __NATIVE_CALL(EXEC_ALL, this, str);
+        return __NATIVE_CALL<string[]>(EXEC_ALL, this, str);
     }
 
     replace(str: string, replacement: string): string {
-        return __NATIVE_CALL(REGEXP_REPLACE, this, str, replacement);
+        return __NATIVE_CALL<string>(REGEXP_REPLACE, this, str, replacement);
     }
 
     split(str: string, limit: number): string[] {
-        return __NATIVE_CALL(REGEXP_SPLIT, this, str, limit);
+        return __NATIVE_CALL<string[]>(REGEXP_SPLIT, this, str, limit);
     }
 
     //@@class_method
     replaceWith(str: string, replacer: (match: string) => string): string {
-        let matches: (string | number)[][] = __NATIVE_CALL(REPLACE_MATCHES, this, str);
+        let matches: (string | number)[][] = __NATIVE_CALL<(string | number)[][]>(REPLACE_MATCHES, this, str);
         let result: string = "";
         let lastIndex: int = 0;
 

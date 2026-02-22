@@ -6,14 +6,14 @@ const TO_STRING_RADIX: number = 0x0F02;
 
 class number {
     toFixed(digits: number): string {
-        return __NATIVE_CALL(TO_FIXED, this, digits);
+        return __NATIVE_CALL<string>(TO_FIXED, this, digits);
     }
 
     toPrecision(precision: number): string {
-        return __NATIVE_CALL(TO_PRECISION, this, precision);
+        return __NATIVE_CALL<string>(TO_PRECISION, this, precision);
     }
 
     toString(radix?: number): string {
-        return __NATIVE_CALL(TO_STRING_RADIX, this, radix);
+        return __NATIVE_CALL<string>(TO_STRING_RADIX, this, radix);
     }
 }

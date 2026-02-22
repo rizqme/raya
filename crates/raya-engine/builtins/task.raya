@@ -25,12 +25,12 @@ class Task<T> {
 
     // Check if the task has completed (success or failure)
     isDone(): boolean {
-        return __NATIVE_CALL(TASK_IS_DONE, this.handle);
+        return __NATIVE_CALL<boolean>(TASK_IS_DONE, this.handle);
     }
 
     // Check if the task was cancelled
     isCancelled(): boolean {
-        return __NATIVE_CALL(TASK_IS_CANCELLED, this.handle);
+        return __NATIVE_CALL<boolean>(TASK_IS_CANCELLED, this.handle);
     }
 }
 
