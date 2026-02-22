@@ -3,19 +3,33 @@
 //! Provides utilities for compiling Raya source code and executing it in the VM.
 
 use raya_engine::compiler::{Compiler, Module};
-use raya_engine::vm::{Array, Object, Value, Vm, VmError, RayaString};
+use raya_engine::parser::checker::{Binder, TypeChecker};
+use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::vm::gc::GcHeader;
 use raya_engine::vm::scheduler::SchedulerLimits;
-use raya_engine::parser::{Interner, Parser, TypeContext};
-use raya_engine::parser::checker::{Binder, TypeChecker};
+use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::StdNativeHandler;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 thread_local! {
-    /// Keeps the most recently used VM alive on each test thread so pointer values
-    /// returned from `compile_and_run*` remain valid during assertions.
-    static LAST_VM: RefCell<Option<Vm>> = const { RefCell::new(None) };
+    /// Keeps a small ring of recently used VMs alive on each test thread so
+    /// pointer values returned from `compile_and_run*` remain valid across
+    /// back-to-back invocations within the same test.
+    static KEPT_VMS: RefCell<VecDeque<Vm>> = RefCell::new(VecDeque::new());
+}
+
+/// Retain a small number of recent VMs to keep returned pointer Values valid.
+fn keep_vm_alive(vm: Vm) {
+    const MAX_KEPT_VMS: usize = 2;
+    KEPT_VMS.with(|slot| {
+        let mut kept = slot.borrow_mut();
+        kept.push_back(vm);
+        while kept.len() > MAX_KEPT_VMS {
+            kept.pop_front();
+        }
+    });
 }
 
 /// Get the builtin source files content
@@ -160,14 +174,21 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
 fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
     // Optionally prepend builtin and std sources
     let full_source = if include_builtins {
-        format!("{}\n{}\n{}", get_builtin_sources(), get_std_sources(), source)
+        format!(
+            "{}\n{}\n{}",
+            get_builtin_sources(),
+            get_std_sources(),
+            source
+        )
     } else {
         source.to_string()
     };
 
     // Parse
     let parser = Parser::new(&full_source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
-    let (ast, interner) = parser.parse().map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
@@ -205,11 +226,8 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
     // Note: check_result.captures contains closure capture info for future use
 
     // Compile via IR pipeline with expression types from type checker
-    let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(check_result.expr_types);
-    let bytecode = compiler
-        .compile_via_ir(&ast)
-        .map_err(E2EError::Compile)?;
+    let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+    let bytecode = compiler.compile_via_ir(&ast).map_err(E2EError::Compile)?;
 
     Ok((bytecode, interner))
 }
@@ -224,9 +242,7 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
     // Use single worker to avoid resource contention during parallel test execution
     let mut vm = Vm::with_worker_count(1);
     let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    LAST_VM.with(|slot| {
-        *slot.borrow_mut() = Some(vm);
-    });
+    keep_vm_alive(vm);
     Ok(value)
 }
 
@@ -247,9 +263,7 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     }
 
     let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    LAST_VM.with(|slot| {
-        *slot.borrow_mut() = Some(vm);
-    });
+    keep_vm_alive(vm);
     Ok(value)
 }
 
@@ -269,11 +283,16 @@ pub fn expect_i32_with_builtins(source: &str, expected: i32) {
                 assert!(
                     (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
                     "Expected {} (i32), got {} (f64) for:\n{}",
-                    expected, actual, source
+                    expected,
+                    actual,
+                    source
                 );
                 return;
             }
-            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -292,7 +311,9 @@ pub fn expect_f64_with_builtins(source: &str, expected: f64) {
             assert!(
                 (actual - expected).abs() < 1e-10,
                 "Expected {}, got {} for:\n{}",
-                expected, actual, source
+                expected,
+                actual,
+                source
             );
         }
         Err(e) => {
@@ -333,11 +354,16 @@ pub fn expect_i32(source: &str, expected: i32) {
                 assert!(
                     (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
                     "Expected {} (i32), got {} (f64) for:\n{}",
-                    expected, actual, source
+                    expected,
+                    actual,
+                    source
                 );
                 return;
             }
-            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -356,7 +382,9 @@ pub fn expect_f64(source: &str, expected: f64) {
             assert!(
                 (actual - expected).abs() < 1e-10,
                 "Expected {}, got {} for:\n{}",
-                expected, actual, source
+                expected,
+                actual,
+                source
             );
         }
         Err(e) => {
@@ -388,7 +416,8 @@ pub fn expect_null(source: &str) {
             assert!(
                 value.is_null(),
                 "Expected null, got {:?}\nSource:\n{}",
-                value, source
+                value,
+                source
             );
         }
         Err(e) => {
@@ -548,7 +577,9 @@ pub fn expect_compile_error(source: &str, error_pattern: &str) {
             assert!(
                 error_msg.contains(error_pattern),
                 "Expected error containing '{}', got: {}\nSource:\n{}",
-                error_pattern, error_msg, source
+                error_pattern,
+                error_msg,
+                source
             );
         }
     }
@@ -568,7 +599,9 @@ pub fn expect_runtime_error(source: &str, error_pattern: &str) {
             assert!(
                 error_msg.contains(error_pattern),
                 "Expected runtime error containing '{}', got: {}\nSource:\n{}",
-                error_pattern, error_msg, source
+                error_pattern,
+                error_msg,
+                source
             );
         }
         Err(e) => {
@@ -601,7 +634,9 @@ pub fn expect_runtime_error_fast_preempt(source: &str, error_pattern: &str) {
             assert!(
                 error_msg.contains(error_pattern),
                 "Expected runtime error containing '{}', got: {}\nSource:\n{}",
-                error_pattern, error_msg, source
+                error_pattern,
+                error_msg,
+                source
             );
         }
     }
@@ -621,7 +656,9 @@ pub fn expect_runtime_error_with_builtins(source: &str, error_pattern: &str) {
             assert!(
                 error_msg.contains(error_pattern),
                 "Expected runtime error containing '{}', got: {}\nSource:\n{}",
-                error_pattern, error_msg, source
+                error_pattern,
+                error_msg,
+                source
             );
         }
         Err(e) => {
@@ -642,9 +679,7 @@ pub fn compile_and_run_multiworker(source: &str, worker_count: usize) -> E2EResu
 
     let mut vm = Vm::with_worker_count(worker_count);
     let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    LAST_VM.with(|slot| {
-        *slot.borrow_mut() = Some(vm);
-    });
+    keep_vm_alive(vm);
     Ok(value)
 }
 
@@ -662,11 +697,16 @@ pub fn expect_i32_multiworker(source: &str, expected: i32, worker_count: usize) 
                 assert!(
                     (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
                     "Expected {} (i32), got {} (f64) for:\n{}",
-                    expected, actual, source
+                    expected,
+                    actual,
+                    source
                 );
                 return;
             }
-            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -677,7 +717,10 @@ pub fn expect_i32_multiworker(source: &str, expected: i32, worker_count: usize) 
 /// Compile and execute with multiple worker threads and builtins
 ///
 /// Use this for tests that need to stress-test true parallel execution with Mutex/Channel.
-pub fn compile_and_run_multiworker_with_builtins(source: &str, worker_count: usize) -> E2EResult<Value> {
+pub fn compile_and_run_multiworker_with_builtins(
+    source: &str,
+    worker_count: usize,
+) -> E2EResult<Value> {
     let (module, _interner) = compile_with_builtins(source)?;
 
     let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
@@ -690,9 +733,7 @@ pub fn compile_and_run_multiworker_with_builtins(source: &str, worker_count: usi
     }
 
     let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    LAST_VM.with(|slot| {
-        *slot.borrow_mut() = Some(vm);
-    });
+    keep_vm_alive(vm);
     Ok(value)
 }
 
@@ -710,11 +751,16 @@ pub fn expect_i32_multiworker_with_builtins(source: &str, expected: i32, worker_
                 assert!(
                     (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
                     "Expected {} (i32), got {} (f64) for:\n{}",
-                    expected, actual, source
+                    expected,
+                    actual,
+                    source
                 );
                 return;
             }
-            panic!("Expected i32 or f64 result, got {:?}\nSource:\n{}", value, source);
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
         }
         Err(e) => {
             panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
@@ -744,7 +790,8 @@ fn extract_array_i32(value: &Value, source: &str) -> Vec<i32> {
     assert!(
         value.is_ptr(),
         "Expected array (pointer), got {:?}\nSource:\n{}",
-        value, source
+        value,
+        source
     );
     let arr_ptr = unsafe { value.as_ptr::<Array>() };
     let ptr = arr_ptr.unwrap_or_else(|| {
@@ -756,9 +803,9 @@ fn extract_array_i32(value: &Value, source: &str) -> Vec<i32> {
     let array = unsafe { &*ptr.as_ptr() };
     let mut result = Vec::with_capacity(array.len());
     for i in 0..array.len() {
-        let elem = array.get(i).unwrap_or_else(|| {
-            panic!("Missing array element at index {}\nSource:\n{}", i, source)
-        });
+        let elem = array
+            .get(i)
+            .unwrap_or_else(|| panic!("Missing array element at index {}\nSource:\n{}", i, source));
         // Try i32 first, then f64 whole number
         if let Some(v) = elem.as_i32() {
             result.push(v);
@@ -766,7 +813,9 @@ fn extract_array_i32(value: &Value, source: &str) -> Vec<i32> {
             assert!(
                 v.fract() == 0.0,
                 "Array element {} is f64 {} (not whole number)\nSource:\n{}",
-                i, v, source
+                i,
+                v,
+                source
             );
             result.push(v as i32);
         } else {
@@ -794,7 +843,11 @@ pub fn expect_array_i32(source: &str, expected: &[i32]) {
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Array element {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -818,7 +871,11 @@ pub fn expect_array_i32_with_builtins(source: &str, expected: &[i32]) {
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Array element {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -829,7 +886,11 @@ pub fn expect_array_i32_with_builtins(source: &str, expected: &[i32]) {
 
 /// Compile and execute with multiple workers and builtins, expecting an array of i32 results
 #[allow(dead_code)]
-pub fn expect_array_i32_multiworker_with_builtins(source: &str, expected: &[i32], worker_count: usize) {
+pub fn expect_array_i32_multiworker_with_builtins(
+    source: &str,
+    expected: &[i32],
+    worker_count: usize,
+) {
     match compile_and_run_multiworker_with_builtins(source, worker_count) {
         Ok(value) => {
             let actual = extract_array_i32(&value, source);
@@ -842,7 +903,11 @@ pub fn expect_array_i32_multiworker_with_builtins(source: &str, expected: &[i32]
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Array element {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Array element {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -856,7 +921,8 @@ fn extract_object_i32_fields(value: &Value, source: &str) -> Vec<i32> {
     assert!(
         value.is_ptr(),
         "Expected object (pointer), got {:?}\nSource:\n{}",
-        value, source
+        value,
+        source
     );
     let obj_ptr = unsafe { value.as_ptr::<Object>() };
     let ptr = obj_ptr.unwrap_or_else(|| {
@@ -868,16 +934,18 @@ fn extract_object_i32_fields(value: &Value, source: &str) -> Vec<i32> {
     let object = unsafe { &*ptr.as_ptr() };
     let mut result = Vec::with_capacity(object.field_count());
     for i in 0..object.field_count() {
-        let field = object.get_field(i).unwrap_or_else(|| {
-            panic!("Missing object field at index {}\nSource:\n{}", i, source)
-        });
+        let field = object
+            .get_field(i)
+            .unwrap_or_else(|| panic!("Missing object field at index {}\nSource:\n{}", i, source));
         if let Some(v) = field.as_i32() {
             result.push(v);
         } else if let Some(v) = field.as_f64() {
             assert!(
                 v.fract() == 0.0,
                 "Object field {} is f64 {} (not whole number)\nSource:\n{}",
-                i, v, source
+                i,
+                v,
+                source
             );
             result.push(v as i32);
         } else {
@@ -905,7 +973,11 @@ pub fn expect_object_i32_fields(source: &str, expected: &[i32]) {
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Object field {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -929,7 +1001,11 @@ pub fn expect_object_i32_fields_with_builtins(source: &str, expected: &[i32]) {
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Object field {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -940,7 +1016,11 @@ pub fn expect_object_i32_fields_with_builtins(source: &str, expected: &[i32]) {
 
 /// Compile and execute with multiple workers and builtins, expecting an object whose numeric fields match
 #[allow(dead_code)]
-pub fn expect_object_i32_fields_multiworker_with_builtins(source: &str, expected: &[i32], worker_count: usize) {
+pub fn expect_object_i32_fields_multiworker_with_builtins(
+    source: &str,
+    expected: &[i32],
+    worker_count: usize,
+) {
     match compile_and_run_multiworker_with_builtins(source, worker_count) {
         Ok(value) => {
             let actual = extract_object_i32_fields(&value, source);
@@ -953,7 +1033,11 @@ pub fn expect_object_i32_fields_multiworker_with_builtins(source: &str, expected
                 source
             );
             for (i, (&a, &e)) in actual.iter().zip(expected.iter()).enumerate() {
-                assert_eq!(a, e, "Object field {} mismatch: expected {}, got {}\nSource:\n{}", i, e, a, source);
+                assert_eq!(
+                    a, e,
+                    "Object field {} mismatch: expected {}, got {}\nSource:\n{}",
+                    i, e, a, source
+                );
             }
         }
         Err(e) => {
@@ -992,8 +1076,7 @@ pub fn debug_compile(source: &str) -> String {
         Err(e) => return format!("Type check error: {:?}", e),
     };
 
-    let compiler = Compiler::new(type_ctx, &interner)
-        .with_expr_types(check_result.expr_types);
+    let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
     match compiler.compile_with_debug(&ast) {
         Ok((_, debug_output)) => debug_output,
         Err(e) => format!("Compile error: {}", e),
