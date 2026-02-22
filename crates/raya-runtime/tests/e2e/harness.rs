@@ -4,11 +4,19 @@
 
 use raya_engine::compiler::{Compiler, Module};
 use raya_engine::vm::{Array, Object, Value, Vm, VmError, RayaString};
+use raya_engine::vm::gc::GcHeader;
 use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::parser::checker::{Binder, TypeChecker};
 use raya_runtime::StdNativeHandler;
+use std::cell::RefCell;
 use std::sync::Arc;
+
+thread_local! {
+    /// Keeps the most recently used VM alive on each test thread so pointer values
+    /// returned from `compile_and_run*` remain valid during assertions.
+    static LAST_VM: RefCell<Option<Vm>> = const { RefCell::new(None) };
+}
 
 /// Get the builtin source files content
 ///
@@ -215,7 +223,11 @@ pub fn compile_and_run(source: &str) -> E2EResult<Value> {
 
     // Use single worker to avoid resource contention during parallel test execution
     let mut vm = Vm::with_worker_count(1);
-    vm.execute(&module).map_err(E2EError::Vm)
+    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    LAST_VM.with(|slot| {
+        *slot.borrow_mut() = Some(vm);
+    });
+    Ok(value)
 }
 
 /// Compile and execute with builtins included
@@ -234,7 +246,11 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
         raya_stdlib_posix::register_posix(&mut registry);
     }
 
-    vm.execute(&module).map_err(E2EError::Vm)
+    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    LAST_VM.with(|slot| {
+        *slot.borrow_mut() = Some(vm);
+    });
+    Ok(value)
 }
 
 /// Compile and execute with builtins, expecting a specific i32 result
@@ -387,11 +403,30 @@ pub fn expect_string(source: &str, expected: &str) {
     match compile_and_run(source) {
         Ok(value) => {
             if value.is_ptr() {
-                // Extract string from pointer
-                // SAFETY: We trust that string values from the VM are RayaString pointers
-                let str_ptr = unsafe { value.as_ptr::<RayaString>() };
-                if let Some(ptr) = str_ptr {
-                    let raya_str = unsafe { &*ptr.as_ptr() };
+                // Extract string from pointer with runtime type check via GC header
+                // to avoid UB when a non-string pointer is returned.
+                let raw_ptr = unsafe { value.as_ptr::<u8>() };
+                if let Some(ptr) = raw_ptr {
+                    let header = unsafe {
+                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+                        &*(hp as *const GcHeader)
+                    };
+                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
+                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
+                            "Object"
+                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
+                            "Array"
+                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+                            "RayaString"
+                        } else {
+                            "Unknown"
+                        };
+                        panic!(
+                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
+                            detected, value, source
+                        );
+                    }
+                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
                     assert_eq!(
                         raya_str.data, expected,
                         "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
@@ -421,9 +456,28 @@ pub fn expect_string_with_builtins(source: &str, expected: &str) {
     match compile_and_run_with_builtins(source) {
         Ok(value) => {
             if value.is_ptr() {
-                let str_ptr = unsafe { value.as_ptr::<RayaString>() };
-                if let Some(ptr) = str_ptr {
-                    let raya_str = unsafe { &*ptr.as_ptr() };
+                let raw_ptr = unsafe { value.as_ptr::<u8>() };
+                if let Some(ptr) = raw_ptr {
+                    let header = unsafe {
+                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+                        &*(hp as *const GcHeader)
+                    };
+                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
+                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
+                            "Object"
+                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
+                            "Array"
+                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+                            "RayaString"
+                        } else {
+                            "Unknown"
+                        };
+                        panic!(
+                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
+                            detected, value, source
+                        );
+                    }
+                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
                     assert_eq!(
                         raya_str.data, expected,
                         "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
@@ -587,7 +641,11 @@ pub fn compile_and_run_multiworker(source: &str, worker_count: usize) -> E2EResu
     let (module, _interner) = compile(source)?;
 
     let mut vm = Vm::with_worker_count(worker_count);
-    vm.execute(&module).map_err(E2EError::Vm)
+    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    LAST_VM.with(|slot| {
+        *slot.borrow_mut() = Some(vm);
+    });
+    Ok(value)
 }
 
 /// Compile and execute with multiple workers, expecting a specific i32 result
@@ -631,7 +689,11 @@ pub fn compile_and_run_multiworker_with_builtins(source: &str, worker_count: usi
         raya_stdlib_posix::register_posix(&mut registry);
     }
 
-    vm.execute(&module).map_err(E2EError::Vm)
+    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    LAST_VM.with(|slot| {
+        *slot.borrow_mut() = Some(vm);
+    });
+    Ok(value)
 }
 
 /// Compile and execute with multiple workers and builtins, expecting a specific i32 result
