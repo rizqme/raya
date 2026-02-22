@@ -27,7 +27,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 | `raya bench` | — | Run benchmarks | Stub |
 | `raya fmt` | — | Format source files | Stub |
 | `raya lint` | — | Lint source files | Stub |
-| `raya repl` | — | Interactive REPL | **Implemented** — persistent session, multi-line, history, dot-commands |
+| `raya repl` | — | Interactive REPL | **Implemented** — persistent session, multi-line, history, REPL commands (no dot prefix) |
 | `raya bundle` | — | AOT compile to native bundle | **Implemented** — requires `--features aot` |
 | `raya doc` | — | Generate documentation | Stub |
 | `raya lsp` | — | Start Language Server | Stub |
@@ -67,7 +67,7 @@ src/
     │   ├── set_url.rs    # Registry URL management (project + global)
     │   ├── whoami.rs     # Current user info
     │   └── info.rs       # Package info (stub)
-    ├── repl.rs           # Interactive REPL (rustyline, Session, multi-line, dot-commands)
+    ├── repl.rs           # Interactive REPL (rustyline, Session, multi-line, REPL commands: help/clear/load/type/exit)
     ├── init.rs           # Project initialization (called by pkg dispatch)
     ├── install.rs        # Dependency installation (called by pkg dispatch)
     ├── add.rs            # Add dependency (called by pkg dispatch)
@@ -129,13 +129,15 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 
 - `run`, `build`, `eval`, `repl` are fully wired through `raya-runtime::Runtime`/`Session`
 - `repl.rs` uses `raya_runtime::Session` which accumulates declarations and re-compiles each eval
-- REPL supports: dot-commands (.help, .clear, .load, .type, .exit), multi-line input, colored output, history (~/.raya/repl_history)
+- **REPL commands** (no dot prefix): `help`, `clear`, `load`, `type`, `exit` (changed from `.help`, `.clear`, etc.)
+- REPL features: multi-line input, colored output, history (~/.raya/repl_history)
 - `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
 - `pkg` is the canonical PM namespace — all PM commands live in `PkgCommands` enum
 - Top-level `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade` are aliases that delegate to the same implementations
 - `pkg` registry subcommands (login/logout/set-url/whoami) are fully implemented
 - `clean` and `info` are functional
 - `run.rs` uses `Runtime::run_file()` which auto-detects .raya/.ryb and resolves deps from raya.toml
+- Dependency resolution: local path, URL/git (cached), registry packages
 - `eval.rs` auto-wraps bare expressions in `return ...;`
 - `build.rs` uses `Runtime::compile_file()` + `CompiledModule::encode()`
 - `bundle.rs` uses `raya-engine::aot` pipeline + `raya-runtime::bundle::format` for output

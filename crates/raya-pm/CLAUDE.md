@@ -11,8 +11,8 @@ This crate provides package management functionality:
 - Semver version parsing and constraint matching
 - Dependency resolution
 - Local path dependency resolution
+- **URL/Git dependency resolution** (direct HTTP/HTTPS, git repos, cached)
 - Registry client (HTTP API for raya.dev)
-- URL imports (direct HTTP/HTTPS fetching and caching)
 - Command implementations (init, install, add, remove)
 
 ## Usage

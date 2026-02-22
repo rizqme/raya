@@ -158,6 +158,9 @@ pub const STRING_CHAR_AT: u16 = 0x0200;
 
 - Use `compile_via_ir()` - it's the full optimizing pipeline
 - `codegen_ast.rs` is legacy, prefer IR-based compilation
-- Native IDs must match VM dispatch in `vm/vm/interpreter.rs`
+- Native IDs must match VM dispatch in `vm/interpreter/opcodes/native.rs`
 - Monomorphization happens before optimization
 - All generics are specialized at compile time
+- **Rest parameters** (`...args`) lowered to array allocation + argument collection
+- **Optional parameters** (`param?`) handled with default value initialization
+- **Method-level type parameters** partially supported (ongoing work)

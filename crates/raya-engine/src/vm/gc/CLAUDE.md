@@ -11,17 +11,53 @@ Manages memory allocation and reclamation for heap-allocated values (objects, ar
 ```
 gc/
 ├── mod.rs       # Entry point, GC struct
-├── heap.rs      # Heap allocation
+├── heap.rs      # Shared heap allocation
+├── nursery.rs   # Per-task bump allocator (NEW)
 ├── mark.rs      # Mark phase
 ├── sweep.rs     # Sweep phase
-└── roots.rs     # Root set management
+├── ptr.rs       # Smart pointers (ObjectRef, ArrayRef, etc.)
+└── header.rs    # Object headers
 ```
 
 ## Current Status
 
-**Status: Placeholder/Minimal**
+**Status: Active Development**
 
-The GC is currently minimal - basic allocation without collection. Full implementation is planned.
+The GC uses mark-sweep collection with a **per-task nursery allocator** to reduce lock contention.
+
+### Nursery Allocator (NEW)
+
+Each task has a 64KB bump allocator for short-lived objects:
+
+```rust
+pub struct Nursery {
+    buffer: UnsafeCell<Vec<u8>>,    // 64KB backing buffer
+    cursor: UnsafeCell<usize>,       // Bump pointer
+    capacity: usize,                 // 64 * 1024
+    allocation_count: UnsafeCell<usize>,
+}
+```
+
+**Allocation Strategy:**
+- Fast bump allocation (no GC lock acquired)
+- Objects either:
+  - Promoted to shared heap when they escape (stored in globals, channels, etc.)
+  - Discarded en masse when nursery resets (at task completion or when full)
+- Fallback to shared GC when nursery is full
+
+**Benefits:**
+- Zero GC lock contention for temporary allocations
+- Fast allocation (pointer bump only)
+- Reduced pressure on shared GC
+
+```rust
+// Usage in task
+let nursery = Nursery::new();
+let ptr = unsafe { nursery.allocate(value) };  // Fast, no lock
+
+// When full or task completes
+unsafe { nursery.reset(); }  // All pointers invalidated
+```
 
 ## Planned Design
 
@@ -62,7 +98,14 @@ pub struct RootSet {
 
 ```
 ┌─────────────────────────────────────────┐
-│              Heap                        │
+│         Per-Task Nursery (64KB)         │
+├─────────────────────────────────────────┤
+│ Bump allocator for short-lived objects │
+│ Reset on task completion or when full   │
+└─────────────────────────────────────────┘
+                  ↓ (on escape)
+┌─────────────────────────────────────────┐
+│           Shared GC Heap                │
 ├─────────────────────────────────────────┤
 │ Object | Array | Free | String | ...    │
 ├─────────────────────────────────────────┤
@@ -134,20 +177,24 @@ if gc.should_collect() {
 | Feature | Status |
 |---------|--------|
 | Basic allocation | Complete |
+| Nursery allocator | **Complete** ✅ |
 | Mark phase | Partial |
-| Sweep phase | TODO |
+| Sweep phase | Partial |
 | Stop-the-world | TODO |
 | Root tracking | Partial |
 | Native pinning | Complete |
+| JSON GC safety | **Complete** ✅ |
 | Generational GC | Future |
 | Concurrent marking | Future |
 
 ## For AI Assistants
 
-- GC is currently minimal (no collection)
-- Mark-sweep is the planned algorithm
+- **Nursery allocator** (64KB per-task bump allocator) reduces GC lock contention for temporary objects
+- Objects escape to shared heap when stored in globals/channels
+- Mark-sweep is the collection algorithm (partial implementation)
 - Stop-the-world required for consistency
 - Native code must pin values during calls
 - Safepoints enable safe collection points
+- JSON parsing now pins objects to prevent premature GC
 - Future: generational for better performance
 - Future: concurrent marking for lower latency

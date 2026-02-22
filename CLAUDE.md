@@ -176,7 +176,12 @@
 - POSIX: fs, net, http, fetch, env, process, os, io, dns, terminal, ws, readline, glob, archive, watch
 - Remaining: std:test (separate task)
 
-**Tests:** 3,348+ total (1,721 engine + 147 JIT + 55 AOT, 1,297 runtime + 15 bundle, 39 CLI (26 integration + 13 unit), 41 stdlib, 204 raya-pm) — 0 ignored
+**Language Completeness:** Comprehensive testing phase complete
+- 773 new comprehensive tests added across 12 new test modules
+- Test coverage: bug hunting (5 rounds, 26 bugs found/fixed), compiler edge cases, cross-feature interactions, parser stress tests, type system edge cases, diagnostics, missing features
+- Discovered and fixed: method-level type params, Array.splice(), closure capture, JSON GC safety, rest parameters, optional parameters
+
+**Tests:** 4,121+ total (1,136 engine lib + 147 JIT + 55 AOT, 2,450 runtime e2e + 30 runtime lib + 15 bundle, 39 CLI (26 integration + 13 unit), 41 stdlib, 204 raya-pm) — 0 ignored
 
 **`raya check` Command:** Complete
 - Type-check without building: Parse → Bind → TypeCheck (no codegen)
@@ -192,7 +197,7 @@
 - `raya pkg` is canonical PM namespace (init, install, add, remove, update, publish, upgrade, login, logout, set-url, whoami, info)
 - Common PM commands aliased at top-level: `raya init`, `raya install`, `raya add`, `raya remove`, `raya update`, `raya publish`, `raya upgrade`
 - Dependency resolution: local path, URL/git (cached), registry packages
-- `raya repl`: persistent session, multi-line input, history, dot-commands (.help/.clear/.load/.type/.exit)
+- `raya repl`: persistent session, multi-line input, history, REPL commands (help/clear/load/type/exit — no dot prefix)
 - Session accumulates declarations (let, const, function, class, import) across evals
 - 26 CLI integration tests + 13 REPL unit tests
 
@@ -227,17 +232,23 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 - `typeof` for primitive unions (`string | int | number | boolean | null`)
 - `instanceof` for class type checking
 - Discriminated unions for complex types (required discriminant field)
+- Rest parameters: `function foo(...args: int[])`
+- Optional parameters: `function bar(x: int, y?: string)` (required before optional)
+- Method-level type parameters: `class C { foo<T>(x: T): T { ... } }` (partial support)
 - **BANNED:** `any` type, runtime type tags/RTTI
 
 ### Concurrency
 - `async` functions create Tasks (green threads), start immediately
 - `await` suspends current Task (doesn't block OS thread)
 - Work-stealing scheduler across CPU cores
+- Task spawn optimization: lazy stacks, stack pooling, mutex consolidation
+- Per-task nursery allocator (64KB bump allocator) for reduced GC contention
 
 ### Compilation
 - Monomorphization (generics specialized at compile time)
 - Typed opcodes: `IADD` (int), `FADD` (float/number)
 - No runtime type checking overhead
+- Builtin classes: lowercase filenames (array.raya, string.raya), centralized TypeRegistry dispatch
 
 ---
 

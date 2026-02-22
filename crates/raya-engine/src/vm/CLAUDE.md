@@ -58,7 +58,7 @@ vm/
 | Range | Module | Description |
 |-------|--------|-------------|
 | 0x00xx | Object | hashCode, equals, toString |
-| 0x01xx | Array | push, pop, shift, slice, sort, map, filter, etc. |
+| 0x01xx | Array | push, pop, shift, slice, sort, map, filter, splice, etc. |
 | 0x02xx | String | charAt, substring, indexOf, split, replace, etc. |
 | 0x03xx | Mutex | lock, unlock |
 | 0x04xx | Channel | send, receive, close, tryReceive, etc. |
@@ -101,11 +101,14 @@ See [scheduler/CLAUDE.md](scheduler/CLAUDE.md).
 - Single-threaded reactor (control loop) + VM worker pool + IO worker pool
 - Task preemption (Go-style async)
 - Blocking IO offloaded to IO pool via `Suspend(BlockingWork)`
+- Task spawn optimization: lazy stacks, stack pooling, mutex consolidation
 
 ### `gc/` - Garbage Collector
 See [gc/CLAUDE.md](gc/CLAUDE.md).
-- Mark-sweep collection
+- Mark-sweep collection with nursery allocator
+- Per-task 64KB bump allocator (reduces GC lock contention)
 - Object roots tracking
+- Promotion to shared heap on escape
 
 ### `reflect/` - Reflection API Runtime
 - Phases 1-17 implemented (metadata, introspection, proxies, dynamic code, permissions)
@@ -136,12 +139,14 @@ const result = await task;  // Suspends current task
 ## For AI Assistants
 
 - VM is stack-based with local variable slots
-- Tasks are green threads, not OS threads
+- Tasks are green threads, not OS threads (optimized spawn with lazy stacks + pooling)
 - Scheduler uses work-stealing for parallelism
 - Objects have vtables for method dispatch
 - Values are NaN-boxed (64-bit tagged), not heap-boxed for primitives
+- **Nursery allocator**: per-task 64KB bump allocator for short-lived objects (no GC lock)
 - Native calls use `NativeCall` opcode + native ID (dispatched in `interpreter/opcodes/native.rs`)
 - JIT integration: `Vm` has optional `jit_engine` field (`#[cfg(feature = "jit")]`), enable via `vm.enable_jit()`. Pre-warms hot functions at module load time. Supports loops (RPO lifting, Phi insertion, deferred block sealing). Adaptive compilation via background thread with profile-guided thresholds.
 - Stdlib native calls delegate to `NativeHandler` trait (implemented by `StdNativeHandler` in raya-stdlib)
 - `ModuleNativeCall` uses `NativeFunctionRegistry` for name-based dispatch
 - Exception handling uses try/catch blocks in bytecode
+- **Builtin classes**: lowercase files (array.raya, string.raya), centralized TypeRegistry dispatch

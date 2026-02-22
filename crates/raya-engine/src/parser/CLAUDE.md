@@ -23,6 +23,10 @@ Token definitions and source spans.
 ```rust
 pub enum Token { ... }
 pub struct Span { start, end, line, column }
+
+// Key tokens for recent features:
+Token::DotDotDot    // ... for rest/spread parameters
+Token::Question     // ? for optional parameters
 ```
 
 ### `lexer.rs`
@@ -92,3 +96,6 @@ let type_ctx = result.type_context();
 - Interner is used for all identifiers/strings
 - Type checker produces `CheckResult` with errors + type context
 - AST nodes include `Span` for error reporting
+- **Rest parameters** (`...args`) parsed via `Token::DotDotDot`
+- **Optional parameters** (`param?`) parsed via `Token::Question`
+- Parameter ordering validated: required params must come before optional params

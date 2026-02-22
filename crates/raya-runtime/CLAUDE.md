@@ -76,8 +76,15 @@ src/
 
 tests/
 ├── e2e_tests.rs        # E2E test entry point
-└── e2e/                # 27+ test modules (1,297+ tests)
+└── e2e/                # 62 test modules (2,450+ tests)
     ├── harness.rs       # Test harness (compile + execute)
+    ├── bug_hunting*.rs  # 5 modules: bug hunting rounds 1-5 (773 tests)
+    ├── compiler_edge_cases.rs
+    ├── cross_feature.rs
+    ├── diagnostics.rs
+    ├── missing_features.rs
+    ├── parser_stress.rs
+    ├── type_system_edge_cases.rs
     └── *.rs             # Feature modules (arrays, classes, closures, concurrency, etc.)
 ```
 
@@ -115,10 +122,13 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 
 ## Tests
 
-- **E2E tests** (1,297+): Full compilation + execution tests using `StdNativeHandler`
+- **E2E tests** (2,450+): Full compilation + execution tests using `StdNativeHandler`
+  - 773 new comprehensive tests (bug hunting rounds 1-5)
+  - Test coverage: edge cases, cross-feature interactions, parser stress, type system, diagnostics
+  - Discovered and fixed 26+ bugs
+- **Runtime lib tests** (30): Unit tests for Runtime API
 - **Bundle tests** (15): Format roundtrip, loader, VFS (DiskBacked + Embedded)
 - **0 ignored**: All tests passing
-- Test modules include: syntax_edge_cases, concurrency_edge_cases, edge_cases, and 30+ feature modules
 
 ## For AI Assistants
 

@@ -65,6 +65,7 @@ lowerer.lower_stmt(&stmt)
 - `Return` → `Terminator::Return`
 - `Throw` → `Terminator::Throw`
 - `Try/Catch` → `SetupTry`, `EndTry`, catch blocks
+- `FunctionDecl` with rest params (`...args`) → collect variadic args into array
 
 ### Expression Lowering (`expr.rs`)
 
@@ -78,6 +79,7 @@ lowerer.lower_expr(&expr) -> Register
 - Member access → `LoadField`
 - Array index → `LoadElement`
 - Arrow functions → `MakeClosure` with captures
+- Optional parameters (`param?`) → default value initialization
 - `new` → `NewObject` + constructor call
 - `await` → `Await` instruction
 

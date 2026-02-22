@@ -13,7 +13,8 @@ scheduler/
 ├── mod.rs        # Public API, re-exports
 ├── scheduler.rs  # Scheduler struct (spawns reactor)
 ├── reactor.rs    # Unified reactor loop (single control thread)
-└── task.rs       # Task struct, state machine
+├── task.rs       # Task struct, state machine
+└── pool.rs       # Stack pooling for task reuse (NEW)
 ```
 
 ## Architecture
@@ -68,7 +69,37 @@ Ready → Running → Suspended → Resumed → Running → ... → Completed/Fa
 - `Suspended`: set by reactor in handle_vm_result (or try_suspend for MutexLock)
 - `Resumed`: set by wakeup source (reactor or VM worker for MutexUnlock)
 
-## IO Integration (BlockingWork)
+## Task Spawn Optimization (NEW)
+
+Recent optimizations dramatically reduce task spawn overhead:
+
+### Lazy Stack Allocation
+```rust
+pub struct Task {
+    stack: Option<Box<Stack>>,  // Allocated on first use
+    // ...
+}
+```
+- Stacks not allocated until first bytecode execution
+- Saves memory for tasks that complete before running
+
+### Stack Pooling
+```rust
+pub struct StackPool {
+    pool: Mutex<Vec<Box<Stack>>>,  // Reusable stacks
+    max_size: usize,                // Pool capacity limit
+}
+```
+- Completed tasks return stacks to pool
+- New tasks reuse pooled stacks (skip allocation)
+- Bounded pool size to prevent unbounded memory growth
+
+### Mutex Consolidation
+- Reduced mutex count in Task struct
+- Combined multiple small locks into fewer, coarser locks
+- Lower contention and fewer allocations
+
+**Impact:** Significant reduction in task spawn latency and memory overhead.
 
 Native handlers return `NativeCallResult::Suspend(IoRequest::BlockingWork { work })` to offload blocking IO to the IO pool. The reactor routes the work, and when the IO pool returns `IoCompletion`, the reactor converts it to a `Value` and resumes the task via `complete_task`.
 
@@ -81,8 +112,10 @@ Native handlers return `NativeCallResult::Suspend(IoRequest::BlockingWork { work
 ## For AI Assistants
 
 - **Single reactor thread** — all scheduling decisions happen here (no races between scheduler operations)
+- **Task spawn optimization** — lazy stacks, stack pooling (pool.rs), mutex consolidation for lower overhead
 - **MutexLock is special** — only suspend reason where wakeup happens on VM workers, not reactor. Uses `try_suspend()`.
 - The `injector` (crossbeam deque) is used for spawned tasks and mutex-woken tasks
 - `active_vm_tasks` tracks how many tasks are on VM workers (for backpressure)
 - Timer heap uses `BinaryHeap<SleepEntry>` with `Reverse`-like ordering (earliest wake first)
 - Channel waiters use 3-phase resolution: try buffer ops, pair senders with receivers, re-queue unresolved
+- **Stack pooling** dramatically reduces allocation overhead for short-lived tasks

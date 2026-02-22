@@ -35,8 +35,8 @@ src/
 
 ### `vm/` - Runtime
 - **interpreter/**: Single-executor bytecode interpreter (opcodes/ + handlers/ modules)
-- **scheduler/**: Work-stealing task scheduler
-- **gc/**: Garbage collector
+- **scheduler/**: Unified reactor + VM/IO worker pools, task spawn optimization (lazy stacks, pooling)
+- **gc/**: Garbage collector with per-task nursery allocator (64KB bump allocator)
 - **stack.rs**: Call frames, operand stack
 - **object.rs**: Object model (Class, Array, String, Closure, Buffer, Map, Set)
 - **builtin.rs**: Native ID constants (all ranges: 0x01xx-0x6000+)
@@ -185,21 +185,26 @@ Vm::execute(&Module) -> VmResult<Value>
 
 ## Test Files
 
-- **Engine total** (1,721): Unit tests + integration tests (without JIT or AOT)
+- **Engine lib tests** (1,136): Unit tests across all modules
 - **JIT tests** (147): 88 unit tests in `src/jit/` + 59 integration tests in `tests/jit_integration.rs` (requires `--features jit`)
 - **AOT tests** (55): Unit tests across 12 modules in `src/aot/` (requires `--features aot`)
-- **E2E tests** (1,297): In `raya-runtime/tests/` (require `StdNativeHandler`)
-- **CLI tests** (19): In `raya-cli/tests/` (use `raya-runtime::Runtime`)
-- `tests/module_loading.rs`: 29 E2E tests (load/execute pipeline, registry, classes, snapshots, file I/O)
-- `tests/reflect_phase8_tests.rs`: Reflect API integration tests
-- `tests/opcode_tests.rs`: Individual opcode tests
+- **Runtime e2e tests** (2,450): In `raya-runtime/tests/e2e/` (62 test modules including bug hunting, edge cases)
+- **Runtime lib tests** (30): In `raya-runtime/tests/`
+- **Bundle tests** (15): In `raya-runtime/tests/bundle/`
+- **CLI tests** (39): 26 integration + 13 REPL unit tests in `raya-cli/tests/`
+- **Stdlib tests** (41): In `raya-stdlib/tests/`
+- **Package manager tests** (204): In `raya-pm/tests/`
 
 ## Important Notes
 
 - **No runtime type checks**: All types verified at compile time
 - **Monomorphization**: Generics are specialized per concrete type
-- **Task-based concurrency**: `async` creates Tasks, `await` suspends
+- **Task-based concurrency**: `async` creates Tasks, `await` suspends; optimized spawn (lazy stacks, pooling)
+- **Nursery allocator**: Per-task 64KB bump allocator reduces GC lock contention
 - **Typed opcodes**: `IADD` (int), `FADD` (float/number)
+- **Rest parameters**: `...args` syntax fully supported
+- **Optional parameters**: `param?` syntax with ordering validation
+- **Builtin classes**: lowercase filenames (array.raya, string.raya), centralized TypeRegistry dispatch
 - **NativeHandler trait**: Engine defines this trait for stdlib decoupling; `raya-runtime` binds implementations via `Runtime` API
 - **Reflection always enabled**: No compiler flag needed, metadata always emitted
 - **JIT is feature-gated**: `cargo build --features jit` pulls in Cranelift; without the flag, no JIT deps
