@@ -138,7 +138,7 @@ mod tests {
     fn test_nursery_allocate() {
         let mut nursery = Nursery::new();
 
-        let ptr = nursery.allocate(42i32);
+        let ptr = unsafe { nursery.allocate(42i32) };
         assert!(ptr.is_some());
         assert_eq!(unsafe { *ptr.unwrap() }, 42);
     }
@@ -147,9 +147,9 @@ mod tests {
     fn test_nursery_multiple_allocations() {
         let mut nursery = Nursery::new();
 
-        let p1 = nursery.allocate(1i32);
-        let p2 = nursery.allocate(2i32);
-        let p3 = nursery.allocate(3i32);
+        let p1 = unsafe { nursery.allocate(1i32) };
+        let p2 = unsafe { nursery.allocate(2i32) };
+        let p3 = unsafe { nursery.allocate(3i32) };
 
         assert!(p1.is_some());
         assert!(p2.is_some());
@@ -166,7 +166,7 @@ mod tests {
     fn test_nursery_reset() {
         let mut nursery = Nursery::new();
 
-        nursery.allocate(42i32);
+        unsafe { nursery.allocate(42i32); }
         assert_eq!(nursery.used_bytes(), 4);
         assert_eq!(nursery.allocation_count(), 1);
 
@@ -183,13 +183,13 @@ mod tests {
         let mut nursery = Nursery::with_capacity(16);
 
         // Small allocations should work
-        assert!(nursery.allocate(1i32).is_some());
-        assert!(nursery.allocate(2i32).is_some());
-        assert!(nursery.allocate(3i32).is_some());
+        assert!(unsafe { nursery.allocate(1i32) }.is_some());
+        assert!(unsafe { nursery.allocate(2i32) }.is_some());
+        assert!(unsafe { nursery.allocate(3i32) }.is_some());
 
         // Large allocation should fail
         let large: [u8; 32] = [0; 32];
-        assert!(nursery.allocate(large).is_none());
+        assert!(unsafe { nursery.allocate(large) }.is_none());
     }
 
     #[test]
@@ -198,10 +198,10 @@ mod tests {
 
         assert_eq!(nursery.remaining_bytes(), 64);
 
-        nursery.allocate(1i32);
+        unsafe { nursery.allocate(1i32); }
         assert_eq!(nursery.remaining_bytes(), 60);
 
-        nursery.allocate(1i32);
+        unsafe { nursery.allocate(1i32); }
         assert_eq!(nursery.remaining_bytes(), 56);
     }
 
@@ -210,8 +210,8 @@ mod tests {
         let mut nursery = Nursery::new();
 
         // Allocate a bool (1 byte) then a u64 (8 byte aligned)
-        nursery.allocate(true);
-        let ptr = nursery.allocate(42u64);
+        unsafe { nursery.allocate(true); }
+        let ptr = unsafe { nursery.allocate(42u64) };
 
         assert!(ptr.is_some());
         // The u64 should be properly aligned
@@ -232,7 +232,7 @@ mod tests {
         }
 
         let mut nursery = Nursery::new();
-        nursery.allocate(Dropper);
+        unsafe { nursery.allocate(Dropper); }
 
         // Reset doesn't drop - we need to drop manually before reset
         unsafe {

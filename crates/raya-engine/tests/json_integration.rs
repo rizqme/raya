@@ -11,7 +11,7 @@
 //! - Error handling
 
 use raya_engine::vm::gc::GarbageCollector;
-use raya_engine::vm::json::{parser, stringify};
+use raya_engine::vm::json::{parser, stringify, json_to_value, JsonValue};
 use raya_engine::vm::object::RayaString;
 
 // ============================================================================
@@ -433,9 +433,7 @@ fn test_json_gc_survival_simple() {
     let parsed = parser::parse(json, &mut gc).unwrap();
 
     // Trigger multiple collections
-    for _ in 0..5 {
-        gc.collect();
-    }
+    collect_json_with_root(&mut gc, &parsed, 5);
 
     // Verify structure is still accessible and intact
     assert!(parsed.is_object());
@@ -464,7 +462,7 @@ fn test_json_gc_nested_structures() {
     assert!(parsed.is_object());
 
     // Trigger GC - all nested objects should survive if rooted
-    gc.collect();
+    collect_json_with_root(&mut gc, &parsed, 1);
 
     // Navigate to verify structure survived
     let mut current = parsed;
@@ -491,9 +489,7 @@ fn test_json_gc_array_of_objects() {
     assert!(parsed.is_array());
 
     // Trigger GC multiple times
-    for _ in 0..5 {
-        gc.collect();
-    }
+    collect_json_with_root(&mut gc, &parsed, 5);
 
     // Verify structure is intact
     let arr_ptr = parsed.as_array().unwrap();
@@ -530,7 +526,7 @@ fn test_json_gc_large_allocation() {
     assert!(parsed.is_array());
 
     // Trigger GC - should handle the large structure
-    gc.collect();
+    collect_json_with_root(&mut gc, &parsed, 1);
 
     // Verify structure is intact
     let arr_ptr = parsed.as_array().unwrap();
@@ -564,7 +560,7 @@ fn test_json_gc_mixed_types() {
     assert!(parsed.is_object());
 
     // Trigger GC
-    gc.collect();
+    collect_json_with_root(&mut gc, &parsed, 1);
 
     // Verify all types survived
     assert!(parsed.get_property("null_val").is_null());
@@ -593,7 +589,7 @@ fn test_json_gc_string_deduplication() {
     assert!(parsed.is_object());
 
     // Trigger GC
-    gc.collect();
+    collect_json_with_root(&mut gc, &parsed, 1);
 
     // Verify all strings are accessible
     let key1 = parsed.get_property("key1");
@@ -611,4 +607,13 @@ fn test_json_gc_string_deduplication() {
     assert!(arr[0].is_string());
     assert!(arr[1].is_string());
     assert!(arr[2].is_string());
+}
+
+fn collect_json_with_root(gc: &mut GarbageCollector, value: &JsonValue, iterations: usize) {
+    let root_value = json_to_value(value, gc);
+    gc.add_root(root_value);
+    for _ in 0..iterations {
+        gc.collect();
+    }
+    gc.clear_stack_roots();
 }
