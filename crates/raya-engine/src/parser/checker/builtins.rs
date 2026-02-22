@@ -10,6 +10,7 @@ pub struct BuiltinMethod {
     pub params: Vec<(String, String)>, // (name, type)
     pub return_type: String,
     pub is_static: bool,
+    pub type_params: Vec<String>, // Method-level type parameters
 }
 
 /// Property signature for a builtin class
@@ -96,6 +97,18 @@ impl BuiltinClass {
             params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
             return_type: return_type.to_string(),
             is_static: false,
+            type_params: Vec::new(),
+        });
+        self
+    }
+
+    pub fn with_method_type_params(mut self, name: &str, type_params: Vec<&str>, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+        self.methods.push(BuiltinMethod {
+            name: name.to_string(),
+            params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            return_type: return_type.to_string(),
+            is_static: false,
+            type_params: type_params.into_iter().map(String::from).collect(),
         });
         self
     }
@@ -106,6 +119,7 @@ impl BuiltinClass {
             params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
             return_type: return_type.to_string(),
             is_static: true,
+            type_params: Vec::new(),
         });
         self
     }

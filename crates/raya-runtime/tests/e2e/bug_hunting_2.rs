@@ -483,31 +483,25 @@ fn test_heterogeneous_array_virtual_dispatch() {
 // 16. String Concatenation with Numbers via Template
 // ============================================================================
 
-// BUG DISCOVERY: String concatenation with non-string types via `+` operator
-// uses Rust's Debug format instead of Display format.
-// "answer: " + 42 produces "answer: int(42)" instead of "answer: 42".
-// The spec says number → string should auto-convert (e.g. 42 → "42").
-// #[test]
-// fn test_string_concat_with_number_via_plus() {
-//     expect_string(
-//         "let x: int = 42;
-//          return \"answer: \" + x;",
-//         "answer: 42",
-//     );
-// }
+// FIXED: String concatenation now uses Display format instead of Debug
+#[test]
+fn test_string_concat_with_number_via_plus() {
+    expect_string(
+        "let x: int = 42;
+         return \"answer: \" + x;",
+        "answer: 42",
+    );
+}
 
-// BUG DISCOVERY: Same string + non-string concatenation issue.
-// "n=" + 42 + " b=" + true produces "n=int(42) b=bool(true)"
-// instead of "n=42 b=true".
-// #[test]
-// fn test_string_concat_multiple_types() {
-//     expect_string(
-//         "let n: int = 42;
-//          let b: boolean = true;
-//          return \"n=\" + n + \" b=\" + b;",
-//         "n=42 b=true",
-//     );
-// }
+#[test]
+fn test_string_concat_multiple_types() {
+    expect_string(
+        "let n: int = 42;
+         let b: boolean = true;
+         return \"n=\" + n + \" b=\" + b;",
+        "n=42 b=true",
+    );
+}
 
 // ============================================================================
 // 17. Complex While Loop Patterns

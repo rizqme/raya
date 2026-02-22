@@ -198,6 +198,7 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
                             params: m.params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
                             return_type: m.return_type.to_string(),
                             is_static: m.is_static,
+                            type_params: vec![], // VM builtins don't support method-level type params yet
                         }
                     }).collect(),
                     constructor_params: c.constructor.map(|params| {

@@ -2425,11 +2425,13 @@ impl<'a> TypeChecker<'a> {
                 Some(self.type_ctx.function_type_with_min_params(vec![compare_fn_ty], array_ty, false, 0))
             }
             // map(fn: (elem: T) => T) -> Array<T> (simplified - without generic U)
+            // TODO: Support map<U>(fn: (elem: T) => U): U[] with polymorphic function types
             "map" => {
                 let callback_ty = self.type_ctx.function_type(vec![elem_ty], elem_ty, false);
                 Some(self.type_ctx.function_type(vec![callback_ty], array_ty, false))
             }
             // reduce(fn: (acc: T, elem: T) => T, initial: T) -> T (simplified)
+            // TODO: Support reduce<U>(fn: (acc: U, elem: T) => U, initial: U): U with polymorphic function types
             "reduce" => {
                 let callback_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], elem_ty, false);
                 Some(self.type_ctx.function_type(vec![callback_ty, elem_ty], elem_ty, false))

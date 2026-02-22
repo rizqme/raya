@@ -108,8 +108,30 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
                 let mut result: i32 = -1;
+
+                // Helper function to compare two values for equality
+                // For strings, uses value equality instead of pointer equality
+                let values_equal = |a: &Value, b: &Value| -> bool {
+                    if a == b {
+                        true
+                    } else if a.is_ptr() && b.is_ptr() {
+                        // Both are pointers - check if they're strings and compare data
+                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
+                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
+                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
+                            let a_str = unsafe { &*a_ptr.as_ptr() };
+                            let b_str = unsafe { &*b_ptr.as_ptr() };
+                            a_str.data == b_str.data
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
                 for (i, elem) in arr.elements.iter().enumerate().skip(from_index) {
-                    if *elem == value {
+                    if values_equal(elem, &value) {
                         result = i as i32;
                         break;
                     }
@@ -238,8 +260,30 @@ impl<'a> Interpreter<'a> {
 
                 let end = from_index.unwrap_or(arr.elements.len().saturating_sub(1));
                 let mut found_index: i32 = -1;
+
+                // Helper function to compare two values for equality
+                // For strings, uses value equality instead of pointer equality
+                let values_equal = |a: &Value, b: &Value| -> bool {
+                    if a == b {
+                        true
+                    } else if a.is_ptr() && b.is_ptr() {
+                        // Both are pointers - check if they're strings and compare data
+                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
+                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
+                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
+                            let a_str = unsafe { &*a_ptr.as_ptr() };
+                            let b_str = unsafe { &*b_ptr.as_ptr() };
+                            a_str.data == b_str.data
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
                 for i in (0..=end.min(arr.elements.len().saturating_sub(1))).rev() {
-                    if arr.elements[i] == search_val {
+                    if values_equal(&arr.elements[i], &search_val) {
                         found_index = i as i32;
                         break;
                     }

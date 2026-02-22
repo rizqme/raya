@@ -196,30 +196,27 @@ fn test_generic_array_of_generic() {
 // 5. Array.map Returning Different Type
 // ============================================================================
 
-// BUG DISCOVERY: Array.map() cannot return a different type than the
-// array element type. `int[].map((x: int): string => ...)` fails with
-// TypeMismatch — the type checker forces the callback to return the
-// same type as the array elements, defeating the purpose of map().
-// #[test]
-// fn test_array_map_int_to_string() {
-//     expect_string(
-//         "let nums: int[] = [1, 2, 3];
-//          let strs = nums.map((x: int): string => `num:${x}`);
-//          return strs[0];",
-//         "num:1",
-//     );
-// }
-//
-// BUG DISCOVERY: Same map type transformation issue — int[] → boolean[].
-// #[test]
-// fn test_array_map_int_to_bool() {
-//     expect_bool(
-//         "let nums: int[] = [1, 2, 3];
-//          let bools = nums.map((x: int): boolean => x > 2);
-//          return bools[2];",
-//         true,
-//     );
-// }
+// FIXED: Array.map() can now return a different type than the
+// array element type. Generic type parameter U allows transformation.
+#[test]
+fn test_array_map_int_to_string() {
+    expect_string(
+        "let nums: int[] = [1, 2, 3];
+         let strs = nums.map((x: int): string => `num:${x}`);
+         return strs[0];",
+        "num:1",
+    );
+}
+
+#[test]
+fn test_array_map_int_to_bool() {
+    expect_bool(
+        "let nums: int[] = [1, 2, 3];
+         let bools = nums.map((x: int): boolean => x > 2);
+         return bools[2];",
+        true,
+    );
+}
 
 // ============================================================================
 // 6. Property Access on Nullable Without Narrowing (should error)
@@ -497,17 +494,14 @@ fn test_three_level_abstract_hierarchy() {
 // 15. Typeof on Various Values
 // ============================================================================
 
-// BUG DISCOVERY: `typeof 42` returns "number" instead of "int".
-// Raya has distinct `int` (i32) and `number` (f64) types, so `typeof`
-// on an integer literal should return "int", not "number". The runtime
-// doesn't distinguish between the two numeric types in typeof.
-// #[test]
-// fn test_typeof_int() {
-//     expect_string(
-//         "return typeof 42;",
-//         "int",
-//     );
-// }
+// FIXED: `typeof 42` now returns "int" for i32 values
+#[test]
+fn test_typeof_int() {
+    expect_string(
+        "return typeof 42;",
+        "int",
+    );
+}
 
 #[test]
 fn test_typeof_number() {
@@ -872,20 +866,16 @@ fn test_ternary_in_function_arg() {
 // 29. Array of Strings with Methods
 // ============================================================================
 
-// BUG DISCOVERY: Array.map() cannot return a different type than the
-// array element type. `string[].map((w: string): int => w.length)` fails
-// because the type checker forces the callback return type to match the
-// element type (string), not the declared return type (int).
-// Same root cause as test_array_map_int_to_string above.
-// #[test]
-// fn test_array_of_strings_map_length() {
-//     expect_i32(
-//         "let words: string[] = [\"hi\", \"hello\", \"hey\"];
-//          let lengths = words.map((w: string): int => w.length);
-//          return lengths[0] + lengths[1] + lengths[2];",
-//         12,
-//     );
-// }
+// FIXED: Array.map() can now transform string[] to int[]
+#[test]
+fn test_array_of_strings_map_length() {
+    expect_i32(
+        "let words: string[] = [\"hi\", \"hello\", \"hey\"];
+         let lengths = words.map((w: string): int => w.length);
+         return lengths[0] + lengths[1] + lengths[2];",
+        12,
+    );
+}
 
 // ============================================================================
 // 30. Complex While + For Interaction
@@ -1011,20 +1001,17 @@ fn test_deeply_nested_function_calls() {
 // 36. Array Reduce with Different Accumulator Type
 // ============================================================================
 
-// BUG DISCOVERY: Array.reduce() accumulator type must match the array
-// element type. `int[].reduce((acc: string, x: int): string => ..., "")`
-// fails because the type checker expects the accumulator to be `int`,
-// not `string`. This severely limits reduce's usefulness — it can only
-// fold into the same type as the array elements.
-// #[test]
-// fn test_reduce_to_string() {
-//     expect_string(
-//         "let nums: int[] = [1, 2, 3];
-//          let result = nums.reduce((acc: string, x: int): string => `${acc}${x}`, \"\");
-//          return result;",
-//         "123",
-//     );
-// }
+// FIXED: Array.reduce() accumulator can now be a different type.
+// Generic type parameter U allows folding into any type.
+#[test]
+fn test_reduce_to_string() {
+    expect_string(
+        "let nums: int[] = [1, 2, 3];
+         let result = nums.reduce((acc: string, x: int): string => `${acc}${x}`, \"\");
+         return result;",
+        "123",
+    );
+}
 
 // ============================================================================
 // 37. Generic Function with Default Type Behavior

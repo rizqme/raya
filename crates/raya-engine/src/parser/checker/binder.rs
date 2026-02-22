@@ -621,15 +621,20 @@ impl<'a> Binder<'a> {
         let methods: Vec<MethodSignature> = class_sig.methods.iter()
             .filter(|m| !m.is_static)
             .map(|m| {
-                let param_types: Vec<TypeId> = m.params.iter()
-                    .map(|(_, ty)| self.parse_type_string(ty, &type_params))
+                // Combine class type params with method type params for parsing
+                let all_type_params: Vec<String> = type_params.iter()
+                    .chain(m.type_params.iter())
+                    .cloned()
                     .collect();
-                let return_ty = self.parse_type_string(&m.return_type, &type_params);
+                let param_types: Vec<TypeId> = m.params.iter()
+                    .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
+                    .collect();
+                let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
                 let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,
-                    type_params: vec![], // Builtin methods don't have method-level type params
+                    type_params: m.type_params.clone(),
                     visibility: Default::default(),
                 }
             })
@@ -638,15 +643,20 @@ impl<'a> Binder<'a> {
         let static_methods: Vec<MethodSignature> = class_sig.methods.iter()
             .filter(|m| m.is_static)
             .map(|m| {
-                let param_types: Vec<TypeId> = m.params.iter()
-                    .map(|(_, ty)| self.parse_type_string(ty, &type_params))
+                // Combine class type params with method type params for parsing
+                let all_type_params: Vec<String> = type_params.iter()
+                    .chain(m.type_params.iter())
+                    .cloned()
                     .collect();
-                let return_ty = self.parse_type_string(&m.return_type, &type_params);
+                let param_types: Vec<TypeId> = m.params.iter()
+                    .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
+                    .collect();
+                let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
                 let func_ty = self.type_ctx.function_type(param_types, return_ty, false);
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,
-                    type_params: vec![], // Builtin methods don't have method-level type params
+                    type_params: m.type_params.clone(),
                     visibility: Default::default(),
                 }
             })

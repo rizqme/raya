@@ -290,10 +290,28 @@ impl Array {
     }
 
     /// Find index of value, returns -1 if not found
+    /// For string elements, uses value equality instead of pointer equality
     pub fn index_of(&self, value: Value) -> i32 {
         for (i, elem) in self.elements.iter().enumerate() {
-            // Use equality check - Value implements PartialEq
-            if *elem == value {
+            // Check equality - for strings, compare string data instead of pointers
+            let equal = if *elem == value {
+                true
+            } else if elem.is_ptr() && value.is_ptr() {
+                // Both are pointers - check if they're strings and compare data
+                let elem_str = unsafe { elem.as_ptr::<RayaString>() };
+                let val_str = unsafe { value.as_ptr::<RayaString>() };
+                if let (Some(e_ptr), Some(v_ptr)) = (elem_str, val_str) {
+                    let e = unsafe { &*e_ptr.as_ptr() };
+                    let v = unsafe { &*v_ptr.as_ptr() };
+                    e.data == v.data
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if equal {
                 return i as i32;
             }
         }

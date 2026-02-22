@@ -25,18 +25,55 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
+                // Helper function to convert a Value to its string representation
+                // Uses Display format (not Debug) for proper string representation
+                let value_to_string = |val: &Value| -> String {
+                    if val.is_null() {
+                        "null".to_string()
+                    } else if let Some(b) = val.as_bool() {
+                        if b { "true".to_string() } else { "false".to_string() }
+                    } else if let Some(i) = val.as_i32() {
+                        i.to_string()
+                    } else if let Some(f) = val.as_f64() {
+                        // Format float like JavaScript: no trailing zeros for whole numbers
+                        if f.fract() == 0.0 && f.abs() < 1e15 {
+                            (f as i64).to_string()
+                        } else {
+                            f.to_string()
+                        }
+                    } else if val.is_ptr() {
+                        // Check if it's already a string
+                        let ptr = unsafe { val.as_ptr::<RayaString>() };
+                        if let Some(str_ptr) = ptr {
+                            unsafe { &*str_ptr.as_ptr() }.data.clone()
+                        } else {
+                            "[object]".to_string()
+                        }
+                    } else {
+                        "undefined".to_string()
+                    }
+                };
+
                 let a_str = if a_val.is_ptr() {
                     let ptr = unsafe { a_val.as_ptr::<RayaString>() };
-                    unsafe { &*ptr.unwrap().as_ptr() }.data.clone()
+                    if let Some(str_ptr) = ptr {
+                        unsafe { &*str_ptr.as_ptr() }.data.clone()
+                    } else {
+                        "[object]".to_string()
+                    }
                 } else {
-                    format!("{:?}", a_val)
+                    value_to_string(&a_val)
                 };
 
                 let b_str = if b_val.is_ptr() {
                     let ptr = unsafe { b_val.as_ptr::<RayaString>() };
-                    unsafe { &*ptr.unwrap().as_ptr() }.data.clone()
+                    if let Some(str_ptr) = ptr {
+                        unsafe { &*str_ptr.as_ptr() }.data.clone()
+                    } else {
+                        "[object]".to_string()
+                    }
                 } else {
-                    format!("{:?}", b_val)
+                    value_to_string(&b_val)
                 };
 
                 let result = RayaString::new(format!("{}{}", a_str, b_str));

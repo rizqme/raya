@@ -87,8 +87,8 @@ class Array<T> {
     }
 
     //@@class_method
-    map(fn: (element: T) => T): T[] {
-        let result: T[] = [];
+    map<U>(fn: (element: T) => U): U[] {
+        let result: U[] = [];
         for (let i = 0; i < this.length; i++) {
             result.push(fn(this[i]));
         }
@@ -147,8 +147,8 @@ class Array<T> {
     }
 
     //@@class_method
-    reduce(fn: (accumulator: T, element: T) => T, initial: T): T {
-        let acc: T = initial;
+    reduce<U>(fn: (accumulator: U, element: T) => U, initial: U): U {
+        let acc: U = initial;
         for (let i = 0; i < this.length; i++) {
             acc = fn(acc, this[i]);
         }

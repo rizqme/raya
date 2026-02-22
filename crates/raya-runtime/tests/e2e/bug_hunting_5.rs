@@ -1600,18 +1600,15 @@ fn test_int_times_number_promotes() {
 // 53. Array.indexOf with Strings
 // ============================================================================
 
-// BUG DISCOVERY: Array.indexOf() doesn't work for string arrays.
-// `string[].indexOf("b")` always returns -1 even when the element
-// exists. The indexOf implementation likely uses reference equality
-// for string comparisons instead of value equality.
-// #[test]
-// fn test_array_index_of_string() {
-//     expect_i32(
-//         "let arr: string[] = [\"a\", \"b\", \"c\"];
-//          return arr.indexOf(\"b\");",
-//         1,
-//     );
-// }
+// FIXED: Array.indexOf() now uses value equality for strings
+#[test]
+fn test_array_index_of_string() {
+    expect_i32(
+        "let arr: string[] = [\"a\", \"b\", \"c\"];
+         return arr.indexOf(\"b\");",
+        1,
+    );
+}
 
 #[test]
 fn test_array_index_of_not_found() {
