@@ -2,11 +2,11 @@
 //!
 //! This module provides the heap allocator that manages memory for all GC objects.
 
-use super::header::GcHeader;
+use super::header::{DropFn, GcHeader};
 use super::ptr::GcPtr;
 use crate::vm::types::TypeRegistry;
 use crate::vm::interpreter::VmContextId;
-use std::alloc::{alloc, Layout};
+use std::alloc::{alloc, dealloc, Layout};
 use std::any::TypeId;
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -27,6 +27,17 @@ pub struct Heap {
 
     /// Maximum heap size (0 = unlimited)
     max_heap_bytes: usize,
+}
+
+/// Generic drop shim for calling drop glue through a function pointer
+unsafe fn drop_in_place_shim<T>(ptr: *mut u8, _count: usize) {
+    std::ptr::drop_in_place(ptr as *mut T);
+}
+
+/// Drop shim for slices/arrays
+unsafe fn drop_in_place_slice_shim<T>(ptr: *mut u8, count: usize) {
+    let slice_ptr = std::ptr::slice_from_raw_parts_mut(ptr as *mut T, count);
+    std::ptr::drop_in_place(slice_ptr);
 }
 
 impl Heap {
@@ -82,6 +93,13 @@ impl Heap {
             panic!("Heap size limit exceeded");
         }
 
+        // Determine if type needs drop glue
+        let drop_fn = if std::mem::needs_drop::<T>() {
+            Some(drop_in_place_shim::<T> as DropFn)
+        } else {
+            None
+        };
+
         // Allocate memory
         let ptr = unsafe { alloc(combined_layout) };
         if ptr.is_null() {
@@ -95,6 +113,9 @@ impl Heap {
                 self.context_id,
                 type_id,
                 combined_layout.size(),
+                value_offset as u8,
+                drop_fn,
+                1, // element_count for single object
             ));
         }
 
@@ -135,6 +156,13 @@ impl Heap {
             panic!("Heap size limit exceeded");
         }
 
+        // Determine if type needs drop glue
+        let drop_fn = if std::mem::needs_drop::<T>() {
+            Some(drop_in_place_slice_shim::<T> as DropFn)
+        } else {
+            None
+        };
+
         // Allocate memory
         let ptr = unsafe { alloc(combined_layout) };
         if ptr.is_null() {
@@ -148,6 +176,9 @@ impl Heap {
                 self.context_id,
                 type_id,
                 combined_layout.size(),
+                array_offset as u8,
+                drop_fn,
+                len, // element_count for array
             ));
         }
 
@@ -174,22 +205,25 @@ impl Heap {
     ///
     /// The header pointer must be valid and allocated by this heap.
     pub unsafe fn free(&mut self, header_ptr: *mut GcHeader) {
-        // Get the type ID to determine layout
+        // Get the allocation size from the header
         let header = &*header_ptr;
-        let _type_id = header.type_id();
+        let total_size = header.size();
 
-        // For now, we can't determine the exact layout without more metadata
-        // We'll need to store size in the header or use a type registry
-        // For this implementation, we'll just mark it for removal
+        // Run drop glue if this type has a destructor
+        header.run_drop(header_ptr);
 
-        // Remove from allocations
+        // Remove from allocations tracking
         if let Some(pos) = self.allocations.iter().position(|&p| p == header_ptr) {
             self.allocations.swap_remove(pos);
         }
 
-        // Note: Actual deallocation is complex without storing size
-        // We'll need to enhance GcHeader to store size
-        // For now, this is a placeholder
+        // Decrement allocated bytes
+        self.allocated_bytes = self.allocated_bytes.saturating_sub(total_size);
+
+        // Actually deallocate the memory
+        // GcHeader is 8-byte aligned, so we use the same alignment for deallocation
+        let layout = Layout::from_size_align_unchecked(total_size, 8);
+        dealloc(header_ptr as *mut u8, layout);
     }
 
     /// Get total allocated bytes
@@ -219,8 +253,19 @@ impl Default for Heap {
 impl Drop for Heap {
     fn drop(&mut self) {
         // Free all remaining allocations
-        // Note: This is simplified and may leak memory
-        // A production implementation would need proper cleanup
+        for &header_ptr in &self.allocations {
+            unsafe {
+                let header = &*header_ptr;
+
+                // Run drop glue if this type has a destructor
+                header.run_drop(header_ptr);
+
+                // Deallocate the memory
+                let total_size = header.size();
+                let layout = Layout::from_size_align_unchecked(total_size, 8);
+                dealloc(header_ptr as *mut u8, layout);
+            }
+        }
         self.allocations.clear();
     }
 }
@@ -304,5 +349,168 @@ mod tests {
                 assert_eq!(*item, 0); // Default value
             }
         }
+    }
+
+    #[test]
+    fn test_memory_deallocation_decreases_bytes() {
+        let mut heap = Heap::default();
+        let initial_bytes = heap.allocated_bytes();
+
+        // Allocate some objects
+        let _ptr1 = heap.allocate(42i32);
+        let bytes_after_alloc = heap.allocated_bytes();
+        assert!(bytes_after_alloc > initial_bytes);
+
+        // Free the first object
+        let header_ptr = heap.iter_allocations().next().unwrap();
+        unsafe {
+            heap.free(header_ptr);
+        }
+
+        // Bytes should decrease
+        let bytes_after_free = heap.allocated_bytes();
+        assert!(bytes_after_free < bytes_after_alloc);
+    }
+
+    #[test]
+    fn test_allocation_count_decreases_after_free() {
+        let mut heap = Heap::default();
+
+        // Allocate objects
+        let _ptr1 = heap.allocate(10i32);
+        let _ptr2 = heap.allocate(20i32);
+        let _ptr3 = heap.allocate(30i32);
+        assert_eq!(heap.allocation_count(), 3);
+
+        // Free one object
+        let header_ptr = heap.iter_allocations().next().unwrap();
+        unsafe {
+            heap.free(header_ptr);
+        }
+
+        assert_eq!(heap.allocation_count(), 2);
+    }
+
+    #[test]
+    fn test_drop_glue_runs_for_string() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DROPPED: AtomicBool = AtomicBool::new(false);
+
+        struct Dropper;
+        impl Drop for Dropper {
+            fn drop(&mut self) {
+                DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let mut heap = Heap::default();
+        let _ptr = heap.allocate(Dropper);
+
+        // Free the object
+        let header_ptr = heap.iter_allocations().next().unwrap();
+        unsafe {
+            heap.free(header_ptr);
+        }
+
+        // Verify drop glue ran
+        assert!(DROPPED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_drop_glue_runs_for_vec() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct Counter;
+        impl Drop for Counter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut heap = Heap::default();
+
+        // Allocate multiple counters in a Vec-like wrapper
+        let _ptr1 = heap.allocate(Counter);
+        let _ptr2 = heap.allocate(Counter);
+        let _ptr3 = heap.allocate(Counter);
+
+        // Free all objects
+        let allocations: Vec<_> = heap.iter_allocations().collect();
+        for header_ptr in allocations {
+            unsafe {
+                heap.free(header_ptr);
+            }
+        }
+
+        // All three should have been dropped
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn test_heap_drop_cleanup() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        static DROPPED: AtomicBool = AtomicBool::new(false);
+
+        struct Dropper;
+        impl Drop for Dropper {
+            fn drop(&mut self) {
+                DROPPED.store(true, Ordering::SeqCst);
+            }
+        }
+
+        // Create a heap with allocations
+        let mut heap = Heap::default();
+        let _ptr = heap.allocate(Dropper);
+        assert_eq!(heap.allocation_count(), 1);
+
+        // Drop the heap
+        drop(heap);
+
+        // Verify drop glue ran
+        assert!(DROPPED.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_no_memory_leak_stress() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+        struct Counter;
+        impl Drop for Counter {
+            fn drop(&mut self) {
+                DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let mut heap = Heap::default();
+        heap.set_max_heap_size(10 * 1024 * 1024); // 10MB limit
+
+        let alloc_count = 1000;
+        let mut allocations = Vec::new();
+
+        // Allocate many objects
+        for _ in 0..alloc_count {
+            allocations.push(heap.allocate(Counter));
+        }
+
+        assert_eq!(heap.allocation_count(), alloc_count);
+
+        // Free all objects
+        let headers: Vec<_> = heap.iter_allocations().collect();
+        for header_ptr in headers {
+            unsafe {
+                heap.free(header_ptr);
+            }
+        }
+
+        // All should be freed
+        assert_eq!(heap.allocation_count(), 0);
+        assert_eq!(heap.allocated_bytes(), 0);
+        assert_eq!(DROP_COUNT.load(Ordering::SeqCst), alloc_count);
     }
 }

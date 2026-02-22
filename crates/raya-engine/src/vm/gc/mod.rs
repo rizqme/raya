@@ -43,6 +43,7 @@
 mod collector;
 mod header;
 mod heap;
+mod nursery;
 mod ptr;
 mod roots;
 
@@ -50,6 +51,7 @@ mod roots;
 pub use collector::{GarbageCollector, GcStats, HeapStats};
 pub use header::GcHeader;
 pub use heap::Heap;
+pub use nursery::Nursery;
 pub use ptr::GcPtr;
 pub use roots::RootSet;
 

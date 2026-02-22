@@ -11,6 +11,7 @@
 //! | CallState       | closure_stack, call_stack, execution_frames                     | VM workers only      |
 //! | InitState       | initial_args, held_mutexes                                     | VM workers only      |
 
+use crate::vm::gc::Nursery;
 use crate::vm::interpreter::execution::ExecutionFrame;
 use crate::vm::snapshot::{BlockedReason, SerializedFrame, SerializedTask};
 use crate::vm::stack::Stack;
@@ -226,6 +227,9 @@ pub struct Task {
 
     /// Condvar for blocking until task completes
     completion_condvar: ParkingCondvar,
+
+    /// Per-task nursery allocator for fast temporary allocations
+    nursery: ParkingMutex<Nursery>,
 }
 
 impl Task {
@@ -288,6 +292,7 @@ impl Task {
             stack: StdMutex::new(Stack::new()),
             completion_lock: ParkingMutex::new(false),
             completion_condvar: ParkingCondvar::new(),
+            nursery: ParkingMutex::new(Nursery::new()),
         }
     }
 
@@ -393,6 +398,11 @@ impl Task {
         &self.stack
     }
 
+    /// Get the task's nursery allocator for fast temporary allocations
+    pub fn nursery(&self) -> &ParkingMutex<Nursery> {
+        &self.nursery
+    }
+
     /// Take the initial arguments (consumes them)
     pub fn take_initial_args(&self) -> Vec<Value> {
         std::mem::take(&mut self.init.lock().initial_args)
@@ -432,6 +442,30 @@ impl Task {
             lc.state = TaskState::Completed;
         }
         self.signal_completion();
+        self.reset_nursery();
+    }
+
+    /// Reset the task's nursery allocator (called on task completion)
+    pub fn reset_nursery(&self) {
+        let mut nursery = self.nursery.lock();
+        unsafe {
+            nursery.reset();
+        }
+    }
+
+    /// Try to allocate from the nursery, falling back to shared GC if full.
+    ///
+    /// This is the primary method for allocating temporary values in the interpreter.
+    /// For values that may escape (stored in globals, channels, or returned to callers),
+    /// use the shared GC directly via the GarbageCollector.
+    ///
+    /// # Safety
+    ///
+    /// The returned pointer is valid only until the nursery is reset (task completion
+    /// or when full). The caller must ensure the value doesn't outlive the nursery.
+    pub unsafe fn try_nursery_allocate<T>(&self, value: T) -> Option<*mut T> {
+        let mut nursery = self.nursery.lock();
+        nursery.allocate(value)
     }
 
     /// Mark the task as failed
@@ -901,6 +935,7 @@ impl Task {
             stack: StdMutex::new(stack),
             completion_lock: ParkingMutex::new(false),
             completion_condvar: ParkingCondvar::new(),
+            nursery: ParkingMutex::new(Nursery::new()),
         }
     }
 }
