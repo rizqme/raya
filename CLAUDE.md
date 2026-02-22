@@ -313,6 +313,56 @@ cargo test -p raya-pm          # Package manager tests (204)
 
 ---
 
+## Release & Deployment
+
+### Creating a Release
+
+Releases are automated via GitHub Actions:
+
+```bash
+# Tag and create a release (triggers automated binary builds)
+git tag v0.1.0
+git push origin v0.1.0
+gh release create v0.1.0 --title "Release v0.1.0"
+```
+
+The `.github/workflows/release.yml` workflow:
+- Builds binaries for Ubuntu (x86_64/aarch64) and macOS ARM64
+- Generates SHA256 checksums
+- Uploads assets to the release
+
+### Installing Raya
+
+Users can install via the install script:
+
+```bash
+curl -fsSL https://raya.land/install.sh | sh
+```
+
+The install script:
+- Auto-detects OS and architecture
+- Downloads the appropriate binary from GitHub releases
+- Verifies SHA256 checksums
+- Installs to `~/.raya/bin` and updates PATH
+
+**Note:** macOS x86_64 (Intel) is not supported in pre-built binaries. Users should build from source.
+
+### Deploying Documentation
+
+Docs are hosted on Cloudflare Pages at `raya.land`:
+
+```bash
+# Build docs locally
+cd docs && npm run docs:build
+
+# Deploy to Cloudflare Pages
+wrangler pages deploy docs/.vitepress/dist --project-name=raya-docs
+```
+
+The VitePress documentation includes the install script at `/install.sh`, which is served directly from the Pages deployment.
+
+---
+
 ## Quick Reference
 
 | Question | Answer |
