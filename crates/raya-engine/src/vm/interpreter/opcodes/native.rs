@@ -393,9 +393,35 @@ impl<'a> Interpreter<'a> {
                             buf.length()
                         };
                         let sliced = buf.slice(start, end);
-                        let gc_ptr = self.gc.lock().allocate(sliced);
-                        let new_handle = gc_ptr.as_ptr() as u64;
-                        if let Err(e) = stack.push(Value::u64(new_handle)) {
+                        let new_handle = {
+                            let gc_ptr = self.gc.lock().allocate(sliced);
+                            gc_ptr.as_ptr() as u64
+                        };
+                        
+                        // Create Buffer object instance wrapping the handle
+                        let buffer_class_id = {
+                            let classes = self.classes.read();
+                            match classes.get_class_by_name("Buffer") {
+                                Some(class) => class.id,
+                                None => {
+                                    return OpcodeResult::Error(VmError::RuntimeError(
+                                        "Buffer class not found".to_string(),
+                                    ));
+                                }
+                            }
+                        };
+                        
+                        let mut obj = Object::new(buffer_class_id, 1);
+                        if let Err(e) = obj.set_field(0, Value::u64(new_handle)) {
+                            return OpcodeResult::Error(VmError::RuntimeError(e));
+                        }
+                        
+                        let obj_ptr = self.gc.lock().allocate(obj);
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap())
+                        };
+                        
+                        if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

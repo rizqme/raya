@@ -1,6 +1,6 @@
 //! Tests for optional parameters and default values in builtins
 
-use super::{expect_i32, expect_i32_with_builtins, expect_string, expect_string_with_builtins};
+use super::{expect_i32_with_builtins, expect_string, expect_string_with_builtins};
 
 // ============================================================================
 // Array Methods
