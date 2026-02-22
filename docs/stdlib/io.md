@@ -71,8 +71,7 @@ function main(): void {
   const name = io.readLine();
   
   io.write("How old are you? ");
-  const ageStr = io.readLine();
-  const age = parseInt(ageStr);
+  const age = io.readLine();
   
   io.writeln(`Hello ${name}, you are ${age} years old!`);
 }

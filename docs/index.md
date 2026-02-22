@@ -9,6 +9,9 @@ hero:
       text: Get Started
       link: /getting-started
     - theme: alt
+      text: Quick Install
+      link: /getting-started
+    - theme: alt
       text: View on GitHub
       link: https://github.com/rizqme/raya
 
@@ -156,15 +159,15 @@ All I/O is synchronous. Concurrency achieved with Tasks at call site.
 ## Installation
 
 ```bash
-# Clone the repo
+curl -fsSL https://raya.land/install.sh | sh
+```
+
+**Build from source:**
+
+```bash
 git clone https://github.com/rizqme/raya.git
 cd raya
-
-# Build (requires Rust 1.70+)
 cargo build --release -p raya-cli
-
-# Run
-./target/release/raya run examples/hello.raya
 ```
 
 ## Project Status

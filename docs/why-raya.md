@@ -254,10 +254,8 @@ class User {
 ## Try It
 
 ```bash
-git clone https://github.com/rizqme/raya.git
-cd raya
-cargo build --release -p raya-cli
-./target/release/raya run examples/concurrent.raya
+curl -fsSL https://raya.land/install.sh | sh
+raya eval "1 + 2 * 3"
 ```
 
 Read the [Getting Started](/getting-started) guide to learn more.

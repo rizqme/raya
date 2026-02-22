@@ -95,6 +95,12 @@ const b = await task2;
 ## Task Methods
 
 ```typescript
+import io from "std:io";
+
+async function doWork(): Task<string> {
+  return "done";
+}
+
 const task = async doWork();
 
 // Check if done
@@ -135,12 +141,16 @@ This is handled automatically - no API exposed.
 4. **Don't share mutable state** - use message passing
 
 ```typescript
+async function fetchUser(id: int): Task<string> {
+  return `user-${id}`;
+}
+
 // ✅ Good - concurrent execution
 const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
 const users = await tasks;  // Returns array of results
 
 // ❌ Bad - sequential execution
-const users = [
+const sequentialUsers = [
   await fetchUser(1),
   await fetchUser(2),
   await fetchUser(3),

@@ -2,18 +2,34 @@
 
 ## Installation
 
-Raya requires Rust 1.70+ for building from source.
+Install Raya directly:
 
 ```bash
-# Clone the repository
+curl -fsSL https://raya.land/install.sh | sh
+```
+
+**Other options:**
+
+```bash
+# Install specific version
+curl -fsSL https://raya.land/install.sh | sh -s -- --version v0.1.0
+
+# Install to custom directory
+INSTALL_DIR=/usr/local/bin curl -fsSL https://raya.land/install.sh | sh
+```
+
+Verify install:
+
+```bash
+raya --version
+```
+
+**Build from source** (for contributors):
+
+```bash
 git clone https://github.com/rizqme/raya.git
 cd raya
-
-# Build the CLI
 cargo build --release -p raya-cli
-
-# Add to PATH or create an alias
-alias raya='./target/release/raya'
 ```
 
 ## Your First Program

@@ -14,7 +14,7 @@ npm run docs:preview  # Preview production build
 
 ## Structure
 
-```
+```text
 docs/
 ├── index.md                  # Homepage (hero + features + examples)
 ├── getting-started.md        # Installation + first programs
@@ -117,7 +117,7 @@ Raya is in active development.
 
 ## Navigation Structure
 
-```
+```text
 Home
 ├─ Guide
 │  ├─ Getting Started
