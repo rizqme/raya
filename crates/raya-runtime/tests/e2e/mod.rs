@@ -68,6 +68,7 @@ mod diagnostics;
 mod bug_hunting;
 mod bug_hunting_2;
 mod bug_hunting_3;
+mod bug_hunting_4;
 
 
 pub use harness::*;
