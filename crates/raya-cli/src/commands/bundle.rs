@@ -46,11 +46,11 @@ mod aot_impl {
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
-    use raya_engine::aot::bytecode_adapter::LiftedFunction;
+    use raya_engine::aot::bytecode_adapter::lift_bytecode_module;
     use raya_engine::aot::codegen::{compile_functions, create_native_isa, CompilableFunction};
     use raya_engine::aot::traits::AotCompilable;
     use raya_runtime::bundle::format::{
-        AotTrailer, BundledFuncEntry, TRAILER_MAGIC, TRAILER_SIZE, write_vfs_section,
+        write_vfs_section, AotTrailer, BundledFuncEntry, TRAILER_MAGIC, TRAILER_SIZE,
     };
     use raya_runtime::Runtime;
 
@@ -107,17 +107,12 @@ mod aot_impl {
         }
 
         // Step 2: Lift bytecode functions to AOT-compilable form
-        let lifted: Vec<LiftedFunction> = module
-            .functions
-            .iter()
-            .enumerate()
-            .map(|(i, f)| LiftedFunction {
-                func_index: i as u32,
-                param_count: f.param_count as u32,
-                local_count: f.local_count as u32,
-                name: Some(f.name.clone()),
-            })
-            .collect();
+        let lifted = lift_bytecode_module(module).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to lift bytecode functions for AOT compilation: {}",
+                e
+            )
+        })?;
 
         let compilables: Vec<CompilableFunction<'_>> = lifted
             .iter()
