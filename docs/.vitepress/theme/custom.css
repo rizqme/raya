@@ -1,0 +1,135 @@
+/**
+ * Custom theme colors matching raya-logo.svg
+ * Logo has red accent (#E70000), clean design
+ */
+
+:root {
+  /* Brand colors from logo */
+  --vp-c-brand-1: #E70000;
+  --vp-c-brand-2: #cc0000;
+  --vp-c-brand-3: #b30000;
+  --vp-c-brand-soft: rgba(231, 0, 0, 0.14);
+}
+
+/* Light mode adjustments */
+.light {
+  --vp-c-brand-1: #d60000;
+  --vp-c-brand-2: #E70000;
+  --vp-c-brand-3: #b30000;
+}
+
+/* Hero section improvements - add more top padding */
+.VPHero {
+  padding-top: 160px !important;
+  padding-bottom: 96px !important;
+}
+
+/* Center the entire hero container */
+.VPHero .container {
+  text-align: center !important;
+}
+
+.VPHero .main {
+  max-width: 100% !important;
+}
+
+/* Make the main text a single flowing phrase - centered and balanced */
+.VPHero .text {
+  font-size: 48px !important;
+  line-height: 1.35 !important;
+  font-weight: 600 !important;
+  color: var(--vp-c-text-1) !important;
+  max-width: 920px !important;
+  margin: 0 auto !important;
+  opacity: 1 !important;
+  text-align: center !important;
+  padding: 0 32px !important;
+}
+
+/* Style "raya" to be bold and red */
+.VPHero .text .raya-name {
+  font-weight: 700 !important;
+  color: var(--vp-c-brand-1) !important;
+}
+
+.VPHero .tagline {
+  font-size: 18px !important;
+  line-height: 1.6 !important;
+  color: var(--vp-c-text-2) !important;
+  max-width: 640px !important;
+  margin: 24px auto 0 !important;
+  opacity: 0.85 !important;
+  text-align: center !important;
+  padding: 0 32px !important;
+}
+
+/* Action buttons */
+.VPHero .actions {
+  padding-top: 40px !important;
+  justify-content: center !important;
+  display: flex !important;
+}
+
+/* Feature grid */
+.VPFeatures {
+  padding-top: 48px !important;
+}
+
+.VPFeature {
+  background-color: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  transition: all 0.25s;
+  padding: 24px !important;
+}
+
+.VPFeature:hover {
+  border-color: var(--vp-c-brand-1);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.08);
+}
+
+.VPFeature .icon {
+  font-size: 48px !important;
+  margin-bottom: 16px;
+}
+
+/* Style SVG icons */
+.VPFeature .vpi-image {
+  width: 48px !important;
+  height: 48px !important;
+  margin-bottom: 16px;
+}
+
+.VPFeature .icon img {
+  width: 48px !important;
+  height: 48px !important;
+}
+
+.VPFeature .title {
+  font-size: 18px !important;
+  font-weight: 600 !important;
+  color: var(--vp-c-text-1) !important;
+}
+
+.VPFeature .details {
+  font-size: 14px !important;
+  line-height: 1.6 !important;
+  color: var(--vp-c-text-2) !important;
+}
+
+/* Logo in nav should be well sized */
+.VPNavBarTitle .logo {
+  height: 32px !important;
+  width: auto !important;
+}
+
+/* Code blocks */
+.vp-code-group {
+  margin-top: 1.5rem;
+}
+
+/* Content width adjustments */
+.VPHome {
+  max-width: 1280px;
+  margin: 0 auto;
+}

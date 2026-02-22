@@ -1,13 +1,19 @@
 {
-  "name": "raya-docs",
-  "private": true,
-  "type": "module",
+  "name": "docs",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
   "scripts": {
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
     "docs:preview": "vitepress preview"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
   "devDependencies": {
+    "lucide-vue-next": "^0.575.0",
     "vitepress": "^1.6.4"
   }
 }
