@@ -852,7 +852,8 @@ pub(crate) fn extract_class_method_names(source: &str) -> Vec<String> {
                 }
                 // Extract method name: identifier before '('
                 if let Some(paren_idx) = next.find('(') {
-                    let name = next[..paren_idx].trim();
+                    let raw_name = next[..paren_idx].trim();
+                    let name = raw_name.split('<').next().unwrap_or(raw_name).trim();
                     if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
                         result.push(name.to_string());
                     }

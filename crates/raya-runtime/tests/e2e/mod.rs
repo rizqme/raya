@@ -58,5 +58,18 @@ mod ts_int_number;
 // Real-world application e2e tests
 mod real_world;
 
+// Language completeness tests (cross-feature interactions, stress tests, edge cases)
+mod cross_feature;
+mod parser_stress;
+mod type_system_edge_cases;
+mod compiler_edge_cases;
+mod missing_features;
+mod diagnostics;
+mod bug_hunting;
+mod bug_hunting_2;
+mod bug_hunting_3;
+mod bug_hunting_4;
+mod bug_hunting_5;
+
 
 pub use harness::*;

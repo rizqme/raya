@@ -348,7 +348,9 @@ impl<'a> Interpreter<'a> {
                     "null"
                 } else if value.is_bool() {
                     "boolean"
-                } else if value.is_i32() || value.is_i64() || value.is_f64() {
+                } else if value.is_i32() {
+                    "number"
+                } else if value.is_i64() || value.is_f64() {
                     "number"
                 } else if value.is_ptr() {
                     // Check if it's a string

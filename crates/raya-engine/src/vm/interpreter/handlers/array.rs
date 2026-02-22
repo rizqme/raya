@@ -108,8 +108,30 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
                 let mut result: i32 = -1;
+
+                // Helper function to compare two values for equality
+                // For strings, uses value equality instead of pointer equality
+                let values_equal = |a: &Value, b: &Value| -> bool {
+                    if a == b {
+                        true
+                    } else if a.is_ptr() && b.is_ptr() {
+                        // Both are pointers - check if they're strings and compare data
+                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
+                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
+                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
+                            let a_str = unsafe { &*a_ptr.as_ptr() };
+                            let b_str = unsafe { &*b_ptr.as_ptr() };
+                            a_str.data == b_str.data
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
                 for (i, elem) in arr.elements.iter().enumerate().skip(from_index) {
-                    if *elem == value {
+                    if values_equal(elem, &value) {
                         result = i as i32;
                         break;
                     }
@@ -161,6 +183,84 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 let gc_ptr = self.gc.lock().allocate(new_arr);
+                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                stack.push(value)?;
+                Ok(())
+            }
+            array::SPLICE => {
+                // splice(start, deleteCount?, ...items): remove elements and optionally insert new ones
+                // Returns array of removed elements
+                if arg_count < 1 {
+                    return Err(VmError::RuntimeError(format!(
+                        "Array.splice expects at least 1 argument, got {}", arg_count
+                    )));
+                }
+
+                // Pop arguments in reverse order
+                let mut items = Vec::new();
+                for _ in 2..arg_count {
+                    items.push(stack.pop()?);
+                }
+                items.reverse();
+
+                let delete_count_val = if arg_count >= 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let start_val = stack.pop()?;
+                let array_val = stack.pop()?;
+
+                if !array_val.is_ptr() {
+                    return Err(VmError::TypeError("Expected array".to_string()));
+                }
+                let arr_ptr = unsafe { array_val.as_ptr::<Array>() };
+                let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
+
+                let len = arr.len();
+                let start = start_val.as_i32().unwrap_or(0) as usize;
+                let start = if start > len { len } else { start };
+
+                // Calculate delete count (default to rest of array if not specified)
+                let delete_count = if let Some(dc_val) = delete_count_val {
+                    dc_val.as_i32().unwrap_or(0).max(0) as usize
+                } else {
+                    len.saturating_sub(start)
+                };
+
+                // Calculate actual end of deletion
+                let end = (start + delete_count).min(len);
+
+                // Collect removed elements
+                let removed_vals: Vec<Value> = (start..end)
+                    .filter_map(|i| arr.get(i))
+                    .collect();
+
+                // Build new elements list: [0..start] + items + [end..len]
+                let mut new_elements: Vec<Value> = Vec::new();
+                for i in 0..start {
+                    new_elements.push(arr.elements[i]);
+                }
+                for item in items {
+                    new_elements.push(item);
+                }
+                for i in end..len {
+                    new_elements.push(arr.elements[i]);
+                }
+
+                // Update array elements - use std::mem::take to avoid reallocation
+                let old_elements = std::mem::take(&mut arr.elements);
+                arr.elements = new_elements;
+                drop(old_elements); // Explicitly drop old elements
+
+                // Create removed array with same element type as source array
+                let mut removed = Array::new(arr.type_id, removed_vals.len());
+                for (i, v) in removed_vals.iter().enumerate() {
+                    removed.elements[i] = *v;
+                }
+
+                // Return removed elements
+                let gc_ptr = self.gc.lock().allocate(removed);
                 let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
@@ -238,8 +338,30 @@ impl<'a> Interpreter<'a> {
 
                 let end = from_index.unwrap_or(arr.elements.len().saturating_sub(1));
                 let mut found_index: i32 = -1;
+
+                // Helper function to compare two values for equality
+                // For strings, uses value equality instead of pointer equality
+                let values_equal = |a: &Value, b: &Value| -> bool {
+                    if a == b {
+                        true
+                    } else if a.is_ptr() && b.is_ptr() {
+                        // Both are pointers - check if they're strings and compare data
+                        let a_str_ptr = unsafe { a.as_ptr::<RayaString>() };
+                        let b_str_ptr = unsafe { b.as_ptr::<RayaString>() };
+                        if let (Some(a_ptr), Some(b_ptr)) = (a_str_ptr, b_str_ptr) {
+                            let a_str = unsafe { &*a_ptr.as_ptr() };
+                            let b_str = unsafe { &*b_ptr.as_ptr() };
+                            a_str.data == b_str.data
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
                 for i in (0..=end.min(arr.elements.len().saturating_sub(1))).rev() {
-                    if arr.elements[i] == search_val {
+                    if values_equal(&arr.elements[i], &search_val) {
                         found_index = i as i32;
                         break;
                     }

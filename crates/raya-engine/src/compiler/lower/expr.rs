@@ -1694,6 +1694,8 @@ impl<'a> Lowerer<'a> {
             AssignmentOperator::LeftShiftAssign => Some(BinaryOp::ShiftLeft),
             AssignmentOperator::RightShiftAssign => Some(BinaryOp::ShiftRight),
             AssignmentOperator::UnsignedRightShiftAssign => Some(BinaryOp::UnsignedShiftRight),
+            AssignmentOperator::LogicalOrAssign => Some(BinaryOp::Or),
+            AssignmentOperator::LogicalAndAssign => Some(BinaryOp::And),
             AssignmentOperator::NullCoalesceAssign => unreachable!(),
         };
 
@@ -2315,6 +2317,17 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_typeof(&mut self, typeof_expr: &ast::TypeofExpression) -> Register {
+        // Preserve explicit int-literal behavior: `typeof 42` should be "int".
+        // For non-literals, runtime TYPEOF handles value-based classification.
+        if let Expression::IntLiteral(_) = &*typeof_expr.argument {
+            let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::String("int".to_string())),
+            });
+            return dest;
+        }
+
         let operand = self.lower_expr(&typeof_expr.argument);
         let dest = self.alloc_register(TypeId::new(STRING_TYPE_ID)); // String type (TypeId 1)
 

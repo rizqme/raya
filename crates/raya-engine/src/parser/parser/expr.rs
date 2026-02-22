@@ -500,6 +500,8 @@ fn parse_infix(
             | Token::PercentEqual
             | Token::AmpEqual
             | Token::PipeEqual
+            | Token::PipePipeEqual
+            | Token::AmpersandAmpersandEqual
             | Token::CaretEqual
             | Token::LessLessEqual
             | Token::GreaterGreaterEqual
@@ -516,6 +518,8 @@ fn parse_infix(
             Token::PercentEqual => AssignmentOperator::ModAssign,
             Token::AmpEqual => AssignmentOperator::AndAssign,
             Token::PipeEqual => AssignmentOperator::OrAssign,
+            Token::PipePipeEqual => AssignmentOperator::LogicalOrAssign,
+            Token::AmpersandAmpersandEqual => AssignmentOperator::LogicalAndAssign,
             Token::CaretEqual => AssignmentOperator::XorAssign,
             Token::LessLessEqual => AssignmentOperator::LeftShiftAssign,
             Token::GreaterGreaterEqual => AssignmentOperator::RightShiftAssign,

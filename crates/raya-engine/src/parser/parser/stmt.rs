@@ -958,7 +958,7 @@ fn parse_switch_statement(parser: &mut Parser) -> Result<Statement, ParseError> 
             && !parser.at_eof()
         {
             consequent_guard.check()?;
-            consequent.push(parse_statement(parser)?);
+            consequent.push(parse_switch_case_statement(parser)?);
         }
 
         let case_end = if let Some(last) = consequent.last() {
@@ -986,6 +986,36 @@ fn parse_switch_statement(parser: &mut Parser) -> Result<Statement, ParseError> 
         cases,
         span,
     }))
+}
+
+/// Parse a statement within a switch case.
+///
+/// Switch cases allow block statements `case X: { ... }` which is different
+/// from the top-level where `{` starts an object literal. This helper function
+/// handles that special case.
+fn parse_switch_case_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    // Check for block statement - allowed in switch cases
+    if parser.check(&Token::LeftBrace) {
+        let start_span = parser.current_span();
+        parser.advance();
+
+        let mut statements = Vec::new();
+        let mut guard = super::guards::LoopGuard::new("block");
+
+        while !parser.check(&Token::RightBrace) && !parser.at_eof() {
+            guard.check()?;
+            statements.push(parse_statement(parser)?);
+        }
+
+        let end_span = parser.current_span();
+        parser.expect(Token::RightBrace)?;
+        let span = parser.combine_spans(&start_span, &end_span);
+
+        return Ok(Statement::Block(BlockStatement { statements, span }));
+    }
+
+    // Otherwise parse as a normal statement
+    parse_statement(parser)
 }
 
 // ============================================================================
