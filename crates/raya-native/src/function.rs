@@ -6,7 +6,6 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{ItemFn, Result};
 
-
 /// Expands the #[function] attribute macro.
 ///
 /// Input: Original Rust function
@@ -73,21 +72,26 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
     let arg_count = arg_names.len();
 
     // Generate argument extraction code
-    let arg_extractions = arg_names.iter().zip(arg_types.iter()).enumerate().map(|(i, (name, ty))| {
-        quote! {
-            let #name = match unsafe {
-                let raw_arg = *args.add(#i);
-                <#ty as raya_sdk::FromRaya>::from_raya(raw_arg)
-            } {
-                Ok(val) => val,
-                Err(e) => {
-                    return raya_sdk::NativeValue::error(
-                        format!("Argument {} ({}): {}", #i, stringify!(#name), e)
-                    );
+    let arg_extractions =
+        arg_names
+            .iter()
+            .zip(arg_types.iter())
+            .enumerate()
+            .map(|(i, (name, ty))| {
+                quote! {
+                    let #name = match unsafe {
+                        let raw_arg = *args.add(#i);
+                        <#ty as raya_sdk::FromRaya>::from_raya(raw_arg)
+                    } {
+                        Ok(val) => val,
+                        Err(e) => {
+                            return raya_sdk::NativeValue::error(
+                                format!("Argument {} ({}): {}", #i, stringify!(#name), e)
+                            );
+                        }
+                    };
                 }
-            };
-        }
-    });
+            });
 
     // Generate function call (handle async)
     let func_call = if is_async {
@@ -117,7 +121,7 @@ pub fn expand_function(func: ItemFn) -> Result<TokenStream> {
 
     // Generate return value conversion
     let return_conversion = if is_async {
-        quote! {}  // Already returned error above
+        quote! {} // Already returned error above
     } else {
         match output {
             syn::ReturnType::Default => {

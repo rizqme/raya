@@ -8,7 +8,7 @@
 //! the state machine transform and then Cranelift lowering.
 
 use super::analysis::SuspensionAnalysis;
-use super::statemachine::{SmBlock, StateMachineFunction, transform_to_state_machine};
+use super::statemachine::{transform_to_state_machine, SmBlock, StateMachineFunction};
 
 /// Trait for types that can be compiled to AOT native code.
 ///
@@ -126,9 +126,15 @@ mod tests {
             self.blocks.clone()
         }
 
-        fn param_count(&self) -> u32 { 0 }
-        fn local_count(&self) -> u32 { 1 }
-        fn name(&self) -> Option<&str> { Some("test") }
+        fn param_count(&self) -> u32 {
+            0
+        }
+        fn local_count(&self) -> u32 {
+            1
+        }
+        fn name(&self) -> Option<&str> {
+            Some("test")
+        }
     }
 
     // SmBlock and SmInstr must impl Clone for the test above

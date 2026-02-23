@@ -30,13 +30,19 @@ fn test_jsx_self_closing_element() {
     let element = JsxElement {
         opening: JsxOpeningElement {
             name: JsxElementName::Identifier(ident(&mut interner, "img", Span::new(1, 4, 1, 2))),
-            attributes: vec![
-                JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "src", Span::new(5, 8, 1, 6))),
-                    value: Some(JsxAttributeValue::StringLiteral(string_lit(&mut interner, "photo.jpg", Span::new(9, 20, 1, 10)))),
-                    span: Span::new(5, 20, 1, 6),
-                },
-            ],
+            attributes: vec![JsxAttribute::Attribute {
+                name: JsxAttributeName::Identifier(ident(
+                    &mut interner,
+                    "src",
+                    Span::new(5, 8, 1, 6),
+                )),
+                value: Some(JsxAttributeValue::StringLiteral(string_lit(
+                    &mut interner,
+                    "photo.jpg",
+                    Span::new(9, 20, 1, 10),
+                ))),
+                span: Span::new(5, 20, 1, 6),
+            }],
             self_closing: true,
             span: Span::new(0, 23, 1, 1),
         },
@@ -81,7 +87,8 @@ fn test_jsx_element_with_children() {
 fn test_jsx_element_name_is_intrinsic() {
     let mut interner = test_interner();
     let div_name = JsxElementName::Identifier(ident(&mut interner, "div", Span::new(0, 3, 1, 1)));
-    let button_name = JsxElementName::Identifier(ident(&mut interner, "Button", Span::new(0, 6, 1, 1)));
+    let button_name =
+        JsxElementName::Identifier(ident(&mut interner, "Button", Span::new(0, 6, 1, 1)));
 
     assert!(div_name.is_intrinsic(&interner));
     assert!(!button_name.is_intrinsic(&interner));
@@ -104,7 +111,11 @@ fn test_jsx_element_name_to_string() {
 
     // Member expression
     let member = JsxElementName::MemberExpression {
-        object: Box::new(JsxElementName::Identifier(ident(&mut interner, "React", Span::new(0, 5, 1, 1)))),
+        object: Box::new(JsxElementName::Identifier(ident(
+            &mut interner,
+            "React",
+            Span::new(0, 5, 1, 1),
+        ))),
         property: ident(&mut interner, "Fragment", Span::new(6, 14, 1, 7)),
     };
     assert_eq!(member.to_string(&interner), "React.Fragment");
@@ -117,7 +128,11 @@ fn test_jsx_nested_member_expression() {
     // UI.Components.Button
     let nested = JsxElementName::MemberExpression {
         object: Box::new(JsxElementName::MemberExpression {
-            object: Box::new(JsxElementName::Identifier(ident(&mut interner, "UI", Span::new(0, 2, 1, 1)))),
+            object: Box::new(JsxElementName::Identifier(ident(
+                &mut interner,
+                "UI",
+                Span::new(0, 2, 1, 1),
+            ))),
             property: ident(&mut interner, "Components", Span::new(3, 13, 1, 4)),
         }),
         property: ident(&mut interner, "Button", Span::new(14, 20, 1, 15)),
@@ -134,8 +149,16 @@ fn test_jsx_nested_member_expression() {
 fn test_jsx_string_attribute() {
     let mut interner = test_interner();
     let attr = JsxAttribute::Attribute {
-        name: JsxAttributeName::Identifier(ident(&mut interner, "className", Span::new(0, 9, 1, 1))),
-        value: Some(JsxAttributeValue::StringLiteral(string_lit(&mut interner, "container", Span::new(10, 21, 1, 11)))),
+        name: JsxAttributeName::Identifier(ident(
+            &mut interner,
+            "className",
+            Span::new(0, 9, 1, 1),
+        )),
+        value: Some(JsxAttributeValue::StringLiteral(string_lit(
+            &mut interner,
+            "container",
+            Span::new(10, 21, 1, 11),
+        ))),
         span: Span::new(0, 21, 1, 1),
     };
 
@@ -186,7 +209,11 @@ fn test_jsx_namespaced_attribute() {
             namespace: ident(&mut interner, "xlink", Span::new(0, 5, 1, 1)),
             name: ident(&mut interner, "href", Span::new(6, 10, 1, 7)),
         },
-        value: Some(JsxAttributeValue::StringLiteral(string_lit(&mut interner, "#target", Span::new(11, 20, 1, 12)))),
+        value: Some(JsxAttributeValue::StringLiteral(string_lit(
+            &mut interner,
+            "#target",
+            Span::new(11, 20, 1, 12),
+        ))),
         span: Span::new(0, 20, 1, 1),
     };
 
@@ -240,7 +267,11 @@ fn test_jsx_text_child() {
 fn test_jsx_expression_child() {
     let mut interner = test_interner();
     let child = JsxChild::Expression(JsxExpression {
-        expression: Some(Expression::Identifier(ident(&mut interner, "content", Span::new(1, 8, 1, 2)))),
+        expression: Some(Expression::Identifier(ident(
+            &mut interner,
+            "content",
+            Span::new(1, 8, 1, 2),
+        ))),
         span: Span::new(0, 9, 1, 1),
     });
 
@@ -340,7 +371,11 @@ fn test_jsx_nested_elements() {
         },
         children: vec![JsxChild::Element(JsxElement {
             opening: JsxOpeningElement {
-                name: JsxElementName::Identifier(ident(&mut interner, "span", Span::new(6, 10, 1, 7))),
+                name: JsxElementName::Identifier(ident(
+                    &mut interner,
+                    "span",
+                    Span::new(6, 10, 1, 7),
+                )),
                 attributes: vec![],
                 self_closing: false,
                 span: Span::new(5, 11, 1, 6),
@@ -351,7 +386,11 @@ fn test_jsx_nested_elements() {
                 span: Span::new(11, 15, 1, 12),
             })],
             closing: Some(JsxClosingElement {
-                name: JsxElementName::Identifier(ident(&mut interner, "span", Span::new(18, 22, 1, 19))),
+                name: JsxElementName::Identifier(ident(
+                    &mut interner,
+                    "span",
+                    Span::new(18, 22, 1, 19),
+                )),
                 span: Span::new(15, 23, 1, 16),
             }),
             span: Span::new(5, 23, 1, 6),
@@ -378,19 +417,35 @@ fn test_jsx_multiple_attributes() {
             name: JsxElementName::Identifier(ident(&mut interner, "input", Span::new(1, 6, 1, 2))),
             attributes: vec![
                 JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "type", Span::new(7, 11, 1, 8))),
-                    value: Some(JsxAttributeValue::StringLiteral(string_lit(&mut interner, "text", Span::new(12, 18, 1, 13)))),
+                    name: JsxAttributeName::Identifier(ident(
+                        &mut interner,
+                        "type",
+                        Span::new(7, 11, 1, 8),
+                    )),
+                    value: Some(JsxAttributeValue::StringLiteral(string_lit(
+                        &mut interner,
+                        "text",
+                        Span::new(12, 18, 1, 13),
+                    ))),
                     span: Span::new(7, 18, 1, 8),
                 },
                 JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "value", Span::new(19, 24, 1, 20))),
+                    name: JsxAttributeName::Identifier(ident(
+                        &mut interner,
+                        "value",
+                        Span::new(19, 24, 1, 20),
+                    )),
                     value: Some(JsxAttributeValue::Expression(Expression::Identifier(
                         ident(&mut interner, "input", Span::new(26, 31, 1, 27)),
                     ))),
                     span: Span::new(19, 32, 1, 20),
                 },
                 JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "onChange", Span::new(33, 41, 1, 34))),
+                    name: JsxAttributeName::Identifier(ident(
+                        &mut interner,
+                        "onChange",
+                        Span::new(33, 41, 1, 34),
+                    )),
                     value: Some(JsxAttributeValue::Expression(Expression::Identifier(
                         ident(&mut interner, "handleChange", Span::new(43, 55, 1, 44)),
                     ))),
@@ -427,7 +482,11 @@ fn test_jsx_mixed_children() {
                 span: Span::new(5, 10, 1, 6),
             }),
             JsxChild::Expression(JsxExpression {
-                expression: Some(Expression::Identifier(ident(&mut interner, "expr", Span::new(11, 15, 1, 12)))),
+                expression: Some(Expression::Identifier(ident(
+                    &mut interner,
+                    "expr",
+                    Span::new(11, 15, 1, 12),
+                ))),
                 span: Span::new(10, 16, 1, 11),
             }),
             JsxChild::Text(JsxText {
@@ -455,14 +514,22 @@ fn test_jsx_component_with_props() {
             name: JsxElementName::Identifier(ident(&mut interner, "Button", Span::new(1, 7, 1, 2))),
             attributes: vec![
                 JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "onClick", Span::new(8, 15, 1, 9))),
+                    name: JsxAttributeName::Identifier(ident(
+                        &mut interner,
+                        "onClick",
+                        Span::new(8, 15, 1, 9),
+                    )),
                     value: Some(JsxAttributeValue::Expression(Expression::Identifier(
                         ident(&mut interner, "handleClick", Span::new(17, 28, 1, 18)),
                     ))),
                     span: Span::new(8, 29, 1, 9),
                 },
                 JsxAttribute::Attribute {
-                    name: JsxAttributeName::Identifier(ident(&mut interner, "disabled", Span::new(30, 38, 1, 31))),
+                    name: JsxAttributeName::Identifier(ident(
+                        &mut interner,
+                        "disabled",
+                        Span::new(30, 38, 1, 31),
+                    )),
                     value: None,
                     span: Span::new(30, 38, 1, 31),
                 },
@@ -476,7 +543,11 @@ fn test_jsx_component_with_props() {
             span: Span::new(39, 45, 1, 40),
         })],
         closing: Some(JsxClosingElement {
-            name: JsxElementName::Identifier(ident(&mut interner, "Button", Span::new(48, 54, 1, 49))),
+            name: JsxElementName::Identifier(ident(
+                &mut interner,
+                "Button",
+                Span::new(48, 54, 1, 49),
+            )),
             span: Span::new(45, 55, 1, 46),
         }),
         span: Span::new(0, 55, 1, 1),

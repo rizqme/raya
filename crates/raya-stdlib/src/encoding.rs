@@ -76,12 +76,10 @@ struct XmlNodeData {
 // ============================================================================
 
 /// Global registry for CSV table handles
-static CSV_TABLES: LazyLock<HandleRegistry<CsvTableData>> =
-    LazyLock::new(HandleRegistry::new);
+static CSV_TABLES: LazyLock<HandleRegistry<CsvTableData>> = LazyLock::new(HandleRegistry::new);
 
 /// Global registry for XML node handles
-static XML_NODES: LazyLock<HandleRegistry<XmlNodeData>> =
-    LazyLock::new(HandleRegistry::new);
+static XML_NODES: LazyLock<HandleRegistry<XmlNodeData>> = LazyLock::new(HandleRegistry::new);
 
 // ============================================================================
 // Helper
@@ -154,7 +152,9 @@ fn csv_parse(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
 
     let input = match ctx.read_string(args[0]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("encoding.csvParse: invalid input: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("encoding.csvParse: invalid input: {}", e))
+        }
     };
 
     let mut reader = csv::ReaderBuilder::new()
@@ -188,9 +188,7 @@ fn csv_parse(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
 /// to a CsvTable with headers and data rows.
 fn csv_parse_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "encoding.csvParseHeaders requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("encoding.csvParseHeaders requires 1 argument".to_string());
     }
 
     let input = match ctx.read_string(args[0]) {
@@ -281,9 +279,7 @@ fn csv_stringify_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nativ
     }) {
         Some(Ok(s)) => NativeCallResult::Value(ctx.create_string(&s)),
         Some(Err(e)) => NativeCallResult::Error(e),
-        None => NativeCallResult::Error(
-            "encoding.csvStringifyHeaders: invalid handle".to_string(),
-        ),
+        None => NativeCallResult::Error("encoding.csvStringifyHeaders: invalid handle".to_string()),
     }
 }
 
@@ -295,8 +291,7 @@ fn csv_table_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
 
     match CSV_TABLES.with(handle, |table| table.headers.clone()) {
         Some(headers) => {
-            let items: Vec<NativeValue> =
-                headers.iter().map(|h| ctx.create_string(h)).collect();
+            let items: Vec<NativeValue> = headers.iter().map(|h| ctx.create_string(h)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error("encoding.csvTableHeaders: invalid handle".to_string()),
@@ -331,9 +326,7 @@ fn csv_table_rows(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 /// Get a single row from a CSV table by index.
 fn csv_table_row(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
-        return NativeCallResult::Error(
-            "encoding.csvTableRow requires 2 arguments".to_string(),
-        );
+        return NativeCallResult::Error("encoding.csvTableRow requires 2 arguments".to_string());
     }
 
     let handle = get_handle(args, 0);
@@ -347,12 +340,9 @@ fn csv_table_row(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
     }
     let index = index as usize;
 
-    match CSV_TABLES.with(handle, |table| {
-        table.rows.get(index).cloned()
-    }) {
+    match CSV_TABLES.with(handle, |table| table.rows.get(index).cloned()) {
         Some(Some(row)) => {
-            let items: Vec<NativeValue> =
-                row.iter().map(|cell| ctx.create_string(cell)).collect();
+            let items: Vec<NativeValue> = row.iter().map(|cell| ctx.create_string(cell)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         Some(None) => NativeCallResult::Error(format!(
@@ -368,19 +358,14 @@ fn csv_table_row(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 /// Get all values from a column by header name.
 fn csv_table_column(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
-        return NativeCallResult::Error(
-            "encoding.csvTableColumn requires 2 arguments".to_string(),
-        );
+        return NativeCallResult::Error("encoding.csvTableColumn requires 2 arguments".to_string());
     }
 
     let handle = get_handle(args, 0);
     let name = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "encoding.csvTableColumn: invalid name: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("encoding.csvTableColumn: invalid name: {}", e))
         }
     };
 
@@ -402,14 +387,11 @@ fn csv_table_column(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCall
         }
     }) {
         Some(Ok(values)) => {
-            let items: Vec<NativeValue> =
-                values.iter().map(|v| ctx.create_string(v)).collect();
+            let items: Vec<NativeValue> = values.iter().map(|v| ctx.create_string(v)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         Some(Err(e)) => NativeCallResult::Error(e),
-        None => NativeCallResult::Error(
-            "encoding.csvTableColumn: invalid handle".to_string(),
-        ),
+        None => NativeCallResult::Error("encoding.csvTableColumn: invalid handle".to_string()),
     }
 }
 
@@ -421,9 +403,7 @@ fn csv_table_row_count(args: &[NativeValue]) -> NativeCallResult {
 
     match CSV_TABLES.with(handle, |table| table.rows.len()) {
         Some(count) => NativeCallResult::f64(count as f64),
-        None => NativeCallResult::Error(
-            "encoding.csvTableRowCount: invalid handle".to_string(),
-        ),
+        None => NativeCallResult::Error("encoding.csvTableRowCount: invalid handle".to_string()),
     }
 }
 
@@ -462,10 +442,8 @@ fn parse_xml_tree(xml_str: &str) -> Result<u64, String> {
                     .attributes()
                     .filter_map(|a| {
                         a.ok().map(|attr| {
-                            let key =
-                                String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
                             (key, val)
                         })
                     })
@@ -508,10 +486,8 @@ fn parse_xml_tree(xml_str: &str) -> Result<u64, String> {
                     .attributes()
                     .filter_map(|a| {
                         a.ok().map(|attr| {
-                            let key =
-                                String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                            let val =
-                                String::from_utf8_lossy(&attr.value).to_string();
+                            let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
+                            let val = String::from_utf8_lossy(&attr.value).to_string();
                             (key, val)
                         })
                     })
@@ -686,9 +662,7 @@ fn xml_attr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
     let name = match ctx.read_string(args[1]) {
         Ok(s) => s,
-        Err(e) => {
-            return NativeCallResult::Error(format!("encoding.xmlAttr: invalid name: {}", e))
-        }
+        Err(e) => return NativeCallResult::Error(format!("encoding.xmlAttr: invalid name: {}", e)),
     };
 
     match XML_NODES.with(handle, |node| {
@@ -751,9 +725,7 @@ fn xml_child(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
     let handle = get_handle(args, 0);
     let tag_name = match ctx.read_string(args[1]) {
         Ok(s) => s,
-        Err(e) => {
-            return NativeCallResult::Error(format!("encoding.xmlChild: invalid tag: {}", e))
-        }
+        Err(e) => return NativeCallResult::Error(format!("encoding.xmlChild: invalid tag: {}", e)),
     };
 
     match XML_NODES.with(handle, |node| node.children.clone()) {
@@ -807,9 +779,7 @@ fn xml_children_by_tag(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
                 .collect();
             NativeCallResult::Value(ctx.create_array(&matching))
         }
-        None => NativeCallResult::Error(
-            "encoding.xmlChildrenByTag: invalid handle".to_string(),
-        ),
+        None => NativeCallResult::Error("encoding.xmlChildrenByTag: invalid handle".to_string()),
     }
 }
 
@@ -840,18 +810,13 @@ fn release_xml_recursive(handle: u64) {
 /// Encode a buffer to a Base32 string (RFC 4648).
 fn base32_encode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "encoding.base32Encode requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("encoding.base32Encode requires 1 argument".to_string());
     }
 
     let data = match ctx.read_buffer(args[0]) {
         Ok(b) => b,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "encoding.base32Encode: invalid buffer: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("encoding.base32Encode: invalid buffer: {}", e))
         }
     };
 
@@ -864,18 +829,13 @@ fn base32_encode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 /// Decode a Base32 string (RFC 4648) to a buffer.
 fn base32_decode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "encoding.base32Decode requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("encoding.base32Decode requires 1 argument".to_string());
     }
 
     let input = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "encoding.base32Decode: invalid input: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("encoding.base32Decode: invalid input: {}", e))
         }
     };
 
@@ -890,9 +850,7 @@ fn base32_decode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 /// Encode a buffer to a Base32hex string (RFC 4648 extended hex alphabet).
 fn base32_hex_encode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "encoding.base32HexEncode requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("encoding.base32HexEncode requires 1 argument".to_string());
     }
 
     let data = match ctx.read_buffer(args[0]) {
@@ -914,9 +872,7 @@ fn base32_hex_encode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
 /// Decode a Base32hex string (RFC 4648 extended hex alphabet) to a buffer.
 fn base32_hex_decode(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "encoding.base32HexDecode requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("encoding.base32HexDecode requires 1 argument".to_string());
     }
 
     let input = match ctx.read_string(args[0]) {

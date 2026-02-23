@@ -11,7 +11,7 @@
 //! - Error handling
 
 use raya_engine::vm::gc::GarbageCollector;
-use raya_engine::vm::json::{parser, stringify, json_to_value, JsonValue};
+use raya_engine::vm::json::{json_to_value, parser, stringify, JsonValue};
 use raya_engine::vm::object::RayaString;
 
 // ============================================================================

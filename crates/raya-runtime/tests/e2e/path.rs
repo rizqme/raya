@@ -3,8 +3,7 @@
 //! Tests verify that path manipulation methods compile and execute correctly.
 
 use super::harness::{
-    compile_and_run_with_builtins, expect_bool_with_builtins,
-    expect_string_with_builtins,
+    compile_and_run_with_builtins, expect_bool_with_builtins, expect_string_with_builtins,
 };
 
 // ============================================================================

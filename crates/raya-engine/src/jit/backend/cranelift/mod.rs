@@ -6,17 +6,17 @@
 pub mod abi;
 pub mod lowering;
 
-use std::sync::Arc;
 use cranelift_codegen::control::ControlPlane;
 use cranelift_codegen::isa::TargetIsa;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::{ir, Context};
 use cranelift_frontend::FunctionBuilderContext;
+use std::sync::Arc;
 use target_lexicon::Architecture;
 
+use self::lowering::{jit_entry_signature, LoweringContext};
 use crate::jit::backend::traits::*;
 use crate::jit::ir::instr::JitFunction;
-use self::lowering::{LoweringContext, jit_entry_signature};
 
 /// Cranelift-based code generation backend
 pub struct CraneliftBackend {
@@ -28,18 +28,20 @@ impl CraneliftBackend {
     /// Create a backend targeting the host machine
     pub fn host() -> Result<Self, CodegenError> {
         let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").map_err(|e|
-            CodegenError::BackendError(format!("Failed to set opt_level: {}", e))
-        )?;
+        flag_builder
+            .set("opt_level", "speed")
+            .map_err(|e| CodegenError::BackendError(format!("Failed to set opt_level: {}", e)))?;
         // Enable position-independent code for safety
-        flag_builder.set("is_pic", "true").map_err(|e|
-            CodegenError::BackendError(format!("Failed to set is_pic: {}", e))
-        )?;
+        flag_builder
+            .set("is_pic", "true")
+            .map_err(|e| CodegenError::BackendError(format!("Failed to set is_pic: {}", e)))?;
 
         let flags = settings::Flags::new(flag_builder);
 
         let isa = cranelift_native::builder()
-            .map_err(|e| CodegenError::BackendError(format!("Failed to create native ISA builder: {}", e)))?
+            .map_err(|e| {
+                CodegenError::BackendError(format!("Failed to create native ISA builder: {}", e))
+            })?
             .finish(flags)
             .map_err(|e| CodegenError::BackendError(format!("Failed to finish ISA: {}", e)))?;
 
@@ -78,9 +80,8 @@ impl CodegenBackend for CraneliftBackend {
             );
 
             // lower() takes ownership of builder (finalize() consumes it)
-            LoweringContext::lower(func, builder).map_err(|e| {
-                CodegenError::BackendError(format!("Lowering failed: {}", e))
-            })?;
+            LoweringContext::lower(func, builder)
+                .map_err(|e| CodegenError::BackendError(format!("Lowering failed: {}", e)))?;
         }
 
         // Compile to machine code
@@ -110,7 +111,8 @@ impl CodegenBackend for CraneliftBackend {
         // Full finalization with executable memory mapping deferred to JitEngine
         // which uses cranelift_jit::JITModule for proper memory management
         Err(CodegenError::BackendError(
-            "Use JitEngine for executable code; CraneliftBackend::finalize not yet implemented".to_string()
+            "Use JitEngine for executable code; CraneliftBackend::finalize not yet implemented"
+                .to_string(),
         ))
     }
 
@@ -130,10 +132,10 @@ impl CodegenBackend for CraneliftBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode};
     use crate::jit::ir::instr::{JitBlock, JitBlockId, JitInstr, JitTerminator, Reg};
     use crate::jit::ir::types::JitType;
     use crate::jit::pipeline::JitPipeline;
-    use crate::compiler::bytecode::{ConstantPool, Function, Metadata, Module, Opcode};
 
     fn make_module_with_func(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
         Module {
@@ -166,7 +168,9 @@ mod tests {
         code.push(Opcode::ConstI32 as u8);
         code.extend_from_slice(&val.to_le_bytes());
     }
-    fn emit(code: &mut Vec<u8>, op: Opcode) { code.push(op as u8); }
+    fn emit(code: &mut Vec<u8>, op: Opcode) {
+        code.push(op as u8);
+    }
 
     #[test]
     fn test_cranelift_backend_creation() {
@@ -183,12 +187,18 @@ mod tests {
         let entry = func.add_block();
 
         let r0 = func.alloc_reg(JitType::I32);
-        func.block_mut(entry).instrs.push(JitInstr::ConstI32 { dest: r0, value: 42 });
+        func.block_mut(entry).instrs.push(JitInstr::ConstI32 {
+            dest: r0,
+            value: 42,
+        });
         func.block_mut(entry).terminator = JitTerminator::Return(Some(r0));
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());
@@ -205,14 +215,25 @@ mod tests {
         let r1 = func.alloc_reg(JitType::I32);
         let r2 = func.alloc_reg(JitType::I32);
 
-        func.block_mut(entry).instrs.push(JitInstr::ConstI32 { dest: r0, value: 3 });
-        func.block_mut(entry).instrs.push(JitInstr::ConstI32 { dest: r1, value: 5 });
-        func.block_mut(entry).instrs.push(JitInstr::IAdd { dest: r2, left: r0, right: r1 });
+        func.block_mut(entry)
+            .instrs
+            .push(JitInstr::ConstI32 { dest: r0, value: 3 });
+        func.block_mut(entry)
+            .instrs
+            .push(JitInstr::ConstI32 { dest: r1, value: 5 });
+        func.block_mut(entry).instrs.push(JitInstr::IAdd {
+            dest: r2,
+            left: r0,
+            right: r1,
+        });
         func.block_mut(entry).terminator = JitTerminator::Return(Some(r2));
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());
@@ -230,14 +251,27 @@ mod tests {
         let r1 = func.alloc_reg(JitType::F64);
         let r2 = func.alloc_reg(JitType::F64);
 
-        func.block_mut(entry).instrs.push(JitInstr::ConstF64 { dest: r0, value: 1.5 });
-        func.block_mut(entry).instrs.push(JitInstr::ConstF64 { dest: r1, value: 2.5 });
-        func.block_mut(entry).instrs.push(JitInstr::FAdd { dest: r2, left: r0, right: r1 });
+        func.block_mut(entry).instrs.push(JitInstr::ConstF64 {
+            dest: r0,
+            value: 1.5,
+        });
+        func.block_mut(entry).instrs.push(JitInstr::ConstF64 {
+            dest: r1,
+            value: 2.5,
+        });
+        func.block_mut(entry).instrs.push(JitInstr::FAdd {
+            dest: r2,
+            left: r0,
+            right: r1,
+        });
         func.block_mut(entry).terminator = JitTerminator::Return(Some(r2));
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());
@@ -257,22 +291,32 @@ mod tests {
         let r1 = func.alloc_reg(JitType::I32);
         let r2 = func.alloc_reg(JitType::I32);
 
-        func.block_mut(entry).instrs.push(JitInstr::ConstBool { dest: r0, value: true });
+        func.block_mut(entry).instrs.push(JitInstr::ConstBool {
+            dest: r0,
+            value: true,
+        });
         func.block_mut(entry).terminator = JitTerminator::Branch {
             cond: r0,
             then_block,
             else_block,
         };
 
-        func.block_mut(then_block).instrs.push(JitInstr::ConstI32 { dest: r1, value: 1 });
+        func.block_mut(then_block)
+            .instrs
+            .push(JitInstr::ConstI32 { dest: r1, value: 1 });
         func.block_mut(then_block).terminator = JitTerminator::Return(Some(r1));
 
-        func.block_mut(else_block).instrs.push(JitInstr::ConstI32 { dest: r2, value: 2 });
+        func.block_mut(else_block)
+            .instrs
+            .push(JitInstr::ConstI32 { dest: r2, value: 2 });
         func.block_mut(else_block).terminator = JitTerminator::Return(Some(r2));
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());
@@ -287,13 +331,21 @@ mod tests {
         let r0 = func.alloc_reg(JitType::I32);
         let r1 = func.alloc_reg(JitType::Value);
 
-        func.block_mut(entry).instrs.push(JitInstr::ConstI32 { dest: r0, value: 42 });
-        func.block_mut(entry).instrs.push(JitInstr::BoxI32 { dest: r1, src: r0 });
+        func.block_mut(entry).instrs.push(JitInstr::ConstI32 {
+            dest: r0,
+            value: 42,
+        });
+        func.block_mut(entry)
+            .instrs
+            .push(JitInstr::BoxI32 { dest: r1, src: r0 });
         func.block_mut(entry).terminator = JitTerminator::Return(Some(r1));
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());
@@ -310,9 +362,9 @@ mod tests {
         let backend = CraneliftBackend::host().unwrap();
         let pipeline = JitPipeline::new(backend);
 
-        let (jit_func, compiled) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, compiled) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         assert_eq!(jit_func.name, "test_func");
         assert!(!compiled.code.is_empty());
@@ -333,9 +385,9 @@ mod tests {
         let backend = CraneliftBackend::host().unwrap();
         let pipeline = JitPipeline::new(backend);
 
-        let (_jit_func, compiled) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (_jit_func, compiled) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         assert!(!compiled.code.is_empty());
     }
@@ -355,9 +407,9 @@ mod tests {
         let backend = CraneliftBackend::host().unwrap();
         let pipeline = JitPipeline::new(backend);
 
-        let (_jit_func, compiled) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (_jit_func, compiled) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         assert!(!compiled.code.is_empty());
     }
@@ -371,7 +423,10 @@ mod tests {
 
         let backend = CraneliftBackend::host().unwrap();
         let module = make_module_with_func(vec![], 0, 0);
-        let ctx = ModuleContext { module: &module, func_index: 0 };
+        let ctx = ModuleContext {
+            module: &module,
+            func_index: 0,
+        };
 
         let compiled = backend.compile_function(&func, &ctx).unwrap();
         assert!(!compiled.code.is_empty());

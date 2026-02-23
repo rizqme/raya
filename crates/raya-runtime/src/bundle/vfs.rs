@@ -49,11 +49,7 @@ impl Vfs {
     /// Create a disk-backed VFS from a list of include patterns.
     ///
     /// Resolves paths relative to `base_dir`.
-    pub fn from_disk(
-        base_dir: &Path,
-        include: &[String],
-        exclude: &[String],
-    ) -> Self {
+    pub fn from_disk(base_dir: &Path, include: &[String], exclude: &[String]) -> Self {
         let mut entries = HashMap::new();
 
         for pattern in include {
@@ -66,7 +62,8 @@ impl Vfs {
             if let Ok(paths) = glob_paths(&pattern_str) {
                 for path in paths {
                     // Skip excluded patterns
-                    let relative = path.strip_prefix(base_dir)
+                    let relative = path
+                        .strip_prefix(base_dir)
                         .unwrap_or(&path)
                         .to_string_lossy()
                         .replace('\\', "/");
@@ -139,12 +136,10 @@ impl Vfs {
         let mut result = Vec::new();
         for (path, entry) in &self.entries {
             let data = match entry {
-                VfsEntry::DiskBacked(p) => {
-                    match std::fs::read(p) {
-                        Ok(data) => data,
-                        Err(_) => continue,
-                    }
-                }
+                VfsEntry::DiskBacked(p) => match std::fs::read(p) {
+                    Ok(data) => data,
+                    Err(_) => continue,
+                },
                 VfsEntry::Embedded(data) => data.clone(),
             };
             result.push((path.clone(), data));
@@ -210,7 +205,10 @@ fn split_at_glob(pattern: &str) -> (String, String) {
         let base = &pattern[..pos];
         // Find the last separator before the glob
         let sep_pos = base.rfind('/').map(|p| p + 1).unwrap_or(0);
-        (pattern[..sep_pos].to_string(), pattern[sep_pos..].to_string())
+        (
+            pattern[..sep_pos].to_string(),
+            pattern[sep_pos..].to_string(),
+        )
     } else {
         (pattern.to_string(), String::new())
     }
@@ -316,10 +314,7 @@ mod tests {
         std::fs::write(&file_path, "hello world").unwrap();
 
         let mut entries = HashMap::new();
-        entries.insert(
-            "test.txt".to_string(),
-            VfsEntry::DiskBacked(file_path),
-        );
+        entries.insert("test.txt".to_string(), VfsEntry::DiskBacked(file_path));
 
         let vfs = Vfs::new(entries);
         assert!(vfs.exists("test.txt"));
@@ -329,14 +324,8 @@ mod tests {
     #[test]
     fn test_vfs_collect_for_embedding() {
         let mut entries = HashMap::new();
-        entries.insert(
-            "b.txt".to_string(),
-            VfsEntry::Embedded(b"second".to_vec()),
-        );
-        entries.insert(
-            "a.txt".to_string(),
-            VfsEntry::Embedded(b"first".to_vec()),
-        );
+        entries.insert("b.txt".to_string(), VfsEntry::Embedded(b"second".to_vec()));
+        entries.insert("a.txt".to_string(), VfsEntry::Embedded(b"first".to_vec()));
 
         let vfs = Vfs::new(entries);
         let collected = vfs.collect_for_embedding();
@@ -352,6 +341,9 @@ mod tests {
         assert!(is_excluded("test.tmp", &["**/*.tmp".to_string()]));
         assert!(is_excluded("dir/file.tmp", &["**/*.tmp".to_string()]));
         assert!(!is_excluded("test.txt", &["**/*.tmp".to_string()]));
-        assert!(is_excluded("assets/dev-only/file.txt", &["assets/dev-only/".to_string()]));
+        assert!(is_excluded(
+            "assets/dev-only/file.txt",
+            &["assets/dev-only/".to_string()]
+        ));
     }
 }

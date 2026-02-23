@@ -3,8 +3,8 @@
 //! This module implements a high-performance lexer using the logos library.
 //! It converts source code into a stream of tokens with precise source location information.
 
-use crate::parser::token::{Span, TemplatePart, Token};
 use crate::parser::interner::Interner;
+use crate::parser::token::{Span, TemplatePart, Token};
 use logos::Logos;
 
 /// Logos-based token enum for lexing.
@@ -19,9 +19,9 @@ enum LogosToken {
 
     // Line comments are handled in the manual whitespace loop (which checks for //@@)
     // This regex is kept for any edge cases but should rarely be hit
-    #[regex(r"//[^@\n][^\n]*", logos::skip)]  // Skip // followed by non-@
-    #[regex(r"//@[^@\n][^\n]*", logos::skip)]  // Skip //@ followed by non-@
-    #[regex(r"//\n", logos::skip)]  // Skip empty line comment
+    #[regex(r"//[^@\n][^\n]*", logos::skip)] // Skip // followed by non-@
+    #[regex(r"//@[^@\n][^\n]*", logos::skip)] // Skip //@ followed by non-@
+    #[regex(r"//\n", logos::skip)] // Skip empty line comment
     LineComment,
 
     #[regex(r"/\*", lex_block_comment)]
@@ -49,7 +49,6 @@ enum LogosToken {
     Const,
 
     // Note: 'interface', 'enum', and 'var' are BANNED in Raya
-
     #[token("if")]
     If,
 
@@ -193,7 +192,10 @@ enum LogosToken {
     #[regex(r"[0-9]+(_[0-9]+)*", parse_int)]
     IntLiteral(i64),
 
-    #[regex(r"[0-9]+(_[0-9]+)*\.[0-9]+(_[0-9]+)*([eE][+-]?[0-9]+(_[0-9]+)*)?", parse_float)]
+    #[regex(
+        r"[0-9]+(_[0-9]+)*\.[0-9]+(_[0-9]+)*([eE][+-]?[0-9]+(_[0-9]+)*)?",
+        parse_float
+    )]
     #[regex(r"[0-9]+(_[0-9]+)*[eE][+-]?[0-9]+(_[0-9]+)*", parse_float)]
     #[regex(r"\.[0-9]+(_[0-9]+)*([eE][+-]?[0-9]+(_[0-9]+)*)?", parse_float)]
     FloatLiteral(f64),
@@ -688,7 +690,8 @@ impl<'a> Lexer<'a> {
 
                 match self.lex_template(pos) {
                     Ok((template, end_pos)) => {
-                        self.tokens.push((Token::TemplateLiteral(template), start_span));
+                        self.tokens
+                            .push((Token::TemplateLiteral(template), start_span));
 
                         // Update line/column for consumed template
                         for c in self.source[pos..end_pos].chars() {
@@ -740,7 +743,8 @@ impl<'a> Lexer<'a> {
                     }
                     Err(_) => {
                         let char = self.source[abs_start..].chars().next().unwrap_or('\0');
-                        self.errors.push(LexError::UnexpectedCharacter { char, span });
+                        self.errors
+                            .push(LexError::UnexpectedCharacter { char, span });
                     }
                 }
 
@@ -973,7 +977,8 @@ impl<'a> Lexer<'a> {
                                 // Fixed-length \uXXXX
                                 let mut hex = String::new();
                                 for _ in 0..4 {
-                                    if pos < bytes.len() && (bytes[pos] as char).is_ascii_hexdigit() {
+                                    if pos < bytes.len() && (bytes[pos] as char).is_ascii_hexdigit()
+                                    {
                                         hex.push(bytes[pos] as char);
                                         pos += 1;
                                     } else {
@@ -983,7 +988,8 @@ impl<'a> Lexer<'a> {
 
                                 if hex.len() == 4 {
                                     if let Ok(code_point) = u16::from_str_radix(&hex, 16) {
-                                        string_part.push(char::from_u32(code_point as u32).unwrap());
+                                        string_part
+                                            .push(char::from_u32(code_point as u32).unwrap());
                                     }
                                 }
                             }
@@ -1103,12 +1109,8 @@ impl LexError {
             LexError::UnexpectedCharacter { char, .. } => {
                 format!("Unexpected character '{}'", char)
             }
-            LexError::UnterminatedString { .. } => {
-                "Unterminated string literal".to_string()
-            }
-            LexError::UnterminatedTemplate { .. } => {
-                "Unterminated template literal".to_string()
-            }
+            LexError::UnterminatedString { .. } => "Unterminated string literal".to_string(),
+            LexError::UnterminatedTemplate { .. } => "Unterminated template literal".to_string(),
             LexError::InvalidNumber { text, .. } => {
                 format!("Invalid number '{}'", text)
             }
@@ -1154,7 +1156,11 @@ impl LexError {
         if let Some(error_line) = source.lines().nth((span.line - 1) as usize) {
             result.push_str("  |\n");
             result.push_str(&format!("{:3} | {}\n", span.line, error_line));
-            result.push_str(&format!("  | {}{}\n", " ".repeat(span.column as usize - 1), "^"));
+            result.push_str(&format!(
+                "  | {}{}\n",
+                " ".repeat(span.column as usize - 1),
+                "^"
+            ));
         }
 
         // Hint if available
@@ -1249,7 +1255,8 @@ class User {
         let (tokens, interner) = lexer.tokenize().expect("should lex");
 
         // Find annotation tokens
-        let annotations: Vec<_> = tokens.iter()
+        let annotations: Vec<_> = tokens
+            .iter()
             .filter_map(|(t, _)| {
                 if let Token::Annotation(sym) = t {
                     Some(interner.resolve(*sym).to_string())
@@ -1271,8 +1278,13 @@ class User {
         let (tokens, _) = lexer.tokenize().expect("should lex");
 
         // Should not have any Annotation tokens
-        let has_annotation = tokens.iter().any(|(t, _)| matches!(t, Token::Annotation(_)));
-        assert!(!has_annotation, "Regular comments should not produce Annotation tokens");
+        let has_annotation = tokens
+            .iter()
+            .any(|(t, _)| matches!(t, Token::Annotation(_)));
+        assert!(
+            !has_annotation,
+            "Regular comments should not produce Annotation tokens"
+        );
 
         // Should have the let statement tokens
         assert!(tokens.iter().any(|(t, _)| matches!(t, Token::Let)));
@@ -1285,7 +1297,12 @@ class User {
         let (tokens, _) = lexer.tokenize().expect("should lex");
 
         // Should not have any Annotation tokens (single @ is not an annotation)
-        let has_annotation = tokens.iter().any(|(t, _)| matches!(t, Token::Annotation(_)));
-        assert!(!has_annotation, "//@... should not produce Annotation tokens");
+        let has_annotation = tokens
+            .iter()
+            .any(|(t, _)| matches!(t, Token::Annotation(_)));
+        assert!(
+            !has_annotation,
+            "//@... should not produce Annotation tokens"
+        );
     }
 }

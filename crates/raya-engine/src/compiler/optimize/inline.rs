@@ -52,7 +52,11 @@ impl Inliner {
     }
 
     /// Check if a function is inlinable and extract its body if so
-    fn extract_inlinable_body(&self, func: &IrFunction, func_id: FunctionId) -> Option<InlinableBody> {
+    fn extract_inlinable_body(
+        &self,
+        func: &IrFunction,
+        func_id: FunctionId,
+    ) -> Option<InlinableBody> {
         // Must have exactly one basic block
         if func.blocks.len() != 1 {
             return None;
@@ -89,14 +93,20 @@ impl Inliner {
 
     /// Check if an instruction can be inlined.
     /// Whitelist approach: only allow instructions the renamer knows how to handle.
-    fn is_inlinable_instruction(&self, instr: &IrInstr, self_func_id: FunctionId, param_count: usize) -> bool {
+    fn is_inlinable_instruction(
+        &self,
+        instr: &IrInstr,
+        self_func_id: FunctionId,
+        param_count: usize,
+    ) -> bool {
         match instr {
             // Recursive calls cannot be inlined
             IrInstr::Call { func, .. } if *func == self_func_id => false,
             // Async operations cannot be inlined (they create tasks)
-            IrInstr::Spawn { .. } | IrInstr::SpawnClosure { .. } | IrInstr::Await { .. } | IrInstr::AwaitAll { .. } => {
-                false
-            }
+            IrInstr::Spawn { .. }
+            | IrInstr::SpawnClosure { .. }
+            | IrInstr::Await { .. }
+            | IrInstr::AwaitAll { .. } => false,
             // Try/catch blocks cannot be inlined
             IrInstr::SetupTry { .. } | IrInstr::EndTry => false,
             // Closures with captures are complex
@@ -159,7 +169,10 @@ impl Inliner {
             let mut new_instructions = Vec::new();
             let mut i = 0;
 
-            while i < module.functions[func_idx].blocks[block_idx].instructions.len() {
+            while i < module.functions[func_idx].blocks[block_idx]
+                .instructions
+                .len()
+            {
                 let instr = &module.functions[func_idx].blocks[block_idx].instructions[i];
 
                 // Check if this is a call to an inlinable function
@@ -169,7 +182,8 @@ impl Inliner {
                         // This avoids issues with mismatched this/self parameters
                         if args.len() == body.param_count {
                             // Inline this call
-                            let inlined = self.inline_call(dest.clone(), args, body, &mut max_reg_id);
+                            let inlined =
+                                self.inline_call(dest.clone(), args, body, &mut max_reg_id);
                             new_instructions.extend(inlined);
                             i += 1;
                             continue;
@@ -178,7 +192,8 @@ impl Inliner {
                 }
 
                 // Keep the original instruction
-                new_instructions.push(module.functions[func_idx].blocks[block_idx].instructions[i].clone());
+                new_instructions
+                    .push(module.functions[func_idx].blocks[block_idx].instructions[i].clone());
                 i += 1;
             }
 
@@ -228,7 +243,9 @@ impl Inliner {
                     f(reg.id.as_u32());
                 }
             }
-            IrInstr::BinaryOp { dest, left, right, .. } => {
+            IrInstr::BinaryOp {
+                dest, left, right, ..
+            } => {
                 f(dest.id.as_u32());
                 f(left.id.as_u32());
                 f(right.id.as_u32());
@@ -280,7 +297,9 @@ impl Inliner {
                 f(dest.id.as_u32());
                 f(string.id.as_u32());
             }
-            IrInstr::StringCompare { dest, left, right, .. } => {
+            IrInstr::StringCompare {
+                dest, left, right, ..
+            } => {
                 f(dest.id.as_u32());
                 f(left.id.as_u32());
                 f(right.id.as_u32());
@@ -298,7 +317,11 @@ impl Inliner {
                 f(array.id.as_u32());
                 f(index.id.as_u32());
             }
-            IrInstr::StoreElement { array, index, value } => {
+            IrInstr::StoreElement {
+                array,
+                index,
+                value,
+            } => {
                 f(array.id.as_u32());
                 f(index.id.as_u32());
                 f(value.id.as_u32());
@@ -312,7 +335,12 @@ impl Inliner {
                     f(arg.id.as_u32());
                 }
             }
-            IrInstr::CallMethod { dest, object, args: method_args, .. } => {
+            IrInstr::CallMethod {
+                dest,
+                object,
+                args: method_args,
+                ..
+            } => {
                 if let Some(d) = dest {
                     f(d.id.as_u32());
                 }
@@ -352,8 +380,14 @@ impl Inliner {
 
         // Clone and rename each instruction
         for instr in &body.instructions {
-            let renamed =
-                self.rename_instruction(instr, args, body.param_count, &mut reg_map, &mut allocated, max_reg_id);
+            let renamed = self.rename_instruction(
+                instr,
+                args,
+                body.param_count,
+                &mut reg_map,
+                &mut allocated,
+                max_reg_id,
+            );
             // rename_instruction may return None if the instruction was elided (e.g., LoadLocal for param)
             if let Some(renamed_instr) = renamed {
                 result.push(renamed_instr);
@@ -393,7 +427,12 @@ impl Inliner {
                     IrValue::Constant(c) => IrValue::Constant(c.clone()),
                 },
             }),
-            IrInstr::BinaryOp { dest, op, left, right } => Some(IrInstr::BinaryOp {
+            IrInstr::BinaryOp {
+                dest,
+                op,
+                left,
+                right,
+            } => Some(IrInstr::BinaryOp {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 op: *op,
                 left: self.rename_register(left, reg_map),
@@ -441,30 +480,65 @@ impl Inliner {
                     })
                 }
             }
-            IrInstr::LoadField { dest, object, field } => Some(IrInstr::LoadField {
+            IrInstr::LoadField {
+                dest,
+                object,
+                field,
+            } => Some(IrInstr::LoadField {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
                 field: *field,
             }),
-            IrInstr::StoreField { object, field, value } => Some(IrInstr::StoreField {
+            IrInstr::StoreField {
+                object,
+                field,
+                value,
+            } => Some(IrInstr::StoreField {
                 object: self.rename_register(object, reg_map),
                 field: *field,
                 value: self.rename_register(value, reg_map),
             }),
-            IrInstr::Call { dest, func, args: call_args } => Some(IrInstr::Call {
-                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+            IrInstr::Call {
+                dest,
+                func,
+                args: call_args,
+            } => Some(IrInstr::Call {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 func: *func,
-                args: call_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+                args: call_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
-            IrInstr::NativeCall { dest, native_id, args: native_args } => Some(IrInstr::NativeCall {
-                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+            IrInstr::NativeCall {
+                dest,
+                native_id,
+                args: native_args,
+            } => Some(IrInstr::NativeCall {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 native_id: *native_id,
-                args: native_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+                args: native_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
-            IrInstr::ModuleNativeCall { dest, local_idx, args: native_args } => Some(IrInstr::ModuleNativeCall {
-                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+            IrInstr::ModuleNativeCall {
+                dest,
+                local_idx,
+                args: native_args,
+            } => Some(IrInstr::ModuleNativeCall {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 local_idx: *local_idx,
-                args: native_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+                args: native_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
             IrInstr::MutexLock { mutex } => Some(IrInstr::MutexLock {
                 mutex: self.rename_register(mutex, reg_map),
@@ -502,7 +576,13 @@ impl Inliner {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 string: self.rename_register(string, reg_map),
             }),
-            IrInstr::StringCompare { dest, left, right, mode, negate } => Some(IrInstr::StringCompare {
+            IrInstr::StringCompare {
+                dest,
+                left,
+                right,
+                mode,
+                negate,
+            } => Some(IrInstr::StringCompare {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 left: self.rename_register(left, reg_map),
                 right: self.rename_register(right, reg_map),
@@ -522,7 +602,11 @@ impl Inliner {
                 array: self.rename_register(array, reg_map),
                 index: self.rename_register(index, reg_map),
             }),
-            IrInstr::StoreElement { array, index, value } => Some(IrInstr::StoreElement {
+            IrInstr::StoreElement {
+                array,
+                index,
+                value,
+            } => Some(IrInstr::StoreElement {
                 array: self.rename_register(array, reg_map),
                 index: self.rename_register(index, reg_map),
                 value: self.rename_register(value, reg_map),
@@ -531,31 +615,65 @@ impl Inliner {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 class: *class,
             }),
-            IrInstr::InstanceOf { dest, object, class_id } => Some(IrInstr::InstanceOf {
+            IrInstr::InstanceOf {
+                dest,
+                object,
+                class_id,
+            } => Some(IrInstr::InstanceOf {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
                 class_id: *class_id,
             }),
-            IrInstr::Cast { dest, object, class_id } => Some(IrInstr::Cast {
+            IrInstr::Cast {
+                dest,
+                object,
+                class_id,
+            } => Some(IrInstr::Cast {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
                 class_id: *class_id,
             }),
-            IrInstr::MakeClosure { dest, func, captures } => Some(IrInstr::MakeClosure {
+            IrInstr::MakeClosure {
+                dest,
+                func,
+                captures,
+            } => Some(IrInstr::MakeClosure {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 func: *func,
-                captures: captures.iter().map(|c| self.rename_register(c, reg_map)).collect(),
+                captures: captures
+                    .iter()
+                    .map(|c| self.rename_register(c, reg_map))
+                    .collect(),
             }),
-            IrInstr::CallClosure { dest, closure, args: closure_args } => Some(IrInstr::CallClosure {
-                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+            IrInstr::CallClosure {
+                dest,
+                closure,
+                args: closure_args,
+            } => Some(IrInstr::CallClosure {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 closure: self.rename_register(closure, reg_map),
-                args: closure_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+                args: closure_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
-            IrInstr::CallMethod { dest, object, method, args: method_args } => Some(IrInstr::CallMethod {
-                dest: dest.as_ref().map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
+            IrInstr::CallMethod {
+                dest,
+                object,
+                method,
+                args: method_args,
+            } => Some(IrInstr::CallMethod {
+                dest: dest
+                    .as_ref()
+                    .map(|d| self.rename_or_allocate(d, reg_map, allocated, max_reg_id)),
                 object: self.rename_register(object, reg_map),
                 method: *method,
-                args: method_args.iter().map(|a| self.rename_register(a, reg_map)).collect(),
+                args: method_args
+                    .iter()
+                    .map(|a| self.rename_register(a, reg_map))
+                    .collect(),
             }),
             IrInstr::StoreGlobal { index, value } => Some(IrInstr::StoreGlobal {
                 index: *index,
@@ -572,7 +690,11 @@ impl Inliner {
     }
 
     /// Rename a register using the mapping, or return as-is if not mapped
-    fn rename_register(&self, reg: &Register, reg_map: &FxHashMap<RegisterId, Register>) -> Register {
+    fn rename_register(
+        &self,
+        reg: &Register,
+        reg_map: &FxHashMap<RegisterId, Register>,
+    ) -> Register {
         reg_map.get(&reg.id).cloned().unwrap_or_else(|| reg.clone())
     }
 

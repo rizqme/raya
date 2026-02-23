@@ -11,10 +11,11 @@
 
 pub mod abi;
 pub mod builtin;
-pub mod defaults;
 pub mod builtins;
+pub mod defaults;
 pub mod ffi;
 pub mod gc;
+pub mod interpreter;
 pub mod json;
 pub mod module;
 pub mod native_handler;
@@ -27,25 +28,41 @@ pub mod stack;
 pub mod sync;
 pub mod types;
 pub mod value;
-pub mod interpreter;
 
 // Re-export SDK types (canonical definitions live in raya-sdk)
 pub use raya_sdk::{
-    NativeValue, NativeContext, NativeHandler, NativeCallResult, NoopNativeHandler,
-    NativeArray, NativeObject, ObjectSchema, NativeClass, NativeFunction, NativeMethod, NativeTask,
-    AbiResult, ClassInfo, NativeError, FromNativeObject, ToNativeObject,
+    AbiResult, ClassInfo, FromNativeObject, NativeArray, NativeCallResult, NativeClass,
+    NativeContext, NativeError, NativeFunction, NativeHandler, NativeMethod, NativeObject,
+    NativeTask, NativeValue, NoopNativeHandler, ObjectSchema, ToNativeObject,
 };
 
 // Re-export engine-specific ABI types
 pub use abi::{
-    EngineContext,
-    value_to_native, native_to_value,
     // Backward-compatible free functions
-    array_allocate, array_get, array_length, buffer_allocate, buffer_read_bytes, class_get_info,
-    object_allocate, object_class_id, object_get_field, object_set_field, string_allocate,
-    string_read, task_cancel, task_is_done, task_spawn,
+    array_allocate,
+    array_get,
+    array_length,
+    buffer_allocate,
+    buffer_read_bytes,
+    class_get_info,
+    native_to_value,
+    object_allocate,
+    object_class_id,
+    object_get_field,
+    object_set_field,
+    string_allocate,
+    string_read,
+    task_cancel,
+    task_is_done,
+    task_spawn,
+    value_to_native,
+    EngineContext,
 };
 
+pub use interpreter::{
+    ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
+    VmOptions, VmStats,
+};
 pub use json::{validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry};
 pub use native_registry::{NativeFn, NativeFunctionRegistry, ResolvedNatives};
 pub use object::{Array, BoundMethod, Class, Object, RayaString, VTable};
@@ -55,10 +72,6 @@ pub use stack::{CallFrame, Stack, StackStats};
 pub use sync::{Mutex, MutexError, MutexId, MutexRegistry};
 pub use types::{PointerMap, TypeInfo, TypeRegistry};
 pub use value::Value;
-pub use interpreter::{
-    ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits, Vm, VmContext, VmContextId,
-    VmOptions, VmStats,
-};
 
 /// VM execution errors
 #[derive(Debug, thiserror::Error)]

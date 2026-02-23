@@ -110,7 +110,10 @@ impl Mutex {
     /// This is a convenience method that combines try_lock with guard creation.
     /// Note: This will block if the mutex is already locked. For VM usage,
     /// prefer using the LOCK opcode which integrates with the scheduler.
-    pub fn lock_guard(&self, task_id: TaskId) -> Result<MutexGuard<'_>, crate::vm::sync::BlockReason> {
+    pub fn lock_guard(
+        &self,
+        task_id: TaskId,
+    ) -> Result<MutexGuard<'_>, crate::vm::sync::BlockReason> {
         self.try_lock(task_id)?;
         Ok(MutexGuard::new(self, task_id))
     }

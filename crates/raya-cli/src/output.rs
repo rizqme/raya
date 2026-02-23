@@ -40,13 +40,7 @@ impl StyledOutput {
     // ── Generic styled writes ────────────────────────────────────────
 
     /// Write text with a specific color and style.
-    pub fn write_styled(
-        &mut self,
-        text: &str,
-        color: Option<Color>,
-        bold: bool,
-        intense: bool,
-    ) {
+    pub fn write_styled(&mut self, text: &str, color: Option<Color>, bold: bool, intense: bool) {
         let mut spec = ColorSpec::new();
         spec.set_fg(color).set_bold(bold).set_intense(intense);
         let _ = self.stdout.set_color(&spec);
@@ -55,13 +49,7 @@ impl StyledOutput {
     }
 
     /// Write text followed by newline with a specific color and style.
-    pub fn writeln_styled(
-        &mut self,
-        text: &str,
-        color: Option<Color>,
-        bold: bool,
-        intense: bool,
-    ) {
+    pub fn writeln_styled(&mut self, text: &str, color: Option<Color>, bold: bool, intense: bool) {
         let mut spec = ColorSpec::new();
         spec.set_fg(color).set_bold(bold).set_intense(intense);
         let _ = self.stdout.set_color(&spec);

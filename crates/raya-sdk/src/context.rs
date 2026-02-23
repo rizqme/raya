@@ -80,12 +80,8 @@ pub trait NativeContext {
     fn object_get_field(&self, val: NativeValue, index: usize) -> AbiResult<NativeValue>;
 
     /// Set object field by index
-    fn object_set_field(
-        &self,
-        val: NativeValue,
-        index: usize,
-        value: NativeValue,
-    ) -> AbiResult<()>;
+    fn object_set_field(&self, val: NativeValue, index: usize, value: NativeValue)
+        -> AbiResult<()>;
 
     /// Get object's class ID
     fn object_class_id(&self, val: NativeValue) -> AbiResult<usize>;

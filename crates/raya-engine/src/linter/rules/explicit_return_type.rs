@@ -22,11 +22,7 @@ impl LintRule for ExplicitReturnType {
         &META
     }
 
-    fn check_statement(
-        &self,
-        stmt: &ast::Statement,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, stmt: &ast::Statement, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         // Check exported function declarations.
         #[allow(clippy::collapsible_match)]
         if let ast::Statement::ExportDecl(ast::ExportDecl::Declaration(inner)) = stmt {
@@ -84,13 +80,20 @@ mod tests {
     #[test]
     fn test_missing_return_type_flagged() {
         let diags = lint("function add(a: int, b: int) { return a + b; }");
-        assert!(has_rule(&diags, "L2004"), "should flag missing return type, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2004"),
+            "should flag missing return type, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_with_return_type_ok() {
         let diags = lint("function add(a: int, b: int): int { return a + b; }");
-        assert!(!has_rule(&diags, "L2004"), "function with return type should be ok");
+        assert!(
+            !has_rule(&diags, "L2004"),
+            "function with return type should be ok"
+        );
     }
 
     #[test]

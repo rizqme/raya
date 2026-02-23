@@ -83,7 +83,9 @@ pub fn connect_tls(
         .map_err(|e| format!("TLS handshake setup failed: {}", e))?;
     let mut tls_stream = rustls::StreamOwned::new(conn, stream);
     // Force the handshake by writing zero bytes (flush triggers handshake)
-    tls_stream.flush().map_err(|e| format!("TLS handshake failed: {}", e))?;
+    tls_stream
+        .flush()
+        .map_err(|e| format!("TLS handshake failed: {}", e))?;
     Ok(tls_stream)
 }
 

@@ -3,13 +3,13 @@
 //! The binder walks the AST and creates symbol tables for name resolution.
 //! It resolves type annotations to TypeId values and tracks all declarations.
 
-use super::error::BindError;
-use super::symbols::{Symbol, SymbolFlags, SymbolKind, SymbolTable, ScopeKind};
 use super::builtins::BuiltinSignatures;
+use super::error::BindError;
+use super::symbols::{ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
 use crate::parser::ast::*;
-use crate::parser::Interner;
+use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
-use crate::parser::types::ty::{ClassType, PropertySignature, MethodSignature, Type};
+use crate::parser::Interner;
 use crate::parser::Span;
 
 /// Binder - builds symbol tables from AST
@@ -91,7 +91,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -124,7 +129,10 @@ impl<'a> Binder<'a> {
     /// Define an imported symbol
     ///
     /// Used to inject symbols from imported modules before binding.
-    pub fn define_imported(&mut self, symbol: Symbol) -> Result<(), super::symbols::DuplicateSymbolError> {
+    pub fn define_imported(
+        &mut self,
+        symbol: Symbol,
+    ) -> Result<(), super::symbols::DuplicateSymbolError> {
         self.symbols.define_imported(symbol)
     }
 
@@ -152,13 +160,20 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
         // __OPCODE_CHANNEL_NEW(capacity: number): number
-        let channel_new_ty = self.type_ctx.function_type(vec![number_ty], number_ty, false);
+        let channel_new_ty = self
+            .type_ctx
+            .function_type(vec![number_ty], number_ty, false);
         let symbol = Symbol {
             name: "__OPCODE_CHANNEL_NEW".to_string(),
             kind: SymbolKind::Function,
@@ -171,7 +186,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -192,7 +212,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -211,7 +236,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -230,7 +260,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -249,7 +284,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -268,7 +308,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -287,7 +332,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -306,13 +356,20 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
 
         // __OPCODE_ARRAY_PUSH(arr: any, elem: any): void
-        let array_push_ty = self.type_ctx.function_type(vec![any_ty, any_ty], void_ty, false);
+        let array_push_ty = self
+            .type_ctx
+            .function_type(vec![any_ty, any_ty], void_ty, false);
         let symbol = Symbol {
             name: "__OPCODE_ARRAY_PUSH".to_string(),
             kind: SymbolKind::Function,
@@ -325,7 +382,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -344,7 +406,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -428,7 +495,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(symbol);
@@ -489,7 +561,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(class_symbol);
@@ -515,7 +592,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(class_decorator_symbol);
@@ -535,18 +617,21 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(method_decorator_symbol);
 
         // FieldDecorator<T> = (target: T, fieldName: string) => void
         let field_t_var = self.type_ctx.type_variable("T".to_string());
-        let field_decorator_ty = self.type_ctx.function_type(
-            vec![field_t_var, string_ty],
-            void_ty,
-            false,
-        );
+        let field_decorator_ty =
+            self.type_ctx
+                .function_type(vec![field_t_var, string_ty], void_ty, false);
         let field_decorator_symbol = Symbol {
             name: "FieldDecorator".to_string(),
             kind: SymbolKind::TypeAlias,
@@ -559,18 +644,21 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(field_decorator_symbol);
 
         // ParameterDecorator<T> = (target: T, methodName: string, parameterIndex: number) => void
         let param_t_var = self.type_ctx.type_variable("T".to_string());
-        let param_decorator_ty = self.type_ctx.function_type(
-            vec![param_t_var, string_ty, number_ty],
-            void_ty,
-            false,
-        );
+        let param_decorator_ty =
+            self.type_ctx
+                .function_type(vec![param_t_var, string_ty, number_ty], void_ty, false);
         let param_decorator_symbol = Symbol {
             name: "ParameterDecorator".to_string(),
             kind: SymbolKind::TypeAlias,
@@ -583,7 +671,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
         let _ = self.symbols.define(param_decorator_symbol);
@@ -595,7 +688,9 @@ impl<'a> Binder<'a> {
         let type_params: Vec<String> = class_sig.type_params.clone();
 
         // Create property signatures
-        let properties: Vec<PropertySignature> = class_sig.properties.iter()
+        let properties: Vec<PropertySignature> = class_sig
+            .properties
+            .iter()
             .filter(|p| !p.is_static)
             .map(|p| PropertySignature {
                 name: p.name.clone(),
@@ -606,7 +701,9 @@ impl<'a> Binder<'a> {
             })
             .collect();
 
-        let static_properties: Vec<PropertySignature> = class_sig.properties.iter()
+        let static_properties: Vec<PropertySignature> = class_sig
+            .properties
+            .iter()
             .filter(|p| p.is_static)
             .map(|p| PropertySignature {
                 name: p.name.clone(),
@@ -618,19 +715,29 @@ impl<'a> Binder<'a> {
             .collect();
 
         // Create method signatures
-        let methods: Vec<MethodSignature> = class_sig.methods.iter()
+        let methods: Vec<MethodSignature> = class_sig
+            .methods
+            .iter()
             .filter(|m| !m.is_static)
             .map(|m| {
                 // Combine class type params with method type params for parsing
-                let all_type_params: Vec<String> = type_params.iter()
+                let all_type_params: Vec<String> = type_params
+                    .iter()
                     .chain(m.type_params.iter())
                     .cloned()
                     .collect();
-                let param_types: Vec<TypeId> = m.params.iter()
+                let param_types: Vec<TypeId> = m
+                    .params
+                    .iter()
                     .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
                     .collect();
                 let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
-                let func_ty = self.type_ctx.function_type_with_min_params(param_types, return_ty, false, m.min_params);
+                let func_ty = self.type_ctx.function_type_with_min_params(
+                    param_types,
+                    return_ty,
+                    false,
+                    m.min_params,
+                );
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,
@@ -640,19 +747,29 @@ impl<'a> Binder<'a> {
             })
             .collect();
 
-        let static_methods: Vec<MethodSignature> = class_sig.methods.iter()
+        let static_methods: Vec<MethodSignature> = class_sig
+            .methods
+            .iter()
             .filter(|m| m.is_static)
             .map(|m| {
                 // Combine class type params with method type params for parsing
-                let all_type_params: Vec<String> = type_params.iter()
+                let all_type_params: Vec<String> = type_params
+                    .iter()
                     .chain(m.type_params.iter())
                     .cloned()
                     .collect();
-                let param_types: Vec<TypeId> = m.params.iter()
+                let param_types: Vec<TypeId> = m
+                    .params
+                    .iter()
                     .map(|(_, ty)| self.parse_type_string(ty, &all_type_params))
                     .collect();
                 let return_ty = self.parse_type_string(&m.return_type, &all_type_params);
-                let func_ty = self.type_ctx.function_type_with_min_params(param_types, return_ty, false, m.min_params);
+                let func_ty = self.type_ctx.function_type_with_min_params(
+                    param_types,
+                    return_ty,
+                    false,
+                    m.min_params,
+                );
                 MethodSignature {
                     name: m.name.clone(),
                     ty: func_ty,
@@ -690,7 +807,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
 
@@ -700,7 +822,9 @@ impl<'a> Binder<'a> {
 
     /// Register a single builtin function
     fn register_builtin_function(&mut self, func_sig: &super::builtins::BuiltinFunction) {
-        let param_types: Vec<TypeId> = func_sig.params.iter()
+        let param_types: Vec<TypeId> = func_sig
+            .params
+            .iter()
             .map(|(_, ty)| self.parse_type_string(ty, &func_sig.type_params))
             .collect();
         let return_ty = self.parse_type_string(&func_sig.return_type, &func_sig.type_params);
@@ -718,7 +842,12 @@ impl<'a> Binder<'a> {
                 is_imported: false,
             },
             scope_id: self.symbols.current_scope_id(),
-            span: Span { start: 0, end: 0, line: 0, column: 0 },
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
             referenced: false,
         };
 
@@ -738,7 +867,8 @@ impl<'a> Binder<'a> {
         // Check for union types (e.g., "T | null")
         if ty_str.contains(" | ") {
             let parts: Vec<&str> = ty_str.split(" | ").collect();
-            let type_ids: Vec<TypeId> = parts.iter()
+            let type_ids: Vec<TypeId> = parts
+                .iter()
                 .map(|p| self.parse_type_string(p.trim(), type_params))
                 .collect();
             return self.type_ctx.union_type(type_ids);
@@ -746,15 +876,16 @@ impl<'a> Binder<'a> {
 
         // Check for array types (e.g., "Array<T>")
         if ty_str.starts_with("Array<") && ty_str.ends_with('>') {
-            let inner = &ty_str[6..ty_str.len()-1];
+            let inner = &ty_str[6..ty_str.len() - 1];
             let elem_ty = self.parse_type_string(inner, type_params);
             return self.type_ctx.array_type(elem_ty);
         }
 
         // Check for tuple types (e.g., "[K, V]")
         if ty_str.starts_with('[') && ty_str.ends_with(']') {
-            let inner = &ty_str[1..ty_str.len()-1];
-            let elem_types: Vec<TypeId> = inner.split(',')
+            let inner = &ty_str[1..ty_str.len() - 1];
+            let elem_types: Vec<TypeId> = inner
+                .split(',')
                 .map(|p| self.parse_type_string(p.trim(), type_params))
                 .collect();
             return self.type_ctx.tuple_type(elem_types);
@@ -763,8 +894,9 @@ impl<'a> Binder<'a> {
         // Check for generic class types (e.g., "Set<T>", "Map<K, V>")
         if let Some(idx) = ty_str.find('<') {
             let _class_name = &ty_str[..idx];
-            let args_str = &ty_str[idx+1..ty_str.len()-1];
-            let _args: Vec<TypeId> = args_str.split(',')
+            let args_str = &ty_str[idx + 1..ty_str.len() - 1];
+            let _args: Vec<TypeId> = args_str
+                .split(',')
                 .map(|p| self.parse_type_string(p.trim(), type_params))
                 .collect();
             // For now, just return unknown for complex generic types
@@ -838,7 +970,9 @@ impl<'a> Binder<'a> {
         match stmt {
             Statement::ClassDecl(class) => self.prepass_class(class),
             Statement::FunctionDecl(func) => self.prepass_function(func),
-            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.prepass_stmt(inner_stmt),
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
+                self.prepass_stmt(inner_stmt)
+            }
             _ => Ok(()),
         }
     }
@@ -853,7 +987,8 @@ impl<'a> Binder<'a> {
             return Ok(());
         }
 
-        let type_param_names: Vec<String> = class.type_params
+        let type_param_names: Vec<String> = class
+            .type_params
             .as_ref()
             .map(|params| params.iter().map(|p| self.resolve(p.name.name)).collect())
             .unwrap_or_default();
@@ -887,11 +1022,13 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
 
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })
+        self.symbols
+            .define(symbol)
+            .map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })
     }
 
     /// Pre-pass: register a function name with a placeholder type
@@ -921,11 +1058,13 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
 
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })
+        self.symbols
+            .define(symbol)
+            .map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })
     }
 
     /// Bind a statement
@@ -1039,9 +1178,7 @@ impl<'a> Binder<'a> {
             Statement::FunctionDecl(func) => {
                 Some(self.interner.resolve(func.name.name).to_string())
             }
-            Statement::ClassDecl(class) => {
-                Some(self.interner.resolve(class.name.name).to_string())
-            }
+            Statement::ClassDecl(class) => Some(self.interner.resolve(class.name.name).to_string()),
             Statement::TypeAliasDecl(alias) => {
                 Some(self.interner.resolve(alias.name.name).to_string())
             }
@@ -1074,11 +1211,13 @@ impl<'a> Binder<'a> {
                     span: ident.span,
                     referenced: false,
                 };
-                self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-                    name: err.name,
-                    original: err.original,
-                    duplicate: err.duplicate,
-                })?;
+                self.symbols
+                    .define(symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
             }
             Pattern::Array(array_pat) => {
                 let elem_ty = self.type_ctx.unknown_type();
@@ -1111,11 +1250,13 @@ impl<'a> Binder<'a> {
                         span: rest_ident.span,
                         referenced: false,
                     };
-                    self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-                        name: err.name,
-                        original: err.original,
-                        duplicate: err.duplicate,
-                    })?;
+                    self.symbols
+                        .define(symbol)
+                        .map_err(|err| BindError::DuplicateSymbol {
+                            name: err.name,
+                            original: err.original,
+                            duplicate: err.duplicate,
+                        })?;
                 }
             }
             Pattern::Rest(rest_pat) => {
@@ -1150,7 +1291,8 @@ impl<'a> Binder<'a> {
                     duplicate: func.name.span,
                 });
             }
-            self.bound_functions.insert(func_name.clone(), func.name.span);
+            self.bound_functions
+                .insert(func_name.clone(), func.name.span);
         }
 
         // Get parent scope ID before pushing (for defining function symbol)
@@ -1170,7 +1312,9 @@ impl<'a> Binder<'a> {
                     None
                 };
                 // Create a type variable for this type parameter
-                let type_var = self.type_ctx.type_variable_with_constraint(param_name.clone(), constraint_ty);
+                let type_var = self
+                    .type_ctx
+                    .type_variable_with_constraint(param_name.clone(), constraint_ty);
 
                 let tp_symbol = Symbol {
                     name: param_name,
@@ -1182,11 +1326,13 @@ impl<'a> Binder<'a> {
                     referenced: false,
                 };
 
-                self.symbols.define(tp_symbol).map_err(|err| BindError::DuplicateSymbol {
-                    name: err.name,
-                    original: err.original,
-                    duplicate: err.duplicate,
-                })?;
+                self.symbols
+                    .define(tp_symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
             }
         }
 
@@ -1204,13 +1350,17 @@ impl<'a> Binder<'a> {
                         rest_param_ty = Some(param_ty);
                     } else {
                         return Err(BindError::InvalidRestParameter {
-                            message: "Rest parameter type must be an array (e.g., string[] or number[])".to_string(),
+                            message:
+                                "Rest parameter type must be an array (e.g., string[] or number[])"
+                                    .to_string(),
                             span: type_ann.span,
                         });
                     }
                 } else {
                     return Err(BindError::InvalidRestParameter {
-                        message: "Rest parameter must have a type annotation (e.g., ...args: string[])".to_string(),
+                        message:
+                            "Rest parameter must have a type annotation (e.g., ...args: string[])"
+                                .to_string(),
                         span: param.span,
                     });
                 }
@@ -1246,18 +1396,27 @@ impl<'a> Binder<'a> {
 
         // Count required params (those without default values and not optional)
         // Exclude rest parameter from count
-        let min_params = func.params.iter()
+        let min_params = func
+            .params
+            .iter()
             .filter(|p| !p.is_rest)
             .filter(|p| p.default_value.is_none() && !p.optional)
             .count();
 
         // Create function type with rest parameter
-        let func_ty = self.type_ctx.function_type_with_rest(param_types.clone(), return_ty, func.is_async, min_params, rest_param_ty);
+        let func_ty = self.type_ctx.function_type_with_rest(
+            param_types.clone(),
+            return_ty,
+            func.is_async,
+            min_params,
+            rest_param_ty,
+        );
 
         // Define function symbol in parent scope (so it can be called recursively)
         // If pre-registered by the pre-pass, update the type instead of re-defining
         if self.symbols.resolve(&func_name).is_some() {
-            self.symbols.update_type(parent_scope_id, &func_name, func_ty);
+            self.symbols
+                .update_type(parent_scope_id, &func_name, func_ty);
         } else {
             let symbol = Symbol {
                 name: func_name,
@@ -1274,11 +1433,13 @@ impl<'a> Binder<'a> {
                 span: func.name.span,
                 referenced: false,
             };
-            self.symbols.define_in_scope(parent_scope_id, symbol).map_err(|err| BindError::DuplicateSymbol {
-                name: err.name,
-                original: err.original,
-                duplicate: err.duplicate,
-            })?;
+            self.symbols
+                .define_in_scope(parent_scope_id, symbol)
+                .map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
         }
 
         // Bind parameters in the function scope
@@ -1328,11 +1489,13 @@ impl<'a> Binder<'a> {
                 referenced: false,
             };
 
-            self.symbols.define(param_symbol).map_err(|err| BindError::DuplicateSymbol {
-                name: err.name,
-                original: err.original,
-                duplicate: err.duplicate,
-            })?;
+            self.symbols
+                .define(param_symbol)
+                .map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
         }
 
         // Bind body statements
@@ -1346,7 +1509,7 @@ impl<'a> Binder<'a> {
 
     /// Bind class declaration
     fn bind_class(&mut self, class: &ClassDecl) -> Result<(), BindError> {
-        use crate::parser::types::ty::{ClassType, PropertySignature, MethodSignature, Type};
+        use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 
         let class_name = self.resolve(class.name.name);
 
@@ -1359,11 +1522,13 @@ impl<'a> Binder<'a> {
                     duplicate: class.name.span,
                 });
             }
-            self.bound_classes.insert(class_name.clone(), class.name.span);
+            self.bound_classes
+                .insert(class_name.clone(), class.name.span);
         }
 
         // Collect type parameters (K, V, T, etc.)
-        let type_param_names: Vec<String> = class.type_params
+        let type_param_names: Vec<String> = class
+            .type_params
             .as_ref()
             .map(|params| params.iter().map(|p| self.resolve(p.name.name)).collect())
             .unwrap_or_default();
@@ -1388,7 +1553,8 @@ impl<'a> Binder<'a> {
         // If the class was already registered by the pre-pass, update its type;
         // otherwise define it now (handles non-top-level classes)
         if self.symbols.resolve(&class_name).is_some() {
-            self.symbols.update_type(class_definition_scope, &class_name, class_ty);
+            self.symbols
+                .update_type(class_definition_scope, &class_name, class_ty);
         } else {
             let symbol = Symbol {
                 name: class_name.clone(),
@@ -1405,11 +1571,13 @@ impl<'a> Binder<'a> {
                 span: class.name.span,
                 referenced: false,
             };
-            self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-                name: err.name,
-                original: err.original,
-                duplicate: err.duplicate,
-            })?;
+            self.symbols
+                .define(symbol)
+                .map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })?;
         }
 
         // Enter class scope for type parameters
@@ -1424,7 +1592,12 @@ impl<'a> Binder<'a> {
                 ty: type_var,
                 flags: SymbolFlags::default(),
                 scope_id: self.symbols.current_scope_id(),
-                span: Span { start: 0, end: 0, line: 0, column: 0 },
+                span: Span {
+                    start: 0,
+                    end: 0,
+                    line: 0,
+                    column: 0,
+                },
                 referenced: false,
             };
             let _ = self.symbols.define(symbol);
@@ -1438,8 +1611,10 @@ impl<'a> Binder<'a> {
         let mut static_methods = Vec::new();
 
         // Track seen field/method names for duplicate detection
-        let mut seen_fields: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
-        let mut seen_methods: std::collections::HashMap<String, Span> = std::collections::HashMap::new();
+        let mut seen_fields: std::collections::HashMap<String, Span> =
+            std::collections::HashMap::new();
+        let mut seen_methods: std::collections::HashMap<String, Span> =
+            std::collections::HashMap::new();
 
         for member in &class.members {
             match member {
@@ -1505,7 +1680,12 @@ impl<'a> Binder<'a> {
                                 ty: type_var,
                                 flags: SymbolFlags::default(),
                                 scope_id: self.symbols.current_scope_id(),
-                                span: Span { start: 0, end: 0, line: 0, column: 0 },
+                                span: Span {
+                                    start: 0,
+                                    end: 0,
+                                    line: 0,
+                                    column: 0,
+                                },
                                 referenced: false,
                             };
                             let _ = self.symbols.define(symbol);
@@ -1573,15 +1753,35 @@ impl<'a> Binder<'a> {
                     }
 
                     // Count required params (excluding rest parameter)
-                    let min_params = method.params.iter()
+                    let min_params = method
+                        .params
+                        .iter()
                         .filter(|p| !p.is_rest)
                         .filter(|p| p.default_value.is_none() && !p.optional)
                         .count();
 
                     if method.is_static {
-                        static_methods.push((method_name, params, return_ty, method.is_async, method_type_params.clone(), method.visibility, min_params, rest_param_ty));
+                        static_methods.push((
+                            method_name,
+                            params,
+                            return_ty,
+                            method.is_async,
+                            method_type_params.clone(),
+                            method.visibility,
+                            min_params,
+                            rest_param_ty,
+                        ));
                     } else {
-                        methods.push((method_name, params, return_ty, method.is_async, method_type_params, method.visibility, min_params, rest_param_ty));
+                        methods.push((
+                            method_name,
+                            params,
+                            return_ty,
+                            method.is_async,
+                            method_type_params,
+                            method.visibility,
+                            min_params,
+                            rest_param_ty,
+                        ));
                     }
                 }
                 ClassMember::Constructor(ctor) => {
@@ -1616,19 +1816,55 @@ impl<'a> Binder<'a> {
         // First pass: create instance method signatures
         let method_sigs: Vec<MethodSignature> = methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params, rest_param)| {
-                let func_ty = self.type_ctx.function_type_with_rest(params, return_ty, is_async, min_params, rest_param);
-                MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
-            })
+            .map(
+                |(
+                    name,
+                    params,
+                    return_ty,
+                    is_async,
+                    method_type_params,
+                    vis,
+                    min_params,
+                    rest_param,
+                )| {
+                    let func_ty = self.type_ctx.function_type_with_rest(
+                        params, return_ty, is_async, min_params, rest_param,
+                    );
+                    MethodSignature {
+                        name,
+                        ty: func_ty,
+                        type_params: method_type_params,
+                        visibility: vis,
+                    }
+                },
+            )
             .collect();
 
         // Create static method signatures
         let static_method_sigs: Vec<MethodSignature> = static_methods
             .into_iter()
-            .map(|(name, params, return_ty, is_async, method_type_params, vis, min_params, rest_param)| {
-                let func_ty = self.type_ctx.function_type_with_rest(params, return_ty, is_async, min_params, rest_param);
-                MethodSignature { name, ty: func_ty, type_params: method_type_params, visibility: vis }
-            })
+            .map(
+                |(
+                    name,
+                    params,
+                    return_ty,
+                    is_async,
+                    method_type_params,
+                    vis,
+                    min_params,
+                    rest_param,
+                )| {
+                    let func_ty = self.type_ctx.function_type_with_rest(
+                        params, return_ty, is_async, min_params, rest_param,
+                    );
+                    MethodSignature {
+                        name,
+                        ty: func_ty,
+                        type_params: method_type_params,
+                        visibility: vis,
+                    }
+                },
+            )
             .collect();
 
         // Resolve the extends clause if present
@@ -1653,7 +1889,8 @@ impl<'a> Binder<'a> {
         // Replace the placeholder type in-place so that all existing references
         // (e.g., self-referential fields like `next: Node | null`) automatically
         // see the full class type without needing to update every TypeId.
-        self.type_ctx.replace_type(class_ty, Type::Class(full_class_type));
+        self.type_ctx
+            .replace_type(class_ty, Type::Class(full_class_type));
 
         // Bind class members in the already-entered class scope
         // (scope was pushed earlier for type parameters)
@@ -1722,7 +1959,12 @@ impl<'a> Binder<'a> {
                     ty: type_var,
                     flags: SymbolFlags::default(),
                     scope_id: self.symbols.current_scope_id(),
-                    span: Span { start: 0, end: 0, line: 0, column: 0 },
+                    span: Span {
+                        start: 0,
+                        end: 0,
+                        line: 0,
+                        column: 0,
+                    },
                     referenced: false,
                 };
                 let _ = self.symbols.define(sym);
@@ -1736,7 +1978,8 @@ impl<'a> Binder<'a> {
         if has_type_params {
             self.symbols.pop_scope();
             // Store type param names for later substitution during type reference resolution
-            self.generic_type_alias_params.insert(alias_name.clone(), type_param_names);
+            self.generic_type_alias_params
+                .insert(alias_name.clone(), type_param_names);
         }
 
         let symbol = Symbol {
@@ -1749,11 +1992,13 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
 
-        self.symbols.define(symbol).map_err(|err| BindError::DuplicateSymbol {
-            name: err.name,
-            original: err.original,
-            duplicate: err.duplicate,
-        })
+        self.symbols
+            .define(symbol)
+            .map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })
     }
 
     /// Bind block statement
@@ -1858,7 +2103,9 @@ impl<'a> Binder<'a> {
 
                 // Look up Error class type for catch parameter
                 // If Error class isn't registered, fall back to unknown
-                let error_ty = self.symbols.resolve("Error")
+                let error_ty = self
+                    .symbols
+                    .resolve("Error")
                     .map(|s| s.ty)
                     .unwrap_or_else(|| self.type_ctx.unknown_type());
 
@@ -1878,11 +2125,13 @@ impl<'a> Binder<'a> {
                     referenced: false,
                 };
 
-                self.symbols.define(param_symbol).map_err(|err| BindError::DuplicateSymbol {
-                    name: err.name,
-                    original: err.original,
-                    duplicate: err.duplicate,
-                })?;
+                self.symbols
+                    .define(param_symbol)
+                    .map_err(|err| BindError::DuplicateSymbol {
+                        name: err.name,
+                        original: err.original,
+                        duplicate: err.duplicate,
+                    })?;
             }
 
             // Bind catch body
@@ -1904,7 +2153,10 @@ impl<'a> Binder<'a> {
     }
 
     /// Validate that required parameters come before optional/default parameters
-    fn validate_param_order(&self, params: &[crate::parser::ast::Parameter]) -> Result<(), BindError> {
+    fn validate_param_order(
+        &self,
+        params: &[crate::parser::ast::Parameter],
+    ) -> Result<(), BindError> {
         let mut seen_optional = false;
         for param in params {
             let is_optional = param.optional || param.default_value.is_some();
@@ -1931,7 +2183,11 @@ impl<'a> Binder<'a> {
     }
 
     /// Recursively substitute TypeVars in a type according to a substitution map
-    fn substitute_type_vars(&mut self, ty: TypeId, subs: &std::collections::HashMap<String, TypeId>) -> TypeId {
+    fn substitute_type_vars(
+        &mut self,
+        ty: TypeId,
+        subs: &std::collections::HashMap<String, TypeId>,
+    ) -> TypeId {
         let type_info = self.type_ctx.get(ty).cloned();
         match type_info {
             Some(Type::TypeVar(tv)) => {
@@ -1942,52 +2198,63 @@ impl<'a> Binder<'a> {
                 }
             }
             Some(Type::Object(obj)) => {
-                let new_props: Vec<_> = obj.properties.iter().map(|p| {
-                    PropertySignature {
+                let new_props: Vec<_> = obj
+                    .properties
+                    .iter()
+                    .map(|p| PropertySignature {
                         name: p.name.clone(),
                         ty: self.substitute_type_vars(p.ty, subs),
                         optional: p.optional,
                         readonly: p.readonly,
                         visibility: p.visibility,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 self.type_ctx.object_type(new_props)
             }
             Some(Type::Union(union)) => {
-                let new_members: Vec<_> = union.members.iter().map(|&m| {
-                    self.substitute_type_vars(m, subs)
-                }).collect();
+                let new_members: Vec<_> = union
+                    .members
+                    .iter()
+                    .map(|&m| self.substitute_type_vars(m, subs))
+                    .collect();
                 self.type_ctx.union_type(new_members)
             }
             Some(Type::Function(func)) => {
-                let new_params: Vec<_> = func.params.iter().map(|&p| {
-                    self.substitute_type_vars(p, subs)
-                }).collect();
+                let new_params: Vec<_> = func
+                    .params
+                    .iter()
+                    .map(|&p| self.substitute_type_vars(p, subs))
+                    .collect();
                 let new_ret = self.substitute_type_vars(func.return_type, subs);
-                self.type_ctx.function_type(new_params, new_ret, func.is_async)
+                self.type_ctx
+                    .function_type(new_params, new_ret, func.is_async)
             }
             Some(Type::Array(arr)) => {
                 let new_elem = self.substitute_type_vars(arr.element, subs);
                 self.type_ctx.array_type(new_elem)
             }
             Some(Type::Class(class)) => {
-                let new_props: Vec<_> = class.properties.iter().map(|p| {
-                    PropertySignature {
+                let new_props: Vec<_> = class
+                    .properties
+                    .iter()
+                    .map(|p| PropertySignature {
                         name: p.name.clone(),
                         ty: self.substitute_type_vars(p.ty, subs),
                         optional: p.optional,
                         readonly: p.readonly,
                         visibility: p.visibility,
-                    }
-                }).collect();
-                let new_methods: Vec<_> = class.methods.iter().map(|m| {
-                    MethodSignature {
+                    })
+                    .collect();
+                let new_methods: Vec<_> = class
+                    .methods
+                    .iter()
+                    .map(|m| MethodSignature {
                         name: m.name.clone(),
                         ty: self.substitute_type_vars(m.ty, subs),
                         type_params: m.type_params.clone(),
                         visibility: m.visibility,
-                    }
-                }).collect();
+                    })
+                    .collect();
                 let new_extends = class.extends.map(|e| self.substitute_type_vars(e, subs));
                 let new_class = ClassType {
                     name: class.name.clone(),
@@ -2007,7 +2274,11 @@ impl<'a> Binder<'a> {
     }
 
     /// Resolve type to TypeId
-    fn resolve_type(&mut self, ty: &crate::parser::ast::Type, span: crate::parser::Span) -> Result<TypeId, BindError> {
+    fn resolve_type(
+        &mut self,
+        ty: &crate::parser::ast::Type,
+        span: crate::parser::Span,
+    ) -> Result<TypeId, BindError> {
         use crate::parser::ast::Type as AstType;
 
         match ty {
@@ -2071,15 +2342,20 @@ impl<'a> Binder<'a> {
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter
-                        || symbol.kind == SymbolKind::Class {
+                        || symbol.kind == SymbolKind::Class
+                    {
                         let template_ty = symbol.ty;
 
                         // Check if this is a generic type with type arguments
                         if let Some(ref type_args) = type_ref.type_args {
                             // Try type alias params first
-                            let param_names = if let Some(names) = self.generic_type_alias_params.get(&name).cloned() {
+                            let param_names = if let Some(names) =
+                                self.generic_type_alias_params.get(&name).cloned()
+                            {
                                 Some(names)
-                            } else if let Some(Type::Class(class_ty)) = self.type_ctx.get(template_ty).cloned() {
+                            } else if let Some(Type::Class(class_ty)) =
+                                self.type_ctx.get(template_ty).cloned()
+                            {
                                 // For classes, read type_params from the ClassType
                                 if !class_ty.type_params.is_empty() {
                                     Some(class_ty.type_params.clone())
@@ -2099,7 +2375,9 @@ impl<'a> Binder<'a> {
                                     }
                                     // Build substitution map: param_name → concrete type
                                     let mut subs = std::collections::HashMap::new();
-                                    for (param_name, arg_ty) in param_names.iter().zip(resolved_args.iter()) {
+                                    for (param_name, arg_ty) in
+                                        param_names.iter().zip(resolved_args.iter())
+                                    {
                                         subs.insert(param_name.clone(), *arg_ty);
                                     }
                                     // Apply substitution to the template type
@@ -2110,16 +2388,10 @@ impl<'a> Binder<'a> {
 
                         Ok(template_ty)
                     } else {
-                        Err(BindError::NotAType {
-                            name,
-                            span,
-                        })
+                        Err(BindError::NotAType { name, span })
                     }
                 } else {
-                    Err(BindError::UndefinedType {
-                        name,
-                        span,
-                    })
+                    Err(BindError::UndefinedType { name, span })
                 }
             }
 
@@ -2151,9 +2423,15 @@ impl<'a> Binder<'a> {
                 let mut merged_properties = Vec::new();
                 for ty_annot in &intersection.types {
                     let ty_id = self.resolve_type_annotation(ty_annot)?;
-                    if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(ty_id).cloned() {
+                    if let Some(crate::parser::types::Type::Object(obj)) =
+                        self.type_ctx.get(ty_id).cloned()
+                    {
                         for prop in &obj.properties {
-                            if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                            if !merged_properties.iter().any(
+                                |p: &crate::parser::types::ty::PropertySignature| {
+                                    p.name == prop.name
+                                },
+                            ) {
                                 merged_properties.push(prop.clone());
                             }
                         }
@@ -2219,7 +2497,9 @@ impl<'a> Binder<'a> {
                     index_signature: None,
                 };
 
-                Ok(self.type_ctx.intern(crate::parser::types::ty::Type::Object(object_type)))
+                Ok(self
+                    .type_ctx
+                    .intern(crate::parser::types::ty::Type::Object(object_type)))
             }
 
             AstType::Typeof(_) => {
@@ -2227,21 +2507,15 @@ impl<'a> Binder<'a> {
                 Ok(self.type_ctx.unknown_type())
             }
 
-            AstType::StringLiteral(s) => {
-                Ok(self.type_ctx.string_literal(self.interner.resolve(*s).to_string()))
-            }
+            AstType::StringLiteral(s) => Ok(self
+                .type_ctx
+                .string_literal(self.interner.resolve(*s).to_string())),
 
-            AstType::NumberLiteral(n) => {
-                Ok(self.type_ctx.number_literal(*n))
-            }
+            AstType::NumberLiteral(n) => Ok(self.type_ctx.number_literal(*n)),
 
-            AstType::BooleanLiteral(b) => {
-                Ok(self.type_ctx.boolean_literal(*b))
-            }
+            AstType::BooleanLiteral(b) => Ok(self.type_ctx.boolean_literal(*b)),
 
-            AstType::Parenthesized(inner) => {
-                self.resolve_type_annotation(inner)
-            }
+            AstType::Parenthesized(inner) => self.resolve_type_annotation(inner),
         }
     }
 
@@ -2287,9 +2561,8 @@ mod tests {
 
     #[test]
     fn test_bind_function() {
-        let (symbols, _ctx) = parse_and_bind(
-            "function add(a: number, b: number): number { return a + b; }"
-        );
+        let (symbols, _ctx) =
+            parse_and_bind("function add(a: number, b: number): number { return a + b; }");
 
         // Should be able to resolve add
         let symbol = symbols.resolve("add").unwrap();

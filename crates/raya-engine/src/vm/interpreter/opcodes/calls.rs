@@ -1,14 +1,14 @@
 //! Call opcode handlers: Call, CallMethod, CallConstructor, CallSuper
 
+use crate::compiler::{Module, Opcode};
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
-use crate::vm::gc::GcHeader;
 use crate::vm::object::{BoundMethod, Closure, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::{Module, Opcode};
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
@@ -172,14 +172,16 @@ impl<'a> Interpreter<'a> {
                     native_args.extend(args);
 
                     // Dispatch based on method ID
-                    let value = native_args[0].as_f64()
+                    let value = native_args[0]
+                        .as_f64()
                         .or_else(|| native_args[0].as_i32().map(|v| v as f64))
                         .unwrap_or(0.0);
 
                     let result_str = match method_id {
                         0x0F00 => {
                             // toFixed(digits)
-                            let digits = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(0) as usize;
+                            let digits =
+                                native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(0) as usize;
                             format!("{:.prec$}", value, prec = digits)
                         }
                         0x0F01 => {
@@ -192,7 +194,11 @@ impl<'a> Interpreter<'a> {
                                     format!("{}", value)
                                 }
                             } else {
-                                let prec = native_args.get(1).and_then(|v| v.as_i32()).unwrap_or(1).max(1) as usize;
+                                let prec = native_args
+                                    .get(1)
+                                    .and_then(|v| v.as_i32())
+                                    .unwrap_or(1)
+                                    .max(1) as usize;
                                 if value == 0.0 {
                                     format!("{:.prec$}", 0.0, prec = prec - 1)
                                 } else {
@@ -224,20 +230,29 @@ impl<'a> Interpreter<'a> {
                                     8 => format!("{:o}", int_val),
                                     16 => format!("{:x}", int_val),
                                     _ => {
-                                        if int_val == 0 { "0".to_string() }
-                                        else {
+                                        if int_val == 0 {
+                                            "0".to_string()
+                                        } else {
                                             let negative = int_val < 0;
                                             let mut n = int_val.unsigned_abs();
                                             let mut digits = Vec::new();
                                             let r = radix as u64;
                                             while n > 0 {
                                                 let d = (n % r) as u8;
-                                                digits.push(if d < 10 { b'0' + d } else { b'a' + d - 10 });
+                                                digits.push(if d < 10 {
+                                                    b'0' + d
+                                                } else {
+                                                    b'a' + d - 10
+                                                });
                                                 n /= r;
                                             }
                                             digits.reverse();
                                             let s = String::from_utf8(digits).unwrap_or_default();
-                                            if negative { format!("-{}", s) } else { s }
+                                            if negative {
+                                                format!("-{}", s)
+                                            } else {
+                                                s
+                                            }
                                         }
                                     }
                                 }
@@ -248,8 +263,12 @@ impl<'a> Interpreter<'a> {
 
                     let s = RayaString::new(result_str);
                     let gc_ptr = self.gc.lock().allocate(s);
-                    let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
-                    if let Err(e) = stack.push(val) { return OpcodeResult::Error(e); }
+                    let val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
+                    if let Err(e) = stack.push(val) {
+                        return OpcodeResult::Error(e);
+                    }
                     return OpcodeResult::Continue;
                 }
 
@@ -377,9 +396,8 @@ impl<'a> Interpreter<'a> {
                 // Create the object
                 let obj = Object::new(class_index, field_count);
                 let gc_ptr = self.gc.lock().allocate(obj);
-                let obj_val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                };
+                let obj_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
 
                 // If no constructor, just push the object
                 let constructor_id = match constructor_id {

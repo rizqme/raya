@@ -13,11 +13,11 @@
 //! - Pre-warming: compile CPU-intensive functions at module load time
 
 pub mod analysis;
+pub mod backend;
 pub mod ir;
 pub mod pipeline;
-pub mod backend;
-pub mod runtime;
 pub mod profiling;
+pub mod runtime;
 
 mod engine;
-pub use engine::{JitEngine, JitConfig};
+pub use engine::{JitConfig, JitEngine};

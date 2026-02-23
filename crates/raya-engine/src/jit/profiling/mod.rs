@@ -3,8 +3,8 @@
 pub mod counters;
 pub mod policy;
 
-use std::sync::Arc;
 use crate::compiler::bytecode::Module;
+use std::sync::Arc;
 
 /// A request to compile a function on the background JIT thread.
 pub struct CompilationRequest {

@@ -66,7 +66,11 @@ pub fn uptime(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResu
 
 /// Get OS line ending
 pub fn eol(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let ending = if cfg!(target_os = "windows") { "\r\n" } else { "\n" };
+    let ending = if cfg!(target_os = "windows") {
+        "\r\n"
+    } else {
+        "\n"
+    };
     NativeCallResult::Value(ctx.create_string(ending))
 }
 
@@ -93,8 +97,8 @@ pub fn machine(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResu
 
 /// Get current username from passwd database
 pub fn username(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let name = get_pw_field(PwField::Name)
-        .unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
+    let name =
+        get_pw_field(PwField::Name).unwrap_or_else(|| std::env::var("USER").unwrap_or_default());
     NativeCallResult::Value(ctx.create_string(&name))
 }
 
@@ -107,8 +111,8 @@ pub fn user_info(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
 
 /// Get user's login shell
 pub fn shell(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let sh = get_pw_field(PwField::Shell)
-        .unwrap_or_else(|| std::env::var("SHELL").unwrap_or_default());
+    let sh =
+        get_pw_field(PwField::Shell).unwrap_or_else(|| std::env::var("SHELL").unwrap_or_default());
     NativeCallResult::Value(ctx.create_string(&sh))
 }
 
@@ -118,7 +122,11 @@ pub fn loadavg(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResu
     // SAFETY: getloadavg is safe with a properly sized buffer
     let ret = unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) };
     if ret < 0 {
-        let items = [NativeValue::f64(0.0), NativeValue::f64(0.0), NativeValue::f64(0.0)];
+        let items = [
+            NativeValue::f64(0.0),
+            NativeValue::f64(0.0),
+            NativeValue::f64(0.0),
+        ];
         return NativeCallResult::Value(ctx.create_array(&items));
     }
     let items = [
@@ -138,7 +146,11 @@ pub fn network_interfaces(ctx: &dyn NativeContext, _args: &[NativeValue]) -> Nat
 
 /// Get byte order: "LE" or "BE"
 pub fn endianness(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let s = if cfg!(target_endian = "little") { "LE" } else { "BE" };
+    let s = if cfg!(target_endian = "little") {
+        "LE"
+    } else {
+        "BE"
+    };
     NativeCallResult::Value(ctx.create_string(s))
 }
 
@@ -151,7 +163,11 @@ pub fn page_size(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallR
 
 // ── Platform-specific helpers ──
 
-enum UnameField { Release, Sysname, Machine }
+enum UnameField {
+    Release,
+    Sysname,
+    Machine,
+}
 
 fn uname_field(field: UnameField) -> String {
     #[cfg(unix)]
@@ -181,7 +197,10 @@ fn uname_field(field: UnameField) -> String {
     }
 }
 
-enum PwField { Name, Shell }
+enum PwField {
+    Name,
+    Shell,
+}
 
 fn get_pw_field(field: PwField) -> Option<String> {
     #[cfg(unix)]
@@ -227,19 +246,31 @@ fn get_user_info() -> Vec<String> {
         }
         unsafe {
             let gid = (*pw).pw_gid;
-            let name = if (*pw).pw_name.is_null() { String::new() }
-                else { CStr::from_ptr((*pw).pw_name).to_str().unwrap_or("").to_string() };
-            let dir = if (*pw).pw_dir.is_null() { String::new() }
-                else { CStr::from_ptr((*pw).pw_dir).to_str().unwrap_or("").to_string() };
-            let shell = if (*pw).pw_shell.is_null() { String::new() }
-                else { CStr::from_ptr((*pw).pw_shell).to_str().unwrap_or("").to_string() };
-            vec![
-                uid.to_string(),
-                gid.to_string(),
-                name,
-                dir,
-                shell,
-            ]
+            let name = if (*pw).pw_name.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr((*pw).pw_name)
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let dir = if (*pw).pw_dir.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr((*pw).pw_dir)
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let shell = if (*pw).pw_shell.is_null() {
+                String::new()
+            } else {
+                CStr::from_ptr((*pw).pw_shell)
+                    .to_str()
+                    .unwrap_or("")
+                    .to_string()
+            };
+            vec![uid.to_string(), gid.to_string(), name, dir, shell]
         }
     }
     #[cfg(not(unix))]
@@ -351,7 +382,11 @@ fn get_total_memory() -> u64 {
                 0,
             )
         };
-        if ret == 0 { size } else { 0 }
+        if ret == 0 {
+            size
+        } else {
+            0
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -375,7 +410,9 @@ fn get_free_memory() -> u64 {
         use std::mem;
         let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
         let mut vm_stat: libc::vm_statistics64 = unsafe { mem::zeroed() };
-        let mut info_count = (mem::size_of::<libc::vm_statistics64>() / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+        let mut info_count = (mem::size_of::<libc::vm_statistics64>()
+            / mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
         #[allow(deprecated)] // libc deprecates in favor of mach2 crate, but we use libc
         let ret = unsafe {
             libc::host_statistics64(

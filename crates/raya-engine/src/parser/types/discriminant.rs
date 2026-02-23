@@ -59,10 +59,7 @@ pub enum DiscriminantError {
     },
 
     /// Variant is missing the discriminant field
-    MissingField {
-        variant: TypeId,
-        field: String,
-    },
+    MissingField { variant: TypeId, field: String },
 
     /// Field type is not a literal
     NotALiteral { variant: TypeId, field: String },
@@ -92,7 +89,11 @@ impl fmt::Display for DiscriminantError {
                     variants.len()
                 )
             }
-            DiscriminantError::DuplicateValues { field, duplicate_value, .. } => {
+            DiscriminantError::DuplicateValues {
+                field,
+                duplicate_value,
+                ..
+            } => {
                 write!(
                     f,
                     "Discriminant field '{}' has duplicate value '{}'",
@@ -121,7 +122,10 @@ impl fmt::Display for DiscriminantError {
                 write!(f, "Union cannot be empty")
             }
             DiscriminantError::NonObjectVariant { .. } => {
-                write!(f, "All union variants must be object types for discriminant inference")
+                write!(
+                    f,
+                    "All union variants must be object types for discriminant inference"
+                )
             }
         }
     }
@@ -184,7 +188,9 @@ impl<'a> DiscriminantInference<'a> {
     /// Validate that all variants are object types
     fn validate_object_variants(&self, variants: &[TypeId]) -> Result<(), DiscriminantError> {
         for &variant_id in variants {
-            let variant = self.type_ctx.get(variant_id)
+            let variant = self
+                .type_ctx
+                .get(variant_id)
                 .expect("Invalid variant TypeId in discriminant inference");
             if !matches!(variant, Type::Object(_)) {
                 return Err(DiscriminantError::NonObjectVariant {
@@ -203,13 +209,17 @@ impl<'a> DiscriminantInference<'a> {
         variants: &[TypeId],
     ) -> Result<Vec<String>, DiscriminantError> {
         // Get fields from first variant
-        let first_variant = self.type_ctx.get(variants[0])
+        let first_variant = self
+            .type_ctx
+            .get(variants[0])
             .expect("Invalid variant TypeId");
         let mut common_fields = self.get_literal_fields(first_variant);
 
         // Intersect with fields from other variants
         for &variant_id in &variants[1..] {
-            let variant = self.type_ctx.get(variant_id)
+            let variant = self
+                .type_ctx
+                .get(variant_id)
                 .expect("Invalid variant TypeId");
             let variant_fields = self.get_literal_fields(variant);
 
@@ -225,7 +235,9 @@ impl<'a> DiscriminantInference<'a> {
 
         if let Type::Object(obj) = ty {
             for prop in &obj.properties {
-                let field_ty = self.type_ctx.get(prop.ty)
+                let field_ty = self
+                    .type_ctx
+                    .get(prop.ty)
                     .expect("Invalid field type TypeId");
                 if self.is_literal_type(field_ty) {
                     fields.insert(prop.name.clone());
@@ -280,12 +292,16 @@ impl<'a> DiscriminantInference<'a> {
         let mut literal_kind: Option<&str> = None;
 
         for &variant_id in variants {
-            let variant = self.type_ctx.get(variant_id)
+            let variant = self
+                .type_ctx
+                .get(variant_id)
                 .expect("Invalid variant TypeId");
             if let Type::Object(obj) = variant {
                 if let Some(field_ty_id) = self.get_property_type(obj, discriminant_field) {
-                    let field_ty = self.type_ctx.get(field_ty_id)
-                    .expect("Invalid field type TypeId");
+                    let field_ty = self
+                        .type_ctx
+                        .get(field_ty_id)
+                        .expect("Invalid field type TypeId");
                     let kind = self.get_literal_kind(field_ty, variant_id, discriminant_field)?;
 
                     if let Some(expected) = literal_kind {
@@ -339,13 +355,17 @@ impl<'a> DiscriminantInference<'a> {
         let mut value_map = FxHashMap::default();
 
         for (idx, &variant_id) in variants.iter().enumerate() {
-            let variant = self.type_ctx.get(variant_id)
+            let variant = self
+                .type_ctx
+                .get(variant_id)
                 .expect("Invalid variant TypeId");
 
             if let Type::Object(obj) = variant {
                 if let Some(field_ty_id) = self.get_property_type(obj, discriminant_field) {
-                    let field_ty = self.type_ctx.get(field_ty_id)
-                    .expect("Invalid field type TypeId");
+                    let field_ty = self
+                        .type_ctx
+                        .get(field_ty_id)
+                        .expect("Invalid field type TypeId");
                     let value = self.extract_literal_value(field_ty)?;
 
                     value_map.insert(value, idx);
@@ -385,12 +405,16 @@ impl<'a> DiscriminantInference<'a> {
             // Find the duplicate value
             let mut seen = FxHashSet::default();
             for &variant_id in variants.iter() {
-                let variant = self.type_ctx.get(variant_id)
-                .expect("Invalid variant TypeId");
+                let variant = self
+                    .type_ctx
+                    .get(variant_id)
+                    .expect("Invalid variant TypeId");
                 if let Type::Object(obj) = variant {
                     if let Some(field_ty_id) = self.get_property_type(obj, field) {
-                        let field_ty = self.type_ctx.get(field_ty_id)
-                    .expect("Invalid field type TypeId");
+                        let field_ty = self
+                            .type_ctx
+                            .get(field_ty_id)
+                            .expect("Invalid field type TypeId");
                         if let Ok(value) = self.extract_literal_value(field_ty) {
                             if !seen.insert(value.clone()) {
                                 return Err(DiscriminantError::DuplicateValues {
@@ -598,30 +622,26 @@ mod tests {
         // Variant 1 has "kind" field
         let kind_lit = ctx.string_literal("a");
         let variant1 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "kind".to_string(),
-                    ty: kind_lit,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "kind".to_string(),
+                ty: kind_lit,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 
         // Variant 2 has "type" field (different name)
         let type_lit = ctx.string_literal("b");
         let variant2 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "type".to_string(),
-                    ty: type_lit,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "type".to_string(),
+                ty: type_lit,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 
@@ -644,29 +664,25 @@ mod tests {
         // Both variants have same "kind" value
         let kind_lit = ctx.string_literal("same");
         let variant1 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "kind".to_string(),
-                    ty: kind_lit,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "kind".to_string(),
+                ty: kind_lit,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 
         let kind_lit2 = ctx.string_literal("same");
         let variant2 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "kind".to_string(),
-                    ty: kind_lit2,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "kind".to_string(),
+                ty: kind_lit2,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 
@@ -689,30 +705,26 @@ mod tests {
         // Variant 1 has string literal for "kind"
         let kind_str = ctx.string_literal("a");
         let variant1 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "kind".to_string(),
-                    ty: kind_str,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "kind".to_string(),
+                ty: kind_str,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 
         // Variant 2 has number literal for "kind"
         let kind_num = ctx.number_literal(1.0);
         let variant2 = ctx.intern(Type::Object(ObjectType {
-            properties: vec![
-                PropertySignature {
-                    name: "kind".to_string(),
-                    ty: kind_num,
-                    optional: false,
-                    readonly: false,
-                    visibility: Default::default(),
-                },
-            ],
+            properties: vec![PropertySignature {
+                name: "kind".to_string(),
+                ty: kind_num,
+                optional: false,
+                readonly: false,
+                visibility: Default::default(),
+            }],
             index_signature: None,
         }));
 

@@ -1,7 +1,7 @@
 //! `raya check` — Type-check without building.
 
 use raya_engine::parser::checker::{
-    CheckError, CheckWarning, BindError, Diagnostic, SimpleFiles, WarningCode, WarningConfig,
+    BindError, CheckError, CheckWarning, Diagnostic, SimpleFiles, WarningCode, WarningConfig,
 };
 use raya_engine::parser::Span;
 use raya_runtime::Runtime;
@@ -140,11 +140,7 @@ pub fn execute(
     Ok(())
 }
 
-fn emit_diagnostic(
-    diag: &Diagnostic,
-    files: &SimpleFiles<String, String>,
-    format: &str,
-) {
+fn emit_diagnostic(diag: &Diagnostic, files: &SimpleFiles<String, String>, format: &str) {
     match format {
         "json" => {
             if let Ok(json) = diag.to_json(files) {
@@ -269,19 +265,31 @@ fn adjust_bind_error(err: &BindError, offset: usize) -> Option<BindError> {
 
     let mut adjusted = err.clone();
     match &mut adjusted {
-        BindError::DuplicateSymbol { original, duplicate, .. } => {
-            if let Some(s) = adjust_span(*duplicate, offset) { *duplicate = s; }
-            if let Some(s) = adjust_span(*original, offset) { *original = s; }
+        BindError::DuplicateSymbol {
+            original,
+            duplicate,
+            ..
+        } => {
+            if let Some(s) = adjust_span(*duplicate, offset) {
+                *duplicate = s;
+            }
+            if let Some(s) = adjust_span(*original, offset) {
+                *original = s;
+            }
         }
         BindError::UndefinedType { span, .. }
         | BindError::NotAType { span, .. }
         | BindError::InvalidTypeExpr { span, .. }
         | BindError::InvalidTypeArguments { span, .. }
         | BindError::RequiredAfterOptional { span, .. } => {
-            if let Some(s) = adjust_span(*span, offset) { *span = s; }
+            if let Some(s) = adjust_span(*span, offset) {
+                *span = s;
+            }
         }
-        | BindError::InvalidRestParameter { span, .. } => {
-            if let Some(s) = adjust_span(*span, offset) { *span = s; }
+        BindError::InvalidRestParameter { span, .. } => {
+            if let Some(s) = adjust_span(*span, offset) {
+                *span = s;
+            }
         }
     }
     Some(adjusted)
@@ -296,14 +304,24 @@ fn adjust_warning(warn: &CheckWarning, offset: usize) -> Option<CheckWarning> {
     let mut adjusted = warn.clone();
     match &mut adjusted {
         CheckWarning::UnusedVariable { span, .. } => {
-            if let Some(s) = adjust_span(*span, offset) { *span = s; }
+            if let Some(s) = adjust_span(*span, offset) {
+                *span = s;
+            }
         }
         CheckWarning::UnreachableCode { span } => {
-            if let Some(s) = adjust_span(*span, offset) { *span = s; }
+            if let Some(s) = adjust_span(*span, offset) {
+                *span = s;
+            }
         }
-        CheckWarning::ShadowedVariable { original, shadow, .. } => {
-            if let Some(s) = adjust_span(*shadow, offset) { *shadow = s; }
-            if let Some(s) = adjust_span(*original, offset) { *original = s; }
+        CheckWarning::ShadowedVariable {
+            original, shadow, ..
+        } => {
+            if let Some(s) = adjust_span(*shadow, offset) {
+                *shadow = s;
+            }
+            if let Some(s) = adjust_span(*original, offset) {
+                *original = s;
+            }
         }
     }
     Some(adjusted)

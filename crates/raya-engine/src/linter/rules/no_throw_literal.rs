@@ -76,7 +76,11 @@ mod tests {
     #[test]
     fn test_throw_string_flagged() {
         let diags = lint(r#"function f(): void { throw "error"; }"#);
-        assert!(has_rule(&diags, "L3001"), "should flag throw string, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L3001"),
+            "should flag throw string, got: {:?}",
+            diags
+        );
     }
 
     #[test]

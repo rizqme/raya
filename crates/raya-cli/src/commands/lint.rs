@@ -8,12 +8,7 @@ use raya_engine::parser::checker::diagnostic::{Diagnostic, ErrorCode, SimpleFile
 
 use super::files::collect_raya_files;
 
-pub fn execute(
-    files: Vec<String>,
-    fix: bool,
-    format: String,
-    watch: bool,
-) -> anyhow::Result<()> {
+pub fn execute(files: Vec<String>, fix: bool, format: String, watch: bool) -> anyhow::Result<()> {
     let _ = watch; // TODO: watch mode
 
     // 1. Load lint config from raya.toml (if present)
@@ -101,12 +96,7 @@ pub fn execute(
 
     // 6. Summary
     if format != "json" {
-        print_summary(
-            &mut out,
-            source_files.len(),
-            total_errors,
-            total_warnings,
-        );
+        print_summary(&mut out, source_files.len(), total_errors, total_warnings);
     }
 
     // 7. Exit code

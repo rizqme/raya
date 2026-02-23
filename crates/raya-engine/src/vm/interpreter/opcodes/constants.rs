@@ -1,10 +1,10 @@
+use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::RayaString;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::{Module, Opcode};
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_constant_ops(

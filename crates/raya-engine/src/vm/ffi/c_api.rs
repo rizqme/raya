@@ -9,8 +9,8 @@
 //! - Manual memory management
 
 use crate::compiler::Module;
-use crate::vm::value::Value;
 use crate::vm::interpreter::Vm;
+use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};

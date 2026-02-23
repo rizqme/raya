@@ -10,22 +10,25 @@
 //! Output is appended to the raya binary as a payload and loaded into executable
 //! memory at startup via mmap.
 
-pub mod frame;
+pub mod abi;
 pub mod analysis;
+pub mod bytecode_adapter;
+pub mod codegen;
+pub mod executor;
+pub mod frame;
+pub mod helpers;
+pub mod ir_adapter;
+pub mod linker;
+pub mod lowering;
 pub mod statemachine;
 pub mod traits;
-pub mod ir_adapter;
-pub mod lowering;
-pub mod abi;
-pub mod codegen;
-pub mod bytecode_adapter;
-pub mod linker;
-pub mod helpers;
-pub mod executor;
 
-pub use frame::{AotFrame, AotTaskContext, AotHelperTable, AotEntryFn, SuspendReason, AOT_SUSPEND};
-pub use traits::{AotCompilable, AotError, compile_to_state_machine};
-pub use codegen::{AotBundle, AotModuleInput, FuncTableEntry, GlobalFuncId, CompilableFunction, compile_functions, create_native_isa};
+pub use codegen::{
+    compile_functions, create_native_isa, AotBundle, AotModuleInput, CompilableFunction,
+    FuncTableEntry, GlobalFuncId,
+};
+pub use executor::{run_aot_function, AotRunResult};
+pub use frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason, AOT_SUSPEND};
 pub use ir_adapter::IrFunctionAdapter;
 pub use linker::AotLinker;
-pub use executor::{run_aot_function, AotRunResult};
+pub use traits::{compile_to_state_machine, AotCompilable, AotError};

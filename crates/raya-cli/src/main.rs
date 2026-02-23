@@ -353,66 +353,149 @@ fn main() -> anyhow::Result<()> {
 fn dispatch(cmd: Commands) -> anyhow::Result<()> {
     match cmd {
         Commands::Run {
-            target, args, watch, inspect, inspect_brk,
-            no_cache, no_jit, jit_threshold, threads,
-            heap_limit, timeout, list, cpu_prof, prof_interval,
+            target,
+            args,
+            watch,
+            inspect,
+            inspect_brk,
+            no_cache,
+            no_jit,
+            jit_threshold,
+            threads,
+            heap_limit,
+            timeout,
+            list,
+            cpu_prof,
+            prof_interval,
         } => commands::run::execute(commands::run::RunArgs {
-            target, args, watch, inspect, inspect_brk,
-            no_cache, no_jit, jit_threshold, threads,
-            heap_limit, timeout, list, cpu_prof, prof_interval,
+            target,
+            args,
+            watch,
+            inspect,
+            inspect_brk,
+            no_cache,
+            no_jit,
+            jit_threshold,
+            threads,
+            heap_limit,
+            timeout,
+            list,
+            cpu_prof,
+            prof_interval,
         }),
 
-        Commands::Debug { target, break_at_entry, break_at, dap } =>
-            commands::debug::execute(target, break_at_entry, break_at, dap),
+        Commands::Debug {
+            target,
+            break_at_entry,
+            break_at,
+            dap,
+        } => commands::debug::execute(target, break_at_entry, break_at, dap),
 
-        Commands::Build { files, out_dir, release, watch, sourcemap, dry_run } =>
-            commands::build::execute(files, out_dir, release, watch, sourcemap, dry_run),
+        Commands::Build {
+            files,
+            out_dir,
+            release,
+            watch,
+            sourcemap,
+            dry_run,
+        } => commands::build::execute(files, out_dir, release, watch, sourcemap, dry_run),
 
-        Commands::Check { files, watch, strict, format, allow, deny, no_warnings } =>
-            commands::check::execute(files, watch, strict, format, allow, deny, no_warnings),
+        Commands::Check {
+            files,
+            watch,
+            strict,
+            format,
+            allow,
+            deny,
+            no_warnings,
+        } => commands::check::execute(files, watch, strict, format, allow, deny, no_warnings),
 
-        Commands::Eval { code, print, no_print, no_jit } =>
-            commands::eval::execute(code, print, no_print, no_jit),
+        Commands::Eval {
+            code,
+            print,
+            no_print,
+            no_jit,
+        } => commands::eval::execute(code, print, no_print, no_jit),
 
         Commands::Test {
-            filter, watch, coverage, bail, timeout,
-            concurrency, reporter, file, update_snapshots, color,
+            filter,
+            watch,
+            coverage,
+            bail,
+            timeout,
+            concurrency,
+            reporter,
+            file,
+            update_snapshots,
+            color,
         } => commands::test::execute(commands::test::TestArgs {
-            filter, watch, coverage, bail, timeout,
-            concurrency, reporter, file, update_snapshots, color,
+            filter,
+            watch,
+            coverage,
+            bail,
+            timeout,
+            concurrency,
+            reporter,
+            file,
+            update_snapshots,
+            color,
         }),
 
-        Commands::Lint { files, fix, format, watch } =>
-            commands::lint::execute(files, fix, format, watch),
+        Commands::Lint {
+            files,
+            fix,
+            format,
+            watch,
+        } => commands::lint::execute(files, fix, format, watch),
 
-        Commands::Repl { no_jit } =>
-            commands::repl::execute(no_jit),
+        Commands::Repl { no_jit } => commands::repl::execute(no_jit),
 
-        Commands::Init { path, name, template, yes } =>
-            commands::init::execute(path, name, template, yes),
+        Commands::Init {
+            path,
+            name,
+            template,
+            yes,
+        } => commands::init::execute(path, name, template, yes),
 
-        Commands::Add { package, dev, exact, no_install } =>
-            commands::add::execute(package, dev, exact, no_install),
+        Commands::Add {
+            package,
+            dev,
+            exact,
+            no_install,
+        } => commands::add::execute(package, dev, exact, no_install),
 
-        Commands::Remove { package } =>
-            commands::remove::execute(package),
+        Commands::Remove { package } => commands::remove::execute(package),
 
-        Commands::Install { production, frozen, force } =>
-            commands::install::execute(production, frozen, force),
+        Commands::Install {
+            production,
+            frozen,
+            force,
+        } => commands::install::execute(production, frozen, force),
 
-        Commands::Update { package } =>
-            commands::update::execute(package),
+        Commands::Update { package } => commands::update::execute(package),
 
-        Commands::Publish { tag, dry_run, access } =>
-            commands::publish::execute(tag, dry_run, access),
+        Commands::Publish {
+            tag,
+            dry_run,
+            access,
+        } => commands::publish::execute(tag, dry_run, access),
 
-        Commands::Bundle { file, output, target, release, strip, compress, no_runtime } =>
-            commands::bundle::execute(file, output, target, release, strip, compress, no_runtime),
+        Commands::Bundle {
+            file,
+            output,
+            target,
+            release,
+            strip,
+            compress,
+            no_runtime,
+        } => commands::bundle::execute(file, output, target, release, strip, compress, no_runtime),
 
-        Commands::Clean { cache, dist, all } =>
-            commands::clean::execute(cache, dist, all),
+        Commands::Clean { cache, dist, all } => commands::clean::execute(cache, dist, all),
 
-        Commands::Upgrade { version, check, force } =>
-            commands::upgrade::execute(version, check, force),
+        Commands::Upgrade {
+            version,
+            check,
+            force,
+        } => commands::upgrade::execute(version, check, force),
     }
 }

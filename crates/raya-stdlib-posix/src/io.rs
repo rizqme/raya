@@ -1,6 +1,6 @@
 //! std:io — Standard I/O (stdin/stdout/stderr)
 
-use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
+use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::io::{self, BufRead, Read, Write};
 
 /// Read a line from stdin (blocking → IO pool)
@@ -58,7 +58,10 @@ pub fn writeln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
     };
     let stdout = io::stdout();
     let mut lock = stdout.lock();
-    match lock.write_all(data.as_bytes()).and_then(|_| lock.write_all(b"\n")) {
+    match lock
+        .write_all(data.as_bytes())
+        .and_then(|_| lock.write_all(b"\n"))
+    {
         Ok(_) => NativeCallResult::null(),
         Err(e) => NativeCallResult::Error(format!("io.writeln: {}", e)),
     }
@@ -84,7 +87,10 @@ pub fn write_errln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     };
     let stderr = io::stderr();
     let mut lock = stderr.lock();
-    match lock.write_all(data.as_bytes()).and_then(|_| lock.write_all(b"\n")) {
+    match lock
+        .write_all(data.as_bytes())
+        .and_then(|_| lock.write_all(b"\n"))
+    {
         Ok(_) => NativeCallResult::null(),
         Err(e) => NativeCallResult::Error(format!("io.writeErrln: {}", e)),
     }
@@ -92,7 +98,8 @@ pub fn write_errln(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 
 /// Read exactly `n` bytes from stdin (blocking → IO pool)
 pub fn read_exact(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let n = args.first()
+    let n = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as usize;
     NativeCallResult::Suspend(IoRequest::BlockingWork {

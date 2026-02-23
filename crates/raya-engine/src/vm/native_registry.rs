@@ -3,8 +3,8 @@
 //! Re-exports `NativeFunctionRegistry` from raya-sdk and provides
 //! `ResolvedNatives` — the engine-side dispatch table built at load time.
 
-pub use raya_sdk::{NativeHandlerFn as NativeFn, NativeFunctionRegistry};
-use raya_sdk::{NativeContext, NativeValue, NativeCallResult};
+use raya_sdk::{NativeCallResult, NativeContext, NativeValue};
+pub use raya_sdk::{NativeFunctionRegistry, NativeHandlerFn as NativeFn};
 
 /// Resolved native function table for a loaded module.
 ///

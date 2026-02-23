@@ -257,10 +257,7 @@ impl SnapshotContext {
             }
 
             // Create snapshot and mark as visited before recursing
-            let mut snapshot = ObjectSnapshot::new(
-                format!("Class{}", obj.class_id),
-                obj_id,
-            );
+            let mut snapshot = ObjectSnapshot::new(format!("Class{}", obj.class_id), obj_id);
 
             // Capture fields (by index since we may not have names)
             for (i, &field_value) in obj.fields.iter().enumerate() {
@@ -295,7 +292,8 @@ impl SnapshotContext {
             let obj = unsafe { &*ptr.as_ptr() };
 
             for (i, &field_value) in obj.fields.iter().enumerate() {
-                let field_name = field_names.get(i)
+                let field_name = field_names
+                    .get(i)
                     .cloned()
                     .unwrap_or_else(|| format!("field_{}", i));
                 let field_snapshot = self.capture_value(field_value, 1);
@@ -318,13 +316,17 @@ mod tests {
         assert!(!SnapshotValue::Boolean(true).eq(&SnapshotValue::Boolean(false)));
         assert!(SnapshotValue::Integer(42).eq(&SnapshotValue::Integer(42)));
         assert!(SnapshotValue::Float(3.14).eq(&SnapshotValue::Float(3.14)));
-        assert!(SnapshotValue::String("hello".to_string()).eq(&SnapshotValue::String("hello".to_string())));
+        assert!(SnapshotValue::String("hello".to_string())
+            .eq(&SnapshotValue::String("hello".to_string())));
     }
 
     #[test]
     fn test_object_snapshot_creation() {
         let mut snapshot = ObjectSnapshot::new("User".to_string(), 12345);
-        snapshot.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        snapshot.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
         snapshot.add_field("age".to_string(), SnapshotValue::Integer(30));
 
         assert_eq!(snapshot.class_name, "User");
@@ -337,10 +339,16 @@ mod tests {
     #[test]
     fn test_diff_no_changes() {
         let mut old = ObjectSnapshot::new("User".to_string(), 1);
-        old.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        old.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
 
         let mut new = ObjectSnapshot::new("User".to_string(), 1);
-        new.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        new.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
 
         let diff = ObjectDiff::compute(&old, &new);
         assert!(diff.is_empty());
@@ -364,11 +372,20 @@ mod tests {
     #[test]
     fn test_diff_field_added() {
         let mut old = ObjectSnapshot::new("User".to_string(), 1);
-        old.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        old.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
 
         let mut new = ObjectSnapshot::new("User".to_string(), 1);
-        new.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
-        new.add_field("email".to_string(), SnapshotValue::String("alice@example.com".to_string()));
+        new.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
+        new.add_field(
+            "email".to_string(),
+            SnapshotValue::String("alice@example.com".to_string()),
+        );
 
         let diff = ObjectDiff::compute(&old, &new);
         assert!(!diff.is_empty());
@@ -380,11 +397,17 @@ mod tests {
     #[test]
     fn test_diff_field_removed() {
         let mut old = ObjectSnapshot::new("User".to_string(), 1);
-        old.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        old.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
         old.add_field("legacy".to_string(), SnapshotValue::Boolean(true));
 
         let mut new = ObjectSnapshot::new("User".to_string(), 1);
-        new.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        new.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
 
         let diff = ObjectDiff::compute(&old, &new);
         assert!(!diff.is_empty());
@@ -396,12 +419,18 @@ mod tests {
     #[test]
     fn test_diff_multiple_changes() {
         let mut old = ObjectSnapshot::new("User".to_string(), 1);
-        old.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        old.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
         old.add_field("age".to_string(), SnapshotValue::Integer(30));
         old.add_field("old_field".to_string(), SnapshotValue::Null);
 
         let mut new = ObjectSnapshot::new("User".to_string(), 1);
-        new.add_field("name".to_string(), SnapshotValue::String("Alice".to_string()));
+        new.add_field(
+            "name".to_string(),
+            SnapshotValue::String("Alice".to_string()),
+        );
         new.add_field("age".to_string(), SnapshotValue::Integer(31));
         new.add_field("new_field".to_string(), SnapshotValue::Boolean(true));
 

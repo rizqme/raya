@@ -91,8 +91,7 @@ fn test_metadata_storage() {
     let hash = cache.store(&test_data).unwrap();
 
     // Create metadata
-    let mut metadata =
-        ModuleMetadata::new("test-module".into(), "1.0.0".into(), hex::encode(hash));
+    let mut metadata = ModuleMetadata::new("test-module".into(), "1.0.0".into(), hex::encode(hash));
     metadata.add_dependency("dep1".into(), "^1.0.0".into());
     metadata.add_dependency("dep2".into(), "~2.1.0".into());
 

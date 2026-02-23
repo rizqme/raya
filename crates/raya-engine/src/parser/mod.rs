@@ -29,11 +29,11 @@
 //! }
 //! ```
 
-pub mod token;
-pub mod lexer;
 pub mod ast;
-pub mod parser;
 pub mod interner;
+pub mod lexer;
+pub mod parser;
+pub mod token;
 
 // Type system modules (merged from raya-types)
 pub mod types;
@@ -42,13 +42,13 @@ pub mod types;
 pub mod checker;
 
 // Re-exports for convenience
-pub use token::{Token, Span, TemplatePart};
-pub use lexer::{Lexer, LexError};
-pub use parser::{Parser, ParseError};
 pub use interner::{Interner, Symbol};
+pub use lexer::{LexError, Lexer};
+pub use parser::{ParseError, Parser};
+pub use token::{Span, TemplatePart, Token};
 
 // Type system re-exports
-pub use types::{Type, TypeId, TypeContext};
+pub use types::{Type, TypeContext, TypeId};
 
 // Checker re-exports
-pub use checker::{TypeChecker, CheckError, SymbolTable};
+pub use checker::{CheckError, SymbolTable, TypeChecker};

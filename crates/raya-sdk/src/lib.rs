@@ -35,32 +35,26 @@
 #![warn(missing_docs)]
 
 // Modules
-mod value;
-mod error;
 mod context;
+mod convert;
+mod error;
 mod handler;
 mod types;
-mod convert;
+mod value;
 
 // Re-export core types
-pub use value::NativeValue;
-pub use error::{NativeError, AbiResult};
-pub use context::{NativeContext, ClassInfo};
+pub use context::{ClassInfo, NativeContext};
+pub use error::{AbiResult, NativeError};
 pub use handler::{
-    NativeHandler, NativeCallResult, NoopNativeHandler, NativeHandlerFn, NativeFunctionRegistry,
-    IoRequest, IoCompletion,
+    IoCompletion, IoRequest, NativeCallResult, NativeFunctionRegistry, NativeHandler,
+    NativeHandlerFn, NoopNativeHandler,
 };
+pub use value::NativeValue;
 
 // Re-export wrapper types
 pub use types::{
-    NativeArray,
-    NativeObject,
-    ObjectSchema,
+    NativeArray, NativeClass, NativeFunction, NativeMethod, NativeObject, NativeTask, ObjectSchema,
     ObjectSchemaBuilder,
-    NativeClass,
-    NativeFunction,
-    NativeMethod,
-    NativeTask,
 };
 
 // Re-export conversion traits

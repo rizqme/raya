@@ -7,16 +7,15 @@
 use super::execution::{ExecutionFrame, ExecutionResult, OpcodeResult, ReturnAction};
 use super::{ClassRegistry, SafepointCoordinator};
 use crate::compiler::{Module, Opcode};
-use crate::vm::gc::GarbageCollector;
 use crate::vm::builtins::handlers::{
-    RuntimeHandlerContext,
-    call_runtime_method as runtime_handler,
+    call_runtime_method as runtime_handler, RuntimeHandlerContext,
 };
+use crate::vm::gc::GarbageCollector;
+use crate::vm::native_handler::NativeHandler;
 use crate::vm::object::RayaString;
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
-use crate::vm::native_handler::NativeHandler;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 use crossbeam_deque::Injector;
@@ -64,20 +63,24 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) injector: &'a Arc<Injector<Arc<Task>>>,
 
     /// Metadata store for Reflect API
-    pub(in crate::vm::interpreter) metadata: &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
+    pub(in crate::vm::interpreter) metadata:
+        &'a parking_lot::Mutex<crate::vm::reflect::MetadataStore>,
 
     /// Class metadata registry for reflection (field/method names)
-    pub(in crate::vm::interpreter) class_metadata: &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
+    pub(in crate::vm::interpreter) class_metadata:
+        &'a RwLock<crate::vm::reflect::ClassMetadataRegistry>,
 
     /// External native call handler (stdlib implementation)
     #[allow(dead_code)]
     pub(in crate::vm::interpreter) native_handler: &'a Arc<dyn NativeHandler>,
 
     /// Resolved native functions for ModuleNativeCall dispatch
-    pub(in crate::vm::interpreter) resolved_natives: &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
+    pub(in crate::vm::interpreter) resolved_natives:
+        &'a RwLock<crate::vm::native_registry::ResolvedNatives>,
 
     /// IO submission sender for NativeCallResult::Suspend (None in tests without reactor)
-    pub(in crate::vm::interpreter) io_submit_tx: Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
+    pub(in crate::vm::interpreter) io_submit_tx:
+        Option<&'a crossbeam::channel::Sender<crate::vm::scheduler::IoSubmission>>,
 
     /// Maximum consecutive preemptions before killing a task
     pub(in crate::vm::interpreter) max_preemptions: u32,
@@ -87,19 +90,23 @@ pub struct Interpreter<'a> {
 
     /// JIT code cache for native dispatch (None when JIT is disabled)
     #[cfg(feature = "jit")]
-    pub(in crate::vm::interpreter) code_cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
+    pub(in crate::vm::interpreter) code_cache:
+        Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
 
     /// Per-module profiling counters for on-the-fly JIT compilation
     #[cfg(feature = "jit")]
-    pub(in crate::vm::interpreter) module_profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
+    pub(in crate::vm::interpreter) module_profile:
+        Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
 
     /// Handle to submit compilation requests to the background JIT thread
     #[cfg(feature = "jit")]
-    pub(in crate::vm::interpreter) background_compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
+    pub(in crate::vm::interpreter) background_compiler:
+        Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
 
     /// Compilation policy for deciding when a function is hot enough
     #[cfg(feature = "jit")]
-    pub(in crate::vm::interpreter) compilation_policy: crate::jit::profiling::policy::CompilationPolicy,
+    pub(in crate::vm::interpreter) compilation_policy:
+        crate::jit::profiling::policy::CompilationPolicy,
 
     /// Current function ID being executed (tracked for loop profiling)
     #[cfg(feature = "jit")]
@@ -179,25 +186,37 @@ impl<'a> Interpreter<'a> {
     ///
     /// Called by the reactor worker after constructing the interpreter.
     #[cfg(feature = "jit")]
-    pub fn set_code_cache(&mut self, cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>) {
+    pub fn set_code_cache(
+        &mut self,
+        cache: Option<Arc<crate::jit::runtime::code_cache::CodeCache>>,
+    ) {
         self.code_cache = cache;
     }
 
     /// Set the module profile for on-the-fly JIT profiling.
     #[cfg(feature = "jit")]
-    pub fn set_module_profile(&mut self, profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>) {
+    pub fn set_module_profile(
+        &mut self,
+        profile: Option<Arc<crate::jit::profiling::counters::ModuleProfile>>,
+    ) {
         self.module_profile = profile;
     }
 
     /// Set the background compiler handle for submitting compilation requests.
     #[cfg(feature = "jit")]
-    pub fn set_background_compiler(&mut self, compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>) {
+    pub fn set_background_compiler(
+        &mut self,
+        compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
+    ) {
         self.background_compiler = compiler;
     }
 
     /// Set the compilation policy thresholds.
     #[cfg(feature = "jit")]
-    pub fn set_compilation_policy(&mut self, policy: crate::jit::profiling::policy::CompilationPolicy) {
+    pub fn set_compilation_policy(
+        &mut self,
+        policy: crate::jit::profiling::policy::CompilationPolicy,
+    ) {
         self.compilation_policy = policy;
     }
 
@@ -224,7 +243,9 @@ impl<'a> Interpreter<'a> {
 
         // JIT: look up the module_id for this module's checksum (cached for the run)
         #[cfg(feature = "jit")]
-        let jit_module_id: Option<u64> = self.code_cache.as_ref()
+        let jit_module_id: Option<u64> = self
+            .code_cache
+            .as_ref()
             .and_then(|cache| cache.module_id(&module.checksum));
 
         // Restore execution state (supports suspend/resume)
@@ -233,7 +254,9 @@ impl<'a> Interpreter<'a> {
 
         // Track current function for loop profiling
         #[cfg(feature = "jit")]
-        { self.current_func_id_for_profiling = current_func_id; }
+        {
+            self.current_func_id_for_profiling = current_func_id;
+        }
         self.profiler_func_id = current_func_id;
 
         let function = match module.functions.get(current_func_id) {
@@ -252,10 +275,18 @@ impl<'a> Interpreter<'a> {
         let mut locals_base = task.current_locals_base();
         let mut current_arg_count = 0usize; // Track current function's arg count (for rest parameters)
 
-        // Check if we're resuming from suspension
+        // Check if we're resuming from suspension.
+        //
+        // Most await sites expect the resumed task's value to be pushed back
+        // onto the operand stack. `WaitAll` is different: it re-executes with
+        // its original array operand already on the stack and does not consume
+        // the resumed value from a single completed child task.
         if let Some(resume_value) = task.take_resume_value() {
-            if let Err(e) = stack_guard.push(resume_value) {
-                return ExecutionResult::Failed(e);
+            let next_opcode = code.get(ip).and_then(|b| Opcode::from_u8(*b));
+            if !matches!(next_opcode, Some(Opcode::WaitAll)) {
+                if let Err(e) = stack_guard.push(resume_value) {
+                    return ExecutionResult::Failed(e);
+                }
             }
         }
 
@@ -325,7 +356,9 @@ impl<'a> Interpreter<'a> {
                     // Restore caller's state
                     current_func_id = frame.func_id;
                     #[cfg(feature = "jit")]
-                    { self.current_func_id_for_profiling = current_func_id; }
+                    {
+                        self.current_func_id_for_profiling = current_func_id;
+                    }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[frame.func_id].code;
                     ip = frame.ip;
@@ -355,7 +388,10 @@ impl<'a> Interpreter<'a> {
 
         // Debug: break at entry point if requested
         if let Some(ref ds) = self.debug_state {
-            if ds.break_at_entry.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            if ds
+                .break_at_entry
+                .swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
                 let bytecode_offset = ip as u32;
                 let current_line = self.lookup_line(module, current_func_id, bytecode_offset);
                 let info = self.build_pause_info(
@@ -388,9 +424,10 @@ impl<'a> Interpreter<'a> {
                 if count >= self.max_preemptions {
                     save_frame_state!();
                     drop(stack_guard);
-                    return ExecutionResult::Failed(VmError::RuntimeError(
-                        format!("Maximum execution time exceeded (task preempted {} times)", count),
-                    ));
+                    return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                        "Maximum execution time exceeded (task preempted {} times)",
+                        count
+                    )));
                 }
                 save_frame_state!();
                 drop(stack_guard);
@@ -446,14 +483,25 @@ impl<'a> Interpreter<'a> {
                     let pause_reason = if opcode == Opcode::Debugger {
                         Some(super::debug_state::PauseReason::DebuggerStatement)
                     } else {
-                        ds.should_break(current_func_id, bytecode_offset, frames.len() + 1, current_line)
+                        ds.should_break(
+                            current_func_id,
+                            bytecode_offset,
+                            frames.len() + 1,
+                            current_line,
+                        )
                     };
 
                     if let Some(reason) = pause_reason {
                         if let super::debug_state::PauseReason::Breakpoint(bp_id) = &reason {
                             ds.increment_hit_count(*bp_id);
                         }
-                        let info = self.build_pause_info(module, current_func_id, bytecode_offset, current_line, reason);
+                        let info = self.build_pause_info(
+                            module,
+                            current_func_id,
+                            bytecode_offset,
+                            current_line,
+                            reason,
+                        );
                         ds.signal_pause(info);
                     }
                 }
@@ -610,7 +658,9 @@ impl<'a> Interpreter<'a> {
                     // Switch to callee's code
                     current_func_id = func_id;
                     #[cfg(feature = "jit")]
-                    { self.current_func_id_for_profiling = current_func_id; }
+                    {
+                        self.current_func_id_for_profiling = current_func_id;
+                    }
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
                     current_arg_count = arg_count; // Set current arg count to callee's arg count
@@ -622,8 +672,9 @@ impl<'a> Interpreter<'a> {
                         let error_msg = e.to_string();
                         let raya_string = RayaString::new(error_msg);
                         let gc_ptr = self.gc.lock().allocate(raya_string);
-                        let exc_val =
-                            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        let exc_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
                         task.set_exception(exc_val);
                     }
 
@@ -676,12 +727,14 @@ impl<'a> Interpreter<'a> {
                             // the exception handler's stack_size will handle unwinding
                             current_func_id = frame.func_id;
                             #[cfg(feature = "jit")]
-                            { self.current_func_id_for_profiling = current_func_id; }
+                            {
+                                self.current_func_id_for_profiling = current_func_id;
+                            }
                             code = &module.functions[frame.func_id].code;
                             ip = frame.ip;
                             locals_base = frame.locals_base;
                             current_arg_count = frame.arg_count; // Restore caller's arg count
-                            // Continue searching in parent frame
+                                                                 // Continue searching in parent frame
                         } else {
                             // No more frames — unhandled exception
                             break;
@@ -774,54 +827,87 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Constants
             // =========================================================
-            Opcode::ConstNull | Opcode::ConstTrue | Opcode::ConstFalse |
-            Opcode::ConstI32 | Opcode::ConstF64 | Opcode::ConstStr => {
-                self.exec_constant_ops(stack, ip, code, module, opcode)
-            }
+            Opcode::ConstNull
+            | Opcode::ConstTrue
+            | Opcode::ConstFalse
+            | Opcode::ConstI32
+            | Opcode::ConstF64
+            | Opcode::ConstStr => self.exec_constant_ops(stack, ip, code, module, opcode),
 
             // =========================================================
             // Variables
             // =========================================================
-            Opcode::LoadLocal | Opcode::StoreLocal |
-            Opcode::LoadLocal0 | Opcode::LoadLocal1 |
-            Opcode::StoreLocal0 | Opcode::StoreLocal1 |
-            Opcode::GetArgCount | Opcode::LoadArgLocal |
-            Opcode::LoadGlobal | Opcode::StoreGlobal => {
+            Opcode::LoadLocal
+            | Opcode::StoreLocal
+            | Opcode::LoadLocal0
+            | Opcode::LoadLocal1
+            | Opcode::StoreLocal0
+            | Opcode::StoreLocal1
+            | Opcode::GetArgCount
+            | Opcode::LoadArgLocal
+            | Opcode::LoadGlobal
+            | Opcode::StoreGlobal => {
                 self.exec_variable_ops(stack, ip, code, locals_base, opcode, arg_count)
             }
 
             // =========================================================
             // Integer and Float Arithmetic
             // =========================================================
-            Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv |
-            Opcode::Imod | Opcode::Ineg | Opcode::Ipow |
-            Opcode::Ishl | Opcode::Ishr | Opcode::Iushr |
-            Opcode::Iand | Opcode::Ior | Opcode::Ixor | Opcode::Inot |
-            Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv |
-            Opcode::Fneg | Opcode::Fpow | Opcode::Fmod => {
-                self.exec_arithmetic_ops(stack, opcode)
-            }
+            Opcode::Iadd
+            | Opcode::Isub
+            | Opcode::Imul
+            | Opcode::Idiv
+            | Opcode::Imod
+            | Opcode::Ineg
+            | Opcode::Ipow
+            | Opcode::Ishl
+            | Opcode::Ishr
+            | Opcode::Iushr
+            | Opcode::Iand
+            | Opcode::Ior
+            | Opcode::Ixor
+            | Opcode::Inot
+            | Opcode::Fadd
+            | Opcode::Fsub
+            | Opcode::Fmul
+            | Opcode::Fdiv
+            | Opcode::Fneg
+            | Opcode::Fpow
+            | Opcode::Fmod => self.exec_arithmetic_ops(stack, opcode),
 
             // =========================================================
             // Comparisons and Logical Operators
             // =========================================================
-            Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile |
-            Opcode::Igt | Opcode::Ige |
-            Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle |
-            Opcode::Fgt | Opcode::Fge |
-            Opcode::Not | Opcode::And | Opcode::Or |
-            Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => {
-                self.exec_comparison_ops(stack, opcode)
-            }
+            Opcode::Ieq
+            | Opcode::Ine
+            | Opcode::Ilt
+            | Opcode::Ile
+            | Opcode::Igt
+            | Opcode::Ige
+            | Opcode::Feq
+            | Opcode::Fne
+            | Opcode::Flt
+            | Opcode::Fle
+            | Opcode::Fgt
+            | Opcode::Fge
+            | Opcode::Not
+            | Opcode::And
+            | Opcode::Or
+            | Opcode::Eq
+            | Opcode::Ne
+            | Opcode::StrictEq
+            | Opcode::StrictNe => self.exec_comparison_ops(stack, opcode),
 
             // =========================================================
             // Control Flow
             // =========================================================
-            Opcode::Jmp | Opcode::JmpIfTrue | Opcode::JmpIfFalse |
-            Opcode::JmpIfNull | Opcode::JmpIfNotNull |
-            Opcode::Return | Opcode::ReturnVoid => {
-                self.exec_control_flow_ops(stack, ip, code, opcode)
-            }
+            Opcode::Jmp
+            | Opcode::JmpIfTrue
+            | Opcode::JmpIfFalse
+            | Opcode::JmpIfNull
+            | Opcode::JmpIfNotNull
+            | Opcode::Return
+            | Opcode::ReturnVoid => self.exec_control_flow_ops(stack, ip, code, opcode),
 
             // =========================================================
             // Exception Handling
@@ -833,54 +919,71 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Object Operations
             // =========================================================
-            Opcode::New | Opcode::LoadField | Opcode::StoreField |
-            Opcode::OptionalField | Opcode::LoadFieldFast | Opcode::StoreFieldFast |
-            Opcode::ObjectLiteral | Opcode::InitObject | Opcode::BindMethod => {
-                self.exec_object_ops(stack, ip, code, opcode)
-            }
+            Opcode::New
+            | Opcode::LoadField
+            | Opcode::StoreField
+            | Opcode::OptionalField
+            | Opcode::LoadFieldFast
+            | Opcode::StoreFieldFast
+            | Opcode::ObjectLiteral
+            | Opcode::InitObject
+            | Opcode::BindMethod => self.exec_object_ops(stack, ip, code, opcode),
 
             // =========================================================
             // Array Operations
             // =========================================================
-            Opcode::NewArray | Opcode::LoadElem | Opcode::StoreElem |
-            Opcode::ArrayLen | Opcode::ArrayPush | Opcode::ArrayPop |
-            Opcode::ArrayLiteral | Opcode::InitArray => {
-                self.exec_array_ops(stack, ip, code, opcode)
-            }
+            Opcode::NewArray
+            | Opcode::LoadElem
+            | Opcode::StoreElem
+            | Opcode::ArrayLen
+            | Opcode::ArrayPush
+            | Opcode::ArrayPop
+            | Opcode::ArrayLiteral
+            | Opcode::InitArray => self.exec_array_ops(stack, ip, code, opcode),
 
             // =========================================================
             // Closure Operations
             // =========================================================
-            Opcode::MakeClosure | Opcode::LoadCaptured | Opcode::StoreCaptured |
-            Opcode::SetClosureCapture |
-            Opcode::NewRefCell | Opcode::LoadRefCell | Opcode::StoreRefCell => {
-                self.exec_closure_ops(stack, ip, code, task, opcode)
-            }
+            Opcode::MakeClosure
+            | Opcode::LoadCaptured
+            | Opcode::StoreCaptured
+            | Opcode::SetClosureCapture
+            | Opcode::NewRefCell
+            | Opcode::LoadRefCell
+            | Opcode::StoreRefCell => self.exec_closure_ops(stack, ip, code, task, opcode),
 
             // =========================================================
             // String Operations
             // =========================================================
-            Opcode::Sconcat | Opcode::Slen | Opcode::Seq | Opcode::Sne |
-            Opcode::Slt | Opcode::Sle | Opcode::Sgt | Opcode::Sge |
-            Opcode::ToString => {
-                self.exec_string_ops(stack, opcode)
-            }
+            Opcode::Sconcat
+            | Opcode::Slen
+            | Opcode::Seq
+            | Opcode::Sne
+            | Opcode::Slt
+            | Opcode::Sle
+            | Opcode::Sgt
+            | Opcode::Sge
+            | Opcode::ToString => self.exec_string_ops(stack, opcode),
 
             // =========================================================
             // Concurrency (needs MutexGuard for Await/WaitAll suspension)
             // =========================================================
-            Opcode::Spawn | Opcode::SpawnClosure | Opcode::Await |
-            Opcode::WaitAll | Opcode::Sleep |
-            Opcode::MutexLock | Opcode::MutexUnlock |
-            Opcode::Yield | Opcode::TaskCancel => {
+            Opcode::Spawn
+            | Opcode::SpawnClosure
+            | Opcode::Await
+            | Opcode::WaitAll
+            | Opcode::Sleep
+            | Opcode::MutexLock
+            | Opcode::MutexUnlock
+            | Opcode::Yield
+            | Opcode::TaskCancel => {
                 self.exec_concurrency_ops(stack, ip, code, module, task, opcode)
             }
 
             // =========================================================
             // Function Calls (needs MutexGuard for frame operations)
             // =========================================================
-            Opcode::Call | Opcode::CallMethod |
-            Opcode::CallConstructor | Opcode::CallSuper => {
+            Opcode::Call | Opcode::CallMethod | Opcode::CallConstructor | Opcode::CallSuper => {
                 self.exec_call_ops(stack, ip, code, module, task, opcode)
             }
 
@@ -894,13 +997,15 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Type Operations, JSON, Static Fields, Channels, Mutexes
             // =========================================================
-            Opcode::InstanceOf | Opcode::Cast |
-            Opcode::JsonGet | Opcode::JsonSet |
-            Opcode::NewMutex | Opcode::NewChannel |
-            Opcode::LoadStatic | Opcode::StoreStatic |
-            Opcode::Typeof => {
-                self.exec_type_ops(stack, ip, code, module, task, opcode)
-            }
+            Opcode::InstanceOf
+            | Opcode::Cast
+            | Opcode::JsonGet
+            | Opcode::JsonSet
+            | Opcode::NewMutex
+            | Opcode::NewChannel
+            | Opcode::LoadStatic
+            | Opcode::StoreStatic
+            | Opcode::Typeof => self.exec_type_ops(stack, ip, code, module, task, opcode),
 
             // =========================================================
             // Debugger Statement
@@ -921,8 +1026,6 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-
-
     // ===== Helper Methods =====
 
     #[inline]
@@ -938,7 +1041,10 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn read_u16(code: &[u8], ip: &mut usize) -> Result<u16, VmError> {
+    pub(in crate::vm::interpreter) fn read_u16(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<u16, VmError> {
         if *ip + 1 >= code.len() {
             return Err(VmError::RuntimeError(
                 "Unexpected end of bytecode".to_string(),
@@ -950,7 +1056,10 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn read_i16(code: &[u8], ip: &mut usize) -> Result<i16, VmError> {
+    pub(in crate::vm::interpreter) fn read_i16(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<i16, VmError> {
         if *ip + 1 >= code.len() {
             return Err(VmError::RuntimeError(
                 "Unexpected end of bytecode".to_string(),
@@ -962,7 +1071,10 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn read_u32(code: &[u8], ip: &mut usize) -> Result<u32, VmError> {
+    pub(in crate::vm::interpreter) fn read_u32(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<u32, VmError> {
         if *ip + 3 >= code.len() {
             return Err(VmError::RuntimeError(
                 "Unexpected end of bytecode".to_string(),
@@ -974,7 +1086,10 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn read_i32(code: &[u8], ip: &mut usize) -> Result<i32, VmError> {
+    pub(in crate::vm::interpreter) fn read_i32(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<i32, VmError> {
         if *ip + 3 >= code.len() {
             return Err(VmError::RuntimeError(
                 "Unexpected end of bytecode".to_string(),
@@ -986,7 +1101,10 @@ impl<'a> Interpreter<'a> {
     }
 
     #[inline]
-    pub(in crate::vm::interpreter) fn read_f64(code: &[u8], ip: &mut usize) -> Result<f64, VmError> {
+    pub(in crate::vm::interpreter) fn read_f64(
+        code: &[u8],
+        ip: &mut usize,
+    ) -> Result<f64, VmError> {
         if *ip + 7 >= code.len() {
             return Err(VmError::RuntimeError(
                 "Unexpected end of bytecode".to_string(),
@@ -1007,7 +1125,6 @@ impl<'a> Interpreter<'a> {
         Ok(value)
     }
 
-
     /// Handle built-in runtime methods (std:runtime)
     ///
     /// Bridge between Interpreter's call convention (pre-popped args Vec)
@@ -1020,9 +1137,7 @@ impl<'a> Interpreter<'a> {
         args: Vec<Value>,
         _module: &Module,
     ) -> Result<(), VmError> {
-        let ctx = RuntimeHandlerContext {
-            gc: self.gc,
-        };
+        let ctx = RuntimeHandlerContext { gc: self.gc };
 
         // Push args back onto stack so the handler can pop them
         let arg_count = args.len();
@@ -1044,16 +1159,27 @@ impl<'a> Interpreter<'a> {
         module: &Arc<Module>,
         module_id: u64,
     ) {
-        let Some(ref profile) = self.module_profile else { return };
-        let Some(func_profile) = profile.get(func_id) else { return };
+        let Some(ref profile) = self.module_profile else {
+            return;
+        };
+        let Some(func_profile) = profile.get(func_id) else {
+            return;
+        };
 
         // Already compiled or in progress
         if func_profile.is_jit_available() {
             return;
         }
 
-        let code_size = module.functions.get(func_id).map(|f| f.code.len()).unwrap_or(0);
-        if !self.compilation_policy.should_compile(func_profile, code_size) {
+        let code_size = module
+            .functions
+            .get(func_id)
+            .map(|f| f.code.len())
+            .unwrap_or(0);
+        if !self
+            .compilation_policy
+            .should_compile(func_profile, code_size)
+        {
             return;
         }
 
@@ -1078,7 +1204,9 @@ impl<'a> Interpreter<'a> {
     /// Returns 0 if debug info is unavailable.
     #[inline]
     fn lookup_line(&self, module: &Module, func_id: usize, bytecode_offset: u32) -> u32 {
-        module.debug_info.as_ref()
+        module
+            .debug_info
+            .as_ref()
             .and_then(|di| di.functions.get(func_id))
             .and_then(|fd| fd.lookup_location(bytecode_offset))
             .map(|entry| entry.line)
@@ -1094,18 +1222,24 @@ impl<'a> Interpreter<'a> {
         current_line: u32,
         reason: super::debug_state::PauseReason,
     ) -> super::debug_state::PauseInfo {
-        let (source_file, column) = module.debug_info.as_ref()
+        let (source_file, column) = module
+            .debug_info
+            .as_ref()
             .and_then(|di| {
                 let fd = di.functions.get(func_id)?;
                 let entry = fd.lookup_location(bytecode_offset)?;
-                let file = di.source_files.get(fd.source_file_index as usize)
+                let file = di
+                    .source_files
+                    .get(fd.source_file_index as usize)
                     .cloned()
                     .unwrap_or_default();
                 Some((file, entry.column))
             })
             .unwrap_or_else(|| (String::new(), 0));
 
-        let function_name = module.functions.get(func_id)
+        let function_name = module
+            .functions
+            .get(func_id)
             .map(|f| f.name.clone())
             .unwrap_or_else(|| format!("<func_{}>", func_id));
 

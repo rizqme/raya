@@ -3,9 +3,9 @@
 //! Splits decoded instructions into basic blocks and connects them via
 //! terminators. Also tracks exception scopes from Try/EndTry pairs.
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use crate::compiler::bytecode::Opcode;
 use super::decoder::{DecodedInstr, Operands};
+use crate::compiler::bytecode::Opcode;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Unique identifier for a basic block in the CFG
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -157,8 +157,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
         if block_instrs.is_empty() {
             // Empty block falls through to next if there is one
             if block_idx + 1 < block_count {
-                block.terminator =
-                    CfgTerminator::Fallthrough(BlockId((block_idx + 1) as u32));
+                block.terminator = CfgTerminator::Fallthrough(BlockId((block_idx + 1) as u32));
             }
             continue;
         }
@@ -171,10 +170,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
             Opcode::Jmp => {
                 if let Operands::I32(rel) = last_instr.operands {
                     let target = resolve_jump(last_instr.offset, rel);
-                    let target_block = offset_to_block
-                        .get(&target)
-                        .copied()
-                        .unwrap_or(BlockId(0));
+                    let target_block = offset_to_block.get(&target).copied().unwrap_or(BlockId(0));
                     block.terminator = CfgTerminator::Jump(target_block);
                 }
             }
@@ -182,10 +178,7 @@ pub fn build_cfg(instrs: &[DecodedInstr]) -> ControlFlowGraph {
             Opcode::JmpIfFalse | Opcode::JmpIfTrue | Opcode::JmpIfNull | Opcode::JmpIfNotNull => {
                 if let Operands::I32(rel) = last_instr.operands {
                     let target = resolve_jump(last_instr.offset, rel);
-                    let target_block = offset_to_block
-                        .get(&target)
-                        .copied()
-                        .unwrap_or(BlockId(0));
+                    let target_block = offset_to_block.get(&target).copied().unwrap_or(BlockId(0));
                     let fallthrough_block = offset_to_block
                         .get(&next_offset)
                         .copied()
@@ -366,7 +359,10 @@ fn collect_block_starts(instrs: &[DecodedInstr]) -> FxHashSet<usize> {
             }
 
             // After any terminator, the next instruction starts a new block
-            Opcode::Return | Opcode::ReturnVoid | Opcode::Throw | Opcode::Rethrow
+            Opcode::Return
+            | Opcode::ReturnVoid
+            | Opcode::Throw
+            | Opcode::Rethrow
             | Opcode::Trap => {
                 starts.insert(instr.offset + instr.size);
             }
@@ -466,8 +462,8 @@ mod tests {
         // offset 10: Return
         let mut code = Vec::new();
         emit_jmp(&mut code, Opcode::Jmp, 10); // offset 0, size 5, target = 0 + 10 = 10
-        emit_const_i32(&mut code, 1);          // offset 5, size 5
-        emit(&mut code, Opcode::Return);        // offset 10, size 1
+        emit_const_i32(&mut code, 1); // offset 5, size 5
+        emit(&mut code, Opcode::Return); // offset 10, size 1
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -490,10 +486,10 @@ mod tests {
         // offset 12: ConstI32 2  (else branch)
         // offset 17: Return
         let mut code = Vec::new();
-        emit(&mut code, Opcode::ConstTrue);     // offset 0
+        emit(&mut code, Opcode::ConstTrue); // offset 0
         emit_jmp(&mut code, Opcode::JmpIfFalse, 12); // offset 1, target = 1+11 = 12... wait
-        // JmpIfFalse at offset 1, relative offset = target - instr_offset
-        // We want target = 12, so relative = 12 - 1 = 11
+                                                     // JmpIfFalse at offset 1, relative offset = target - instr_offset
+                                                     // We want target = 12, so relative = 12 - 1 = 11
 
         // Actually let me be more careful. After ConstTrue (1 byte), JmpIfFalse (5 bytes) ends at offset 6.
         // Then branch: ConstI32 1 (5 bytes) at offset 6, ends at 11.
@@ -503,18 +499,18 @@ mod tests {
 
         // Clear and redo
         code.clear();
-        emit(&mut code, Opcode::ConstTrue);             // offset 0, size 1
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 12);    // offset 1, size 5, target=1+12=13... hmm
+        emit(&mut code, Opcode::ConstTrue); // offset 0, size 1
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 12); // offset 1, size 5, target=1+12=13... hmm
 
         // resolve_jump: instr_offset + relative
         // offset 1 + relative = target. For target 12: relative = 11.
         code.clear();
-        emit(&mut code, Opcode::ConstTrue);             // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 11);    // offset 1, target = 1+11 = 12
-        emit_const_i32(&mut code, 1);                    // offset 6 (then)
-        emit(&mut code, Opcode::Return);                 // offset 11
-        emit_const_i32(&mut code, 2);                    // offset 12 (else)
-        emit(&mut code, Opcode::Return);                 // offset 17
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 11); // offset 1, target = 1+11 = 12
+        emit_const_i32(&mut code, 1); // offset 6 (then)
+        emit(&mut code, Opcode::Return); // offset 11
+        emit_const_i32(&mut code, 2); // offset 12 (else)
+        emit(&mut code, Opcode::Return); // offset 17
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -524,7 +520,10 @@ mod tests {
         let entry = cfg.block(BlockId(0));
         assert!(matches!(
             entry.terminator,
-            CfgTerminator::Branch { kind: BranchKind::IfFalse, .. }
+            CfgTerminator::Branch {
+                kind: BranchKind::IfFalse,
+                ..
+            }
         ));
     }
 
@@ -550,15 +549,15 @@ mod tests {
         // offset 6: Jmp -6          (5 bytes, target = 6-6=0)
         // offset 11: ReturnVoid     (1 byte)
         let mut code = Vec::new();
-        emit(&mut code, Opcode::ConstTrue);              // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);     // offset 1, target=11
-        emit_jmp(&mut code, Opcode::Jmp, 0);             // offset 6, target=6+0=6?...
-        // Actually I want Jmp to go back to 0: relative = 0 - 6 = -6
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10); // offset 1, target=11
+        emit_jmp(&mut code, Opcode::Jmp, 0); // offset 6, target=6+0=6?...
+                                             // Actually I want Jmp to go back to 0: relative = 0 - 6 = -6
         code.clear();
-        emit(&mut code, Opcode::ConstTrue);              // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 10);     // offset 1, target=1+10=11
-        emit_jmp(&mut code, Opcode::Jmp, -6);            // offset 6, target=6+(-6)=0
-        emit(&mut code, Opcode::ReturnVoid);              // offset 11
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 10); // offset 1, target=1+10=11
+        emit_jmp(&mut code, Opcode::Jmp, -6); // offset 6, target=6+(-6)=0
+        emit(&mut code, Opcode::ReturnVoid); // offset 11
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -580,9 +579,9 @@ mod tests {
         // offset 9: ConstI32 42    (5 bytes)
         // offset 14: Return        (1 byte) — catch handler
         let mut code = Vec::new();
-        emit_try(&mut code, 14, -1);       // offset 0, catch target = 0+14=14
-        emit_const_i32(&mut code, 42);     // offset 9
-        emit(&mut code, Opcode::Return);   // offset 14
+        emit_try(&mut code, 14, -1); // offset 0, catch target = 0+14=14
+        emit_const_i32(&mut code, 42); // offset 9
+        emit(&mut code, Opcode::Return); // offset 14
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -601,13 +600,13 @@ mod tests {
         // offset 18: ConstI32 2    (catch) (5 bytes)
         // offset 23: ReturnVoid    (finally)
         let mut code = Vec::new();
-        emit_try(&mut code, 18, 23);       // offset 0
-        emit_const_i32(&mut code, 1);      // offset 9
-        emit(&mut code, Opcode::Return);   // offset 14
-        emit(&mut code, Opcode::Nop);      // offset 15
-        emit(&mut code, Opcode::Nop);      // offset 16
-        emit(&mut code, Opcode::Nop);      // offset 17
-        emit_const_i32(&mut code, 2);      // offset 18 (catch)
+        emit_try(&mut code, 18, 23); // offset 0
+        emit_const_i32(&mut code, 1); // offset 9
+        emit(&mut code, Opcode::Return); // offset 14
+        emit(&mut code, Opcode::Nop); // offset 15
+        emit(&mut code, Opcode::Nop); // offset 16
+        emit(&mut code, Opcode::Nop); // offset 17
+        emit_const_i32(&mut code, 2); // offset 18 (catch)
         emit(&mut code, Opcode::ReturnVoid); // offset 23 (finally)
 
         let instrs = decode_function(&code).unwrap();
@@ -634,11 +633,11 @@ mod tests {
         // offset 6: Return            (merge point)
         let mut code = Vec::new();
         // Need a value on stack for JmpIfFalse
-        emit(&mut code, Opcode::ConstTrue);              // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 7);      // offset 1, target = 1+7=8
-        emit(&mut code, Opcode::Nop);                     // offset 6 (then)
-        emit(&mut code, Opcode::Nop);                     // offset 7
-        emit(&mut code, Opcode::Return);                  // offset 8 (merge)
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 7); // offset 1, target = 1+7=8
+        emit(&mut code, Opcode::Nop); // offset 6 (then)
+        emit(&mut code, Opcode::Nop); // offset 7
+        emit(&mut code, Opcode::Return); // offset 8 (merge)
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -657,18 +656,18 @@ mod tests {
         // offset 6: ConstI32 1, Jmp +10
         // offset 16: ConstI32 2, Return
         let mut code = Vec::new();
-        emit(&mut code, Opcode::ConstTrue);               // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 15);      // offset 1, target=1+15=16
-        emit_const_i32(&mut code, 1);                      // offset 6 (case 1)
-        emit_jmp(&mut code, Opcode::Jmp, 21);             // offset 11, target=11+21=32... too far
-        // Simpler: just have two cases
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 15); // offset 1, target=1+15=16
+        emit_const_i32(&mut code, 1); // offset 6 (case 1)
+        emit_jmp(&mut code, Opcode::Jmp, 21); // offset 11, target=11+21=32... too far
+                                              // Simpler: just have two cases
         code.clear();
-        emit(&mut code, Opcode::ConstTrue);               // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 11);      // offset 1, target=12
-        emit_const_i32(&mut code, 1);                      // offset 6 (case 1)
-        emit(&mut code, Opcode::Return);                   // offset 11
-        emit_const_i32(&mut code, 2);                      // offset 12 (case 2)
-        emit(&mut code, Opcode::Return);                   // offset 17
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 11); // offset 1, target=12
+        emit_const_i32(&mut code, 1); // offset 6 (case 1)
+        emit(&mut code, Opcode::Return); // offset 11
+        emit_const_i32(&mut code, 2); // offset 12 (case 2)
+        emit(&mut code, Opcode::Return); // offset 17
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);
@@ -683,10 +682,10 @@ mod tests {
     fn test_successors() {
         let mut code = Vec::new();
         emit(&mut code, Opcode::ConstTrue);
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 7);  // target = 1+7=8
-        emit(&mut code, Opcode::Nop);                 // offset 6
-        emit(&mut code, Opcode::Nop);                 // offset 7
-        emit(&mut code, Opcode::ReturnVoid);           // offset 8
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 7); // target = 1+7=8
+        emit(&mut code, Opcode::Nop); // offset 6
+        emit(&mut code, Opcode::Nop); // offset 7
+        emit(&mut code, Opcode::ReturnVoid); // offset 8
 
         let instrs = decode_function(&code).unwrap();
         let cfg = build_cfg(&instrs);

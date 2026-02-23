@@ -79,14 +79,16 @@ impl<'a> SubtypingContext<'a> {
             (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
 
             // Union subtyping: T <: U1 | U2 | ... | Un if T <: Ui for some i
-            (_, Type::Union(union)) => {
-                union.members.iter().any(|&member| self.is_subtype(sub, member))
-            }
+            (_, Type::Union(union)) => union
+                .members
+                .iter()
+                .any(|&member| self.is_subtype(sub, member)),
 
             // Union subtyping: T1 | T2 | ... | Tn <: U if Ti <: U for all i
-            (Type::Union(union), _) => {
-                union.members.iter().all(|&member| self.is_subtype(member, sup))
-            }
+            (Type::Union(union), _) => union
+                .members
+                .iter()
+                .all(|&member| self.is_subtype(member, sup)),
 
             // Function subtyping (contravariant in parameters, covariant in return type)
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
@@ -161,15 +163,13 @@ impl<'a> SubtypingContext<'a> {
             }
 
             // Object <: Object-like Class (structural)
-            (Type::Object(o), Type::Class(c)) => {
-                c.properties.iter().all(|cp| {
-                    o.properties.iter().any(|op| {
-                        op.name == cp.name
-                            && op.optional == cp.optional
-                            && self.is_subtype(op.ty, cp.ty)
-                    })
+            (Type::Object(o), Type::Class(c)) => c.properties.iter().all(|cp| {
+                o.properties.iter().any(|op| {
+                    op.name == cp.name
+                        && op.optional == cp.optional
+                        && self.is_subtype(op.ty, cp.ty)
                 })
-            }
+            }),
 
             // Class subtyping (nominal): only through extends/implements
             (Type::Class(c1), Type::Class(c2)) => {
@@ -185,7 +185,9 @@ impl<'a> SubtypingContext<'a> {
                 }
 
                 // Check if c1 implements c2
-                c1.implements.iter().any(|&impl_id| self.is_subtype(impl_id, sup))
+                c1.implements
+                    .iter()
+                    .any(|&impl_id| self.is_subtype(impl_id, sup))
             }
 
             // Class <: Interface (structural subtyping for interfaces)
@@ -199,9 +201,9 @@ impl<'a> SubtypingContext<'a> {
                             && self.is_subtype(cp.ty, ip.ty)
                     })
                 }) && i.methods.iter().all(|im| {
-                    c.methods.iter().any(|cm| {
-                        cm.name == im.name && self.is_subtype(cm.ty, im.ty)
-                    })
+                    c.methods
+                        .iter()
+                        .any(|cm| cm.name == im.name && self.is_subtype(cm.ty, im.ty))
                 })
             }
 
@@ -219,9 +221,9 @@ impl<'a> SubtypingContext<'a> {
 
                 // Check methods
                 let methods_match = i2.methods.iter().all(|m2| {
-                    i1.methods.iter().any(|m1| {
-                        m1.name == m2.name && self.is_subtype(m1.ty, m2.ty)
-                    })
+                    i1.methods
+                        .iter()
+                        .any(|m1| m1.name == m2.name && self.is_subtype(m1.ty, m2.ty))
                 });
 
                 props_match && methods_match

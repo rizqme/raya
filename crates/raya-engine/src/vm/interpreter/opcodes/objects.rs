@@ -319,9 +319,8 @@ impl<'a> Interpreter<'a> {
                     func_id,
                 };
                 let gc_ptr = self.gc.lock().allocate(bm);
-                let value = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

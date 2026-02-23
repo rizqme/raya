@@ -312,3 +312,86 @@ fn test_await_array_inline() {
         42,
     );
 }
+
+#[test]
+fn test_await_array_string_tasks_from_variable_in_non_async_function() {
+    // Regression: resuming WaitAll with pointer results (string) must not
+    // mis-handle the resumed value as the task array operand.
+    expect_string(
+        "async function fetchUser(id: number): Task<string> {
+             return 'User ' + id.toString();
+         }
+         function main(): string {
+             const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+             const users = await tasks;
+             return users[0] + ', ' + users[1] + ', ' + users[2];
+         }
+         return main();",
+        "User 1, User 2, User 3",
+    );
+}
+
+#[test]
+fn test_await_array_and_io_writeln_inside_function_scope() {
+    // Regression: stdlib object method calls (io.writeln) from a regular
+    // function after await-all must resolve `io` as a module global, not as
+    // stale closure capture state.
+    expect_string_with_builtins(
+        "import io from 'std:io';
+         async function fetchUser(id: number): Task<string> {
+             if (id == 1) return 'User 1';
+             if (id == 2) return 'User 2';
+             return 'User 3';
+         }
+         function main(): string {
+             const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+             const users = await tasks;
+             io.writeln(users[0]);
+             io.writeln(users[1]);
+             io.writeln(users[2]);
+             return users[0] + '|' + users[1] + '|' + users[2];
+         }
+         return main();",
+        "User 1|User 2|User 3",
+    );
+}
+
+#[test]
+fn test_top_level_main_call_with_await_array_runs_once() {
+    // Regression: when both synthetic top-level main and user-declared main
+    // exist, VM must not execute user main twice if top-level already calls it.
+    expect_null(
+        "let runCount: number = 0;
+         async function fetchUser(id: number): Task<string> {
+             if (id == 1) return 'User 1';
+             if (id == 2) return 'User 2';
+             return 'User 3';
+         }
+         function main(): void {
+             if (runCount == 1) { throw 'main executed twice'; }
+             runCount = runCount + 1;
+             const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+             const users = await tasks;
+             let _first = users[0];
+         }
+         main();",
+    );
+}
+
+#[test]
+fn test_declared_main_is_not_implicitly_executed() {
+    // Regression: declaring `main` without calling it must not execute it.
+    expect_null(
+        "let ran: number = 0;
+         async function fetchUser(id: number): Task<string> {
+             return 'User ' + id.toString();
+         }
+         function main(): void {
+             ran = 1;
+             const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+             const users = await tasks;
+             let _first = users[0];
+         }
+         if (ran == 1) { throw 'main ran implicitly'; }",
+    );
+}

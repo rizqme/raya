@@ -8,8 +8,8 @@
 //! - Loops
 
 use raya_engine::compiler::{Function, Module, Opcode};
-use raya_engine::vm::value::Value;
 use raya_engine::vm::interpreter::Vm;
+use raya_engine::vm::value::Value;
 
 #[test]
 fn test_simple_arithmetic() {
@@ -66,18 +66,22 @@ fn test_local_variables() {
             0,
             0,
             Opcode::StoreLocal as u8,
-            0, 0,
+            0,
+            0,
             Opcode::ConstI32 as u8,
             10,
             0,
             0,
             0,
             Opcode::StoreLocal as u8,
-            1, 0,
+            1,
+            0,
             Opcode::LoadLocal as u8,
-            0, 0,
+            0,
+            0,
             Opcode::LoadLocal as u8,
-            1, 0,
+            1,
+            0,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
@@ -196,7 +200,8 @@ fn test_division_and_modulo() {
             0,
             Opcode::Idiv as u8,
             Opcode::StoreLocal as u8,
-            0, 0,
+            0,
+            0,
             // Store 17 % 5 in local 1
             Opcode::ConstI32 as u8,
             17,
@@ -210,12 +215,15 @@ fn test_division_and_modulo() {
             0,
             Opcode::Imod as u8,
             Opcode::StoreLocal as u8,
-            1, 0,
+            1,
+            0,
             // Return local 0 + local 1 (3 + 2 = 5)
             Opcode::LoadLocal as u8,
-            0, 0,
+            0,
+            0,
             Opcode::LoadLocal as u8,
-            1, 0,
+            1,
+            0,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],

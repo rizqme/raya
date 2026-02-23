@@ -18,26 +18,26 @@ pub fn call_crypto_method(
     args: &[NativeValue],
 ) -> NativeCallResult {
     match method_id {
-        0x4000 => hash(ctx, args),           // HASH
-        0x4001 => hash_bytes(ctx, args),     // HASH_BYTES
-        0x4002 => hmac(ctx, args),           // HMAC
-        0x4003 => hmac_bytes(ctx, args),     // HMAC_BYTES
-        0x4004 => random_bytes(ctx, args),   // RANDOM_BYTES
-        0x4005 => random_int(args),          // RANDOM_INT
-        0x4006 => random_uuid(ctx, args),    // RANDOM_UUID
-        0x4007 => to_hex(ctx, args),         // TO_HEX
-        0x4008 => from_hex(ctx, args),       // FROM_HEX
-        0x4009 => to_base64(ctx, args),      // TO_BASE64
-        0x400A => from_base64(ctx, args),    // FROM_BASE64
-        0x400B => timing_safe_equal(ctx, args),   // TIMING_SAFE_EQUAL
-        0x400C => encrypt(ctx, args),             // ENCRYPT
-        0x400D => decrypt(ctx, args),             // DECRYPT
-        0x400E => generate_key(ctx, args),        // GENERATE_KEY
-        0x400F => sign(ctx, args),                // SIGN
-        0x4010 => verify(ctx, args),              // VERIFY
-        0x4011 => generate_key_pair(ctx, args),   // GENERATE_KEY_PAIR
-        0x4012 => hkdf(ctx, args),                // HKDF
-        0x4013 => pbkdf2(ctx, args),              // PBKDF2
+        0x4000 => hash(ctx, args),              // HASH
+        0x4001 => hash_bytes(ctx, args),        // HASH_BYTES
+        0x4002 => hmac(ctx, args),              // HMAC
+        0x4003 => hmac_bytes(ctx, args),        // HMAC_BYTES
+        0x4004 => random_bytes(ctx, args),      // RANDOM_BYTES
+        0x4005 => random_int(args),             // RANDOM_INT
+        0x4006 => random_uuid(ctx, args),       // RANDOM_UUID
+        0x4007 => to_hex(ctx, args),            // TO_HEX
+        0x4008 => from_hex(ctx, args),          // FROM_HEX
+        0x4009 => to_base64(ctx, args),         // TO_BASE64
+        0x400A => from_base64(ctx, args),       // FROM_BASE64
+        0x400B => timing_safe_equal(ctx, args), // TIMING_SAFE_EQUAL
+        0x400C => encrypt(ctx, args),           // ENCRYPT
+        0x400D => decrypt(ctx, args),           // DECRYPT
+        0x400E => generate_key(ctx, args),      // GENERATE_KEY
+        0x400F => sign(ctx, args),              // SIGN
+        0x4010 => verify(ctx, args),            // VERIFY
+        0x4011 => generate_key_pair(ctx, args), // GENERATE_KEY_PAIR
+        0x4012 => hkdf(ctx, args),              // HKDF
+        0x4013 => pbkdf2(ctx, args),            // PBKDF2
         _ => NativeCallResult::Unhandled,
     }
 }
@@ -274,9 +274,7 @@ fn from_base64(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
 /// crypto.timingSafeEqual(a: Buffer, b: Buffer): boolean
 fn timing_safe_equal(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
-        return NativeCallResult::Error(
-            "crypto.timingSafeEqual requires 2 arguments".to_string(),
-        );
+        return NativeCallResult::Error("crypto.timingSafeEqual requires 2 arguments".to_string());
     }
 
     let a = match ctx.read_buffer(args[0]) {
@@ -445,9 +443,7 @@ fn verify(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 /// crypto.generateKeyPair(algorithm: string): string[] — [publicPem, privatePem]
 fn generate_key_pair(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "crypto.generateKeyPair requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("crypto.generateKeyPair requires 1 argument".to_string());
     }
 
     let algorithm = match ctx.read_string(args[0]) {
@@ -567,9 +563,7 @@ fn hash_bytes_internal(algorithm: &str, data: &[u8]) -> Result<Vec<u8>, String> 
             use sha1::Sha1;
             Ok(Sha1::digest(data).to_vec())
         }
-        "md5" => {
-            Ok(md5::compute(data).to_vec())
-        }
+        "md5" => Ok(md5::compute(data).to_vec()),
         _ => Err(format!(
             "Unsupported hash algorithm: {}. Supported: sha256, sha384, sha512, sha1, md5",
             algorithm
@@ -584,22 +578,22 @@ fn hmac_compute_internal(algorithm: &str, key: &[u8], data: &[u8]) -> Result<Vec
     match algorithm {
         "sha256" => {
             type HmacSha256 = Hmac<Sha256>;
-            let mut mac = HmacSha256::new_from_slice(key)
-                .map_err(|e| format!("HMAC error: {}", e))?;
+            let mut mac =
+                HmacSha256::new_from_slice(key).map_err(|e| format!("HMAC error: {}", e))?;
             mac.update(data);
             Ok(mac.finalize().into_bytes().to_vec())
         }
         "sha384" => {
             type HmacSha384 = Hmac<Sha384>;
-            let mut mac = HmacSha384::new_from_slice(key)
-                .map_err(|e| format!("HMAC error: {}", e))?;
+            let mut mac =
+                HmacSha384::new_from_slice(key).map_err(|e| format!("HMAC error: {}", e))?;
             mac.update(data);
             Ok(mac.finalize().into_bytes().to_vec())
         }
         "sha512" => {
             type HmacSha512 = Hmac<Sha512>;
-            let mut mac = HmacSha512::new_from_slice(key)
-                .map_err(|e| format!("HMAC error: {}", e))?;
+            let mut mac =
+                HmacSha512::new_from_slice(key).map_err(|e| format!("HMAC error: {}", e))?;
             mac.update(data);
             Ok(mac.finalize().into_bytes().to_vec())
         }
@@ -612,8 +606,11 @@ fn hmac_compute_internal(algorithm: &str, key: &[u8], data: &[u8]) -> Result<Vec
 
 /// AES-256-GCM encrypt: returns nonce (12 bytes) + ciphertext + tag
 fn encrypt_aes_gcm(key_bytes: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Key, Nonce};
     use aes_gcm::aead::rand_core::RngCore;
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Key, Nonce,
+    };
 
     if key_bytes.len() != 32 {
         return Err("AES-256 requires a 32-byte key".to_string());
@@ -623,7 +620,9 @@ fn encrypt_aes_gcm(key_bytes: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String
     let mut nonce_bytes = [0u8; 12];
     aes_gcm::aead::OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|e| e.to_string())?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext)
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::with_capacity(12 + ciphertext.len());
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
@@ -632,7 +631,10 @@ fn encrypt_aes_gcm(key_bytes: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, String
 
 /// AES-256-GCM decrypt: expects nonce (12 bytes) + ciphertext + tag
 fn decrypt_aes_gcm(key_bytes: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
-    use aes_gcm::{aead::{Aead, KeyInit}, Aes256Gcm, Key, Nonce};
+    use aes_gcm::{
+        aead::{Aead, KeyInit},
+        Aes256Gcm, Key, Nonce,
+    };
 
     if key_bytes.len() != 32 {
         return Err("AES-256 requires a 32-byte key".to_string());
@@ -643,7 +645,9 @@ fn decrypt_aes_gcm(key_bytes: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
     let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let cipher = Aes256Gcm::new(key);
     let nonce = Nonce::from_slice(&data[..12]);
-    cipher.decrypt(nonce, &data[12..]).map_err(|e| e.to_string())
+    cipher
+        .decrypt(nonce, &data[12..])
+        .map_err(|e| e.to_string())
 }
 
 /// Sign data with Ed25519
@@ -661,8 +665,7 @@ fn verify_ed25519(public_key_pem: &[u8], data: &[u8], sig_bytes: &[u8]) -> Resul
     use ed25519_dalek::{pkcs8::DecodePublicKey, Signature, Verifier, VerifyingKey};
 
     let pem_str = std::str::from_utf8(public_key_pem).map_err(|e| e.to_string())?;
-    let verifying_key =
-        VerifyingKey::from_public_key_pem(pem_str).map_err(|e| e.to_string())?;
+    let verifying_key = VerifyingKey::from_public_key_pem(pem_str).map_err(|e| e.to_string())?;
     let sig_array: [u8; 64] = sig_bytes
         .try_into()
         .map_err(|_| "Invalid signature length (expected 64 bytes)".to_string())?;

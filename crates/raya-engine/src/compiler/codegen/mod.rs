@@ -17,9 +17,9 @@
 //! 5. **Optimizations**: String comparison optimization
 
 mod context;
-pub mod emit;
 #[allow(dead_code)]
 mod control;
+pub mod emit;
 
 pub use context::IrCodeGenerator;
 
@@ -43,10 +43,10 @@ pub fn generate(ir_module: &IrModule, emit_sourcemap: bool) -> CompileResult<Mod
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{BasicBlock, BasicBlockId, IrFunction, IrModule};
     use crate::compiler::ir::block::Terminator;
     use crate::compiler::ir::instr::{BinaryOp, IrInstr};
     use crate::compiler::ir::value::{IrConstant, IrValue, Register, RegisterId};
+    use crate::compiler::ir::{BasicBlock, BasicBlockId, IrFunction, IrModule};
     use crate::parser::TypeId;
 
     fn make_reg(id: u32, ty: u32) -> Register {

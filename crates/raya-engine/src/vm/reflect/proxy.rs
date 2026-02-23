@@ -193,11 +193,7 @@ pub enum TrapResult {
 /// setting up a call frame.
 ///
 /// Arguments for the get trap: (target, propertyName)
-pub fn prepare_get_trap(
-    handler: Value,
-    target: Value,
-    _property_name: &str,
-) -> TrapResult {
+pub fn prepare_get_trap(handler: Value, target: Value, _property_name: &str) -> TrapResult {
     match get_trap_method(handler, "get") {
         TrapMethod::Closure(closure) => {
             // Create property name as a Value (would need GC allocation)
@@ -243,11 +239,7 @@ pub fn prepare_set_trap(
 /// This function checks if the handler has a `has` trap and prepares the call.
 ///
 /// Arguments for the has trap: (target, propertyName)
-pub fn prepare_has_trap(
-    handler: Value,
-    target: Value,
-    _property_name: &str,
-) -> TrapResult {
+pub fn prepare_has_trap(handler: Value, target: Value, _property_name: &str) -> TrapResult {
     match get_trap_method(handler, "has") {
         TrapMethod::Closure(closure) => {
             TrapResult::NeedsInterpreter {

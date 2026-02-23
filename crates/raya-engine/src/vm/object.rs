@@ -539,7 +539,7 @@ impl PartialEq for HashableValue {
         match (self.try_as_string(), other.try_as_string()) {
             (Some(s1), Some(s2)) => s1 == s2,
             (None, None) => self.0 == other.0, // Both are primitives, use raw comparison
-            _ => false, // One is string, one is not
+            _ => false,                        // One is string, one is not
         }
     }
 }
@@ -865,7 +865,8 @@ impl RegExpObject {
             let index = full_match.start();
 
             // Collect captured groups (skip group 0 which is the full match)
-            let groups: Vec<String> = caps.iter()
+            let groups: Vec<String> = caps
+                .iter()
                 .skip(1)
                 .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
                 .collect();
@@ -876,18 +877,22 @@ impl RegExpObject {
 
     /// Execute pattern on string, return all matches
     pub fn exec_all(&self, text: &str) -> Vec<(String, usize, Vec<String>)> {
-        self.compiled.captures_iter(text).map(|caps| {
-            let full_match = caps.get(0).unwrap();
-            let matched_text = full_match.as_str().to_string();
-            let index = full_match.start();
+        self.compiled
+            .captures_iter(text)
+            .map(|caps| {
+                let full_match = caps.get(0).unwrap();
+                let matched_text = full_match.as_str().to_string();
+                let index = full_match.start();
 
-            let groups: Vec<String> = caps.iter()
-                .skip(1)
-                .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
-                .collect();
+                let groups: Vec<String> = caps
+                    .iter()
+                    .skip(1)
+                    .map(|m| m.map(|m| m.as_str().to_string()).unwrap_or_default())
+                    .collect();
 
-            (matched_text, index, groups)
-        }).collect()
+                (matched_text, index, groups)
+            })
+            .collect()
     }
 
     /// Replace first match (or all if global)
@@ -902,7 +907,11 @@ impl RegExpObject {
     /// Split string by pattern
     pub fn split(&self, text: &str, limit: Option<usize>) -> Vec<String> {
         match limit {
-            Some(n) => self.compiled.splitn(text, n).map(|s| s.to_string()).collect(),
+            Some(n) => self
+                .compiled
+                .splitn(text, n)
+                .map(|s| s.to_string())
+                .collect(),
             None => self.compiled.split(text).map(|s| s.to_string()).collect(),
         }
     }
@@ -987,7 +996,11 @@ impl DateObject {
     /// Recompose from (year, month[0-11], day[1-31], hour, min, sec, ms) to timestamp_ms
     fn recompose(y: i32, m: i32, d: i32, h: i32, min: i32, sec: i32, ms: i32) -> i64 {
         let days = Self::days_from_civil(y, m + 1, d);
-        days * 86_400_000 + h as i64 * 3_600_000 + min as i64 * 60_000 + sec as i64 * 1000 + ms as i64
+        days * 86_400_000
+            + h as i64 * 3_600_000
+            + min as i64 * 60_000
+            + sec as i64 * 1000
+            + ms as i64
     }
 
     // ---- Getters ----
@@ -1080,16 +1093,31 @@ impl DateObject {
 
     fn day_name(dow: i32) -> &'static str {
         match dow {
-            0 => "Sun", 1 => "Mon", 2 => "Tue", 3 => "Wed",
-            4 => "Thu", 5 => "Fri", 6 => "Sat", _ => "???",
+            0 => "Sun",
+            1 => "Mon",
+            2 => "Tue",
+            3 => "Wed",
+            4 => "Thu",
+            5 => "Fri",
+            6 => "Sat",
+            _ => "???",
         }
     }
 
     fn month_name(m: i32) -> &'static str {
         match m {
-            0 => "Jan", 1 => "Feb", 2 => "Mar", 3 => "Apr",
-            4 => "May", 5 => "Jun", 6 => "Jul", 7 => "Aug",
-            8 => "Sep", 9 => "Oct", 10 => "Nov", 11 => "Dec",
+            0 => "Jan",
+            1 => "Feb",
+            2 => "Mar",
+            3 => "Apr",
+            4 => "May",
+            5 => "Jun",
+            6 => "Jul",
+            7 => "Aug",
+            8 => "Sep",
+            9 => "Oct",
+            10 => "Nov",
+            11 => "Dec",
             _ => "???",
         }
     }
@@ -1100,7 +1128,13 @@ impl DateObject {
         let dow = self.get_day();
         format!(
             "{} {} {:02} {:04} {:02}:{:02}:{:02}",
-            Self::day_name(dow), Self::month_name(m), d, y, h, min, sec
+            Self::day_name(dow),
+            Self::month_name(m),
+            d,
+            y,
+            h,
+            min,
+            sec
         )
     }
 
@@ -1109,7 +1143,13 @@ impl DateObject {
         let (y, m, d, h, min, sec, ms) = self.decompose();
         format!(
             "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-            y, m + 1, d, h, min, sec, ms
+            y,
+            m + 1,
+            d,
+            h,
+            min,
+            sec,
+            ms
         )
     }
 
@@ -1117,7 +1157,13 @@ impl DateObject {
     pub fn to_date_string(&self) -> String {
         let (y, m, d, _, _, _, _) = self.decompose();
         let dow = self.get_day();
-        format!("{} {} {:02} {:04}", Self::day_name(dow), Self::month_name(m), d, y)
+        format!(
+            "{} {} {:02} {:04}",
+            Self::day_name(dow),
+            Self::month_name(m),
+            d,
+            y
+        )
     }
 
     /// Time portion: "10:30:00"
@@ -1138,11 +1184,15 @@ impl DateObject {
         };
 
         let date_parts: Vec<&str> = date_part.split('-').collect();
-        if date_parts.len() != 3 { return None; }
+        if date_parts.len() != 3 {
+            return None;
+        }
         let y: i32 = date_parts[0].parse().ok()?;
         let m: i32 = date_parts[1].parse().ok()?;
         let d: i32 = date_parts[2].parse().ok()?;
-        if !(1..=12).contains(&m) || !(1..=31).contains(&d) { return None; }
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return None;
+        }
 
         let (h, min, sec, ms) = if let Some(tp) = time_part {
             let (time_str, ms) = if let Some(dot_idx) = tp.find('.') {

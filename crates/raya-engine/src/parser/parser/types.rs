@@ -1,7 +1,7 @@
 //! Type annotation parsing
 
-use super::{ParseError, ParseErrorKind, Parser};
 use super::expr::keyword_as_property_name;
+use super::{ParseError, ParseErrorKind, Parser};
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::Token;
@@ -19,7 +19,10 @@ fn parse_union_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
     if parser.depth > super::guards::MAX_PARSE_DEPTH {
         parser.depth -= 1;
         return Err(ParseError::parser_limit_exceeded(
-            format!("Maximum nesting depth ({}) exceeded in type annotation", super::guards::MAX_PARSE_DEPTH),
+            format!(
+                "Maximum nesting depth ({}) exceeded in type annotation",
+                super::guards::MAX_PARSE_DEPTH
+            ),
             parser.current_span(),
         ));
     }

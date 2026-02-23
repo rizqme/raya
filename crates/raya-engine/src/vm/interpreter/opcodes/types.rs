@@ -1,6 +1,7 @@
 //! Type operation opcode handlers: InstanceOf, Cast, Typeof, JsonGet, JsonSet,
 //! NewMutex, NewChannel, LoadStatic, StoreStatic
 
+use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{ChannelObject, Object, RayaString};
@@ -8,7 +9,6 @@ use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::{Module, Opcode};
 use std::sync::Arc;
 
 impl<'a> Interpreter<'a> {
@@ -263,7 +263,8 @@ impl<'a> Interpreter<'a> {
                 let capacity = capacity_val.as_i32().unwrap_or(0) as usize;
                 let channel = ChannelObject::new(capacity);
                 let gc_ptr = self.gc.lock().allocate(channel);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -294,7 +295,9 @@ impl<'a> Interpreter<'a> {
                         )));
                     }
                 };
-                let value = class.get_static_field(field_offset).unwrap_or(Value::null());
+                let value = class
+                    .get_static_field(field_offset)
+                    .unwrap_or(Value::null());
                 drop(classes);
 
                 if let Err(e) = stack.push(value) {
@@ -366,7 +369,8 @@ impl<'a> Interpreter<'a> {
 
                 let raya_string = RayaString::new(type_str.to_string());
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let str_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let str_value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 if let Err(e) = stack.push(str_value) {
                     return OpcodeResult::Error(e);
                 }

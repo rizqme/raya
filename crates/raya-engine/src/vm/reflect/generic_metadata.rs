@@ -201,7 +201,9 @@ impl GenericTypeRegistry {
 
     /// Get base generic class ID
     pub fn get_generic_base(&self, generic_name: &str) -> Option<usize> {
-        self.generics.get(generic_name).and_then(|g| g.base_class_id)
+        self.generics
+            .get(generic_name)
+            .and_then(|g| g.base_class_id)
     }
 
     /// Find all specializations of a generic type
@@ -270,8 +272,7 @@ mod tests {
     #[test]
     fn test_generic_parameter_with_constraint() {
         let constraint = TypeInfo::primitive("Comparable");
-        let param =
-            GenericParameterInfo::with_constraint("T".to_string(), 0, constraint);
+        let param = GenericParameterInfo::with_constraint("T".to_string(), 0, constraint);
         assert!(param.constraint.is_some());
     }
 
@@ -459,10 +460,7 @@ mod tests {
             20,
             "Map_string_number".to_string(),
             "Map".to_string(),
-            vec![
-                TypeInfo::primitive("string"),
-                TypeInfo::primitive("number"),
-            ],
+            vec![TypeInfo::primitive("string"), TypeInfo::primitive("number")],
         ));
 
         let params = registry.get_type_parameters("Map").unwrap();

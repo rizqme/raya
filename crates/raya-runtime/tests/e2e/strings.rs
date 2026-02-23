@@ -110,7 +110,10 @@ fn test_template_string_simple() {
 
 #[test]
 fn test_template_string_interpolation() {
-    expect_string("let name = \"World\"; return `Hello, ${name}!`;", "Hello, World!");
+    expect_string(
+        "let name = \"World\"; return `Hello, ${name}!`;",
+        "Hello, World!",
+    );
 }
 
 #[test]
@@ -256,10 +259,7 @@ fn test_string_replace_basic() {
 
 #[test]
 fn test_string_replace_first_only() {
-    expect_string(
-        r#"return "abcabc".replace("abc", "x");"#,
-        "xabc",
-    );
+    expect_string(r#"return "abcabc".replace("abc", "x");"#, "xabc");
 }
 
 #[test]

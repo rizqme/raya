@@ -4,8 +4,8 @@
 //! class methods compile and execute correctly through the runtime handler pipeline.
 
 use super::harness::{
-    compile_and_run_with_builtins, expect_i32_with_builtins,
-    expect_bool_with_builtins, expect_string_contains_with_builtins,
+    compile_and_run_with_builtins, expect_bool_with_builtins, expect_i32_with_builtins,
+    expect_string_contains_with_builtins,
 };
 
 // ============================================================================
@@ -551,7 +551,10 @@ fn test_execute_on_terminated_child_errors() {
         return child.execute(mod);
     "#,
     );
-    assert!(result.is_err(), "Executing on terminated child should error");
+    assert!(
+        result.is_err(),
+        "Executing on terminated child should error"
+    );
 }
 
 // ============================================================================

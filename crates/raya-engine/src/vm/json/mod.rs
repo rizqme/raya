@@ -107,18 +107,14 @@ pub fn json_to_value(json: &JsonValue, gc: &mut GarbageCollector) -> Value {
         JsonValue::Number(n) => Value::f64(*n),
         JsonValue::String(s_ptr) => {
             // Convert string pointer to Value
-            unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
-            }
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) }
         }
         JsonValue::Array(_) | JsonValue::Object(_) => {
             // Store the JsonValue itself on the heap to enable duck typing
             // This allows property access via JsonGet opcode
             let json_clone = json.clone();
             let gc_ptr = gc.allocate(json_clone);
-            unsafe {
-                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-            }
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
         }
     }
 }

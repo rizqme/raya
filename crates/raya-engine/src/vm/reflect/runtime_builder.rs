@@ -25,10 +25,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::vm::object::Closure;
-use crate::vm::reflect::{
-    FieldDefinition, MethodDefinition,
-    SubclassDefinition,
-};
+use crate::vm::reflect::{FieldDefinition, MethodDefinition, SubclassDefinition};
 use crate::vm::value::Value;
 use crate::vm::VmError;
 
@@ -429,12 +426,7 @@ impl SpecializationCache {
     }
 
     /// Register a new specialization
-    pub fn register(
-        &mut self,
-        generic_name: &str,
-        type_args: Vec<String>,
-        class_id: usize,
-    ) {
+    pub fn register(&mut self, generic_name: &str, type_args: Vec<String>, class_id: usize) {
         let key = Self::make_key(generic_name, &type_args);
         self.cache.insert(key, class_id);
         self.origins.insert(
@@ -528,8 +520,12 @@ mod tests {
     #[test]
     fn test_class_builder_add_field() {
         let mut builder = ClassBuilder::new("TestClass".to_string());
-        builder.add_field("name".to_string(), "string", false, false).unwrap();
-        builder.add_field("age".to_string(), "number", false, true).unwrap();
+        builder
+            .add_field("name".to_string(), "string", false, false)
+            .unwrap();
+        builder
+            .add_field("age".to_string(), "number", false, true)
+            .unwrap();
 
         assert_eq!(builder.fields.len(), 2);
         assert_eq!(builder.fields[0].name, "name");
@@ -541,8 +537,12 @@ mod tests {
     #[test]
     fn test_class_builder_add_method() {
         let mut builder = ClassBuilder::new("TestClass".to_string());
-        builder.add_method("greet".to_string(), 42, false, false).unwrap();
-        builder.add_method("compute".to_string(), 43, true, true).unwrap();
+        builder
+            .add_method("greet".to_string(), 42, false, false)
+            .unwrap();
+        builder
+            .add_method("compute".to_string(), 43, true, true)
+            .unwrap();
 
         assert_eq!(builder.methods.len(), 2);
         assert_eq!(builder.methods[0].name, "greet");
@@ -555,7 +555,9 @@ mod tests {
     #[test]
     fn test_class_builder_duplicate_field() {
         let mut builder = ClassBuilder::new("TestClass".to_string());
-        builder.add_field("name".to_string(), "string", false, false).unwrap();
+        builder
+            .add_field("name".to_string(), "string", false, false)
+            .unwrap();
         let result = builder.add_field("name".to_string(), "number", false, false);
         assert!(result.is_err());
     }
@@ -595,7 +597,9 @@ mod tests {
         assert!(registry.get(id).is_some());
 
         let builder = registry.get_mut(id).unwrap();
-        builder.add_field("x".to_string(), "number", false, false).unwrap();
+        builder
+            .add_field("x".to_string(), "number", false, false)
+            .unwrap();
 
         let removed = registry.remove(id);
         assert!(removed.is_some());
@@ -673,8 +677,12 @@ mod tests {
     #[test]
     fn test_to_definition() {
         let mut builder = ClassBuilder::new("TestClass".to_string());
-        builder.add_field("x".to_string(), "number", false, false).unwrap();
-        builder.add_method("greet".to_string(), 42, false, false).unwrap();
+        builder
+            .add_field("x".to_string(), "number", false, false)
+            .unwrap();
+        builder
+            .add_method("greet".to_string(), 42, false, false)
+            .unwrap();
         builder.set_constructor(100).unwrap();
         builder.add_interface("Serializable".to_string()).unwrap();
 

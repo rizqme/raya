@@ -5,8 +5,8 @@
 //! are handled.
 
 use crate::parser::ast::{Expression, SwitchCase, SwitchStatement};
-use crate::parser::Interner;
 use crate::parser::types::{Type, TypeContext, TypeId};
+use crate::parser::Interner;
 use std::collections::HashSet;
 
 /// Result of exhaustiveness checking
@@ -125,14 +125,14 @@ pub fn check_typeof_exhaustiveness(
     bare_union: TypeId,
     tested_types: &HashSet<String>,
 ) -> Option<Vec<String>> {
-    
-
     let type_def = ctx.get(bare_union)?;
 
     match type_def {
         Type::Union(union_ty) if union_ty.is_bare => {
             // Extract all primitive type names from the bare union
-            let all_types: HashSet<String> = union_ty.members.iter()
+            let all_types: HashSet<String> = union_ty
+                .members
+                .iter()
                 .filter_map(|&member| {
                     if let Some(Type::Primitive(prim)) = ctx.get(member) {
                         Some(prim.type_name().to_string())
@@ -143,7 +143,8 @@ pub fn check_typeof_exhaustiveness(
                 .collect();
 
             // Find missing types
-            let missing: Vec<String> = all_types.iter()
+            let missing: Vec<String> = all_types
+                .iter()
                 .filter(|t| !tested_types.contains(*t))
                 .cloned()
                 .collect();
@@ -194,7 +195,10 @@ fn extract_discriminant_value(
     match type_def {
         Type::Object(obj) => {
             // Find the discriminant property
-            let prop = obj.properties.iter().find(|p| p.name == discriminant_field)?;
+            let prop = obj
+                .properties
+                .iter()
+                .find(|p| p.name == discriminant_field)?;
 
             // Extract the literal value from the discriminant field's type
             let field_type = ctx.get(prop.ty)?;
@@ -242,8 +246,8 @@ fn extract_variant_from_expression(expr: &Expression, interner: &Interner) -> Op
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Parser;
     use crate::parser::ast::Statement;
+    use crate::Parser;
 
     fn parse_switch(source: &str) -> (SwitchStatement, Interner) {
         let parser = Parser::new(source).unwrap();
@@ -257,31 +261,37 @@ mod tests {
     #[test]
     fn test_has_default_case() {
         // No default case
-        let (switch_stmt, _interner) = parse_switch(r#"
+        let (switch_stmt, _interner) = parse_switch(
+            r#"
             switch (x) {
                 case "ok": break;
             }
-        "#);
+        "#,
+        );
         assert!(!has_default_case(&switch_stmt.cases));
 
         // Has default case
-        let (switch_stmt, _interner) = parse_switch(r#"
+        let (switch_stmt, _interner) = parse_switch(
+            r#"
             switch (x) {
                 case "ok": break;
                 default: break;
             }
-        "#);
+        "#,
+        );
         assert!(has_default_case(&switch_stmt.cases));
     }
 
     #[test]
     fn test_extract_tested_variants() {
-        let (switch_stmt, interner) = parse_switch(r#"
+        let (switch_stmt, interner) = parse_switch(
+            r#"
             switch (x) {
                 case "ok": break;
                 case "error": break;
             }
-        "#);
+        "#,
+        );
 
         let variants = extract_tested_variants(&switch_stmt.cases, &interner);
         assert_eq!(variants.len(), 2);

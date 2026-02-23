@@ -30,9 +30,9 @@ impl<'a> Interpreter<'a> {
 
         // Pop receiver (the RegExp handle)
         let receiver = stack.pop()?;
-        let handle = receiver.as_u64().ok_or_else(|| {
-            VmError::TypeError("Expected RegExp handle".to_string())
-        })?;
+        let handle = receiver
+            .as_u64()
+            .ok_or_else(|| VmError::TypeError("Expected RegExp handle".to_string()))?;
         let re_ptr = handle as *const RegExpObject;
         if re_ptr.is_null() {
             return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -127,9 +127,8 @@ impl<'a> Interpreter<'a> {
                     result_arr.push(match_arr_val);
                 }
                 let arr_gc = self.gc.lock().allocate(result_arr);
-                let arr_val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
-                };
+                let arr_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) };
                 stack.push(arr_val)?;
             }
             id if id == regexp::REPLACE => {
@@ -154,9 +153,8 @@ impl<'a> Interpreter<'a> {
                 let result = re.replace(&input, &replacement);
                 let result_str = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(result_str);
-                let result_val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
-                };
+                let result_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(result_val)?;
             }
             id if id == regexp::SPLIT => {
@@ -172,7 +170,11 @@ impl<'a> Interpreter<'a> {
                 // In Raya, limit 0 means "no limit"
                 let limit = if args.len() > 1 {
                     let raw_limit = args[1].as_i32().unwrap_or(0);
-                    if raw_limit > 0 { Some(raw_limit as usize) } else { None }
+                    if raw_limit > 0 {
+                        Some(raw_limit as usize)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -187,9 +189,8 @@ impl<'a> Interpreter<'a> {
                     arr.push(val);
                 }
                 let arr_gc = self.gc.lock().allocate(arr);
-                let arr_val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
-                };
+                let arr_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) };
                 stack.push(arr_val)?;
             }
             id if id == regexp::REPLACE_WITH => {
@@ -246,9 +247,8 @@ impl<'a> Interpreter<'a> {
                     result_arr.push(match_arr_val);
                 }
                 let arr_gc = self.gc.lock().allocate(result_arr);
-                let arr_val = unsafe {
-                    Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap())
-                };
+                let arr_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_gc.as_ptr()).unwrap()) };
                 stack.push(arr_val)?;
             }
             _ => {

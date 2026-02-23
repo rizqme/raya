@@ -787,7 +787,6 @@ impl Opcode {
     pub fn is_terminator(self) -> bool {
         self.is_jump() || self.is_return() || matches!(self, Self::Throw | Self::Trap)
     }
-
 }
 
 #[cfg(test)]
@@ -848,20 +847,53 @@ mod tests {
         // Test that unassigned opcodes return None
         assert_eq!(Opcode::from_u8(0xFE), Some(Opcode::ModuleNativeCall));
         assert_eq!(Opcode::from_u8(0xFF), None); // Unassigned
-        // Test that assigned opcodes return correct values
-        assert_eq!(Opcode::from_u8(Opcode::NewChannel.to_u8()), Some(Opcode::NewChannel));
-        assert_eq!(Opcode::from_u8(Opcode::SetClosureCapture.to_u8()), Some(Opcode::SetClosureCapture));
-        assert_eq!(Opcode::from_u8(Opcode::SpawnClosure.to_u8()), Some(Opcode::SpawnClosure));
-        assert_eq!(Opcode::from_u8(Opcode::NewRefCell.to_u8()), Some(Opcode::NewRefCell));
-        assert_eq!(Opcode::from_u8(Opcode::LoadRefCell.to_u8()), Some(Opcode::LoadRefCell));
-        assert_eq!(Opcode::from_u8(Opcode::StoreRefCell.to_u8()), Some(Opcode::StoreRefCell));
+                                                 // Test that assigned opcodes return correct values
+        assert_eq!(
+            Opcode::from_u8(Opcode::NewChannel.to_u8()),
+            Some(Opcode::NewChannel)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::SetClosureCapture.to_u8()),
+            Some(Opcode::SetClosureCapture)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::SpawnClosure.to_u8()),
+            Some(Opcode::SpawnClosure)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::NewRefCell.to_u8()),
+            Some(Opcode::NewRefCell)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::LoadRefCell.to_u8()),
+            Some(Opcode::LoadRefCell)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::StoreRefCell.to_u8()),
+            Some(Opcode::StoreRefCell)
+        );
         assert_eq!(Opcode::from_u8(Opcode::Sleep.to_u8()), Some(Opcode::Sleep));
-        assert_eq!(Opcode::from_u8(Opcode::TaskCancel.to_u8()), Some(Opcode::TaskCancel));
-        assert_eq!(Opcode::from_u8(Opcode::InstanceOf.to_u8()), Some(Opcode::InstanceOf));
+        assert_eq!(
+            Opcode::from_u8(Opcode::TaskCancel.to_u8()),
+            Some(Opcode::TaskCancel)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::InstanceOf.to_u8()),
+            Some(Opcode::InstanceOf)
+        );
         assert_eq!(Opcode::from_u8(Opcode::Cast.to_u8()), Some(Opcode::Cast));
-        assert_eq!(Opcode::from_u8(Opcode::NativeCall.to_u8()), Some(Opcode::NativeCall));
-        assert_eq!(Opcode::from_u8(Opcode::ArrayPush.to_u8()), Some(Opcode::ArrayPush));
-        assert_eq!(Opcode::from_u8(Opcode::ArrayPop.to_u8()), Some(Opcode::ArrayPop));
+        assert_eq!(
+            Opcode::from_u8(Opcode::NativeCall.to_u8()),
+            Some(Opcode::NativeCall)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::ArrayPush.to_u8()),
+            Some(Opcode::ArrayPush)
+        );
+        assert_eq!(
+            Opcode::from_u8(Opcode::ArrayPop.to_u8()),
+            Some(Opcode::ArrayPop)
+        );
     }
 
     #[test]
@@ -916,46 +948,155 @@ mod tests {
         assert!(!Opcode::Iadd.is_terminator());
     }
 
-
     #[test]
     fn test_opcode_roundtrip_all() {
         // Test that all opcodes can be converted to u8 and back
         let all_opcodes = [
-            Opcode::Nop, Opcode::Pop, Opcode::Dup, Opcode::Swap,
-            Opcode::ConstNull, Opcode::ConstTrue, Opcode::ConstFalse,
-            Opcode::ConstI32, Opcode::ConstF64, Opcode::ConstStr, Opcode::LoadConst,
-            Opcode::LoadLocal, Opcode::StoreLocal, Opcode::LoadLocal0,
-            Opcode::LoadLocal1, Opcode::StoreLocal0, Opcode::StoreLocal1,
-            Opcode::GetArgCount, Opcode::LoadArgLocal,
-            Opcode::Iadd, Opcode::Isub, Opcode::Imul, Opcode::Idiv, Opcode::Imod,
-            Opcode::Ineg, Opcode::Ipow, Opcode::Ishl, Opcode::Ishr, Opcode::Iushr,
-            Opcode::Iand, Opcode::Ior, Opcode::Ixor, Opcode::Inot,
-            Opcode::Fadd, Opcode::Fsub, Opcode::Fmul, Opcode::Fdiv, Opcode::Fneg, Opcode::Fpow,
-            Opcode::Ieq, Opcode::Ine, Opcode::Ilt, Opcode::Ile, Opcode::Igt, Opcode::Ige,
-            Opcode::Feq, Opcode::Fne, Opcode::Flt, Opcode::Fle, Opcode::Fgt, Opcode::Fge,
-            Opcode::Eq, Opcode::Ne, Opcode::StrictEq, Opcode::StrictNe, Opcode::Not, Opcode::And, Opcode::Or, Opcode::Typeof,
-            Opcode::Sconcat, Opcode::Slen, Opcode::Seq, Opcode::Sne, Opcode::Slt, Opcode::Sle, Opcode::Sgt, Opcode::Sge, Opcode::ToString,
-            Opcode::Jmp, Opcode::JmpIfFalse, Opcode::JmpIfTrue, Opcode::JmpIfNull, Opcode::JmpIfNotNull,
-            Opcode::Call, Opcode::CallMethod, Opcode::Return, Opcode::ReturnVoid,
-            Opcode::CallConstructor, Opcode::CallSuper, Opcode::CallStatic,
-            Opcode::New, Opcode::LoadField, Opcode::StoreField, Opcode::LoadFieldFast,
-            Opcode::StoreFieldFast, Opcode::ObjectLiteral, Opcode::InitObject,
-            Opcode::OptionalField, Opcode::LoadStatic, Opcode::StoreStatic,
-            Opcode::NewArray, Opcode::LoadElem, Opcode::StoreElem, Opcode::ArrayLen,
-            Opcode::ArrayLiteral, Opcode::InitArray,
-            Opcode::TupleLiteral, Opcode::InitTuple, Opcode::TupleGet,
-            Opcode::ArrayPush, Opcode::ArrayPop,
-            Opcode::Spawn, Opcode::Await, Opcode::Yield, Opcode::TaskThen,
-            Opcode::NewMutex, Opcode::MutexLock, Opcode::MutexUnlock,
-            Opcode::NewSemaphore, Opcode::SemAcquire, Opcode::SemRelease,
-            Opcode::WaitAll, Opcode::SpawnClosure, Opcode::Sleep,
-            Opcode::NewRefCell, Opcode::LoadRefCell, Opcode::StoreRefCell,
-            Opcode::JsonGet, Opcode::JsonSet, Opcode::JsonDelete, Opcode::JsonIndex, Opcode::JsonIndexSet, Opcode::JsonPush,
-            Opcode::JsonPop, Opcode::JsonNewObject, Opcode::JsonNewArray, Opcode::JsonKeys, Opcode::JsonLength,
-            Opcode::TaskCancel, Opcode::InstanceOf, Opcode::Cast,
-            Opcode::MakeClosure, Opcode::CloseVar, Opcode::LoadCaptured, Opcode::StoreCaptured,
-            Opcode::LoadModule, Opcode::LoadGlobal, Opcode::StoreGlobal, Opcode::SetClosureCapture,
-            Opcode::Throw, Opcode::Try, Opcode::EndTry, Opcode::Rethrow, Opcode::Trap, Opcode::NativeCall,
+            Opcode::Nop,
+            Opcode::Pop,
+            Opcode::Dup,
+            Opcode::Swap,
+            Opcode::ConstNull,
+            Opcode::ConstTrue,
+            Opcode::ConstFalse,
+            Opcode::ConstI32,
+            Opcode::ConstF64,
+            Opcode::ConstStr,
+            Opcode::LoadConst,
+            Opcode::LoadLocal,
+            Opcode::StoreLocal,
+            Opcode::LoadLocal0,
+            Opcode::LoadLocal1,
+            Opcode::StoreLocal0,
+            Opcode::StoreLocal1,
+            Opcode::GetArgCount,
+            Opcode::LoadArgLocal,
+            Opcode::Iadd,
+            Opcode::Isub,
+            Opcode::Imul,
+            Opcode::Idiv,
+            Opcode::Imod,
+            Opcode::Ineg,
+            Opcode::Ipow,
+            Opcode::Ishl,
+            Opcode::Ishr,
+            Opcode::Iushr,
+            Opcode::Iand,
+            Opcode::Ior,
+            Opcode::Ixor,
+            Opcode::Inot,
+            Opcode::Fadd,
+            Opcode::Fsub,
+            Opcode::Fmul,
+            Opcode::Fdiv,
+            Opcode::Fneg,
+            Opcode::Fpow,
+            Opcode::Ieq,
+            Opcode::Ine,
+            Opcode::Ilt,
+            Opcode::Ile,
+            Opcode::Igt,
+            Opcode::Ige,
+            Opcode::Feq,
+            Opcode::Fne,
+            Opcode::Flt,
+            Opcode::Fle,
+            Opcode::Fgt,
+            Opcode::Fge,
+            Opcode::Eq,
+            Opcode::Ne,
+            Opcode::StrictEq,
+            Opcode::StrictNe,
+            Opcode::Not,
+            Opcode::And,
+            Opcode::Or,
+            Opcode::Typeof,
+            Opcode::Sconcat,
+            Opcode::Slen,
+            Opcode::Seq,
+            Opcode::Sne,
+            Opcode::Slt,
+            Opcode::Sle,
+            Opcode::Sgt,
+            Opcode::Sge,
+            Opcode::ToString,
+            Opcode::Jmp,
+            Opcode::JmpIfFalse,
+            Opcode::JmpIfTrue,
+            Opcode::JmpIfNull,
+            Opcode::JmpIfNotNull,
+            Opcode::Call,
+            Opcode::CallMethod,
+            Opcode::Return,
+            Opcode::ReturnVoid,
+            Opcode::CallConstructor,
+            Opcode::CallSuper,
+            Opcode::CallStatic,
+            Opcode::New,
+            Opcode::LoadField,
+            Opcode::StoreField,
+            Opcode::LoadFieldFast,
+            Opcode::StoreFieldFast,
+            Opcode::ObjectLiteral,
+            Opcode::InitObject,
+            Opcode::OptionalField,
+            Opcode::LoadStatic,
+            Opcode::StoreStatic,
+            Opcode::NewArray,
+            Opcode::LoadElem,
+            Opcode::StoreElem,
+            Opcode::ArrayLen,
+            Opcode::ArrayLiteral,
+            Opcode::InitArray,
+            Opcode::TupleLiteral,
+            Opcode::InitTuple,
+            Opcode::TupleGet,
+            Opcode::ArrayPush,
+            Opcode::ArrayPop,
+            Opcode::Spawn,
+            Opcode::Await,
+            Opcode::Yield,
+            Opcode::TaskThen,
+            Opcode::NewMutex,
+            Opcode::MutexLock,
+            Opcode::MutexUnlock,
+            Opcode::NewSemaphore,
+            Opcode::SemAcquire,
+            Opcode::SemRelease,
+            Opcode::WaitAll,
+            Opcode::SpawnClosure,
+            Opcode::Sleep,
+            Opcode::NewRefCell,
+            Opcode::LoadRefCell,
+            Opcode::StoreRefCell,
+            Opcode::JsonGet,
+            Opcode::JsonSet,
+            Opcode::JsonDelete,
+            Opcode::JsonIndex,
+            Opcode::JsonIndexSet,
+            Opcode::JsonPush,
+            Opcode::JsonPop,
+            Opcode::JsonNewObject,
+            Opcode::JsonNewArray,
+            Opcode::JsonKeys,
+            Opcode::JsonLength,
+            Opcode::TaskCancel,
+            Opcode::InstanceOf,
+            Opcode::Cast,
+            Opcode::MakeClosure,
+            Opcode::CloseVar,
+            Opcode::LoadCaptured,
+            Opcode::StoreCaptured,
+            Opcode::LoadModule,
+            Opcode::LoadGlobal,
+            Opcode::StoreGlobal,
+            Opcode::SetClosureCapture,
+            Opcode::Throw,
+            Opcode::Try,
+            Opcode::EndTry,
+            Opcode::Rethrow,
+            Opcode::Trap,
+            Opcode::NativeCall,
             Opcode::ModuleNativeCall,
             Opcode::Debugger,
         ];
@@ -963,7 +1104,13 @@ mod tests {
         for opcode in &all_opcodes {
             let byte = opcode.to_u8();
             let decoded = Opcode::from_u8(byte);
-            assert_eq!(decoded, Some(*opcode), "Failed roundtrip for {:?} (byte: 0x{:02X})", opcode, byte);
+            assert_eq!(
+                decoded,
+                Some(*opcode),
+                "Failed roundtrip for {:?} (byte: 0x{:02X})",
+                opcode,
+                byte
+            );
         }
     }
 }

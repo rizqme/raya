@@ -40,7 +40,9 @@ impl<'a> Interpreter<'a> {
                 };
                 if cond.is_truthy() {
                     #[cfg(feature = "jit")]
-                    if offset < 0 { self.record_loop_for_profiling(); }
+                    if offset < 0 {
+                        self.record_loop_for_profiling();
+                    }
                     *ip = (*ip as isize + offset as isize) as usize;
                 }
                 OpcodeResult::Continue
@@ -57,7 +59,9 @@ impl<'a> Interpreter<'a> {
                 };
                 if !cond.is_truthy() {
                     #[cfg(feature = "jit")]
-                    if offset < 0 { self.record_loop_for_profiling(); }
+                    if offset < 0 {
+                        self.record_loop_for_profiling();
+                    }
                     *ip = (*ip as isize + offset as isize) as usize;
                 }
                 OpcodeResult::Continue

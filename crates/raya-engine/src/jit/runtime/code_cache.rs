@@ -3,11 +3,11 @@
 //! Stores compiled native code indexed by (module_id, function_index), with
 //! support for invalidation (when a function is recompiled or patched).
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use parking_lot::RwLock;
-use rustc_hash::FxHashMap;
 use crate::jit::backend::traits::ExecutableCode;
 use crate::jit::runtime::trampoline::JitEntryFn;
+use parking_lot::RwLock;
+use rustc_hash::FxHashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Composite key for the code cache: (module_id, func_index)
 ///
@@ -90,14 +90,18 @@ impl CodeCache {
         let mut entries = self.entries.write();
         // Remove old entry size if replacing
         if let Some(old) = entries.remove(&key) {
-            self.total_code_size.fetch_sub(old.code.code_size, Ordering::Relaxed);
+            self.total_code_size
+                .fetch_sub(old.code.code_size, Ordering::Relaxed);
         }
 
         self.total_code_size.fetch_add(code_size, Ordering::Relaxed);
-        entries.insert(key, CacheEntry {
-            code,
-            invalidated: AtomicBool::new(false),
-        });
+        entries.insert(
+            key,
+            CacheEntry {
+                code,
+                invalidated: AtomicBool::new(false),
+            },
+        );
         true
     }
 
@@ -129,7 +133,8 @@ impl CodeCache {
     pub fn contains(&self, module_id: u64, func_index: u32) -> bool {
         let key = (module_id, func_index);
         let entries = self.entries.read();
-        entries.get(&key)
+        entries
+            .get(&key)
             .map(|e| !e.invalidated.load(Ordering::Acquire))
             .unwrap_or(false)
     }

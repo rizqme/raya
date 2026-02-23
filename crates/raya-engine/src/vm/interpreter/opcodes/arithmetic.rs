@@ -1,10 +1,10 @@
+use crate::compiler::Opcode;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::Opcode;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_arithmetic_ops(
@@ -25,8 +25,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if let Err(e) = stack.push(Value::i32(a.wrapping_add(b))) {
                     return OpcodeResult::Error(e);
                 }
@@ -42,8 +48,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if let Err(e) = stack.push(Value::i32(a.wrapping_sub(b))) {
                     return OpcodeResult::Error(e);
                 }
@@ -61,8 +73,14 @@ impl<'a> Interpreter<'a> {
                 };
                 // Try i32 first, fall back to f64→i32 conversion for values that
                 // are f64 at runtime due to type inference gaps (e.g., loop accumulators).
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if let Err(e) = stack.push(Value::i32(a.wrapping_mul(b))) {
                     return OpcodeResult::Error(e);
                 }
@@ -78,8 +96,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if b == 0 {
                     return OpcodeResult::Error(VmError::RuntimeError(
                         "division by zero".to_string(),
@@ -100,8 +124,14 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if b == 0 {
                     return OpcodeResult::Error(VmError::RuntimeError(
                         "division by zero".to_string(),
@@ -118,7 +148,10 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
                 if let Err(e) = stack.push(Value::i32(a.wrapping_neg())) {
                     return OpcodeResult::Error(e);
                 }
@@ -134,13 +167,15 @@ impl<'a> Interpreter<'a> {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
-                let a = a_val.as_i32().or_else(|| a_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let b = b_val.as_i32().or_else(|| b_val.as_f64().map(|f| f as i32)).unwrap_or(0);
-                let result = if b < 0 {
-                    0
-                } else {
-                    a.wrapping_pow(b as u32)
-                };
+                let a = a_val
+                    .as_i32()
+                    .or_else(|| a_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let b = b_val
+                    .as_i32()
+                    .or_else(|| b_val.as_f64().map(|f| f as i32))
+                    .unwrap_or(0);
+                let result = if b < 0 { 0 } else { a.wrapping_pow(b as u32) };
                 if let Err(e) = stack.push(Value::i32(result)) {
                     return OpcodeResult::Error(e);
                 }

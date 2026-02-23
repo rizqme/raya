@@ -30,8 +30,8 @@
 //! ```
 
 use raya_engine::compiler::{Function, Module, Opcode};
-use raya_engine::vm::value::Value;
 use raya_engine::vm::interpreter::Vm;
+use raya_engine::vm::value::Value;
 
 /// Helper function to create and execute simple bytecode
 fn execute_bytecode(code: Vec<u8>) -> Value {
@@ -1122,8 +1122,7 @@ mod composite {
         // Loop end - patch forward jump
         let loop_end = code.len();
         let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
-        code[jmp_if_false_pos..jmp_if_false_pos + 2]
-            .copy_from_slice(&forward_offset.to_le_bytes());
+        code[jmp_if_false_pos..jmp_if_false_pos + 2].copy_from_slice(&forward_offset.to_le_bytes());
 
         // Return result
         code.push(Opcode::LoadLocal as u8);
@@ -1211,8 +1210,7 @@ mod composite {
         // Loop end - patch forward jump
         let loop_end = code.len();
         let forward_offset = (loop_end as isize - (jmp_if_false_pos + 2) as isize) as i16;
-        code[jmp_if_false_pos..jmp_if_false_pos + 2]
-            .copy_from_slice(&forward_offset.to_le_bytes());
+        code[jmp_if_false_pos..jmp_if_false_pos + 2].copy_from_slice(&forward_offset.to_le_bytes());
 
         // Return a
         code.push(Opcode::LoadLocal as u8);

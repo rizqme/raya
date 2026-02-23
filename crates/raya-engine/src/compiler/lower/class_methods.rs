@@ -7,15 +7,14 @@
 //! Each function takes `this` as the first parameter, followed by method arguments.
 //! Called via `IrInstr::Call` — regular function calls, NOT `CallMethod`.
 
-use std::sync::LazyLock;
 use rustc_hash::FxHashMap;
+use std::sync::LazyLock;
 
 use crate::compiler::ir::IrFunction;
-use crate::compiler::type_registry::{BUILTIN_PRIMITIVE_SOURCES, extract_class_method_names};
+use crate::compiler::type_registry::{extract_class_method_names, BUILTIN_PRIMITIVE_SOURCES};
 
 /// Compiled class method IrFunctions, lazily initialized from `.raya` sources.
-static COMPILED_BUILTINS: LazyLock<CompiledBuiltins> =
-    LazyLock::new(CompiledBuiltins::init);
+static COMPILED_BUILTINS: LazyLock<CompiledBuiltins> = LazyLock::new(CompiledBuiltins::init);
 
 struct CompiledBuiltins {
     /// (type_name, method_name) → IrFunction
@@ -51,9 +50,9 @@ fn compile_and_extract(
     source: &str,
     class_method_names: &[String],
 ) -> Option<Vec<(String, IrFunction)>> {
-    use crate::parser::{Parser, TypeContext};
-    use crate::parser::checker::{Binder, TypeChecker};
     use crate::compiler::lower::Lowerer;
+    use crate::parser::checker::{Binder, TypeChecker};
+    use crate::parser::{Parser, TypeContext};
 
     // 1. Parse
     let parser = Parser::new(source).unwrap_or_else(|e| {
@@ -68,12 +67,10 @@ fn compile_and_extract(
 
     // Save canonical TypeIds before binding — the binder will overwrite named_types
     // with ClassType IDs, but the TypeRegistry dispatch tables need canonical IDs
-    let canonical_ids: Vec<(&str, crate::parser::types::TypeId)> =
-        BUILTIN_PRIMITIVE_SOURCES.iter()
-            .filter_map(|&(name, _)| {
-                type_ctx.lookup_named_type(name).map(|id| (name, id))
-            })
-            .collect();
+    let canonical_ids: Vec<(&str, crate::parser::types::TypeId)> = BUILTIN_PRIMITIVE_SOURCES
+        .iter()
+        .filter_map(|&(name, _)| type_ctx.lookup_named_type(name).map(|id| (name, id)))
+        .collect();
 
     let symbols = {
         let mut binder = Binder::new(&mut type_ctx, &interner);
@@ -103,8 +100,8 @@ fn compile_and_extract(
         Err(_errors) => {
             // Type errors in builtin files are expected for some constructs
             // (e.g., __NATIVE_CALL returning 'any'). Fall back to empty expr_types.
-            use crate::parser::checker::CheckResult;
             use crate::parser::checker::captures::ModuleCaptureInfo;
+            use crate::parser::checker::CheckResult;
             CheckResult {
                 inferred_types: FxHashMap::default(),
                 captures: ModuleCaptureInfo::new(),

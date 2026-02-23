@@ -1,5 +1,6 @@
 //! Concurrency opcode handlers: Spawn, SpawnClosure, Await, WaitAll, Sleep, MutexLock, MutexUnlock, Yield, TaskCancel
 
+use crate::compiler::{Module, Opcode};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, Closure};
@@ -8,7 +9,6 @@ use crate::vm::stack::Stack;
 use crate::vm::sync::MutexId;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::{Module, Opcode};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -165,32 +165,11 @@ impl<'a> Interpreter<'a> {
 
             Opcode::WaitAll => {
                 // WaitAll: await [task1, task2, ...] - wait for all tasks and return results array
-                // Note: When resumed after awaiting, run() pushes a resume value.
-                // We need to handle this by checking if we got an array or a resume value.
-                let top_val = match stack.pop() {
+                // The array operand is preserved across suspension; run() does not
+                // push resume values for WaitAll sites.
+                let arr_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
-                };
-
-                // Check if this is the array we need, or a resume value from a previous await
-                let arr_val = if top_val.is_ptr() {
-                    // Could be array or something else
-                    if unsafe { top_val.as_ptr::<Array>() }.is_some() {
-                        // Looks like an array - verify it contains task IDs
-                        top_val
-                    } else {
-                        // Not an array - this is a resume value, pop the real array
-                        match stack.pop() {
-                            Ok(v) => v,
-                            Err(e) => return OpcodeResult::Error(e),
-                        }
-                    }
-                } else {
-                    // This is a resume value (probably a number), pop the real array
-                    match stack.pop() {
-                        Ok(v) => v,
-                        Err(e) => return OpcodeResult::Error(e),
-                    }
                 };
 
                 if !arr_val.is_ptr() {
@@ -284,11 +263,14 @@ impl<'a> Interpreter<'a> {
                         let _ = result_arr.set(i, result);
                     }
                     let gc_ptr = self.gc.lock().allocate(result_arr);
-                    let result_val =
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    let result_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
                     if let Err(e) = stack.push(result_val) {
                         return OpcodeResult::Error(e);
                     }
+                    // `ip` already points to the next instruction when exec_concurrency_ops
+                    // is called, so don't advance it here or we'll skip a byte and desync decode.
                     OpcodeResult::Continue
                 } else {
                     // Not all complete - push array back and suspend

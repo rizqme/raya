@@ -1,8 +1,8 @@
 //! Reflect built-in method handlers and helpers
 
 use crate::compiler::Module;
-use crate::vm::interpreter::Interpreter;
 use crate::vm::interpreter::core::value_to_f64;
+use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, Closure, MapObject, Object, RayaString};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
@@ -38,7 +38,7 @@ impl<'a> Interpreter<'a> {
                 // defineMetadata(key, value, target)
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "defineMetadata requires 3 arguments".to_string()
+                        "defineMetadata requires 3 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -54,7 +54,7 @@ impl<'a> Interpreter<'a> {
                 // defineMetadata(key, value, target, propertyKey)
                 if args.len() < 4 {
                     return Err(VmError::RuntimeError(
-                        "defineMetadata with property requires 4 arguments".to_string()
+                        "defineMetadata with property requires 4 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -71,7 +71,7 @@ impl<'a> Interpreter<'a> {
                 // getMetadata(key, target)
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "getMetadata requires 2 arguments".to_string()
+                        "getMetadata requires 2 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -85,7 +85,7 @@ impl<'a> Interpreter<'a> {
                 // getMetadata(key, target, propertyKey)
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "getMetadata with property requires 3 arguments".to_string()
+                        "getMetadata with property requires 3 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -93,14 +93,16 @@ impl<'a> Interpreter<'a> {
                 let property_key = get_string(args[2])?;
 
                 let metadata = self.metadata.lock();
-                metadata.get_metadata_property(&key, target, &property_key).unwrap_or_default()
+                metadata
+                    .get_metadata_property(&key, target, &property_key)
+                    .unwrap_or_default()
             }
 
             reflect::HAS_METADATA => {
                 // hasMetadata(key, target)
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "hasMetadata requires 2 arguments".to_string()
+                        "hasMetadata requires 2 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -114,7 +116,7 @@ impl<'a> Interpreter<'a> {
                 // hasMetadata(key, target, propertyKey)
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "hasMetadata with property requires 3 arguments".to_string()
+                        "hasMetadata with property requires 3 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -129,7 +131,7 @@ impl<'a> Interpreter<'a> {
                 // getMetadataKeys(target)
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getMetadataKeys requires 1 argument".to_string()
+                        "getMetadataKeys requires 1 argument".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -155,7 +157,7 @@ impl<'a> Interpreter<'a> {
                 // getMetadataKeys(target, propertyKey)
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "getMetadataKeys with property requires 2 arguments".to_string()
+                        "getMetadataKeys with property requires 2 arguments".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -182,7 +184,7 @@ impl<'a> Interpreter<'a> {
                 // deleteMetadata(key, target)
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "deleteMetadata requires 2 arguments".to_string()
+                        "deleteMetadata requires 2 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -196,7 +198,7 @@ impl<'a> Interpreter<'a> {
                 // deleteMetadata(key, target, propertyKey)
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "deleteMetadata with property requires 3 arguments".to_string()
+                        "deleteMetadata with property requires 3 arguments".to_string(),
                     ));
                 }
                 let key = get_string(args[0])?;
@@ -208,12 +210,11 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 2: Class Introspection =====
-
             reflect::GET_CLASS => {
                 // getClass(obj) -> returns class ID as i32, or null if not an object
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getClass requires 1 argument".to_string()
+                        "getClass requires 1 argument".to_string(),
                     ));
                 }
                 let obj = args[0];
@@ -228,7 +229,7 @@ impl<'a> Interpreter<'a> {
                 // getClassByName(name) -> returns class ID as i32, or null if not found
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getClassByName requires 1 argument".to_string()
+                        "getClassByName requires 1 argument".to_string(),
                     ));
                 }
                 let name = get_string(args[0])?;
@@ -269,7 +270,7 @@ impl<'a> Interpreter<'a> {
                 // isSubclassOf(subClassId, superClassId) -> boolean
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "isSubclassOf requires 2 arguments".to_string()
+                        "isSubclassOf requires 2 arguments".to_string(),
                     ));
                 }
                 let sub_id = args[0].as_i32().unwrap_or(-1);
@@ -291,7 +292,7 @@ impl<'a> Interpreter<'a> {
                 // isInstanceOf(obj, classId) -> boolean
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "isInstanceOf requires 2 arguments".to_string()
+                        "isInstanceOf requires 2 arguments".to_string(),
                     ));
                 }
                 let obj = args[0];
@@ -314,7 +315,7 @@ impl<'a> Interpreter<'a> {
                 // NOTE: Full TypeInfo requires --emit-reflection
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getTypeInfo requires 1 argument".to_string()
+                        "getTypeInfo requires 1 argument".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -330,7 +331,7 @@ impl<'a> Interpreter<'a> {
                 // getClassHierarchy(obj) -> returns array of class IDs from obj's class to root
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getClassHierarchy requires 1 argument".to_string()
+                        "getClassHierarchy requires 1 argument".to_string(),
                     ));
                 }
                 let obj = args[0];
@@ -339,10 +340,8 @@ impl<'a> Interpreter<'a> {
                     let classes = self.classes.read();
                     let hierarchy = crate::vm::reflect::get_class_hierarchy(&classes, class_id);
 
-                    let class_ids: Vec<Value> = hierarchy
-                        .iter()
-                        .map(|c| Value::i32(c.id as i32))
-                        .collect();
+                    let class_ids: Vec<Value> =
+                        hierarchy.iter().map(|c| Value::i32(c.id as i32)).collect();
 
                     drop(classes);
 
@@ -361,28 +360,31 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 3: Field Access =====
-
             reflect::GET => {
                 // get(target, propertyKey) -> get field value by name
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "get requires 2 arguments (target, propertyKey)".to_string()
+                        "get requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
                 let target = args[0];
                 let property_key = get_string(args[1])?;
 
                 if !target.is_ptr() {
-                    return Err(VmError::TypeError("get: target must be an object".to_string()));
+                    return Err(VmError::TypeError(
+                        "get: target must be an object".to_string(),
+                    ));
                 }
 
                 // Get class ID from object
-                let class_id = crate::vm::reflect::get_class_id(target)
-                    .ok_or_else(|| VmError::TypeError("get: target is not a class instance".to_string()))?;
+                let class_id = crate::vm::reflect::get_class_id(target).ok_or_else(|| {
+                    VmError::TypeError("get: target is not a class instance".to_string())
+                })?;
 
                 // Look up field index from class metadata
                 let class_metadata = self.class_metadata.read();
-                let field_index = class_metadata.get(class_id)
+                let field_index = class_metadata
+                    .get(class_id)
                     .and_then(|meta| meta.get_field_index(&property_key));
                 drop(class_metadata);
 
@@ -400,7 +402,7 @@ impl<'a> Interpreter<'a> {
                 // set(target, propertyKey, value) -> set field value by name
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "set requires 3 arguments (target, propertyKey, value)".to_string()
+                        "set requires 3 arguments (target, propertyKey, value)".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -408,16 +410,20 @@ impl<'a> Interpreter<'a> {
                 let value = args[2];
 
                 if !target.is_ptr() {
-                    return Err(VmError::TypeError("set: target must be an object".to_string()));
+                    return Err(VmError::TypeError(
+                        "set: target must be an object".to_string(),
+                    ));
                 }
 
                 // Get class ID from object
-                let class_id = crate::vm::reflect::get_class_id(target)
-                    .ok_or_else(|| VmError::TypeError("set: target is not a class instance".to_string()))?;
+                let class_id = crate::vm::reflect::get_class_id(target).ok_or_else(|| {
+                    VmError::TypeError("set: target is not a class instance".to_string())
+                })?;
 
                 // Look up field index from class metadata
                 let class_metadata = self.class_metadata.read();
-                let field_index = class_metadata.get(class_id)
+                let field_index = class_metadata
+                    .get(class_id)
                     .and_then(|meta| meta.get_field_index(&property_key));
                 drop(class_metadata);
 
@@ -438,7 +444,7 @@ impl<'a> Interpreter<'a> {
                 // has(target, propertyKey) -> check if field exists
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "has requires 2 arguments (target, propertyKey)".to_string()
+                        "has requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -448,7 +454,8 @@ impl<'a> Interpreter<'a> {
                     Value::bool(false)
                 } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
                     let class_metadata = self.class_metadata.read();
-                    let has_field = class_metadata.get(class_id)
+                    let has_field = class_metadata
+                        .get(class_id)
                         .map(|meta| meta.has_field(&property_key))
                         .unwrap_or(false);
                     Value::bool(has_field)
@@ -461,14 +468,15 @@ impl<'a> Interpreter<'a> {
                 // getFieldNames(target) -> list all field names
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getFieldNames requires 1 argument".to_string()
+                        "getFieldNames requires 1 argument".to_string(),
                     ));
                 }
                 let target = args[0];
 
                 let field_names = if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
                     let class_metadata = self.class_metadata.read();
-                    class_metadata.get(class_id)
+                    class_metadata
+                        .get(class_id)
                         .map(|meta| meta.field_names.clone())
                         .unwrap_or_default()
                 } else {
@@ -481,7 +489,9 @@ impl<'a> Interpreter<'a> {
                     if !name.is_empty() {
                         let s = RayaString::new(name);
                         let gc_ptr = self.gc.lock().allocate(s);
-                        let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        let val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
                         arr.set(i, val).ok();
                     }
                 }
@@ -493,7 +503,7 @@ impl<'a> Interpreter<'a> {
                 // getFieldInfo(target, propertyKey) -> get field metadata as Map
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "getFieldInfo requires 2 arguments (target, propertyKey)".to_string()
+                        "getFieldInfo requires 2 arguments (target, propertyKey)".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -511,44 +521,77 @@ impl<'a> Interpreter<'a> {
                             // Add field properties
                             let name_str = RayaString::new(field_info.name.clone());
                             let name_gc = self.gc.lock().allocate(name_str);
-                            let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap()) };
+                            let name_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap())
+                            };
 
                             let type_str = RayaString::new(field_info.type_info.name.clone());
                             let type_gc = self.gc.lock().allocate(type_str);
-                            let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap()) };
+                            let type_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap())
+                            };
 
                             let key_name = RayaString::new("name".to_string());
                             let key_name_gc = self.gc.lock().allocate(key_name);
-                            let key_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap()) };
+                            let key_name_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_name_val, name_val);
 
                             let key_type = RayaString::new("type".to_string());
                             let key_type_gc = self.gc.lock().allocate(key_type);
-                            let key_type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap()) };
+                            let key_type_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_type_val, type_val);
 
                             let key_index = RayaString::new("index".to_string());
                             let key_index_gc = self.gc.lock().allocate(key_index);
-                            let key_index_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap()) };
+                            let key_index_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_index_val, Value::i32(field_info.field_index as i32));
 
                             let key_static = RayaString::new("isStatic".to_string());
                             let key_static_gc = self.gc.lock().allocate(key_static);
-                            let key_static_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap()) };
+                            let key_static_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_static_val, Value::bool(field_info.is_static));
 
                             let key_readonly = RayaString::new("isReadonly".to_string());
                             let key_readonly_gc = self.gc.lock().allocate(key_readonly);
-                            let key_readonly_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap()) };
+                            let key_readonly_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_readonly_val, Value::bool(field_info.is_readonly));
 
                             let key_class = RayaString::new("declaringClass".to_string());
                             let key_class_gc = self.gc.lock().allocate(key_class);
-                            let key_class_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap()) };
-                            map.set(key_class_val, Value::i32(field_info.declaring_class_id as i32));
+                            let key_class_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap(),
+                                )
+                            };
+                            map.set(
+                                key_class_val,
+                                Value::i32(field_info.declaring_class_id as i32),
+                            );
 
                             let map_gc = self.gc.lock().allocate(map);
-                            unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) }
+                            unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap())
+                            }
                         } else {
                             Value::null()
                         }
@@ -564,7 +607,7 @@ impl<'a> Interpreter<'a> {
                 // getFields(target) -> get all field infos as array of Maps
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getFields requires 1 argument (target)".to_string()
+                        "getFields requires 1 argument (target)".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -585,44 +628,77 @@ impl<'a> Interpreter<'a> {
 
                             let key_name = RayaString::new("name".to_string());
                             let key_name_gc = self.gc.lock().allocate(key_name);
-                            let key_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap()) };
+                            let key_name_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_name_gc.as_ptr()).unwrap(),
+                                )
+                            };
 
                             let name_str = RayaString::new(field_info.name.clone());
                             let name_gc = self.gc.lock().allocate(name_str);
-                            let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap()) };
+                            let name_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(name_gc.as_ptr()).unwrap())
+                            };
                             map.set(key_name_val, name_val);
 
                             let key_type = RayaString::new("type".to_string());
                             let key_type_gc = self.gc.lock().allocate(key_type);
-                            let key_type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap()) };
+                            let key_type_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_type_gc.as_ptr()).unwrap(),
+                                )
+                            };
 
                             let type_str = RayaString::new(field_info.type_info.name.clone());
                             let type_gc = self.gc.lock().allocate(type_str);
-                            let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap()) };
+                            let type_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(type_gc.as_ptr()).unwrap())
+                            };
                             map.set(key_type_val, type_val);
 
                             let key_index = RayaString::new("index".to_string());
                             let key_index_gc = self.gc.lock().allocate(key_index);
-                            let key_index_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap()) };
+                            let key_index_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_index_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_index_val, Value::i32(field_info.field_index as i32));
 
                             let key_static = RayaString::new("isStatic".to_string());
                             let key_static_gc = self.gc.lock().allocate(key_static);
-                            let key_static_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap()) };
+                            let key_static_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_static_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_static_val, Value::bool(field_info.is_static));
 
                             let key_readonly = RayaString::new("isReadonly".to_string());
                             let key_readonly_gc = self.gc.lock().allocate(key_readonly);
-                            let key_readonly_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap()) };
+                            let key_readonly_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_readonly_gc.as_ptr()).unwrap(),
+                                )
+                            };
                             map.set(key_readonly_val, Value::bool(field_info.is_readonly));
 
                             let key_class = RayaString::new("declaringClass".to_string());
                             let key_class_gc = self.gc.lock().allocate(key_class);
-                            let key_class_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap()) };
-                            map.set(key_class_val, Value::i32(field_info.declaring_class_id as i32));
+                            let key_class_val = unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(key_class_gc.as_ptr()).unwrap(),
+                                )
+                            };
+                            map.set(
+                                key_class_val,
+                                Value::i32(field_info.declaring_class_id as i32),
+                            );
 
                             let map_gc = self.gc.lock().allocate(map);
-                            let map_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap()) };
+                            let map_val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(map_gc.as_ptr()).unwrap())
+                            };
                             arr.set(i, map_val).ok();
                         }
 
@@ -644,12 +720,12 @@ impl<'a> Interpreter<'a> {
                 // getStaticFieldNames(classId) -> get static field names as array
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "getStaticFieldNames requires 1 argument (classId)".to_string()
+                        "getStaticFieldNames requires 1 argument (classId)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32()
-                    .ok_or_else(|| VmError::TypeError("getStaticFieldNames: classId must be a number".to_string()))?
-                    as usize;
+                let class_id = args[0].as_i32().ok_or_else(|| {
+                    VmError::TypeError("getStaticFieldNames: classId must be a number".to_string())
+                })? as usize;
 
                 let class_metadata = self.class_metadata.read();
                 if let Some(meta) = class_metadata.get(class_id) {
@@ -659,7 +735,9 @@ impl<'a> Interpreter<'a> {
                         if !name.is_empty() {
                             let s = RayaString::new(name.clone());
                             let gc_ptr = self.gc.lock().allocate(s);
-                            let val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            let val = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
                             arr.set(i, val).ok();
                         }
                     }
@@ -681,12 +759,11 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 4: Method Invocation =====
-
             reflect::HAS_METHOD => {
                 // hasMethod(target, methodName) -> check if method exists
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "hasMethod requires 2 arguments (target, methodName)".to_string()
+                        "hasMethod requires 2 arguments (target, methodName)".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -696,7 +773,8 @@ impl<'a> Interpreter<'a> {
                     Value::bool(false)
                 } else if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
                     let class_metadata = self.class_metadata.read();
-                    let has_method = class_metadata.get(class_id)
+                    let has_method = class_metadata
+                        .get(class_id)
                         .map(|meta| meta.has_method(&method_name))
                         .unwrap_or(false);
                     Value::bool(has_method)
@@ -705,15 +783,19 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
-            reflect::GET_METHODS | reflect::GET_METHOD | reflect::GET_METHOD_INFO |
-            reflect::INVOKE | reflect::INVOKE_ASYNC | reflect::INVOKE_STATIC |
-            reflect::GET_STATIC_METHODS => {
+            reflect::GET_METHODS
+            | reflect::GET_METHOD
+            | reflect::GET_METHOD_INFO
+            | reflect::INVOKE
+            | reflect::INVOKE_ASYNC
+            | reflect::INVOKE_STATIC
+            | reflect::GET_STATIC_METHODS => {
                 // These require full --emit-reflection metadata and dynamic dispatch
                 // Return null/empty for now
                 match method_id {
                     reflect::INVOKE | reflect::INVOKE_ASYNC | reflect::INVOKE_STATIC => {
                         return Err(VmError::RuntimeError(
-                            "Dynamic method invocation requires --emit-reflection".to_string()
+                            "Dynamic method invocation requires --emit-reflection".to_string(),
                         ));
                     }
                     reflect::GET_METHOD | reflect::GET_METHOD_INFO => Value::null(),
@@ -726,21 +808,21 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 5: Object Creation =====
-
             reflect::CONSTRUCT => {
                 // construct(classId, ...args) -> create instance
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "construct requires at least 1 argument (classId)".to_string()
+                        "construct requires at least 1 argument (classId)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32()
-                    .ok_or_else(|| VmError::TypeError("construct: classId must be a number".to_string()))?
-                    as usize;
+                let class_id = args[0].as_i32().ok_or_else(|| {
+                    VmError::TypeError("construct: classId must be a number".to_string())
+                })? as usize;
 
                 let classes = self.classes.read();
-                let class = classes.get_class(class_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+                let class = classes.get_class(class_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Class {} not found", class_id))
+                })?;
                 let field_count = class.field_count;
                 drop(classes);
 
@@ -756,16 +838,17 @@ impl<'a> Interpreter<'a> {
                 // allocate(classId) -> allocate uninitialized instance
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "allocate requires 1 argument (classId)".to_string()
+                        "allocate requires 1 argument (classId)".to_string(),
                     ));
                 }
-                let class_id = args[0].as_i32()
-                    .ok_or_else(|| VmError::TypeError("allocate: classId must be a number".to_string()))?
-                    as usize;
+                let class_id = args[0].as_i32().ok_or_else(|| {
+                    VmError::TypeError("allocate: classId must be a number".to_string())
+                })? as usize;
 
                 let classes = self.classes.read();
-                let class = classes.get_class(class_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Class {} not found", class_id)))?;
+                let class = classes.get_class(class_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Class {} not found", class_id))
+                })?;
                 let field_count = class.field_count;
                 drop(classes);
 
@@ -779,7 +862,7 @@ impl<'a> Interpreter<'a> {
                 // clone(obj) -> shallow clone
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "clone requires 1 argument".to_string()
+                        "clone requires 1 argument".to_string(),
                     ));
                 }
                 let target = args[0];
@@ -805,23 +888,24 @@ impl<'a> Interpreter<'a> {
                 match method_id {
                     reflect::CONSTRUCT_WITH => {
                         return Err(VmError::RuntimeError(
-                            "constructWith requires --emit-reflection".to_string()
+                            "constructWith requires --emit-reflection".to_string(),
                         ));
                     }
                     reflect::DEEP_CLONE => {
                         return Err(VmError::RuntimeError(
-                            "deepClone not yet implemented".to_string()
+                            "deepClone not yet implemented".to_string(),
                         ));
                     }
-                    _ => Value::null()
+                    _ => Value::null(),
                 }
             }
 
             // ===== Phase 6: Type Utilities =====
-
             reflect::IS_STRING => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isString requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isString requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_string = value.is_ptr() && unsafe { value.as_ptr::<RayaString>().is_some() };
@@ -830,7 +914,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_NUMBER => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isNumber requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isNumber requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_number = value.as_f64().is_some() || value.as_i32().is_some();
@@ -839,7 +925,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_BOOLEAN => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isBoolean requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isBoolean requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_bool = value.as_bool().is_some();
@@ -848,7 +936,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_NULL => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isNull requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isNull requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 Value::bool(value.is_null())
@@ -856,7 +946,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_ARRAY => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isArray requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isArray requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_array = value.is_ptr() && unsafe { value.as_ptr::<Array>().is_some() };
@@ -865,7 +957,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_FUNCTION => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isFunction requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isFunction requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_func = value.is_ptr() && unsafe { value.as_ptr::<Closure>().is_some() };
@@ -874,7 +968,9 @@ impl<'a> Interpreter<'a> {
 
             reflect::IS_OBJECT => {
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isObject requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isObject requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let is_obj = value.is_ptr() && unsafe { value.as_ptr::<Object>().is_some() };
@@ -884,14 +980,17 @@ impl<'a> Interpreter<'a> {
             reflect::TYPE_OF => {
                 // typeOf(typeName) - get TypeInfo from string
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("typeOf requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "typeOf requires 1 argument".to_string(),
+                    ));
                 }
                 let type_name = get_string(args[0])?;
 
                 // Check primitive types
                 let (kind, class_id) = match type_name.as_str() {
-                    "string" | "number" | "boolean" | "null" | "void" | "any" =>
-                        ("primitive".to_string(), None),
+                    "string" | "number" | "boolean" | "null" | "void" | "any" => {
+                        ("primitive".to_string(), None)
+                    }
                     _ => {
                         // Check if it's a class name
                         let classes = self.classes.read();
@@ -910,21 +1009,33 @@ impl<'a> Interpreter<'a> {
                 let kind_ptr = self.gc.lock().allocate(kind_str);
                 let kind_key = RayaString::new("kind".to_string());
                 let kind_key_ptr = self.gc.lock().allocate(kind_key);
-                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_key_ptr.as_ptr()).unwrap()) },
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_ptr.as_ptr()).unwrap()) });
+                map.set(
+                    unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(kind_key_ptr.as_ptr()).unwrap())
+                    },
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(kind_ptr.as_ptr()).unwrap()) },
+                );
 
                 let name_str = RayaString::new(type_name);
                 let name_ptr = self.gc.lock().allocate(name_str);
                 let name_key = RayaString::new("name".to_string());
                 let name_key_ptr = self.gc.lock().allocate(name_key);
-                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap()) },
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+                map.set(
+                    unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap())
+                    },
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) },
+                );
 
                 if let Some(id) = class_id {
                     let id_key = RayaString::new("classId".to_string());
                     let id_key_ptr = self.gc.lock().allocate(id_key);
-                    map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(id_key_ptr.as_ptr()).unwrap()) },
-                            Value::i32(id as i32));
+                    map.set(
+                        unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(id_key_ptr.as_ptr()).unwrap())
+                        },
+                        Value::i32(id as i32),
+                    );
                 }
 
                 let map_ptr = self.gc.lock().allocate(map);
@@ -934,7 +1045,9 @@ impl<'a> Interpreter<'a> {
             reflect::IS_ASSIGNABLE_TO => {
                 // isAssignableTo(sourceType, targetType) - check type compatibility
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("isAssignableTo requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isAssignableTo requires 2 arguments".to_string(),
+                    ));
                 }
                 let source = get_string(args[0])?;
                 let target = get_string(args[1])?;
@@ -952,7 +1065,8 @@ impl<'a> Interpreter<'a> {
                     let target_class = classes.get_class_by_name(&target);
 
                     if let (Some(src), Some(tgt)) = (source_class, target_class) {
-                        let is_subclass = crate::vm::reflect::is_subclass_of(&classes, src.id, tgt.id);
+                        let is_subclass =
+                            crate::vm::reflect::is_subclass_of(&classes, src.id, tgt.id);
                         Value::bool(is_subclass)
                     } else {
                         Value::bool(false)
@@ -963,7 +1077,9 @@ impl<'a> Interpreter<'a> {
             reflect::CAST => {
                 // cast(value, classId) - safe cast, returns null if incompatible
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("cast requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "cast requires 2 arguments".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let class_id = value_to_f64(args[1])? as usize;
@@ -979,7 +1095,9 @@ impl<'a> Interpreter<'a> {
             reflect::CAST_OR_THROW => {
                 // castOrThrow(value, classId) - cast or throw error
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("castOrThrow requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "castOrThrow requires 2 arguments".to_string(),
+                    ));
                 }
                 let value = args[0];
                 let class_id = value_to_f64(args[1])? as usize;
@@ -996,11 +1114,12 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 7: Interface and Hierarchy Query =====
-
             reflect::IMPLEMENTS => {
                 // implements(classId, interfaceName) - check if class implements interface
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("implements requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "implements requires 2 arguments".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
                 let interface_name = get_string(args[1])?;
@@ -1016,7 +1135,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_INTERFACES => {
                 // getInterfaces(classId) - get interfaces implemented by class
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getInterfaces requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getInterfaces requires 1 argument".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
 
@@ -1033,7 +1154,9 @@ impl<'a> Interpreter<'a> {
                 for iface in interfaces {
                     let s = RayaString::new(iface);
                     let s_ptr = self.gc.lock().allocate(s);
-                    arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) });
+                    arr.push(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
+                    });
                 }
                 let arr_ptr = self.gc.lock().allocate(arr);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(arr_ptr.as_ptr()).unwrap()) }
@@ -1042,7 +1165,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_SUPERCLASS => {
                 // getSuperclass(classId) - get parent class
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getSuperclass requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getSuperclass requires 1 argument".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
 
@@ -1061,7 +1186,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_SUBCLASSES => {
                 // getSubclasses(classId) - get direct subclasses
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getSubclasses requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getSubclasses requires 1 argument".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
 
@@ -1085,7 +1212,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_IMPLEMENTORS => {
                 // getImplementors(interfaceName) - get all classes implementing interface
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getImplementors requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getImplementors requires 1 argument".to_string(),
+                    ));
                 }
                 let interface_name = get_string(args[0])?;
 
@@ -1104,7 +1233,9 @@ impl<'a> Interpreter<'a> {
             reflect::IS_STRUCTURALLY_COMPATIBLE => {
                 // isStructurallyCompatible(sourceClassId, targetClassId) - check structural compatibility
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("isStructurallyCompatible requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isStructurallyCompatible requires 2 arguments".to_string(),
+                    ));
                 }
                 let source_id = value_to_f64(args[0])? as usize;
                 let target_id = value_to_f64(args[1])? as usize;
@@ -1117,9 +1248,10 @@ impl<'a> Interpreter<'a> {
                     // Check if source has all fields of target
                     let fields_ok = target.field_names.iter().all(|name| source.has_field(name));
                     // Check if source has all methods of target
-                    let methods_ok = target.method_names.iter().all(|name|
-                        name.is_empty() || source.has_method(name)
-                    );
+                    let methods_ok = target
+                        .method_names
+                        .iter()
+                        .all(|name| name.is_empty() || source.has_method(name));
                     Value::bool(fields_ok && methods_ok)
                 } else {
                     Value::bool(false)
@@ -1127,11 +1259,12 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 8: Object Inspection =====
-
             reflect::INSPECT => {
                 // inspect(obj, depth?) - human-readable representation
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("inspect requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "inspect requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
                 let max_depth = if args.len() > 1 {
@@ -1149,7 +1282,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_OBJECT_ID => {
                 // getObjectId(obj) - unique object identifier
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getObjectId requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getObjectId requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
 
@@ -1169,7 +1304,9 @@ impl<'a> Interpreter<'a> {
             reflect::DESCRIBE => {
                 // describe(classId) - detailed class description
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("describe requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "describe requires 1 argument".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
 
@@ -1210,7 +1347,9 @@ impl<'a> Interpreter<'a> {
             reflect::SNAPSHOT => {
                 // snapshot(obj) - Capture object state as a snapshot
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("snapshot requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "snapshot requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
 
@@ -1218,20 +1357,21 @@ impl<'a> Interpreter<'a> {
                 let mut ctx = SnapshotContext::new(10);
 
                 // Get class name if it's an object
-                let (class_name, field_names) = if let Some(ptr) = unsafe { target.as_ptr::<Object>() } {
-                    let obj = unsafe { &*ptr.as_ptr() };
-                    let class_registry = self.classes.read();
-                    if let Some(class) = class_registry.get_class(obj.class_id) {
-                        let names: Vec<String> = (0..class.field_count)
-                            .map(|i| format!("field_{}", i))
-                            .collect();
-                        (class.name.clone(), names)
+                let (class_name, field_names) =
+                    if let Some(ptr) = unsafe { target.as_ptr::<Object>() } {
+                        let obj = unsafe { &*ptr.as_ptr() };
+                        let class_registry = self.classes.read();
+                        if let Some(class) = class_registry.get_class(obj.class_id) {
+                            let names: Vec<String> = (0..class.field_count)
+                                .map(|i| format!("field_{}", i))
+                                .collect();
+                            (class.name.clone(), names)
+                        } else {
+                            (format!("Class{}", obj.class_id), Vec::new())
+                        }
                     } else {
-                        (format!("Class{}", obj.class_id), Vec::new())
-                    }
-                } else {
-                    ("unknown".to_string(), Vec::new())
-                };
+                        ("unknown".to_string(), Vec::new())
+                    };
 
                 // Capture the snapshot
                 let snapshot = ctx.capture_object_with_names(target, &field_names, &class_name);
@@ -1243,7 +1383,9 @@ impl<'a> Interpreter<'a> {
             reflect::DIFF => {
                 // diff(a, b) - Compare two objects and return differences
                 if args.len() < 2 {
-                    return Err(VmError::RuntimeError("diff requires 2 arguments".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "diff requires 2 arguments".to_string(),
+                    ));
                 }
                 let obj_a = args[0];
                 let obj_b = args[1];
@@ -1251,38 +1393,42 @@ impl<'a> Interpreter<'a> {
                 // Capture both objects as snapshots
                 let mut ctx = SnapshotContext::new(10);
 
-                let (class_name_a, field_names_a) = if let Some(ptr) = unsafe { obj_a.as_ptr::<Object>() } {
-                    let obj = unsafe { &*ptr.as_ptr() };
-                    let class_registry = self.classes.read();
-                    if let Some(class) = class_registry.get_class(obj.class_id) {
-                        let names: Vec<String> = (0..class.field_count)
-                            .map(|i| format!("field_{}", i))
-                            .collect();
-                        (class.name.clone(), names)
+                let (class_name_a, field_names_a) =
+                    if let Some(ptr) = unsafe { obj_a.as_ptr::<Object>() } {
+                        let obj = unsafe { &*ptr.as_ptr() };
+                        let class_registry = self.classes.read();
+                        if let Some(class) = class_registry.get_class(obj.class_id) {
+                            let names: Vec<String> = (0..class.field_count)
+                                .map(|i| format!("field_{}", i))
+                                .collect();
+                            (class.name.clone(), names)
+                        } else {
+                            (format!("Class{}", obj.class_id), Vec::new())
+                        }
                     } else {
-                        (format!("Class{}", obj.class_id), Vec::new())
-                    }
-                } else {
-                    ("unknown".to_string(), Vec::new())
-                };
+                        ("unknown".to_string(), Vec::new())
+                    };
 
-                let (class_name_b, field_names_b) = if let Some(ptr) = unsafe { obj_b.as_ptr::<Object>() } {
-                    let obj = unsafe { &*ptr.as_ptr() };
-                    let class_registry = self.classes.read();
-                    if let Some(class) = class_registry.get_class(obj.class_id) {
-                        let names: Vec<String> = (0..class.field_count)
-                            .map(|i| format!("field_{}", i))
-                            .collect();
-                        (class.name.clone(), names)
+                let (class_name_b, field_names_b) =
+                    if let Some(ptr) = unsafe { obj_b.as_ptr::<Object>() } {
+                        let obj = unsafe { &*ptr.as_ptr() };
+                        let class_registry = self.classes.read();
+                        if let Some(class) = class_registry.get_class(obj.class_id) {
+                            let names: Vec<String> = (0..class.field_count)
+                                .map(|i| format!("field_{}", i))
+                                .collect();
+                            (class.name.clone(), names)
+                        } else {
+                            (format!("Class{}", obj.class_id), Vec::new())
+                        }
                     } else {
-                        (format!("Class{}", obj.class_id), Vec::new())
-                    }
-                } else {
-                    ("unknown".to_string(), Vec::new())
-                };
+                        ("unknown".to_string(), Vec::new())
+                    };
 
-                let snapshot_a = ctx.capture_object_with_names(obj_a, &field_names_a, &class_name_a);
-                let snapshot_b = ctx.capture_object_with_names(obj_b, &field_names_b, &class_name_b);
+                let snapshot_a =
+                    ctx.capture_object_with_names(obj_a, &field_names_a, &class_name_a);
+                let snapshot_b =
+                    ctx.capture_object_with_names(obj_b, &field_names_b, &class_name_b);
 
                 // Compute the diff
                 let diff = ObjectDiff::compute(&snapshot_a, &snapshot_b);
@@ -1292,11 +1438,12 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 8: Memory Analysis =====
-
             reflect::GET_OBJECT_SIZE => {
                 // getObjectSize(obj) - shallow memory size
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getObjectSize requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getObjectSize requires 1 argument".to_string(),
+                    ));
                 }
                 let value = args[0];
 
@@ -1321,7 +1468,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_RETAINED_SIZE => {
                 // getRetainedSize(obj) - size including referenced objects
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getRetainedSize requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getRetainedSize requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
 
@@ -1333,7 +1482,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_REFERENCES => {
                 // getReferences(obj) - objects referenced by this object
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getReferences requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getReferences requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
 
@@ -1351,7 +1502,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_REFERRERS => {
                 // getReferrers(obj) - objects that reference this object
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getReferrers requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getReferrers requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
 
@@ -1379,7 +1532,9 @@ impl<'a> Interpreter<'a> {
                             if let Some(ptr) = unsafe { field.as_ptr::<u8>() } {
                                 if ptr.as_ptr() as usize == target_id {
                                     let value = unsafe {
-                                        Value::from_ptr(std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap())
+                                        Value::from_ptr(
+                                            std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap(),
+                                        )
                                     };
                                     referrers.push(value);
                                     break;
@@ -1409,14 +1564,18 @@ impl<'a> Interpreter<'a> {
                 // totalObjects
                 let key = RayaString::new("totalObjects".to_string());
                 let key_ptr = self.gc.lock().allocate(key);
-                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
-                        Value::i32(stats.allocation_count as i32));
+                map.set(
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
+                    Value::i32(stats.allocation_count as i32),
+                );
 
                 // totalBytes
                 let key = RayaString::new("totalBytes".to_string());
                 let key_ptr = self.gc.lock().allocate(key);
-                map.set(unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
-                        Value::i32(stats.allocated_bytes as i32));
+                map.set(
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(key_ptr.as_ptr()).unwrap()) },
+                    Value::i32(stats.allocated_bytes as i32),
+                );
 
                 let map_ptr = self.gc.lock().allocate(map);
                 unsafe { Value::from_ptr(std::ptr::NonNull::new(map_ptr.as_ptr()).unwrap()) }
@@ -1425,7 +1584,9 @@ impl<'a> Interpreter<'a> {
             reflect::FIND_INSTANCES => {
                 // findInstances(classId) - find all live instances of a class
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("findInstances requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "findInstances requires 1 argument".to_string(),
+                    ));
                 }
                 let class_id = value_to_f64(args[0])? as usize;
 
@@ -1440,7 +1601,9 @@ impl<'a> Interpreter<'a> {
                         let obj = unsafe { &*obj_ptr };
                         if obj.class_id == class_id {
                             let value = unsafe {
-                                Value::from_ptr(std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap())
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(obj_ptr as *mut Object).unwrap(),
+                                )
                             };
                             instances.push(value);
                         }
@@ -1457,7 +1620,6 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 8: Stack Introspection =====
-
             reflect::GET_CALL_STACK => {
                 // getCallStack() - get current call frames
                 let call_stack = task.get_call_stack();
@@ -1469,7 +1631,9 @@ impl<'a> Interpreter<'a> {
                     let mut frame_map = MapObject::new();
 
                     // Function name
-                    let func_name = module.functions.get(func_id)
+                    let func_name = module
+                        .functions
+                        .get(func_id)
                         .map(|f| f.name.clone())
                         .unwrap_or_else(|| format!("<function_{}>", func_id));
 
@@ -1478,16 +1642,22 @@ impl<'a> Interpreter<'a> {
                     let name_val = RayaString::new(func_name);
                     let name_val_ptr = self.gc.lock().allocate(name_val);
                     frame_map.set(
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap()) },
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(name_val_ptr.as_ptr()).unwrap()) }
+                        unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(name_key_ptr.as_ptr()).unwrap())
+                        },
+                        unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(name_val_ptr.as_ptr()).unwrap())
+                        },
                     );
 
                     // Frame index
                     let idx_key = RayaString::new("frameIndex".to_string());
                     let idx_key_ptr = self.gc.lock().allocate(idx_key);
                     frame_map.set(
-                        unsafe { Value::from_ptr(std::ptr::NonNull::new(idx_key_ptr.as_ptr()).unwrap()) },
-                        Value::i32(i as i32)
+                        unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(idx_key_ptr.as_ptr()).unwrap())
+                        },
+                        Value::i32(i as i32),
                     );
 
                     // Add frame info if available
@@ -1495,20 +1665,30 @@ impl<'a> Interpreter<'a> {
                         let locals_key = RayaString::new("localCount".to_string());
                         let locals_key_ptr = self.gc.lock().allocate(locals_key);
                         frame_map.set(
-                            unsafe { Value::from_ptr(std::ptr::NonNull::new(locals_key_ptr.as_ptr()).unwrap()) },
-                            Value::i32(frame.local_count as i32)
+                            unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(locals_key_ptr.as_ptr()).unwrap(),
+                                )
+                            },
+                            Value::i32(frame.local_count as i32),
                         );
 
                         let args_key = RayaString::new("argCount".to_string());
                         let args_key_ptr = self.gc.lock().allocate(args_key);
                         frame_map.set(
-                            unsafe { Value::from_ptr(std::ptr::NonNull::new(args_key_ptr.as_ptr()).unwrap()) },
-                            Value::i32(frame.arg_count as i32)
+                            unsafe {
+                                Value::from_ptr(
+                                    std::ptr::NonNull::new(args_key_ptr.as_ptr()).unwrap(),
+                                )
+                            },
+                            Value::i32(frame.arg_count as i32),
                         );
                     }
 
                     let frame_ptr = self.gc.lock().allocate(frame_map);
-                    arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(frame_ptr.as_ptr()).unwrap()) });
+                    arr.push(unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(frame_ptr.as_ptr()).unwrap())
+                    });
                 }
 
                 let arr_ptr = self.gc.lock().allocate(arr);
@@ -1547,7 +1727,7 @@ impl<'a> Interpreter<'a> {
                 // Args: classId (number), methodName (string)
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "getSourceLocation requires 2 arguments: classId, methodName".to_string()
+                        "getSourceLocation requires 2 arguments: classId, methodName".to_string(),
                     ));
                 }
 
@@ -1560,7 +1740,7 @@ impl<'a> Interpreter<'a> {
                     s.data.clone()
                 } else {
                     return Err(VmError::RuntimeError(
-                        "getSourceLocation: methodName must be a string".to_string()
+                        "getSourceLocation: methodName must be a string".to_string(),
                     ));
                 };
 
@@ -1572,8 +1752,7 @@ impl<'a> Interpreter<'a> {
                     // Find the class and method
                     if let Some(class_def) = module.classes.get(class_id) {
                         // Find the method by name
-                        let method = class_def.methods.iter()
-                            .find(|m| m.name == method_name);
+                        let method = class_def.methods.iter().find(|m| m.name == method_name);
 
                         if let Some(method) = method {
                             let function_id = method.function_id;
@@ -1592,17 +1771,25 @@ impl<'a> Interpreter<'a> {
                                 let file_str = RayaString::new(source_file.to_string());
                                 let file_ptr = self.gc.lock().allocate(file_str);
                                 let _ = result_obj.set_field(0, unsafe {
-                                    Value::from_ptr(std::ptr::NonNull::new(file_ptr.as_ptr()).unwrap())
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(file_ptr.as_ptr()).unwrap(),
+                                    )
                                 });
 
                                 // Set line (1-indexed)
-                                let _ = result_obj.set_field(1, Value::i32(func_debug.start_line as i32));
+                                let _ = result_obj
+                                    .set_field(1, Value::i32(func_debug.start_line as i32));
 
                                 // Set column (1-indexed)
-                                let _ = result_obj.set_field(2, Value::i32(func_debug.start_column as i32));
+                                let _ = result_obj
+                                    .set_field(2, Value::i32(func_debug.start_column as i32));
 
                                 let result_ptr = self.gc.lock().allocate(result_obj);
-                                unsafe { Value::from_ptr(std::ptr::NonNull::new(result_ptr.as_ptr()).unwrap()) }
+                                unsafe {
+                                    Value::from_ptr(
+                                        std::ptr::NonNull::new(result_ptr.as_ptr()).unwrap(),
+                                    )
+                                }
                             } else {
                                 Value::null()
                             }
@@ -1619,11 +1806,12 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 8: Serialization Helpers =====
-
             reflect::TO_JSON => {
                 // toJSON(obj) - JSON string representation
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("toJSON requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "toJSON requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
                 let mut visited = Vec::new();
@@ -1636,7 +1824,9 @@ impl<'a> Interpreter<'a> {
             reflect::GET_ENUMERABLE_KEYS => {
                 // getEnumerableKeys(obj) - get field names
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("getEnumerableKeys requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "getEnumerableKeys requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
 
@@ -1648,7 +1838,9 @@ impl<'a> Interpreter<'a> {
                         for name in &meta.field_names {
                             let s = RayaString::new(name.clone());
                             let s_ptr = self.gc.lock().allocate(s);
-                            arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap()) });
+                            arr.push(unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(s_ptr.as_ptr()).unwrap())
+                            });
                         }
                     }
                 }
@@ -1660,7 +1852,9 @@ impl<'a> Interpreter<'a> {
             reflect::IS_CIRCULAR => {
                 // isCircular(obj) - check for circular references
                 if args.is_empty() {
-                    return Err(VmError::RuntimeError("isCircular requires 1 argument".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "isCircular requires 1 argument".to_string(),
+                    ));
                 }
                 let target = args[0];
                 let mut visited = Vec::new();
@@ -1669,7 +1863,6 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Decorator Registration (Phase 3/4 codegen) =====
-
             reflect::REGISTER_CLASS_DECORATOR => {
                 // registerClassDecorator(classId, decoratorName)
                 // Metadata registration - currently a no-op, decorator function does the work
@@ -1719,19 +1912,21 @@ impl<'a> Interpreter<'a> {
             }
 
             // ── BytecodeBuilder (Phase 15, delegated from std:runtime Phase 6) ──
-
             reflect::NEW_BYTECODE_BUILDER => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "BytecodeBuilder requires 3 arguments (name, paramCount, returnType)".to_string()
+                        "BytecodeBuilder requires 3 arguments (name, paramCount, returnType)"
+                            .to_string(),
                     ));
                 }
                 let name = get_string(args[0])?;
-                let param_count = args[1].as_i32()
+                let param_count = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("paramCount must be a number".to_string()))?
                     as usize;
                 let return_type = get_string(args[2])?;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name, param_count, return_type);
                 Value::i32(builder_id as i32)
             }
@@ -1739,21 +1934,26 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "emit requires at least 2 arguments (builderId, opcode)".to_string()
+                        "emit requires at least 2 arguments (builderId, opcode)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let opcode = args[1].as_i32()
+                let opcode = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("opcode must be a number".to_string()))?
                     as u8;
-                let operands: Vec<u8> = args[2..].iter()
+                let operands: Vec<u8> = args[2..]
+                    .iter()
                     .filter_map(|v| v.as_i32().map(|n| n as u8))
                     .collect();
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.emit(opcode, &operands)?;
                 Value::null()
             }
@@ -1761,16 +1961,19 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_PUSH => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "emitPush requires 2 arguments (builderId, value)".to_string()
+                        "emitPush requires 2 arguments (builderId, value)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let value = args[1];
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 if value.is_null() {
                     builder.emit_push_null()?;
                 } else if let Some(b) = value.as_bool() {
@@ -1788,15 +1991,18 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_DEFINE_LABEL => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "defineLabel requires 1 argument (builderId)".to_string()
+                        "defineLabel requires 1 argument (builderId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 let label = builder.define_label();
                 Value::i32(label.id as i32)
             }
@@ -1804,18 +2010,22 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_MARK_LABEL => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "markLabel requires 2 arguments (builderId, labelId)".to_string()
+                        "markLabel requires 2 arguments (builderId, labelId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let label_id = args[1].as_i32()
+                let label_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.mark_label(crate::vm::reflect::Label { id: label_id })?;
                 Value::null()
             }
@@ -1823,18 +2033,22 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_JUMP => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "emitJump requires 2 arguments (builderId, labelId)".to_string()
+                        "emitJump requires 2 arguments (builderId, labelId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let label_id = args[1].as_i32()
+                let label_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.emit_jump(crate::vm::reflect::Label { id: label_id })?;
                 Value::null()
             }
@@ -1842,19 +2056,23 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_JUMP_IF => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "emitJumpIf requires 3 arguments (builderId, labelId, ifTrue)".to_string()
+                        "emitJumpIf requires 3 arguments (builderId, labelId, ifTrue)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let label_id = args[1].as_i32()
+                let label_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("labelId must be a number".to_string()))?
                     as usize;
                 let if_true = args[2].as_bool().unwrap_or(false);
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 if if_true {
                     builder.emit_jump_if_true(crate::vm::reflect::Label { id: label_id })?;
                 } else {
@@ -1866,10 +2084,11 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_DECLARE_LOCAL => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "declareLocal requires 2 arguments (builderId, typeName)".to_string()
+                        "declareLocal requires 2 arguments (builderId, typeName)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let type_name = get_string(args[1])?;
@@ -1881,9 +2100,11 @@ impl<'a> Interpreter<'a> {
                     "null" => crate::vm::reflect::StackType::Null,
                     _ => crate::vm::reflect::StackType::Object,
                 };
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 let index = builder.declare_local(None, stack_type)?;
                 Value::i32(index as i32)
             }
@@ -1891,18 +2112,22 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_LOAD_LOCAL => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "emitLoadLocal requires 2 arguments (builderId, index)".to_string()
+                        "emitLoadLocal requires 2 arguments (builderId, index)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let index = args[1].as_i32()
+                let index = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.emit_load_local(index)?;
                 Value::null()
             }
@@ -1910,18 +2135,22 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_STORE_LOCAL => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "emitStoreLocal requires 2 arguments (builderId, index)".to_string()
+                        "emitStoreLocal requires 2 arguments (builderId, index)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let index = args[1].as_i32()
+                let index = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("index must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.emit_store_local(index)?;
                 Value::null()
             }
@@ -1929,21 +2158,27 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_CALL => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "emitCall requires 3 arguments (builderId, functionId, argCount)".to_string()
+                        "emitCall requires 3 arguments (builderId, functionId, argCount)"
+                            .to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let function_id = args[1].as_i32()
+                let function_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as u32;
-                let arg_count = args[2].as_i32()
+                let arg_count = args[2]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("argCount must be a number".to_string()))?
                     as u16;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 builder.emit_call(function_id, arg_count)?;
                 Value::null()
             }
@@ -1951,16 +2186,19 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_EMIT_RETURN => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "emitReturn requires at least 1 argument (builderId)".to_string()
+                        "emitReturn requires at least 1 argument (builderId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let has_value = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 if has_value {
                     builder.emit_return()?;
                 } else {
@@ -1972,15 +2210,18 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_VALIDATE => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "validate requires 1 argument (builderId)".to_string()
+                        "validate requires 1 argument (builderId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 let result = builder.validate();
                 Value::bool(result.is_valid)
             }
@@ -1988,15 +2229,18 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_BUILD_FUNCTION => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "build requires 1 argument (builderId)".to_string()
+                        "build requires 1 argument (builderId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("BytecodeBuilder {} not found", builder_id))
+                })?;
                 let func = builder.build()?;
                 let func_id = func.function_id;
                 registry.register_function(func);
@@ -2004,15 +2248,15 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 14: ClassBuilder (0x0DE0-0x0DE6) =====
-
             reflect::NEW_CLASS_BUILDER => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "newClassBuilder requires 1 argument (name)".to_string()
+                        "newClassBuilder requires 1 argument (name)".to_string(),
                     ));
                 }
                 let name = get_string(args[0])?;
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
                 let builder_id = registry.create_builder(name);
                 Value::i32(builder_id as i32)
             }
@@ -2023,16 +2267,19 @@ impl<'a> Interpreter<'a> {
                         "addField requires 5 arguments (builderId, name, typeName, isStatic, isReadonly)".to_string()
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let name = get_string(args[1])?;
                 let type_name = get_string(args[2])?;
                 let is_static = args[3].as_bool().unwrap_or(false);
                 let is_readonly = args[4].as_bool().unwrap_or(false);
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                })?;
                 builder.add_field(name, &type_name, is_static, is_readonly)?;
                 Value::null()
             }
@@ -2043,18 +2290,22 @@ impl<'a> Interpreter<'a> {
                         "addMethod requires 5 arguments (builderId, name, functionId, isStatic, isAsync)".to_string()
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let name = get_string(args[1])?;
-                let function_id = args[2].as_i32()
+                let function_id = args[2]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as usize;
                 let is_static = args[3].as_bool().unwrap_or(false);
                 let is_async = args[4].as_bool().unwrap_or(false);
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                })?;
                 builder.add_method(name, function_id, is_static, is_async)?;
                 Value::null()
             }
@@ -2062,18 +2313,22 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_SET_CONSTRUCTOR => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "setConstructor requires 2 arguments (builderId, functionId)".to_string()
+                        "setConstructor requires 2 arguments (builderId, functionId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let function_id = args[1].as_i32()
+                let function_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                })?;
                 builder.set_constructor(function_id)?;
                 Value::null()
             }
@@ -2081,18 +2336,21 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_SET_PARENT => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "setParent requires 2 arguments (builderId, parentClassId)".to_string()
+                        "setParent requires 2 arguments (builderId, parentClassId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
-                let parent_id = args[1].as_i32()
-                    .ok_or_else(|| VmError::TypeError("parentClassId must be a number".to_string()))?
-                    as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                let parent_id = args[1].as_i32().ok_or_else(|| {
+                    VmError::TypeError("parentClassId must be a number".to_string())
+                })? as usize;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                })?;
                 builder.set_parent(parent_id)?;
                 Value::null()
             }
@@ -2100,16 +2358,19 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_ADD_INTERFACE => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "addInterface requires 2 arguments (builderId, interfaceName)".to_string()
+                        "addInterface requires 2 arguments (builderId, interfaceName)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
                 let interface_name = get_string(args[1])?;
-                let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                let builder = registry.get_mut(builder_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                let builder = registry.get_mut(builder_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                })?;
                 builder.add_interface(interface_name)?;
                 Value::null()
             }
@@ -2117,17 +2378,20 @@ impl<'a> Interpreter<'a> {
             reflect::BUILDER_BUILD => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "build requires 1 argument (builderId)".to_string()
+                        "build requires 1 argument (builderId)".to_string(),
                     ));
                 }
-                let builder_id = args[0].as_i32()
+                let builder_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("builderId must be a number".to_string()))?
                     as usize;
 
                 let builder = {
-                    let mut registry = crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
-                    registry.remove(builder_id)
-                        .ok_or_else(|| VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id)))?
+                    let mut registry =
+                        crate::vm::builtins::handlers::reflect::CLASS_BUILDER_REGISTRY.lock();
+                    registry.remove(builder_id).ok_or_else(|| {
+                        VmError::RuntimeError(format!("ClassBuilder {} not found", builder_id))
+                    })?
                 };
 
                 let def = builder.to_definition();
@@ -2136,8 +2400,11 @@ impl<'a> Interpreter<'a> {
                 let mut dyn_builder = crate::vm::reflect::DynamicClassBuilder::new(next_id);
 
                 let (new_class, new_metadata) = if let Some(parent_id) = builder.parent_id {
-                    let parent = classes_write.get_class(parent_id)
-                        .ok_or_else(|| VmError::RuntimeError(format!("Parent class {} not found", parent_id)))?
+                    let parent = classes_write
+                        .get_class(parent_id)
+                        .ok_or_else(|| {
+                            VmError::RuntimeError(format!("Parent class {} not found", parent_id))
+                        })?
                         .clone();
                     drop(classes_write);
 
@@ -2169,15 +2436,15 @@ impl<'a> Interpreter<'a> {
             }
 
             // ===== Phase 17: DynamicModule (0x0E10-0x0E15) =====
-
             reflect::CREATE_MODULE => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "createModule requires 1 argument (name)".to_string()
+                        "createModule requires 1 argument (name)".to_string(),
                     ));
                 }
                 let name = get_string(args[0])?;
-                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
                 let module_id = registry.create_module(name)?;
                 Value::i32(module_id as i32)
             }
@@ -2185,26 +2452,34 @@ impl<'a> Interpreter<'a> {
             reflect::MODULE_ADD_FUNCTION => {
                 if args.len() < 2 {
                     return Err(VmError::RuntimeError(
-                        "addFunction requires 2 arguments (moduleId, functionId)".to_string()
+                        "addFunction requires 2 arguments (moduleId, functionId)".to_string(),
                     ));
                 }
-                let module_id = args[0].as_i32()
+                let module_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
                 // Cast i32 → u32 → usize to preserve bit pattern (function IDs start at 0x8000_0000)
-                let function_id = args[1].as_i32()
+                let function_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("functionId must be a number".to_string()))?
                     as u32 as usize;
 
-                let bytecode_registry = crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
-                let func = bytecode_registry.get_function(function_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Function {} not found", function_id)))?
+                let bytecode_registry =
+                    crate::vm::builtins::handlers::reflect::BYTECODE_BUILDER_REGISTRY.lock();
+                let func = bytecode_registry
+                    .get_function(function_id)
+                    .ok_or_else(|| {
+                        VmError::RuntimeError(format!("Function {} not found", function_id))
+                    })?
                     .clone();
                 drop(bytecode_registry);
 
-                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
-                let module = registry.get_mut(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Module {} not found", module_id))
+                })?;
                 module.add_function(func)?;
                 Value::null()
             }
@@ -2212,19 +2487,23 @@ impl<'a> Interpreter<'a> {
             reflect::MODULE_ADD_CLASS => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "addClass requires 3 arguments (moduleId, classId, name)".to_string()
+                        "addClass requires 3 arguments (moduleId, classId, name)".to_string(),
                     ));
                 }
-                let module_id = args[0].as_i32()
+                let module_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
-                let class_id = args[1].as_i32()
+                let class_id = args[1]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("classId must be a number".to_string()))?
                     as usize;
                 let name = get_string(args[2])?;
-                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
-                let module = registry.get_mut(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Module {} not found", module_id))
+                })?;
                 module.add_class(class_id, class_id, name)?;
                 Value::null()
             }
@@ -2232,17 +2511,20 @@ impl<'a> Interpreter<'a> {
             reflect::MODULE_ADD_GLOBAL => {
                 if args.len() < 3 {
                     return Err(VmError::RuntimeError(
-                        "addGlobal requires 3 arguments (moduleId, name, value)".to_string()
+                        "addGlobal requires 3 arguments (moduleId, name, value)".to_string(),
                     ));
                 }
-                let module_id = args[0].as_i32()
+                let module_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
                 let name = get_string(args[1])?;
                 let value = args[2];
-                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
-                let module = registry.get_mut(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Module {} not found", module_id))
+                })?;
                 module.add_global(name, value)?;
                 Value::null()
             }
@@ -2250,15 +2532,18 @@ impl<'a> Interpreter<'a> {
             reflect::MODULE_SEAL => {
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "seal requires 1 argument (moduleId)".to_string()
+                        "seal requires 1 argument (moduleId)".to_string(),
                     ));
                 }
-                let module_id = args[0].as_i32()
+                let module_id = args[0]
+                    .as_i32()
                     .ok_or_else(|| VmError::TypeError("moduleId must be a number".to_string()))?
                     as usize;
-                let mut registry = crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
-                let module = registry.get_mut(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module {} not found", module_id)))?;
+                let mut registry =
+                    crate::vm::builtins::handlers::reflect::DYNAMIC_MODULE_REGISTRY.lock();
+                let module = registry.get_mut(module_id).ok_or_else(|| {
+                    VmError::RuntimeError(format!("Module {} not found", module_id))
+                })?;
                 module.seal()?;
                 Value::null()
             }
@@ -2267,7 +2552,7 @@ impl<'a> Interpreter<'a> {
                 // Stub: full import resolution not yet implemented
                 if args.is_empty() {
                     return Err(VmError::RuntimeError(
-                        "link requires 1 argument (moduleId)".to_string()
+                        "link requires 1 argument (moduleId)".to_string(),
                     ));
                 }
                 Value::null()
@@ -2286,7 +2571,12 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Inspect a value recursively with depth limit
-    fn inspect_value(&self, value: Value, depth: usize, max_depth: usize) -> Result<String, VmError> {
+    fn inspect_value(
+        &self,
+        value: Value,
+        depth: usize,
+        max_depth: usize,
+    ) -> Result<String, VmError> {
         if depth > max_depth {
             return Ok("...".to_string());
         }
@@ -2314,7 +2604,10 @@ impl<'a> Interpreter<'a> {
         // String
         if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
             let s = unsafe { &*ptr.as_ptr() };
-            return Ok(format!("\"{}\"", s.data.replace('\\', "\\\\").replace('"', "\\\"")));
+            return Ok(format!(
+                "\"{}\"",
+                s.data.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
         }
 
         // Array
@@ -2325,7 +2618,11 @@ impl<'a> Interpreter<'a> {
             }
             let mut items = Vec::new();
             for i in 0..arr.len().min(10) {
-                items.push(self.inspect_value(arr.get(i).unwrap_or(Value::null()), depth + 1, max_depth)?);
+                items.push(self.inspect_value(
+                    arr.get(i).unwrap_or(Value::null()),
+                    depth + 1,
+                    max_depth,
+                )?);
             }
             if arr.len() > 10 {
                 items.push(format!("... {} more", arr.len() - 10));
@@ -2336,7 +2633,8 @@ impl<'a> Interpreter<'a> {
         // Object
         if let Some(class_id) = crate::vm::reflect::get_class_id(value) {
             let classes = self.classes.read();
-            let class_name = classes.get_class(class_id)
+            let class_name = classes
+                .get_class(class_id)
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| format!("Class{}", class_id));
             drop(classes);
@@ -2367,7 +2665,11 @@ impl<'a> Interpreter<'a> {
     }
 
     /// Helper: Calculate retained size by traversing references
-    fn calculate_retained_size(&self, value: Value, visited: &mut std::collections::HashSet<usize>) -> usize {
+    fn calculate_retained_size(
+        &self,
+        value: Value,
+        visited: &mut std::collections::HashSet<usize>,
+    ) -> usize {
         if !value.is_ptr() || value.is_null() {
             return 8; // primitive size
         }
@@ -2482,12 +2784,15 @@ impl<'a> Interpreter<'a> {
         if let Some(ptr) = unsafe { value.as_ptr::<RayaString>() } {
             let s = unsafe { &*ptr.as_ptr() };
             visited.pop();
-            return Ok(format!("\"{}\"",
-                s.data.replace('\\', "\\\\")
-                      .replace('"', "\\\"")
-                      .replace('\n', "\\n")
-                      .replace('\r', "\\r")
-                      .replace('\t', "\\t")));
+            return Ok(format!(
+                "\"{}\"",
+                s.data
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\r', "\\r")
+                    .replace('\t', "\\t")
+            ));
         }
 
         // Array
@@ -2586,7 +2891,8 @@ impl<'a> Interpreter<'a> {
         // Store class_name
         let class_name_str = RayaString::new(snapshot.class_name.clone());
         let class_name_ptr = self.gc.lock().allocate(class_name_str);
-        let class_name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(class_name_ptr.as_ptr()).unwrap()) };
+        let class_name_val =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(class_name_ptr.as_ptr()).unwrap()) };
         obj.set_field(0, class_name_val);
 
         // Store identity
@@ -2605,7 +2911,10 @@ impl<'a> Interpreter<'a> {
 
     /// Helper: Convert snapshot fields HashMap to a Raya Value (Object)
     #[allow(unused_must_use)]
-    fn snapshot_fields_to_value(&self, fields: &std::collections::HashMap<String, crate::vm::reflect::FieldSnapshot>) -> Value {
+    fn snapshot_fields_to_value(
+        &self,
+        fields: &std::collections::HashMap<String, crate::vm::reflect::FieldSnapshot>,
+    ) -> Value {
         // Create an object with field count matching the number of fields
         let field_count = fields.len();
         let mut obj = Object::new(0, field_count);
@@ -2622,7 +2931,8 @@ impl<'a> Interpreter<'a> {
                 // Field name
                 let name_str = RayaString::new(field.name.clone());
                 let name_ptr = self.gc.lock().allocate(name_str);
-                let name_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) };
+                let name_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) };
                 field_obj.set_field(0, name_val);
 
                 // Field value (converted from SnapshotValue)
@@ -2632,11 +2942,14 @@ impl<'a> Interpreter<'a> {
                 // Type name
                 let type_str = RayaString::new(field.type_name.clone());
                 let type_ptr = self.gc.lock().allocate(type_str);
-                let type_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(type_ptr.as_ptr()).unwrap()) };
+                let type_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(type_ptr.as_ptr()).unwrap()) };
                 field_obj.set_field(2, type_val);
 
                 let field_ptr = self.gc.lock().allocate(field_obj);
-                obj.set_field(i, unsafe { Value::from_ptr(std::ptr::NonNull::new(field_ptr.as_ptr()).unwrap()) });
+                obj.set_field(i, unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(field_ptr.as_ptr()).unwrap())
+                });
             }
         }
 
@@ -2689,20 +3002,28 @@ impl<'a> Interpreter<'a> {
         for name in &diff.added {
             let name_str = RayaString::new(name.clone());
             let name_ptr = self.gc.lock().allocate(name_str);
-            added_arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+            added_arr.push(unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap())
+            });
         }
         let added_ptr = self.gc.lock().allocate(added_arr);
-        obj.set_field(0, unsafe { Value::from_ptr(std::ptr::NonNull::new(added_ptr.as_ptr()).unwrap()) });
+        obj.set_field(0, unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(added_ptr.as_ptr()).unwrap())
+        });
 
         // Create removed array
         let mut removed_arr = Array::new(0, diff.removed.len());
         for name in &diff.removed {
             let name_str = RayaString::new(name.clone());
             let name_ptr = self.gc.lock().allocate(name_str);
-            removed_arr.push(unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+            removed_arr.push(unsafe {
+                Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap())
+            });
         }
         let removed_ptr = self.gc.lock().allocate(removed_arr);
-        obj.set_field(1, unsafe { Value::from_ptr(std::ptr::NonNull::new(removed_ptr.as_ptr()).unwrap()) });
+        obj.set_field(1, unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(removed_ptr.as_ptr()).unwrap())
+        });
 
         // Create changed object
         let changed_obj = self.diff_changes_to_value(&diff.changed);
@@ -2714,7 +3035,10 @@ impl<'a> Interpreter<'a> {
 
     /// Helper: Convert diff changes HashMap to a Raya Value (Object)
     #[allow(unused_must_use)]
-    fn diff_changes_to_value(&self, changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>) -> Value {
+    fn diff_changes_to_value(
+        &self,
+        changes: &std::collections::HashMap<String, crate::vm::reflect::ValueChange>,
+    ) -> Value {
         let change_count = changes.len();
         let mut obj = Object::new(0, change_count);
 
@@ -2730,7 +3054,9 @@ impl<'a> Interpreter<'a> {
                 // Field name
                 let name_str = RayaString::new((*name).clone());
                 let name_ptr = self.gc.lock().allocate(name_str);
-                change_obj.set_field(0, unsafe { Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap()) });
+                change_obj.set_field(0, unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(name_ptr.as_ptr()).unwrap())
+                });
 
                 // Old value
                 let old_val = self.snapshot_value_to_value(&change.old);
@@ -2741,7 +3067,9 @@ impl<'a> Interpreter<'a> {
                 change_obj.set_field(2, new_val);
 
                 let change_ptr = self.gc.lock().allocate(change_obj);
-                obj.set_field(i, unsafe { Value::from_ptr(std::ptr::NonNull::new(change_ptr.as_ptr()).unwrap()) });
+                obj.set_field(i, unsafe {
+                    Value::from_ptr(std::ptr::NonNull::new(change_ptr.as_ptr()).unwrap())
+                });
             }
         }
 

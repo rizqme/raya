@@ -1,8 +1,8 @@
 //! Type context for managing types and type interning
 
-use super::ty::{Type, TypeId};
-use super::error::TypeError;
 use super::discriminant::{Discriminant, DiscriminantInference};
+use super::error::TypeError;
+use super::ty::{Type, TypeId};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -81,13 +81,20 @@ impl TypeContext {
         let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
         ctx.register_named_type("Task".into(), task);
 
-        let channel = ctx.intern(Type::Channel(super::ty::ChannelType { message: unknown_id }));
+        let channel = ctx.intern(Type::Channel(super::ty::ChannelType {
+            message: unknown_id,
+        }));
         ctx.register_named_type("Channel".into(), channel);
 
-        let map = ctx.intern(Type::Map(super::ty::MapType { key: unknown_id, value: unknown_id }));
+        let map = ctx.intern(Type::Map(super::ty::MapType {
+            key: unknown_id,
+            value: unknown_id,
+        }));
         ctx.register_named_type("Map".into(), map);
 
-        let set = ctx.intern(Type::Set(super::ty::SetType { element: unknown_id }));
+        let set = ctx.intern(Type::Set(super::ty::SetType {
+            element: unknown_id,
+        }));
         ctx.register_named_type("Set".into(), set);
 
         let json = ctx.intern(Type::Json);
@@ -97,7 +104,9 @@ impl TypeContext {
         ctx.register_named_type("int".into(), int);
 
         // Pre-intern Array<Unknown> as canonical array dispatch type
-        let array = ctx.intern(Type::Array(super::ty::ArrayType { element: unknown_id }));
+        let array = ctx.intern(Type::Array(super::ty::ArrayType {
+            element: unknown_id,
+        }));
         ctx.register_named_type("Array".into(), array);
 
         // Validate that interning order matches the well-known constants.
@@ -232,9 +241,10 @@ impl TypeContext {
 
     /// Resolve a named type, returning an error if not found
     pub fn resolve_named_type(&self, name: &str) -> Result<TypeId, TypeError> {
-        self.lookup_named_type(name).ok_or_else(|| TypeError::UndefinedType {
-            name: name.to_string(),
-        })
+        self.lookup_named_type(name)
+            .ok_or_else(|| TypeError::UndefinedType {
+                name: name.to_string(),
+            })
     }
 
     // Convenience methods for creating common types
@@ -362,7 +372,11 @@ impl TypeContext {
     }
 
     /// Create a type variable with an optional constraint (e.g., `T extends HasLength`)
-    pub fn type_variable_with_constraint(&mut self, name: impl Into<String>, constraint: Option<TypeId>) -> TypeId {
+    pub fn type_variable_with_constraint(
+        &mut self,
+        name: impl Into<String>,
+        constraint: Option<TypeId>,
+    ) -> TypeId {
         self.intern(Type::TypeVar(super::ty::TypeVar {
             name: name.into(),
             constraint,
@@ -394,7 +408,12 @@ impl TypeContext {
     }
 
     /// Create a function type
-    pub fn function_type(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool) -> TypeId {
+    pub fn function_type(
+        &mut self,
+        params: Vec<TypeId>,
+        return_type: TypeId,
+        is_async: bool,
+    ) -> TypeId {
         let min_params = params.len(); // Default: all params required
         self.intern(Type::Function(super::ty::FunctionType {
             params,
@@ -406,7 +425,13 @@ impl TypeContext {
     }
 
     /// Create a function type with specified minimum required params
-    pub fn function_type_with_min_params(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool, min_params: usize) -> TypeId {
+    pub fn function_type_with_min_params(
+        &mut self,
+        params: Vec<TypeId>,
+        return_type: TypeId,
+        is_async: bool,
+        min_params: usize,
+    ) -> TypeId {
         self.intern(Type::Function(super::ty::FunctionType {
             params,
             return_type,
@@ -417,7 +442,14 @@ impl TypeContext {
     }
 
     /// Create a function type with rest parameter
-    pub fn function_type_with_rest(&mut self, params: Vec<TypeId>, return_type: TypeId, is_async: bool, min_params: usize, rest_param: Option<TypeId>) -> TypeId {
+    pub fn function_type_with_rest(
+        &mut self,
+        params: Vec<TypeId>,
+        return_type: TypeId,
+        is_async: bool,
+        min_params: usize,
+        rest_param: Option<TypeId>,
+    ) -> TypeId {
         self.intern(Type::Function(super::ty::FunctionType {
             params,
             return_type,
@@ -561,7 +593,10 @@ mod tests {
 
         assert_eq!(ctx.get(num), Some(&Type::Primitive(PrimitiveType::Number)));
         assert_eq!(ctx.get(str), Some(&Type::Primitive(PrimitiveType::String)));
-        assert_eq!(ctx.get(bool), Some(&Type::Primitive(PrimitiveType::Boolean)));
+        assert_eq!(
+            ctx.get(bool),
+            Some(&Type::Primitive(PrimitiveType::Boolean))
+        );
         assert_eq!(ctx.get(null), Some(&Type::Primitive(PrimitiveType::Null)));
         assert_eq!(ctx.get(void), Some(&Type::Primitive(PrimitiveType::Void)));
     }

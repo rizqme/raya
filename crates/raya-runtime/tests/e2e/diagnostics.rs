@@ -12,18 +12,12 @@ use super::harness::*;
 
 #[test]
 fn test_error_assign_string_to_int() {
-    expect_compile_error(
-        "let x: int = \"hello\";",
-        "TypeMismatch",
-    );
+    expect_compile_error("let x: int = \"hello\";", "TypeMismatch");
 }
 
 #[test]
 fn test_error_return_wrong_type() {
-    expect_compile_error(
-        "function f(): int { return \"hello\"; }",
-        "TypeMismatch",
-    );
+    expect_compile_error("function f(): int { return \"hello\"; }", "TypeMismatch");
 }
 
 #[test]
@@ -55,10 +49,7 @@ fn test_error_too_many_arguments() {
 
 #[test]
 fn test_error_incompatible_binary_op() {
-    expect_compile_error(
-        "return \"hello\" - 1;",
-        "TypeMismatch",
-    );
+    expect_compile_error("return \"hello\" - 1;", "TypeMismatch");
 }
 
 // ============================================================================
@@ -67,18 +58,12 @@ fn test_error_incompatible_binary_op() {
 
 #[test]
 fn test_error_undefined_variable() {
-    expect_compile_error(
-        "return undefinedVar;",
-        "undefined",
-    );
+    expect_compile_error("return undefinedVar;", "undefined");
 }
 
 #[test]
 fn test_error_undefined_function() {
-    expect_compile_error(
-        "return nonExistentFunction();",
-        "Undefined",
-    );
+    expect_compile_error("return nonExistentFunction();", "Undefined");
 }
 
 #[test]
@@ -211,10 +196,7 @@ fn test_runtime_error_stack_overflow() {
 // because Error is a builtin class. Test with builtins:
 #[test]
 fn test_runtime_error_uncaught_throw_with_builtins() {
-    expect_runtime_error_with_builtins(
-        "throw new Error(\"boom\");",
-        "boom",
-    );
+    expect_runtime_error_with_builtins("throw new Error(\"boom\");", "boom");
 }
 
 // ============================================================================

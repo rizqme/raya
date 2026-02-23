@@ -759,10 +759,7 @@ fn test_void_function_returns_nothing() {
 
 #[test]
 fn test_void_function_return_value_errors() {
-    expect_compile_error(
-        "function f(): void { return 42; }",
-        "TypeMismatch",
-    );
+    expect_compile_error("function f(): void { return 42; }", "TypeMismatch");
 }
 
 // ============================================================================
@@ -1150,10 +1147,7 @@ fn test_number_floor() {
 
 #[test]
 fn test_iife() {
-    expect_i32(
-        "return ((x: int): int => x * 2)(21);",
-        42,
-    );
+    expect_i32("return ((x: int): int => x * 2)(21);", 42);
 }
 
 #[test]

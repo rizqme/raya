@@ -23,7 +23,9 @@ pub fn set(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("env.set: {}", e)),
     };
     // SAFETY: This is intentional — Raya programs are single-process
-    unsafe { std::env::set_var(&key, &val); }
+    unsafe {
+        std::env::set_var(&key, &val);
+    }
     NativeCallResult::null()
 }
 
@@ -34,7 +36,9 @@ pub fn remove(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
         Err(e) => return NativeCallResult::Error(format!("env.remove: {}", e)),
     };
     // SAFETY: This is intentional — Raya programs are single-process
-    unsafe { std::env::remove_var(&key); }
+    unsafe {
+        std::env::remove_var(&key);
+    }
     NativeCallResult::null()
 }
 
@@ -76,59 +80,73 @@ pub fn home(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult 
 /// Get user config directory
 /// XDG_CONFIG_HOME, or macOS ~/Library/Application Support, fallback ~/.config
 pub fn config_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let dir = std::env::var("XDG_CONFIG_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if cfg!(target_os = "macos") {
-            format!("{}/Library/Application Support", home)
-        } else {
-            format!("{}/.config", home)
-        }
-    });
+    let dir = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            if cfg!(target_os = "macos") {
+                format!("{}/Library/Application Support", home)
+            } else {
+                format!("{}/.config", home)
+            }
+        });
     NativeCallResult::Value(ctx.create_string(&dir))
 }
 
 /// Get user cache directory
 /// XDG_CACHE_HOME, or macOS ~/Library/Caches, fallback ~/.cache
 pub fn cache_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let dir = std::env::var("XDG_CACHE_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if cfg!(target_os = "macos") {
-            format!("{}/Library/Caches", home)
-        } else {
-            format!("{}/.cache", home)
-        }
-    });
+    let dir = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            if cfg!(target_os = "macos") {
+                format!("{}/Library/Caches", home)
+            } else {
+                format!("{}/.cache", home)
+            }
+        });
     NativeCallResult::Value(ctx.create_string(&dir))
 }
 
 /// Get user data directory
 /// XDG_DATA_HOME, or macOS ~/Library/Application Support, fallback ~/.local/share
 pub fn data_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let dir = std::env::var("XDG_DATA_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if cfg!(target_os = "macos") {
-            format!("{}/Library/Application Support", home)
-        } else {
-            format!("{}/.local/share", home)
-        }
-    });
+    let dir = std::env::var("XDG_DATA_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            if cfg!(target_os = "macos") {
+                format!("{}/Library/Application Support", home)
+            } else {
+                format!("{}/.local/share", home)
+            }
+        });
     NativeCallResult::Value(ctx.create_string(&dir))
 }
 
 /// Get user state directory
 /// XDG_STATE_HOME, fallback ~/.local/state
 pub fn state_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let dir = std::env::var("XDG_STATE_HOME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        format!("{}/.local/state", home)
-    });
+    let dir = std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{}/.local/state", home)
+        });
     NativeCallResult::Value(ctx.create_string(&dir))
 }
 
 /// Get runtime directory
 /// XDG_RUNTIME_DIR, fallback /tmp
 pub fn runtime_dir(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let dir = std::env::var("XDG_RUNTIME_DIR").ok().filter(|s| !s.is_empty())
+    let dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "/tmp".to_string());
     NativeCallResult::Value(ctx.create_string(&dir))
 }

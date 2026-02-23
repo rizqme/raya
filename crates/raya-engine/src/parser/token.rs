@@ -3,8 +3,8 @@
 //! This module defines all tokens that can appear in Raya source code,
 //! including keywords, operators, literals, and special tokens.
 
-use std::fmt;
 use crate::parser::interner::Symbol;
+use std::fmt;
 
 /// A token in the Raya programming language.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,14 +77,14 @@ pub enum Token {
     // Literals
     IntLiteral(i64),
     FloatLiteral(f64),
-    StringLiteral(Symbol),  // Interned string
+    StringLiteral(Symbol), // Interned string
     TemplateLiteral(Vec<TemplatePart>),
     True,
     False,
     Null,
 
     // Identifiers
-    Identifier(Symbol),  // Interned identifier
+    Identifier(Symbol), // Interned identifier
 
     // Operators
     // Arithmetic
@@ -132,8 +132,8 @@ pub enum Token {
     PercentEqual,
     AmpEqual,
     PipeEqual,
-    PipePipeEqual,    // ||=
-    AmpersandAmpersandEqual,  // &&=
+    PipePipeEqual,           // ||=
+    AmpersandAmpersandEqual, // &&=
     CaretEqual,
     LessLessEqual,
     GreaterGreaterEqual,
@@ -172,20 +172,18 @@ pub enum Token {
 /// A part of a template literal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TemplatePart {
-    String(Symbol),  // Interned string part
+    String(Symbol), // Interned string part
     Expression(Vec<(Token, Span)>),
 }
 
 /// Source location information for a token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
     pub line: u32,
     pub column: u32,
 }
-
 
 impl Span {
     pub fn new(start: usize, end: usize, line: u32, column: u32) -> Self {

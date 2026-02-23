@@ -96,17 +96,17 @@ impl Version {
             )));
         }
 
-        let major = parts[0]
-            .parse()
-            .map_err(|_| SemverError::InvalidVersion(format!("Invalid major version: {}", parts[0])))?;
+        let major = parts[0].parse().map_err(|_| {
+            SemverError::InvalidVersion(format!("Invalid major version: {}", parts[0]))
+        })?;
 
-        let minor = parts[1]
-            .parse()
-            .map_err(|_| SemverError::InvalidVersion(format!("Invalid minor version: {}", parts[1])))?;
+        let minor = parts[1].parse().map_err(|_| {
+            SemverError::InvalidVersion(format!("Invalid minor version: {}", parts[1]))
+        })?;
 
-        let patch = parts[2]
-            .parse()
-            .map_err(|_| SemverError::InvalidVersion(format!("Invalid patch version: {}", parts[2])))?;
+        let patch = parts[2].parse().map_err(|_| {
+            SemverError::InvalidVersion(format!("Invalid patch version: {}", parts[2]))
+        })?;
 
         Ok(Version {
             major,
@@ -258,19 +258,19 @@ impl Constraint {
         }
 
         if parts.len() == 2 && parts[1] == "*" {
-            let major = parts[0].parse().map_err(|_| {
-                SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s))
-            })?;
+            let major = parts[0]
+                .parse()
+                .map_err(|_| SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s)))?;
             return Ok(Constraint::Wildcard(major, None));
         }
 
         if parts.len() == 3 && parts[2] == "*" {
-            let major = parts[0].parse().map_err(|_| {
-                SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s))
-            })?;
-            let minor = parts[1].parse().map_err(|_| {
-                SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s))
-            })?;
+            let major = parts[0]
+                .parse()
+                .map_err(|_| SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s)))?;
+            let minor = parts[1]
+                .parse()
+                .map_err(|_| SemverError::InvalidConstraint(format!("Invalid wildcard: {}", s)))?;
             return Ok(Constraint::Wildcard(major, Some(minor)));
         }
 

@@ -37,21 +37,13 @@ impl LintRule for NoEmptyBlock {
                 diags
             }
             // while (...) {}
-            ast::Statement::While(while_stmt) => {
-                check_empty_body(&while_stmt.body, &META)
-            }
+            ast::Statement::While(while_stmt) => check_empty_body(&while_stmt.body, &META),
             // do {} while (...)
-            ast::Statement::DoWhile(do_stmt) => {
-                check_empty_body(&do_stmt.body, &META)
-            }
+            ast::Statement::DoWhile(do_stmt) => check_empty_body(&do_stmt.body, &META),
             // for (...) {}
-            ast::Statement::For(for_stmt) => {
-                check_empty_body(&for_stmt.body, &META)
-            }
+            ast::Statement::For(for_stmt) => check_empty_body(&for_stmt.body, &META),
             // for ... of ... {}
-            ast::Statement::ForOf(for_of_stmt) => {
-                check_empty_body(&for_of_stmt.body, &META)
-            }
+            ast::Statement::ForOf(for_of_stmt) => check_empty_body(&for_of_stmt.body, &META),
             // function foo() {} — empty function body
             ast::Statement::FunctionDecl(func) if func.body.statements.is_empty() => {
                 vec![LintDiagnostic {
@@ -122,14 +114,21 @@ mod tests {
     #[test]
     fn test_empty_if_block() {
         let diags = lint("function f(): void { if (true) {} }");
-        assert!(has_rule(&diags, "L2002"), "should flag empty if block, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2002"),
+            "should flag empty if block, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_nonempty_if_block() {
         let diags = lint("function f(): void { if (true) { const x: int = 1; } }");
         // Should only have the no-constant-condition hit, not no-empty-block
-        assert!(!has_rule(&diags, "L2002"), "should not flag non-empty if block");
+        assert!(
+            !has_rule(&diags, "L2002"),
+            "should not flag non-empty if block"
+        );
     }
 
     #[test]

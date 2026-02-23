@@ -6,9 +6,9 @@ use super::header::GcHeader;
 use super::heap::Heap;
 use super::ptr::GcPtr;
 use super::roots::RootSet;
+use crate::vm::interpreter::VmContextId;
 use crate::vm::types::TypeRegistry;
 use crate::vm::value::Value;
-use crate::vm::interpreter::VmContextId;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

@@ -8,14 +8,14 @@
 //! - Task registry for owned tasks
 //! - Optional parent context for nesting
 
+use crate::compiler::Module;
 use crate::vm::gc::{GarbageCollector, GcStats, HeapStats};
+use crate::vm::interpreter::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
 use crate::vm::scheduler::TaskId;
 use crate::vm::types::TypeRegistry;
 use crate::vm::value::Value;
-use crate::vm::interpreter::{CapabilityRegistry, ClassRegistry, ModuleRegistry};
 use dashmap::DashMap;
 use parking_lot::RwLock;
-use crate::compiler::Module;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -463,7 +463,9 @@ impl VmContext {
     }
 
     /// Get mutable access to the native module registry
-    pub fn native_module_registry_mut(&mut self) -> &mut crate::vm::interpreter::NativeModuleRegistry {
+    pub fn native_module_registry_mut(
+        &mut self,
+    ) -> &mut crate::vm::interpreter::NativeModuleRegistry {
         &mut self.native_module_registry
     }
 
@@ -484,7 +486,10 @@ impl VmContext {
     /// let module = Arc::new(NativeModule::new("math", "1.0.0"));
     /// vm_context.register_native_module(module)?;
     /// ```
-    pub fn register_native_module(&mut self, module: Arc<crate::vm::interpreter::NativeModule>) -> Result<(), String> {
+    pub fn register_native_module(
+        &mut self,
+        module: Arc<crate::vm::interpreter::NativeModule>,
+    ) -> Result<(), String> {
         self.native_module_registry.register(module)
     }
 

@@ -101,7 +101,11 @@ fn test_time_monotonic_increases() {
         return 0;
     "#,
     );
-    assert!(result.is_ok(), "monotonic should increase: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "monotonic should increase: {:?}",
+        result.err()
+    );
     assert_eq!(result.unwrap().as_i32(), Some(1));
 }
 
@@ -168,7 +172,11 @@ fn test_time_sleep_basic() {
         return 1;
     "#,
     );
-    assert!(result.is_ok(), "time.sleep() should work: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "time.sleep() should work: {:?}",
+        result.err()
+    );
     assert_eq!(result.unwrap().as_i32(), Some(1));
 }
 
@@ -316,7 +324,11 @@ fn test_time_sleep_with_duration() {
         return 0;
     "#,
     );
-    assert!(result.is_ok(), "combined time ops should work: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "combined time ops should work: {:?}",
+        result.err()
+    );
     assert_eq!(result.unwrap().as_i32(), Some(1));
 }
 

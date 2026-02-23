@@ -237,9 +237,7 @@ fn toml_to_json(val: toml::Value) -> JsonValue {
         toml::Value::Float(f) => serde_json::json!(f),
         toml::Value::Boolean(b) => JsonValue::Bool(b),
         toml::Value::Datetime(d) => JsonValue::String(d.to_string()),
-        toml::Value::Array(arr) => {
-            JsonValue::Array(arr.into_iter().map(toml_to_json).collect())
-        }
+        toml::Value::Array(arr) => JsonValue::Array(arr.into_iter().map(toml_to_json).collect()),
         toml::Value::Table(table) => {
             let map: serde_json::Map<String, JsonValue> = table
                 .into_iter()
@@ -265,9 +263,7 @@ fn json_to_toml(val: &JsonValue) -> toml::Value {
         }
         JsonValue::Bool(b) => toml::Value::Boolean(*b),
         JsonValue::Null => toml::Value::String(String::new()),
-        JsonValue::Array(arr) => {
-            toml::Value::Array(arr.iter().map(json_to_toml).collect())
-        }
+        JsonValue::Array(arr) => toml::Value::Array(arr.iter().map(json_to_toml).collect()),
         JsonValue::Object(map) => {
             let table: toml::map::Map<String, toml::Value> = map
                 .iter()
@@ -344,9 +340,7 @@ pub fn json_null(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallR
 
 /// encoding.jsonNewObject() -> handle
 pub fn json_new_object(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    NativeCallResult::f64(
-        VALUES.insert(JsonValue::Object(serde_json::Map::new())) as f64,
-    )
+    NativeCallResult::f64(VALUES.insert(JsonValue::Object(serde_json::Map::new())) as f64)
 }
 
 /// encoding.jsonNewArray() -> handle

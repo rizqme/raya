@@ -1,6 +1,9 @@
 //! Lint runner — single-pass AST visitor that dispatches to all enabled rules.
 
-use crate::parser::ast::{self, visitor::{self, Visitor}};
+use crate::parser::ast::{
+    self,
+    visitor::{self, Visitor},
+};
 
 use super::rule::{LintContext, LintDiagnostic, LintRule};
 
@@ -25,7 +28,8 @@ impl<'a> LintRunner<'a> {
     pub fn run(mut self, module: &ast::Module) -> Vec<LintDiagnostic> {
         // First, let rules inspect the module as a whole.
         for rule in self.rules {
-            self.diagnostics.extend(rule.check_module(module, &self.ctx));
+            self.diagnostics
+                .extend(rule.check_module(module, &self.ctx));
         }
 
         // Then walk the AST, dispatching statement/expression/class_member checks.
@@ -38,14 +42,16 @@ impl<'a> LintRunner<'a> {
 impl<'a> Visitor for LintRunner<'a> {
     fn visit_statement(&mut self, stmt: &ast::Statement) {
         for rule in self.rules {
-            self.diagnostics.extend(rule.check_statement(stmt, &self.ctx));
+            self.diagnostics
+                .extend(rule.check_statement(stmt, &self.ctx));
         }
         visitor::walk_statement(self, stmt);
     }
 
     fn visit_expression(&mut self, expr: &ast::Expression) {
         for rule in self.rules {
-            self.diagnostics.extend(rule.check_expression(expr, &self.ctx));
+            self.diagnostics
+                .extend(rule.check_expression(expr, &self.ctx));
         }
         visitor::walk_expression(self, expr);
     }
@@ -66,8 +72,8 @@ impl<'a> Visitor for LintRunner<'a> {
 mod tests {
     use super::*;
     use crate::linter::rule::{Category, RuleMeta, Severity};
-    use crate::parser::token::Span;
     use crate::parser::interner::Interner;
+    use crate::parser::token::Span;
 
     /// A trivial test rule that flags every statement.
     struct FlagAllStatements;

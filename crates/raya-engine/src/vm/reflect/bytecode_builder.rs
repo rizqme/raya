@@ -388,7 +388,11 @@ impl BytecodeBuilder {
     // ===== Local Variables =====
 
     /// Declare a local variable
-    pub fn declare_local(&mut self, name: Option<String>, var_type: StackType) -> Result<usize, VmError> {
+    pub fn declare_local(
+        &mut self,
+        name: Option<String>,
+        var_type: StackType,
+    ) -> Result<usize, VmError> {
         if self.finalized {
             return Err(VmError::RuntimeError(
                 "Cannot modify finalized BytecodeBuilder".to_string(),
@@ -411,7 +415,11 @@ impl BytecodeBuilder {
             ));
         }
         // Track type if we know it
-        let var_type = self.locals.get(index).map(|l| l.var_type).unwrap_or(StackType::Unknown);
+        let var_type = self
+            .locals
+            .get(index)
+            .map(|l| l.var_type)
+            .unwrap_or(StackType::Unknown);
         self.push_type(var_type);
 
         // Use optimized opcodes for indices 0 and 1
@@ -450,7 +458,9 @@ impl BytecodeBuilder {
 
     /// Define a new label (returns label that can be used for jumps)
     pub fn define_label(&mut self) -> Label {
-        let label = Label { id: self.next_label_id };
+        let label = Label {
+            id: self.next_label_id,
+        };
         self.next_label_id += 1;
         label
     }
@@ -858,7 +868,12 @@ impl BytecodeBuilderRegistry {
     }
 
     /// Create and register a new builder
-    pub fn create_builder(&mut self, name: String, param_count: usize, return_type: String) -> usize {
+    pub fn create_builder(
+        &mut self,
+        name: String,
+        param_count: usize,
+        return_type: String,
+    ) -> usize {
         let builder = BytecodeBuilder::new(name, param_count, return_type);
         let id = builder.id;
         self.builders.insert(id, builder);
@@ -927,8 +942,12 @@ mod tests {
     fn test_emit_arithmetic() {
         let mut builder = BytecodeBuilder::new("add".to_string(), 2, "number".to_string());
 
-        builder.declare_local(Some("a".to_string()), StackType::Integer).unwrap();
-        builder.declare_local(Some("b".to_string()), StackType::Integer).unwrap();
+        builder
+            .declare_local(Some("a".to_string()), StackType::Integer)
+            .unwrap();
+        builder
+            .declare_local(Some("b".to_string()), StackType::Integer)
+            .unwrap();
 
         builder.emit_load_local(0).unwrap();
         builder.emit_load_local(1).unwrap();
@@ -1006,8 +1025,12 @@ mod tests {
     fn test_local_variables() {
         let mut builder = BytecodeBuilder::new("locals".to_string(), 0, "void".to_string());
 
-        let idx0 = builder.declare_local(Some("x".to_string()), StackType::Integer).unwrap();
-        let idx1 = builder.declare_local(Some("y".to_string()), StackType::Integer).unwrap();
+        let idx0 = builder
+            .declare_local(Some("x".to_string()), StackType::Integer)
+            .unwrap();
+        let idx1 = builder
+            .declare_local(Some("y".to_string()), StackType::Integer)
+            .unwrap();
 
         assert_eq!(idx0, 0);
         assert_eq!(idx1, 1);

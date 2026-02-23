@@ -11,7 +11,9 @@
 use crate::compiler::bytecode::module::Module;
 
 use super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
-use super::statemachine::{SmBlock, SmBlockKind, SmInstr, SmBlockId, SmTerminator, SmI32BinOp, SmF64BinOp, SmCmpOp};
+use super::statemachine::{
+    SmBlock, SmBlockId, SmBlockKind, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
+};
 use super::traits::AotCompilable;
 
 #[cfg(all(feature = "aot", feature = "jit"))]
@@ -23,25 +25,25 @@ use crate::jit::pipeline::{lifter, optimize::JitOptimizer};
 #[derive(Debug)]
 pub enum BytecodeAdapterError {
     /// Failed to decode a function's bytecode.
-    DecodeFailed {
-        func_index: usize,
-        message: String,
-    },
+    DecodeFailed { func_index: usize, message: String },
 
     /// Failed to lift bytecode to SSA form.
-    LiftFailed {
-        func_index: usize,
-        message: String,
-    },
+    LiftFailed { func_index: usize, message: String },
 }
 
 impl std::fmt::Display for BytecodeAdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BytecodeAdapterError::DecodeFailed { func_index, message } => {
+            BytecodeAdapterError::DecodeFailed {
+                func_index,
+                message,
+            } => {
                 write!(f, "Failed to decode function {}: {}", func_index, message)
             }
-            BytecodeAdapterError::LiftFailed { func_index, message } => {
+            BytecodeAdapterError::LiftFailed {
+                func_index,
+                message,
+            } => {
                 write!(f, "Failed to lift function {}: {}", func_index, message)
             }
         }
@@ -64,18 +66,17 @@ impl std::error::Error for BytecodeAdapterError {}
 /// This is the exact same lifting pipeline the JIT uses at runtime,
 /// but run at build time.
 #[cfg(all(feature = "aot", feature = "jit"))]
-pub fn lift_bytecode_module(
-    module: &Module,
-) -> Result<Vec<LiftedFunction>, BytecodeAdapterError> {
+pub fn lift_bytecode_module(module: &Module) -> Result<Vec<LiftedFunction>, BytecodeAdapterError> {
     let optimizer = JitOptimizer::new();
     let mut lifted = Vec::new();
 
     for (idx, func) in module.functions.iter().enumerate() {
-        let mut jit_func = lifter::lift_function(func, module, idx as u32)
-            .map_err(|e| BytecodeAdapterError::LiftFailed {
+        let mut jit_func = lifter::lift_function(func, module, idx as u32).map_err(|e| {
+            BytecodeAdapterError::LiftFailed {
                 func_index: idx,
                 message: e.to_string(),
-            })?;
+            }
+        })?;
 
         optimizer.optimize(&mut jit_func);
 
@@ -95,9 +96,7 @@ pub fn lift_bytecode_module(
 
 /// Stub version when JIT feature is not enabled.
 #[cfg(not(all(feature = "aot", feature = "jit")))]
-pub fn lift_bytecode_module(
-    _module: &Module,
-) -> Result<Vec<LiftedFunction>, BytecodeAdapterError> {
+pub fn lift_bytecode_module(_module: &Module) -> Result<Vec<LiftedFunction>, BytecodeAdapterError> {
     Ok(Vec::new())
 }
 
@@ -145,7 +144,6 @@ fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
         // Channel operations (if implemented)
         // JitInstr::ChannelRecv { .. } => Some(SuspensionKind::ChannelRecv),
         // JitInstr::ChannelSend { .. } => Some(SuspensionKind::ChannelSend),
-
         _ => None,
     }
 }
@@ -198,26 +196,31 @@ impl AotCompilable for LiftedFunction {
 
     #[cfg(all(feature = "aot", feature = "jit"))]
     fn emit_blocks(&self) -> Vec<SmBlock> {
-        self.jit_func.blocks.iter().enumerate().map(|(idx, jit_block)| {
-            let mut instructions = Vec::new();
+        self.jit_func
+            .blocks
+            .iter()
+            .enumerate()
+            .map(|(idx, jit_block)| {
+                let mut instructions = Vec::new();
 
-            // Map each JitInstr to SmInstr
-            for instr in &jit_block.instrs {
-                if let Some(sm_instr) = map_jit_instr_to_sm(instr) {
-                    instructions.push(sm_instr);
+                // Map each JitInstr to SmInstr
+                for instr in &jit_block.instrs {
+                    if let Some(sm_instr) = map_jit_instr_to_sm(instr) {
+                        instructions.push(sm_instr);
+                    }
                 }
-            }
 
-            // Map the terminator
-            let terminator = map_jit_terminator(&jit_block.terminator);
+                // Map the terminator
+                let terminator = map_jit_terminator(&jit_block.terminator);
 
-            SmBlock {
-                id: SmBlockId(idx as u32),
-                kind: SmBlockKind::Body,
-                instructions,
-                terminator,
-            }
-        }).collect()
+                SmBlock {
+                    id: SmBlockId(idx as u32),
+                    kind: SmBlockKind::Body,
+                    instructions,
+                    terminator,
+                }
+            })
+            .collect()
     }
 
     #[cfg(not(all(feature = "aot", feature = "jit")))]
@@ -260,9 +263,7 @@ fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
             dest: dest.0,
             value: *value,
         },
-        JitInstr::ConstNull { dest } => SmInstr::ConstNull {
-            dest: dest.0,
-        },
+        JitInstr::ConstNull { dest } => SmInstr::ConstNull { dest: dest.0 },
 
         // Integer arithmetic
         JitInstr::IAdd { dest, left, right } => SmInstr::I32BinOp {
@@ -404,14 +405,18 @@ fn map_jit_instr_to_sm(instr: &JitInstr) -> Option<SmInstr> {
 fn map_jit_terminator(terminator: &JitTerminator) -> SmTerminator {
     match terminator {
         JitTerminator::Jump(target) => SmTerminator::Jump(SmBlockId(target.0)),
-        JitTerminator::Branch { cond, then_block, else_block } => SmTerminator::Branch {
+        JitTerminator::Branch {
+            cond,
+            then_block,
+            else_block,
+        } => SmTerminator::Branch {
             cond: cond.0,
             then_block: SmBlockId(then_block.0),
             else_block: SmBlockId(else_block.0),
         },
         JitTerminator::Return(Some(value)) => SmTerminator::Return { value: value.0 },
         JitTerminator::Return(None) => SmTerminator::Return { value: 0 }, // Return null
-        JitTerminator::Unreachable => SmTerminator::Return { value: 0 }, // Fallback
+        JitTerminator::Unreachable => SmTerminator::Return { value: 0 },  // Fallback
         _ => SmTerminator::Return { value: 0 }, // Fallback for other terminators
     }
 }

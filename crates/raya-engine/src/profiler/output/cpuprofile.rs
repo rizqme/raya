@@ -114,11 +114,7 @@ impl ResolvedProfileData {
                     },
                 },
                 hit_count: n.hit_count,
-                children: n
-                    .children
-                    .values()
-                    .map(|&idx| nodes[idx].id)
-                    .collect(),
+                children: n.children.values().map(|&idx| nodes[idx].id).collect(),
             })
             .collect();
 
@@ -133,11 +129,7 @@ impl ResolvedProfileData {
 
     /// Walk the sample's frame stack through the trie, creating nodes as needed.
     /// Returns the leaf node ID.
-    fn insert_sample_into_trie(
-        &self,
-        nodes: &mut Vec<TrieNode>,
-        sample: &ResolvedSample,
-    ) -> u32 {
+    fn insert_sample_into_trie(&self, nodes: &mut Vec<TrieNode>, sample: &ResolvedSample) -> u32 {
         let mut current_idx: usize = 0; // Start at root
 
         for frame in &sample.frames {
@@ -152,9 +144,7 @@ impl ResolvedProfileData {
                     hit_count: 0,
                     children: FxHashMap::default(),
                 });
-                nodes[current_idx]
-                    .children
-                    .insert(frame.clone(), new_idx);
+                nodes[current_idx].children.insert(frame.clone(), new_idx);
                 new_idx
             };
             current_idx = child_idx;

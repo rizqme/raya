@@ -51,8 +51,7 @@ impl<T> HandleRegistry<T> {
 }
 
 /// Global registry for parsed URL objects
-static URL_HANDLES: LazyLock<HandleRegistry<url::Url>> =
-    LazyLock::new(HandleRegistry::new);
+static URL_HANDLES: LazyLock<HandleRegistry<url::Url>> = LazyLock::new(HandleRegistry::new);
 
 /// Global registry for URLSearchParams objects
 static PARAMS_HANDLES: LazyLock<HandleRegistry<Vec<(String, String)>>> =
@@ -162,15 +161,21 @@ fn parse_with_base(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     }
     let input = match ctx.read_string(args[0]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("url.parseWithBase: invalid input: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("url.parseWithBase: invalid input: {}", e))
+        }
     };
     let base_str = match ctx.read_string(args[1]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("url.parseWithBase: invalid base: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("url.parseWithBase: invalid base: {}", e))
+        }
     };
     let base = match url::Url::parse(&base_str) {
         Ok(b) => b,
-        Err(e) => return NativeCallResult::Error(format!("url.parseWithBase: invalid base URL: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("url.parseWithBase: invalid base URL: {}", e))
+        }
     };
     match base.join(&input) {
         Ok(parsed) => {
@@ -217,12 +222,10 @@ fn port(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 /// url.host(handle) -> string (hostname:port or just hostname)
 fn host(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
-    match URL_HANDLES.with(handle, |u| {
-        match (u.host_str(), u.port()) {
-            (Some(h), Some(p)) => format!("{}:{}", h, p),
-            (Some(h), None) => h.to_string(),
-            _ => String::new(),
-        }
+    match URL_HANDLES.with(handle, |u| match (u.host_str(), u.port()) {
+        (Some(h), Some(p)) => format!("{}:{}", h, p),
+        (Some(h), None) => h.to_string(),
+        _ => String::new(),
     }) {
         Some(s) => NativeCallResult::Value(ctx.create_string(&s)),
         None => NativeCallResult::Error("url.host: invalid handle".to_string()),
@@ -290,9 +293,7 @@ fn username(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 /// url.password(handle) -> string
 fn password(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
-    match URL_HANDLES.with(handle, |u| {
-        u.password().unwrap_or("").to_string()
-    }) {
+    match URL_HANDLES.with(handle, |u| u.password().unwrap_or("").to_string()) {
         Some(s) => NativeCallResult::Value(ctx.create_string(&s)),
         None => NativeCallResult::Error("url.password: invalid handle".to_string()),
     }
@@ -565,7 +566,9 @@ fn params_from_string(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
     }
     let input = match ctx.read_string(args[0]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("url.paramsFromString: invalid input: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("url.paramsFromString: invalid input: {}", e))
+        }
     };
     // Strip leading "?" if present
     let query = input.strip_prefix('?').unwrap_or(&input);
@@ -587,7 +590,10 @@ fn params_get(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
         Err(e) => return NativeCallResult::Error(format!("url.paramsGet: invalid name: {}", e)),
     };
     match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter().find(|(k, _)| k == &name).map(|(_, v)| v.clone())
+        pairs
+            .iter()
+            .find(|(k, _)| k == &name)
+            .map(|(_, v)| v.clone())
     }) {
         Some(Some(val)) => NativeCallResult::Value(ctx.create_string(&val)),
         Some(None) => NativeCallResult::null(),
@@ -606,16 +612,14 @@ fn params_get_all(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
         Err(e) => return NativeCallResult::Error(format!("url.paramsGetAll: invalid name: {}", e)),
     };
     match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter()
+        pairs
+            .iter()
             .filter(|(k, _)| k == &name)
             .map(|(_, v)| v.clone())
             .collect::<Vec<String>>()
     }) {
         Some(values) => {
-            let items: Vec<NativeValue> = values
-                .iter()
-                .map(|v| ctx.create_string(v))
-                .collect();
+            let items: Vec<NativeValue> = values.iter().map(|v| ctx.create_string(v)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error("url.paramsGetAll: invalid handle".to_string()),
@@ -632,9 +636,7 @@ fn params_has(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("url.paramsHas: invalid name: {}", e)),
     };
-    match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter().any(|(k, _)| k == &name)
-    }) {
+    match PARAMS_HANDLES.with(handle, |pairs| pairs.iter().any(|(k, _)| k == &name)) {
         Some(found) => NativeCallResult::bool(found),
         None => NativeCallResult::Error("url.paramsHas: invalid handle".to_string()),
     }
@@ -676,7 +678,9 @@ fn params_append(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
     };
     let value = match ctx.read_string(args[2]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("url.paramsAppend: invalid value: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("url.paramsAppend: invalid value: {}", e))
+        }
     };
     match PARAMS_HANDLES.with_mut(handle, |pairs| {
         pairs.push((name, value));
@@ -708,13 +712,13 @@ fn params_delete(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 fn params_keys(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
     match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter().map(|(k, _)| k.clone()).collect::<Vec<String>>()
+        pairs
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect::<Vec<String>>()
     }) {
         Some(keys) => {
-            let items: Vec<NativeValue> = keys
-                .iter()
-                .map(|k| ctx.create_string(k))
-                .collect();
+            let items: Vec<NativeValue> = keys.iter().map(|k| ctx.create_string(k)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error("url.paramsKeys: invalid handle".to_string()),
@@ -725,13 +729,13 @@ fn params_keys(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
 fn params_values(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
     match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter().map(|(_, v)| v.clone()).collect::<Vec<String>>()
+        pairs
+            .iter()
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<String>>()
     }) {
         Some(values) => {
-            let items: Vec<NativeValue> = values
-                .iter()
-                .map(|v| ctx.create_string(v))
-                .collect();
+            let items: Vec<NativeValue> = values.iter().map(|v| ctx.create_string(v)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error("url.paramsValues: invalid handle".to_string()),
@@ -742,15 +746,13 @@ fn params_values(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 fn params_entries(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = get_handle(args, 0);
     match PARAMS_HANDLES.with(handle, |pairs| {
-        pairs.iter()
+        pairs
+            .iter()
             .flat_map(|(k, v)| vec![k.clone(), v.clone()])
             .collect::<Vec<String>>()
     }) {
         Some(entries) => {
-            let items: Vec<NativeValue> = entries
-                .iter()
-                .map(|s| ctx.create_string(s))
-                .collect();
+            let items: Vec<NativeValue> = entries.iter().map(|s| ctx.create_string(s)).collect();
             NativeCallResult::Value(ctx.create_array(&items))
         }
         None => NativeCallResult::Error("url.paramsEntries: invalid handle".to_string()),

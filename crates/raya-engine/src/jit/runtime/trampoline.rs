@@ -9,9 +9,9 @@
 /// JIT code receives arguments as NaN-boxed Value array, a locals buffer,
 /// and a context pointer containing runtime helpers.
 pub type JitEntryFn = unsafe extern "C" fn(
-    args: *const u64,        // NaN-boxed Value array
+    args: *const u64, // NaN-boxed Value array
     arg_count: u32,
-    locals: *mut u64,        // pre-allocated locals
+    locals: *mut u64, // pre-allocated locals
     local_count: u32,
     ctx: *mut RuntimeContext,
 ) -> u64; // returns NaN-boxed Value

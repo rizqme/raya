@@ -79,18 +79,28 @@ pub use vm::builtins;
 // ============================================================================
 
 pub use parser::{
-    // Lexer
-    Lexer, LexError, Token, Span, TemplatePart,
-    // Parser
-    Parser, ParseError,
-    // Interner
-    Interner, Symbol,
-    // Types
-    Type, TypeId, TypeContext,
-    // Checker
-    TypeChecker, CheckError, SymbolTable,
     // AST
     ast,
+    CheckError,
+    // Interner
+    Interner,
+    LexError,
+    // Lexer
+    Lexer,
+    ParseError,
+    // Parser
+    Parser,
+    Span,
+    Symbol,
+    SymbolTable,
+    TemplatePart,
+    Token,
+    // Types
+    Type,
+    // Checker
+    TypeChecker,
+    TypeContext,
+    TypeId,
 };
 
 // ============================================================================
@@ -98,19 +108,37 @@ pub use parser::{
 // ============================================================================
 
 pub use compiler::{
-    // Bytecode
-    BytecodeReader, BytecodeWriter, ClassDef, ConstantPool, DecodeError, Export, Function,
-    Import, Metadata, Method, Module, ModuleError, Opcode, SymbolType, VerifyError, verify_module,
-    // IR
-    ir,
-    // Code generation
-    CodeGenerator, IrCodeGenerator, ModuleBuilder,
-    // Compiler
-    Compiler as BytecodeCompiler, CompileError, CompileResult,
     // Disassembler
     disassemble_function,
+    // IR
+    ir,
     // Native IDs
     native_id,
+    verify_module,
+    // Bytecode
+    BytecodeReader,
+    BytecodeWriter,
+    ClassDef,
+    // Code generation
+    CodeGenerator,
+    CompileError,
+    CompileResult,
+    // Compiler
+    Compiler as BytecodeCompiler,
+    ConstantPool,
+    DecodeError,
+    Export,
+    Function,
+    Import,
+    IrCodeGenerator,
+    Metadata,
+    Method,
+    Module,
+    ModuleBuilder,
+    ModuleError,
+    Opcode,
+    SymbolType,
+    VerifyError,
 };
 
 // ============================================================================
@@ -118,43 +146,89 @@ pub use compiler::{
 // ============================================================================
 
 pub use vm::{
-    // Value and Object model
-    Value, Object, Array, Class, RayaString, VTable,
-    // VM and execution
-    Vm, VmContext, VmContextId, VmOptions, VmError, VmResult,
-    // Scheduler
-    Scheduler,
-    // Stack
-    CallFrame, Stack, StackStats,
-    // GC
-    gc,
-    // Synchronization
-    Mutex, MutexError, MutexId, MutexRegistry,
-    // Snapshots
-    SnapshotReader, SnapshotWriter,
-    // Types
-    PointerMap, TypeInfo, TypeRegistry,
-    // JSON
-    validate_cast, JsonValue, TypeKind, TypeSchema, TypeSchemaRegistry,
-    // Class registry
-    ClassRegistry, ContextRegistry, ResourceCounters, ResourceLimits,
     // Builtin native IDs (for VM dispatch)
     builtin as builtin_ids,
     // FFI - Native modules (types from raya-sdk)
     ffi::{
-        FromRaya, NativeError, NativeFn, NativeModule, NativeValue, ToRaya,
-        pin_value, unpin_value, register_native_module,
+        native_to_value,
+        pin_value,
+        raya_error_free,
+        raya_error_message,
+        raya_module_free,
+        raya_module_load_bytes,
+        raya_module_load_file,
+        raya_value_bool,
+        raya_value_free,
+        raya_value_i32,
+        raya_value_null,
+        raya_version,
+        raya_vm_destroy,
+        raya_vm_execute,
+        raya_vm_new,
+        register_native_module,
+        unpin_value,
         // Value conversion
-        value_to_native, native_to_value,
+        value_to_native,
+        FromRaya,
         // Dynamic library loading
-        Library, LoadError,
+        Library,
+        LoadError,
+        NativeError,
+        NativeFn,
+        NativeModule,
+        NativeValue,
+        RayaError,
+        RayaModule as CRayaModule,
         // C API
-        RayaVM, RayaValue as CRayaValue, RayaModule as CRayaModule, RayaError,
-        raya_vm_new, raya_vm_destroy, raya_vm_execute,
-        raya_module_load_file, raya_module_load_bytes, raya_module_free,
-        raya_value_null, raya_value_bool, raya_value_i32, raya_value_free,
-        raya_error_message, raya_error_free, raya_version,
+        RayaVM,
+        RayaValue as CRayaValue,
+        ToRaya,
     },
+    // GC
+    gc,
+    // JSON
+    validate_cast,
+    Array,
+    // Stack
+    CallFrame,
+    Class,
+    // Class registry
+    ClassRegistry,
+    ContextRegistry,
+    JsonValue,
+    // Synchronization
+    Mutex,
+    MutexError,
+    MutexId,
+    MutexRegistry,
+    Object,
+    // Types
+    PointerMap,
+    RayaString,
+    ResourceCounters,
+    ResourceLimits,
+    // Scheduler
+    Scheduler,
+    // Snapshots
+    SnapshotReader,
+    SnapshotWriter,
+    Stack,
+    StackStats,
+    TypeInfo,
+    TypeKind,
+    TypeRegistry,
+    TypeSchema,
+    TypeSchemaRegistry,
+    VTable,
+    // Value and Object model
+    Value,
+    // VM and execution
+    Vm,
+    VmContext,
+    VmContextId,
+    VmError,
+    VmOptions,
+    VmResult,
 };
 
 // ============================================================================
@@ -162,7 +236,7 @@ pub use vm::{
 // ============================================================================
 
 pub use builtins::{
-    BuiltinModule, BuiltinSignatures, ClassSig, MethodSig, PropertySig, FunctionSig,
-    get_all_builtins, get_builtin, get_builtin_bytecode, builtin_names, builtin_count,
-    get_all_signatures, get_signatures,
+    builtin_count, builtin_names, get_all_builtins, get_all_signatures, get_builtin,
+    get_builtin_bytecode, get_signatures, BuiltinModule, BuiltinSignatures, ClassSig, FunctionSig,
+    MethodSig, PropertySig,
 };

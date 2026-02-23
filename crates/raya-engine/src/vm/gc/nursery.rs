@@ -166,7 +166,9 @@ mod tests {
     fn test_nursery_reset() {
         let mut nursery = Nursery::new();
 
-        unsafe { nursery.allocate(42i32); }
+        unsafe {
+            nursery.allocate(42i32);
+        }
         assert_eq!(nursery.used_bytes(), 4);
         assert_eq!(nursery.allocation_count(), 1);
 
@@ -198,10 +200,14 @@ mod tests {
 
         assert_eq!(nursery.remaining_bytes(), 64);
 
-        unsafe { nursery.allocate(1i32); }
+        unsafe {
+            nursery.allocate(1i32);
+        }
         assert_eq!(nursery.remaining_bytes(), 60);
 
-        unsafe { nursery.allocate(1i32); }
+        unsafe {
+            nursery.allocate(1i32);
+        }
         assert_eq!(nursery.remaining_bytes(), 56);
     }
 
@@ -210,7 +216,9 @@ mod tests {
         let mut nursery = Nursery::new();
 
         // Allocate a bool (1 byte) then a u64 (8 byte aligned)
-        unsafe { nursery.allocate(true); }
+        unsafe {
+            nursery.allocate(true);
+        }
         let ptr = unsafe { nursery.allocate(42u64) };
 
         assert!(ptr.is_some());
@@ -232,7 +240,9 @@ mod tests {
         }
 
         let mut nursery = Nursery::new();
-        unsafe { nursery.allocate(Dropper); }
+        unsafe {
+            nursery.allocate(Dropper);
+        }
 
         // Reset doesn't drop - we need to drop manually before reset
         unsafe {

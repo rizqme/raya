@@ -50,7 +50,7 @@ mod aot_impl {
     use raya_engine::aot::codegen::{compile_functions, create_native_isa, CompilableFunction};
     use raya_engine::aot::traits::AotCompilable;
     use raya_runtime::bundle::format::{
-        AotTrailer, BundledFuncEntry, TRAILER_MAGIC, TRAILER_SIZE, write_vfs_section,
+        write_vfs_section, AotTrailer, BundledFuncEntry, TRAILER_MAGIC, TRAILER_SIZE,
     };
     use raya_runtime::Runtime;
 

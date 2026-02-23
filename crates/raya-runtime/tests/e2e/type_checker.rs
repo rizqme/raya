@@ -264,18 +264,12 @@ fn test_constructor_inheritance_chain() {
 
 #[test]
 fn test_undeclared_variable() {
-    expect_compile_error(
-        "return undeclaredVar;",
-        "undeclared",
-    );
+    expect_compile_error("return undeclaredVar;", "undeclared");
 }
 
 #[test]
 fn test_undeclared_function() {
-    expect_compile_error(
-        "return undeclaredFunc();",
-        "undeclared",
-    );
+    expect_compile_error("return undeclaredFunc();", "undeclared");
 }
 
 #[test]

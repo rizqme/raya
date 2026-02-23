@@ -23,11 +23,7 @@ impl LintRule for NamingConvention {
         &META
     }
 
-    fn check_statement(
-        &self,
-        stmt: &ast::Statement,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, stmt: &ast::Statement, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         match stmt {
             // Variable: camelCase (or UPPER_SNAKE_CASE for const)
             ast::Statement::VariableDecl(decl) => {
@@ -153,13 +149,20 @@ mod tests {
     #[test]
     fn test_camel_case_function_ok() {
         let diags = lint("function myFunc(): void {}");
-        assert!(!has_rule(&diags, "L2001"), "camelCase function should be ok");
+        assert!(
+            !has_rule(&diags, "L2001"),
+            "camelCase function should be ok"
+        );
     }
 
     #[test]
     fn test_pascal_case_function_flagged() {
         let diags = lint("function MyFunc(): void {}");
-        assert!(has_rule(&diags, "L2001"), "PascalCase function should be flagged, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2001"),
+            "PascalCase function should be flagged, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -171,19 +174,28 @@ mod tests {
     #[test]
     fn test_camel_case_class_flagged() {
         let diags = lint("class myClass {}");
-        assert!(has_rule(&diags, "L2001"), "camelCase class should be flagged");
+        assert!(
+            has_rule(&diags, "L2001"),
+            "camelCase class should be flagged"
+        );
     }
 
     #[test]
     fn test_upper_snake_case_const_ok() {
         let diags = lint("const MAX_SIZE: int = 100;");
         // Should not get naming convention warning (UPPER_SNAKE_CASE allowed for const)
-        assert!(!has_rule(&diags, "L2001"), "UPPER_SNAKE_CASE const should be ok");
+        assert!(
+            !has_rule(&diags, "L2001"),
+            "UPPER_SNAKE_CASE const should be ok"
+        );
     }
 
     #[test]
     fn test_type_alias_pascal_case() {
         let diags = lint("type myType = int;");
-        assert!(has_rule(&diags, "L2001"), "camelCase type alias should be flagged");
+        assert!(
+            has_rule(&diags, "L2001"),
+            "camelCase type alias should be flagged"
+        );
     }
 }

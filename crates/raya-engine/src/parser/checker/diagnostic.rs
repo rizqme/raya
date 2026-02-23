@@ -3,12 +3,12 @@
 //! Provides structured error reporting with source code context,
 //! helpful suggestions, and multiple output formats.
 
+use crate::parser::Span;
 use codespan_reporting::diagnostic::{Diagnostic as CsDiagnostic, Label, Severity};
-pub use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::files::Files;
+pub use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 use codespan_reporting::term::termcolor::{ColorChoice, StandardStream};
-use crate::parser::Span;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -64,17 +64,25 @@ impl Diagnostic {
     }
 
     /// Add a primary label (main error location)
-    pub fn with_primary_label(mut self, file_id: usize, span: Span, message: impl Into<String>) -> Self {
-        let label = Label::primary(file_id, span.start..span.end)
-            .with_message(message);
+    pub fn with_primary_label(
+        mut self,
+        file_id: usize,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        let label = Label::primary(file_id, span.start..span.end).with_message(message);
         self.inner = self.inner.with_labels(vec![label]);
         self
     }
 
     /// Add a secondary label (related location)
-    pub fn with_secondary_label(mut self, file_id: usize, span: Span, message: impl Into<String>) -> Self {
-        let label = Label::secondary(file_id, span.start..span.end)
-            .with_message(message);
+    pub fn with_secondary_label(
+        mut self,
+        file_id: usize,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        let label = Label::secondary(file_id, span.start..span.end).with_message(message);
         // Clone the existing diagnostic and add the new label
         let existing_labels = std::mem::take(&mut self.inner.labels);
         let mut new_labels = existing_labels;
@@ -100,13 +108,22 @@ impl Diagnostic {
         use CheckError::*;
 
         match error {
-            TypeMismatch { expected, actual, span, note } => {
+            TypeMismatch {
+                expected,
+                actual,
+                span,
+                note,
+            } => {
                 let mut diag = Diagnostic::error(format!(
                     "Type '{}' is not assignable to type '{}'",
                     actual, expected
                 ))
                 .with_code(error_code(error))
-                .with_primary_label(file_id, *span, format!("expected '{}', found '{}'", expected, actual));
+                .with_primary_label(
+                    file_id,
+                    *span,
+                    format!("expected '{}', found '{}'", expected, actual),
+                );
 
                 if let Some(note_text) = note {
                     diag = diag.with_note(note_text);
@@ -126,13 +143,16 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "not found in this scope")
             }
 
-            NotCallable { ty, span } => {
-                Diagnostic::error(format!("Type '{}' is not callable", ty))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "cannot be called")
-            }
+            NotCallable { ty, span } => Diagnostic::error(format!("Type '{}' is not callable", ty))
+                .with_code(error_code(error))
+                .with_primary_label(file_id, *span, "cannot be called"),
 
-            ArgumentCountMismatch { expected, min_expected, actual, span } => {
+            ArgumentCountMismatch {
+                expected,
+                min_expected,
+                actual,
+                span,
+            } => {
                 let msg = if min_expected < expected {
                     format!(
                         "Expected {}-{} arguments, but got {}",
@@ -151,11 +171,12 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "incorrect number of arguments")
             }
 
-            PropertyNotFound { property, ty, span } => {
-                Diagnostic::error(format!("Property '{}' does not exist on type '{}'", property, ty))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "property not found")
-            }
+            PropertyNotFound { property, ty, span } => Diagnostic::error(format!(
+                "Property '{}' does not exist on type '{}'",
+                property, ty
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "property not found"),
 
             NonExhaustiveMatch { missing, span } => {
                 let mut diag = Diagnostic::error("Match is not exhaustive")
@@ -170,32 +191,39 @@ impl Diagnostic {
                 diag
             }
 
-            ReturnTypeMismatch { expected, actual, span } => {
-                Diagnostic::error(format!(
-                    "Return type '{}' is not assignable to declared type '{}'",
-                    actual, expected
-                ))
-                .with_code(error_code(error))
-                .with_primary_label(file_id, *span, format!("expected '{}', found '{}'", expected, actual))
-            }
+            ReturnTypeMismatch {
+                expected,
+                actual,
+                span,
+            } => Diagnostic::error(format!(
+                "Return type '{}' is not assignable to declared type '{}'",
+                actual, expected
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(
+                file_id,
+                *span,
+                format!("expected '{}', found '{}'", expected, actual),
+            ),
 
-            InvalidBinaryOp { op, left, right, span } => {
-                Diagnostic::error(format!(
-                    "Operator '{}' cannot be applied to types '{}' and '{}'",
-                    op, left, right
-                ))
-                .with_code(error_code(error))
-                .with_primary_label(file_id, *span, "invalid operation")
-            }
+            InvalidBinaryOp {
+                op,
+                left,
+                right,
+                span,
+            } => Diagnostic::error(format!(
+                "Operator '{}' cannot be applied to types '{}' and '{}'",
+                op, left, right
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "invalid operation"),
 
-            InvalidUnaryOp { op, ty, span } => {
-                Diagnostic::error(format!(
-                    "Operator '{}' cannot be applied to type '{}'",
-                    op, ty
-                ))
-                .with_code(error_code(error))
-                .with_primary_label(file_id, *span, "invalid operation")
-            }
+            InvalidUnaryOp { op, ty, span } => Diagnostic::error(format!(
+                "Operator '{}' cannot be applied to type '{}'",
+                op, ty
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "invalid operation"),
 
             BreakOutsideLoop { span } => {
                 Diagnostic::error("'break' can only be used inside a loop")
@@ -227,23 +255,22 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "constraint not satisfied")
             }
 
-            ForbiddenFieldAccess { field, span } => {
-                Diagnostic::error(format!(
-                    "Cannot access internal field '{}' on bare union",
-                    field
-                ))
-                .with_code(error_code(error))
-                .with_primary_label(file_id, *span, "forbidden field access")
-                .with_note("Bare unions use typeof for type narrowing")
-                .with_help("Use typeof instead: typeof x === \"string\"".to_string())
-            }
+            ForbiddenFieldAccess { field, span } => Diagnostic::error(format!(
+                "Cannot access internal field '{}' on bare union",
+                field
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "forbidden field access")
+            .with_note("Bare unions use typeof for type narrowing")
+            .with_help("Use typeof instead: typeof x === \"string\"".to_string()),
 
-            AbstractClassInstantiation { name, span } => {
-                Diagnostic::error(format!("Cannot create an instance of abstract class '{}'", name))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "abstract class")
-                    .with_help("Extend this class with a concrete subclass instead")
-            }
+            AbstractClassInstantiation { name, span } => Diagnostic::error(format!(
+                "Cannot create an instance of abstract class '{}'",
+                name
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "abstract class")
+            .with_help("Extend this class with a concrete subclass instead"),
 
             UndefinedMember { member, span } => {
                 Diagnostic::error(format!("Property '{}' does not exist", member))
@@ -273,14 +300,19 @@ impl Diagnostic {
             }
 
             // Decorator errors
-            InvalidDecorator { ty, expected, span } => {
-                Diagnostic::error(format!("Invalid decorator: type '{}' is not a valid decorator", ty))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "invalid decorator")
-                    .with_note(format!("Expected: {}", expected))
-            }
+            InvalidDecorator { ty, expected, span } => Diagnostic::error(format!(
+                "Invalid decorator: type '{}' is not a valid decorator",
+                ty
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "invalid decorator")
+            .with_note(format!("Expected: {}", expected)),
 
-            DecoratorSignatureMismatch { expected_signature, actual_signature, span } => {
+            DecoratorSignatureMismatch {
+                expected_signature,
+                actual_signature,
+                span,
+            } => {
                 Diagnostic::error("Decorated method signature does not match decorator constraint")
                     .with_code(error_code(error))
                     .with_primary_label(file_id, *span, "signature mismatch")
@@ -288,11 +320,16 @@ impl Diagnostic {
                     .with_note(format!("Method has: {}", actual_signature))
             }
 
-            DecoratorReturnMismatch { expected, actual, span } => {
-                Diagnostic::error(format!("Decorator return type mismatch: expected '{}', got '{}'", expected, actual))
-                    .with_code(error_code(error))
-                    .with_primary_label(file_id, *span, "invalid return type")
-            }
+            DecoratorReturnMismatch {
+                expected,
+                actual,
+                span,
+            } => Diagnostic::error(format!(
+                "Decorator return type mismatch: expected '{}', got '{}'",
+                expected, actual
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "invalid return type"),
         }
     }
 
@@ -301,12 +338,14 @@ impl Diagnostic {
         use BindError::*;
 
         match error {
-            DuplicateSymbol { name, original, duplicate } => {
-                Diagnostic::error(format!("Duplicate identifier '{}'", name))
-                    .with_code(ErrorCode("E3001"))
-                    .with_primary_label(file_id, *duplicate, "duplicate declaration")
-                    .with_secondary_label(file_id, *original, "first declaration here")
-            }
+            DuplicateSymbol {
+                name,
+                original,
+                duplicate,
+            } => Diagnostic::error(format!("Duplicate identifier '{}'", name))
+                .with_code(ErrorCode("E3001"))
+                .with_primary_label(file_id, *duplicate, "duplicate declaration")
+                .with_secondary_label(file_id, *original, "first declaration here"),
 
             UndefinedType { name, span } => {
                 Diagnostic::error(format!("Cannot find type '{}'", name))
@@ -314,11 +353,12 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "type not found")
             }
 
-            NotAType { name, span } => {
-                Diagnostic::error(format!("'{}' refers to a value, but is being used as a type", name))
-                    .with_code(ErrorCode("E3003"))
-                    .with_primary_label(file_id, *span, "not a type")
-            }
+            NotAType { name, span } => Diagnostic::error(format!(
+                "'{}' refers to a value, but is being used as a type",
+                name
+            ))
+            .with_code(ErrorCode("E3003"))
+            .with_primary_label(file_id, *span, "not a type"),
 
             InvalidTypeExpr { message, span } => {
                 Diagnostic::error(format!("Invalid type expression: {}", message))
@@ -326,17 +366,24 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "invalid type")
             }
 
-            InvalidTypeArguments { name, expected, actual, span } => {
-                Diagnostic::error(format!("Type '{}' expects {} type argument(s), got {}", name, expected, actual))
-                    .with_code(ErrorCode("E3005"))
-                    .with_primary_label(file_id, *span, "wrong number of type arguments")
-            }
+            InvalidTypeArguments {
+                name,
+                expected,
+                actual,
+                span,
+            } => Diagnostic::error(format!(
+                "Type '{}' expects {} type argument(s), got {}",
+                name, expected, actual
+            ))
+            .with_code(ErrorCode("E3005"))
+            .with_primary_label(file_id, *span, "wrong number of type arguments"),
 
-            RequiredAfterOptional { name, span } => {
-                Diagnostic::error(format!("Required parameter '{}' cannot follow an optional parameter", name))
-                    .with_code(ErrorCode("E3006"))
-                    .with_primary_label(file_id, *span, "required parameter after optional")
-            }
+            RequiredAfterOptional { name, span } => Diagnostic::error(format!(
+                "Required parameter '{}' cannot follow an optional parameter",
+                name
+            ))
+            .with_code(ErrorCode("E3006"))
+            .with_primary_label(file_id, *span, "required parameter after optional"),
 
             InvalidRestParameter { message, span } => {
                 Diagnostic::error(format!("Invalid rest parameter: {}", message))
@@ -362,17 +409,25 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "this code will never execute")
             }
 
-            CheckWarning::ShadowedVariable { name, original, shadow } => {
-                Diagnostic::warning(format!("Variable '{}' shadows a variable in an outer scope", name))
-                    .with_code(ErrorCode(warning.code().as_str()))
-                    .with_primary_label(file_id, *shadow, "shadows outer variable")
-                    .with_secondary_label(file_id, *original, "previously declared here")
-            }
+            CheckWarning::ShadowedVariable {
+                name,
+                original,
+                shadow,
+            } => Diagnostic::warning(format!(
+                "Variable '{}' shadows a variable in an outer scope",
+                name
+            ))
+            .with_code(ErrorCode(warning.code().as_str()))
+            .with_primary_label(file_id, *shadow, "shadows outer variable")
+            .with_secondary_label(file_id, *original, "previously declared here"),
         }
     }
 
     /// Emit the diagnostic to stderr with colors
-    pub fn emit(&self, files: &SimpleFiles<String, String>) -> Result<(), codespan_reporting::files::Error> {
+    pub fn emit(
+        &self,
+        files: &SimpleFiles<String, String>,
+    ) -> Result<(), codespan_reporting::files::Error> {
         let mut writer = StandardStream::stderr(ColorChoice::Auto);
         let config = codespan_reporting::term::Config::default();
         term::emit(&mut writer, &config, files, &self.inner)
@@ -384,7 +439,10 @@ impl Diagnostic {
     }
 
     /// Convert to JSON representation for IDE integration
-    pub fn to_json(&self, files: &SimpleFiles<String, String>) -> Result<String, serde_json::Error> {
+    pub fn to_json(
+        &self,
+        files: &SimpleFiles<String, String>,
+    ) -> Result<String, serde_json::Error> {
         let json_diag = JsonDiagnostic::from_diagnostic(self, files);
         serde_json::to_string_pretty(&json_diag)
     }
@@ -435,32 +493,38 @@ impl JsonDiagnostic {
             Severity::Bug => "bug",
         };
 
-        let labels = diag.inner.labels.iter().filter_map(|label| {
-            // Try to get file name and location info
-            let file_id = label.file_id;
-            let file_name = files.get(file_id).ok()?.name().to_string();
+        let labels = diag
+            .inner
+            .labels
+            .iter()
+            .filter_map(|label| {
+                // Try to get file name and location info
+                let file_id = label.file_id;
+                let file_name = files.get(file_id).ok()?.name().to_string();
 
-            // Get start and end locations
-            let start = label.range.start;
-            let end = label.range.end;
+                // Get start and end locations
+                let start = label.range.start;
+                let end = label.range.end;
 
-            // Get line and column information
-            let start_location = files.get(file_id).ok()?.location((), start).ok()?;
-            let end_location = files.get(file_id).ok()?.location((), end).ok()?;
+                // Get line and column information
+                let start_location = files.get(file_id).ok()?.location((), start).ok()?;
+                let end_location = files.get(file_id).ok()?.location((), end).ok()?;
 
-            Some(JsonLabel {
-                file: file_name,
-                start_line: start_location.line_number,
-                start_column: start_location.column_number,
-                end_line: end_location.line_number,
-                end_column: end_location.column_number,
-                message: Some(label.message.clone()),
-                style: match label.style {
-                    codespan_reporting::diagnostic::LabelStyle::Primary => "primary",
-                    codespan_reporting::diagnostic::LabelStyle::Secondary => "secondary",
-                }.to_string(),
+                Some(JsonLabel {
+                    file: file_name,
+                    start_line: start_location.line_number,
+                    start_column: start_location.column_number,
+                    end_line: end_location.line_number,
+                    end_column: end_location.column_number,
+                    message: Some(label.message.clone()),
+                    style: match label.style {
+                        codespan_reporting::diagnostic::LabelStyle::Primary => "primary",
+                        codespan_reporting::diagnostic::LabelStyle::Secondary => "secondary",
+                    }
+                    .to_string(),
+                })
             })
-        }).collect();
+            .collect();
 
         JsonDiagnostic {
             code: diag.code.as_ref().map(|c| c.0.to_string()),
@@ -505,7 +569,10 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
 }
 
 /// Helper to create a SimpleFiles instance from source code
-pub fn create_files(path: impl Into<PathBuf>, source: impl Into<String>) -> SimpleFiles<String, String> {
+pub fn create_files(
+    path: impl Into<PathBuf>,
+    source: impl Into<String>,
+) -> SimpleFiles<String, String> {
     let mut files = SimpleFiles::new();
     files.add(path.into().display().to_string(), source.into());
     files
@@ -524,8 +591,7 @@ mod tests {
 
     #[test]
     fn test_diagnostic_with_code() {
-        let diag = Diagnostic::error("Test error")
-            .with_code(ErrorCode("E2001"));
+        let diag = Diagnostic::error("Test error").with_code(ErrorCode("E2001"));
 
         assert_eq!(diag.code, Some(ErrorCode("E2001")));
     }

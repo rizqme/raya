@@ -3,9 +3,9 @@
 //! Provides symbol tables with scope management for tracking declarations
 //! and resolving identifiers during type checking.
 
-use rustc_hash::FxHashMap;
-use crate::parser::Span;
 use crate::parser::types::TypeId;
+use crate::parser::Span;
+use rustc_hash::FxHashMap;
 
 /// Symbol kind (variable, function, class, type alias, etc.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,8 +27,7 @@ pub enum SymbolKind {
 }
 
 /// Symbol flags for additional metadata
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SymbolFlags {
     /// Is this symbol exported from the module?
     pub is_exported: bool,
@@ -41,7 +40,6 @@ pub struct SymbolFlags {
     /// Is this symbol imported from another module?
     pub is_imported: bool,
 }
-
 
 /// Symbol information
 #[derive(Debug, Clone)]
@@ -183,7 +181,11 @@ impl SymbolTable {
     ///
     /// Returns an error if a symbol with the same name already exists in that scope,
     /// unless the existing symbol is imported (allowing user code to shadow imports).
-    pub fn define_in_scope(&mut self, scope_id: ScopeId, mut symbol: Symbol) -> Result<(), DuplicateSymbolError> {
+    pub fn define_in_scope(
+        &mut self,
+        scope_id: ScopeId,
+        mut symbol: Symbol,
+    ) -> Result<(), DuplicateSymbolError> {
         let scope = &mut self.scopes[scope_id.0 as usize];
 
         // Check for duplicate

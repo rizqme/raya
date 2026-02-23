@@ -4,8 +4,8 @@
 
 use super::header::{DropFn, GcHeader};
 use super::ptr::GcPtr;
-use crate::vm::types::TypeRegistry;
 use crate::vm::interpreter::VmContextId;
+use crate::vm::types::TypeRegistry;
 use std::alloc::{alloc, dealloc, Layout};
 use std::any::TypeId;
 use std::ptr::NonNull;

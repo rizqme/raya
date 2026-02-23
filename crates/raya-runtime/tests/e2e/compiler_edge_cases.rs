@@ -611,18 +611,12 @@ fn test_string_length() {
 
 #[test]
 fn test_string_comparison() {
-    expect_bool(
-        "return \"abc\" == \"abc\";",
-        true,
-    );
+    expect_bool("return \"abc\" == \"abc\";", true);
 }
 
 #[test]
 fn test_string_inequality() {
-    expect_bool(
-        "return \"abc\" != \"def\";",
-        true,
-    );
+    expect_bool("return \"abc\" != \"def\";", true);
 }
 
 #[test]

@@ -70,7 +70,9 @@ fn check_condition(condition: &ast::Expression, context: &str) -> Vec<LintDiagno
             span: *condition.span(),
             severity: META.default_severity,
             fix: None,
-            notes: vec![format!("This condition will always evaluate to the same value")],
+            notes: vec![format!(
+                "This condition will always evaluate to the same value"
+            )],
         }]
     } else {
         vec![]
@@ -113,7 +115,10 @@ mod tests {
     #[test]
     fn test_if_variable_ok() {
         let diags = lint("function f(x: bool): void { if (x) { const y: int = 1; } }");
-        assert!(!has_rule(&diags, "L1003"), "should not flag variable condition");
+        assert!(
+            !has_rule(&diags, "L1003"),
+            "should not flag variable condition"
+        );
     }
 
     #[test]

@@ -29,7 +29,9 @@ impl CompilationPolicy {
     /// Check if a function should be compiled based on its profile and code size
     pub fn should_compile(&self, profile: &FunctionProfile, code_size: usize) -> bool {
         // Don't compile if already available or in progress
-        if profile.is_jit_available() || profile.compiling.load(std::sync::atomic::Ordering::Relaxed) {
+        if profile.is_jit_available()
+            || profile.compiling.load(std::sync::atomic::Ordering::Relaxed)
+        {
             return false;
         }
 
@@ -38,8 +40,12 @@ impl CompilationPolicy {
             return false;
         }
 
-        let calls = profile.call_count.load(std::sync::atomic::Ordering::Relaxed);
-        let loops = profile.loop_count.load(std::sync::atomic::Ordering::Relaxed);
+        let calls = profile
+            .call_count
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let loops = profile
+            .loop_count
+            .load(std::sync::atomic::Ordering::Relaxed);
 
         calls >= self.call_threshold || loops >= self.loop_threshold
     }

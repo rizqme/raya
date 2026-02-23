@@ -4,14 +4,14 @@
 //! be compiled to native code. Handles typed arithmetic, NaN-boxing conversions,
 //! local variable access, and control flow.
 
-use cranelift_codegen::ir::{self, condcodes, types, InstBuilder, MemFlags};
 use cranelift_codegen::ir::AbiParam;
+use cranelift_codegen::ir::{self, condcodes, types, InstBuilder, MemFlags};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, Variable};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
 use super::abi;
+use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
 
 /// State maintained during lowering of a single function
 pub struct LoweringContext<'a> {
@@ -59,7 +59,8 @@ fn build_phi_copies(func: &JitFunction) -> FxHashMap<JitBlockId, Vec<(Reg, Reg)>
         for instr in &block.instrs {
             if let JitInstr::Phi { dest, sources } = instr {
                 for (src_block, src_reg) in sources {
-                    copies.entry(*src_block)
+                    copies
+                        .entry(*src_block)
                         .or_default()
                         .push((*dest, *src_reg));
                 }
@@ -387,16 +388,40 @@ impl<'a> LoweringContext<'a> {
                 self.lower_icmp(builder, condcodes::IntCC::NotEqual, *dest, *left, *right);
             }
             JitInstr::ICmpLt { dest, left, right } => {
-                self.lower_icmp(builder, condcodes::IntCC::SignedLessThan, *dest, *left, *right);
+                self.lower_icmp(
+                    builder,
+                    condcodes::IntCC::SignedLessThan,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
             JitInstr::ICmpLe { dest, left, right } => {
-                self.lower_icmp(builder, condcodes::IntCC::SignedLessThanOrEqual, *dest, *left, *right);
+                self.lower_icmp(
+                    builder,
+                    condcodes::IntCC::SignedLessThanOrEqual,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
             JitInstr::ICmpGt { dest, left, right } => {
-                self.lower_icmp(builder, condcodes::IntCC::SignedGreaterThan, *dest, *left, *right);
+                self.lower_icmp(
+                    builder,
+                    condcodes::IntCC::SignedGreaterThan,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
             JitInstr::ICmpGe { dest, left, right } => {
-                self.lower_icmp(builder, condcodes::IntCC::SignedGreaterThanOrEqual, *dest, *left, *right);
+                self.lower_icmp(
+                    builder,
+                    condcodes::IntCC::SignedGreaterThanOrEqual,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
 
             // ===== Float Comparison =====
@@ -410,13 +435,31 @@ impl<'a> LoweringContext<'a> {
                 self.lower_fcmp(builder, condcodes::FloatCC::LessThan, *dest, *left, *right);
             }
             JitInstr::FCmpLe { dest, left, right } => {
-                self.lower_fcmp(builder, condcodes::FloatCC::LessThanOrEqual, *dest, *left, *right);
+                self.lower_fcmp(
+                    builder,
+                    condcodes::FloatCC::LessThanOrEqual,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
             JitInstr::FCmpGt { dest, left, right } => {
-                self.lower_fcmp(builder, condcodes::FloatCC::GreaterThan, *dest, *left, *right);
+                self.lower_fcmp(
+                    builder,
+                    condcodes::FloatCC::GreaterThan,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
             JitInstr::FCmpGe { dest, left, right } => {
-                self.lower_fcmp(builder, condcodes::FloatCC::GreaterThanOrEqual, *dest, *left, *right);
+                self.lower_fcmp(
+                    builder,
+                    condcodes::FloatCC::GreaterThanOrEqual,
+                    *dest,
+                    *left,
+                    *right,
+                );
             }
 
             // ===== Logical =====
@@ -493,12 +536,9 @@ impl<'a> LoweringContext<'a> {
             JitInstr::StoreLocal { index, value } => {
                 let v = self.use_reg(builder, *value);
                 let offset = (*index as i32) * 8;
-                builder.ins().store(
-                    MemFlags::trusted(),
-                    v,
-                    self.params.locals_ptr,
-                    offset,
-                );
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), v, self.params.locals_ptr, offset);
             }
 
             // ===== Move / Phi =====
@@ -589,7 +629,11 @@ impl<'a> LoweringContext<'a> {
                 let cl_target = self.block_map[target];
                 builder.ins().jump(cl_target, &[]);
             }
-            JitTerminator::Branch { cond, then_block, else_block } => {
+            JitTerminator::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 let cond_val = self.use_reg(builder, *cond);
                 let then_cl = self.block_map[then_block];
                 let else_cl = self.block_map[else_block];
@@ -602,7 +646,9 @@ impl<'a> LoweringContext<'a> {
                 // Should not happen in a well-formed IR
                 builder.ins().trap(ir::TrapCode::user(1).unwrap());
             }
-            JitTerminator::Throw(_) | JitTerminator::Deoptimize { .. } | JitTerminator::BranchNull { .. } => {
+            JitTerminator::Throw(_)
+            | JitTerminator::Deoptimize { .. }
+            | JitTerminator::BranchNull { .. } => {
                 // For now, trap on unsupported terminators
                 builder.ins().trap(ir::TrapCode::user(2).unwrap());
             }
@@ -616,12 +662,12 @@ impl<'a> LoweringContext<'a> {
 /// ABI: `extern "C" fn(args: *const u64, arg_count: u32, locals: *mut u64, local_count: u32, ctx: *mut RuntimeContext) -> u64`
 pub fn jit_entry_signature(call_conv: CallConv) -> ir::Signature {
     let mut sig = ir::Signature::new(call_conv);
-    sig.params.push(AbiParam::new(types::I64));  // args_ptr
-    sig.params.push(AbiParam::new(types::I32));  // arg_count
-    sig.params.push(AbiParam::new(types::I64));  // locals_ptr
-    sig.params.push(AbiParam::new(types::I32));  // local_count
-    sig.params.push(AbiParam::new(types::I64));  // ctx_ptr
-    sig.returns.push(AbiParam::new(types::I64));  // return value (NaN-boxed)
+    sig.params.push(AbiParam::new(types::I64)); // args_ptr
+    sig.params.push(AbiParam::new(types::I32)); // arg_count
+    sig.params.push(AbiParam::new(types::I64)); // locals_ptr
+    sig.params.push(AbiParam::new(types::I32)); // local_count
+    sig.params.push(AbiParam::new(types::I64)); // ctx_ptr
+    sig.returns.push(AbiParam::new(types::I64)); // return value (NaN-boxed)
     sig
 }
 

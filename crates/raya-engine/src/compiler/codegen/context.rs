@@ -2,15 +2,15 @@
 //!
 //! Manages state during bytecode generation from IR.
 
+use crate::compiler::bytecode::flags;
 use crate::compiler::bytecode::{
     ClassReflectionData, DebugInfo, FieldReflectionData, Function, FunctionDebugInfo, LineEntry,
     Module, Opcode, ReflectionData,
 };
-use crate::compiler::bytecode::flags;
 use crate::compiler::error::{CompileError, CompileResult};
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, IrConstant, IrFunction, IrInstr,
-    IrModule, IrValue, Register, StringCompareMode, Terminator, UnaryOp,
+    BasicBlock, BasicBlockId, BinaryOp, IrConstant, IrFunction, IrInstr, IrModule, IrValue,
+    Register, StringCompareMode, Terminator, UnaryOp,
 };
 use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
 use crate::parser::token::Span;
@@ -121,7 +121,9 @@ impl FunctionContext {
 
     /// Emit a u32 operand
     fn emit_u32(&mut self, value: u32) {
-        self.builder.code_mut().extend_from_slice(&value.to_le_bytes());
+        self.builder
+            .code_mut()
+            .extend_from_slice(&value.to_le_bytes());
     }
 
     /// Get current code position
@@ -131,7 +133,8 @@ impl FunctionContext {
 
     /// Record block start position
     fn record_block_position(&mut self, block_id: BasicBlockId) {
-        self.block_positions.insert(block_id, self.current_position());
+        self.block_positions
+            .insert(block_id, self.current_position());
     }
 
     /// Record a pending jump to be patched
@@ -230,16 +233,18 @@ impl IrCodeGenerator {
 
         // Generate class definitions with method vtable entries
         for class in module.classes() {
-            let methods: Vec<crate::compiler::bytecode::Method> = class.methods.iter()
+            let methods: Vec<crate::compiler::bytecode::Method> = class
+                .methods
+                .iter()
                 .zip(class.method_slots.iter())
                 .filter_map(|(&method_id, &slot)| {
-                    module.get_function(method_id).map(|func| {
-                        crate::compiler::bytecode::Method {
+                    module
+                        .get_function(method_id)
+                        .map(|func| crate::compiler::bytecode::Method {
                             name: func.name.clone(),
                             function_id: method_id.as_u32() as usize,
                             slot: slot as usize,
-                        }
-                    })
+                        })
                 })
                 .collect();
             let class_def = crate::compiler::bytecode::ClassDef {
@@ -252,10 +257,8 @@ impl IrCodeGenerator {
         }
 
         // Build and return the module
-        let builder = std::mem::replace(
-            &mut self.module_builder,
-            ModuleBuilder::new(String::new()),
-        );
+        let builder =
+            std::mem::replace(&mut self.module_builder, ModuleBuilder::new(String::new()));
         let mut bytecode_module = builder.build();
 
         // Add reflection data if present
@@ -272,7 +275,10 @@ impl IrCodeGenerator {
 
         // Add debug info (source map) if collected
         if self.emit_sourcemap && !func_debug_infos.is_empty() {
-            let debug_info = DebugInfo { functions: func_debug_infos, ..Default::default() };
+            let debug_info = DebugInfo {
+                functions: func_debug_infos,
+                ..Default::default()
+            };
             bytecode_module.flags |= flags::HAS_DEBUG_INFO;
             bytecode_module.debug_info = Some(debug_info);
         }
@@ -355,7 +361,10 @@ impl IrCodeGenerator {
     }
 
     /// Generate bytecode for a single function, returning the bytecode and optional debug info.
-    fn generate_function(&mut self, func: &IrFunction) -> CompileResult<(Function, Option<FunctionDebugInfo>)> {
+    fn generate_function(
+        &mut self,
+        func: &IrFunction,
+    ) -> CompileResult<(Function, Option<FunctionDebugInfo>)> {
         let param_count = func.param_count() as u8;
         let mut ctx = FunctionContext::new(func.name.clone(), param_count);
 
@@ -410,7 +419,11 @@ impl IrCodeGenerator {
     }
 
     /// Generate bytecode for a basic block
-    fn generate_block(&mut self, ctx: &mut FunctionContext, block: &BasicBlock) -> CompileResult<()> {
+    fn generate_block(
+        &mut self,
+        ctx: &mut FunctionContext,
+        block: &BasicBlock,
+    ) -> CompileResult<()> {
         let has_spans = !block.instruction_spans.is_empty();
 
         // Emit instructions
@@ -440,7 +453,12 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::BinaryOp { dest, op, left, right } => {
+            IrInstr::BinaryOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 // Load left operand
                 self.emit_load_register(ctx, left);
                 // Load right operand
@@ -480,7 +498,12 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::CallMethod { dest, object, method, args } => {
+            IrInstr::CallMethod {
+                dest,
+                object,
+                method,
+                args,
+            } => {
                 // Push object
                 self.emit_load_register(ctx, object);
                 // Push arguments
@@ -501,7 +524,11 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::NativeCall { dest, native_id, args } => {
+            IrInstr::NativeCall {
+                dest,
+                native_id,
+                args,
+            } => {
                 // Push arguments onto stack
                 for arg in args {
                     self.emit_load_register(ctx, arg);
@@ -520,7 +547,11 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::ModuleNativeCall { dest, local_idx, args } => {
+            IrInstr::ModuleNativeCall {
+                dest,
+                local_idx,
+                args,
+            } => {
                 // Push arguments onto stack
                 for arg in args {
                     self.emit_load_register(ctx, arg);
@@ -538,7 +569,11 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::InstanceOf { dest, object, class_id } => {
+            IrInstr::InstanceOf {
+                dest,
+                object,
+                class_id,
+            } => {
                 // Push object onto stack
                 self.emit_load_register(ctx, object);
                 // Emit InstanceOf opcode with class ID
@@ -549,7 +584,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::Cast { dest, object, class_id } => {
+            IrInstr::Cast {
+                dest,
+                object,
+                class_id,
+            } => {
                 // Push object onto stack
                 self.emit_load_register(ctx, object);
                 // Emit Cast opcode with class ID
@@ -600,7 +639,11 @@ impl IrCodeGenerator {
                 ctx.emit_u32(*index as u32);
             }
 
-            IrInstr::LoadField { dest, object, field } => {
+            IrInstr::LoadField {
+                dest,
+                object,
+                field,
+            } => {
                 self.emit_load_register(ctx, object);
                 ctx.emit(Opcode::LoadField);
                 ctx.emit_u16(*field);
@@ -608,7 +651,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::BindMethod { dest, object, method } => {
+            IrInstr::BindMethod {
+                dest,
+                object,
+                method,
+            } => {
                 self.emit_load_register(ctx, object);
                 ctx.emit(Opcode::BindMethod);
                 ctx.emit_u16(*method);
@@ -616,7 +663,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::StoreField { object, field, value } => {
+            IrInstr::StoreField {
+                object,
+                field,
+                value,
+            } => {
                 // VM expects: [object, value] with value on top
                 // VM pops: value first, then object
                 self.emit_load_register(ctx, object);
@@ -625,7 +676,11 @@ impl IrCodeGenerator {
                 ctx.emit_u16(*field);
             }
 
-            IrInstr::JsonLoadProperty { dest, object, property } => {
+            IrInstr::JsonLoadProperty {
+                dest,
+                object,
+                property,
+            } => {
                 // Load JSON property by name (duck typing)
                 // Push object, then emit JsonGet with property name index
                 self.emit_load_register(ctx, object);
@@ -636,7 +691,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::JsonStoreProperty { object, property, value } => {
+            IrInstr::JsonStoreProperty {
+                object,
+                property,
+                value,
+            } => {
                 // Store JSON property by name (duck typing)
                 // Push object, push value, then emit JsonSet with property name index
                 self.emit_load_register(ctx, object);
@@ -654,7 +713,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::StoreElement { array, index, value } => {
+            IrInstr::StoreElement {
+                array,
+                index,
+                value,
+            } => {
                 // Stack order: array, index, value (top)
                 // VM pops: value, index, array
                 self.emit_load_register(ctx, array);
@@ -670,7 +733,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::NewArray { dest, len, elem_ty: _ } => {
+            IrInstr::NewArray {
+                dest,
+                len,
+                elem_ty: _,
+            } => {
                 self.emit_load_register(ctx, len);
                 ctx.emit(Opcode::NewArray);
                 ctx.emit_u32(0); // Type index (TODO: proper type handling)
@@ -678,7 +745,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::ArrayLiteral { dest, elements, elem_ty: _ } => {
+            IrInstr::ArrayLiteral {
+                dest,
+                elements,
+                elem_ty: _,
+            } => {
                 // Push all elements
                 for elem in elements {
                     self.emit_load_register(ctx, elem);
@@ -690,7 +761,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::ObjectLiteral { dest, class, fields } => {
+            IrInstr::ObjectLiteral {
+                dest,
+                class,
+                fields,
+            } => {
                 // Create the object first (pushes it on the stack)
                 ctx.emit(Opcode::ObjectLiteral);
                 ctx.emit_u16(class.as_u32() as u16);
@@ -747,7 +822,11 @@ impl IrCodeGenerator {
                 });
             }
 
-            IrInstr::MakeClosure { dest, func, captures } => {
+            IrInstr::MakeClosure {
+                dest,
+                func,
+                captures,
+            } => {
                 // Push captured variables onto the stack
                 for capture in captures {
                     self.emit_load_register(ctx, capture);
@@ -774,7 +853,11 @@ impl IrCodeGenerator {
                 ctx.emit_u16(*index);
             }
 
-            IrInstr::SetClosureCapture { closure, index, value } => {
+            IrInstr::SetClosureCapture {
+                closure,
+                index,
+                value,
+            } => {
                 // Push closure and value onto stack
                 self.emit_load_register(ctx, closure);
                 self.emit_load_register(ctx, value);
@@ -785,7 +868,10 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::NewRefCell { dest, initial_value } => {
+            IrInstr::NewRefCell {
+                dest,
+                initial_value,
+            } => {
                 // Push initial value and create RefCell
                 self.emit_load_register(ctx, initial_value);
                 ctx.emit(Opcode::NewRefCell);
@@ -810,7 +896,11 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::StoreRefCell);
             }
 
-            IrInstr::CallClosure { dest, closure, args } => {
+            IrInstr::CallClosure {
+                dest,
+                closure,
+                args,
+            } => {
                 // Push closure first (will be below args on stack)
                 self.emit_load_register(ctx, closure);
                 // Push arguments
@@ -831,7 +921,13 @@ impl IrCodeGenerator {
                 }
             }
 
-            IrInstr::StringCompare { dest, left, right, mode, negate } => {
+            IrInstr::StringCompare {
+                dest,
+                left,
+                right,
+                mode,
+                negate,
+            } => {
                 // Load operands
                 self.emit_load_register(ctx, left);
                 self.emit_load_register(ctx, right);
@@ -882,7 +978,11 @@ impl IrCodeGenerator {
                 self.emit_store_local(ctx, slot);
             }
 
-            IrInstr::SpawnClosure { dest, closure, args } => {
+            IrInstr::SpawnClosure {
+                dest,
+                closure,
+                args,
+            } => {
                 // Push arguments onto stack in reverse order
                 for arg in args.iter().rev() {
                     self.emit_load_register(ctx, arg);
@@ -973,7 +1073,10 @@ impl IrCodeGenerator {
                 ctx.emit(Opcode::TaskCancel);
             }
 
-            IrInstr::SetupTry { catch_block, finally_block } => {
+            IrInstr::SetupTry {
+                catch_block,
+                finally_block,
+            } => {
                 // Emit Try opcode with catch and finally offsets
                 ctx.emit(Opcode::Try);
                 // Record pending jump for catch block (i32 offset)
@@ -1015,7 +1118,11 @@ impl IrCodeGenerator {
     }
 
     /// Generate bytecode for a terminator
-    fn generate_terminator(&mut self, ctx: &mut FunctionContext, term: &Terminator) -> CompileResult<()> {
+    fn generate_terminator(
+        &mut self,
+        ctx: &mut FunctionContext,
+        term: &Terminator,
+    ) -> CompileResult<()> {
         match term {
             Terminator::Return(None) => {
                 ctx.emit(Opcode::ConstNull);
@@ -1032,7 +1139,11 @@ impl IrCodeGenerator {
                 ctx.record_pending_jump(*target);
             }
 
-            Terminator::Branch { cond, then_block, else_block } => {
+            Terminator::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 self.emit_load_register(ctx, cond);
                 // Jump to else block if condition is false
                 ctx.emit(Opcode::JmpIfFalse);
@@ -1056,7 +1167,11 @@ impl IrCodeGenerator {
                 ctx.record_pending_jump(*not_null_block);
             }
 
-            Terminator::Switch { value, cases, default } => {
+            Terminator::Switch {
+                value,
+                cases,
+                default,
+            } => {
                 // For now, emit as a series of comparisons
                 // TODO: Optimize with jump table for dense cases
                 for (case_value, target) in cases {
@@ -1100,7 +1215,11 @@ impl IrCodeGenerator {
     }
 
     /// Emit bytecode to load a constant
-    fn emit_constant(&mut self, ctx: &mut FunctionContext, constant: &IrConstant) -> CompileResult<()> {
+    fn emit_constant(
+        &mut self,
+        ctx: &mut FunctionContext,
+        constant: &IrConstant,
+    ) -> CompileResult<()> {
         match constant {
             IrConstant::I32(value) => {
                 ctx.emit(Opcode::ConstI32);
@@ -1199,13 +1318,21 @@ impl IrCodeGenerator {
     /// 5 = Never
     /// 6 = Unknown
     /// 16 = Int (i32)
-    fn emit_binary_op_typed_v2(&self, ctx: &mut FunctionContext, op: BinaryOp, left_ty: u32, right_ty: u32) {
+    fn emit_binary_op_typed_v2(
+        &self,
+        ctx: &mut FunctionContext,
+        op: BinaryOp,
+        left_ty: u32,
+        right_ty: u32,
+    ) {
         const INT_TYPE_ID: u32 = 16;
 
         let is_string = left_ty == 1 || right_ty == 1;
         // Generic: null (3), unknown (6), or non-primitive types (>6 except Int)
-        let use_generic = left_ty == 3 || right_ty == 3
-            || left_ty == 6 || right_ty == 6
+        let use_generic = left_ty == 3
+            || right_ty == 3
+            || left_ty == 6
+            || right_ty == 6
             || (left_ty > 6 && left_ty != INT_TYPE_ID)
             || (right_ty > 6 && right_ty != INT_TYPE_ID);
         // Float: either operand is number/float (TypeId 0)
@@ -1213,7 +1340,9 @@ impl IrCodeGenerator {
         // Int: both operands are int (TypeId 16)
         let is_int = left_ty == INT_TYPE_ID && right_ty == INT_TYPE_ID;
 
-        let opcode = if (left_ty == 3 || right_ty == 3) && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
+        let opcode = if (left_ty == 3 || right_ty == 3)
+            && matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+        {
             // Null comparison — use generic Eq/Ne. Seq returns false for null==null
             // (neither is a pointer), so null checks must use raw bit comparison.
             match op {
@@ -1260,7 +1389,13 @@ impl IrCodeGenerator {
 
     /// Emit binary operation (type-aware version) - legacy
     #[allow(dead_code)]
-    fn emit_binary_op_typed(&self, ctx: &mut FunctionContext, op: BinaryOp, is_string: bool, use_generic: bool) {
+    fn emit_binary_op_typed(
+        &self,
+        ctx: &mut FunctionContext,
+        op: BinaryOp,
+        is_string: bool,
+        use_generic: bool,
+    ) {
         let opcode = if is_string {
             // String operations
             match op {

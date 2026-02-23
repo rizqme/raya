@@ -384,23 +384,26 @@ impl Dependency {
 
     /// Check if this is a path dependency
     pub fn is_path(&self) -> bool {
-        matches!(
-            self,
-            Dependency::Detailed { path: Some(_), .. }
-        )
+        matches!(self, Dependency::Detailed { path: Some(_), .. })
     }
 
     /// Check if this is a git dependency
     pub fn is_git(&self) -> bool {
-        matches!(
-            self,
-            Dependency::Detailed { git: Some(_), .. }
-        )
+        matches!(self, Dependency::Detailed { git: Some(_), .. })
     }
 
     /// Check if this is a registry dependency
     pub fn is_registry(&self) -> bool {
-        matches!(self, Dependency::Simple(_) | Dependency::Detailed { version: Some(_), path: None, git: None, .. })
+        matches!(
+            self,
+            Dependency::Simple(_)
+                | Dependency::Detailed {
+                    version: Some(_),
+                    path: None,
+                    git: None,
+                    ..
+                }
+        )
     }
 }
 
@@ -462,10 +465,7 @@ fn validate_dependency(name: &str, dep: &Dependency) -> Result<(), ManifestError
             }
         }
         Dependency::Detailed {
-            version,
-            path,
-            git,
-            ..
+            version, path, git, ..
         } => {
             // Must have at least one source specified
             if version.is_none() && path.is_none() && git.is_none() {
@@ -476,11 +476,10 @@ fn validate_dependency(name: &str, dep: &Dependency) -> Result<(), ManifestError
             }
 
             // Cannot have multiple sources
-            let source_count =
-                [version.is_some(), path.is_some(), git.is_some()]
-                    .iter()
-                    .filter(|&&x| x)
-                    .count();
+            let source_count = [version.is_some(), path.is_some(), git.is_some()]
+                .iter()
+                .filter(|&&x| x)
+                .count();
 
             if source_count > 1 {
                 return Err(ManifestError::ValidationError(format!(

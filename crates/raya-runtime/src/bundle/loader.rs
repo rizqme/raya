@@ -148,11 +148,14 @@ pub fn detect_bundle_at(path: &Path) -> Option<BundlePayload> {
             break;
         }
         if let Some(entry) = BundledFuncEntry::from_bytes(&data[entry_start..entry_end]) {
-            functions.insert(entry.global_func_id, LoadedFunction {
-                code_offset: entry.code_offset,
-                local_count: entry.local_count,
-                param_count: entry.param_count,
-            });
+            functions.insert(
+                entry.global_func_id,
+                LoadedFunction {
+                    code_offset: entry.code_offset,
+                    local_count: entry.local_count,
+                    param_count: entry.param_count,
+                },
+            );
         }
     }
 
@@ -209,18 +212,10 @@ fn load_executable_code(code_bytes: &[u8]) -> Option<AotCodeRegion> {
         }
 
         // 2. Copy machine code
-        std::ptr::copy_nonoverlapping(
-            code_bytes.as_ptr(),
-            ptr as *mut u8,
-            code_bytes.len(),
-        );
+        std::ptr::copy_nonoverlapping(code_bytes.as_ptr(), ptr as *mut u8, code_bytes.len());
 
         // 3. Switch to executable (W^X: remove write, add execute)
-        let result = libc::mprotect(
-            ptr,
-            code_bytes.len(),
-            libc::PROT_READ | libc::PROT_EXEC,
-        );
+        let result = libc::mprotect(ptr, code_bytes.len(), libc::PROT_READ | libc::PROT_EXEC);
 
         if result != 0 {
             libc::munmap(ptr, code_bytes.len());

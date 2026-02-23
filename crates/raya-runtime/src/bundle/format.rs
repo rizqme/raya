@@ -113,9 +113,7 @@ impl AotTrailer {
         }
 
         // Safety: AotTrailer is repr(C, packed) with no padding
-        let trailer = unsafe {
-            std::ptr::read_unaligned(bytes.as_ptr() as *const AotTrailer)
-        };
+        let trailer = unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const AotTrailer) };
 
         if trailer.is_valid() {
             Some(trailer)
@@ -150,7 +148,11 @@ impl AotTrailer {
 
     /// Decode the target triple from the fixed-size buffer.
     pub fn decode_target_triple(&self) -> &str {
-        let end = self.target_triple.iter().position(|&b| b == 0).unwrap_or(64);
+        let end = self
+            .target_triple
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(64);
         std::str::from_utf8(&self.target_triple[..end]).unwrap_or("unknown")
     }
 }
@@ -161,9 +163,7 @@ impl BundledFuncEntry {
         if bytes.len() < FUNC_ENTRY_SIZE {
             return None;
         }
-        Some(unsafe {
-            std::ptr::read_unaligned(bytes.as_ptr() as *const BundledFuncEntry)
-        })
+        Some(unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const BundledFuncEntry) })
     }
 
     /// Write to a byte buffer.
@@ -181,10 +181,7 @@ impl BundledFuncEntry {
 ///
 /// Format: for each file:
 ///   [VfsFileHeader][path_bytes][file_data]
-pub fn write_vfs_section<W: Write>(
-    writer: &mut W,
-    files: &[(String, Vec<u8>)],
-) -> io::Result<u64> {
+pub fn write_vfs_section<W: Write>(writer: &mut W, files: &[(String, Vec<u8>)]) -> io::Result<u64> {
     let mut total = 0u64;
 
     for (path, data) in files {
@@ -219,9 +216,8 @@ pub fn read_vfs_section(data: &[u8]) -> Vec<(String, Vec<u8>)> {
     let header_size = std::mem::size_of::<VfsFileHeader>();
 
     while offset + header_size <= data.len() {
-        let header = unsafe {
-            std::ptr::read_unaligned(data[offset..].as_ptr() as *const VfsFileHeader)
-        };
+        let header =
+            unsafe { std::ptr::read_unaligned(data[offset..].as_ptr() as *const VfsFileHeader) };
         offset += header_size;
 
         let path_len = header.path_len as usize;

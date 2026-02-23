@@ -193,13 +193,27 @@ impl VmPermissions {
     /// Get a comma-separated list of enabled permission names
     fn to_string_list(&self) -> String {
         let mut perms = Vec::new();
-        if self.allow_eval { perms.push("eval"); }
-        if self.allow_binary_io { perms.push("binaryIO"); }
-        if self.allow_vm_spawn { perms.push("vmSpawn"); }
-        if self.allow_vm_access { perms.push("vmAccess"); }
-        if self.allow_lib_load { perms.push("libLoad"); }
-        if self.allow_reflect { perms.push("reflect"); }
-        if self.allow_native_calls { perms.push("nativeCalls"); }
+        if self.allow_eval {
+            perms.push("eval");
+        }
+        if self.allow_binary_io {
+            perms.push("binaryIO");
+        }
+        if self.allow_vm_spawn {
+            perms.push("vmSpawn");
+        }
+        if self.allow_vm_access {
+            perms.push("vmAccess");
+        }
+        if self.allow_lib_load {
+            perms.push("libLoad");
+        }
+        if self.allow_reflect {
+            perms.push("reflect");
+        }
+        if self.allow_native_calls {
+            perms.push("nativeCalls");
+        }
         perms.join(",")
     }
 
@@ -254,16 +268,19 @@ impl VmInstanceRegistry {
         let id = self.next_id;
         self.next_id += 1;
         self.root_id = Some(id);
-        self.instances.insert(id, VmInstanceEntry {
+        self.instances.insert(
             id,
-            vm: None, // Root has no owned Vm — delegates to global registries
-            modules: CompiledModuleRegistry::new(),
-            parent_id: None,
-            children: Vec::new(),
-            is_alive: true,
-            permissions: VmPermissions::root(),
-            debug_state: None,
-        });
+            VmInstanceEntry {
+                id,
+                vm: None, // Root has no owned Vm — delegates to global registries
+                modules: CompiledModuleRegistry::new(),
+                parent_id: None,
+                children: Vec::new(),
+                is_alive: true,
+                permissions: VmPermissions::root(),
+                debug_state: None,
+            },
+        );
         id
     }
 
@@ -272,16 +289,19 @@ impl VmInstanceRegistry {
         let id = self.next_id;
         self.next_id += 1;
         let vm = Vm::with_worker_count(1);
-        self.instances.insert(id, VmInstanceEntry {
+        self.instances.insert(
             id,
-            vm: Some(vm),
-            modules: CompiledModuleRegistry::new(),
-            parent_id: Some(parent_id),
-            children: Vec::new(),
-            is_alive: true,
-            permissions: VmPermissions::child_default(),
-            debug_state: None,
-        });
+            VmInstanceEntry {
+                id,
+                vm: Some(vm),
+                modules: CompiledModuleRegistry::new(),
+                parent_id: Some(parent_id),
+                children: Vec::new(),
+                is_alive: true,
+                permissions: VmPermissions::child_default(),
+                debug_state: None,
+            },
+        );
         // Register child in parent
         if let Some(parent) = self.instances.get_mut(&parent_id) {
             parent.children.push(id);
@@ -292,7 +312,8 @@ impl VmInstanceRegistry {
     /// Terminate an instance and all its descendants (cascading)
     fn terminate(&mut self, id: u32) {
         // Collect children first to avoid borrow issues
-        let children = self.instances
+        let children = self
+            .instances
             .get(&id)
             .map(|e| e.children.clone())
             .unwrap_or_default();
@@ -412,7 +433,10 @@ pub fn call_runtime_method(
             let source = get_string(args[0])?;
 
             // Wrap in a function so `return` works at top level
-            let wrapped = format!("function __eval__(): number {{ {} }}\nreturn __eval__();", source);
+            let wrapped = format!(
+                "function __eval__(): number {{ {} }}\nreturn __eval__();",
+                source
+            );
             let module = compile_source(&wrapped)?;
             execute_module(&module)?
         }
@@ -432,9 +456,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?
                 .clone();
             drop(registry);
 
@@ -457,9 +479,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?
                 .clone();
             drop(registry);
 
@@ -484,9 +504,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let bytes = module.encode();
             drop(registry);
 
@@ -517,11 +535,12 @@ pub fn call_runtime_method(
             }
             let buf_ptr = unsafe { buf_val.as_ptr::<Buffer>() };
             let buffer = unsafe { &*buf_ptr.unwrap().as_ptr() };
-            let bytes: Vec<u8> = (0..buffer.length()).filter_map(|i| buffer.get_byte(i)).collect();
+            let bytes: Vec<u8> = (0..buffer.length())
+                .filter_map(|i| buffer.get_byte(i))
+                .collect();
 
-            let module = Module::decode(&bytes).map_err(|e| {
-                VmError::RuntimeError(format!("Failed to decode module: {}", e))
-            })?;
+            let module = Module::decode(&bytes)
+                .map_err(|e| VmError::RuntimeError(format!("Failed to decode module: {}", e)))?;
 
             let mut registry = COMPILED_MODULE_REGISTRY.lock();
             let id = registry.register(module);
@@ -594,17 +613,20 @@ pub fn call_runtime_method(
             let entry = ast_reg
                 .typed
                 .remove(&ast_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Typed AST not found: {}", ast_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Typed AST not found: {}", ast_id)))?;
             drop(ast_reg);
 
-            let TypedAstEntry { ast, interner, type_ctx, symbols: _, expr_types } = entry;
-            let compiler = Compiler::new(type_ctx, &interner)
-                .with_expr_types(expr_types);
-            let module = compiler.compile_via_ir(&ast).map_err(|e| {
-                VmError::RuntimeError(format!("Compile error: {}", e))
-            })?;
+            let TypedAstEntry {
+                ast,
+                interner,
+                type_ctx,
+                symbols: _,
+                expr_types,
+            } = entry;
+            let compiler = Compiler::new(type_ctx, &interner).with_expr_types(expr_types);
+            let module = compiler
+                .compile_via_ir(&ast)
+                .map_err(|e| VmError::RuntimeError(format!("Compile error: {}", e)))?;
 
             let mut registry = COMPILED_MODULE_REGISTRY.lock();
             let id = registry.register(module);
@@ -640,10 +662,7 @@ pub fn call_runtime_method(
             })?;
 
             let module = Module::decode(&bytes).map_err(|e| {
-                VmError::RuntimeError(format!(
-                    "Failed to decode dependency '{}': {}",
-                    name, e
-                ))
+                VmError::RuntimeError(format!("Failed to decode dependency '{}': {}", name, e))
             })?;
 
             let mut registry = COMPILED_MODULE_REGISTRY.lock();
@@ -652,7 +671,6 @@ pub fn call_runtime_method(
         }
 
         // ── Bytecode Inspection (Phase 2) ──
-
         runtime::VALIDATE => {
             // Bytecode.validate(moduleId: number): boolean
             if args.is_empty() {
@@ -668,9 +686,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let is_valid = verify_module(module).is_ok();
             drop(registry);
             Value::bool(is_valid)
@@ -691,9 +707,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let mut output = String::new();
             for func in &module.functions {
                 output.push_str(&format!("function {}:\n", func.name));
@@ -719,9 +733,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let name = module.metadata.name.clone();
             drop(registry);
             allocate_string(ctx, name)
@@ -742,9 +754,7 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let names: Vec<String> = module.functions.iter().map(|f| f.name.clone()).collect();
             drop(registry);
             allocate_string(ctx, names.join(","))
@@ -765,16 +775,13 @@ pub fn call_runtime_method(
             let registry = COMPILED_MODULE_REGISTRY.lock();
             let module = registry
                 .get(module_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Module not found: {}", module_id))
-                })?;
+                .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?;
             let names: Vec<String> = module.classes.iter().map(|c| c.name.clone()).collect();
             drop(registry);
             allocate_string(ctx, names.join(","))
         }
 
         // ── Parser (Phase 2) ──
-
         runtime::PARSE => {
             // Parser.parse(source: string): number
             if args.is_empty() {
@@ -805,7 +812,6 @@ pub fn call_runtime_method(
         }
 
         // ── TypeChecker (Phase 2) ──
-
         runtime::CHECK | runtime::CHECK_EXPRESSION => {
             // TypeChecker.check(astId: number): number
             // TypeChecker.checkExpression(astId: number): number
@@ -820,12 +826,9 @@ pub fn call_runtime_method(
                 as u32;
 
             let ast_reg = AST_REGISTRY.lock();
-            let entry = ast_reg
-                .parsed
-                .get(&ast_id)
-                .ok_or_else(|| {
-                    VmError::RuntimeError(format!("Parsed AST not found: {}", ast_id))
-                })?;
+            let entry = ast_reg.parsed.get(&ast_id).ok_or_else(|| {
+                VmError::RuntimeError(format!("Parsed AST not found: {}", ast_id))
+            })?;
             let ast = entry.ast.clone();
             let interner = entry.interner.clone();
             drop(ast_reg);
@@ -837,7 +840,6 @@ pub fn call_runtime_method(
         }
 
         // ── Vm class (Phase 3) ──
-
         runtime::VM_CURRENT => {
             // Vm.current(): returns root instance handle
             let mut registry = VM_INSTANCE_REGISTRY.lock();
@@ -850,7 +852,9 @@ pub fn call_runtime_method(
             let mut registry = VM_INSTANCE_REGISTRY.lock();
             let root_id = registry.get_or_create_root();
             // Check if current VM has vmSpawn permission
-            let root = registry.instances.get(&root_id)
+            let root = registry
+                .instances
+                .get(&root_id)
                 .ok_or_else(|| VmError::RuntimeError("Root VM not found".to_string()))?;
             if !root.permissions.allow_vm_spawn {
                 return Err(VmError::RuntimeError(
@@ -862,7 +866,6 @@ pub fn call_runtime_method(
         }
 
         // ── Permission management (Phase 4) ──
-
         runtime::HAS_PERMISSION => {
             // Vm.hasPermission(name: string): boolean
             if args.is_empty() {
@@ -873,7 +876,8 @@ pub fn call_runtime_method(
             let name = get_string(args[0])?;
             let registry = VM_INSTANCE_REGISTRY.lock();
             let root_id = registry.root_id.unwrap_or(0);
-            let has_perm = registry.instances
+            let has_perm = registry
+                .instances
                 .get(&root_id)
                 .map(|e| e.permissions.has_permission(&name))
                 .unwrap_or(true); // No registry yet = root = all perms
@@ -884,7 +888,8 @@ pub fn call_runtime_method(
             // Vm.getPermissions(): string (comma-separated permission names)
             let registry = VM_INSTANCE_REGISTRY.lock();
             let root_id = registry.root_id.unwrap_or(0);
-            let perms_str = registry.instances
+            let perms_str = registry
+                .instances
                 .get(&root_id)
                 .map(|e| e.permissions.to_string_list())
                 .unwrap_or_else(|| VmPermissions::root().to_string_list());
@@ -896,7 +901,8 @@ pub fn call_runtime_method(
             // Vm.getAllowedStdlib(): string (comma-separated stdlib module names)
             let registry = VM_INSTANCE_REGISTRY.lock();
             let root_id = registry.root_id.unwrap_or(0);
-            let stdlib_str = registry.instances
+            let stdlib_str = registry
+                .instances
                 .get(&root_id)
                 .map(|e| e.permissions.allowed_stdlib_list())
                 .unwrap_or_else(|| "*".to_string());
@@ -914,7 +920,8 @@ pub fn call_runtime_method(
             let module_name = get_string(args[0])?;
             let registry = VM_INSTANCE_REGISTRY.lock();
             let root_id = registry.root_id.unwrap_or(0);
-            let allowed = registry.instances
+            let allowed = registry
+                .instances
                 .get(&root_id)
                 .map(|e| e.permissions.is_stdlib_allowed(&module_name))
                 .unwrap_or(true); // No registry yet = root = all allowed
@@ -922,7 +929,6 @@ pub fn call_runtime_method(
         }
 
         // ── VmInstance methods (Phase 3) ──
-
         runtime::VM_INSTANCE_ID => {
             // instance.id(): returns instance handle
             if args.is_empty() {
@@ -963,7 +969,8 @@ pub fn call_runtime_method(
                 .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
                 as u32;
             let registry = VM_INSTANCE_REGISTRY.lock();
-            let is_alive = registry.instances
+            let is_alive = registry
+                .instances
                 .get(&handle)
                 .map(|e| e.is_alive)
                 .unwrap_or(false);
@@ -982,7 +989,8 @@ pub fn call_runtime_method(
                 .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
                 as u32;
             let registry = VM_INSTANCE_REGISTRY.lock();
-            let is_destroyed = registry.instances
+            let is_destroyed = registry
+                .instances
                 .get(&handle)
                 .map(|e| !e.is_alive)
                 .unwrap_or(true);
@@ -1004,7 +1012,9 @@ pub fn call_runtime_method(
 
             let registry = VM_INSTANCE_REGISTRY.lock();
             let is_root = registry.root_id == Some(handle);
-            let has_debug = registry.instances.get(&handle)
+            let has_debug = registry
+                .instances
+                .get(&handle)
                 .map(|e| e.debug_state.is_some())
                 .unwrap_or(false);
             drop(registry);
@@ -1023,10 +1033,13 @@ pub fn call_runtime_method(
                 Value::i32(id as i32)
             } else {
                 let mut registry = VM_INSTANCE_REGISTRY.lock();
-                let entry = registry.instances.get_mut(&handle)
-                    .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                    VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                })?;
                 if !entry.is_alive {
-                    return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "VM instance is terminated".to_string(),
+                    ));
                 }
                 let id = entry.modules.register(module);
                 Value::i32(id as i32)
@@ -1056,8 +1069,11 @@ pub fn call_runtime_method(
             if is_root {
                 // Root delegates to global registry + execute_module
                 let global_reg = COMPILED_MODULE_REGISTRY.lock();
-                let module = global_reg.get(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?
+                let module = global_reg
+                    .get(module_id)
+                    .ok_or_else(|| {
+                        VmError::RuntimeError(format!("Module not found: {}", module_id))
+                    })?
                     .clone();
                 drop(global_reg);
                 execute_module(&module)?
@@ -1065,16 +1081,27 @@ pub fn call_runtime_method(
                 // Child: take Vm, execute, put back
                 let (module, mut vm) = {
                     let mut registry = VM_INSTANCE_REGISTRY.lock();
-                    let entry = registry.instances.get_mut(&handle)
-                        .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                    let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                        VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                    })?;
                     if !entry.is_alive {
-                        return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                        return Err(VmError::RuntimeError(
+                            "VM instance is terminated".to_string(),
+                        ));
                     }
-                    let module = entry.modules.get(module_id)
-                        .ok_or_else(|| VmError::RuntimeError(format!("Module not found in child VM: {}", module_id)))?
+                    let module = entry
+                        .modules
+                        .get(module_id)
+                        .ok_or_else(|| {
+                            VmError::RuntimeError(format!(
+                                "Module not found in child VM: {}",
+                                module_id
+                            ))
+                        })?
                         .clone();
-                    let vm = entry.vm.take()
-                        .ok_or_else(|| VmError::RuntimeError("VM instance is currently in use".to_string()))?;
+                    let vm = entry.vm.take().ok_or_else(|| {
+                        VmError::RuntimeError("VM instance is currently in use".to_string())
+                    })?;
                     (module, vm)
                 };
 
@@ -1121,13 +1148,17 @@ pub fn call_runtime_method(
                 // Take Vm, execute, put back
                 let mut vm = {
                     let mut registry = VM_INSTANCE_REGISTRY.lock();
-                    let entry = registry.instances.get_mut(&handle)
-                        .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                    let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                        VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                    })?;
                     if !entry.is_alive {
-                        return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                        return Err(VmError::RuntimeError(
+                            "VM instance is terminated".to_string(),
+                        ));
                     }
-                    entry.vm.take()
-                        .ok_or_else(|| VmError::RuntimeError("VM instance is currently in use".to_string()))?
+                    entry.vm.take().ok_or_else(|| {
+                        VmError::RuntimeError("VM instance is currently in use".to_string())
+                    })?
                 };
 
                 let result = vm.execute(&module);
@@ -1164,9 +1195,8 @@ pub fn call_runtime_method(
             let bytes: Vec<u8> = (0..buffer.length())
                 .filter_map(|i| buffer.get_byte(i))
                 .collect();
-            let module = Module::decode(&bytes).map_err(|e| {
-                VmError::RuntimeError(format!("Bytecode decode error: {:?}", e))
-            })?;
+            let module = Module::decode(&bytes)
+                .map_err(|e| VmError::RuntimeError(format!("Bytecode decode error: {:?}", e)))?;
 
             let mut registry = VM_INSTANCE_REGISTRY.lock();
             let is_root = registry.root_id == Some(handle);
@@ -1177,10 +1207,13 @@ pub fn call_runtime_method(
                 let id = global_reg.register(module);
                 Value::i32(id as i32)
             } else {
-                let entry = registry.instances.get_mut(&handle)
-                    .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                    VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                })?;
                 if !entry.is_alive {
-                    return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "VM instance is terminated".to_string(),
+                    ));
                 }
                 let id = entry.modules.register(module);
                 Value::i32(id as i32)
@@ -1216,17 +1249,21 @@ pub fn call_runtime_method(
                     }
                 }
                 drop(global_reg);
-                let module = found_module
-                    .ok_or_else(|| VmError::RuntimeError(format!("Function '{}' not found", func_name)))?;
+                let module = found_module.ok_or_else(|| {
+                    VmError::RuntimeError(format!("Function '{}' not found", func_name))
+                })?;
                 execute_module(&module)?
             } else {
                 // Child: search in child's modules
                 let (module, mut vm) = {
                     let mut registry = VM_INSTANCE_REGISTRY.lock();
-                    let entry = registry.instances.get_mut(&handle)
-                        .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                    let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                        VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                    })?;
                     if !entry.is_alive {
-                        return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                        return Err(VmError::RuntimeError(
+                            "VM instance is terminated".to_string(),
+                        ));
                     }
                     let mut found_module = None;
                     for module in entry.modules.modules.values() {
@@ -1235,10 +1272,15 @@ pub fn call_runtime_method(
                             break;
                         }
                     }
-                    let module = found_module
-                        .ok_or_else(|| VmError::RuntimeError(format!("Function '{}' not found in child VM", func_name)))?;
-                    let vm = entry.vm.take()
-                        .ok_or_else(|| VmError::RuntimeError("VM instance is currently in use".to_string()))?;
+                    let module = found_module.ok_or_else(|| {
+                        VmError::RuntimeError(format!(
+                            "Function '{}' not found in child VM",
+                            func_name
+                        ))
+                    })?;
+                    let vm = entry.vm.take().ok_or_else(|| {
+                        VmError::RuntimeError("VM instance is currently in use".to_string())
+                    })?;
                     (module, vm)
                 };
 
@@ -1251,7 +1293,8 @@ pub fn call_runtime_method(
                 }
                 drop(registry);
 
-                result.map_err(|e| VmError::RuntimeError(format!("Child VM runEntry error: {}", e)))?
+                result
+                    .map_err(|e| VmError::RuntimeError(format!("Child VM runEntry error: {}", e)))?
             }
         }
 
@@ -1269,14 +1312,15 @@ pub fn call_runtime_method(
 
             let mut registry = VM_INSTANCE_REGISTRY.lock();
             if registry.root_id == Some(handle) {
-                return Err(VmError::RuntimeError("Cannot terminate root VM".to_string()));
+                return Err(VmError::RuntimeError(
+                    "Cannot terminate root VM".to_string(),
+                ));
             }
             registry.terminate(handle);
             Value::null()
         }
 
         // ── VM Introspection & Resource Control (Phase 5) ──
-
         runtime::HEAP_USED => {
             // Vm.heapUsed(): number — current heap allocation in bytes
             let gc = ctx.gc.lock();
@@ -1357,20 +1401,26 @@ pub fn call_runtime_method(
         // =================================================================
         // VmInstance Debug Control (0x3070-0x3081)
         // =================================================================
-
         runtime::VM_ENABLE_DEBUG => {
             // instance.enableDebug(): activate DebugState for child VM
             if args.is_empty() {
-                return Err(VmError::RuntimeError("enableDebug requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "enableDebug requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let mut registry = VM_INSTANCE_REGISTRY.lock();
-            let entry = registry.instances.get_mut(&handle)
-                .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+            let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                VmError::RuntimeError(format!("VM instance not found: {}", handle))
+            })?;
             if !entry.is_alive {
-                return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                return Err(VmError::RuntimeError(
+                    "VM instance is terminated".to_string(),
+                ));
             }
 
             let ds = std::sync::Arc::new(crate::vm::interpreter::DebugState::new());
@@ -1386,28 +1436,45 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_RUN => {
             // instance.debugRun(moduleId): run module in debug mode
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("debugRun requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugRun requires 2 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
-            let module_id = args[1].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
+            let module_id = args[1]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))?
+                as u32;
 
             // Take Vm, module, and debug state from registry
             let (module, vm, ds) = {
                 let mut registry = VM_INSTANCE_REGISTRY.lock();
-                let entry = registry.instances.get_mut(&handle)
-                    .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
+                let entry = registry.instances.get_mut(&handle).ok_or_else(|| {
+                    VmError::RuntimeError(format!("VM instance not found: {}", handle))
+                })?;
                 if !entry.is_alive {
-                    return Err(VmError::RuntimeError("VM instance is terminated".to_string()));
+                    return Err(VmError::RuntimeError(
+                        "VM instance is terminated".to_string(),
+                    ));
                 }
-                let module = entry.modules.get(module_id)
-                    .ok_or_else(|| VmError::RuntimeError(format!("Module not found: {}", module_id)))?
+                let module = entry
+                    .modules
+                    .get(module_id)
+                    .ok_or_else(|| {
+                        VmError::RuntimeError(format!("Module not found: {}", module_id))
+                    })?
                     .clone();
-                let vm = entry.vm.take()
-                    .ok_or_else(|| VmError::RuntimeError("VM instance is currently in use".to_string()))?;
-                let ds = entry.debug_state.clone()
-                    .ok_or_else(|| VmError::RuntimeError("Debug not enabled — call enableDebug() first".to_string()))?;
+                let vm = entry.vm.take().ok_or_else(|| {
+                    VmError::RuntimeError("VM instance is currently in use".to_string())
+                })?;
+                let ds = entry.debug_state.clone().ok_or_else(|| {
+                    VmError::RuntimeError(
+                        "Debug not enabled — call enableDebug() first".to_string(),
+                    )
+                })?;
                 (module, vm, ds)
             };
 
@@ -1415,17 +1482,21 @@ pub fn call_runtime_method(
 
             // Register module & spawn main task in child scheduler
             let module_arc = std::sync::Arc::new(module.clone());
-            vm.shared_state().register_module(module_arc.clone())
+            vm.shared_state()
+                .register_module(module_arc.clone())
                 .map_err(VmError::RuntimeError)?;
 
-            let main_fn_id = module.functions.iter()
-                .position(|f| f.name == "main")
+            let main_fn_id = module
+                .functions
+                .iter()
+                .rposition(|f| f.name == "main")
                 .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
 
-            let main_task = std::sync::Arc::new(
-                crate::vm::scheduler::Task::new(main_fn_id, module_arc, None)
-            );
-            vm.scheduler().spawn(main_task)
+            let main_task = std::sync::Arc::new(crate::vm::scheduler::Task::new(
+                main_fn_id, module_arc, None,
+            ));
+            vm.scheduler()
+                .spawn(main_task)
                 .ok_or_else(|| VmError::RuntimeError("Failed to spawn main task".to_string()))?;
 
             // Block parent thread until child pauses or completes
@@ -1445,10 +1516,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_CONTINUE => {
             // instance.debugContinue(): resume until next pause
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugContinue requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugContinue requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             ds.signal_resume(crate::vm::interpreter::debug_state::StepMode::None);
@@ -1459,10 +1534,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_STEP_OVER => {
             // instance.debugStepOver(): step to next line at same or lower depth
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugStepOver requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugStepOver requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let depth = ds.pause_depth.load(std::sync::atomic::Ordering::Acquire) as usize;
@@ -1478,10 +1557,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_STEP_INTO => {
             // instance.debugStepInto(): step to next line at any depth
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugStepInto requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugStepInto requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let line = ds.pause_line.load(std::sync::atomic::Ordering::Acquire);
@@ -1495,10 +1578,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_STEP_OUT => {
             // instance.debugStepOut(): run until current function returns
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugStepOut requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugStepOut requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let depth = ds.pause_depth.load(std::sync::atomic::Ordering::Acquire) as usize;
@@ -1512,19 +1599,26 @@ pub fn call_runtime_method(
         runtime::VM_SET_BREAKPOINT => {
             // instance.setBreakpoint(file, line): returns bp_id
             if args.len() < 3 {
-                return Err(VmError::RuntimeError("setBreakpoint requires 3 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "setBreakpoint requires 3 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
             let file = get_string(args[1])?;
-            let line = args[2].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for line".to_string()))? as u32;
+            let line = args[2]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for line".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
 
             // Get module from child's registry for line table lookup
             let module = get_child_module(handle)?;
-            let (func_id, offset) = ds.resolve_breakpoint(&module, &file, line)
+            let (func_id, offset) = ds
+                .resolve_breakpoint(&module, &file, line)
                 .map_err(VmError::RuntimeError)?;
             let bp_id = ds.add_breakpoint(func_id, offset, file, line);
             Value::i32(bp_id as i32)
@@ -1533,12 +1627,18 @@ pub fn call_runtime_method(
         runtime::VM_REMOVE_BREAKPOINT => {
             // instance.removeBreakpoint(bpId)
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("removeBreakpoint requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "removeBreakpoint requires 2 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
-            let bp_id = args[1].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
+            let bp_id = args[1]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             ds.remove_breakpoint(bp_id);
@@ -1548,10 +1648,14 @@ pub fn call_runtime_method(
         runtime::VM_LIST_BREAKPOINTS => {
             // instance.listBreakpoints(): JSON string
             if args.is_empty() {
-                return Err(VmError::RuntimeError("listBreakpoints requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "listBreakpoints requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let registry = ds.bp_registry.read();
@@ -1559,8 +1663,11 @@ pub fn call_runtime_method(
             for entry in registry.values() {
                 entries.push(format!(
                     r#"{{"id":{},"file":"{}","line":{},"enabled":{},"hitCount":{}}}"#,
-                    entry.id, entry.file.replace('"', "\\\""), entry.line,
-                    entry.enabled, entry.hit_count,
+                    entry.id,
+                    entry.file.replace('"', "\\\""),
+                    entry.line,
+                    entry.enabled,
+                    entry.hit_count,
                 ));
             }
             let json = format!("[{}]", entries.join(","));
@@ -1570,10 +1677,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_STACK_TRACE => {
             // instance.debugStackTrace(): JSON array of stack frames
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugStackTrace requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugStackTrace requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let pause_info = ds.pause_info.lock().unwrap();
@@ -1596,11 +1707,16 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_GET_LOCALS => {
             // instance.debugGetLocals(frameIndex): JSON array of locals
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("debugGetLocals requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugGetLocals requires 2 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
-            let _frame_index = args[1].as_i32()
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
+            let _frame_index = args[1]
+                .as_i32()
                 .ok_or_else(|| VmError::TypeError("Expected number for frameIndex".to_string()))?;
 
             // Ensure debugger is attached and paused
@@ -1614,10 +1730,14 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_EVALUATE => {
             // instance.debugEvaluate(expression): eval in paused context
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("debugEvaluate requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugEvaluate requires 2 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
             let _expr = get_string(args[1])?;
 
             let _ds = get_debug_state(handle)?;
@@ -1629,18 +1749,26 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_LOCATION => {
             // instance.debugLocation(): JSON with current pause location
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugLocation requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugLocation requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let pause_info = ds.pause_info.lock().unwrap();
             if let Some(info) = pause_info.as_ref() {
                 let reason_str = match &info.reason {
-                    crate::vm::interpreter::debug_state::PauseReason::Breakpoint(id) => format!("breakpoint({})", id),
+                    crate::vm::interpreter::debug_state::PauseReason::Breakpoint(id) => {
+                        format!("breakpoint({})", id)
+                    }
                     crate::vm::interpreter::debug_state::PauseReason::Step => "step".to_string(),
-                    crate::vm::interpreter::debug_state::PauseReason::DebuggerStatement => "debugger".to_string(),
+                    crate::vm::interpreter::debug_state::PauseReason::DebuggerStatement => {
+                        "debugger".to_string()
+                    }
                     crate::vm::interpreter::debug_state::PauseReason::Entry => "entry".to_string(),
                 };
                 let json = format!(
@@ -1660,15 +1788,23 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_GET_SOURCE => {
             // instance.debugGetSource(file, startLine, endLine): source text
             if args.len() < 4 {
-                return Err(VmError::RuntimeError("debugGetSource requires 4 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugGetSource requires 4 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
             let file = get_string(args[1])?;
-            let start_line = args[2].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for startLine".to_string()))? as usize;
-            let end_line = args[3].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for endLine".to_string()))? as usize;
+            let start_line = args[2]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for startLine".to_string()))?
+                as usize;
+            let end_line = args[3]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for endLine".to_string()))?
+                as usize;
 
             let ds = get_debug_state(handle)?;
 
@@ -1676,7 +1812,8 @@ pub fn call_runtime_method(
             let source = {
                 let cache = ds.source_cache.read();
                 cache.get(&file).cloned()
-            }.or_else(|| std::fs::read_to_string(&file).ok());
+            }
+            .or_else(|| std::fs::read_to_string(&file).ok());
 
             if let Some(source) = source {
                 let lines: Vec<&str> = source.lines().collect();
@@ -1692,24 +1829,35 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_IS_PAUSED => {
             // instance.debugIsPaused(): boolean
             if args.is_empty() {
-                return Err(VmError::RuntimeError("debugIsPaused requires handle".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugIsPaused requires handle".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             let ds = get_debug_state(handle)?;
             let phase = ds.phase_lock.lock().unwrap();
-            let paused = matches!(*phase, crate::vm::interpreter::debug_state::DebugPhase::Paused);
+            let paused = matches!(
+                *phase,
+                crate::vm::interpreter::debug_state::DebugPhase::Paused
+            );
             Value::bool(paused)
         }
 
         runtime::VM_DEBUG_GET_VARIABLES => {
             // instance.debugGetVariables(frameIndex): same as getLocals for now
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("debugGetVariables requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugGetVariables requires 2 arguments".to_string(),
+                ));
             }
-            let _handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
+            let _handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
 
             // TODO: Read from paused task's stack
             allocate_string(ctx, "[]".to_string())
@@ -1718,12 +1866,18 @@ pub fn call_runtime_method(
         runtime::VM_SET_BP_CONDITION => {
             // instance.setBreakpointCondition(bpId, condition): set condition
             if args.len() < 3 {
-                return Err(VmError::RuntimeError("setBreakpointCondition requires 3 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "setBreakpointCondition requires 3 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
-            let bp_id = args[1].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))? as u32;
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
+            let bp_id = args[1]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for bpId".to_string()))?
+                as u32;
             let condition = get_string(args[2])?;
 
             let ds = get_debug_state(handle)?;
@@ -1737,15 +1891,21 @@ pub fn call_runtime_method(
         runtime::VM_DEBUG_BREAK_AT_ENTRY => {
             // instance.debugBreakAtEntry(moduleId): break at first instruction
             if args.len() < 2 {
-                return Err(VmError::RuntimeError("debugBreakAtEntry requires 2 arguments".to_string()));
+                return Err(VmError::RuntimeError(
+                    "debugBreakAtEntry requires 2 arguments".to_string(),
+                ));
             }
-            let handle = args[0].as_i32()
-                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))? as u32;
-            let _module_id = args[1].as_i32()
+            let handle = args[0]
+                .as_i32()
+                .ok_or_else(|| VmError::TypeError("Expected number for handle".to_string()))?
+                as u32;
+            let _module_id = args[1]
+                .as_i32()
                 .ok_or_else(|| VmError::TypeError("Expected number for moduleId".to_string()))?;
 
             let ds = get_debug_state(handle)?;
-            ds.break_at_entry.store(true, std::sync::atomic::Ordering::Release);
+            ds.break_at_entry
+                .store(true, std::sync::atomic::Ordering::Release);
             Value::null()
         }
 
@@ -1766,21 +1926,33 @@ pub fn call_runtime_method(
 // ============================================================================
 
 /// Get the DebugState for a VM instance handle.
-fn get_debug_state(handle: u32) -> Result<std::sync::Arc<crate::vm::interpreter::DebugState>, VmError> {
+fn get_debug_state(
+    handle: u32,
+) -> Result<std::sync::Arc<crate::vm::interpreter::DebugState>, VmError> {
     let registry = VM_INSTANCE_REGISTRY.lock();
-    let entry = registry.instances.get(&handle)
+    let entry = registry
+        .instances
+        .get(&handle)
         .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
-    entry.debug_state.clone()
-        .ok_or_else(|| VmError::RuntimeError("Debug not enabled — call enableDebug() first".to_string()))
+    entry.debug_state.clone().ok_or_else(|| {
+        VmError::RuntimeError("Debug not enabled — call enableDebug() first".to_string())
+    })
 }
 
 /// Get the first compiled module from a child VM instance.
 fn get_child_module(handle: u32) -> Result<Module, VmError> {
     let registry = VM_INSTANCE_REGISTRY.lock();
-    let entry = registry.instances.get(&handle)
+    let entry = registry
+        .instances
+        .get(&handle)
         .ok_or_else(|| VmError::RuntimeError(format!("VM instance not found: {}", handle)))?;
     // Return the most recently compiled module (highest ID)
-    entry.modules.modules.values().next().cloned()
+    entry
+        .modules
+        .modules
+        .values()
+        .next()
+        .cloned()
         .ok_or_else(|| VmError::RuntimeError("No modules compiled in child VM".to_string()))
 }
 
@@ -1811,12 +1983,11 @@ fn allocate_string(ctx: &RuntimeHandlerContext<'_>, s: String) -> Value {
 
 /// Parse Raya source code to an AST
 fn parse_source(source: &str) -> Result<(ast::Module, Interner), VmError> {
-    let parser = Parser::new(source).map_err(|e| {
-        VmError::RuntimeError(format!("Lexer error: {:?}", e))
-    })?;
-    parser.parse().map_err(|e| {
-        VmError::RuntimeError(format!("Parse error: {:?}", e))
-    })
+    let parser =
+        Parser::new(source).map_err(|e| VmError::RuntimeError(format!("Lexer error: {:?}", e)))?;
+    parser
+        .parse()
+        .map_err(|e| VmError::RuntimeError(format!("Parse error: {:?}", e)))
 }
 
 /// Type-check a parsed AST, returning a TypedAstEntry
@@ -1827,14 +1998,14 @@ fn typecheck_ast(ast: ast::Module, interner: Interner) -> Result<TypedAstEntry, 
     let builtin_sigs = crate::builtins::to_checker_signatures();
     binder.register_builtins(&builtin_sigs);
 
-    let mut symbols = binder.bind_module(&ast).map_err(|e| {
-        VmError::RuntimeError(format!("Binding error: {:?}", e))
-    })?;
+    let mut symbols = binder
+        .bind_module(&ast)
+        .map_err(|e| VmError::RuntimeError(format!("Binding error: {:?}", e)))?;
 
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
-    let check_result = checker.check_module(&ast).map_err(|e| {
-        VmError::RuntimeError(format!("Type check error: {:?}", e))
-    })?;
+    let check_result = checker
+        .check_module(&ast)
+        .map_err(|e| VmError::RuntimeError(format!("Type check error: {:?}", e)))?;
 
     for ((scope_id, name), ty) in check_result.inferred_types {
         symbols.update_type(ScopeId(scope_id), &name, ty);
@@ -1862,13 +2033,19 @@ fn compile_source_impl(source: &str, sourcemap: bool) -> Result<Module, VmError>
     let (ast, interner) = parse_source(source)?;
     let typed = typecheck_ast(ast, interner)?;
 
-    let TypedAstEntry { ast, interner, type_ctx, symbols: _, expr_types } = typed;
+    let TypedAstEntry {
+        ast,
+        interner,
+        type_ctx,
+        symbols: _,
+        expr_types,
+    } = typed;
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(expr_types)
         .with_sourcemap(sourcemap);
-    compiler.compile_via_ir(&ast).map_err(|e| {
-        VmError::RuntimeError(format!("Compile error: {}", e))
-    })
+    compiler
+        .compile_via_ir(&ast)
+        .map_err(|e| VmError::RuntimeError(format!("Compile error: {}", e)))
 }
 
 /// Execute a compiled module and return the result
@@ -1900,5 +2077,7 @@ fn get_dependency_search_paths(name: &str) -> Vec<String> {
 
 /// Get the user's home directory
 fn dirs_home() -> Option<String> {
-    std::env::var("HOME").ok().or_else(|| std::env::var("USERPROFILE").ok())
+    std::env::var("HOME")
+        .ok()
+        .or_else(|| std::env::var("USERPROFILE").ok())
 }

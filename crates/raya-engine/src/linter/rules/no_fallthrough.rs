@@ -53,7 +53,9 @@ impl LintRule for NoFallthrough {
                         span: case.span,
                         severity: META.default_severity,
                         fix: None,
-                        notes: vec!["Add 'break', 'return', or 'throw' to prevent fallthrough".to_string()],
+                        notes: vec![
+                            "Add 'break', 'return', or 'throw' to prevent fallthrough".to_string()
+                        ],
                     });
                 }
             }
@@ -100,7 +102,11 @@ function f(x: int): void {
 }
 "#;
         let diags = lint(source);
-        assert!(has_rule(&diags, "L1005"), "should flag fallthrough, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1005"),
+            "should flag fallthrough, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -132,6 +138,9 @@ function f(x: int): void {
 }
 "#;
         let diags = lint(source);
-        assert!(!has_rule(&diags, "L1005"), "empty case grouping should be ok");
+        assert!(
+            !has_rule(&diags, "L1005"),
+            "empty case grouping should be ok"
+        );
     }
 }

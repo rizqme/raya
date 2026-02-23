@@ -2,8 +2,8 @@
 //!
 //! Each pass implements the `OptPass` trait and transforms a `JitFunction` in place.
 
-use rustc_hash::FxHashSet;
 use crate::jit::ir::instr::{JitFunction, JitInstr, Reg};
+use rustc_hash::FxHashSet;
 
 /// An optimization pass on JIT IR
 pub trait OptPass: Send + Sync {
@@ -65,7 +65,9 @@ impl Default for JitOptimizer {
 pub struct BoxElimination;
 
 impl OptPass for BoxElimination {
-    fn name(&self) -> &str { "box-elimination" }
+    fn name(&self) -> &str {
+        "box-elimination"
+    }
 
     fn run(&self, func: &mut JitFunction) {
         use rustc_hash::FxHashMap;
@@ -76,10 +78,18 @@ impl OptPass for BoxElimination {
         for block in &func.blocks {
             for instr in &block.instrs {
                 match instr {
-                    JitInstr::BoxI32 { dest, src } => { box_sources.insert(*dest, (*src, BoxKind::I32)); }
-                    JitInstr::BoxF64 { dest, src } => { box_sources.insert(*dest, (*src, BoxKind::F64)); }
-                    JitInstr::BoxBool { dest, src } => { box_sources.insert(*dest, (*src, BoxKind::Bool)); }
-                    JitInstr::BoxPtr { dest, src } => { box_sources.insert(*dest, (*src, BoxKind::Ptr)); }
+                    JitInstr::BoxI32 { dest, src } => {
+                        box_sources.insert(*dest, (*src, BoxKind::I32));
+                    }
+                    JitInstr::BoxF64 { dest, src } => {
+                        box_sources.insert(*dest, (*src, BoxKind::F64));
+                    }
+                    JitInstr::BoxBool { dest, src } => {
+                        box_sources.insert(*dest, (*src, BoxKind::Bool));
+                    }
+                    JitInstr::BoxPtr { dest, src } => {
+                        box_sources.insert(*dest, (*src, BoxKind::Ptr));
+                    }
                     _ => {}
                 }
             }
@@ -89,26 +99,34 @@ impl OptPass for BoxElimination {
         for block in &mut func.blocks {
             for instr in &mut block.instrs {
                 let replacement = match instr {
-                    JitInstr::UnboxI32 { dest, src } => {
-                        box_sources.get(src)
-                            .filter(|(_, kind)| *kind == BoxKind::I32)
-                            .map(|(orig, _)| JitInstr::Move { dest: *dest, src: *orig })
-                    }
-                    JitInstr::UnboxF64 { dest, src } => {
-                        box_sources.get(src)
-                            .filter(|(_, kind)| *kind == BoxKind::F64)
-                            .map(|(orig, _)| JitInstr::Move { dest: *dest, src: *orig })
-                    }
-                    JitInstr::UnboxBool { dest, src } => {
-                        box_sources.get(src)
-                            .filter(|(_, kind)| *kind == BoxKind::Bool)
-                            .map(|(orig, _)| JitInstr::Move { dest: *dest, src: *orig })
-                    }
-                    JitInstr::UnboxPtr { dest, src } => {
-                        box_sources.get(src)
-                            .filter(|(_, kind)| *kind == BoxKind::Ptr)
-                            .map(|(orig, _)| JitInstr::Move { dest: *dest, src: *orig })
-                    }
+                    JitInstr::UnboxI32 { dest, src } => box_sources
+                        .get(src)
+                        .filter(|(_, kind)| *kind == BoxKind::I32)
+                        .map(|(orig, _)| JitInstr::Move {
+                            dest: *dest,
+                            src: *orig,
+                        }),
+                    JitInstr::UnboxF64 { dest, src } => box_sources
+                        .get(src)
+                        .filter(|(_, kind)| *kind == BoxKind::F64)
+                        .map(|(orig, _)| JitInstr::Move {
+                            dest: *dest,
+                            src: *orig,
+                        }),
+                    JitInstr::UnboxBool { dest, src } => box_sources
+                        .get(src)
+                        .filter(|(_, kind)| *kind == BoxKind::Bool)
+                        .map(|(orig, _)| JitInstr::Move {
+                            dest: *dest,
+                            src: *orig,
+                        }),
+                    JitInstr::UnboxPtr { dest, src } => box_sources
+                        .get(src)
+                        .filter(|(_, kind)| *kind == BoxKind::Ptr)
+                        .map(|(orig, _)| JitInstr::Move {
+                            dest: *dest,
+                            src: *orig,
+                        }),
                     _ => None,
                 };
 
@@ -121,7 +139,12 @@ impl OptPass for BoxElimination {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoxKind { I32, F64, Bool, Ptr }
+enum BoxKind {
+    I32,
+    F64,
+    Bool,
+    Ptr,
+}
 
 // ===== Pass 2: Copy Propagation =====
 
@@ -129,7 +152,9 @@ enum BoxKind { I32, F64, Bool, Ptr }
 pub struct CopyPropagation;
 
 impl OptPass for CopyPropagation {
-    fn name(&self) -> &str { "copy-propagation" }
+    fn name(&self) -> &str {
+        "copy-propagation"
+    }
 
     fn run(&self, func: &mut JitFunction) {
         use rustc_hash::FxHashMap;
@@ -149,16 +174,21 @@ impl OptPass for CopyPropagation {
         }
 
         // Resolve transitive copies: if r3 = Move(r2) and r2 = Move(r1), then r3 → r1
-        let resolved: FxHashMap<Reg, Reg> = copies.keys().map(|&reg| {
-            let mut current = reg;
-            let mut depth = 0;
-            while let Some(&src) = copies.get(&current) {
-                current = src;
-                depth += 1;
-                if depth > 100 { break; } // cycle guard
-            }
-            (reg, current)
-        }).collect();
+        let resolved: FxHashMap<Reg, Reg> = copies
+            .keys()
+            .map(|&reg| {
+                let mut current = reg;
+                let mut depth = 0;
+                while let Some(&src) = copies.get(&current) {
+                    current = src;
+                    depth += 1;
+                    if depth > 100 {
+                        break;
+                    } // cycle guard
+                }
+                (reg, current)
+            })
+            .collect();
 
         // Replace all uses of copied registers
         for block in &mut func.blocks {
@@ -275,7 +305,9 @@ fn replace_reg_uses(instr: &mut JitInstr, subs: &rustc_hash::FxHashMap<Reg, Reg>
 pub struct ConstantFolding;
 
 impl OptPass for ConstantFolding {
-    fn name(&self) -> &str { "constant-folding" }
+    fn name(&self) -> &str {
+        "constant-folding"
+    }
 
     fn run(&self, func: &mut JitFunction) {
         use rustc_hash::FxHashMap;
@@ -287,8 +319,12 @@ impl OptPass for ConstantFolding {
         for block in &func.blocks {
             for instr in &block.instrs {
                 match instr {
-                    JitInstr::ConstI32 { dest, value } => { i32_consts.insert(*dest, *value); }
-                    JitInstr::ConstF64 { dest, value } => { f64_consts.insert(*dest, *value); }
+                    JitInstr::ConstI32 { dest, value } => {
+                        i32_consts.insert(*dest, *value);
+                    }
+                    JitInstr::ConstF64 { dest, value } => {
+                        f64_consts.insert(*dest, *value);
+                    }
                     _ => {}
                 }
             }
@@ -303,7 +339,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l.wrapping_add(r);
                                 i32_consts.insert(*dest, result);
-                                Some(JitInstr::ConstI32 { dest: *dest, value: result })
+                                Some(JitInstr::ConstI32 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -313,7 +352,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l.wrapping_sub(r);
                                 i32_consts.insert(*dest, result);
-                                Some(JitInstr::ConstI32 { dest: *dest, value: result })
+                                Some(JitInstr::ConstI32 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -323,7 +365,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l.wrapping_mul(r);
                                 i32_consts.insert(*dest, result);
-                                Some(JitInstr::ConstI32 { dest: *dest, value: result })
+                                Some(JitInstr::ConstI32 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -333,7 +378,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l + r;
                                 f64_consts.insert(*dest, result);
-                                Some(JitInstr::ConstF64 { dest: *dest, value: result })
+                                Some(JitInstr::ConstF64 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -343,7 +391,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l - r;
                                 f64_consts.insert(*dest, result);
-                                Some(JitInstr::ConstF64 { dest: *dest, value: result })
+                                Some(JitInstr::ConstF64 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -353,7 +404,10 @@ impl OptPass for ConstantFolding {
                             (Some(&l), Some(&r)) => {
                                 let result = l * r;
                                 f64_consts.insert(*dest, result);
-                                Some(JitInstr::ConstF64 { dest: *dest, value: result })
+                                Some(JitInstr::ConstF64 {
+                                    dest: *dest,
+                                    value: result,
+                                })
                             }
                             _ => None,
                         }
@@ -376,7 +430,9 @@ impl OptPass for ConstantFolding {
 pub struct DeadCodeElimination;
 
 impl OptPass for DeadCodeElimination {
-    fn name(&self) -> &str { "dead-code-elimination" }
+    fn name(&self) -> &str {
+        "dead-code-elimination"
+    }
 
     fn run(&self, func: &mut JitFunction) {
         // Collect all used registers (appeared as an operand)
@@ -458,7 +514,9 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         JitInstr::INeg { operand, .. }
         | JitInstr::INot { operand, .. }
         | JitInstr::FNeg { operand, .. }
-        | JitInstr::Not { operand, .. } => { used.insert(*operand); }
+        | JitInstr::Not { operand, .. } => {
+            used.insert(*operand);
+        }
 
         JitInstr::BoxI32 { src, .. }
         | JitInstr::BoxF64 { src, .. }
@@ -468,18 +526,26 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         | JitInstr::UnboxF64 { src, .. }
         | JitInstr::UnboxBool { src, .. }
         | JitInstr::UnboxPtr { src, .. }
-        | JitInstr::Move { src, .. } => { used.insert(*src); }
+        | JitInstr::Move { src, .. } => {
+            used.insert(*src);
+        }
 
         JitInstr::StoreLocal { value, .. }
         | JitInstr::StoreGlobal { value, .. }
-        | JitInstr::StoreStatic { value, .. } => { used.insert(*value); }
+        | JitInstr::StoreStatic { value, .. } => {
+            used.insert(*value);
+        }
 
         JitInstr::StoreField { object, value, .. }
         | JitInstr::StoreFieldFast { object, value, .. } => {
             used.insert(*object);
             used.insert(*value);
         }
-        JitInstr::StoreElem { array, index, value } => {
+        JitInstr::StoreElem {
+            array,
+            index,
+            value,
+        } => {
             used.insert(*array);
             used.insert(*index);
             used.insert(*value);
@@ -491,9 +557,13 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         | JitInstr::ArrayLen { array: object, .. }
         | JitInstr::ArrayPop { array: object, .. }
         | JitInstr::LoadRefCell { cell: object, .. }
-        | JitInstr::Typeof { operand: object, .. }
+        | JitInstr::Typeof {
+            operand: object, ..
+        }
         | JitInstr::ToString { value: object, .. }
-        | JitInstr::SLen { string: object, .. } => { used.insert(*object); }
+        | JitInstr::SLen { string: object, .. } => {
+            used.insert(*object);
+        }
 
         JitInstr::LoadElem { array, index, .. } => {
             used.insert(*array);
@@ -503,27 +573,45 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
         JitInstr::Call { args, .. }
         | JitInstr::CallStatic { args, .. }
         | JitInstr::CallSuper { args, .. } => {
-            for arg in args { used.insert(*arg); }
+            for arg in args {
+                used.insert(*arg);
+            }
         }
         JitInstr::CallMethod { receiver, args, .. } => {
             used.insert(*receiver);
-            for arg in args { used.insert(*arg); }
+            for arg in args {
+                used.insert(*arg);
+            }
         }
         JitInstr::CallConstructor { args, .. } => {
-            for arg in args { used.insert(*arg); }
+            for arg in args {
+                used.insert(*arg);
+            }
         }
         JitInstr::CallNative { args, .. } => {
-            for arg in args { used.insert(*arg); }
+            for arg in args {
+                used.insert(*arg);
+            }
         }
         JitInstr::CallClosure { closure, args, .. } => {
             used.insert(*closure);
-            for arg in args { used.insert(*arg); }
+            for arg in args {
+                used.insert(*arg);
+            }
         }
 
-        JitInstr::Throw { value } => { used.insert(*value); }
-        JitInstr::Await { task, .. } => { used.insert(*task); }
-        JitInstr::Sleep { duration } => { used.insert(*duration); }
-        JitInstr::MutexLock { mutex } | JitInstr::MutexUnlock { mutex } => { used.insert(*mutex); }
+        JitInstr::Throw { value } => {
+            used.insert(*value);
+        }
+        JitInstr::Await { task, .. } => {
+            used.insert(*task);
+        }
+        JitInstr::Sleep { duration } => {
+            used.insert(*duration);
+        }
+        JitInstr::MutexLock { mutex } | JitInstr::MutexUnlock { mutex } => {
+            used.insert(*mutex);
+        }
         JitInstr::ArrayPush { array, value } | JitInstr::JsonPush { array, value } => {
             used.insert(*array);
             used.insert(*value);
@@ -532,11 +620,17 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
             used.insert(*cell);
             used.insert(*value);
         }
-        JitInstr::NewRefCell { value, .. } => { used.insert(*value); }
-        JitInstr::StoreCaptured { value, .. } => { used.insert(*value); }
+        JitInstr::NewRefCell { value, .. } => {
+            used.insert(*value);
+        }
+        JitInstr::StoreCaptured { value, .. } => {
+            used.insert(*value);
+        }
 
         JitInstr::Phi { sources, .. } => {
-            for (_, reg) in sources { used.insert(*reg); }
+            for (_, reg) in sources {
+                used.insert(*reg);
+            }
         }
 
         // Instructions with no register operands — skip
@@ -546,10 +640,18 @@ fn collect_used_regs(instr: &JitInstr, used: &mut FxHashSet<Reg>) {
 
 fn collect_terminator_regs(term: &crate::jit::ir::instr::JitTerminator, used: &mut FxHashSet<Reg>) {
     match term {
-        crate::jit::ir::instr::JitTerminator::Branch { cond, .. } => { used.insert(*cond); }
-        crate::jit::ir::instr::JitTerminator::BranchNull { value, .. } => { used.insert(*value); }
-        crate::jit::ir::instr::JitTerminator::Return(Some(reg)) => { used.insert(*reg); }
-        crate::jit::ir::instr::JitTerminator::Throw(reg) => { used.insert(*reg); }
+        crate::jit::ir::instr::JitTerminator::Branch { cond, .. } => {
+            used.insert(*cond);
+        }
+        crate::jit::ir::instr::JitTerminator::BranchNull { value, .. } => {
+            used.insert(*value);
+        }
+        crate::jit::ir::instr::JitTerminator::Return(Some(reg)) => {
+            used.insert(*reg);
+        }
+        crate::jit::ir::instr::JitTerminator::Throw(reg) => {
+            used.insert(*reg);
+        }
         _ => {}
     }
 }
@@ -574,7 +676,10 @@ mod tests {
         let r2 = func.alloc_reg(JitType::I32);
 
         func.block_mut(JitBlockId(0)).instrs = vec![
-            JitInstr::ConstI32 { dest: r0, value: 42 },
+            JitInstr::ConstI32 {
+                dest: r0,
+                value: 42,
+            },
             JitInstr::BoxI32 { dest: r1, src: r0 },
             JitInstr::UnboxI32 { dest: r2, src: r1 },
         ];
@@ -597,7 +702,11 @@ mod tests {
         func.block_mut(JitBlockId(0)).instrs = vec![
             JitInstr::ConstI32 { dest: r0, value: 3 },
             JitInstr::ConstI32 { dest: r1, value: 5 },
-            JitInstr::IAdd { dest: r2, left: r0, right: r1 },
+            JitInstr::IAdd {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
         ];
         func.block_mut(JitBlockId(0)).terminator = JitTerminator::Return(Some(r2));
 
@@ -616,9 +725,16 @@ mod tests {
         let r3 = func.alloc_reg(JitType::I32);
 
         func.block_mut(JitBlockId(0)).instrs = vec![
-            JitInstr::ConstI32 { dest: r0, value: 42 },
+            JitInstr::ConstI32 {
+                dest: r0,
+                value: 42,
+            },
             JitInstr::Move { dest: r1, src: r0 },
-            JitInstr::IAdd { dest: r2, left: r1, right: r1 },
+            JitInstr::IAdd {
+                dest: r2,
+                left: r1,
+                right: r1,
+            },
         ];
         func.block_mut(JitBlockId(0)).terminator = JitTerminator::Return(Some(r2));
 
@@ -642,9 +758,18 @@ mod tests {
         let r2 = func.alloc_reg(JitType::I32); // unused
 
         func.block_mut(JitBlockId(0)).instrs = vec![
-            JitInstr::ConstI32 { dest: r0, value: 42 },
-            JitInstr::ConstI32 { dest: r1, value: 99 },  // dead
-            JitInstr::ConstI32 { dest: r2, value: 100 }, // dead
+            JitInstr::ConstI32 {
+                dest: r0,
+                value: 42,
+            },
+            JitInstr::ConstI32 {
+                dest: r1,
+                value: 99,
+            }, // dead
+            JitInstr::ConstI32 {
+                dest: r2,
+                value: 100,
+            }, // dead
         ];
         func.block_mut(JitBlockId(0)).terminator = JitTerminator::Return(Some(r0));
 
@@ -665,7 +790,11 @@ mod tests {
         func.block_mut(JitBlockId(0)).instrs = vec![
             JitInstr::ConstI32 { dest: r0, value: 3 },
             JitInstr::ConstI32 { dest: r1, value: 5 },
-            JitInstr::IAdd { dest: r2, left: r0, right: r1 },
+            JitInstr::IAdd {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
         ];
         func.block_mut(JitBlockId(0)).terminator = JitTerminator::Return(Some(r2));
 
@@ -675,6 +804,8 @@ mod tests {
         // After constant folding + DCE: should have just ConstI32(8) + possibly others
         let instrs = &func.block(JitBlockId(0)).instrs;
         // r0 and r1 are dead after folding, but r2 is used by Return
-        assert!(instrs.iter().any(|i| matches!(i, JitInstr::ConstI32 { value: 8, .. })));
+        assert!(instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::ConstI32 { value: 8, .. })));
     }
 }

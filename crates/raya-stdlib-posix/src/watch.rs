@@ -44,10 +44,7 @@ pub fn watch_create(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCall
 /// Args: `paths: string[], recursive: boolean`
 /// Returns: handle (f64)
 pub fn watch_create_recursive(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let recursive = args
-        .get(1)
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let recursive = args.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
 
     let mode = if recursive {
         RecursiveMode::Recursive
@@ -100,7 +97,10 @@ fn create_watcher_inner(
     // Watch all requested paths
     for path_str in &paths {
         if let Err(e) = watcher.watch(Path::new(path_str), mode) {
-            return NativeCallResult::Error(format!("watch.create: failed to watch '{}': {}", path_str, e));
+            return NativeCallResult::Error(format!(
+                "watch.create: failed to watch '{}': {}",
+                path_str, e
+            ));
         }
     }
 
@@ -174,7 +174,10 @@ pub fn watch_add_path(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
     match WATCHER_HANDLES.get(handle) {
         Some(guard) => {
             let mut wh = guard.lock().unwrap();
-            if let Err(e) = wh._watcher.watch(Path::new(&path_str), RecursiveMode::NonRecursive) {
+            if let Err(e) = wh
+                ._watcher
+                .watch(Path::new(&path_str), RecursiveMode::NonRecursive)
+            {
                 return NativeCallResult::Error(format!("watch.addPath: {}", e));
             }
             NativeCallResult::null()

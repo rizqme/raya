@@ -22,11 +22,7 @@ impl LintRule for NoDuplicateCase {
         &META
     }
 
-    fn check_statement(
-        &self,
-        stmt: &ast::Statement,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, stmt: &ast::Statement, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         let switch = match stmt {
             ast::Statement::Switch(s) => s,
             _ => return vec![],
@@ -122,7 +118,11 @@ function f(x: int): void {
 }
 "#;
         let diags = lint(source);
-        assert!(has_rule(&diags, "L1004"), "should flag duplicate case 1, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1004"),
+            "should flag duplicate case 1, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -154,6 +154,9 @@ function f(x: string): void {
 }
 "#;
         let diags = lint(source);
-        assert!(has_rule(&diags, "L1004"), "should flag duplicate string case");
+        assert!(
+            has_rule(&diags, "L1004"),
+            "should flag duplicate string case"
+        );
     }
 }

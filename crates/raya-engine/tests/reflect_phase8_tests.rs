@@ -124,16 +124,16 @@ mod snapshot_tests {
     #[test]
     fn test_object_snapshot_with_nested_fields() {
         let mut snapshot = ObjectSnapshot::new("Parent".to_string(), 100);
-        snapshot.add_field("name".to_string(), SnapshotValue::String("root".to_string()));
+        snapshot.add_field(
+            "name".to_string(),
+            SnapshotValue::String("root".to_string()),
+        );
 
         // Add a nested object reference
         let mut child_snapshot = ObjectSnapshot::new("Child".to_string(), 200);
         child_snapshot.add_field("value".to_string(), SnapshotValue::Integer(42));
 
-        snapshot.add_field(
-            "child".to_string(),
-            SnapshotValue::Object(child_snapshot),
-        );
+        snapshot.add_field("child".to_string(), SnapshotValue::Object(child_snapshot));
 
         assert_eq!(snapshot.fields.len(), 2);
         assert!(snapshot.fields.contains_key("name"));
@@ -150,8 +150,11 @@ mod snapshot_tests {
         let mut new = ObjectSnapshot::new("Config".to_string(), 1);
         new.add_field("debug".to_string(), SnapshotValue::Boolean(true)); // changed
         new.add_field("timeout".to_string(), SnapshotValue::Integer(1000)); // unchanged
-        new.add_field("version".to_string(), SnapshotValue::String("2.0".to_string())); // added
-        // deprecated removed
+        new.add_field(
+            "version".to_string(),
+            SnapshotValue::String("2.0".to_string()),
+        ); // added
+           // deprecated removed
 
         let diff = ObjectDiff::compute(&old, &new);
 
@@ -167,10 +170,7 @@ mod snapshot_tests {
         let mut old = ObjectSnapshot::new("Container".to_string(), 1);
         old.add_field(
             "items".to_string(),
-            SnapshotValue::Array(vec![
-                SnapshotValue::Integer(1),
-                SnapshotValue::Integer(2),
-            ]),
+            SnapshotValue::Array(vec![SnapshotValue::Integer(1), SnapshotValue::Integer(2)]),
         );
 
         let mut new = ObjectSnapshot::new("Container".to_string(), 1);
@@ -254,11 +254,11 @@ mod debug_info {
     #[test]
     fn test_function_debug_info() {
         let mut func_debug = FunctionDebugInfo::new(
-            0, // source_file_index
+            0,  // source_file_index
             10, // start_line
-            1, // start_column
+            1,  // start_column
             20, // end_line
-            1, // end_column
+            1,  // end_column
         );
 
         // Add line entries
@@ -374,8 +374,9 @@ mod object_identity {
         let obj = gc.allocate(Object::new(42, 3));
 
         // Create Value from the object pointer
-        let value =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(obj.as_ptr() as *mut Object).unwrap()) };
+        let value = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(obj.as_ptr() as *mut Object).unwrap())
+        };
 
         // get_class_id should return the class ID
         let class_id = get_class_id(value);
@@ -400,10 +401,12 @@ mod proxy_tests {
         let target_obj = gc.allocate(Object::new(1, 2));
         let handler_obj = gc.allocate(Object::new(2, 4));
 
-        let target_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
-        let handler_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+        let target_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
+        };
+        let handler_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap())
+        };
 
         // Create proxy
         let proxy = Proxy::new(target_val, handler_val);
@@ -417,10 +420,12 @@ mod proxy_tests {
         let target_obj = gc.allocate(Object::new(42, 3));
         let handler_obj = gc.allocate(Object::new(0, 0));
 
-        let target_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
-        let handler_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+        let target_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
+        };
+        let handler_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap())
+        };
 
         let proxy = Proxy::new(target_val, handler_val);
 
@@ -436,10 +441,12 @@ mod proxy_tests {
         let target_obj = gc.allocate(Object::new(1, 1));
         let handler_obj = gc.allocate(Object::new(99, 4));
 
-        let target_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
-        let handler_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+        let target_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
+        };
+        let handler_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap())
+        };
 
         let proxy = Proxy::new(target_val, handler_val);
 
@@ -455,10 +462,12 @@ mod proxy_tests {
         let target_obj = gc.allocate(Object::new(1, 2));
         let handler_obj = gc.allocate(Object::new(2, 4));
 
-        let target_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
-        let handler_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+        let target_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
+        };
+        let handler_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap())
+        };
 
         // Allocate proxy through GC (like the handler does)
         let proxy = Proxy::new(target_val, handler_val);
@@ -477,15 +486,18 @@ mod proxy_tests {
         let target_obj = gc.allocate(Object::new(1, 2));
         let handler_obj = gc.allocate(Object::new(2, 4));
 
-        let target_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap()) };
-        let handler_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap()) };
+        let target_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target_obj.as_ptr() as *mut Object).unwrap())
+        };
+        let handler_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler_obj.as_ptr() as *mut Object).unwrap())
+        };
 
         let proxy = Proxy::new(target_val, handler_val);
         let proxy_gc = gc.allocate(proxy);
-        let proxy_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(proxy_gc.as_ptr() as *mut Proxy).unwrap()) };
+        let proxy_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(proxy_gc.as_ptr() as *mut Proxy).unwrap())
+        };
 
         // Proxy value should be different from target value
         assert_ne!(proxy_val.raw(), target_val.raw());
@@ -500,14 +512,18 @@ mod proxy_tests {
         let target2 = gc.allocate(Object::new(2, 1));
         let handler2 = gc.allocate(Object::new(0, 0));
 
-        let target1_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target1.as_ptr() as *mut Object).unwrap()) };
-        let handler1_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler1.as_ptr() as *mut Object).unwrap()) };
-        let target2_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(target2.as_ptr() as *mut Object).unwrap()) };
-        let handler2_val =
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(handler2.as_ptr() as *mut Object).unwrap()) };
+        let target1_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target1.as_ptr() as *mut Object).unwrap())
+        };
+        let handler1_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler1.as_ptr() as *mut Object).unwrap())
+        };
+        let target2_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(target2.as_ptr() as *mut Object).unwrap())
+        };
+        let handler2_val = unsafe {
+            Value::from_ptr(std::ptr::NonNull::new(handler2.as_ptr() as *mut Object).unwrap())
+        };
 
         let proxy1 = Proxy::new(target1_val, handler1_val);
         let proxy2 = Proxy::new(target2_val, handler2_val);

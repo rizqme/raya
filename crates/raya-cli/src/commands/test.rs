@@ -104,7 +104,12 @@ pub fn execute(args: TestArgs) -> anyhow::Result<()> {
     // Print summary
     match args.reporter.as_str() {
         "json" => print_json_summary(&all_results, overall_duration.as_secs_f64()),
-        _ => print_summary(&mut out, &all_results, &test_files, overall_duration.as_secs_f64()),
+        _ => print_summary(
+            &mut out,
+            &all_results,
+            &test_files,
+            overall_duration.as_secs_f64(),
+        ),
     }
 
     if any_failure {
@@ -129,12 +134,14 @@ fn discover_test_files(file_filter: Option<&str>) -> anyhow::Result<Vec<PathBuf>
         }
     } else {
         // Default discovery patterns
-        let patterns = [
-            "**/*.test.raya",
-            "**/*_test.raya",
-            "**/__tests__/**/*.raya",
+        let patterns = ["**/*.test.raya", "**/*_test.raya", "**/__tests__/**/*.raya"];
+        let excludes = [
+            "node_modules",
+            ".raya-cache",
+            "dist",
+            "target",
+            ".worktrees",
         ];
-        let excludes = ["node_modules", ".raya-cache", "dist", "target", ".worktrees"];
 
         for pattern in &patterns {
             let full_pattern = cwd.join(pattern);

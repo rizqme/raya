@@ -145,7 +145,7 @@ fn parse_instructions(code: &[u8]) -> Result<Vec<Instruction>, VerifyError> {
         })?;
 
         // Read operands based on opcode
-        let operand_size = get_operand_size(opcode);
+        let operand_size = operand_size(opcode);
         let operands = if operand_size > 0 {
             reader
                 .read_bytes(operand_size)
@@ -165,7 +165,7 @@ fn parse_instructions(code: &[u8]) -> Result<Vec<Instruction>, VerifyError> {
 }
 
 /// Get the operand size for an opcode (in bytes)
-fn get_operand_size(opcode: Opcode) -> usize {
+pub(crate) fn operand_size(opcode: Opcode) -> usize {
     match opcode {
         // No operands
         Opcode::Nop
@@ -417,10 +417,16 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadLocal | Opcode::LoadLocal0 | Opcode::LoadLocal1 | Opcode::GetArgCount => (0, 1),
         Opcode::StoreLocal | Opcode::StoreLocal0 | Opcode::StoreLocal1 => (1, 0),
         Opcode::LoadArgLocal => (1, 1), // Pops index, pushes value
-        Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => (2, 1),
-        Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => (2, 1),
+        Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod | Opcode::Ipow => {
+            (2, 1)
+        }
+        Opcode::Ishl | Opcode::Ishr | Opcode::Iushr | Opcode::Iand | Opcode::Ior | Opcode::Ixor => {
+            (2, 1)
+        }
         Opcode::Ineg | Opcode::Fneg | Opcode::Inot => (1, 1),
-        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow | Opcode::Fmod => (2, 1),
+        Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv | Opcode::Fpow | Opcode::Fmod => {
+            (2, 1)
+        }
         Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige => (2, 1),
         Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge => (2, 1),
         Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe => (2, 1),
@@ -455,11 +461,11 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::TupleLiteral => (0, 1),
         Opcode::InitTuple => (0, 0),
         Opcode::TupleGet => (2, 1),
-        Opcode::Spawn => (0, 1),       // pops args (dynamic), pushes TaskHandle
+        Opcode::Spawn => (0, 1), // pops args (dynamic), pushes TaskHandle
         Opcode::SpawnClosure => (1, 1), // pops closure + args (dynamic), pushes TaskHandle
         Opcode::Await => (1, 1),
         Opcode::Yield => (0, 0),
-        Opcode::Sleep => (1, 0),  // pops duration_ms
+        Opcode::Sleep => (1, 0), // pops duration_ms
         Opcode::TaskThen => (1, 1),
         Opcode::NewMutex => (0, 1),
         Opcode::NewChannel => (1, 1), // pops capacity, pushes channel reference
@@ -476,42 +482,42 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::LoadModule => (0, 1),
 
         // RefCell operations (for capture-by-reference)
-        Opcode::NewRefCell => (1, 1),    // Pop initial value, push refcell ptr
-        Opcode::LoadRefCell => (1, 1),   // Pop refcell ptr, push value
-        Opcode::StoreRefCell => (2, 0),  // Pop refcell ptr + value
+        Opcode::NewRefCell => (1, 1), // Pop initial value, push refcell ptr
+        Opcode::LoadRefCell => (1, 1), // Pop refcell ptr, push value
+        Opcode::StoreRefCell => (2, 0), // Pop refcell ptr + value
 
         // JSON operations (parse/stringify use NativeCall)
-        Opcode::JsonGet => (1, 1),         // Pop json object, push value
-        Opcode::JsonSet => (2, 0),         // Pop value + object (mutates)
-        Opcode::JsonDelete => (1, 0),      // Pop object (mutates)
-        Opcode::JsonIndex => (2, 1),       // Pop index + json array, push element
-        Opcode::JsonIndexSet => (3, 0),    // Pop value + index + array (mutates)
-        Opcode::JsonPush => (2, 0),        // Pop value + array (mutates)
-        Opcode::JsonPop => (1, 1),         // Pop array, push popped element
-        Opcode::JsonNewObject => (0, 1),   // Push new empty json object
-        Opcode::JsonNewArray => (0, 1),    // Push new empty json array
-        Opcode::JsonKeys => (1, 1),        // Pop json object, push string array
-        Opcode::JsonLength => (1, 1),      // Pop json, push length
+        Opcode::JsonGet => (1, 1),       // Pop json object, push value
+        Opcode::JsonSet => (2, 0),       // Pop value + object (mutates)
+        Opcode::JsonDelete => (1, 0),    // Pop object (mutates)
+        Opcode::JsonIndex => (2, 1),     // Pop index + json array, push element
+        Opcode::JsonIndexSet => (3, 0),  // Pop value + index + array (mutates)
+        Opcode::JsonPush => (2, 0),      // Pop value + array (mutates)
+        Opcode::JsonPop => (1, 1),       // Pop array, push popped element
+        Opcode::JsonNewObject => (0, 1), // Push new empty json object
+        Opcode::JsonNewArray => (0, 1),  // Push new empty json array
+        Opcode::JsonKeys => (1, 1),      // Pop json object, push string array
+        Opcode::JsonLength => (1, 1),    // Pop json, push length
 
         // Semaphore operations
-        Opcode::NewSemaphore => (1, 1),    // Pop permit count, push semaphore
-        Opcode::SemAcquire => (2, 0),      // Pop count, pop semaphore (may block)
-        Opcode::SemRelease => (2, 0),      // Pop count, pop semaphore
+        Opcode::NewSemaphore => (1, 1), // Pop permit count, push semaphore
+        Opcode::SemAcquire => (2, 0),   // Pop count, pop semaphore (may block)
+        Opcode::SemRelease => (2, 0),   // Pop count, pop semaphore
 
         // Task waiting
-        Opcode::WaitAll => (1, 1),         // Pop task array, push result array
+        Opcode::WaitAll => (1, 1), // Pop task array, push result array
 
         // Task cancellation
-        Opcode::TaskCancel => (1, 0),      // Pop task handle
+        Opcode::TaskCancel => (1, 0), // Pop task handle
 
         // Exception handling
-        Opcode::Try => (0, 0),      // Installs handler, no stack effect
-        Opcode::EndTry => (0, 0),   // Removes handler, no stack effect
-        Opcode::Rethrow => (0, 0),  // Rethrows, unwinds stack
+        Opcode::Try => (0, 0),     // Installs handler, no stack effect
+        Opcode::EndTry => (0, 0),  // Removes handler, no stack effect
+        Opcode::Rethrow => (0, 0), // Rethrows, unwinds stack
 
         // Array primitive operations
-        Opcode::ArrayPush => (2, 0),  // Pop value + array, mutates array
-        Opcode::ArrayPop => (1, 1),   // Pop array, push popped element
+        Opcode::ArrayPush => (2, 0), // Pop value + array, mutates array
+        Opcode::ArrayPop => (1, 1),  // Pop array, push popped element
 
         // Type operations
         Opcode::InstanceOf => (2, 1), // Pop class_id + object, push bool

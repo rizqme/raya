@@ -107,12 +107,16 @@ impl Semaphore {
 
             if current >= count {
                 // Try to decrement permits
-                if self.permits.compare_exchange(
-                    current,
-                    current - count,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ).is_ok() {
+                if self
+                    .permits
+                    .compare_exchange(
+                        current,
+                        current - count,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
                     return Ok(());
                 }
                 // CAS failed, retry
@@ -149,12 +153,16 @@ impl Semaphore {
 
             if current >= needed {
                 // Try to acquire for the waiting task
-                if self.permits.compare_exchange(
-                    current,
-                    current - needed,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ).is_ok() {
+                if self
+                    .permits
+                    .compare_exchange(
+                        current,
+                        current - needed,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
                     queue.pop_front();
                     resumed_tasks.push(waiting_task);
                 }

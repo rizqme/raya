@@ -100,7 +100,6 @@ pub enum SmBlockKind {
 #[derive(Debug, Clone)]
 pub enum SmInstr {
     // ===== Frame / State (state machine transform inserts these) =====
-
     /// Load a local from the frame: dest = frame.locals[index]
     LoadLocal { dest: u32, index: u32 },
 
@@ -129,7 +128,6 @@ pub enum SmInstr {
     LoadResumeValue { dest: u32 },
 
     // ===== Constants =====
-
     /// Load an i32 immediate.
     ConstI32 { dest: u32, value: i32 },
 
@@ -143,9 +141,13 @@ pub enum SmInstr {
     ConstNull { dest: u32 },
 
     // ===== Typed Integer Arithmetic (unboxed i32) =====
-
     /// dest = left `op` right (i32)
-    I32BinOp { dest: u32, op: SmI32BinOp, left: u32, right: u32 },
+    I32BinOp {
+        dest: u32,
+        op: SmI32BinOp,
+        left: u32,
+        right: u32,
+    },
 
     /// dest = -src (i32)
     I32Neg { dest: u32, src: u32 },
@@ -154,23 +156,35 @@ pub enum SmInstr {
     I32BitNot { dest: u32, src: u32 },
 
     // ===== Typed Float Arithmetic (unboxed f64) =====
-
     /// dest = left `op` right (f64)
-    F64BinOp { dest: u32, op: SmF64BinOp, left: u32, right: u32 },
+    F64BinOp {
+        dest: u32,
+        op: SmF64BinOp,
+        left: u32,
+        right: u32,
+    },
 
     /// dest = -src (f64)
     F64Neg { dest: u32, src: u32 },
 
     // ===== Typed Comparison (unboxed → bool) =====
-
     /// dest = left `op` right (i32 compare → bool)
-    I32Cmp { dest: u32, op: SmCmpOp, left: u32, right: u32 },
+    I32Cmp {
+        dest: u32,
+        op: SmCmpOp,
+        left: u32,
+        right: u32,
+    },
 
     /// dest = left `op` right (f64 compare → bool)
-    F64Cmp { dest: u32, op: SmCmpOp, left: u32, right: u32 },
+    F64Cmp {
+        dest: u32,
+        op: SmCmpOp,
+        left: u32,
+        right: u32,
+    },
 
     // ===== Boolean Logic =====
-
     /// dest = !src (boolean NOT)
     BoolNot { dest: u32, src: u32 },
 
@@ -181,7 +195,6 @@ pub enum SmInstr {
     BoolOr { dest: u32, left: u32, right: u32 },
 
     // ===== NaN-boxing Conversion =====
-
     /// dest = box_i32(src)
     BoxI32 { dest: u32, src: u32 },
 
@@ -201,7 +214,6 @@ pub enum SmInstr {
     UnboxBool { dest: u32, src: u32 },
 
     // ===== Memory Access =====
-
     /// dest = globals[index]
     LoadGlobal { dest: u32, index: u32 },
 
@@ -209,7 +221,6 @@ pub enum SmInstr {
     StoreGlobal { index: u32, src: u32 },
 
     // ===== Helper Calls (runtime-assisted operations) =====
-
     /// Call a helper function through the AotHelperTable.
     /// Used for all operations that need runtime support: allocation,
     /// string/array/object operations, native calls, concurrency, etc.
@@ -220,7 +231,6 @@ pub enum SmInstr {
     },
 
     // ===== AOT Function Call (may suspend) =====
-
     /// Call another AOT function. The callee may suspend, in which case
     /// the state machine must check for AOT_SUSPEND and propagate.
     CallAot {
@@ -230,7 +240,6 @@ pub enum SmInstr {
     },
 
     // ===== Suspension =====
-
     /// Check if a returned value is the AOT_SUSPEND sentinel.
     IsSuspend { dest: u32, value: u32 },
 
@@ -238,9 +247,11 @@ pub enum SmInstr {
     ReturnValue { value: u32 },
 
     // ===== SSA =====
-
     /// Phi node: dest = phi([(block_a, val_a), (block_b, val_b), ...])
-    Phi { dest: u32, sources: Vec<(SmBlockId, u32)> },
+    Phi {
+        dest: u32,
+        sources: Vec<(SmBlockId, u32)>,
+    },
 
     /// Register-to-register copy.
     Move { dest: u32, src: u32 },
@@ -253,20 +264,40 @@ pub enum SmInstr {
 /// Integer (i32) binary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmI32BinOp {
-    Add, Sub, Mul, Div, Mod, Pow,
-    Shl, Shr, Ushr, And, Or, Xor,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Shl,
+    Shr,
+    Ushr,
+    And,
+    Or,
+    Xor,
 }
 
 /// Float (f64) binary operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmF64BinOp {
-    Add, Sub, Mul, Div, Mod, Pow,
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
 }
 
 /// Comparison operators (works for both i32 and f64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SmCmpOp {
-    Eq, Ne, Lt, Le, Gt, Ge,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 // =============================================================================
@@ -311,7 +342,6 @@ pub enum HelperCall {
     LoadArgLocal,
 
     // ===== Compound operations (lowering emits specific code) =====
-
     /// Generic polymorphic add (box+unbox pattern based on runtime tags).
     GenericAdd,
     GenericSub,
@@ -478,9 +508,8 @@ pub fn transform_to_state_machine(
         };
     }
 
-    let mut transformer = StateMachineTransformer::new(
-        function_id, local_count, param_count, &analysis, blocks,
-    );
+    let mut transformer =
+        StateMachineTransformer::new(function_id, local_count, param_count, &analysis, blocks);
     let sm_blocks = transformer.transform();
 
     StateMachineFunction {
@@ -544,7 +573,8 @@ impl<'a> StateMachineTransformer<'a> {
 
     fn transform(&mut self) -> Vec<SmBlock> {
         // 1. Build suspension point index: (block_id, instr_index) → suspension_index
-        let mut suspend_map: std::collections::HashMap<(u32, u32), usize> = std::collections::HashMap::new();
+        let mut suspend_map: std::collections::HashMap<(u32, u32), usize> =
+            std::collections::HashMap::new();
         for (idx, point) in self.analysis.points.iter().enumerate() {
             suspend_map.insert((point.block_id, point.instr_index), idx);
         }
@@ -571,9 +601,9 @@ impl<'a> StateMachineTransformer<'a> {
         let dispatch_block = SmBlock {
             id: dispatch_id,
             kind: SmBlockKind::Dispatch,
-            instructions: vec![
-                SmInstr::LoadResumePoint { dest: resume_point_reg },
-            ],
+            instructions: vec![SmInstr::LoadResumePoint {
+                dest: resume_point_reg,
+            }],
             terminator: SmTerminator::BrTable {
                 index: resume_point_reg,
                 default: SmBlockId(u32::MAX), // unreachable
@@ -586,7 +616,8 @@ impl<'a> StateMachineTransformer<'a> {
         let input_blocks = std::mem::take(&mut self.input_blocks);
         for block in &input_blocks {
             // Find suspension points within this block
-            let block_suspensions: Vec<(u32, usize)> = suspend_map.iter()
+            let block_suspensions: Vec<(u32, usize)> = suspend_map
+                .iter()
                 .filter(|((bid, _), _)| *bid == block.id.0)
                 .map(|((_, iidx), &sidx)| (*iidx, sidx))
                 .collect::<Vec<_>>();
@@ -631,7 +662,9 @@ impl<'a> StateMachineTransformer<'a> {
 
             self.output_blocks.push(SmBlock {
                 id: restore_id,
-                kind: SmBlockKind::RestoreState { suspension_index: idx as u32 },
+                kind: SmBlockKind::RestoreState {
+                    suspension_index: idx as u32,
+                },
                 instructions: restore_instrs,
                 terminator: SmTerminator::Jump(continuation_id),
             });
@@ -666,8 +699,8 @@ impl<'a> StateMachineTransformer<'a> {
             let save_block_id = self.alloc_block_id();
             let continuation_id = SmBlockId(block.id.0 * 1000 + instr_idx + 1);
 
-            let pre_instrs: Vec<SmInstr> = block.instructions[current_start as usize..instr_idx as usize]
-                .to_vec();
+            let pre_instrs: Vec<SmInstr> =
+                block.instructions[current_start as usize..instr_idx as usize].to_vec();
 
             // Include the suspension instruction itself in pre-suspend
             let suspend_instr = if (instr_idx as usize) < block.instructions.len() {
@@ -686,13 +719,19 @@ impl<'a> StateMachineTransformer<'a> {
             if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
                 let check_reg = self.alloc_temp();
                 // The last instruction's dest should be the call result
-                let call_result = all_pre_instrs.last().and_then(|i| match i {
-                    SmInstr::CallHelper { dest: Some(d), .. } => Some(*d),
-                    SmInstr::CallAot { dest, .. } => Some(*dest),
-                    _ => None,
-                }).unwrap_or(0);
+                let call_result = all_pre_instrs
+                    .last()
+                    .and_then(|i| match i {
+                        SmInstr::CallHelper { dest: Some(d), .. } => Some(*d),
+                        SmInstr::CallAot { dest, .. } => Some(*dest),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
 
-                all_pre_instrs.push(SmInstr::IsSuspend { dest: check_reg, value: call_result });
+                all_pre_instrs.push(SmInstr::IsSuspend {
+                    dest: check_reg,
+                    value: call_result,
+                });
 
                 // Branch: if suspended → save, else → continuation
                 self.output_blocks.push(SmBlock {
@@ -728,8 +767,13 @@ impl<'a> StateMachineTransformer<'a> {
 
             // Set resume_point = suspension_index + 1 (0 = entry)
             let resume_const = self.alloc_temp();
-            save_instrs.push(SmInstr::ConstI32 { dest: resume_const, value: (suspend_idx as i32) + 1 });
-            save_instrs.push(SmInstr::StoreResumePoint { value: resume_const });
+            save_instrs.push(SmInstr::ConstI32 {
+                dest: resume_const,
+                value: (suspend_idx as i32) + 1,
+            });
+            save_instrs.push(SmInstr::StoreResumePoint {
+                value: resume_const,
+            });
 
             // Set suspend reason
             let reason_const = self.alloc_temp();
@@ -744,8 +788,13 @@ impl<'a> StateMachineTransformer<'a> {
                 super::analysis::SuspensionKind::ChannelRecv => 6,
                 super::analysis::SuspensionKind::ChannelSend => 7,
             };
-            save_instrs.push(SmInstr::ConstI32 { dest: reason_const, value: reason_value });
-            save_instrs.push(SmInstr::StoreSuspendReason { reason: reason_const });
+            save_instrs.push(SmInstr::ConstI32 {
+                dest: reason_const,
+                value: reason_value,
+            });
+            save_instrs.push(SmInstr::StoreSuspendReason {
+                reason: reason_const,
+            });
 
             // Return AOT_SUSPEND
             let suspend_reg = self.alloc_temp();
@@ -756,7 +805,9 @@ impl<'a> StateMachineTransformer<'a> {
 
             self.output_blocks.push(SmBlock {
                 id: save_block_id,
-                kind: SmBlockKind::SaveState { suspension_index: suspend_idx as u32 },
+                kind: SmBlockKind::SaveState {
+                    suspension_index: suspend_idx as u32,
+                },
                 instructions: save_instrs,
                 terminator: SmTerminator::Return { value: suspend_reg },
             });
@@ -822,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_transform_with_await() {
-        use super::super::analysis::{SuspensionPoint, SuspensionKind};
+        use super::super::analysis::{SuspensionKind, SuspensionPoint};
         use std::collections::HashSet;
 
         // Simulate a function that spawns a task and awaits it:
@@ -860,7 +911,8 @@ mod tests {
             loop_headers: HashSet::new(),
         };
 
-        let sm = transform_to_state_machine(0, blocks, analysis, 0, 2, Some("test_await".to_string()));
+        let sm =
+            transform_to_state_machine(0, blocks, analysis, 0, 2, Some("test_await".to_string()));
 
         assert!(sm.analysis.has_suspensions);
         assert_eq!(sm.name.as_deref(), Some("test_await"));
@@ -871,18 +923,28 @@ mod tests {
         // 3. Save block
         // 4. Continuation block (BoxI32 + return)
         // 5. Restore block
-        assert!(sm.blocks.len() >= 4, "Expected at least 4 blocks, got {}", sm.blocks.len());
+        assert!(
+            sm.blocks.len() >= 4,
+            "Expected at least 4 blocks, got {}",
+            sm.blocks.len()
+        );
 
         // Verify dispatch block exists
         let dispatch = sm.blocks.iter().find(|b| b.kind == SmBlockKind::Dispatch);
         assert!(dispatch.is_some(), "Should have a dispatch block");
 
         // Verify save block exists
-        let save = sm.blocks.iter().find(|b| matches!(b.kind, SmBlockKind::SaveState { .. }));
+        let save = sm
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, SmBlockKind::SaveState { .. }));
         assert!(save.is_some(), "Should have a save block");
 
         // Verify restore block exists
-        let restore = sm.blocks.iter().find(|b| matches!(b.kind, SmBlockKind::RestoreState { .. }));
+        let restore = sm
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, SmBlockKind::RestoreState { .. }));
         assert!(restore.is_some(), "Should have a restore block");
 
         // Save block should return AOT_SUSPEND

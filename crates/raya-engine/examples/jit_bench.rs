@@ -132,8 +132,12 @@ fn jit_compile(module: &Module, func_idx: usize) -> Result<CompiledFunction, Str
         lift_function(func, module, func_idx as u32).map_err(|e| format!("Lift: {}", e))?;
 
     let mut flag_builder = settings::builder();
-    flag_builder.set("opt_level", "speed").map_err(|e| format!("{}", e))?;
-    flag_builder.set("is_pic", "false").map_err(|e| format!("{}", e))?;
+    flag_builder
+        .set("opt_level", "speed")
+        .map_err(|e| format!("{}", e))?;
+    flag_builder
+        .set("is_pic", "false")
+        .map_err(|e| format!("{}", e))?;
     let flags = settings::Flags::new(flag_builder);
 
     let isa = cranelift_native::builder()
@@ -195,9 +199,7 @@ fn jit_compile_safe(module: &Module, func_idx: usize) -> Result<CompiledFunction
 
 #[inline(never)]
 fn call_jit(compiled: &CompiledFunction) -> u64 {
-    unsafe {
-        (compiled.entry_fn)(ptr::null(), 0, ptr::null_mut(), 0, ptr::null_mut())
-    }
+    unsafe { (compiled.entry_fn)(ptr::null(), 0, ptr::null_mut(), 0, ptr::null_mut()) }
 }
 
 // ============================================================================
@@ -228,7 +230,12 @@ impl BenchResult {
     }
 }
 
-fn bench<F: FnMut() -> u64>(name: &str, warmup_iters: u64, bench_iters: u64, mut f: F) -> BenchResult {
+fn bench<F: FnMut() -> u64>(
+    name: &str,
+    warmup_iters: u64,
+    bench_iters: u64,
+    mut f: F,
+) -> BenchResult {
     for _ in 0..warmup_iters {
         black_box(f());
     }
@@ -249,7 +256,12 @@ fn bench<F: FnMut() -> u64>(name: &str, warmup_iters: u64, bench_iters: u64, mut
 }
 
 /// Variant that doesn't return a value (for compilation benchmarks)
-fn bench_void<F: FnMut()>(name: &str, warmup_iters: u64, bench_iters: u64, mut f: F) -> BenchResult {
+fn bench_void<F: FnMut()>(
+    name: &str,
+    warmup_iters: u64,
+    bench_iters: u64,
+    mut f: F,
+) -> BenchResult {
     for _ in 0..warmup_iters {
         f();
     }
@@ -491,8 +503,7 @@ fn main() {
 
         match jit_per_iter {
             Some(jit_dur) if jit_dur.as_nanos() > 0 => {
-                let speedup =
-                    interp_result.per_iter.as_nanos() as f64 / jit_dur.as_nanos() as f64;
+                let speedup = interp_result.per_iter.as_nanos() as f64 / jit_dur.as_nanos() as f64;
                 println!(
                     "  {:<30} {:>10.2} us {:>10.2} ns {:>8.1}x",
                     label,
@@ -541,41 +552,34 @@ fn main() {
 
         let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
-        let lower_result = bench_void(
-            "2. lower + codegen (SSA IR -> native)",
-            10,
-            iters,
-            || {
-                let mut flag_builder = settings::builder();
-                flag_builder.set("opt_level", "speed").unwrap();
-                flag_builder.set("is_pic", "false").unwrap();
-                let flags = settings::Flags::new(flag_builder);
-                let isa = cranelift_native::builder().unwrap().finish(flags).unwrap();
-                let call_conv = isa.default_call_conv();
-                let builder =
-                    JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-                let mut jit_module = JITModule::new(builder);
+        let lower_result = bench_void("2. lower + codegen (SSA IR -> native)", 10, iters, || {
+            let mut flag_builder = settings::builder();
+            flag_builder.set("opt_level", "speed").unwrap();
+            flag_builder.set("is_pic", "false").unwrap();
+            let flags = settings::Flags::new(flag_builder);
+            let isa = cranelift_native::builder().unwrap().finish(flags).unwrap();
+            let call_conv = isa.default_call_conv();
+            let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
+            let mut jit_module = JITModule::new(builder);
 
-                let sig = jit_entry_signature(call_conv);
-                let func_id = jit_module
-                    .declare_function("f", cranelift_module::Linkage::Local, &sig)
-                    .unwrap();
+            let sig = jit_entry_signature(call_conv);
+            let func_id = jit_module
+                .declare_function("f", cranelift_module::Linkage::Local, &sig)
+                .unwrap();
 
-                let mut ctx = Context::new();
-                ctx.func.signature = jit_entry_signature(call_conv);
-                ctx.func.name = ir::UserFuncName::user(0, 0);
+            let mut ctx = Context::new();
+            ctx.func.signature = jit_entry_signature(call_conv);
+            ctx.func.name = ir::UserFuncName::user(0, 0);
 
-                let mut fbc = FunctionBuilderContext::new();
-                {
-                    let builder =
-                        cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut fbc);
-                    LoweringContext::lower(&jit_func, builder).unwrap();
-                }
+            let mut fbc = FunctionBuilderContext::new();
+            {
+                let builder = cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut fbc);
+                LoweringContext::lower(&jit_func, builder).unwrap();
+            }
 
-                jit_module.define_function(func_id, &mut ctx).unwrap();
-                jit_module.finalize_definitions().unwrap();
-            },
-        );
+            jit_module.define_function(func_id, &mut ctx).unwrap();
+            jit_module.finalize_definitions().unwrap();
+        });
         lower_result.print();
 
         let lift_ns = lift_result.per_iter.as_nanos();
@@ -638,7 +642,9 @@ fn main() {
             Err(e) => {
                 println!(
                     "  arith({}ops): interp={:?}, jit=[failed: {}]",
-                    size * 4, interp_val, e
+                    size * 4,
+                    interp_val,
+                    e
                 );
             }
         }

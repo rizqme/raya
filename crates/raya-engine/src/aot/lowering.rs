@@ -9,16 +9,16 @@
 
 use std::collections::HashMap;
 
-use cranelift_codegen::ir::{self, types, condcodes, AbiParam, InstBuilder, MemFlags, Value};
+use cranelift_codegen::ir::{self, condcodes, types, AbiParam, InstBuilder, MemFlags, Value};
 use cranelift_codegen::isa::CallConv;
-use cranelift_frontend::{FunctionBuilder, Variable};
 #[cfg(test)]
 use cranelift_frontend::FunctionBuilderContext;
+use cranelift_frontend::{FunctionBuilder, Variable};
 
 use super::abi;
 use super::statemachine::{
-    SmBlock, SmBlockId, SmCmpOp, SmF64BinOp, SmI32BinOp,
-    SmInstr, SmTerminator, StateMachineFunction, HelperCall,
+    HelperCall, SmBlock, SmBlockId, SmCmpOp, SmF64BinOp, SmI32BinOp, SmInstr, SmTerminator,
+    StateMachineFunction,
 };
 
 // =============================================================================
@@ -166,52 +166,108 @@ fn determine_reg_types(blocks: &[SmBlock]) -> HashMap<u32, ir::types::Type> {
         for instr in &block.instructions {
             match instr {
                 // Constants
-                SmInstr::ConstI32 { dest, .. } => { types_map.insert(*dest, types::I32); }
-                SmInstr::ConstF64 { dest, .. } => { types_map.insert(*dest, types::F64); }
-                SmInstr::ConstBool { dest, .. } => { types_map.insert(*dest, types::I8); }
-                SmInstr::ConstNull { dest } => { types_map.insert(*dest, types::I64); }
+                SmInstr::ConstI32 { dest, .. } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::ConstF64 { dest, .. } => {
+                    types_map.insert(*dest, types::F64);
+                }
+                SmInstr::ConstBool { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
+                SmInstr::ConstNull { dest } => {
+                    types_map.insert(*dest, types::I64);
+                }
 
                 // Typed arithmetic
-                SmInstr::I32BinOp { dest, .. } => { types_map.insert(*dest, types::I32); }
-                SmInstr::I32Neg { dest, .. } => { types_map.insert(*dest, types::I32); }
-                SmInstr::I32BitNot { dest, .. } => { types_map.insert(*dest, types::I32); }
-                SmInstr::F64BinOp { dest, .. } => { types_map.insert(*dest, types::F64); }
-                SmInstr::F64Neg { dest, .. } => { types_map.insert(*dest, types::F64); }
+                SmInstr::I32BinOp { dest, .. } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::I32Neg { dest, .. } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::I32BitNot { dest, .. } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::F64BinOp { dest, .. } => {
+                    types_map.insert(*dest, types::F64);
+                }
+                SmInstr::F64Neg { dest, .. } => {
+                    types_map.insert(*dest, types::F64);
+                }
 
                 // Comparisons → bool (I8)
-                SmInstr::I32Cmp { dest, .. } => { types_map.insert(*dest, types::I8); }
-                SmInstr::F64Cmp { dest, .. } => { types_map.insert(*dest, types::I8); }
+                SmInstr::I32Cmp { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
+                SmInstr::F64Cmp { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
 
                 // Boolean logic
-                SmInstr::BoolNot { dest, .. } => { types_map.insert(*dest, types::I8); }
-                SmInstr::BoolAnd { dest, .. } => { types_map.insert(*dest, types::I8); }
-                SmInstr::BoolOr { dest, .. } => { types_map.insert(*dest, types::I8); }
+                SmInstr::BoolNot { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
+                SmInstr::BoolAnd { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
+                SmInstr::BoolOr { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
 
                 // NaN-boxing conversions
-                SmInstr::BoxI32 { dest, .. } => { types_map.insert(*dest, types::I64); }
-                SmInstr::UnboxI32 { dest, .. } => { types_map.insert(*dest, types::I32); }
-                SmInstr::BoxF64 { dest, .. } => { types_map.insert(*dest, types::I64); }
-                SmInstr::UnboxF64 { dest, .. } => { types_map.insert(*dest, types::F64); }
-                SmInstr::BoxBool { dest, .. } => { types_map.insert(*dest, types::I64); }
-                SmInstr::UnboxBool { dest, .. } => { types_map.insert(*dest, types::I8); }
+                SmInstr::BoxI32 { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
+                SmInstr::UnboxI32 { dest, .. } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::BoxF64 { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
+                SmInstr::UnboxF64 { dest, .. } => {
+                    types_map.insert(*dest, types::F64);
+                }
+                SmInstr::BoxBool { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
+                SmInstr::UnboxBool { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
 
                 // Frame / state access
-                SmInstr::LoadLocal { dest, .. } => { types_map.insert(*dest, types::I64); }
-                SmInstr::LoadResumePoint { dest } => { types_map.insert(*dest, types::I32); }
-                SmInstr::LoadChildFrame { dest } => { types_map.insert(*dest, types::I64); }
-                SmInstr::LoadResumeValue { dest } => { types_map.insert(*dest, types::I64); }
+                SmInstr::LoadLocal { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
+                SmInstr::LoadResumePoint { dest } => {
+                    types_map.insert(*dest, types::I32);
+                }
+                SmInstr::LoadChildFrame { dest } => {
+                    types_map.insert(*dest, types::I64);
+                }
+                SmInstr::LoadResumeValue { dest } => {
+                    types_map.insert(*dest, types::I64);
+                }
 
                 // Memory access
-                SmInstr::LoadGlobal { dest, .. } => { types_map.insert(*dest, types::I64); }
+                SmInstr::LoadGlobal { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
 
                 // Helper calls (return NaN-boxed I64)
-                SmInstr::CallHelper { dest: Some(d), .. } => { types_map.insert(*d, types::I64); }
+                SmInstr::CallHelper { dest: Some(d), .. } => {
+                    types_map.insert(*d, types::I64);
+                }
 
                 // AOT function calls (return NaN-boxed I64 or AOT_SUSPEND)
-                SmInstr::CallAot { dest, .. } => { types_map.insert(*dest, types::I64); }
+                SmInstr::CallAot { dest, .. } => {
+                    types_map.insert(*dest, types::I64);
+                }
 
                 // Suspend check → bool
-                SmInstr::IsSuspend { dest, .. } => { types_map.insert(*dest, types::I8); }
+                SmInstr::IsSuspend { dest, .. } => {
+                    types_map.insert(*dest, types::I8);
+                }
 
                 // Phi: type from first known source
                 SmInstr::Phi { dest, sources } => {
@@ -257,7 +313,8 @@ fn build_phi_copies(blocks: &[SmBlock]) -> HashMap<SmBlockId, Vec<(u32, u32)>> {
         for instr in &block.instructions {
             if let SmInstr::Phi { dest, sources } = instr {
                 for (src_block, src_reg) in sources {
-                    copies.entry(*src_block)
+                    copies
+                        .entry(*src_block)
                         .or_default()
                         .push((*dest, *src_reg));
                 }
@@ -297,9 +354,9 @@ impl LoweringCtx {
 
     /// Ensure a register variable exists, declaring it with a default type if needed.
     fn ensure_reg(&mut self, builder: &mut FunctionBuilder<'_>, reg: u32, ty: ir::types::Type) {
-        self.reg_vars.entry(reg).or_insert_with(|| {
-            builder.declare_var(ty)
-        });
+        self.reg_vars
+            .entry(reg)
+            .or_insert_with(|| builder.declare_var(ty));
     }
 
     // ---- Frame / context access ----
@@ -312,7 +369,12 @@ impl LoweringCtx {
         builder.use_var(self.ctx_var)
     }
 
-    fn load_frame_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, ty: ir::types::Type) -> Value {
+    fn load_frame_field(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        offset: i32,
+        ty: ir::types::Type,
+    ) -> Value {
         let fp = self.frame_ptr(builder);
         builder.ins().load(ty, MemFlags::trusted(), fp, offset)
     }
@@ -322,7 +384,12 @@ impl LoweringCtx {
         builder.ins().store(MemFlags::trusted(), val, fp, offset);
     }
 
-    fn load_ctx_field(&self, builder: &mut FunctionBuilder<'_>, offset: i32, ty: ir::types::Type) -> Value {
+    fn load_ctx_field(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        offset: i32,
+        ty: ir::types::Type,
+    ) -> Value {
         let cp = self.ctx_ptr(builder);
         builder.ins().load(ty, MemFlags::trusted(), cp, offset)
     }
@@ -336,24 +403,34 @@ impl LoweringCtx {
     fn load_local(&self, builder: &mut FunctionBuilder<'_>, index: u32) -> Value {
         let locals_ptr = self.load_frame_field(builder, frame_offsets::LOCALS_PTR, types::I64);
         let offset = (index as i32) * 8;
-        builder.ins().load(types::I64, MemFlags::trusted(), locals_ptr, offset)
+        builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), locals_ptr, offset)
     }
 
     /// Load the locals pointer from the frame, then store a value at the given index.
     fn store_local(&self, builder: &mut FunctionBuilder<'_>, index: u32, val: Value) {
         let locals_ptr = self.load_frame_field(builder, frame_offsets::LOCALS_PTR, types::I64);
         let offset = (index as i32) * 8;
-        builder.ins().store(MemFlags::trusted(), val, locals_ptr, offset);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), val, locals_ptr, offset);
     }
 
     // ---- Helper function pointer loading ----
 
     /// Load a helper function pointer from the AotHelperTable.
-    fn load_helper_fn_ptr(&self, builder: &mut FunctionBuilder<'_>, helper: &HelperCall) -> Option<Value> {
+    fn load_helper_fn_ptr(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        helper: &HelperCall,
+    ) -> Option<Value> {
         let offset = helper_table_field_offset(helper)?;
         let combined_offset = ctx_offsets::HELPERS + offset;
         let cp = self.ctx_ptr(builder);
-        let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), cp, combined_offset);
+        let fn_ptr = builder
+            .ins()
+            .load(types::I64, MemFlags::trusted(), cp, combined_offset);
         Some(fn_ptr)
     }
 
@@ -371,7 +448,11 @@ impl LoweringCtx {
 
     // ---- Block lowering ----
 
-    fn lower_block(&mut self, block: &SmBlock, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
+    fn lower_block(
+        &mut self,
+        block: &SmBlock,
+        builder: &mut FunctionBuilder<'_>,
+    ) -> Result<(), LoweringError> {
         // Lower instructions (skip Phi nodes — handled via resolution map)
         for instr in &block.instructions {
             if matches!(instr, SmInstr::Phi { .. }) {
@@ -394,7 +475,11 @@ impl LoweringCtx {
 
     // ---- Instruction lowering ----
 
-    fn lower_instr(&mut self, instr: &SmInstr, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
+    fn lower_instr(
+        &mut self,
+        instr: &SmInstr,
+        builder: &mut FunctionBuilder<'_>,
+    ) -> Result<(), LoweringError> {
         match instr {
             // ===== Frame / State access =====
             SmInstr::LoadLocal { dest, index } => {
@@ -461,7 +546,12 @@ impl LoweringCtx {
             }
 
             // ===== Typed Integer Arithmetic =====
-            SmInstr::I32BinOp { dest, op, left, right } => {
+            SmInstr::I32BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 self.ensure_reg(builder, *dest, types::I32);
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
@@ -482,7 +572,12 @@ impl LoweringCtx {
             }
 
             // ===== Typed Float Arithmetic =====
-            SmInstr::F64BinOp { dest, op, left, right } => {
+            SmInstr::F64BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 self.ensure_reg(builder, *dest, types::F64);
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
@@ -497,7 +592,12 @@ impl LoweringCtx {
             }
 
             // ===== Typed Comparisons =====
-            SmInstr::I32Cmp { dest, op, left, right } => {
+            SmInstr::I32Cmp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 self.ensure_reg(builder, *dest, types::I8);
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
@@ -505,7 +605,12 @@ impl LoweringCtx {
                 let result = builder.ins().icmp(cc, l, r);
                 self.def_reg(builder, *dest, result);
             }
-            SmInstr::F64Cmp { dest, op, left, right } => {
+            SmInstr::F64Cmp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 self.ensure_reg(builder, *dest, types::I8);
                 let l = self.use_reg(builder, *left);
                 let r = self.use_reg(builder, *right);
@@ -595,7 +700,11 @@ impl LoweringCtx {
             }
 
             // ===== AOT Function Calls =====
-            SmInstr::CallAot { dest, func_id, callee_frame } => {
+            SmInstr::CallAot {
+                dest,
+                func_id,
+                callee_frame,
+            } => {
                 self.ensure_reg(builder, *dest, types::I64);
                 self.lower_aot_call(builder, *dest, *func_id, *callee_frame)?;
             }
@@ -620,7 +729,9 @@ impl LoweringCtx {
                 // Handled via resolution map — skip during instruction lowering
             }
             SmInstr::Move { dest, src } => {
-                let ty = self.reg_vars.get(src)
+                let ty = self
+                    .reg_vars
+                    .get(src)
                     .map(|_| types::I64)
                     .unwrap_or(types::I64);
                 self.ensure_reg(builder, *dest, ty);
@@ -633,21 +744,33 @@ impl LoweringCtx {
 
     // ---- Terminator lowering ----
 
-    fn lower_terminator(&self, term: &SmTerminator, builder: &mut FunctionBuilder<'_>) -> Result<(), LoweringError> {
+    fn lower_terminator(
+        &self,
+        term: &SmTerminator,
+        builder: &mut FunctionBuilder<'_>,
+    ) -> Result<(), LoweringError> {
         match term {
             SmTerminator::Jump(target) => {
                 let cl_block = self.resolve_block(*target)?;
                 builder.ins().jump(cl_block, &[]);
             }
 
-            SmTerminator::Branch { cond, then_block, else_block } => {
+            SmTerminator::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
                 let cond_val = self.use_reg(builder, *cond);
                 let then_cl = self.resolve_block(*then_block)?;
                 let else_cl = self.resolve_block(*else_block)?;
                 builder.ins().brif(cond_val, then_cl, &[], else_cl, &[]);
             }
 
-            SmTerminator::BranchNull { value, null_block, not_null_block } => {
+            SmTerminator::BranchNull {
+                value,
+                null_block,
+                not_null_block,
+            } => {
                 let val = self.use_reg(builder, *value);
                 let null_const = abi::emit_null(builder);
                 let is_null = builder.ins().icmp(condcodes::IntCC::Equal, val, null_const);
@@ -656,7 +779,11 @@ impl LoweringCtx {
                 builder.ins().brif(is_null, null_cl, &[], not_null_cl, &[]);
             }
 
-            SmTerminator::BrTable { index, default, targets } => {
+            SmTerminator::BrTable {
+                index,
+                default,
+                targets,
+            } => {
                 // Emit as if-else chain for simplicity and correctness
                 let index_val = self.use_reg(builder, *index);
                 self.emit_dispatch_chain(builder, index_val, targets, *default)?;
@@ -675,7 +802,10 @@ impl LoweringCtx {
     }
 
     fn resolve_block(&self, id: SmBlockId) -> Result<ir::Block, LoweringError> {
-        self.block_map.get(&id).copied().ok_or(LoweringError::MissingBlock(id))
+        self.block_map
+            .get(&id)
+            .copied()
+            .ok_or(LoweringError::MissingBlock(id))
     }
 
     /// Emit a dispatch chain (if-else) for BrTable.
@@ -690,12 +820,17 @@ impl LoweringCtx {
     ) -> Result<(), LoweringError> {
         // Resolve the default block. If it's the entry block (which can't be
         // branched to in Cranelift), use the trap block instead.
-        let default_cl = self.resolve_block(default)
+        let default_cl = self
+            .resolve_block(default)
             .map(|b| {
                 // Check if this maps to the entry block (first block created).
                 // In our layout, the entry block gets function params and can't
                 // be a branch target. Use the trap block as fallback.
-                if self.is_entry_block(default) { self.trap_block } else { b }
+                if self.is_entry_block(default) {
+                    self.trap_block
+                } else {
+                    b
+                }
             })
             .unwrap_or(self.trap_block);
 
@@ -710,7 +845,9 @@ impl LoweringCtx {
             let target_cl = self.resolve_block(*target)?;
 
             let i_val = builder.ins().iconst(types::I32, i as i64);
-            let cmp = builder.ins().icmp(condcodes::IntCC::Equal, index_val, i_val);
+            let cmp = builder
+                .ins()
+                .icmp(condcodes::IntCC::Equal, index_val, i_val);
 
             if is_last {
                 // Last entry: branch to target or default
@@ -732,7 +869,13 @@ impl LoweringCtx {
 
     // ---- i32 binary operations ----
 
-    fn lower_i32_binop(&self, builder: &mut FunctionBuilder<'_>, op: SmI32BinOp, l: Value, r: Value) -> Value {
+    fn lower_i32_binop(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        op: SmI32BinOp,
+        l: Value,
+        r: Value,
+    ) -> Value {
         match op {
             SmI32BinOp::Add => builder.ins().iadd(l, r),
             SmI32BinOp::Sub => builder.ins().isub(l, r),
@@ -756,7 +899,13 @@ impl LoweringCtx {
 
     // ---- f64 binary operations ----
 
-    fn lower_f64_binop(&self, builder: &mut FunctionBuilder<'_>, op: SmF64BinOp, l: Value, r: Value) -> Value {
+    fn lower_f64_binop(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        op: SmF64BinOp,
+        l: Value,
+        r: Value,
+    ) -> Value {
         match op {
             SmF64BinOp::Add => builder.ins().fadd(l, r),
             SmF64BinOp::Sub => builder.ins().fsub(l, r),
@@ -804,25 +953,53 @@ impl LoweringCtx {
 
         // Compound operations: emit specialized code or placeholder
         match helper {
-            HelperCall::GenericAdd | HelperCall::GenericSub | HelperCall::GenericMul
-            | HelperCall::GenericDiv | HelperCall::GenericMod | HelperCall::GenericNeg
-            | HelperCall::GenericNot | HelperCall::GenericNotEqual | HelperCall::GenericLessEqual
-            | HelperCall::GenericGreater | HelperCall::GenericGreaterEqual
-            | HelperCall::GenericConcat | HelperCall::ToString
-            | HelperCall::NewObject | HelperCall::ObjectLiteral | HelperCall::ArrayLiteral
-            | HelperCall::ArrayPop | HelperCall::LoadElement | HelperCall::StoreElement
-            | HelperCall::LoadField | HelperCall::StoreField
-            | HelperCall::ModuleNativeCall | HelperCall::MakeClosure
-            | HelperCall::LoadCaptured | HelperCall::StoreCaptured | HelperCall::CallClosure
-            | HelperCall::NewRefCell | HelperCall::LoadRefCell | HelperCall::StoreRefCell
-            | HelperCall::InstanceOf | HelperCall::Cast | HelperCall::Typeof
-            | HelperCall::JsonLoadProperty | HelperCall::JsonStoreProperty
+            HelperCall::GenericAdd
+            | HelperCall::GenericSub
+            | HelperCall::GenericMul
+            | HelperCall::GenericDiv
+            | HelperCall::GenericMod
+            | HelperCall::GenericNeg
+            | HelperCall::GenericNot
+            | HelperCall::GenericNotEqual
+            | HelperCall::GenericLessEqual
+            | HelperCall::GenericGreater
+            | HelperCall::GenericGreaterEqual
+            | HelperCall::GenericConcat
+            | HelperCall::ToString
+            | HelperCall::NewObject
+            | HelperCall::ObjectLiteral
+            | HelperCall::ArrayLiteral
+            | HelperCall::ArrayPop
+            | HelperCall::LoadElement
+            | HelperCall::StoreElement
+            | HelperCall::LoadField
+            | HelperCall::StoreField
+            | HelperCall::ModuleNativeCall
+            | HelperCall::MakeClosure
+            | HelperCall::LoadCaptured
+            | HelperCall::StoreCaptured
+            | HelperCall::CallClosure
+            | HelperCall::NewRefCell
+            | HelperCall::LoadRefCell
+            | HelperCall::StoreRefCell
+            | HelperCall::InstanceOf
+            | HelperCall::Cast
+            | HelperCall::Typeof
+            | HelperCall::JsonLoadProperty
+            | HelperCall::JsonStoreProperty
             | HelperCall::StringCompare
-            | HelperCall::AwaitTask | HelperCall::AwaitAll | HelperCall::YieldTask
-            | HelperCall::SleepTask | HelperCall::SpawnClosure
-            | HelperCall::NewMutex | HelperCall::MutexLock | HelperCall::MutexUnlock
-            | HelperCall::NewChannel | HelperCall::TaskCancel
-            | HelperCall::SetupTry | HelperCall::EndTry => {
+            | HelperCall::AwaitTask
+            | HelperCall::AwaitAll
+            | HelperCall::YieldTask
+            | HelperCall::SleepTask
+            | HelperCall::SpawnClosure
+            | HelperCall::NewMutex
+            | HelperCall::MutexLock
+            | HelperCall::MutexUnlock
+            | HelperCall::NewChannel
+            | HelperCall::TaskCancel
+            | HelperCall::SetupTry
+            | HelperCall::EndTry => {
                 // TODO: Implement compound operations via extended helper table
                 // For now, produce null for dest
                 if let Some(d) = dest {
@@ -840,19 +1017,20 @@ impl LoweringCtx {
     }
 
     /// Build the full argument list for a helper call (including implicit ctx/frame).
-    fn build_helper_args(&self, builder: &mut FunctionBuilder<'_>, helper: &HelperCall, args: &[u32]) -> Vec<Value> {
+    fn build_helper_args(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        helper: &HelperCall,
+        args: &[u32],
+    ) -> Vec<Value> {
         let ctx = self.ctx_ptr(builder);
 
         match helper {
             // (func_id: u32, local_count: u32, func_ptr: i64) -> *mut AotFrame
-            HelperCall::AllocFrame => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::AllocFrame => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (frame_ptr: i64)
-            HelperCall::FreeFrame => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::FreeFrame => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx: i64)
             HelperCall::SafepointPoll => vec![ctx],
@@ -860,28 +1038,36 @@ impl LoweringCtx {
             // (ctx, class_id: u32) -> u64
             HelperCall::AllocObject => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (ctx, type_id: u32, capacity: u32) -> u64
             HelperCall::AllocArray => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (ctx, data_ptr: i64, len: u32) -> u64
             HelperCall::AllocString => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (ctx, a: u64, b: u64) -> u64
             HelperCall::StringConcat => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
@@ -891,19 +1077,17 @@ impl LoweringCtx {
             }
 
             // (array: u64, index: u64) -> u64
-            HelperCall::ArrayGet => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::ArrayGet => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (array: u64, index: u64, value: u64) -> void
-            HelperCall::ArraySet => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::ArraySet => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx, array: u64, value: u64)
             HelperCall::ArrayPush => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
@@ -913,31 +1097,29 @@ impl LoweringCtx {
             }
 
             // (obj: u64, field_index: u32) -> u64
-            HelperCall::ObjectGetField => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::ObjectGetField => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (obj: u64, field_index: u32, value: u64)
-            HelperCall::ObjectSetField => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::ObjectSetField => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx, native_id: u16, args_ptr: i64, argc: u8) -> u64
             HelperCall::NativeCall => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (result: u64) -> u8
-            HelperCall::IsNativeSuspend => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::IsNativeSuspend => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx, func_id: u32, args_ptr: i64, argc: u32) -> u64
             HelperCall::Spawn => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
@@ -947,31 +1129,29 @@ impl LoweringCtx {
             // (ctx, exception_val: u64)
             HelperCall::ThrowException => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (func_id: u32) -> i64
-            HelperCall::GetAotFuncPtr => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::GetAotFuncPtr => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (ctx, const_index: u32) -> u64
             HelperCall::LoadStringConstant => {
                 let mut v = vec![ctx];
-                for a in args { v.push(self.use_reg(builder, *a)); }
+                for a in args {
+                    v.push(self.use_reg(builder, *a));
+                }
                 v
             }
 
             // (value: i32) -> u64
-            HelperCall::LoadI32Constant => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::LoadI32Constant => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // (value: f64) -> u64
-            HelperCall::LoadF64Constant => {
-                args.iter().map(|a| self.use_reg(builder, *a)).collect()
-            }
+            HelperCall::LoadF64Constant => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
 
             // Compound operations (not direct table entries) — handled elsewhere
             _ => args.iter().map(|a| self.use_reg(builder, *a)).collect(),
@@ -988,7 +1168,8 @@ impl LoweringCtx {
         callee_frame: u32,
     ) -> Result<(), LoweringError> {
         // Load the callee's entry function pointer via GetAotFuncPtr helper
-        let get_func_ptr = self.load_helper_fn_ptr(builder, &HelperCall::GetAotFuncPtr)
+        let get_func_ptr = self
+            .load_helper_fn_ptr(builder, &HelperCall::GetAotFuncPtr)
             .ok_or_else(|| LoweringError::Unsupported("GetAotFuncPtr helper not found".into()))?;
 
         let mut sig = ir::Signature::new(self.call_conv);
@@ -997,7 +1178,9 @@ impl LoweringCtx {
 
         let func_id_val = builder.ins().iconst(types::I32, func_id as i64);
         let sig_ref = builder.import_signature(sig);
-        let inst = builder.ins().call_indirect(sig_ref, get_func_ptr, &[func_id_val]);
+        let inst = builder
+            .ins()
+            .call_indirect(sig_ref, get_func_ptr, &[func_id_val]);
         let callee_fn_ptr = builder.inst_results(inst)[0];
 
         // Call the callee: callee_fn(callee_frame, ctx) -> u64
@@ -1006,9 +1189,10 @@ impl LoweringCtx {
 
         let call_sig = aot_entry_signature(self.call_conv);
         let call_sig_ref = builder.import_signature(call_sig);
-        let call_inst = builder.ins().call_indirect(
-            call_sig_ref, callee_fn_ptr, &[callee_frame_val, ctx],
-        );
+        let call_inst =
+            builder
+                .ins()
+                .call_indirect(call_sig_ref, callee_fn_ptr, &[callee_frame_val, ctx]);
         let result = builder.inst_results(call_inst)[0];
         self.def_reg(builder, dest, result);
 
@@ -1311,8 +1495,14 @@ mod tests {
     fn test_helper_offsets() {
         assert_eq!(helper_table_field_offset(&HelperCall::AllocFrame), Some(0));
         assert_eq!(helper_table_field_offset(&HelperCall::FreeFrame), Some(8));
-        assert_eq!(helper_table_field_offset(&HelperCall::SafepointPoll), Some(16));
-        assert_eq!(helper_table_field_offset(&HelperCall::LoadF64Constant), Some(24 * 8));
+        assert_eq!(
+            helper_table_field_offset(&HelperCall::SafepointPoll),
+            Some(16)
+        );
+        assert_eq!(
+            helper_table_field_offset(&HelperCall::LoadF64Constant),
+            Some(24 * 8)
+        );
         // Compound operations return None
         assert_eq!(helper_table_field_offset(&HelperCall::GenericAdd), None);
     }
@@ -1320,8 +1510,14 @@ mod tests {
     #[test]
     fn test_cmp_op_mapping() {
         assert_eq!(cmp_op_to_intcc(SmCmpOp::Eq), condcodes::IntCC::Equal);
-        assert_eq!(cmp_op_to_intcc(SmCmpOp::Lt), condcodes::IntCC::SignedLessThan);
-        assert_eq!(cmp_op_to_floatcc(SmCmpOp::Gt), condcodes::FloatCC::GreaterThan);
+        assert_eq!(
+            cmp_op_to_intcc(SmCmpOp::Lt),
+            condcodes::IntCC::SignedLessThan
+        );
+        assert_eq!(
+            cmp_op_to_floatcc(SmCmpOp::Gt),
+            condcodes::FloatCC::GreaterThan
+        );
     }
 
     #[test]
@@ -1333,8 +1529,14 @@ mod tests {
             kind: SmBlockKind::Body,
             instructions: vec![
                 SmInstr::ConstI32 { dest: 0, value: 42 },
-                SmInstr::ConstF64 { dest: 1, bits: f64::to_bits(3.14) },
-                SmInstr::ConstBool { dest: 2, value: true },
+                SmInstr::ConstF64 {
+                    dest: 1,
+                    bits: f64::to_bits(3.14),
+                },
+                SmInstr::ConstBool {
+                    dest: 2,
+                    value: true,
+                },
                 SmInstr::BoxI32 { dest: 3, src: 0 },
                 SmInstr::UnboxF64 { dest: 4, src: 3 },
             ],
@@ -1351,8 +1553,8 @@ mod tests {
 
     #[test]
     fn test_lower_simple_function() {
-        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
         use super::super::analysis::SuspensionAnalysis;
+        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
 
         let sm_func = StateMachineFunction {
             function_id: 0,
@@ -1377,10 +1579,7 @@ mod tests {
         codegen_ctx.func.signature = aot_entry_signature(CallConv::SystemV);
 
         let mut func_builder_ctx = FunctionBuilderContext::new();
-        let builder = FunctionBuilder::new(
-            &mut codegen_ctx.func,
-            &mut func_builder_ctx,
-        );
+        let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
 
         // Lower should succeed
         let result = lower_function(&sm_func, builder);
@@ -1388,13 +1587,17 @@ mod tests {
 
         // Verify the function can be verified by Cranelift
         let verify_result = cranelift_codegen::verify_function(&codegen_ctx.func, &flags);
-        assert!(verify_result.is_ok(), "Cranelift verify failed: {:?}", verify_result.err());
+        assert!(
+            verify_result.is_ok(),
+            "Cranelift verify failed: {:?}",
+            verify_result.err()
+        );
     }
 
     #[test]
     fn test_lower_arithmetic_function() {
-        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
         use super::super::analysis::SuspensionAnalysis;
+        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
 
         // Function: unbox two i32 params, add them, box the result
         let sm_func = StateMachineFunction {
@@ -1414,7 +1617,12 @@ mod tests {
                     SmInstr::UnboxI32 { dest: 2, src: 0 },
                     SmInstr::UnboxI32 { dest: 3, src: 1 },
                     // Add
-                    SmInstr::I32BinOp { dest: 4, op: SmI32BinOp::Add, left: 2, right: 3 },
+                    SmInstr::I32BinOp {
+                        dest: 4,
+                        op: SmI32BinOp::Add,
+                        left: 2,
+                        right: 3,
+                    },
                     // Box result
                     SmInstr::BoxI32 { dest: 5, src: 4 },
                 ],
@@ -1427,22 +1635,23 @@ mod tests {
         codegen_ctx.func.signature = aot_entry_signature(CallConv::SystemV);
 
         let mut func_builder_ctx = FunctionBuilderContext::new();
-        let builder = FunctionBuilder::new(
-            &mut codegen_ctx.func,
-            &mut func_builder_ctx,
-        );
+        let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
 
         let result = lower_function(&sm_func, builder);
         assert!(result.is_ok(), "lower_function failed: {:?}", result.err());
 
         let verify_result = cranelift_codegen::verify_function(&codegen_ctx.func, &flags);
-        assert!(verify_result.is_ok(), "Cranelift verify failed: {:?}", verify_result.err());
+        assert!(
+            verify_result.is_ok(),
+            "Cranelift verify failed: {:?}",
+            verify_result.err()
+        );
     }
 
     #[test]
     fn test_lower_with_branch() {
-        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
         use super::super::analysis::SuspensionAnalysis;
+        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
 
         // Function: if (param0 < 10) return 1 else return 0
         let sm_func = StateMachineFunction {
@@ -1459,7 +1668,12 @@ mod tests {
                         SmInstr::LoadLocal { dest: 0, index: 0 },
                         SmInstr::UnboxI32 { dest: 1, src: 0 },
                         SmInstr::ConstI32 { dest: 2, value: 10 },
-                        SmInstr::I32Cmp { dest: 3, op: SmCmpOp::Lt, left: 1, right: 2 },
+                        SmInstr::I32Cmp {
+                            dest: 3,
+                            op: SmCmpOp::Lt,
+                            left: 1,
+                            right: 2,
+                        },
                     ],
                     terminator: SmTerminator::Branch {
                         cond: 3,
@@ -1493,22 +1707,23 @@ mod tests {
         codegen_ctx.func.signature = aot_entry_signature(CallConv::SystemV);
 
         let mut func_builder_ctx = FunctionBuilderContext::new();
-        let builder = FunctionBuilder::new(
-            &mut codegen_ctx.func,
-            &mut func_builder_ctx,
-        );
+        let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
 
         let result = lower_function(&sm_func, builder);
         assert!(result.is_ok(), "lower_function failed: {:?}", result.err());
 
         let verify_result = cranelift_codegen::verify_function(&codegen_ctx.func, &flags);
-        assert!(verify_result.is_ok(), "Cranelift verify failed: {:?}", verify_result.err());
+        assert!(
+            verify_result.is_ok(),
+            "Cranelift verify failed: {:?}",
+            verify_result.err()
+        );
     }
 
     #[test]
     fn test_lower_state_machine_dispatch() {
+        use super::super::analysis::{SuspensionAnalysis, SuspensionKind, SuspensionPoint};
         use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
-        use super::super::analysis::{SuspensionAnalysis, SuspensionPoint, SuspensionKind};
         use std::collections::HashSet;
 
         // Simulate a function with a dispatch block and body
@@ -1533,9 +1748,7 @@ mod tests {
                 SmBlock {
                     id: SmBlockId(100),
                     kind: SmBlockKind::Dispatch,
-                    instructions: vec![
-                        SmInstr::LoadResumePoint { dest: 50 },
-                    ],
+                    instructions: vec![SmInstr::LoadResumePoint { dest: 50 }],
                     terminator: SmTerminator::BrTable {
                         index: 50,
                         default: SmBlockId(100), // self (unreachable in practice)
@@ -1555,10 +1768,10 @@ mod tests {
                 // Restore block
                 SmBlock {
                     id: SmBlockId(200),
-                    kind: SmBlockKind::RestoreState { suspension_index: 0 },
-                    instructions: vec![
-                        SmInstr::LoadResumeValue { dest: 60 },
-                    ],
+                    kind: SmBlockKind::RestoreState {
+                        suspension_index: 0,
+                    },
+                    instructions: vec![SmInstr::LoadResumeValue { dest: 60 }],
                     terminator: SmTerminator::Jump(SmBlockId(0)),
                 },
             ],
@@ -1569,15 +1782,16 @@ mod tests {
         codegen_ctx.func.signature = aot_entry_signature(CallConv::SystemV);
 
         let mut func_builder_ctx = FunctionBuilderContext::new();
-        let builder = FunctionBuilder::new(
-            &mut codegen_ctx.func,
-            &mut func_builder_ctx,
-        );
+        let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
 
         let result = lower_function(&sm_func, builder);
         assert!(result.is_ok(), "lower_function failed: {:?}", result.err());
 
         let verify_result = cranelift_codegen::verify_function(&codegen_ctx.func, &flags);
-        assert!(verify_result.is_ok(), "Cranelift verify failed: {:?}", verify_result.err());
+        assert!(
+            verify_result.is_ok(),
+            "Cranelift verify failed: {:?}",
+            verify_result.err()
+        );
     }
 }

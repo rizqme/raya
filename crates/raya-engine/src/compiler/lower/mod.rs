@@ -8,13 +8,16 @@ mod expr;
 mod stmt;
 
 use crate::compiler::ir::{
-    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrClass, IrConstant, IrField, IrFunction,
-    IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId, Terminator,
-    TypeAliasId,
+    BasicBlock, BasicBlockId, BinaryOp, ClassId, FunctionId, IrClass, IrConstant, IrField,
+    IrFunction, IrInstr, IrModule, IrTypeAlias, IrTypeAliasField, IrValue, Register, RegisterId,
+    Terminator, TypeAliasId,
 };
-use crate::parser::ast::{self, ExportDecl, Expression, Pattern, Statement, VariableKind, Visitor, walk_arrow_function, walk_block_statement, walk_expression};
+use crate::parser::ast::{
+    self, walk_arrow_function, walk_block_statement, walk_expression, ExportDecl, Expression,
+    Pattern, Statement, VariableKind, Visitor,
+};
 use crate::parser::token::Span;
-use crate::parser::{Interner, Symbol, TypeContext, TypeId, Type};
+use crate::parser::{Interner, Symbol, Type, TypeContext, TypeId};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
@@ -184,7 +187,11 @@ enum DecoratorTarget {
     /// Field decorator - applied to a specific field
     Field { class_id: u32, field_name: String },
     /// Parameter decorator - applied to a specific parameter
-    Parameter { class_id: u32, method_name: String, param_index: u32 },
+    Parameter {
+        class_id: u32,
+        method_name: String,
+        param_index: u32,
+    },
 }
 
 /// Information about a method's decorators
@@ -413,11 +420,17 @@ pub struct Lowerer<'a> {
     /// Depth counter: 0 = module top-level, >0 = inside function declaration.
     /// Used to prevent `let x = ...` inside functions from hijacking module globals.
     function_depth: u32,
+    /// Block nesting depth at module scope.
+    /// `0` means true module top-level statement context.
+    block_depth: u32,
     /// Set of function IDs that are async closures (should be spawned as Tasks)
     async_closures: FxHashSet<FunctionId>,
     /// Map from local variable index to function ID for closures stored in variables
     /// Used to track async closures for SpawnClosure emission
     closure_locals: FxHashMap<u16, FunctionId>,
+    /// Map from module-global variable index to function ID for closures stored in globals.
+    /// Used to track async closures for SpawnClosure emission from global variables.
+    closure_globals: FxHashMap<u16, FunctionId>,
     /// Expression types from type checker (maps expr ptr to TypeId)
     expr_types: FxHashMap<usize, TypeId>,
     /// Type map for module-level globals (preserves initializer types through LoadGlobal)
@@ -578,11 +591,7 @@ struct ArrowCaptureFinder<'a> {
 impl<'a> ArrowCaptureFinder<'a> {
     /// Analyze a closure body (block form) for captured references to outer variables.
     /// Also scans default parameter expressions.
-    fn analyze_closure_body(
-        &mut self,
-        params: &[ast::Parameter],
-        body: &ast::BlockStatement,
-    ) {
+    fn analyze_closure_body(&mut self, params: &[ast::Parameter], body: &ast::BlockStatement) {
         let mut closure_locals = FxHashSet::default();
         for param in params {
             collect_pattern_names(&param.pattern, &mut closure_locals);
@@ -794,8 +803,10 @@ impl<'a> Lowerer<'a> {
             next_global_index: 0,
             module_var_globals: FxHashMap::default(),
             function_depth: 0,
+            block_depth: 0,
             async_closures: FxHashSet::default(),
             closure_locals: FxHashMap::default(),
+            closure_globals: FxHashMap::default(),
             expr_types,
             global_type_map: FxHashMap::default(),
             constant_map: FxHashMap::default(),
@@ -874,9 +885,7 @@ impl<'a> Lowerer<'a> {
             }
             Expression::BooleanLiteral(lit) => Some(ConstantValue::Bool(lit.value)),
             // For identifiers, check if they reference another constant
-            Expression::Identifier(ident) => {
-                self.constant_map.get(&ident.name).cloned()
-            }
+            Expression::Identifier(ident) => self.constant_map.get(&ident.name).cloned(),
             // Could extend to support simple constant expressions like 0x0300
             // but for now only support direct literals
             _ => None,
@@ -911,9 +920,8 @@ impl<'a> Lowerer<'a> {
         match self.type_registry.normalize_type(type_id, self.type_ctx) {
             Ok(id) => id,
             Err(msg) => {
-                self.errors.push(super::error::CompileError::InternalError {
-                    message: msg,
-                });
+                self.errors
+                    .push(super::error::CompileError::InternalError { message: msg });
                 UNRESOLVED_TYPE_ID
             }
         }
@@ -955,7 +963,9 @@ impl<'a> Lowerer<'a> {
         // Only promote variables that are actually referenced by module-level function bodies.
         {
             // Step 1: Collect candidate module-level variable names (excluding constants)
-            let candidates: FxHashSet<Symbol> = module.statements.iter()
+            let candidates: FxHashSet<Symbol> = module
+                .statements
+                .iter()
                 .filter_map(|s| {
                     let s = Self::unwrap_export(s);
                     if let Statement::VariableDecl(decl) = s {
@@ -1003,16 +1013,26 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Step 3: Only promote variables that are actually referenced by functions
+            // Step 3: Promote all non-constant module-level variables.
+            //
+            // Rationale:
+            // Module-level bindings (including stdlib singletons like `io`) must be
+            // accessible from module-level function bodies. Restricting promotion to
+            // a reference-analysis subset can miss valid references in some paths and
+            // cause unresolved identifiers to lower to null placeholders at runtime
+            // (e.g. `io.writeln(...)` inside `function main()`), which then fails with
+            // "Expected object for method call".
+            //
+            // Promoting all non-constant module vars is semantically correct and keeps
+            // function access predictable.
             for raw_stmt in &module.statements {
                 let stmt = Self::unwrap_export(raw_stmt);
                 if let Statement::VariableDecl(decl) = stmt {
                     if let Pattern::Identifier(ident) = &decl.pattern {
-                        if referenced.contains(&ident.name) {
-                            let global_index = self.next_global_index;
-                            self.next_global_index += 1;
-                            self.module_var_globals.insert(ident.name, global_index);
-                        }
+                        let _was_referenced = referenced.contains(&ident.name);
+                        let global_index = self.next_global_index;
+                        self.next_global_index += 1;
+                        self.module_var_globals.insert(ident.name, global_index);
                     }
                 }
             }
@@ -1034,13 +1054,15 @@ impl<'a> Lowerer<'a> {
                     if let Some(ret_type) = &func.return_type {
                         if let ast::Type::Reference(type_ref) = &ret_type.ty {
                             if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                                self.function_return_class_map.insert(func.name.name, class_id);
+                                self.function_return_class_map
+                                    .insert(func.name.name, class_id);
                             }
                         }
                     }
                     // Store AST for generic functions (needed for call-site specialization)
                     if func.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
-                        self.generic_function_asts.insert(func.name.name, func.clone());
+                        self.generic_function_asts
+                            .insert(func.name.name, func.clone());
                     }
                 }
                 Statement::ClassDecl(class) => {
@@ -1050,7 +1072,8 @@ impl<'a> Lowerer<'a> {
                     // Register type alias for JSON decode support
                     let type_alias_id = TypeAliasId::new(self.next_type_alias_id);
                     self.next_type_alias_id += 1;
-                    self.type_alias_map.insert(type_alias.name.name, type_alias_id);
+                    self.type_alias_map
+                        .insert(type_alias.name.name, type_alias_id);
                 }
                 _ => {}
             }
@@ -1076,7 +1099,8 @@ impl<'a> Lowerer<'a> {
                     if !self.variable_class_map.contains_key(&name) {
                         if let Some(init) = &decl.initializer {
                             if let ast::Expression::New(new_expr) = init {
-                                if let ast::Expression::Identifier(class_ident) = &*new_expr.callee {
+                                if let ast::Expression::Identifier(class_ident) = &*new_expr.callee
+                                {
                                     if let Some(&class_id) = self.class_map.get(&class_ident.name) {
                                         self.variable_class_map.insert(name, class_id);
                                     }
@@ -1100,7 +1124,8 @@ impl<'a> Lowerer<'a> {
                     let func_id = self.function_map.get(&func.name.name).copied().unwrap();
                     let ir_func = self.lower_function(func);
                     // Add to pending with pre-assigned ID (will be sorted later)
-                    self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
+                    self.pending_arrow_functions
+                        .push((func_id.as_u32(), ir_func));
                 }
                 Statement::ClassDecl(class) => {
                     let ir_class = self.lower_class(class);
@@ -1199,7 +1224,9 @@ impl<'a> Lowerer<'a> {
         // This ensures closures see the live value, not a stale copy.
         if !self.loop_captured_vars.is_empty() {
             let mut assigned = FxHashSet::default();
-            let mut collector = ScopeAssignmentCollector { assigned: &mut assigned };
+            let mut collector = ScopeAssignmentCollector {
+                assigned: &mut assigned,
+            };
             for stmt in stmts {
                 collector.visit_statement(stmt);
             }
@@ -1234,7 +1261,8 @@ impl<'a> Lowerer<'a> {
         // Store type parameter names for generic classes
         if let Some(ref type_params) = class.type_params {
             if !type_params.is_empty() {
-                let param_names: Vec<String> = type_params.iter()
+                let param_names: Vec<String> = type_params
+                    .iter()
                     .map(|tp| self.interner.resolve(tp.name.name).to_string())
                     .collect();
                 self.class_type_params.insert(class_id, param_names);
@@ -1247,7 +1275,8 @@ impl<'a> Lowerer<'a> {
             if let ast::Type::Reference(type_ref) = &extends.ty {
                 // Extract type arguments from extends clause (e.g., Base<string>)
                 if let Some(ref type_args) = type_ref.type_args {
-                    let resolved: Vec<TypeId> = type_args.iter()
+                    let resolved: Vec<TypeId> = type_args
+                        .iter()
                         .map(|ta| self.resolve_type_annotation(ta))
                         .collect();
                     extends_type_args = Some(resolved);
@@ -1278,7 +1307,8 @@ impl<'a> Lowerer<'a> {
                 if let Some(parent_type_params) = self.class_type_params.get(&parent_id).cloned() {
                     if parent_type_params.len() == type_args.len() {
                         // Build TypeVar name → concrete TypeId mapping
-                        let subs: std::collections::HashMap<String, TypeId> = parent_type_params.iter()
+                        let subs: std::collections::HashMap<String, TypeId> = parent_type_params
+                            .iter()
                             .zip(type_args.iter())
                             .map(|(name, &ty)| (name.clone(), ty))
                             .collect();
@@ -1294,10 +1324,18 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                         Some(subs)
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let mut field_index = parent_fields.len() as u16;
 
         for member in &class.members {
@@ -1433,18 +1471,21 @@ impl<'a> Lowerer<'a> {
                             name: method.name.name,
                             func_id,
                         });
-                        self.method_map.insert((class_id, method.name.name), func_id);
+                        self.method_map
+                            .insert((class_id, method.name.name), func_id);
                     }
 
                     if let Some(ret_type) = &method.return_type {
                         if let ast::Type::Reference(type_ref) = &ret_type.ty {
                             if let Some(&ret_class_id) = self.class_map.get(&type_ref.name.name) {
-                                self.method_return_class_map.insert((class_id, method.name.name), ret_class_id);
+                                self.method_return_class_map
+                                    .insert((class_id, method.name.name), ret_class_id);
                             }
                         }
                         // Store full return TypeId for all return types (bound method propagation)
                         let type_id = self.resolve_type_annotation(ret_type);
-                        self.method_return_type_map.insert((class_id, method.name.name), type_id);
+                        self.method_return_type_map
+                            .insert((class_id, method.name.name), type_id);
                     }
                 }
             }
@@ -1462,17 +1503,28 @@ impl<'a> Lowerer<'a> {
             if let ast::ClassMember::Method(method) = member {
                 if method.body.is_none() && !method.is_static {
                     let method_name = method.name.name;
-                    let slot = self.find_parent_method_slot(parent_class, method_name)
-                        .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
+                    let slot = self
+                        .find_parent_method_slot(parent_class, method_name)
+                        .unwrap_or_else(|| {
+                            let s = next_slot;
+                            next_slot += 1;
+                            s
+                        });
                     self.method_slot_map.insert((class_id, method_name), slot);
                 }
             }
         }
 
         for method_info in &methods {
-            let slot = self.find_parent_method_slot(parent_class, method_info.name)
-                .unwrap_or_else(|| { let s = next_slot; next_slot += 1; s });
-            self.method_slot_map.insert((class_id, method_info.name), slot);
+            let slot = self
+                .find_parent_method_slot(parent_class, method_info.name)
+                .unwrap_or_else(|| {
+                    let s = next_slot;
+                    next_slot += 1;
+                    s
+                });
+            self.method_slot_map
+                .insert((class_id, method_info.name), slot);
         }
         let method_slot_count = next_slot;
 
@@ -1497,7 +1549,9 @@ impl<'a> Lowerer<'a> {
         let class_decorators: Vec<DecoratorInfo> = class
             .decorators
             .iter()
-            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+            .map(|d| DecoratorInfo {
+                expression: d.expression.clone(),
+            })
             .collect();
 
         let mut method_decorators = Vec::new();
@@ -1506,8 +1560,12 @@ impl<'a> Lowerer<'a> {
                 if !method.decorators.is_empty() {
                     method_decorators.push(MethodDecoratorInfo {
                         method_name: method.name.name,
-                        decorators: method.decorators.iter()
-                            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                        decorators: method
+                            .decorators
+                            .iter()
+                            .map(|d| DecoratorInfo {
+                                expression: d.expression.clone(),
+                            })
                             .collect(),
                     });
                 }
@@ -1520,8 +1578,12 @@ impl<'a> Lowerer<'a> {
                 if !field.decorators.is_empty() {
                     field_decorators.push(FieldDecoratorInfo {
                         field_name: field.name.name,
-                        decorators: field.decorators.iter()
-                            .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                        decorators: field
+                            .decorators
+                            .iter()
+                            .map(|d| DecoratorInfo {
+                                expression: d.expression.clone(),
+                            })
                             .collect(),
                     });
                 }
@@ -1538,8 +1600,12 @@ impl<'a> Lowerer<'a> {
                             parameter_decorators.push(ParameterDecoratorInfo {
                                 method_name: method_name.clone(),
                                 param_index: index as u32,
-                                decorators: param.decorators.iter()
-                                    .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                                decorators: param
+                                    .decorators
+                                    .iter()
+                                    .map(|d| DecoratorInfo {
+                                        expression: d.expression.clone(),
+                                    })
                                     .collect(),
                             });
                         }
@@ -1551,8 +1617,12 @@ impl<'a> Lowerer<'a> {
                             parameter_decorators.push(ParameterDecoratorInfo {
                                 method_name: "constructor".to_string(),
                                 param_index: index as u32,
-                                decorators: param.decorators.iter()
-                                    .map(|d| DecoratorInfo { expression: d.expression.clone() })
+                                decorators: param
+                                    .decorators
+                                    .iter()
+                                    .map(|d| DecoratorInfo {
+                                        expression: d.expression.clone(),
+                                    })
                                     .collect(),
                             });
                         }
@@ -1597,6 +1667,14 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.refcell_inner_types.clear();
         self.loop_captured_vars.clear();
+        // Module-level functions do not inherit closure capture state.
+        // Without resetting this, stale captures from previously-lowered closures
+        // can cause identifiers (e.g. `io`) to resolve via LoadCaptured instead of
+        // LoadGlobal, producing invalid receivers at runtime.
+        self.ancestor_variables = None;
+        self.captures.clear();
+        self.next_capture_slot = 0;
+        self.this_captured_idx = None;
 
         // Pre-scan to identify captured variables
         let mut locals = FxHashSet::default();
@@ -1712,6 +1790,10 @@ impl<'a> Lowerer<'a> {
         self.refcell_registers.clear();
         self.refcell_inner_types.clear();
         self.loop_captured_vars.clear();
+        self.ancestor_variables = None;
+        self.captures.clear();
+        self.next_capture_slot = 0;
+        self.this_captured_idx = None;
 
         // Pre-scan to identify captured variables
         let stmts_owned: Vec<ast::Statement> = stmts.iter().map(|s| (*s).clone()).collect();
@@ -1763,7 +1845,9 @@ impl<'a> Lowerer<'a> {
         }
 
         // Get class ID from per-declaration map (safe even when names collide)
-        let class_id = self.class_decl_ids.get(&class.span.start)
+        let class_id = self
+            .class_decl_ids
+            .get(&class.span.start)
             .copied()
             .unwrap_or_else(|| *self.class_map.get(&class.name.name).unwrap());
         let class_info = self.class_info_map.get(&class_id).cloned();
@@ -1908,7 +1992,9 @@ impl<'a> Lowerer<'a> {
                         // Instance method - 'this' is the first parameter
                         // Use the class's actual TypeId for correct dispatch
                         // (e.g., Array → ArrayLen for .length, string → StringLen)
-                        let this_ty = self.type_ctx.lookup_named_type(name)
+                        let this_ty = self
+                            .type_ctx
+                            .lookup_named_type(name)
                             .unwrap_or(TypeId::new(0));
                         self.current_class = Some(class_id);
                         let this_reg = self.alloc_register(this_ty);
@@ -1949,7 +2035,9 @@ impl<'a> Lowerer<'a> {
 
                             // Track class type for parameters with class type annotations
                             if let Some(type_ann) = &param.type_annotation {
-                                if let Some(param_class_id) = self.try_extract_class_from_type(type_ann) {
+                                if let Some(param_class_id) =
+                                    self.try_extract_class_from_type(type_ann)
+                                {
                                     self.variable_class_map.insert(ident.name, param_class_id);
                                 }
                             }
@@ -1989,7 +2077,11 @@ impl<'a> Lowerer<'a> {
                             collect_pattern_names(&param.pattern, &mut method_locals);
                         }
                         method_locals.extend(self.collect_local_names(&body.statements));
-                        self.scan_for_captured_vars(&body.statements, &method.params, &method_locals);
+                        self.scan_for_captured_vars(
+                            &body.statements,
+                            &method.params,
+                            &method_locals,
+                        );
                     }
 
                     // Emit null-check + default-value for parameters with defaults
@@ -2014,18 +2106,26 @@ impl<'a> Lowerer<'a> {
                                 name, method_name_str, class_id.as_u32()
                             ))
                     } else {
-                        *self.method_map.get(&(class_id, method.name.name))
-                            .unwrap_or_else(|| panic!(
-                                "ICE: method '{}::{}' not found in method_map (class_id={})",
-                                name, method_name_str, class_id.as_u32()
-                            ))
+                        *self
+                            .method_map
+                            .get(&(class_id, method.name.name))
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "ICE: method '{}::{}' not found in method_map (class_id={})",
+                                    name,
+                                    method_name_str,
+                                    class_id.as_u32()
+                                )
+                            })
                     };
                     let ir_func = self.current_function.take().unwrap();
-                    self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
+                    self.pending_arrow_functions
+                        .push((func_id.as_u32(), ir_func));
 
                     // Add instance methods to the IR class vtable with slot index
                     if !method.is_static {
-                        if let Some(&slot) = self.method_slot_map.get(&(class_id, method.name.name)) {
+                        if let Some(&slot) = self.method_slot_map.get(&(class_id, method.name.name))
+                        {
                             ir_class.add_method_with_slot(func_id, slot);
                         } else {
                             ir_class.add_method(func_id);
@@ -2064,7 +2164,9 @@ impl<'a> Lowerer<'a> {
 
                 // Add 'this' as the first parameter
                 // Reserve local slot 0 for 'this'
-                let this_ty = self.type_ctx.lookup_named_type(name)
+                let this_ty = self
+                    .type_ctx
+                    .lookup_named_type(name)
                     .unwrap_or(TypeId::new(0));
                 let this_reg = self.alloc_register(this_ty);
                 params.push(this_reg.clone());
@@ -2130,7 +2232,10 @@ impl<'a> Lowerer<'a> {
                 for (param_name, param_reg) in &param_prop_regs {
                     let field_name_str = self.interner.resolve(*param_name);
                     let all_fields = self.get_all_fields(class_id);
-                    if let Some(fi) = all_fields.iter().find(|f| self.interner.resolve(f.name) == field_name_str) {
+                    if let Some(fi) = all_fields
+                        .iter()
+                        .find(|f| self.interner.resolve(f.name) == field_name_str)
+                    {
                         let field_idx = fi.index;
                         let this_reg = self.this_register.clone().unwrap();
                         self.emit(IrInstr::StoreField {
@@ -2224,7 +2329,12 @@ impl<'a> Lowerer<'a> {
     /// Collects extra arguments beyond the fixed parameters into an array.
     /// Must be called after entry block creation and parameter registration,
     /// before default params (rest params can't have defaults).
-    fn emit_rest_array_collection(&mut self, rest_name: Symbol, rest_array_ty: TypeId, fixed_param_count: usize) {
+    fn emit_rest_array_collection(
+        &mut self,
+        rest_name: Symbol,
+        rest_array_ty: TypeId,
+        fixed_param_count: usize,
+    ) {
         // Extract element type from array type
         let elem_ty = if let Some(Type::Array(arr_ty)) = self.type_ctx.get(rest_array_ty) {
             arr_ty.element
@@ -2401,13 +2511,20 @@ impl<'a> Lowerer<'a> {
     }
 
     /// Find a method's vtable slot in parent class hierarchy
-    fn find_parent_method_slot(&self, parent_class: Option<ClassId>, method_name: Symbol) -> Option<u16> {
+    fn find_parent_method_slot(
+        &self,
+        parent_class: Option<ClassId>,
+        method_name: Symbol,
+    ) -> Option<u16> {
         let mut current = parent_class;
         while let Some(class_id) = current {
             if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name)) {
                 return Some(slot);
             }
-            current = self.class_info_map.get(&class_id).and_then(|info| info.parent_class);
+            current = self
+                .class_info_map
+                .get(&class_id)
+                .and_then(|info| info.parent_class);
         }
         None
     }
@@ -2494,14 +2611,11 @@ impl<'a> Lowerer<'a> {
             .class_info_map
             .values()
             .flat_map(|class_info| {
-                class_info
-                    .static_fields
-                    .iter()
-                    .filter_map(|sf| {
-                        sf.initializer
-                            .as_ref()
-                            .map(|init| (sf.global_index, init.clone()))
-                    })
+                class_info.static_fields.iter().filter_map(|sf| {
+                    sf.initializer
+                        .as_ref()
+                        .map(|init| (sf.global_index, init.clone()))
+                })
             })
             .collect();
 
@@ -2534,7 +2648,8 @@ impl<'a> Lowerer<'a> {
 
         // Collect all decorator applications (clone to avoid borrow issues)
         // Structure: (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators)
-        #[allow(clippy::type_complexity)] // Tuple groups related decorator info; a dedicated struct would add boilerplate for a single use-site.
+        #[allow(clippy::type_complexity)]
+        // Tuple groups related decorator info; a dedicated struct would add boilerplate for a single use-site.
         let decorator_apps: Vec<(
             ClassId,
             String,
@@ -2575,8 +2690,14 @@ impl<'a> Lowerer<'a> {
             .collect();
 
         // Process each class's decorators
-        for (class_id, class_name, class_decorators, field_decorators, method_decorators, parameter_decorators) in
-            decorator_apps
+        for (
+            class_id,
+            class_name,
+            class_decorators,
+            field_decorators,
+            method_decorators,
+            parameter_decorators,
+        ) in decorator_apps
         {
             let class_id_val = class_id.as_u32();
 
@@ -2693,7 +2814,11 @@ impl<'a> Lowerer<'a> {
                 });
                 vec![class_id_reg.clone(), field_name_reg]
             }
-            DecoratorTarget::Parameter { method_name, param_index, .. } => {
+            DecoratorTarget::Parameter {
+                method_name,
+                param_index,
+                ..
+            } => {
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -2781,7 +2906,11 @@ impl<'a> Lowerer<'a> {
                     args: vec![class_id_reg, field_name_reg, dec_name_reg],
                 });
             }
-            DecoratorTarget::Parameter { method_name, param_index, .. } => {
+            DecoratorTarget::Parameter {
+                method_name,
+                param_index,
+                ..
+            } => {
                 // registerParameterDecorator(classId, methodName, paramIndex, decoratorName)
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
@@ -2822,7 +2951,7 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a type annotation to a TypeId
     fn resolve_type_annotation(&self, ty: &ast::TypeAnnotation) -> TypeId {
-        use crate::parser::types::ty::{Type as TyType, PrimitiveType as TyPrim};
+        use crate::parser::types::ty::{PrimitiveType as TyPrim, Type as TyType};
 
         match &ty.ty {
             ast::Type::Primitive(prim) => {
@@ -2834,7 +2963,9 @@ impl<'a> Lowerer<'a> {
                     ast::PrimitiveType::Null => TyPrim::Null,
                     ast::PrimitiveType::Void => TyPrim::Void,
                 };
-                self.type_ctx.lookup(&TyType::Primitive(ty_prim)).unwrap_or(UNRESOLVED)
+                self.type_ctx
+                    .lookup(&TyType::Primitive(ty_prim))
+                    .unwrap_or(UNRESOLVED)
             }
             ast::Type::Reference(type_ref) => {
                 let name = self.interner.resolve(type_ref.name.name);
@@ -2846,9 +2977,10 @@ impl<'a> Lowerer<'a> {
             }
             // Array types: string[], number[], T[]
             // Tuple types: [string, number] — arrays at runtime
-            ast::Type::Array(_) | ast::Type::Tuple(_) => {
-                self.type_ctx.lookup_named_type("Array").unwrap_or(UNRESOLVED)
-            }
+            ast::Type::Array(_) | ast::Type::Tuple(_) => self
+                .type_ctx
+                .lookup_named_type("Array")
+                .unwrap_or(UNRESOLVED),
             // Union types: resolve to dominant non-null member
             ast::Type::Union(union) => {
                 let null_id = self.type_ctx.lookup(&TyType::Primitive(TyPrim::Null));
@@ -2866,15 +2998,18 @@ impl<'a> Lowerer<'a> {
                 resolved
             }
             // Literal types → their primitive
-            ast::Type::StringLiteral(_) => {
-                self.type_ctx.lookup(&TyType::Primitive(TyPrim::String)).unwrap_or(UNRESOLVED)
-            }
-            ast::Type::NumberLiteral(_) => {
-                self.type_ctx.lookup(&TyType::Primitive(TyPrim::Number)).unwrap_or(UNRESOLVED)
-            }
-            ast::Type::BooleanLiteral(_) => {
-                self.type_ctx.lookup(&TyType::Primitive(TyPrim::Boolean)).unwrap_or(UNRESOLVED)
-            }
+            ast::Type::StringLiteral(_) => self
+                .type_ctx
+                .lookup(&TyType::Primitive(TyPrim::String))
+                .unwrap_or(UNRESOLVED),
+            ast::Type::NumberLiteral(_) => self
+                .type_ctx
+                .lookup(&TyType::Primitive(TyPrim::Number))
+                .unwrap_or(UNRESOLVED),
+            ast::Type::BooleanLiteral(_) => self
+                .type_ctx
+                .lookup(&TyType::Primitive(TyPrim::Boolean))
+                .unwrap_or(UNRESOLVED),
             // Parenthesized: unwrap
             ast::Type::Parenthesized(inner) => self.resolve_type_annotation(inner),
             // Function, Object, Intersection, Typeof → UNRESOLVED
@@ -2886,9 +3021,7 @@ impl<'a> Lowerer<'a> {
     /// and nullable unions (e.g., `Node | null` → Node's ClassId).
     fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
         match &type_ann.ty {
-            ast::Type::Reference(type_ref) => {
-                self.class_map.get(&type_ref.name.name).copied()
-            }
+            ast::Type::Reference(type_ref) => self.class_map.get(&type_ref.name.name).copied(),
             ast::Type::Union(union_type) => {
                 let mut class_id = None;
                 for member in &union_type.types {
@@ -3018,7 +3151,6 @@ impl<'a> Lowerer<'a> {
 
         dest
     }
-
 }
 
 /// Information about a JSON field for specialized decode
@@ -3065,7 +3197,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have 2 functions: Injectable and main
-        assert!(module.function_count() >= 2, "Should have at least Injectable and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 2,
+            "Should have at least Injectable and main functions, got {}",
+            module.function_count()
+        );
         // Should have 1 class: Service
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
@@ -3088,7 +3224,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have 3 functions: Log, Api::getUsers, and main
-        assert!(module.function_count() >= 3, "Should have Log, getUsers, and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 3,
+            "Should have Log, getUsers, and main functions, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 
@@ -3109,7 +3249,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have functions including Column and main
-        assert!(module.function_count() >= 2, "Should have Column and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 2,
+            "Should have Column and main functions, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 
@@ -3132,7 +3276,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have 5 functions: A, B, C, main
-        assert!(module.function_count() >= 4, "Should have A, B, C, and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 4,
+            "Should have A, B, C, and main functions, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 
@@ -3151,7 +3299,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have Controller factory and main
-        assert!(module.function_count() >= 2, "Should have Controller and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 2,
+            "Should have Controller and main functions, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 
@@ -3173,7 +3325,10 @@ mod decorator_tests {
         assert_eq!(module.class_count(), 1, "Should have Service class");
         // The main function should have decorator initialization code
         let main_func = module.get_function_by_name("main");
-        assert!(main_func.is_some(), "Should have main function with decorator init");
+        assert!(
+            main_func.is_some(),
+            "Should have main function with decorator init"
+        );
     }
 
     #[test]
@@ -3199,7 +3354,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have Entity, Column, Validate, User::save, and main
-        assert!(module.function_count() >= 5, "Should have all decorator functions plus method and main, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 5,
+            "Should have all decorator functions plus method and main, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 
@@ -3220,7 +3379,11 @@ mod decorator_tests {
         let module = lower_source(source);
 
         // Should have Route, Api::getUsers, and main
-        assert!(module.function_count() >= 3, "Should have Route, getUsers, and main functions, got {}", module.function_count());
+        assert!(
+            module.function_count() >= 3,
+            "Should have Route, getUsers, and main functions, got {}",
+            module.function_count()
+        );
         assert_eq!(module.class_count(), 1, "Should have 1 class");
     }
 }

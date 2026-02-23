@@ -2,8 +2,8 @@
 //!
 //! Tests the complete module loading pipeline from .ryb bytes to registered modules.
 
-use raya_engine::compiler::{Function, Module};
 use raya_engine::compiler::Opcode;
+use raya_engine::compiler::{Function, Module};
 use raya_engine::vm::Vm;
 
 /// Helper to create a simple test module
@@ -253,8 +253,16 @@ fn test_e2e_load_then_execute_arithmetic() {
         param_count: 0,
         local_count: 0,
         code: vec![
-            Opcode::ConstI32 as u8, 7, 0, 0, 0,
-            Opcode::ConstI32 as u8, 8, 0, 0, 0,
+            Opcode::ConstI32 as u8,
+            7,
+            0,
+            0,
+            0,
+            Opcode::ConstI32 as u8,
+            8,
+            0,
+            0,
+            0,
             Opcode::Imul as u8,
             Opcode::Return as u8,
         ],
@@ -275,12 +283,28 @@ fn test_e2e_load_then_execute_with_locals() {
         param_count: 0,
         local_count: 2,
         code: vec![
-            Opcode::ConstI32 as u8, 100, 0, 0, 0,
-            Opcode::StoreLocal as u8, 0, 0,
-            Opcode::ConstI32 as u8, 23, 0, 0, 0,
-            Opcode::StoreLocal as u8, 1, 0,
-            Opcode::LoadLocal as u8, 0, 0,
-            Opcode::LoadLocal as u8, 1, 0,
+            Opcode::ConstI32 as u8,
+            100,
+            0,
+            0,
+            0,
+            Opcode::StoreLocal as u8,
+            0,
+            0,
+            Opcode::ConstI32 as u8,
+            23,
+            0,
+            0,
+            0,
+            Opcode::StoreLocal as u8,
+            1,
+            0,
+            Opcode::LoadLocal as u8,
+            0,
+            0,
+            Opcode::LoadLocal as u8,
+            1,
+            0,
             Opcode::Isub as u8,
             Opcode::Return as u8,
         ],
@@ -328,9 +352,15 @@ fn test_e2e_load_then_execute_multi_function_call() {
         param_count: 1,
         local_count: 1,
         code: vec![
-            Opcode::LoadLocal as u8, 0, 0,        // load param x
-            Opcode::ConstI32 as u8, 10, 0, 0, 0,  // push 10
-            Opcode::Iadd as u8,                    // x + 10
+            Opcode::LoadLocal as u8,
+            0,
+            0, // load param x
+            Opcode::ConstI32 as u8,
+            10,
+            0,
+            0,
+            0,                  // push 10
+            Opcode::Iadd as u8, // x + 10
             Opcode::Return as u8,
         ],
     });
@@ -341,10 +371,18 @@ fn test_e2e_load_then_execute_multi_function_call() {
         param_count: 0,
         local_count: 0,
         code: vec![
-            Opcode::ConstI32 as u8, 32, 0, 0, 0,  // push 32 (arg)
+            Opcode::ConstI32 as u8,
+            32,
+            0,
+            0,
+            0, // push 32 (arg)
             Opcode::Call as u8,
-            0, 0, 0, 0,  // func_index = 0 (add_ten), u32 LE
-            1, 0,         // arg_count = 1, u16 LE
+            0,
+            0,
+            0,
+            0, // func_index = 0 (add_ten), u32 LE
+            1,
+            0, // arg_count = 1, u16 LE
             Opcode::Return as u8,
         ],
     });
@@ -388,7 +426,11 @@ fn test_registry_tracks_multiple_modules() {
             param_count: 0,
             local_count: 0,
             code: vec![
-                Opcode::ConstI32 as u8, i as u8, 0, 0, 0,
+                Opcode::ConstI32 as u8,
+                i as u8,
+                0,
+                0,
+                0,
                 Opcode::Return as u8,
             ],
         });
@@ -426,7 +468,11 @@ fn test_registry_deduplicates_same_module() {
     vm.load_rbin_bytes(&bytes).unwrap();
 
     let registry = vm.shared_state().module_registry.read();
-    assert_eq!(registry.module_count(), 1, "Duplicate modules should be deduplicated");
+    assert_eq!(
+        registry.module_count(),
+        1,
+        "Duplicate modules should be deduplicated"
+    );
 }
 
 // =============================================================================
@@ -462,7 +508,10 @@ fn test_e2e_load_module_with_class() {
     // Verify the class was registered
     let classes = vm.shared_state().classes.read();
     let point = classes.get_class(0);
-    assert!(point.is_some(), "Class 'Point' should be registered at index 0");
+    assert!(
+        point.is_some(),
+        "Class 'Point' should be registered at index 0"
+    );
     assert_eq!(point.unwrap().name, "Point");
     assert_eq!(point.unwrap().field_count, 2);
 }
@@ -593,8 +642,12 @@ fn test_e2e_exports_survive_encode_decode() {
         param_count: 2,
         local_count: 2,
         code: vec![
-            Opcode::LoadLocal as u8, 0, 0,
-            Opcode::LoadLocal as u8, 1, 0,
+            Opcode::LoadLocal as u8,
+            0,
+            0,
+            Opcode::LoadLocal as u8,
+            1,
+            0,
             Opcode::Iadd as u8,
             Opcode::Return as u8,
         ],
@@ -657,7 +710,10 @@ fn test_e2e_imports_survive_encode_decode() {
     assert_eq!(decoded.imports[0].module_specifier, "math@2.0.0");
     assert_eq!(decoded.imports[0].symbol, "sqrt");
     assert_eq!(decoded.imports[0].alias.as_deref(), Some("squareRoot"));
-    assert_eq!(decoded.imports[0].version_constraint.as_deref(), Some("^2.0.0"));
+    assert_eq!(
+        decoded.imports[0].version_constraint.as_deref(),
+        Some("^2.0.0")
+    );
 }
 
 // =============================================================================

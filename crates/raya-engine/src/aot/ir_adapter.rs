@@ -74,10 +74,21 @@ impl<'a> IrFunctionAdapter<'a> {
             IrInstr::Assign { dest, value } => {
                 match value {
                     IrValue::Constant(c) => match c {
-                        IrConstant::I32(v) => out.push(SmInstr::ConstI32 { dest: Self::reg(dest), value: *v }),
-                        IrConstant::F64(v) => out.push(SmInstr::ConstF64 { dest: Self::reg(dest), bits: v.to_bits() }),
-                        IrConstant::Boolean(v) => out.push(SmInstr::ConstBool { dest: Self::reg(dest), value: *v }),
-                        IrConstant::Null => out.push(SmInstr::ConstNull { dest: Self::reg(dest) }),
+                        IrConstant::I32(v) => out.push(SmInstr::ConstI32 {
+                            dest: Self::reg(dest),
+                            value: *v,
+                        }),
+                        IrConstant::F64(v) => out.push(SmInstr::ConstF64 {
+                            dest: Self::reg(dest),
+                            bits: v.to_bits(),
+                        }),
+                        IrConstant::Boolean(v) => out.push(SmInstr::ConstBool {
+                            dest: Self::reg(dest),
+                            value: *v,
+                        }),
+                        IrConstant::Null => out.push(SmInstr::ConstNull {
+                            dest: Self::reg(dest),
+                        }),
                         IrConstant::String(_) => {
                             // String constants go through the helper table
                             // TODO: Map string to constant pool index
@@ -89,13 +100,21 @@ impl<'a> IrFunctionAdapter<'a> {
                         }
                     },
                     IrValue::Register(src) => {
-                        out.push(SmInstr::Move { dest: Self::reg(dest), src: Self::reg(src) });
+                        out.push(SmInstr::Move {
+                            dest: Self::reg(dest),
+                            src: Self::reg(src),
+                        });
                     }
                 }
             }
 
             // === Binary Operations (type-dispatched) ===
-            IrInstr::BinaryOp { dest, op, left, right } => {
+            IrInstr::BinaryOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 let d = Self::reg(dest);
                 let l = Self::reg(left);
                 let r = Self::reg(right);
@@ -104,26 +123,116 @@ impl<'a> IrFunctionAdapter<'a> {
                 if Self::is_int(left.ty) && Self::is_int(right.ty) {
                     match op {
                         // Arithmetic
-                        BinaryOp::Add => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Add, left: l, right: r }),
-                        BinaryOp::Sub => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Sub, left: l, right: r }),
-                        BinaryOp::Mul => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Mul, left: l, right: r }),
-                        BinaryOp::Div => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Div, left: l, right: r }),
-                        BinaryOp::Mod => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Mod, left: l, right: r }),
-                        BinaryOp::Pow => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Pow, left: l, right: r }),
+                        BinaryOp::Add => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Add,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Sub => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Sub,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Mul => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Mul,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Div => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Div,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Mod => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Mod,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Pow => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Pow,
+                            left: l,
+                            right: r,
+                        }),
                         // Comparison
-                        BinaryOp::Equal => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Eq, left: l, right: r }),
-                        BinaryOp::NotEqual => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Ne, left: l, right: r }),
-                        BinaryOp::Less => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Lt, left: l, right: r }),
-                        BinaryOp::LessEqual => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Le, left: l, right: r }),
-                        BinaryOp::Greater => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Gt, left: l, right: r }),
-                        BinaryOp::GreaterEqual => out.push(SmInstr::I32Cmp { dest: d, op: SmCmpOp::Ge, left: l, right: r }),
+                        BinaryOp::Equal => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Eq,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::NotEqual => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Ne,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Less => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Lt,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::LessEqual => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Le,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Greater => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Gt,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::GreaterEqual => out.push(SmInstr::I32Cmp {
+                            dest: d,
+                            op: SmCmpOp::Ge,
+                            left: l,
+                            right: r,
+                        }),
                         // Bitwise
-                        BinaryOp::BitAnd => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::And, left: l, right: r }),
-                        BinaryOp::BitOr => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Or, left: l, right: r }),
-                        BinaryOp::BitXor => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Xor, left: l, right: r }),
-                        BinaryOp::ShiftLeft => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Shl, left: l, right: r }),
-                        BinaryOp::ShiftRight => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Shr, left: l, right: r }),
-                        BinaryOp::UnsignedShiftRight => out.push(SmInstr::I32BinOp { dest: d, op: SmI32BinOp::Ushr, left: l, right: r }),
+                        BinaryOp::BitAnd => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::And,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::BitOr => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Or,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::BitXor => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Xor,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::ShiftLeft => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Shl,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::ShiftRight => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Shr,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::UnsignedShiftRight => out.push(SmInstr::I32BinOp {
+                            dest: d,
+                            op: SmI32BinOp::Ushr,
+                            left: l,
+                            right: r,
+                        }),
                         // Logical (should be on booleans, but emit generic)
                         BinaryOp::And | BinaryOp::Or | BinaryOp::Concat => {
                             Self::emit_generic_binop(d, *op, l, r, out);
@@ -131,18 +240,78 @@ impl<'a> IrFunctionAdapter<'a> {
                     }
                 } else if Self::is_number(left.ty) && Self::is_number(right.ty) {
                     match op {
-                        BinaryOp::Add => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Add, left: l, right: r }),
-                        BinaryOp::Sub => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Sub, left: l, right: r }),
-                        BinaryOp::Mul => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Mul, left: l, right: r }),
-                        BinaryOp::Div => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Div, left: l, right: r }),
-                        BinaryOp::Mod => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Mod, left: l, right: r }),
-                        BinaryOp::Pow => out.push(SmInstr::F64BinOp { dest: d, op: SmF64BinOp::Pow, left: l, right: r }),
-                        BinaryOp::Equal => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Eq, left: l, right: r }),
-                        BinaryOp::NotEqual => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Ne, left: l, right: r }),
-                        BinaryOp::Less => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Lt, left: l, right: r }),
-                        BinaryOp::LessEqual => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Le, left: l, right: r }),
-                        BinaryOp::Greater => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Gt, left: l, right: r }),
-                        BinaryOp::GreaterEqual => out.push(SmInstr::F64Cmp { dest: d, op: SmCmpOp::Ge, left: l, right: r }),
+                        BinaryOp::Add => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Add,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Sub => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Sub,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Mul => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Mul,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Div => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Div,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Mod => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Mod,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Pow => out.push(SmInstr::F64BinOp {
+                            dest: d,
+                            op: SmF64BinOp::Pow,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Equal => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Eq,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::NotEqual => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Ne,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Less => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Lt,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::LessEqual => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Le,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::Greater => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Gt,
+                            left: l,
+                            right: r,
+                        }),
+                        BinaryOp::GreaterEqual => out.push(SmInstr::F64Cmp {
+                            dest: d,
+                            op: SmCmpOp::Ge,
+                            left: l,
+                            right: r,
+                        }),
                         _ => Self::emit_generic_binop(d, *op, l, r, out),
                     }
                 } else {
@@ -170,24 +339,42 @@ impl<'a> IrFunctionAdapter<'a> {
                         out.push(SmInstr::I32BitNot { dest: d, src: s });
                     }
                     UnaryOp::Neg => {
-                        out.push(SmInstr::CallHelper { dest: Some(d), helper: HelperCall::GenericNeg, args: vec![s] });
+                        out.push(SmInstr::CallHelper {
+                            dest: Some(d),
+                            helper: HelperCall::GenericNeg,
+                            args: vec![s],
+                        });
                     }
                     UnaryOp::Not => {
-                        out.push(SmInstr::CallHelper { dest: Some(d), helper: HelperCall::GenericNot, args: vec![s] });
+                        out.push(SmInstr::CallHelper {
+                            dest: Some(d),
+                            helper: HelperCall::GenericNot,
+                            args: vec![s],
+                        });
                     }
                     UnaryOp::BitNot => {
                         // Bitwise NOT on non-int → generic
-                        out.push(SmInstr::CallHelper { dest: Some(d), helper: HelperCall::GenericNot, args: vec![s] });
+                        out.push(SmInstr::CallHelper {
+                            dest: Some(d),
+                            helper: HelperCall::GenericNot,
+                            args: vec![s],
+                        });
                     }
                 }
             }
 
             // === Local Variable Access ===
             IrInstr::LoadLocal { dest, index } => {
-                out.push(SmInstr::LoadLocal { dest: Self::reg(dest), index: *index as u32 });
+                out.push(SmInstr::LoadLocal {
+                    dest: Self::reg(dest),
+                    index: *index as u32,
+                });
             }
             IrInstr::StoreLocal { index, value } => {
-                out.push(SmInstr::StoreLocal { index: *index as u32, src: Self::reg(value) });
+                out.push(SmInstr::StoreLocal {
+                    index: *index as u32,
+                    src: Self::reg(value),
+                });
             }
             IrInstr::LoadArgCount { dest } => {
                 // LoadArgCount reads the argument count from the call frame
@@ -209,26 +396,42 @@ impl<'a> IrFunctionAdapter<'a> {
             }
             IrInstr::PopToLocal { index } => {
                 // PopToLocal is for catch parameters — load resume value
-                out.push(SmInstr::LoadResumeValue { dest: *index as u32 });
+                out.push(SmInstr::LoadResumeValue {
+                    dest: *index as u32,
+                });
             }
 
             // === Global Variable Access ===
             IrInstr::LoadGlobal { dest, index } => {
-                out.push(SmInstr::LoadGlobal { dest: Self::reg(dest), index: *index as u32 });
+                out.push(SmInstr::LoadGlobal {
+                    dest: Self::reg(dest),
+                    index: *index as u32,
+                });
             }
             IrInstr::StoreGlobal { index, value } => {
-                out.push(SmInstr::StoreGlobal { index: *index as u32, src: Self::reg(value) });
+                out.push(SmInstr::StoreGlobal {
+                    index: *index as u32,
+                    src: Self::reg(value),
+                });
             }
 
             // === Object Field Access ===
-            IrInstr::LoadField { dest, object, field } => {
+            IrInstr::LoadField {
+                dest,
+                object,
+                field,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::ObjectGetField,
                     args: vec![Self::reg(object), *field as u32],
                 });
             }
-            IrInstr::StoreField { object, field, value } => {
+            IrInstr::StoreField {
+                object,
+                field,
+                value,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
                     helper: HelperCall::ObjectSetField,
@@ -260,7 +463,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(array), Self::reg(index)],
                 });
             }
-            IrInstr::StoreElement { array, index, value } => {
+            IrInstr::StoreElement {
+                array,
+                index,
+                value,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
                     helper: HelperCall::ArraySet,
@@ -292,7 +499,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args,
                 });
             }
-            IrInstr::ObjectLiteral { dest, class, fields } => {
+            IrInstr::ObjectLiteral {
+                dest,
+                class,
+                fields,
+            } => {
                 let mut args = vec![class.as_u32()];
                 for (field_idx, reg) in fields {
                     args.push(*field_idx as u32);
@@ -336,7 +547,9 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![Self::reg(string)],
                 });
             }
-            IrInstr::StringCompare { dest, left, right, .. } => {
+            IrInstr::StringCompare {
+                dest, left, right, ..
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::StringCompare,
@@ -368,7 +581,12 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::CallMethod { dest, object, method, args } => {
+            IrInstr::CallMethod {
+                dest,
+                object,
+                method,
+                args,
+            } => {
                 let mut call_args = vec![Self::reg(object), *method as u32];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -377,7 +595,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::NativeCall { dest, native_id, args } => {
+            IrInstr::NativeCall {
+                dest,
+                native_id,
+                args,
+            } => {
                 let mut call_args = vec![*native_id as u32];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -386,7 +608,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::ModuleNativeCall { dest, local_idx, args } => {
+            IrInstr::ModuleNativeCall {
+                dest,
+                local_idx,
+                args,
+            } => {
                 let mut call_args = vec![*local_idx as u32];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -395,7 +621,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::CallClosure { dest, closure, args } => {
+            IrInstr::CallClosure {
+                dest,
+                closure,
+                args,
+            } => {
                 let mut call_args = vec![Self::reg(closure)];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -406,7 +636,11 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Closures ===
-            IrInstr::MakeClosure { dest, func, captures } => {
+            IrInstr::MakeClosure {
+                dest,
+                func,
+                captures,
+            } => {
                 let mut args = vec![func.as_u32()];
                 args.extend(captures.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -429,7 +663,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: vec![*index as u32, Self::reg(value)],
                 });
             }
-            IrInstr::SetClosureCapture { closure, index, value } => {
+            IrInstr::SetClosureCapture {
+                closure,
+                index,
+                value,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: None,
                     helper: HelperCall::StoreCaptured,
@@ -438,7 +676,10 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === RefCells ===
-            IrInstr::NewRefCell { dest, initial_value } => {
+            IrInstr::NewRefCell {
+                dest,
+                initial_value,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::NewRefCell,
@@ -461,14 +702,22 @@ impl<'a> IrFunctionAdapter<'a> {
             }
 
             // === Type Operations ===
-            IrInstr::InstanceOf { dest, object, class_id } => {
+            IrInstr::InstanceOf {
+                dest,
+                object,
+                class_id,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::InstanceOf,
                     args: vec![Self::reg(object), class_id.as_u32()],
                 });
             }
-            IrInstr::Cast { dest, object, class_id } => {
+            IrInstr::Cast {
+                dest,
+                object,
+                class_id,
+            } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
                     helper: HelperCall::Cast,
@@ -486,7 +735,11 @@ impl<'a> IrFunctionAdapter<'a> {
                     args: call_args,
                 });
             }
-            IrInstr::SpawnClosure { dest, closure, args } => {
+            IrInstr::SpawnClosure {
+                dest,
+                closure,
+                args,
+            } => {
                 let mut call_args = vec![Self::reg(closure)];
                 call_args.extend(args.iter().map(Self::reg));
                 out.push(SmInstr::CallHelper {
@@ -565,7 +818,10 @@ impl<'a> IrFunctionAdapter<'a> {
                     .iter()
                     .map(|(bb, reg)| (Self::block_id(*bb), Self::reg(reg)))
                     .collect();
-                out.push(SmInstr::Phi { dest: Self::reg(dest), sources: sm_sources });
+                out.push(SmInstr::Phi {
+                    dest: Self::reg(dest),
+                    sources: sm_sources,
+                });
             }
 
             // === Exception Handling ===
@@ -600,7 +856,11 @@ impl<'a> IrFunctionAdapter<'a> {
                 // No-op in AOT — debugger breakpoints are not supported in compiled code
             }
 
-            IrInstr::BindMethod { dest, object, method } => {
+            IrInstr::BindMethod {
+                dest,
+                object,
+                method,
+            } => {
                 // Bound method creation requires GC allocation — stub as field load fallback
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
@@ -615,34 +875,40 @@ impl<'a> IrFunctionAdapter<'a> {
     fn translate_terminator(term: &Terminator) -> SmTerminator {
         match term {
             Terminator::Jump(target) => SmTerminator::Jump(Self::block_id(*target)),
-            Terminator::Branch { cond, then_block, else_block } => {
-                SmTerminator::Branch {
-                    cond: Self::reg(cond),
-                    then_block: Self::block_id(*then_block),
-                    else_block: Self::block_id(*else_block),
-                }
-            }
-            Terminator::BranchIfNull { value, null_block, not_null_block } => {
-                SmTerminator::BranchNull {
-                    value: Self::reg(value),
-                    null_block: Self::block_id(*null_block),
-                    not_null_block: Self::block_id(*not_null_block),
-                }
-            }
-            Terminator::Return(Some(reg)) => {
-                SmTerminator::Return { value: Self::reg(reg) }
-            }
+            Terminator::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => SmTerminator::Branch {
+                cond: Self::reg(cond),
+                then_block: Self::block_id(*then_block),
+                else_block: Self::block_id(*else_block),
+            },
+            Terminator::BranchIfNull {
+                value,
+                null_block,
+                not_null_block,
+            } => SmTerminator::BranchNull {
+                value: Self::reg(value),
+                null_block: Self::block_id(*null_block),
+                not_null_block: Self::block_id(*not_null_block),
+            },
+            Terminator::Return(Some(reg)) => SmTerminator::Return {
+                value: Self::reg(reg),
+            },
             Terminator::Return(None) => {
                 // void return → return null
                 SmTerminator::Return { value: u32::MAX } // sentinel for void
             }
-            Terminator::Switch { value, cases, default } => {
-                SmTerminator::BrTable {
-                    index: Self::reg(value),
-                    default: Self::block_id(*default),
-                    targets: cases.iter().map(|(_, bb)| Self::block_id(*bb)).collect(),
-                }
-            }
+            Terminator::Switch {
+                value,
+                cases,
+                default,
+            } => SmTerminator::BrTable {
+                index: Self::reg(value),
+                default: Self::block_id(*default),
+                targets: cases.iter().map(|(_, bb)| Self::block_id(*bb)).collect(),
+            },
             Terminator::Unreachable => SmTerminator::Unreachable,
             Terminator::Throw(_reg) => {
                 // Throw → call helper + unreachable
@@ -672,8 +938,12 @@ impl<'a> IrFunctionAdapter<'a> {
             BinaryOp::And => HelperCall::GenericEquals, // TODO: Logical AND
             BinaryOp::Or => HelperCall::GenericEquals,  // TODO: Logical OR
             BinaryOp::Concat => HelperCall::GenericConcat,
-            BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor
-            | BinaryOp::ShiftLeft | BinaryOp::ShiftRight | BinaryOp::UnsignedShiftRight => {
+            BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight
+            | BinaryOp::UnsignedShiftRight => {
                 HelperCall::GenericAdd // TODO: generic bitwise
             }
         };
@@ -815,7 +1085,11 @@ mod tests {
 
     #[test]
     fn test_translate_i32_add() {
-        let mut func = IrFunction::new("test", vec![make_int_reg(0), make_int_reg(1)], TypeId::new(INT_TYPE_ID));
+        let mut func = IrFunction::new(
+            "test",
+            vec![make_int_reg(0), make_int_reg(1)],
+            TypeId::new(INT_TYPE_ID),
+        );
 
         let mut block = BasicBlock::new(BasicBlockId(0));
         block.add_instr(IrInstr::BinaryOp {
@@ -834,7 +1108,12 @@ mod tests {
         assert_eq!(blocks[0].instructions.len(), 1);
 
         match &blocks[0].instructions[0] {
-            SmInstr::I32BinOp { dest, op, left, right } => {
+            SmInstr::I32BinOp {
+                dest,
+                op,
+                left,
+                right,
+            } => {
                 assert_eq!(*dest, 2);
                 assert_eq!(*op, SmI32BinOp::Add);
                 assert_eq!(*left, 0);
@@ -846,7 +1125,11 @@ mod tests {
 
     #[test]
     fn test_translate_f64_mul() {
-        let mut func = IrFunction::new("test", vec![make_number_reg(0), make_number_reg(1)], TypeId::new(NUMBER_TYPE_ID));
+        let mut func = IrFunction::new(
+            "test",
+            vec![make_number_reg(0), make_number_reg(1)],
+            TypeId::new(NUMBER_TYPE_ID),
+        );
 
         let mut block = BasicBlock::new(BasicBlockId(0));
         block.add_instr(IrInstr::BinaryOp {
@@ -894,9 +1177,18 @@ mod tests {
         let blocks = adapter.emit_blocks();
 
         assert_eq!(blocks[0].instructions.len(), 3);
-        assert!(matches!(&blocks[0].instructions[0], SmInstr::ConstI32 { value: 42, .. }));
-        assert!(matches!(&blocks[0].instructions[1], SmInstr::ConstF64 { .. }));
-        assert!(matches!(&blocks[0].instructions[2], SmInstr::ConstBool { value: true, .. }));
+        assert!(matches!(
+            &blocks[0].instructions[0],
+            SmInstr::ConstI32 { value: 42, .. }
+        ));
+        assert!(matches!(
+            &blocks[0].instructions[1],
+            SmInstr::ConstF64 { .. }
+        ));
+        assert!(matches!(
+            &blocks[0].instructions[2],
+            SmInstr::ConstBool { value: true, .. }
+        ));
     }
 
     #[test]
@@ -922,7 +1214,9 @@ mod tests {
         assert!(analysis.has_suspensions);
         // Spawn doesn't suspend, but Await does
         // Also Call (Spawn maps to Call internally) might be counted
-        let await_points: Vec<_> = analysis.points.iter()
+        let await_points: Vec<_> = analysis
+            .points
+            .iter()
             .filter(|p| p.kind == SuspensionKind::Await)
             .collect();
         assert!(!await_points.is_empty());

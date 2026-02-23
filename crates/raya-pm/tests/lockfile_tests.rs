@@ -2,7 +2,7 @@
 //!
 //! Tests the Lockfile parser with realistic raya.lock files.
 
-use raya_pm::{Lockfile, LockedPackage, Source};
+use raya_pm::{LockedPackage, Lockfile, Source};
 
 #[test]
 fn test_create_empty_lockfile() {
@@ -397,7 +397,10 @@ fn test_roundtrip() {
         "dep2".to_string(),
         "2.0.0".to_string(),
         "b".repeat(64),
-        Source::git("https://github.com/user/repo".to_string(), "abc123".to_string()),
+        Source::git(
+            "https://github.com/user/repo".to_string(),
+            "abc123".to_string(),
+        ),
     ));
 
     lock.add_package(LockedPackage::new(
@@ -448,7 +451,10 @@ fn test_source_constructors() {
         } if u == "https://registry.example.com"
     ));
 
-    let git = Source::git("https://github.com/user/repo".to_string(), "abc123".to_string());
+    let git = Source::git(
+        "https://github.com/user/repo".to_string(),
+        "abc123".to_string(),
+    );
     assert!(matches!(
         git,
         Source::Git {

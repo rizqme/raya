@@ -12,16 +12,16 @@
 use crate::parser::token::Span;
 
 // Re-export submodules
-pub mod statement;
 pub mod expression;
-pub mod types;
 pub mod pattern;
+pub mod statement;
+pub mod types;
 pub mod visitor;
 
-pub use statement::*;
 pub use expression::*;
-pub use types::*;
 pub use pattern::*;
+pub use statement::*;
+pub use types::*;
 pub use visitor::*;
 
 /// Root node: a Raya source file (module)

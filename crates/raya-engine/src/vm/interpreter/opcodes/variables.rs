@@ -1,9 +1,9 @@
+use crate::compiler::Opcode;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
-use crate::compiler::Opcode;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_variable_ops(
@@ -106,7 +106,11 @@ impl<'a> Interpreter<'a> {
                 };
                 let index = match index_value.as_i32() {
                     Some(i) if i >= 0 => i as usize,
-                    _ => return OpcodeResult::Error(VmError::RuntimeError("Invalid local index".to_string())),
+                    _ => {
+                        return OpcodeResult::Error(VmError::RuntimeError(
+                            "Invalid local index".to_string(),
+                        ))
+                    }
                 };
                 // Load the local at that index
                 let value = match stack.peek_at(locals_base + index) {

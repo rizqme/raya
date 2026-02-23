@@ -773,7 +773,10 @@ fn test_return_void() {
     // Return(None) emits ConstNull + Return
     let has_const_null = code.iter().any(|&b| b == Opcode::ConstNull as u8);
     let has_return = code.iter().any(|&b| b == Opcode::Return as u8);
-    assert!(has_const_null && has_return, "Should emit CONST_NULL + RETURN");
+    assert!(
+        has_const_null && has_return,
+        "Should emit CONST_NULL + RETURN"
+    );
 }
 
 #[test]
@@ -1044,11 +1047,17 @@ fn test_string_compare_index_mode() {
 
     // Should emit IEQ for index-based comparison
     let has_ieq = code.iter().any(|&b| b == Opcode::Ieq as u8);
-    assert!(has_ieq, "StringCompare with Index mode should emit IEQ opcode");
+    assert!(
+        has_ieq,
+        "StringCompare with Index mode should emit IEQ opcode"
+    );
 
     // Should NOT emit SEQ
     let has_seq = code.iter().any(|&b| b == Opcode::Seq as u8);
-    assert!(!has_seq, "StringCompare with Index mode should NOT emit SEQ opcode");
+    assert!(
+        !has_seq,
+        "StringCompare with Index mode should NOT emit SEQ opcode"
+    );
 }
 
 #[test]
@@ -1086,7 +1095,10 @@ fn test_string_compare_full_mode() {
 
     // Should emit SEQ for full string comparison
     let has_seq = code.iter().any(|&b| b == Opcode::Seq as u8);
-    assert!(has_seq, "StringCompare with Full mode should emit SEQ opcode");
+    assert!(
+        has_seq,
+        "StringCompare with Full mode should emit SEQ opcode"
+    );
 }
 
 #[test]
@@ -1128,7 +1140,10 @@ fn test_string_compare_not_equal_index() {
 
     // Should emit INE for index-based not-equal comparison
     let has_ine = code.iter().any(|&b| b == Opcode::Ine as u8);
-    assert!(has_ine, "StringCompare with negate=true and Index mode should emit INE opcode");
+    assert!(
+        has_ine,
+        "StringCompare with negate=true and Index mode should emit INE opcode"
+    );
 }
 
 #[test]
@@ -1166,5 +1181,8 @@ fn test_string_compare_not_equal_full() {
 
     // Should emit SNE for full string not-equal comparison
     let has_sne = code.iter().any(|&b| b == Opcode::Sne as u8);
-    assert!(has_sne, "StringCompare with negate=true and Full mode should emit SNE opcode");
+    assert!(
+        has_sne,
+        "StringCompare with negate=true and Full mode should emit SNE opcode"
+    );
 }

@@ -41,14 +41,20 @@ impl<'a> Interpreter<'a> {
             string::CHAR_AT => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.charAt expects 1 argument, got {}", arg_count
+                        "String.charAt expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let index = args[0].as_i32().unwrap_or(0) as usize;
-                let result = s.chars().nth(index).map(|c| c.to_string()).unwrap_or_default();
+                let result = s
+                    .chars()
+                    .nth(index)
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -56,7 +62,8 @@ impl<'a> Interpreter<'a> {
                 let result = s.to_uppercase();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -64,7 +71,8 @@ impl<'a> Interpreter<'a> {
                 let result = s.to_lowercase();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -72,14 +80,16 @@ impl<'a> Interpreter<'a> {
                 let result = s.trim().to_string();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
             string::INDEX_OF => {
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.indexOf expects 1-2 arguments, got {}", arg_count
+                        "String.indexOf expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let search_val = args[0];
@@ -96,7 +106,10 @@ impl<'a> Interpreter<'a> {
                 let result = if from_index >= s.len() {
                     -1
                 } else {
-                    s[from_index..].find(&search_str).map(|i| (i + from_index) as i32).unwrap_or(-1)
+                    s[from_index..]
+                        .find(&search_str)
+                        .map(|i| (i + from_index) as i32)
+                        .unwrap_or(-1)
                 };
                 stack.push(Value::i32(result))?;
                 Ok(())
@@ -104,7 +117,8 @@ impl<'a> Interpreter<'a> {
             string::INCLUDES => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.includes expects 1 argument, got {}", arg_count
+                        "String.includes expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let search_val = args[0];
@@ -120,7 +134,8 @@ impl<'a> Interpreter<'a> {
             string::STARTS_WITH => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.startsWith expects 1 argument, got {}", arg_count
+                        "String.startsWith expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let prefix_val = args[0];
@@ -136,7 +151,8 @@ impl<'a> Interpreter<'a> {
             string::ENDS_WITH => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.endsWith expects 1 argument, got {}", arg_count
+                        "String.endsWith expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let suffix_val = args[0];
@@ -151,23 +167,36 @@ impl<'a> Interpreter<'a> {
             }
             string::SUBSTRING => {
                 // substring(start, end?)
-                let start_val = if arg_count >= 1 { args[0] } else { Value::i32(0) };
+                let start_val = if arg_count >= 1 {
+                    args[0]
+                } else {
+                    Value::i32(0)
+                };
                 let end_val = if arg_count >= 2 { Some(args[1]) } else { None };
 
                 let start = start_val.as_i32().unwrap_or(0).max(0) as usize;
-                let end = end_val.and_then(|v| v.as_i32()).map(|e| e.max(0) as usize).unwrap_or(s.len());
+                let end = end_val
+                    .and_then(|v| v.as_i32())
+                    .map(|e| e.max(0) as usize)
+                    .unwrap_or(s.len());
 
-                let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
+                let result: String = s
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start))
+                    .collect();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
             string::SPLIT => {
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.split expects 1-2 arguments, got {}", arg_count
+                        "String.split expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let sep_val = args[0];
@@ -180,10 +209,15 @@ impl<'a> Interpreter<'a> {
                 // Get optional limit argument (try both i32 and i64)
                 // In Raya, limit 0 means "no limit"
                 let limit = if arg_count == 2 {
-                    let raw_limit = args[1].as_i32()
+                    let raw_limit = args[1]
+                        .as_i32()
                         .or_else(|| args[1].as_i64().map(|v| v as i32))
                         .unwrap_or(0);
-                    if raw_limit > 0 { Some(raw_limit as usize) } else { None }
+                    if raw_limit > 0 {
+                        Some(raw_limit as usize)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -209,19 +243,23 @@ impl<'a> Interpreter<'a> {
                 for part in parts {
                     let raya_string = RayaString::new(part);
                     let gc_ptr = self.gc.lock().allocate(raya_string);
-                    let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    let value = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
                     arr.push(value);
                 }
 
                 let gc_ptr = self.gc.lock().allocate(arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
             string::CHAR_CODE_AT => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.charCodeAt expects 1 argument, got {}", arg_count
+                        "String.charCodeAt expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let index = args[0].as_i32().unwrap_or(0) as usize;
@@ -232,7 +270,8 @@ impl<'a> Interpreter<'a> {
             string::LAST_INDEX_OF => {
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.lastIndexOf expects 1-2 arguments, got {}", arg_count
+                        "String.lastIndexOf expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let search_val = args[0];
@@ -255,7 +294,8 @@ impl<'a> Interpreter<'a> {
                 // padStart(targetLength, padString?)
                 if arg_count < 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.padStart expects at least 1 argument, got {}", arg_count
+                        "String.padStart expects at least 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let target_length = args[0].as_i32().unwrap_or(0) as usize;
@@ -279,7 +319,8 @@ impl<'a> Interpreter<'a> {
 
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -287,7 +328,8 @@ impl<'a> Interpreter<'a> {
                 // padEnd(targetLength, padString?)
                 if arg_count < 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.padEnd expects at least 1 argument, got {}", arg_count
+                        "String.padEnd expects at least 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let target_length = args[0].as_i32().unwrap_or(0) as usize;
@@ -311,7 +353,8 @@ impl<'a> Interpreter<'a> {
 
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -319,7 +362,8 @@ impl<'a> Interpreter<'a> {
                 let result = s.trim_start().to_string();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -327,7 +371,8 @@ impl<'a> Interpreter<'a> {
                 let result = s.trim_end().to_string();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -335,13 +380,14 @@ impl<'a> Interpreter<'a> {
                 // match(regexp): returns array of matches or null
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.match expects 1 argument, got {}", arg_count
+                        "String.match expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val.as_u64().ok_or_else(|| {
-                    VmError::TypeError("Expected RegExp argument".to_string())
-                })?;
+                let handle = regexp_val
+                    .as_u64()
+                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -353,7 +399,11 @@ impl<'a> Interpreter<'a> {
 
                 if is_global {
                     // Return all matches
-                    let matches: Vec<_> = re.compiled.find_iter(s).map(|m| m.as_str().to_string()).collect();
+                    let matches: Vec<_> = re
+                        .compiled
+                        .find_iter(s)
+                        .map(|m| m.as_str().to_string())
+                        .collect();
                     if matches.is_empty() {
                         stack.push(Value::null())?;
                     } else {
@@ -361,11 +411,15 @@ impl<'a> Interpreter<'a> {
                         for m in matches {
                             let raya_string = RayaString::new(m);
                             let gc_ptr = self.gc.lock().allocate(raya_string);
-                            let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                            let value = unsafe {
+                                Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                            };
                             arr.push(value);
                         }
                         let gc_ptr = self.gc.lock().allocate(arr);
-                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
                         stack.push(value)?;
                     }
                 } else {
@@ -374,10 +428,14 @@ impl<'a> Interpreter<'a> {
                         let mut arr = Array::new(0, 0);
                         let raya_string = RayaString::new(m.as_str().to_string());
                         let gc_ptr = self.gc.lock().allocate(raya_string);
-                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
                         arr.push(value);
                         let gc_ptr = self.gc.lock().allocate(arr);
-                        let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                        let value = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
                         stack.push(value)?;
                     } else {
                         stack.push(Value::null())?;
@@ -389,13 +447,14 @@ impl<'a> Interpreter<'a> {
                 // matchAll(regexp): returns array of [match, index] arrays
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.matchAll expects 1 argument, got {}", arg_count
+                        "String.matchAll expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val.as_u64().ok_or_else(|| {
-                    VmError::TypeError("Expected RegExp argument".to_string())
-                })?;
+                let handle = regexp_val
+                    .as_u64()
+                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -411,18 +470,23 @@ impl<'a> Interpreter<'a> {
                     // Add match string
                     let raya_string = RayaString::new(m.as_str().to_string());
                     let gc_ptr = self.gc.lock().allocate(raya_string);
-                    let match_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    let match_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
                     match_arr.push(match_val);
 
                     // Add index
                     match_arr.push(Value::i32(m.start() as i32));
 
                     let inner_gc_ptr = self.gc.lock().allocate(match_arr);
-                    let inner_val = unsafe { Value::from_ptr(std::ptr::NonNull::new(inner_gc_ptr.as_ptr()).unwrap()) };
+                    let inner_val = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(inner_gc_ptr.as_ptr()).unwrap())
+                    };
                     result_arr.push(inner_val);
                 }
                 let gc_ptr = self.gc.lock().allocate(result_arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -430,13 +494,14 @@ impl<'a> Interpreter<'a> {
                 // search(regexp): returns index of first match or -1
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.search expects 1 argument, got {}", arg_count
+                        "String.search expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val.as_u64().ok_or_else(|| {
-                    VmError::TypeError("Expected RegExp argument".to_string())
-                })?;
+                let handle = regexp_val
+                    .as_u64()
+                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -451,13 +516,14 @@ impl<'a> Interpreter<'a> {
                 // replace(regexp, replacement): replace matches with string
                 if arg_count != 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.replace expects 2 arguments, got {}", arg_count
+                        "String.replace expects 2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val.as_u64().ok_or_else(|| {
-                    VmError::TypeError("Expected RegExp argument".to_string())
-                })?;
+                let handle = regexp_val
+                    .as_u64()
+                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -479,7 +545,8 @@ impl<'a> Interpreter<'a> {
 
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -487,13 +554,14 @@ impl<'a> Interpreter<'a> {
                 // split(regexp, limit?): split string by regexp
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "String.split expects 1-2 arguments, got {}", arg_count
+                        "String.split expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let regexp_val = args[0];
-                let handle = regexp_val.as_u64().ok_or_else(|| {
-                    VmError::TypeError("Expected RegExp argument".to_string())
-                })?;
+                let handle = regexp_val
+                    .as_u64()
+                    .ok_or_else(|| VmError::TypeError("Expected RegExp argument".to_string()))?;
                 let re_ptr = handle as *const RegExpObject;
                 if re_ptr.is_null() {
                     return Err(VmError::RuntimeError("Invalid regexp handle".to_string()));
@@ -503,10 +571,15 @@ impl<'a> Interpreter<'a> {
                 // Get optional limit argument (try both i32 and i64)
                 // In Raya, limit 0 means "no limit"
                 let limit = if arg_count == 2 {
-                    let raw_limit = args[1].as_i32()
+                    let raw_limit = args[1]
+                        .as_i32()
                         .or_else(|| args[1].as_i64().map(|v| v as i32))
                         .unwrap_or(0);
-                    if raw_limit > 0 { Some(raw_limit as usize) } else { None }
+                    if raw_limit > 0 {
+                        Some(raw_limit as usize)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };
@@ -523,12 +596,15 @@ impl<'a> Interpreter<'a> {
                 for part in parts {
                     let raya_string = RayaString::new(part);
                     let gc_ptr = self.gc.lock().allocate(raya_string);
-                    let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                    let value = unsafe {
+                        Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                    };
                     arr.push(value);
                 }
 
                 let gc_ptr = self.gc.lock().allocate(arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -542,11 +618,15 @@ impl<'a> Interpreter<'a> {
             string::SLICE => {
                 // slice(start, end?)
                 // Supports negative indices: -1 = last char, -2 = second-to-last, etc.
-                let start_val = if arg_count >= 1 { args[0] } else { Value::i32(0) };
+                let start_val = if arg_count >= 1 {
+                    args[0]
+                } else {
+                    Value::i32(0)
+                };
                 let end_val = if arg_count >= 2 { Some(args[1]) } else { None };
 
                 let len = s.len();
-                
+
                 // Normalize negative indices
                 let start_raw = start_val.as_i32().unwrap_or(0);
                 let start = if start_raw < 0 {
@@ -554,7 +634,7 @@ impl<'a> Interpreter<'a> {
                 } else {
                     (start_raw as usize).min(len)
                 };
-                
+
                 let end = end_val
                     .and_then(|v| v.as_i32())
                     .map(|e| {
@@ -566,10 +646,15 @@ impl<'a> Interpreter<'a> {
                     })
                     .unwrap_or(len);
 
-                let result: String = s.chars().skip(start).take(end.saturating_sub(start)).collect();
+                let result: String = s
+                    .chars()
+                    .skip(start)
+                    .take(end.saturating_sub(start))
+                    .collect();
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -577,7 +662,8 @@ impl<'a> Interpreter<'a> {
                 // replace(search: string, replacement: string): string
                 if arg_count != 2 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.replace expects 2 arguments, got {}", arg_count
+                        "String.replace expects 2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let search_str = if let Some(ptr) = unsafe { args[0].as_ptr::<RayaString>() } {
@@ -593,7 +679,8 @@ impl<'a> Interpreter<'a> {
                 let result = s.replacen(&search_str, &replacement_str, 1);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -601,14 +688,20 @@ impl<'a> Interpreter<'a> {
                 // repeat(count: number = 1): string
                 if arg_count > 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "String.repeat expects at most 1 argument, got {}", arg_count
+                        "String.repeat expects at most 1 argument, got {}",
+                        arg_count
                     )));
                 }
-                let count = if arg_count == 0 { 1 } else { args[0].as_i32().unwrap_or(0).max(0) as usize };
+                let count = if arg_count == 0 {
+                    1
+                } else {
+                    args[0].as_i32().unwrap_or(0).max(0) as usize
+                };
                 let result = s.repeat(count);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }

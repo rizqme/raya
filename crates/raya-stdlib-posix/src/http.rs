@@ -14,8 +14,7 @@ struct HttpServerEntry {
     tls_config: Option<Arc<rustls::ServerConfig>>,
 }
 
-static HTTP_SERVERS: LazyLock<HandleRegistry<HttpServerEntry>> =
-    LazyLock::new(HandleRegistry::new);
+static HTTP_SERVERS: LazyLock<HandleRegistry<HttpServerEntry>> = LazyLock::new(HandleRegistry::new);
 static HTTP_REQUESTS: LazyLock<HandleRegistry<HttpRequestData>> =
     LazyLock::new(HandleRegistry::new);
 
@@ -102,32 +101,26 @@ pub fn server_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match HTTP_SERVERS.get(handle) {
-                Some(entry) => match entry.listener.accept() {
-                    Ok((stream, addr)) => {
-                        let remote = addr.to_string();
-                        let result = if let Some(ref tls_config) = entry.tls_config {
-                            accept_tls_request(stream, tls_config.clone(), &remote)
-                        } else {
-                            accept_plain_request(stream, &remote)
-                        };
-                        match result {
-                            Ok(req) => {
-                                let req_handle = HTTP_REQUESTS.insert(req);
-                                IoCompletion::Primitive(NativeValue::f64(req_handle as f64))
-                            }
-                            Err(e) => {
-                                IoCompletion::Error(format!("http.serverAccept: {}", e))
-                            }
+        work: Box::new(move || match HTTP_SERVERS.get(handle) {
+            Some(entry) => match entry.listener.accept() {
+                Ok((stream, addr)) => {
+                    let remote = addr.to_string();
+                    let result = if let Some(ref tls_config) = entry.tls_config {
+                        accept_tls_request(stream, tls_config.clone(), &remote)
+                    } else {
+                        accept_plain_request(stream, &remote)
+                    };
+                    match result {
+                        Ok(req) => {
+                            let req_handle = HTTP_REQUESTS.insert(req);
+                            IoCompletion::Primitive(NativeValue::f64(req_handle as f64))
                         }
+                        Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
                     }
-                    Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
-                },
-                None => {
-                    IoCompletion::Error(format!("http.serverAccept: invalid handle {}", handle))
                 }
-            }
+                Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
+            },
+            None => IoCompletion::Error(format!("http.serverAccept: invalid handle {}", handle)),
         }),
     })
 }
@@ -237,9 +230,7 @@ pub fn server_respond_headers(ctx: &dyn NativeContext, args: &[NativeValue]) -> 
     }
     let body = match ctx.read_string(args[4]) {
         Ok(s) => s,
-        Err(e) => {
-            return NativeCallResult::Error(format!("http.serverRespondHeaders: {}", e))
-        }
+        Err(e) => return NativeCallResult::Error(format!("http.serverRespondHeaders: {}", e)),
     };
 
     if let Some((_, req)) = HTTP_REQUESTS.remove(req_handle) {
@@ -424,7 +415,10 @@ pub fn req_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
 
 // ── Internal helpers ──
 
-fn accept_plain_request(stream: net::TcpStream, remote_addr: &str) -> Result<HttpRequestData, String> {
+fn accept_plain_request(
+    stream: net::TcpStream,
+    remote_addr: &str,
+) -> Result<HttpRequestData, String> {
     let clone = stream.try_clone().map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(clone);
     let (method, path, query, headers, body) = parse_http_request_from_reader(&mut reader)?;
@@ -543,16 +537,7 @@ fn parse_tls_request(
 #[allow(clippy::type_complexity)] // Returns parsed HTTP request components
 fn parse_http_request_from_reader<R: Read>(
     reader: &mut BufReader<R>,
-) -> Result<
-    (
-        String,
-        String,
-        String,
-        HashMap<String, String>,
-        Vec<u8>,
-    ),
-    String,
-> {
+) -> Result<(String, String, String, HashMap<String, String>, Vec<u8>), String> {
     // Read request line: METHOD /path?query HTTP/1.1
     let mut request_line = String::new();
     reader

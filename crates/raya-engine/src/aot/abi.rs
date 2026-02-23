@@ -71,8 +71,12 @@ pub fn emit_box_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Va
     let bits = builder.ins().bitcast(i64_type, ir::MemFlags::new(), val);
     let nan_base = builder.ins().iconst(i64_type, NAN_BOX_BASE as i64);
     let masked = builder.ins().band(bits, nan_base);
-    let is_collision = builder.ins().icmp(ir::condcodes::IntCC::Equal, masked, nan_base);
-    let canonical_nan = builder.ins().iconst(i64_type, 0x7FF8_0000_0000_0000u64 as i64);
+    let is_collision = builder
+        .ins()
+        .icmp(ir::condcodes::IntCC::Equal, masked, nan_base);
+    let canonical_nan = builder
+        .ins()
+        .iconst(i64_type, 0x7FF8_0000_0000_0000u64 as i64);
     builder.ins().select(is_collision, canonical_nan, bits)
 }
 
@@ -116,13 +120,17 @@ pub fn emit_false(builder: &mut FunctionBuilder<'_>) -> ir::Value {
 
 /// Emit the AOT_SUSPEND sentinel constant.
 pub fn emit_aot_suspend(builder: &mut FunctionBuilder<'_>) -> ir::Value {
-    builder.ins().iconst(ir::types::I64, super::frame::AOT_SUSPEND as i64)
+    builder
+        .ins()
+        .iconst(ir::types::I64, super::frame::AOT_SUSPEND as i64)
 }
 
 /// Check if a value equals AOT_SUSPEND: (val) -> i8 (0 or 1)
 pub fn emit_is_suspend(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Value {
     let suspend = emit_aot_suspend(builder);
-    builder.ins().icmp(ir::condcodes::IntCC::Equal, val, suspend)
+    builder
+        .ins()
+        .icmp(ir::condcodes::IntCC::Equal, val, suspend)
 }
 
 #[cfg(test)]

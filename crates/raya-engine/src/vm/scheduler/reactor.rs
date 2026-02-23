@@ -5,11 +5,11 @@
 //! it dispatches tasks to VM workers, handles IO submissions, manages timers, retries
 //! channel waiters, and checks preemption — all in one loop iteration.
 
+use crate::vm::abi::native_to_value;
 use crate::vm::interpreter::{ExecutionResult, Interpreter, SharedVmState};
 use crate::vm::object::{Buffer, ChannelObject, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
-use crate::vm::abi::native_to_value;
 use crossbeam::channel::{self, Receiver, Sender, TryRecvError, TrySendError};
 use raya_sdk::{IoCompletion, IoRequest};
 use std::cmp::Ordering;
@@ -90,7 +90,6 @@ impl PartialEq for SleepEntry {
 }
 
 impl Eq for SleepEntry {}
-
 
 // ============================================================================
 // Reactor
@@ -391,10 +390,7 @@ impl Reactor {
     // IO Worker Loop
     // ========================================================================
 
-    fn io_worker_loop(
-        work_rx: Receiver<IoWork>,
-        shutdown: Arc<AtomicBool>,
-    ) {
+    fn io_worker_loop(work_rx: Receiver<IoWork>, shutdown: Arc<AtomicBool>) {
         while !shutdown.load(AtomicOrdering::Acquire) {
             let work = match work_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(w) => w,
@@ -475,11 +471,7 @@ impl Reactor {
             loop {
                 match io_completion_rx.try_recv() {
                     Ok(completion) => {
-                        Self::handle_io_completion(
-                            completion,
-                            &shared_state,
-                            &mut ready_queue,
-                        );
+                        Self::handle_io_completion(completion, &shared_state, &mut ready_queue);
                     }
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break,
@@ -519,7 +511,12 @@ impl Reactor {
                     }
                     // Closed channel with empty buffer → return null
                     if channel.is_closed() {
-                        Self::complete_task(&shared_state, waiter.task_id, Value::null(), &mut ready_queue);
+                        Self::complete_task(
+                            &shared_state,
+                            waiter.task_id,
+                            Value::null(),
+                            &mut ready_queue,
+                        );
                         continue;
                     }
                     unresolved.push(waiter);
@@ -527,11 +524,21 @@ impl Reactor {
                     // Sender: try buffer first
                     if let Some(val) = waiter.value {
                         if channel.try_send(val) {
-                            Self::complete_task(&shared_state, waiter.task_id, Value::null(), &mut ready_queue);
+                            Self::complete_task(
+                                &shared_state,
+                                waiter.task_id,
+                                Value::null(),
+                                &mut ready_queue,
+                            );
                             continue;
                         }
                         if channel.is_closed() {
-                            Self::complete_task(&shared_state, waiter.task_id, Value::null(), &mut ready_queue);
+                            Self::complete_task(
+                                &shared_state,
+                                waiter.task_id,
+                                Value::null(),
+                                &mut ready_queue,
+                            );
                             continue;
                         }
                     }
@@ -560,8 +567,18 @@ impl Reactor {
                         let receiver = unresolved_receivers.swap_remove(i);
                         // Transfer value from sender to receiver
                         if let Some(val) = sender.value {
-                            Self::complete_task(&shared_state, receiver.task_id, val, &mut ready_queue);
-                            Self::complete_task(&shared_state, sender.task_id, Value::null(), &mut ready_queue);
+                            Self::complete_task(
+                                &shared_state,
+                                receiver.task_id,
+                                val,
+                                &mut ready_queue,
+                            );
+                            Self::complete_task(
+                                &shared_state,
+                                sender.task_id,
+                                Value::null(),
+                                &mut ready_queue,
+                            );
                         }
                         matched = true;
                         break;
@@ -793,11 +810,21 @@ impl Reactor {
                 if !ch_ptr.is_null() {
                     let ch = unsafe { &*ch_ptr };
                     if ch.try_send(send_val) {
-                        Self::complete_task(shared_state, sub.task_id, Value::bool(true), ready_queue);
+                        Self::complete_task(
+                            shared_state,
+                            sub.task_id,
+                            Value::bool(true),
+                            ready_queue,
+                        );
                         return;
                     }
                     if ch.is_closed() {
-                        Self::complete_task(shared_state, sub.task_id, Value::bool(false), ready_queue);
+                        Self::complete_task(
+                            shared_state,
+                            sub.task_id,
+                            Value::bool(false),
+                            ready_queue,
+                        );
                         return;
                     }
                 }
@@ -891,7 +918,10 @@ impl Reactor {
             IoCompletion::Primitive(native_val) => native_to_value(native_val),
             IoCompletion::Error(msg) => {
                 // TODO: Set exception on the task instead of returning null
-                eprintln!("[reactor] IO error for task {:?}: {}", completion.task_id, msg);
+                eprintln!(
+                    "[reactor] IO error for task {:?}: {}",
+                    completion.task_id, msg
+                );
                 Value::null()
             }
         };

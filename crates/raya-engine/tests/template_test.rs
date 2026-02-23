@@ -45,14 +45,12 @@ fn test_parse_template_with_simple_interpolation() {
                     assert_eq!(template.parts.len(), 3);
                     assert!(matches!(template.parts[0], TemplatePart::String(_)));
                     match &template.parts[1] {
-                        TemplatePart::Expression(expr) => {
-                            match expr.as_ref() {
-                                Expression::Identifier(id) => {
-                                    assert_eq!(interner.resolve(id.name), "name");
-                                }
-                                _ => panic!("Expected identifier"),
+                        TemplatePart::Expression(expr) => match expr.as_ref() {
+                            Expression::Identifier(id) => {
+                                assert_eq!(interner.resolve(id.name), "name");
                             }
-                        }
+                            _ => panic!("Expected identifier"),
+                        },
                         _ => panic!("Expected expression"),
                     }
                     assert!(matches!(template.parts[2], TemplatePart::String(_)));
@@ -150,17 +148,15 @@ fn test_parse_template_with_binary_expression() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let has_binary = template.parts.iter().any(|p| {
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let has_binary = template.parts.iter().any(|p| {
                         matches!(p, TemplatePart::Expression(e) if matches!(e.as_ref(), Expression::Binary(_)))
                     });
-                    assert!(has_binary, "Expected binary expression in template");
-                }
-                _ => panic!("Expected template literal"),
+                assert!(has_binary, "Expected binary expression in template");
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -173,17 +169,18 @@ fn test_parse_template_with_ternary() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let has_conditional = template.parts.iter().any(|p| {
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let has_conditional = template.parts.iter().any(|p| {
                         matches!(p, TemplatePart::Expression(e) if matches!(e.as_ref(), Expression::Conditional(_)))
                     });
-                    assert!(has_conditional, "Expected conditional expression in template");
-                }
-                _ => panic!("Expected template literal"),
+                assert!(
+                    has_conditional,
+                    "Expected conditional expression in template"
+                );
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -226,19 +223,17 @@ fn test_parse_template_ending_with_interpolation() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let expr_count = template
-                        .parts
-                        .iter()
-                        .filter(|p| matches!(p, TemplatePart::Expression(_)))
-                        .count();
-                    assert_eq!(expr_count, 1);
-                }
-                _ => panic!("Expected template literal"),
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let expr_count = template
+                    .parts
+                    .iter()
+                    .filter(|p| matches!(p, TemplatePart::Expression(_)))
+                    .count();
+                assert_eq!(expr_count, 1);
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -251,19 +246,17 @@ fn test_parse_template_consecutive_interpolations() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let expr_count = template
-                        .parts
-                        .iter()
-                        .filter(|p| matches!(p, TemplatePart::Expression(_)))
-                        .count();
-                    assert_eq!(expr_count, 3);
-                }
-                _ => panic!("Expected template literal"),
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let expr_count = template
+                    .parts
+                    .iter()
+                    .filter(|p| matches!(p, TemplatePart::Expression(_)))
+                    .count();
+                assert_eq!(expr_count, 3);
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -276,17 +269,15 @@ fn test_parse_template_with_nested_object() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let has_object = template.parts.iter().any(|p| {
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let has_object = template.parts.iter().any(|p| {
                         matches!(p, TemplatePart::Expression(e) if matches!(e.as_ref(), Expression::Object(_)))
                     });
-                    assert!(has_object, "Expected object expression in template");
-                }
-                _ => panic!("Expected template literal"),
+                assert!(has_object, "Expected object expression in template");
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -299,17 +290,15 @@ fn test_parse_template_with_array() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match decl.initializer.as_ref().unwrap() {
-                Expression::TemplateLiteral(template) => {
-                    let has_array = template.parts.iter().any(|p| {
+        Statement::VariableDecl(decl) => match decl.initializer.as_ref().unwrap() {
+            Expression::TemplateLiteral(template) => {
+                let has_array = template.parts.iter().any(|p| {
                         matches!(p, TemplatePart::Expression(e) if matches!(e.as_ref(), Expression::Array(_)))
                     });
-                    assert!(has_array, "Expected array expression in template");
-                }
-                _ => panic!("Expected template literal"),
+                assert!(has_array, "Expected array expression in template");
             }
-        }
+            _ => panic!("Expected template literal"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }

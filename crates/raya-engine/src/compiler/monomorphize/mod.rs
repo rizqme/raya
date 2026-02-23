@@ -33,8 +33,8 @@ pub use rewrite::CallSiteRewriter;
 pub use specialize::Monomorphizer;
 pub use substitute::TypeSubstitution;
 
-use crate::compiler::ir::{ClassId, FunctionId, IrModule};
 use crate::compiler::ir::instr::IrInstr;
+use crate::compiler::ir::{ClassId, FunctionId, IrModule};
 use crate::compiler::type_registry::TypeRegistry;
 use crate::parser::{Interner, TypeContext, TypeId};
 use rustc_hash::FxHashMap;
@@ -248,9 +248,15 @@ pub fn resolve_late_bound_members(
     for func in &mut ir_module.functions {
         for block in &mut func.blocks {
             for instr in &mut block.instructions {
-                if let IrInstr::LateBoundMember { dest, object, property } = instr {
+                if let IrInstr::LateBoundMember {
+                    dest,
+                    object,
+                    property,
+                } = instr
+                {
                     let obj_ty = object.ty.as_u32();
-                    let dispatch_ty = type_registry.normalize_type(obj_ty, type_ctx)
+                    let dispatch_ty = type_registry
+                        .normalize_type(obj_ty, type_ctx)
                         .unwrap_or(crate::compiler::type_registry::UNRESOLVED_TYPE_ID);
 
                     if dispatch_ty == crate::compiler::type_registry::UNRESOLVED_TYPE_ID {

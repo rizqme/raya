@@ -43,9 +43,7 @@ pub enum ImportResolution {
         export_name: String,
     },
     /// Import a native function
-    Native {
-        native_id: u16,
-    },
+    Native { native_id: u16 },
 }
 
 /// Dynamic module state
@@ -129,13 +127,19 @@ impl DynamicModule {
         self.function_names.insert(func_name.clone(), func_id);
 
         // Auto-export the function
-        self.exports.insert(func_name, DynamicExport::Function(func_id));
+        self.exports
+            .insert(func_name, DynamicExport::Function(func_id));
 
         Ok(func_id)
     }
 
     /// Add a class to the module
-    pub fn add_class(&mut self, local_id: usize, global_id: usize, name: String) -> Result<(), VmError> {
+    pub fn add_class(
+        &mut self,
+        local_id: usize,
+        global_id: usize,
+        name: String,
+    ) -> Result<(), VmError> {
         if self.state != ModuleState::Building {
             return Err(VmError::RuntimeError(
                 "Cannot add class to sealed module".to_string(),
@@ -160,7 +164,8 @@ impl DynamicModule {
         }
 
         self.globals.insert(name.clone(), value);
-        self.exports.insert(name.clone(), DynamicExport::Global(name));
+        self.exports
+            .insert(name.clone(), DynamicExport::Global(name));
 
         Ok(())
     }
@@ -189,7 +194,9 @@ impl DynamicModule {
 
     /// Get a function by name
     pub fn get_function_by_name(&self, name: &str) -> Option<&CompiledFunction> {
-        self.function_names.get(name).and_then(|id| self.functions.get(id))
+        self.function_names
+            .get(name)
+            .and_then(|id| self.functions.get(id))
     }
 
     /// Get a global variable
@@ -200,9 +207,10 @@ impl DynamicModule {
     /// Set a global variable (allowed even after sealing)
     pub fn set_global(&mut self, name: &str, value: Value) -> Result<(), VmError> {
         if !self.globals.contains_key(name) {
-            return Err(VmError::RuntimeError(
-                format!("Global '{}' not found in module", name),
-            ));
+            return Err(VmError::RuntimeError(format!(
+                "Global '{}' not found in module",
+                name
+            )));
         }
         self.globals.insert(name.to_string(), value);
         Ok(())
@@ -265,9 +273,10 @@ impl DynamicModuleRegistry {
     /// Create a new dynamic module
     pub fn create_module(&mut self, name: String) -> Result<usize, VmError> {
         if self.module_names.contains_key(&name) {
-            return Err(VmError::RuntimeError(
-                format!("Module '{}' already exists", name),
-            ));
+            return Err(VmError::RuntimeError(format!(
+                "Module '{}' already exists",
+                name
+            )));
         }
 
         let id = DYNAMIC_MODULE_BASE + self.next_module_id;
@@ -292,7 +301,9 @@ impl DynamicModuleRegistry {
 
     /// Get a module by name
     pub fn get_by_name(&self, name: &str) -> Option<&DynamicModule> {
-        self.module_names.get(name).and_then(|id| self.modules.get(id))
+        self.module_names
+            .get(name)
+            .and_then(|id| self.modules.get(id))
     }
 
     /// Get a module by name (mutable)
@@ -343,7 +354,10 @@ impl DynamicModuleRegistry {
 
     /// Get the module containing a function
     pub fn get_module_for_function(&self, function_id: usize) -> Option<&DynamicModule> {
-        self.modules.values().find(|&module| module.functions.contains_key(&function_id)).map(|v| v as _)
+        self.modules
+            .values()
+            .find(|&module| module.functions.contains_key(&function_id))
+            .map(|v| v as _)
     }
 }
 
@@ -438,7 +452,9 @@ mod tests {
         let module_id = registry.create_module("test".to_string()).unwrap();
 
         let module = registry.get_mut(module_id).unwrap();
-        module.add_global("PI".to_string(), Value::f64(3.14159)).unwrap();
+        module
+            .add_global("PI".to_string(), Value::f64(3.14159))
+            .unwrap();
 
         assert_eq!(module.get_global("PI"), Some(Value::f64(3.14159)));
     }
@@ -461,7 +477,9 @@ mod tests {
 
         let module = registry.get_mut(module_id).unwrap();
         module.add_function(func).unwrap();
-        module.add_global("VERSION".to_string(), Value::i32(1)).unwrap();
+        module
+            .add_global("VERSION".to_string(), Value::i32(1))
+            .unwrap();
 
         let info = module.get_info();
         assert_eq!(info.name, "mymodule");

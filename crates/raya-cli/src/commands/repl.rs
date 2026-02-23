@@ -7,6 +7,7 @@
 use raya_runtime::{RuntimeOptions, Session};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use rustyline::{Cmd, KeyCode, KeyEvent, Modifiers};
 
 const PROMPT: &str = "raya> ";
 const CONTINUATION_PROMPT: &str = "  ... ";
@@ -19,6 +20,7 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
 
     let mut session = Session::new(&options);
     let mut editor = DefaultEditor::new()?;
+    configure_keybindings(&mut editor);
 
     // Load history if it exists
     let history_path = dirs::home_dir().map(|h| h.join(".raya").join("repl_history"));
@@ -28,8 +30,10 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
 
     println!("Raya v{} REPL", env!("CARGO_PKG_VERSION"));
     println!("Type help for help, exit to quit\n");
+    println!("Multiline: Shift+Enter (or Alt+Enter / Ctrl+J)\n");
 
     let mut buffer = String::new();
+    let mut saw_ctrl_c_once = false;
 
     loop {
         let prompt = if buffer.is_empty() {
@@ -40,6 +44,7 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
 
         match editor.readline(prompt) {
             Ok(line) => {
+                saw_ctrl_c_once = false;
                 let trimmed = line.trim();
 
                 // Handle empty line
@@ -95,12 +100,15 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
                 }
             }
             Err(ReadlineError::Interrupted) => {
-                // Ctrl-C: discard multi-line buffer or hint exit
-                if !buffer.is_empty() {
+                let ctrl_c = handle_ctrl_c_interrupt(saw_ctrl_c_once, !buffer.is_empty());
+                saw_ctrl_c_once = ctrl_c.next_saw_ctrl_c_once;
+                if ctrl_c.clear_buffer {
                     buffer.clear();
                     println!();
+                } else if ctrl_c.should_exit {
+                    break;
                 } else {
-                    println!("\n(To exit, press Ctrl+D or type exit)");
+                    println!("\n(Press Ctrl-C again to exit, or Ctrl-D/type exit)");
                 }
                 continue;
             }
@@ -124,6 +132,23 @@ pub fn execute(no_jit: bool) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn configure_keybindings(editor: &mut DefaultEditor) {
+    for (key, cmd) in multiline_bindings() {
+        editor.bind_sequence(key, cmd);
+    }
+}
+
+fn multiline_bindings() -> [(KeyEvent, Cmd); 3] {
+    [
+        // Preferred: works in terminals that expose modified Enter.
+        (KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline),
+        // Common fallback for terminals that don't send Shift+Enter distinctly.
+        (KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline),
+        // Universal fallback: Ctrl+J inserts newline in most terminals.
+        (KeyEvent(KeyCode::Char('J'), Modifiers::CTRL), Cmd::Newline),
+    ]
 }
 
 /// Check if input looks like a REPL command.
@@ -278,6 +303,36 @@ fn print_value(formatted: &str) {
     println!("\x1b[36m{}\x1b[0m", formatted);
 }
 
+struct CtrlCAction {
+    should_exit: bool,
+    clear_buffer: bool,
+    next_saw_ctrl_c_once: bool,
+}
+
+fn handle_ctrl_c_interrupt(saw_ctrl_c_once: bool, has_buffer: bool) -> CtrlCAction {
+    if has_buffer {
+        return CtrlCAction {
+            should_exit: false,
+            clear_buffer: true,
+            next_saw_ctrl_c_once: false,
+        };
+    }
+
+    if saw_ctrl_c_once {
+        CtrlCAction {
+            should_exit: true,
+            clear_buffer: false,
+            next_saw_ctrl_c_once: true,
+        }
+    } else {
+        CtrlCAction {
+            should_exit: false,
+            clear_buffer: false,
+            next_saw_ctrl_c_once: true,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +407,40 @@ mod tests {
     #[test]
     fn needs_wrapping_multiline() {
         assert!(!needs_wrapping("function f() {\nreturn 1;\n}"));
+    }
+
+    #[test]
+    fn multiline_keys_are_bound_to_newline() {
+        let bindings = multiline_bindings();
+        assert_eq!(bindings[0], (KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline));
+        assert_eq!(bindings[1], (KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline));
+        assert_eq!(
+            bindings[2],
+            (KeyEvent(KeyCode::Char('J'), Modifiers::CTRL), Cmd::Newline)
+        );
+    }
+
+    #[test]
+    fn ctrl_c_with_buffer_clears_buffer_not_exit() {
+        let action = handle_ctrl_c_interrupt(false, true);
+        assert!(!action.should_exit);
+        assert!(action.clear_buffer);
+        assert!(!action.next_saw_ctrl_c_once);
+    }
+
+    #[test]
+    fn first_ctrl_c_without_buffer_sets_pending_exit() {
+        let action = handle_ctrl_c_interrupt(false, false);
+        assert!(!action.should_exit);
+        assert!(!action.clear_buffer);
+        assert!(action.next_saw_ctrl_c_once);
+    }
+
+    #[test]
+    fn second_ctrl_c_without_buffer_exits() {
+        let action = handle_ctrl_c_interrupt(true, false);
+        assert!(action.should_exit);
+        assert!(!action.clear_buffer);
+        assert!(action.next_saw_ctrl_c_once);
     }
 }

@@ -299,10 +299,7 @@ unsafe impl Sync for WindowsLibrary {}
 #[cfg(windows)]
 extern "system" {
     fn LoadLibraryW(filename: *const u16) -> *mut std::ffi::c_void;
-    fn GetProcAddress(
-        module: *mut std::ffi::c_void,
-        procname: *const i8,
-    ) -> *mut std::ffi::c_void;
+    fn GetProcAddress(module: *mut std::ffi::c_void, procname: *const i8) -> *mut std::ffi::c_void;
     fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
     fn GetLastError() -> u32;
 }

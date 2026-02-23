@@ -36,7 +36,10 @@ fn make_simple_function(name: &str, param_ty: TypeId, return_ty: TypeId) -> IrFu
 fn make_add_function(name: &str, param_ty: TypeId) -> IrFunction {
     let mut func = IrFunction::new(
         name,
-        vec![make_reg(0, param_ty.as_u32()), make_reg(1, param_ty.as_u32())],
+        vec![
+            make_reg(0, param_ty.as_u32()),
+            make_reg(1, param_ty.as_u32()),
+        ],
         param_ty,
     );
     let mut block = BasicBlock::new(BasicBlockId(0));
@@ -236,7 +239,10 @@ mod substitution_tests {
 
         let result = sub.apply_instr(&instr);
 
-        if let IrInstr::BinaryOp { dest, left, right, .. } = result {
+        if let IrInstr::BinaryOp {
+            dest, left, right, ..
+        } = result
+        {
             assert_eq!(dest.ty, TypeId::new(1));
             assert_eq!(left.ty, TypeId::new(1));
             assert_eq!(right.ty, TypeId::new(1));
@@ -310,7 +316,7 @@ mod monomorphizer_tests {
             key: key.clone(),
             kind: InstantiationKind::Function(func_id),
         };
-        mono.context();  // Just verify we can access context
+        mono.context(); // Just verify we can access context
 
         // After specialization, check the specialized function
         let result = mono.monomorphize(&mut module);

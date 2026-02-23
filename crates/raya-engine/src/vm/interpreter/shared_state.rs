@@ -3,18 +3,18 @@
 //! This module provides shared state that can be safely accessed by multiple
 //! worker threads executing tasks concurrently.
 
+use crate::compiler::Module;
 use crate::vm::gc::GarbageCollector;
+use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
 use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
-use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
 use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
-use crate::compiler::Module;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
@@ -96,7 +96,8 @@ pub struct SharedVmState {
     /// Per-module profiling data for hot function detection.
     /// Keyed by module checksum. Created when a module is first executed with JIT enabled.
     #[cfg(feature = "jit")]
-    pub module_profiles: RwLock<FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>>,
+    pub module_profiles:
+        RwLock<FxHashMap<[u8; 32], Arc<crate::jit::profiling::counters::ModuleProfile>>>,
 
     /// Handle to the background JIT compilation thread.
     /// Set by `Vm::enable_jit()`, cloned by worker threads to submit compilation requests.

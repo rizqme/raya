@@ -15,8 +15,8 @@ use cranelift_module::Module as CraneliftModule;
 use crate::compiler::bytecode::Module;
 use crate::jit::analysis::heuristics::HeuristicsAnalyzer;
 use crate::jit::backend::cranelift::lowering::{jit_entry_signature, LoweringContext};
-use crate::jit::backend::CraneliftBackend;
 use crate::jit::backend::traits::{CodegenError, ExecutableCode};
+use crate::jit::backend::CraneliftBackend;
 use crate::jit::ir::instr::JitFunction;
 use crate::jit::pipeline::prewarm::PrewarmConfig;
 use crate::jit::pipeline::JitPipeline;
@@ -116,23 +116,19 @@ impl JitEngine {
     /// Create a cranelift_jit JITModule targeting the host
     fn create_jit_module() -> Result<JITModule, CodegenError> {
         let mut flag_builder = settings::builder();
-        flag_builder.set("opt_level", "speed").map_err(|e| {
-            CodegenError::BackendError(format!("Failed to set opt_level: {}", e))
-        })?;
+        flag_builder
+            .set("opt_level", "speed")
+            .map_err(|e| CodegenError::BackendError(format!("Failed to set opt_level: {}", e)))?;
         // JITModule manages its own memory layout, so PIC is not needed
-        flag_builder.set("is_pic", "false").map_err(|e| {
-            CodegenError::BackendError(format!("Failed to set is_pic: {}", e))
-        })?;
+        flag_builder
+            .set("is_pic", "false")
+            .map_err(|e| CodegenError::BackendError(format!("Failed to set is_pic: {}", e)))?;
         let flags = settings::Flags::new(flag_builder);
 
         let isa = cranelift_native::builder()
-            .map_err(|e| {
-                CodegenError::BackendError(format!("Failed to create native ISA: {}", e))
-            })?
+            .map_err(|e| CodegenError::BackendError(format!("Failed to create native ISA: {}", e)))?
             .finish(flags)
-            .map_err(|e| {
-                CodegenError::BackendError(format!("Failed to finish ISA: {}", e))
-            })?;
+            .map_err(|e| CodegenError::BackendError(format!("Failed to finish ISA: {}", e)))?;
 
         let builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         Ok(JITModule::new(builder))
@@ -209,10 +205,8 @@ impl JitEngine {
         ctx.func.name = ir::UserFuncName::user(0, jit_func.func_index);
 
         {
-            let builder = cranelift_frontend::FunctionBuilder::new(
-                &mut ctx.func,
-                &mut self.func_builder_ctx,
-            );
+            let builder =
+                cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut self.func_builder_ctx);
             LoweringContext::lower(jit_func, builder)
                 .map_err(|e| format!("Lowering failed: {}", e))?;
         }
@@ -275,9 +269,7 @@ impl JitEngine {
     ///
     /// Returns a `BackgroundCompiler` handle for submitting requests.
     /// Dropping the handle closes the channel and the thread exits.
-    pub fn start_background(
-        self,
-    ) -> crate::jit::profiling::BackgroundCompiler {
+    pub fn start_background(self) -> crate::jit::profiling::BackgroundCompiler {
         let (tx, rx) = crossbeam::channel::bounded::<crate::jit::profiling::CompilationRequest>(64);
 
         std::thread::Builder::new()
@@ -286,8 +278,13 @@ impl JitEngine {
                 let mut engine = self;
                 while let Ok(req) = rx.recv() {
                     // Skip if already compiled (another request may have beaten us)
-                    if engine.code_cache.contains(req.module_id, req.func_index as u32) {
-                        if let Some(fp) = req.module_profile.get(req.func_index) { fp.finish_compile() }
+                    if engine
+                        .code_cache
+                        .contains(req.module_id, req.func_index as u32)
+                    {
+                        if let Some(fp) = req.module_profile.get(req.func_index) {
+                            fp.finish_compile()
+                        }
                         continue;
                     }
 
@@ -336,8 +333,8 @@ pub struct PrewarmSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jit::backend::traits::CodegenBackend;
     use crate::compiler::bytecode::{ConstantPool, Function, Metadata, Opcode};
+    use crate::jit::backend::traits::CodegenBackend;
 
     fn make_module(functions: Vec<Function>) -> Module {
         Module {
@@ -429,7 +426,10 @@ mod tests {
         let summary = engine.prewarm(&module);
 
         // The function should be compiled and cached
-        assert!(summary.compiled > 0, "Expected at least one compiled function");
+        assert!(
+            summary.compiled > 0,
+            "Expected at least one compiled function"
+        );
         assert!(
             engine.code_cache().contains(summary.module_id, 0),
             "Compiled function should be in the code cache"

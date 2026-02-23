@@ -130,7 +130,11 @@ mod tests {
         assert_eq!(stack.break_target(None), Some(BasicBlockId(1)));
         assert_eq!(stack.continue_target(None), Some(BasicBlockId(2)));
 
-        stack.push(LoopContext::labeled(BasicBlockId(3), BasicBlockId(4), "outer"));
+        stack.push(LoopContext::labeled(
+            BasicBlockId(3),
+            BasicBlockId(4),
+            "outer",
+        ));
         assert_eq!(stack.break_target(Some("outer")), Some(BasicBlockId(3)));
 
         stack.pop();

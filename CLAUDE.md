@@ -4,9 +4,9 @@
 
 ---
 
-## ⚠️ Worktree Workflow (MANDATORY)
+## Worktree Workflow
 
-**Before executing any plan**, use the `/worktree` skill to create a git worktree first. All implementation work must happen in an isolated worktree, not directly on the main branch.
+Prefer using a git worktree for isolated changes, but it is optional.
 
 ---
 
@@ -199,7 +199,7 @@
 - Dependency resolution: local path, URL/git (cached), registry packages
 - `raya repl`: persistent session, multi-line input, history, REPL commands (help/clear/load/type/exit — no dot prefix)
 - Session accumulates declarations (let, const, function, class, import) across evals
-- 26 CLI integration tests + 13 REPL unit tests
+- 33 CLI integration tests + 13 REPL unit tests
 
 **JIT Compilation (feature-gated):** Complete
 - Cranelift backend with NaN-boxing ABI, SSA lifter, optimization passes

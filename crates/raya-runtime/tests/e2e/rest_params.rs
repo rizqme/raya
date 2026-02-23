@@ -183,7 +183,7 @@ fn test_rest_parameter_in_nested_function() {
             return inner(1, 2, 3);
         }
         return outer(1);",
-        7,  // 1 (x) + 1 + 2 + 3
+        7, // 1 (x) + 1 + 2 + 3
     );
 }
 
@@ -355,7 +355,7 @@ fn test_rest_parameter_multiple_fixed_params() {
             return sum;
         }
         return add(1, 2, 3, 4, 5);",
-        15,  // 1 + 2 + 3 + 4 + 5
+        15, // 1 + 2 + 3 + 4 + 5
     );
 
     expect_i32(
@@ -367,7 +367,7 @@ fn test_rest_parameter_multiple_fixed_params() {
             return sum;
         }
         return add(1, 2);",
-        3,  // 1 + 2, no rest args
+        3, // 1 + 2, no rest args
     );
 }
 
@@ -397,7 +397,7 @@ fn test_rest_parameter_array_iteration() {
             return sum;
         }
         return sumFirstTwo(5, 10, 15, 20);",
-        15,  // 5 + 10
+        15, // 5 + 10
     );
 }
 

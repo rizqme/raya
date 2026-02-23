@@ -1,7 +1,7 @@
 //! Module builder for constructing bytecode modules
 
-use crate::compiler::error::{CompileError, CompileResult};
 use crate::compiler::bytecode::{ClassDef, Function, Module, Opcode};
+use crate::compiler::error::{CompileError, CompileResult};
 use rustc_hash::FxHashMap;
 
 /// Helper for building bytecode modules

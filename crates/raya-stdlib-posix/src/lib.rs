@@ -13,20 +13,20 @@ pub mod registry;
 
 pub mod tls;
 
+pub mod archive;
+pub mod dns;
 pub mod env;
+pub mod fetch;
 pub mod fs;
+pub mod glob_mod;
+pub mod http;
 pub mod io;
+pub mod net;
 pub mod os;
 pub mod process;
-pub mod net;
-pub mod http;
-pub mod fetch;
-pub mod dns;
-pub mod terminal;
-pub mod ws;
 pub mod readline;
-pub mod glob_mod;
-pub mod archive;
+pub mod terminal;
 pub mod watch;
+pub mod ws;
 
 pub use registry::register_posix;

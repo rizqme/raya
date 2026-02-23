@@ -14,8 +14,7 @@ pub fn load_bytecode_file(path: &Path) -> Result<CompiledModule, RuntimeError> {
 
 /// Load bytecode from raw bytes.
 pub fn load_bytecode_bytes(bytes: &[u8]) -> Result<CompiledModule, RuntimeError> {
-    let module = Module::decode(bytes)
-        .map_err(|e| RuntimeError::Bytecode(format!("{}", e)))?;
+    let module = Module::decode(bytes).map_err(|e| RuntimeError::Bytecode(format!("{}", e)))?;
     Ok(CompiledModule {
         module,
         interner: None,

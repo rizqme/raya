@@ -15,9 +15,9 @@
 //! | 0x0D16 | getTypeInfo                 | Get type info for target             |
 //! | 0x0D17 | getTypeInfoProperty         | Get type info for property           |
 
+use crate::vm::interpreter::ClassRegistry;
 use crate::vm::object::{Class, Object};
 use crate::vm::value::Value;
-use crate::vm::interpreter::ClassRegistry;
 
 /// Runtime type information (simplified for basic introspection)
 #[derive(Debug, Clone)]
@@ -219,7 +219,11 @@ pub fn get_all_classes(registry: &ClassRegistry) -> Vec<&Class> {
 }
 
 /// Check if a class is a subclass of another class
-pub fn is_subclass_of(registry: &ClassRegistry, sub_class_id: usize, super_class_id: usize) -> bool {
+pub fn is_subclass_of(
+    registry: &ClassRegistry,
+    sub_class_id: usize,
+    super_class_id: usize,
+) -> bool {
     if sub_class_id == super_class_id {
         return true;
     }
@@ -505,7 +509,8 @@ mod tests {
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
         let obj = Object::new(2, 3); // class_id = 2 (Labrador)
         let gc_ptr = gc.lock().allocate(obj);
-        let lab_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+        let lab_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
 
         // Labrador is instance of Labrador, Dog, and Animal
         assert!(is_instance_of(&registry, lab_value, 2)); // Labrador
@@ -515,7 +520,8 @@ mod tests {
         // Create a Dog instance
         let dog_obj = Object::new(1, 2);
         let dog_ptr = gc.lock().allocate(dog_obj);
-        let dog_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
+        let dog_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
 
         // Dog is instance of Dog and Animal, but not Labrador
         assert!(is_instance_of(&registry, dog_value, 1)); // Dog
@@ -649,7 +655,8 @@ mod tests {
         let gc = Arc::new(Mutex::new(GarbageCollector::new(context_id, type_registry)));
         let dog_obj = Object::new(1, 2); // class_id = 1 (Dog)
         let dog_ptr = gc.lock().allocate(dog_obj);
-        let dog_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
+        let dog_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(dog_ptr.as_ptr()).unwrap()) };
 
         // Dog can be cast to Animal (upcast)
         assert!(is_instance_of(&registry, dog_value, 0));
@@ -659,7 +666,8 @@ mod tests {
         // Create an Animal instance
         let animal_obj = Object::new(0, 1); // class_id = 0 (Animal)
         let animal_ptr = gc.lock().allocate(animal_obj);
-        let animal_value = unsafe { Value::from_ptr(std::ptr::NonNull::new(animal_ptr.as_ptr()).unwrap()) };
+        let animal_value =
+            unsafe { Value::from_ptr(std::ptr::NonNull::new(animal_ptr.as_ptr()).unwrap()) };
 
         // Animal cannot be cast to Dog (downcast fails)
         assert!(!is_instance_of(&registry, animal_value, 1));

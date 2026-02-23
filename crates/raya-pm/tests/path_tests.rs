@@ -211,10 +211,7 @@ fn test_absolute_path_resolution() {
     // Resolve absolute path
     let lib_absolute = root.join("lib");
     let resolved = resolver
-        .resolve(
-            lib_absolute.to_str().unwrap(),
-            &root,
-        )
+        .resolve(lib_absolute.to_str().unwrap(), &root)
         .unwrap();
 
     assert!(resolved.ends_with("lib"));

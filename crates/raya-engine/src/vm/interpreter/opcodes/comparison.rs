@@ -1,9 +1,9 @@
+use crate::compiler::Opcode;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
-use crate::compiler::Opcode;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_comparison_ops(
@@ -256,8 +256,12 @@ impl<'a> Interpreter<'a> {
                 };
                 // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
                 let result = if a.is_f64() || b.is_f64() {
-                    let fa = a.as_f64().unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b.as_f64().unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa == fb
                 } else {
                     a == b
@@ -279,8 +283,12 @@ impl<'a> Interpreter<'a> {
                 };
                 // NaN != NaN per IEEE 754 — f64 comparison must use float semantics
                 let result = if a.is_f64() || b.is_f64() {
-                    let fa = a.as_f64().unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
-                    let fb = b.as_f64().unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fa = a
+                        .as_f64()
+                        .unwrap_or(a.as_i32().map(|i| i as f64).unwrap_or(0.0));
+                    let fb = b
+                        .as_f64()
+                        .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa != fb
                 } else {
                     a != b

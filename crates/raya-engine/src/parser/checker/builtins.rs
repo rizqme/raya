@@ -8,7 +8,7 @@
 pub struct BuiltinMethod {
     pub name: String,
     pub params: Vec<(String, String)>, // (name, type)
-    pub min_params: usize, // Minimum required parameters (for optional params)
+    pub min_params: usize,             // Minimum required parameters (for optional params)
     pub return_type: String,
     pub is_static: bool,
     pub type_params: Vec<String>, // Method-level type parameters
@@ -87,7 +87,10 @@ impl BuiltinClass {
 
     pub fn with_constructor(mut self, params: Vec<(&str, &str)>) -> Self {
         self.constructor_params = Some(
-            params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect()
+            params
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
         );
         self
     }
@@ -96,7 +99,10 @@ impl BuiltinClass {
         let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
-            params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            params: params
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
             min_params,
             return_type: return_type.to_string(),
             is_static: false,
@@ -105,11 +111,20 @@ impl BuiltinClass {
         self
     }
 
-    pub fn with_method_type_params(mut self, name: &str, type_params: Vec<&str>, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+    pub fn with_method_type_params(
+        mut self,
+        name: &str,
+        type_params: Vec<&str>,
+        params: Vec<(&str, &str)>,
+        return_type: &str,
+    ) -> Self {
         let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
-            params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            params: params
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
             min_params,
             return_type: return_type.to_string(),
             is_static: false,
@@ -118,11 +133,19 @@ impl BuiltinClass {
         self
     }
 
-    pub fn with_static_method(mut self, name: &str, params: Vec<(&str, &str)>, return_type: &str) -> Self {
+    pub fn with_static_method(
+        mut self,
+        name: &str,
+        params: Vec<(&str, &str)>,
+        return_type: &str,
+    ) -> Self {
         let min_params = params.len();
         self.methods.push(BuiltinMethod {
             name: name.to_string(),
-            params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            params: params
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
             min_params,
             return_type: return_type.to_string(),
             is_static: true,
@@ -146,7 +169,10 @@ impl BuiltinFunction {
         Self {
             name: name.to_string(),
             type_params: Vec::new(),
-            params: params.into_iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            params: params
+                .into_iter()
+                .map(|(n, t)| (n.to_string(), t.to_string()))
+                .collect(),
             return_type: return_type.to_string(),
         }
     }
@@ -189,11 +215,7 @@ pub fn decorator_type_aliases() -> Vec<BuiltinTypeAlias> {
         ),
         // MethodDecorator<F> = (method: F) => F
         // F must be a function type; the decorator can wrap/replace the method
-        BuiltinTypeAlias::new(
-            "MethodDecorator",
-            vec!["F"],
-            "(method: F) => F",
-        ),
+        BuiltinTypeAlias::new("MethodDecorator", vec!["F"], "(method: F) => F"),
         // FieldDecorator<T> = (target: T, fieldName: string) => void
         BuiltinTypeAlias::new(
             "FieldDecorator",
@@ -218,6 +240,6 @@ pub fn class_interface() -> BuiltinClass {
         .with_type_params(vec!["T"])
         .with_property("name", "string")
         .with_property("prototype", "T")
-        // Constructor signature: new(...args: unknown[]): T
-        // This is implicit - Class<T> is callable as a constructor
+    // Constructor signature: new(...args: unknown[]): T
+    // This is implicit - Class<T> is callable as a constructor
 }

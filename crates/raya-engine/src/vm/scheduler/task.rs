@@ -170,7 +170,6 @@ struct InitState {
 /// A lightweight green thread
 pub struct Task {
     // -- Immutable (set at creation, never changes) --
-
     /// Unique identifier
     id: TaskId,
 
@@ -184,7 +183,6 @@ pub struct Task {
     parent: Option<TaskId>,
 
     // -- Atomics (lock-free) --
-
     /// Instruction pointer
     ip: AtomicUsize,
 
@@ -204,7 +202,6 @@ pub struct Task {
     current_locals_base: AtomicUsize,
 
     // -- Grouped Mutexes (parking_lot::Mutex — ~8 bytes each) --
-
     /// Lifecycle and scheduling state
     lifecycle: ParkingMutex<LifecycleState>,
 
@@ -218,7 +215,6 @@ pub struct Task {
     init: ParkingMutex<InitState>,
 
     // -- Separate locks (special reasons) --
-
     /// Execution stack (held for full interpreter run duration — std::sync::Mutex)
     stack: StdMutex<Stack>,
 
@@ -727,19 +723,24 @@ impl Task {
                     Some(current_ip)
                 } else {
                     let frame_idx = cs.execution_frames.len().checked_sub(i);
-                    frame_idx.and_then(|idx| cs.execution_frames.get(idx)).map(|f| f.ip)
+                    frame_idx
+                        .and_then(|idx| cs.execution_frames.get(idx))
+                        .map(|f| f.ip)
                 };
 
                 let location = ip.and_then(|offset| {
                     debug_info.and_then(|di| {
-                        di.functions.get(func_id).and_then(|fdi| {
-                            fdi.lookup_location(offset as u32)
-                        })
+                        di.functions
+                            .get(func_id)
+                            .and_then(|fdi| fdi.lookup_location(offset as u32))
                     })
                 });
 
                 if let Some(loc) = location {
-                    trace.push_str(&format!("\n    at {} (line {}:{})", func.name, loc.line, loc.column));
+                    trace.push_str(&format!(
+                        "\n    at {} (line {}:{})",
+                        func.name, loc.line, loc.column
+                    ));
                 } else {
                     trace.push_str(&format!("\n    at {}", func.name));
                 }
@@ -887,10 +888,7 @@ impl Task {
             .map(|f| f.func_id)
             .unwrap_or(serialized.function_index);
 
-        let current_locals_base = execution_frames
-            .last()
-            .map(|f| f.locals_base)
-            .unwrap_or(0);
+        let current_locals_base = execution_frames.last().map(|f| f.locals_base).unwrap_or(0);
 
         Self {
             id: serialized.task_id,

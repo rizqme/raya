@@ -37,10 +37,10 @@ fn load_dependency(
         Dependency::Detailed {
             path: Some(path), ..
         } => load_path_dep(name, path, manifest_dir),
+        Dependency::Detailed { git: Some(url), .. } => load_url_dep(name, url),
         Dependency::Detailed {
-            git: Some(url), ..
-        } => load_url_dep(name, url),
-        Dependency::Detailed { version: Some(_), .. } => load_registry_dep(name, manifest_dir),
+            version: Some(_), ..
+        } => load_registry_dep(name, manifest_dir),
         _ => Err(RuntimeError::Dependency(format!(
             "Dependency '{}' has no path, git, or version specified.",
             name
@@ -99,10 +99,7 @@ fn load_url_dep(name: &str, url: &str) -> Result<CompiledModule, RuntimeError> {
 }
 
 /// Load a registry package from raya_packages/ or global cache.
-fn load_registry_dep(
-    name: &str,
-    manifest_dir: &Path,
-) -> Result<CompiledModule, RuntimeError> {
+fn load_registry_dep(name: &str, manifest_dir: &Path) -> Result<CompiledModule, RuntimeError> {
     // 1. Project-local: raya_packages/{name}/
     let local = manifest_dir.join("raya_packages").join(name);
     if local.exists() {

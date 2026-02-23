@@ -161,10 +161,7 @@ fn test_template_literal_with_ternary() {
 
 #[test]
 fn test_template_literal_empty_expression() {
-    expect_string(
-        "return `before${\"\"}after`;",
-        "beforeafter",
-    );
+    expect_string("return `before${\"\"}after`;", "beforeafter");
 }
 
 // ============================================================================
@@ -372,52 +369,34 @@ fn test_complex_boolean_expression() {
 
 #[test]
 fn test_arithmetic_precedence() {
-    expect_i32(
-        "return 2 + 3 * 4;",
-        14,
-    );
+    expect_i32("return 2 + 3 * 4;", 14);
 }
 
 #[test]
 fn test_arithmetic_precedence_with_parens() {
-    expect_i32(
-        "return (2 + 3) * 4 + 22;",
-        42,
-    );
+    expect_i32("return (2 + 3) * 4 + 22;", 42);
 }
 
 #[test]
 fn test_comparison_in_logical() {
-    expect_bool(
-        "return 1 < 2 && 3 > 2;",
-        true,
-    );
+    expect_bool("return 1 < 2 && 3 > 2;", true);
 }
 
 #[test]
 fn test_bitwise_precedence() {
     // & binds tighter than |
-    expect_i32(
-        "return 0xFF & 0x2A | 0x00;",
-        42,
-    );
+    expect_i32("return 0xFF & 0x2A | 0x00;", 42);
 }
 
 #[test]
 fn test_mixed_arithmetic_and_bitwise() {
-    expect_i32(
-        "return (5 + 3) << 2 | 10;",
-        42,
-    );
+    expect_i32("return (5 + 3) << 2 | 10;", 42);
 }
 
 #[test]
 fn test_exponentiation_right_associative() {
     // 2 ** 3 ** 2 should be 2 ** (3 ** 2) = 2 ** 9 = 512
-    expect_i32(
-        "return 2 ** 3 ** 2;",
-        512,
-    );
+    expect_i32("return 2 ** 3 ** 2;", 512);
 }
 
 #[test]
@@ -434,10 +413,7 @@ fn test_unary_minus_with_exponent() {
 #[test]
 fn test_complex_precedence_chain() {
     // 1 + 2 * 3 - 4 / 2 + 1 = 1 + 6 - 2 + 1 = 6
-    expect_i32(
-        "return 1 + 2 * 3 - 4 / 2 + 1;",
-        6,
-    );
+    expect_i32("return 1 + 2 * 3 - 4 / 2 + 1;", 6);
 }
 
 // ============================================================================

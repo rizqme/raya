@@ -59,7 +59,8 @@ impl NativeHandler for StdNativeHandler {
             // Logger methods (0x1000-0x1003)
             0x1000 => {
                 // LOGGER_DEBUG
-                let parts: Vec<String> = args.iter()
+                let parts: Vec<String> = args
+                    .iter()
                     .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
@@ -68,7 +69,8 @@ impl NativeHandler for StdNativeHandler {
             }
             0x1001 => {
                 // LOGGER_INFO
-                let parts: Vec<String> = args.iter()
+                let parts: Vec<String> = args
+                    .iter()
                     .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
@@ -77,7 +79,8 @@ impl NativeHandler for StdNativeHandler {
             }
             0x1002 => {
                 // LOGGER_WARN
-                let parts: Vec<String> = args.iter()
+                let parts: Vec<String> = args
+                    .iter()
                     .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
@@ -86,7 +89,8 @@ impl NativeHandler for StdNativeHandler {
             }
             0x1003 => {
                 // LOGGER_ERROR
-                let parts: Vec<String> = args.iter()
+                let parts: Vec<String> = args
+                    .iter()
                     .filter_map(|v| ctx.read_string(*v).ok())
                     .collect();
                 let msg = parts.join(" ");
@@ -179,15 +183,9 @@ impl NativeHandler for StdNativeHandler {
                 let x = args.first().map(Self::get_f64).unwrap_or(0.0);
                 NativeCallResult::f64(crate::math::log10(x))
             }
-            0x2014 => {
-                NativeCallResult::f64(crate::math::random())
-            }
-            0x2015 => {
-                NativeCallResult::f64(crate::math::pi())
-            }
-            0x2016 => {
-                NativeCallResult::f64(crate::math::e())
-            }
+            0x2014 => NativeCallResult::f64(crate::math::random()),
+            0x2015 => NativeCallResult::f64(crate::math::pi()),
+            0x2016 => NativeCallResult::f64(crate::math::e()),
 
             _ => NativeCallResult::Unhandled,
         }
@@ -197,16 +195,20 @@ impl NativeHandler for StdNativeHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::{Mutex, RwLock};
     use raya_engine::vm::abi::EngineContext;
     use raya_engine::vm::gc::GarbageCollector as Gc;
-    use raya_engine::vm::scheduler::TaskId;
     use raya_engine::vm::interpreter::{ClassRegistry, VmContextId};
     use raya_engine::vm::reflect::ClassMetadataRegistry;
+    use raya_engine::vm::scheduler::TaskId;
     use raya_engine::vm::types::TypeRegistry;
-    use parking_lot::{Mutex, RwLock};
     use std::sync::Arc;
 
-    fn create_test_context() -> (Mutex<Gc>, RwLock<ClassRegistry>, RwLock<ClassMetadataRegistry>) {
+    fn create_test_context() -> (
+        Mutex<Gc>,
+        RwLock<ClassRegistry>,
+        RwLock<ClassMetadataRegistry>,
+    ) {
         let context_id = VmContextId::new();
         let type_registry = Arc::new(TypeRegistry::new());
         let gc = Mutex::new(Gc::new(context_id, type_registry));

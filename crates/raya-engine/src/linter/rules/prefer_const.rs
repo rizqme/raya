@@ -23,11 +23,7 @@ impl LintRule for PreferConst {
         &META
     }
 
-    fn check_statement(
-        &self,
-        stmt: &ast::Statement,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, stmt: &ast::Statement, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         let decl = match stmt {
             ast::Statement::VariableDecl(d) => d,
             _ => return vec![],
@@ -95,7 +91,11 @@ mod tests {
     #[test]
     fn test_let_with_init_flagged() {
         let diags = lint("let x: int = 42;");
-        assert!(has_rule(&diags, "L2003"), "should suggest const, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2003"),
+            "should suggest const, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -107,7 +107,10 @@ mod tests {
     #[test]
     fn test_let_without_init_not_flagged() {
         let diags = lint("function f(): void { let x: int; }");
-        assert!(!has_rule(&diags, "L2003"), "let without init should not be flagged");
+        assert!(
+            !has_rule(&diags, "L2003"),
+            "let without init should not be flagged"
+        );
     }
 
     #[test]

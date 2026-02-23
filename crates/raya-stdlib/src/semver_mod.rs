@@ -48,13 +48,22 @@ fn parse_two_versions(
         NativeCallResult::Error(format!("semver.{}: invalid first argument: {}", fn_name, e))
     })?;
     let b_str = ctx.read_string(args[1]).map_err(|e| {
-        NativeCallResult::Error(format!("semver.{}: invalid second argument: {}", fn_name, e))
+        NativeCallResult::Error(format!(
+            "semver.{}: invalid second argument: {}",
+            fn_name, e
+        ))
     })?;
     let a = semver::Version::parse(&a_str).map_err(|e| {
-        NativeCallResult::Error(format!("semver.{}: invalid version '{}': {}", fn_name, a_str, e))
+        NativeCallResult::Error(format!(
+            "semver.{}: invalid version '{}': {}",
+            fn_name, a_str, e
+        ))
     })?;
     let b = semver::Version::parse(&b_str).map_err(|e| {
-        NativeCallResult::Error(format!("semver.{}: invalid version '{}': {}", fn_name, b_str, e))
+        NativeCallResult::Error(format!(
+            "semver.{}: invalid version '{}': {}",
+            fn_name, b_str, e
+        ))
     })?;
     Ok((a, b))
 }
@@ -113,7 +122,9 @@ fn semver_parse(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
             VERSIONS.lock().insert(id, version);
             NativeCallResult::f64(id as f64)
         }
-        Err(e) => NativeCallResult::Error(format!("semver.parse: invalid version '{}': {}", input, e)),
+        Err(e) => {
+            NativeCallResult::Error(format!("semver.parse: invalid version '{}': {}", input, e))
+        }
     }
 }
 
@@ -161,25 +172,33 @@ fn semver_satisfies(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCall
     }
     let version_str = match ctx.read_string(args[0]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("semver.satisfies: invalid version: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("semver.satisfies: invalid version: {}", e))
+        }
     };
     let range_str = match ctx.read_string(args[1]) {
         Ok(s) => s,
-        Err(e) => return NativeCallResult::Error(format!("semver.satisfies: invalid range: {}", e)),
+        Err(e) => {
+            return NativeCallResult::Error(format!("semver.satisfies: invalid range: {}", e))
+        }
     };
     let version = match semver::Version::parse(&version_str) {
         Ok(v) => v,
-        Err(e) => return NativeCallResult::Error(format!(
-            "semver.satisfies: invalid version '{}': {}",
-            version_str, e
-        )),
+        Err(e) => {
+            return NativeCallResult::Error(format!(
+                "semver.satisfies: invalid version '{}': {}",
+                version_str, e
+            ))
+        }
     };
     let req = match semver::VersionReq::parse(&range_str) {
         Ok(r) => r,
-        Err(e) => return NativeCallResult::Error(format!(
-            "semver.satisfies: invalid range '{}': {}",
-            range_str, e
-        )),
+        Err(e) => {
+            return NativeCallResult::Error(format!(
+                "semver.satisfies: invalid range '{}': {}",
+                range_str, e
+            ))
+        }
     };
     NativeCallResult::bool(req.matches(&version))
 }

@@ -71,9 +71,7 @@ impl<'a> Interpreter<'a> {
                 let arr_ptr = unsafe { arr_val.as_ptr::<Array>() };
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
                 let value = match arr.get(index) {
-                    Some(v) => {
-                        v
-                    }
+                    Some(v) => v,
                     None => {
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
                             "Array index {} out of bounds",

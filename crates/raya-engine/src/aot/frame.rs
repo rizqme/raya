@@ -23,15 +23,11 @@ pub const AOT_SUSPEND: u64 = 0xFFFF_DEAD_0000_0000;
 /// - `AOT_SUSPEND` sentinel when the function suspends
 ///
 /// On suspend, the reason is written to `ctx.suspend_reason`.
-pub type AotEntryFn = unsafe extern "C" fn(
-    frame: *mut AotFrame,
-    ctx: *mut AotTaskContext,
-) -> u64;
+pub type AotEntryFn = unsafe extern "C" fn(frame: *mut AotFrame, ctx: *mut AotTaskContext) -> u64;
 
 /// Reason why an AOT function suspended execution.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SuspendReason {
     /// Not suspended (initial state)
     #[default]
@@ -132,7 +128,6 @@ pub struct AotTaskContext {
 #[derive(Clone, Copy)]
 pub struct AotHelperTable {
     // ---- Frame management ----
-
     /// Allocate a new AotFrame: (func_id, local_count, func_ptr) -> frame_ptr
     pub alloc_frame: unsafe extern "C" fn(u32, u32, AotEntryFn) -> *mut AotFrame,
 
@@ -140,7 +135,6 @@ pub struct AotHelperTable {
     pub free_frame: unsafe extern "C" fn(*mut AotFrame),
 
     // ---- GC / Heap ----
-
     /// GC safepoint poll: (ctx)
     pub safepoint_poll: unsafe extern "C" fn(*mut AotTaskContext),
 
@@ -154,7 +148,6 @@ pub struct AotHelperTable {
     pub alloc_string: unsafe extern "C" fn(*mut AotTaskContext, *const u8, u32) -> u64,
 
     // ---- Value operations ----
-
     /// String concatenation: (ctx, a, b) -> NaN-boxed string ptr
     pub string_concat: unsafe extern "C" fn(*mut AotTaskContext, u64, u64) -> u64,
 
@@ -180,7 +173,6 @@ pub struct AotHelperTable {
     pub generic_less_than: unsafe extern "C" fn(u64, u64) -> u8,
 
     // ---- Object field access ----
-
     /// Get object field by index: (obj_val, field_index) -> NaN-boxed value
     pub object_get_field: unsafe extern "C" fn(u64, u32) -> u64,
 
@@ -188,7 +180,6 @@ pub struct AotHelperTable {
     pub object_set_field: unsafe extern "C" fn(u64, u32, u64),
 
     // ---- Native call dispatch ----
-
     /// Dispatch a native function call: (ctx, native_id, args_ptr, argc) -> result
     ///
     /// Returns a NaN-boxed value on immediate completion, or a special
@@ -199,7 +190,6 @@ pub struct AotHelperTable {
     pub is_native_suspend: unsafe extern "C" fn(u64) -> u8,
 
     // ---- Concurrency ----
-
     /// Spawn a new task: (ctx, func_id, args_ptr, argc) -> NaN-boxed task handle
     pub spawn: unsafe extern "C" fn(*mut AotTaskContext, u32, *const u64, u32) -> u64,
 
@@ -207,19 +197,16 @@ pub struct AotHelperTable {
     pub check_preemption: unsafe extern "C" fn(*mut AotTaskContext) -> u8,
 
     // ---- Exceptions ----
-
     /// Throw an exception: (ctx, exception_value)
     pub throw_exception: unsafe extern "C" fn(*mut AotTaskContext, u64),
 
     // ---- AOT function dispatch ----
-
     /// Look up an AOT function pointer by global ID: (func_id) -> AotEntryFn
     ///
     /// Used for indirect calls (closures, virtual dispatch, cross-module calls).
     pub get_aot_func_ptr: unsafe extern "C" fn(u32) -> AotEntryFn,
 
     // ---- Constant pool access ----
-
     /// Load a string constant from the module's constant pool: (ctx, const_index) -> NaN-boxed string
     pub load_string_constant: unsafe extern "C" fn(*mut AotTaskContext, u32) -> u64,
 
@@ -244,7 +231,6 @@ impl AotFrame {
         !self.child_frame.is_null()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

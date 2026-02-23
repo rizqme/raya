@@ -1,10 +1,6 @@
 //! `raya upgrade` — Upgrade Raya installation.
 
-pub fn execute(
-    version: Option<String>,
-    check: bool,
-    _force: bool,
-) -> anyhow::Result<()> {
+pub fn execute(version: Option<String>, check: bool, _force: bool) -> anyhow::Result<()> {
     if check {
         println!("Checking for updates...");
         eprintln!("(Not yet implemented)");

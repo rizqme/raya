@@ -190,10 +190,7 @@ fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64]) -> u
     flag_builder.set("is_pic", "false").unwrap();
     let flags = settings::Flags::new(flag_builder);
 
-    let isa = cranelift_native::builder()
-        .unwrap()
-        .finish(flags)
-        .unwrap();
+    let isa = cranelift_native::builder().unwrap().finish(flags).unwrap();
 
     let call_conv = isa.default_call_conv();
     let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
@@ -213,10 +210,8 @@ fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64]) -> u
     codegen_ctx.func.name = ir::UserFuncName::user(0, func.func_index);
 
     {
-        let builder = cranelift_frontend::FunctionBuilder::new(
-            &mut codegen_ctx.func,
-            &mut func_builder_ctx,
-        );
+        let builder =
+            cranelift_frontend::FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
         LoweringContext::lower(func, builder).expect("Lowering failed");
     }
 
@@ -258,11 +253,7 @@ fn jit_pipeline_and_call(code: Vec<u8>, local_count: usize) -> u64 {
 // ============================================================================
 
 /// Build a single-block JitFunction from a list of instructions and typed registers.
-fn build_func(
-    instrs: Vec<JitInstr>,
-    regs: Vec<(Reg, JitType)>,
-    ret: Option<Reg>,
-) -> JitFunction {
+fn build_func(instrs: Vec<JitInstr>, regs: Vec<(Reg, JitType)>, ret: Option<Reg>) -> JitFunction {
     let mut func = JitFunction::new(0, "test_func".to_string(), 0, 0);
     let entry = func.add_block();
 
@@ -355,7 +346,11 @@ fn lift_const_i32_return() {
     assert!(!jit_func.blocks.is_empty());
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("const.i32 42"), "IR should contain const.i32 42, got:\n{}", display);
+    assert!(
+        display.contains("const.i32 42"),
+        "IR should contain const.i32 42, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -368,7 +363,11 @@ fn lift_const_f64_return() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("const.f64"), "IR should contain const.f64, got:\n{}", display);
+    assert!(
+        display.contains("const.f64"),
+        "IR should contain const.f64, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -383,8 +382,16 @@ fn lift_const_bool_null() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("const.bool true"), "IR should contain const.bool true, got:\n{}", display);
-    assert!(display.contains("const.null"), "IR should contain const.null, got:\n{}", display);
+    assert!(
+        display.contains("const.bool true"),
+        "IR should contain const.bool true, got:\n{}",
+        display
+    );
+    assert!(
+        display.contains("const.null"),
+        "IR should contain const.null, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -399,7 +406,11 @@ fn lift_integer_arithmetic() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("iadd"), "IR should contain iadd, got:\n{}", display);
+    assert!(
+        display.contains("iadd"),
+        "IR should contain iadd, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -414,7 +425,11 @@ fn lift_float_arithmetic() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("fadd"), "IR should contain fadd, got:\n{}", display);
+    assert!(
+        display.contains("fadd"),
+        "IR should contain fadd, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -429,8 +444,16 @@ fn lift_locals() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("store.local"), "IR should contain store.local, got:\n{}", display);
-    assert!(display.contains("load.local"), "IR should contain load.local, got:\n{}", display);
+    assert!(
+        display.contains("store.local"),
+        "IR should contain store.local, got:\n{}",
+        display
+    );
+    assert!(
+        display.contains("load.local"),
+        "IR should contain load.local, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -445,7 +468,11 @@ fn lift_comparisons() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("icmp.lt"), "IR should contain icmp.lt, got:\n{}", display);
+    assert!(
+        display.contains("icmp.lt"),
+        "IR should contain icmp.lt, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -482,7 +509,11 @@ fn lift_bitwise() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("iand"), "IR should contain iand, got:\n{}", display);
+    assert!(
+        display.contains("iand"),
+        "IR should contain iand, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -496,7 +527,11 @@ fn lift_negation() {
     let jit_func = lift_function(&module.functions[0], &module, 0).unwrap();
 
     let display = format!("{}", jit_func);
-    assert!(display.contains("ineg"), "IR should contain ineg, got:\n{}", display);
+    assert!(
+        display.contains("ineg"),
+        "IR should contain ineg, got:\n{}",
+        display
+    );
 }
 
 #[test]
@@ -564,7 +599,10 @@ fn lift_float_ops() {
 fn exec_return_i32() {
     let r0 = Reg(0);
     let func = build_func(
-        vec![JitInstr::ConstI32 { dest: r0, value: 42 }],
+        vec![JitInstr::ConstI32 {
+            dest: r0,
+            value: 42,
+        }],
         vec![(r0, JitType::I32)],
         Some(r0),
     );
@@ -578,7 +616,10 @@ fn exec_return_i32() {
 fn exec_return_f64() {
     let r0 = Reg(0);
     let func = build_func(
-        vec![JitInstr::ConstF64 { dest: r0, value: 3.14 }],
+        vec![JitInstr::ConstF64 {
+            dest: r0,
+            value: 3.14,
+        }],
         vec![(r0, JitType::F64)],
         Some(r0),
     );
@@ -593,7 +634,10 @@ fn exec_return_f64() {
 fn exec_return_bool_true() {
     let r0 = Reg(0);
     let func = build_func(
-        vec![JitInstr::ConstBool { dest: r0, value: true }],
+        vec![JitInstr::ConstBool {
+            dest: r0,
+            value: true,
+        }],
         vec![(r0, JitType::Bool)],
         Some(r0),
     );
@@ -607,7 +651,10 @@ fn exec_return_bool_true() {
 fn exec_return_bool_false() {
     let r0 = Reg(0);
     let func = build_func(
-        vec![JitInstr::ConstBool { dest: r0, value: false }],
+        vec![JitInstr::ConstBool {
+            dest: r0,
+            value: false,
+        }],
         vec![(r0, JitType::Bool)],
         Some(r0),
     );
@@ -737,8 +784,14 @@ fn exec_ineg() {
     let r1 = Reg(1);
     let func = build_func(
         vec![
-            JitInstr::ConstI32 { dest: r0, value: 42 },
-            JitInstr::INeg { dest: r1, operand: r0 },
+            JitInstr::ConstI32 {
+                dest: r0,
+                value: 42,
+            },
+            JitInstr::INeg {
+                dest: r1,
+                operand: r0,
+            },
         ],
         vec![(r0, JitType::I32), (r1, JitType::I32)],
         Some(r1),
@@ -776,14 +829,24 @@ fn exec_fneg() {
     let r1 = Reg(1);
     let func = build_func(
         vec![
-            JitInstr::ConstF64 { dest: r0, value: 2.5 },
-            JitInstr::FNeg { dest: r1, operand: r0 },
+            JitInstr::ConstF64 {
+                dest: r0,
+                value: 2.5,
+            },
+            JitInstr::FNeg {
+                dest: r1,
+                operand: r0,
+            },
         ],
         vec![(r0, JitType::F64), (r1, JitType::F64)],
         Some(r1),
     );
     let result = decode_f64(jit_compile_and_call(&func));
-    assert!((result - (-2.5)).abs() < 1e-10, "Expected -2.5, got {}", result);
+    assert!(
+        (result - (-2.5)).abs() < 1e-10,
+        "Expected -2.5, got {}",
+        result
+    );
 }
 
 #[test]
@@ -904,9 +967,19 @@ fn exec_fcmp_lt() {
     let r2 = Reg(2);
     let func = build_func(
         vec![
-            JitInstr::ConstF64 { dest: r0, value: 1.0 },
-            JitInstr::ConstF64 { dest: r1, value: 2.0 },
-            JitInstr::FCmpLt { dest: r2, left: r0, right: r1 },
+            JitInstr::ConstF64 {
+                dest: r0,
+                value: 1.0,
+            },
+            JitInstr::ConstF64 {
+                dest: r1,
+                value: 2.0,
+            },
+            JitInstr::FCmpLt {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
         ],
         vec![(r0, JitType::F64), (r1, JitType::F64), (r2, JitType::Bool)],
         Some(r2),
@@ -921,11 +994,25 @@ fn exec_logic_and() {
     let r2 = Reg(2);
     let func = build_func(
         vec![
-            JitInstr::ConstBool { dest: r0, value: true },
-            JitInstr::ConstBool { dest: r1, value: false },
-            JitInstr::And { dest: r2, left: r0, right: r1 },
+            JitInstr::ConstBool {
+                dest: r0,
+                value: true,
+            },
+            JitInstr::ConstBool {
+                dest: r1,
+                value: false,
+            },
+            JitInstr::And {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
         ],
-        vec![(r0, JitType::Bool), (r1, JitType::Bool), (r2, JitType::Bool)],
+        vec![
+            (r0, JitType::Bool),
+            (r1, JitType::Bool),
+            (r2, JitType::Bool),
+        ],
         Some(r2),
     );
     assert!(!decode_bool(jit_compile_and_call(&func)));
@@ -938,11 +1025,25 @@ fn exec_logic_or() {
     let r2 = Reg(2);
     let func = build_func(
         vec![
-            JitInstr::ConstBool { dest: r0, value: true },
-            JitInstr::ConstBool { dest: r1, value: false },
-            JitInstr::Or { dest: r2, left: r0, right: r1 },
+            JitInstr::ConstBool {
+                dest: r0,
+                value: true,
+            },
+            JitInstr::ConstBool {
+                dest: r1,
+                value: false,
+            },
+            JitInstr::Or {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
         ],
-        vec![(r0, JitType::Bool), (r1, JitType::Bool), (r2, JitType::Bool)],
+        vec![
+            (r0, JitType::Bool),
+            (r1, JitType::Bool),
+            (r2, JitType::Bool),
+        ],
         Some(r2),
     );
     assert!(decode_bool(jit_compile_and_call(&func)));
@@ -954,8 +1055,14 @@ fn exec_logic_not() {
     let r1 = Reg(1);
     let func = build_func(
         vec![
-            JitInstr::ConstBool { dest: r0, value: true },
-            JitInstr::Not { dest: r1, operand: r0 },
+            JitInstr::ConstBool {
+                dest: r0,
+                value: true,
+            },
+            JitInstr::Not {
+                dest: r1,
+                operand: r0,
+            },
         ],
         vec![(r0, JitType::Bool), (r1, JitType::Bool)],
         Some(r1),
@@ -971,7 +1078,10 @@ fn exec_branch_true() {
     let r2 = Reg(2);
 
     let func = build_branch_func(
-        vec![JitInstr::ConstBool { dest: r0, value: true }],
+        vec![JitInstr::ConstBool {
+            dest: r0,
+            value: true,
+        }],
         vec![(r0, JitType::Bool)],
         r0,
         vec![JitInstr::ConstI32 { dest: r1, value: 1 }],
@@ -993,7 +1103,10 @@ fn exec_branch_false() {
     let r2 = Reg(2);
 
     let func = build_branch_func(
-        vec![JitInstr::ConstBool { dest: r0, value: false }],
+        vec![JitInstr::ConstBool {
+            dest: r0,
+            value: false,
+        }],
         vec![(r0, JitType::Bool)],
         r0,
         vec![JitInstr::ConstI32 { dest: r1, value: 1 }],
@@ -1022,11 +1135,26 @@ fn exec_complex_expr() {
         vec![
             JitInstr::ConstI32 { dest: r0, value: 3 },
             JitInstr::ConstI32 { dest: r1, value: 5 },
-            JitInstr::IAdd { dest: r2, left: r0, right: r1 },
-            JitInstr::ConstI32 { dest: r3, value: 10 },
+            JitInstr::IAdd {
+                dest: r2,
+                left: r0,
+                right: r1,
+            },
+            JitInstr::ConstI32 {
+                dest: r3,
+                value: 10,
+            },
             JitInstr::ConstI32 { dest: r4, value: 2 },
-            JitInstr::ISub { dest: r5, left: r3, right: r4 },
-            JitInstr::IMul { dest: r6, left: r2, right: r5 },
+            JitInstr::ISub {
+                dest: r5,
+                left: r3,
+                right: r4,
+            },
+            JitInstr::IMul {
+                dest: r6,
+                left: r2,
+                right: r5,
+            },
         ],
         vec![
             (r0, JitType::I32),
@@ -1047,7 +1175,10 @@ fn exec_complex_expr() {
 fn exec_negative_i32() {
     let r0 = Reg(0);
     let func = build_func(
-        vec![JitInstr::ConstI32 { dest: r0, value: -100 }],
+        vec![JitInstr::ConstI32 {
+            dest: r0,
+            value: -100,
+        }],
         vec![(r0, JitType::I32)],
         Some(r0),
     );
@@ -1195,7 +1326,10 @@ fn engine_prewarm_selects_hot() {
 
     // The heavy function should be compiled (or at least attempted)
     let total = result.compiled + result.failed;
-    assert!(total > 0, "Prewarm should have processed at least one function");
+    assert!(
+        total > 0,
+        "Prewarm should have processed at least one function"
+    );
 }
 
 #[test]
@@ -1346,7 +1480,11 @@ fn vm_adaptive_jit_disabled_no_profile() {
 
     // Verify no profile was created
     let profiles = vm.shared_state().module_profiles.read();
-    assert_eq!(profiles.len(), 0, "Expected no module profiles when adaptive is disabled");
+    assert_eq!(
+        profiles.len(),
+        0,
+        "Expected no module profiles when adaptive is disabled"
+    );
 }
 
 #[test]
@@ -1469,7 +1607,7 @@ fn background_compiler_processes_request() {
 
 #[test]
 fn jit_hints_encode_decode_roundtrip() {
-    use raya_engine::compiler::bytecode::{JitHint, flags};
+    use raya_engine::compiler::bytecode::{flags, JitHint};
 
     // Create a module with JIT hints
     let mut module = Module {
@@ -1478,11 +1616,24 @@ fn jit_hints_encode_decode_roundtrip() {
         flags: flags::HAS_JIT_HINTS,
         constants: ConstantPool::new(),
         functions: vec![
-            Function { name: "hot_func".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
-            Function { name: "cold_func".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
+            Function {
+                name: "hot_func".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: vec![Opcode::Return as u8],
+            },
+            Function {
+                name: "cold_func".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: vec![Opcode::Return as u8],
+            },
         ],
         classes: vec![],
-        metadata: Metadata { name: "hints_test".to_string(), source_file: None },
+        metadata: Metadata {
+            name: "hints_test".to_string(),
+            source_file: None,
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1490,8 +1641,16 @@ fn jit_hints_encode_decode_roundtrip() {
         debug_info: None,
         native_functions: vec![],
         jit_hints: vec![
-            JitHint { func_index: 0, score: 42.5, is_cpu_bound: true },
-            JitHint { func_index: 1, score: 3.2, is_cpu_bound: false },
+            JitHint {
+                func_index: 0,
+                score: 42.5,
+                is_cpu_bound: true,
+            },
+            JitHint {
+                func_index: 1,
+                score: 3.2,
+                is_cpu_bound: false,
+            },
         ],
     };
 
@@ -1520,11 +1679,17 @@ fn jit_hints_absent_when_no_flag() {
         version: 1,
         flags: 0,
         constants: ConstantPool::new(),
-        functions: vec![
-            Function { name: "main".to_string(), param_count: 0, local_count: 0, code: vec![Opcode::Return as u8] },
-        ],
+        functions: vec![Function {
+            name: "main".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: vec![Opcode::Return as u8],
+        }],
         classes: vec![],
-        metadata: Metadata { name: "no_hints".to_string(), source_file: None },
+        metadata: Metadata {
+            name: "no_hints".to_string(),
+            source_file: None,
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1600,11 +1765,17 @@ fn prewarm_candidates_submitted_to_background() {
         version: 1,
         flags: 0,
         constants: ConstantPool::new(),
-        functions: vec![
-            Function { name: "main".to_string(), param_count: 0, local_count: 0, code: heavy_code },
-        ],
+        functions: vec![Function {
+            name: "main".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code: heavy_code,
+        }],
         classes: vec![],
-        metadata: Metadata { name: "prewarm_bg_test".to_string(), source_file: None },
+        metadata: Metadata {
+            name: "prewarm_bg_test".to_string(),
+            source_file: None,
+        },
         exports: vec![],
         imports: vec![],
         checksum: [0; 32],
@@ -1631,5 +1802,9 @@ fn prewarm_candidates_submitted_to_background() {
 
     // The module profile should exist
     let profiles = vm.shared_state().module_profiles.read();
-    assert_eq!(profiles.len(), 1, "Expected module profile for adaptive compilation");
+    assert_eq!(
+        profiles.len(),
+        1,
+        "Expected module profile for adaptive compilation"
+    );
 }

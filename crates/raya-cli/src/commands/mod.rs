@@ -1,11 +1,11 @@
 pub mod add;
 pub mod build;
 pub mod bundle;
-pub mod debug;
 pub mod check;
-pub mod files;
 pub mod clean;
+pub mod debug;
 pub mod eval;
+pub mod files;
 pub mod init;
 pub mod install;
 pub mod lint;

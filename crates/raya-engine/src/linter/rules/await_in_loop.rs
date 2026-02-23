@@ -5,7 +5,10 @@
 //! consider collecting promises and awaiting them all at once.
 
 use crate::linter::rule::*;
-use crate::parser::ast::{self, visitor::{Visitor, walk_expression}};
+use crate::parser::ast::{
+    self,
+    visitor::{walk_expression, Visitor},
+};
 
 pub struct AwaitInLoop;
 
@@ -101,13 +104,20 @@ async function f(): void {
 }
 "#;
         let diags = lint(source);
-        assert!(has_rule(&diags, "L1006"), "should flag await in for loop, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1006"),
+            "should flag await in for loop, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_await_outside_loop_ok() {
         let source = "async function f(): int { return await async getNum(); }";
         let diags = lint(source);
-        assert!(!has_rule(&diags, "L1006"), "await outside loop should be ok");
+        assert!(
+            !has_rule(&diags, "L1006"),
+            "await outside loop should be ok"
+        );
     }
 }

@@ -128,9 +128,7 @@ impl<'a> Interpreter<'a> {
                     if let Some(obj_ptr) = unsafe { exception.as_ptr::<Object>() } {
                         let obj = unsafe { &*obj_ptr.as_ptr() };
                         if !obj.fields.is_empty() {
-                            if let Some(msg_ptr) =
-                                unsafe { obj.fields[0].as_ptr::<RayaString>() }
-                            {
+                            if let Some(msg_ptr) = unsafe { obj.fields[0].as_ptr::<RayaString>() } {
                                 let msg = unsafe { &*msg_ptr.as_ptr() }.data.clone();
                                 if msg.is_empty() {
                                     "throw".to_string()

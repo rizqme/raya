@@ -8,36 +8,48 @@ use super::harness::*;
 #[test]
 fn test_io_write() {
     // write() should succeed without error (returns null)
-    compile_and_run_with_builtins(r#"
+    compile_and_run_with_builtins(
+        r#"
         import io from "std:io";
         io.write("");
         return 1;
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 }
 
 #[test]
 fn test_io_writeln() {
-    compile_and_run_with_builtins(r#"
+    compile_and_run_with_builtins(
+        r#"
         import io from "std:io";
         io.writeln("");
         return 1;
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 }
 
 #[test]
 fn test_io_write_err() {
-    compile_and_run_with_builtins(r#"
+    compile_and_run_with_builtins(
+        r#"
         import io from "std:io";
         io.writeErr("");
         return 1;
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 }
 
 #[test]
 fn test_io_flush() {
-    compile_and_run_with_builtins(r#"
+    compile_and_run_with_builtins(
+        r#"
         import io from "std:io";
         io.flush();
         return 1;
-    "#).unwrap();
+    "#,
+    )
+    .unwrap();
 }

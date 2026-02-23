@@ -9,7 +9,10 @@ fn lex_tokens(source: &str) -> (Vec<(Token, raya_engine::parser::Span)>, Interne
 
 fn lex_single(source: &str) -> (Token, Interner) {
     let (tokens, interner) = lex_tokens(source);
-    assert!(tokens.len() >= 2, "Expected at least 2 tokens (token + EOF)");
+    assert!(
+        tokens.len() >= 2,
+        "Expected at least 2 tokens (token + EOF)"
+    );
     (tokens[0].0.clone(), interner)
 }
 
@@ -29,7 +32,11 @@ fn assert_identifier(token: &Token, interner: &Interner, expected_name: &str) {
     match token {
         Token::Identifier(sym) => {
             let actual = interner.resolve(*sym);
-            assert_eq!(actual, expected_name, "Expected identifier '{}', got '{}'", expected_name, actual);
+            assert_eq!(
+                actual, expected_name,
+                "Expected identifier '{}', got '{}'",
+                expected_name, actual
+            );
         }
         _ => panic!("Expected identifier, got {:?}", token),
     }
@@ -40,7 +47,11 @@ fn assert_string_literal(token: &Token, interner: &Interner, expected_value: &st
     match token {
         Token::StringLiteral(sym) => {
             let actual = interner.resolve(*sym);
-            assert_eq!(actual, expected_value, "Expected string '{}', got '{}'", expected_value, actual);
+            assert_eq!(
+                actual, expected_value,
+                "Expected string '{}', got '{}'",
+                expected_value, actual
+            );
         }
         _ => panic!("Expected string literal, got {:?}", token),
     }
@@ -50,98 +61,96 @@ fn assert_string_literal(token: &Token, interner: &Interner, expected_value: &st
 // NOTE: 'var' is BANNED in Raya (LANG.md §19.1) - use 'let' or 'const' instead
 #[test]
 fn test_keywords_variables() {
-    assert_tokens("let const", vec![
-        Token::Let,
-        Token::Const,
-    ]);
+    assert_tokens("let const", vec![Token::Let, Token::Const]);
 }
 
 #[test]
 fn test_keywords_functions() {
-    assert_tokens("function async await return", vec![
-        Token::Function,
-        Token::Async,
-        Token::Await,
-        Token::Return,
-    ]);
+    assert_tokens(
+        "function async await return",
+        vec![Token::Function, Token::Async, Token::Await, Token::Return],
+    );
 }
 
 #[test]
 fn test_keywords_control_flow() {
-    assert_tokens("if else for while do break continue", vec![
-        Token::If,
-        Token::Else,
-        Token::For,
-        Token::While,
-        Token::Do,
-        Token::Break,
-        Token::Continue,
-    ]);
+    assert_tokens(
+        "if else for while do break continue",
+        vec![
+            Token::If,
+            Token::Else,
+            Token::For,
+            Token::While,
+            Token::Do,
+            Token::Break,
+            Token::Continue,
+        ],
+    );
 }
 
 #[test]
 fn test_keywords_switch() {
-    assert_tokens("switch case default", vec![
-        Token::Switch,
-        Token::Case,
-        Token::Default,
-    ]);
+    assert_tokens(
+        "switch case default",
+        vec![Token::Switch, Token::Case, Token::Default],
+    );
 }
 
 // NOTE: 'interface' is BANNED in Raya (LANG.md §10) - use 'type' aliases instead
 #[test]
 fn test_keywords_oop() {
-    assert_tokens("class new this super static extends implements", vec![
-        Token::Class,
-        Token::New,
-        Token::This,
-        Token::Super,
-        Token::Static,
-        Token::Extends,
-        Token::Implements,
-    ]);
+    assert_tokens(
+        "class new this super static extends implements",
+        vec![
+            Token::Class,
+            Token::New,
+            Token::This,
+            Token::Super,
+            Token::Static,
+            Token::Extends,
+            Token::Implements,
+        ],
+    );
 }
 
 // NOTE: 'enum' is BANNED in Raya (LANG.md §19.2) - use union of literals instead
 #[test]
 fn test_keywords_types() {
-    assert_tokens("type typeof instanceof void", vec![
-        Token::Type,
-        Token::Typeof,
-        Token::Instanceof,
-        Token::Void,
-    ]);
+    assert_tokens(
+        "type typeof instanceof void",
+        vec![Token::Type, Token::Typeof, Token::Instanceof, Token::Void],
+    );
 }
 
 #[test]
 fn test_keywords_error_handling() {
-    assert_tokens("try catch finally throw", vec![
-        Token::Try,
-        Token::Catch,
-        Token::Finally,
-        Token::Throw,
-    ]);
+    assert_tokens(
+        "try catch finally throw",
+        vec![Token::Try, Token::Catch, Token::Finally, Token::Throw],
+    );
 }
 
 #[test]
 fn test_keywords_modules() {
-    assert_tokens("import export from", vec![
-        Token::Import,
-        Token::Export,
-        Token::From,
-    ]);
+    assert_tokens(
+        "import export from",
+        vec![Token::Import, Token::Export, Token::From],
+    );
 }
 
 #[test]
 fn test_keywords_future_reserved() {
-    assert_tokens("namespace private protected public yield in", vec![
-        Token::Namespace,
-        Token::Private,
-        Token::Protected,
-        Token::Public,
-        Token::Yield,
-        Token::In,
-    ]);
+    assert_tokens(
+        "namespace private protected public yield in",
+        vec![
+            Token::Namespace,
+            Token::Private,
+            Token::Protected,
+            Token::Public,
+            Token::Yield,
+            Token::In,
+        ],
+    );
 }
 
 #[test]
@@ -153,10 +162,7 @@ fn test_keywords_debug() {
 // Literals tests
 #[test]
 fn test_boolean_literals() {
-    assert_tokens("true false", vec![
-        Token::True,
-        Token::False,
-    ]);
+    assert_tokens("true false", vec![Token::True, Token::False]);
 }
 
 #[test]
@@ -287,13 +293,16 @@ fn test_identifiers() {
 // Operator tests
 #[test]
 fn test_arithmetic_operators() {
-    assert_tokens("+ - * / %", vec![
-        Token::Plus,
-        Token::Minus,
-        Token::Star,
-        Token::Slash,
-        Token::Percent,
-    ]);
+    assert_tokens(
+        "+ - * / %",
+        vec![
+            Token::Plus,
+            Token::Minus,
+            Token::Star,
+            Token::Slash,
+            Token::Percent,
+        ],
+    );
 }
 
 #[test]
@@ -301,107 +310,109 @@ fn test_exponentiation_operator() {
     let (token, _) = lex_single("**");
     assert_eq!(token, Token::StarStar);
 
-    assert_tokens("2 ** 3", vec![
-        Token::IntLiteral(2),
-        Token::StarStar,
-        Token::IntLiteral(3),
-    ]);
+    assert_tokens(
+        "2 ** 3",
+        vec![Token::IntLiteral(2), Token::StarStar, Token::IntLiteral(3)],
+    );
 }
 
 #[test]
 fn test_comparison_operators() {
-    assert_tokens("== != === !== < > <= >=", vec![
-        Token::EqualEqual,
-        Token::BangEqual,
-        Token::EqualEqualEqual,
-        Token::BangEqualEqual,
-        Token::Less,
-        Token::Greater,
-        Token::LessEqual,
-        Token::GreaterEqual,
-    ]);
+    assert_tokens(
+        "== != === !== < > <= >=",
+        vec![
+            Token::EqualEqual,
+            Token::BangEqual,
+            Token::EqualEqualEqual,
+            Token::BangEqualEqual,
+            Token::Less,
+            Token::Greater,
+            Token::LessEqual,
+            Token::GreaterEqual,
+        ],
+    );
 }
 
 #[test]
 fn test_logical_operators() {
-    assert_tokens("&& || !", vec![
-        Token::AmpAmp,
-        Token::PipePipe,
-        Token::Bang,
-    ]);
+    assert_tokens("&& || !", vec![Token::AmpAmp, Token::PipePipe, Token::Bang]);
 }
 
 #[test]
 fn test_bitwise_operators() {
-    assert_tokens("& | ^ ~ << >> >>>", vec![
-        Token::Amp,
-        Token::Pipe,
-        Token::Caret,
-        Token::Tilde,
-        Token::LessLess,
-        Token::GreaterGreater,
-        Token::GreaterGreaterGreater,
-    ]);
+    assert_tokens(
+        "& | ^ ~ << >> >>>",
+        vec![
+            Token::Amp,
+            Token::Pipe,
+            Token::Caret,
+            Token::Tilde,
+            Token::LessLess,
+            Token::GreaterGreater,
+            Token::GreaterGreaterGreater,
+        ],
+    );
 }
 
 #[test]
 fn test_assignment_operators() {
-    assert_tokens("= += -= *= /= %= &= |= ^= <<= >>= >>>=", vec![
-        Token::Equal,
-        Token::PlusEqual,
-        Token::MinusEqual,
-        Token::StarEqual,
-        Token::SlashEqual,
-        Token::PercentEqual,
-        Token::AmpEqual,
-        Token::PipeEqual,
-        Token::CaretEqual,
-        Token::LessLessEqual,
-        Token::GreaterGreaterEqual,
-        Token::GreaterGreaterGreaterEqual,
-    ]);
+    assert_tokens(
+        "= += -= *= /= %= &= |= ^= <<= >>= >>>=",
+        vec![
+            Token::Equal,
+            Token::PlusEqual,
+            Token::MinusEqual,
+            Token::StarEqual,
+            Token::SlashEqual,
+            Token::PercentEqual,
+            Token::AmpEqual,
+            Token::PipeEqual,
+            Token::CaretEqual,
+            Token::LessLessEqual,
+            Token::GreaterGreaterEqual,
+            Token::GreaterGreaterGreaterEqual,
+        ],
+    );
 }
 
 #[test]
 fn test_increment_decrement() {
-    assert_tokens("++ --", vec![
-        Token::PlusPlus,
-        Token::MinusMinus,
-    ]);
+    assert_tokens("++ --", vec![Token::PlusPlus, Token::MinusMinus]);
 }
 
 #[test]
 fn test_special_operators() {
-    assert_tokens("?. ?? =>", vec![
-        Token::QuestionDot,
-        Token::QuestionQuestion,
-        Token::Arrow,
-    ]);
+    assert_tokens(
+        "?. ?? =>",
+        vec![Token::QuestionDot, Token::QuestionQuestion, Token::Arrow],
+    );
 }
 
 #[test]
 fn test_member_operators() {
-    assert_tokens(". [ ]", vec![
-        Token::Dot,
-        Token::LeftBracket,
-        Token::RightBracket,
-    ]);
+    assert_tokens(
+        ". [ ]",
+        vec![Token::Dot, Token::LeftBracket, Token::RightBracket],
+    );
 }
 
 // Delimiter tests
 #[test]
 fn test_delimiters() {
-    assert_tokens("( ) { } [ ] ; , :", vec![
-        Token::LeftParen,
-        Token::RightParen,
-        Token::LeftBrace,
-        Token::RightBrace,
-        Token::LeftBracket,
-        Token::RightBracket,
-        Token::Semicolon,
-        Token::Comma,
-        Token::Colon,
-    ]);
+    assert_tokens(
+        "( ) { } [ ] ; , :",
+        vec![
+            Token::LeftParen,
+            Token::RightParen,
+            Token::LeftBrace,
+            Token::RightBrace,
+            Token::LeftBracket,
+            Token::RightBracket,
+            Token::Semicolon,
+            Token::Comma,
+            Token::Colon,
+        ],
+    );
 }
 
 // Integration tests
@@ -501,9 +512,9 @@ fn test_comments_are_ignored() {
     assert!(token_types.contains(&Token::Let));
 
     // Check for identifier "x"
-    let has_x = tokens.iter().any(|(t, _)| {
-        matches!(t, Token::Identifier(sym) if interner.resolve(*sym) == "x")
-    });
+    let has_x = tokens
+        .iter()
+        .any(|(t, _)| matches!(t, Token::Identifier(sym) if interner.resolve(*sym) == "x"));
     assert!(has_x, "Expected identifier 'x'");
 }
 
@@ -555,7 +566,10 @@ fn test_template_with_single_expression() {
                 TemplatePart::Expression(expr_tokens) => {
                     assert_eq!(expr_tokens.len(), 1);
                     // Note: Expression tokens use their own interner, so we just check it's an identifier
-                    assert!(matches!(&expr_tokens[0].0, Token::Identifier(_)), "Expected identifier token");
+                    assert!(
+                        matches!(&expr_tokens[0].0, Token::Identifier(_)),
+                        "Expected identifier token"
+                    );
                 }
                 _ => panic!("Expected expression part"),
             }
@@ -587,7 +601,10 @@ fn test_template_with_multiple_expressions() {
                 TemplatePart::Expression(expr_tokens) => {
                     assert_eq!(expr_tokens.len(), 1);
                     // Note: Expression tokens use their own interner, so we just check it's an identifier
-                    assert!(matches!(&expr_tokens[0].0, Token::Identifier(_)), "Expected identifier token");
+                    assert!(
+                        matches!(&expr_tokens[0].0, Token::Identifier(_)),
+                        "Expected identifier token"
+                    );
                 }
                 _ => panic!("Expected expression part"),
             }
@@ -618,7 +635,9 @@ fn test_template_with_nested_braces() {
             match &parts[1] {
                 TemplatePart::Expression(expr_tokens) => {
                     // Should contain: { x : 42 } . x
-                    let has_braces = expr_tokens.iter().any(|(t, _)| matches!(t, Token::LeftBrace | Token::RightBrace));
+                    let has_braces = expr_tokens
+                        .iter()
+                        .any(|(t, _)| matches!(t, Token::LeftBrace | Token::RightBrace));
                     assert!(has_braces, "Expected braces in expression");
                 }
                 _ => panic!("Expected expression part"),

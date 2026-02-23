@@ -52,10 +52,7 @@ pub enum LinkerError {
     TooManyModules,
 
     /// Too many functions in a module (> 65536).
-    TooManyFunctions {
-        module: String,
-        count: usize,
-    },
+    TooManyFunctions { module: String, count: usize },
 
     /// Duplicate module name.
     DuplicateModule(String),
@@ -64,12 +61,23 @@ pub enum LinkerError {
 impl std::fmt::Display for LinkerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LinkerError::UnresolvedImport { importing_module, symbol } => {
-                write!(f, "Unresolved import: {} imports '{}'", importing_module, symbol)
+            LinkerError::UnresolvedImport {
+                importing_module,
+                symbol,
+            } => {
+                write!(
+                    f,
+                    "Unresolved import: {} imports '{}'",
+                    importing_module, symbol
+                )
             }
             LinkerError::TooManyModules => write!(f, "Too many modules (max 65536)"),
             LinkerError::TooManyFunctions { module, count } => {
-                write!(f, "Too many functions in module '{}': {} (max 65536)", module, count)
+                write!(
+                    f,
+                    "Too many functions in module '{}': {} (max 65536)",
+                    module, count
+                )
             }
             LinkerError::DuplicateModule(name) => {
                 write!(f, "Duplicate module name: {}", name)
@@ -113,15 +121,16 @@ impl AotLinker {
 
         for (symbol_name, func_index) in exports {
             let global_id = GlobalFuncId::new(module_index, *func_index);
-            self.symbol_table.insert(
-                (module_name.to_string(), symbol_name.clone()),
+            self.symbol_table
+                .insert((module_name.to_string(), symbol_name.clone()), global_id);
+            self.reverse_table.insert(
                 global_id,
+                FuncInfo {
+                    module_index,
+                    func_index: *func_index,
+                    qualified_name: format!("{}::{}", module_name, symbol_name),
+                },
             );
-            self.reverse_table.insert(global_id, FuncInfo {
-                module_index,
-                func_index: *func_index,
-                qualified_name: format!("{}::{}", module_name, symbol_name),
-            });
         }
 
         Ok(module_index)
@@ -178,10 +187,12 @@ mod tests {
     fn test_register_module() {
         let mut linker = AotLinker::new();
 
-        let idx = linker.register_module("math", &[
-            ("add".to_string(), 0),
-            ("multiply".to_string(), 1),
-        ]).unwrap();
+        let idx = linker
+            .register_module(
+                "math",
+                &[("add".to_string(), 0), ("multiply".to_string(), 1)],
+            )
+            .unwrap();
 
         assert_eq!(idx, 0);
         assert_eq!(linker.module_count(), 1);
@@ -191,10 +202,12 @@ mod tests {
     fn test_resolve_import() {
         let mut linker = AotLinker::new();
 
-        linker.register_module("math", &[
-            ("add".to_string(), 0),
-            ("multiply".to_string(), 1),
-        ]).unwrap();
+        linker
+            .register_module(
+                "math",
+                &[("add".to_string(), 0), ("multiply".to_string(), 1)],
+            )
+            .unwrap();
 
         let id = linker.resolve_import("main", "math", "add").unwrap();
         assert_eq!(id.module_index(), 0);
@@ -225,17 +238,21 @@ mod tests {
         let mut linker = AotLinker::new();
 
         // Register two modules
-        linker.register_module("utils", &[
-            ("format_string".to_string(), 0),
-        ]).unwrap();
+        linker
+            .register_module("utils", &[("format_string".to_string(), 0)])
+            .unwrap();
 
-        linker.register_module("main", &[
-            ("entry".to_string(), 0),
-            ("helper".to_string(), 1),
-        ]).unwrap();
+        linker
+            .register_module(
+                "main",
+                &[("entry".to_string(), 0), ("helper".to_string(), 1)],
+            )
+            .unwrap();
 
         // Main imports format_string from utils
-        let id = linker.resolve_import("main", "utils", "format_string").unwrap();
+        let id = linker
+            .resolve_import("main", "utils", "format_string")
+            .unwrap();
         assert_eq!(id.module_index(), 0); // utils is module 0
         assert_eq!(id.func_index(), 0);
 

@@ -16,33 +16,40 @@ static MULTIWORKER_LOCK: Mutex<()> = Mutex::new(());
 #[test]
 fn test_async_arrow_capturing_outer_variable() {
     // Async arrow captures a variable from the enclosing scope
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let x: number = 10;
             let work = async (): Task<number> => x * 3;
             return await work();
         }
         return await main();
-    ", 30);
+    ",
+        30,
+    );
 }
 
 #[test]
 fn test_async_arrow_with_parameter_and_capture() {
     // Async arrow captures outer variable AND takes a parameter
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let base: number = 100;
             let add = async (n: number): Task<number> => base + n;
             return await add(42);
         }
         return await main();
-    ", 142);
+    ",
+        142,
+    );
 }
 
 #[test]
 fn test_async_method_calls_another_async_method() {
     // Async method on class calls another async method on self
-    expect_i32("
+    expect_i32(
+        "
         class Calculator {
             value: number;
             constructor(v: number) {
@@ -61,20 +68,25 @@ fn test_async_method_calls_another_async_method() {
             return await calc.quadruple();
         }
         return await main();
-    ", 20);
+    ",
+        20,
+    );
 }
 
 #[test]
 fn test_nested_async_arrow_inside_async_function() {
     // Async arrow defined and called inside another async function
-    expect_i32("
+    expect_i32(
+        "
         async function outer(): Task<number> {
             let inner = async (): Task<number> => 7;
             let result = await inner();
             return result + 3;
         }
         return await outer();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 // ============================================================================
@@ -83,28 +95,35 @@ fn test_nested_async_arrow_inside_async_function() {
 
 #[test]
 fn test_task_returns_negative_number() {
-    expect_i32("
+    expect_i32(
+        "
         async function negative(): Task<number> {
             return -42;
         }
         return await negative();
-    ", -42);
+    ",
+        -42,
+    );
 }
 
 #[test]
 fn test_task_returns_zero() {
-    expect_i32("
+    expect_i32(
+        "
         async function zero(): Task<number> {
             return 0;
         }
         return await zero();
-    ", 0);
+    ",
+        0,
+    );
 }
 
 #[test]
 fn test_task_returns_large_computation() {
     // Task does significant work before returning
-    expect_i32("
+    expect_i32(
+        "
         async function compute(): Task<number> {
             let sum: number = 0;
             let i: number = 1;
@@ -115,27 +134,35 @@ fn test_task_returns_large_computation() {
             return sum;
         }
         return await compute();
-    ", 5050);
+    ",
+        5050,
+    );
 }
 
 #[test]
 fn test_task_returns_boolean_true() {
-    expect_bool("
+    expect_bool(
+        "
         async function check(): Task<boolean> {
             return true;
         }
         return await check();
-    ", true);
+    ",
+        true,
+    );
 }
 
 #[test]
 fn test_task_returns_boolean_false() {
-    expect_bool("
+    expect_bool(
+        "
         async function check(): Task<boolean> {
             return 3 > 5;
         }
         return await check();
-    ", false);
+    ",
+        false,
+    );
 }
 
 // ============================================================================
@@ -145,7 +172,8 @@ fn test_task_returns_boolean_false() {
 #[test]
 fn test_exception_propagates_through_nested_await() {
     // Exception thrown in deeply nested async chain should propagate to top
-    expect_i32("
+    expect_i32(
+        "
         async function level2(): Task<number> {
             throw 'deep error';
         }
@@ -163,13 +191,16 @@ fn test_exception_propagates_through_nested_await() {
             }
         }
         return await main();
-    ", 99);
+    ",
+        99,
+    );
 }
 
 #[test]
 fn test_exception_in_one_parallel_task() {
     // One task in a parallel group fails — error should propagate
-    expect_i32("
+    expect_i32(
+        "
         async function good(): Task<number> {
             return 1;
         }
@@ -185,13 +216,16 @@ fn test_exception_in_one_parallel_task() {
             }
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_try_catch_wrapping_await() {
     // Try-catch around a single await catches the exception
-    expect_i32("
+    expect_i32(
+        "
         async function failing(): Task<number> {
             throw 'oops';
         }
@@ -204,13 +238,16 @@ fn test_try_catch_wrapping_await() {
             }
         }
         return await main();
-    ", 77);
+    ",
+        77,
+    );
 }
 
 #[test]
 fn test_exception_in_async_does_not_affect_other_tasks() {
     // One task fails, but a separately awaited task succeeds
-    expect_i32("
+    expect_i32(
+        "
         async function goodTask(): Task<number> {
             return 10;
         }
@@ -229,13 +266,16 @@ fn test_exception_in_async_does_not_affect_other_tasks() {
             return goodResult;
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_finally_runs_after_async_exception() {
     // Finally block executes even when async function throws
-    expect_i32("
+    expect_i32(
+        "
         async function failing(): Task<number> {
             throw 'error';
         }
@@ -251,13 +291,16 @@ fn test_finally_runs_after_async_exception() {
             return cleanup;
         }
         return await main();
-    ", 11);
+    ",
+        11,
+    );
 }
 
 #[test]
 fn test_rethrow_in_async_catch() {
     // Catch and rethrow in async function
-    expect_i32("
+    expect_i32(
+        "
         async function inner(): Task<number> {
             throw 'inner error';
         }
@@ -276,13 +319,16 @@ fn test_rethrow_in_async_catch() {
             }
         }
         return await main();
-    ", 55);
+    ",
+        55,
+    );
 }
 
 #[test]
 fn test_exception_after_successful_await() {
     // First await succeeds, then an exception is thrown and caught locally
-    expect_i32("
+    expect_i32(
+        "
         async function ok(): Task<number> {
             return 5;
         }
@@ -298,7 +344,9 @@ fn test_exception_after_successful_await() {
             }
         }
         return await main();
-    ", 88);
+    ",
+        88,
+    );
 }
 
 // ============================================================================
@@ -308,7 +356,8 @@ fn test_exception_after_successful_await() {
 #[test]
 fn test_two_tasks_await_same_task() {
     // Two tasks both await the same shared task
-    expect_i32("
+    expect_i32(
+        "
         async function shared(): Task<number> {
             return 10;
         }
@@ -324,13 +373,16 @@ fn test_two_tasks_await_same_task() {
             return r1 + r2;
         }
         return await main();
-    ", 20);
+    ",
+        20,
+    );
 }
 
 #[test]
 fn test_await_already_completed_task() {
     // Task completes before we await it
-    expect_i32("
+    expect_i32(
+        "
         async function fast(): Task<number> {
             return 42;
         }
@@ -342,13 +394,16 @@ fn test_await_already_completed_task() {
             return r;
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_await_same_task_twice() {
     // Await the same task twice — second await should get cached result
-    expect_i32("
+    expect_i32(
+        "
         async function work(): Task<number> {
             return 7;
         }
@@ -359,7 +414,9 @@ fn test_await_same_task_twice() {
             return r1 + r2;
         }
         return await main();
-    ", 14);
+    ",
+        14,
+    );
 }
 
 // ============================================================================
@@ -369,7 +426,8 @@ fn test_await_same_task_twice() {
 #[test]
 fn test_waitall_single_task() {
     // await [...] with just one task
-    expect_i32("
+    expect_i32(
+        "
         async function work(): Task<number> {
             return 42;
         }
@@ -378,13 +436,16 @@ fn test_waitall_single_task() {
             return results[0];
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_waitall_preserves_order() {
     // Results should be in array order, not completion order
-    expect_i32("
+    expect_i32(
+        "
         async function slow(): Task<number> {
             let i: number = 0;
             while (i < 50) { i = i + 1; }
@@ -399,13 +460,16 @@ fn test_waitall_preserves_order() {
             return results[0] * 10 + results[1];
         }
         return await main();
-    ", 12);
+    ",
+        12,
+    );
 }
 
 #[test]
 fn test_waitall_all_same_value() {
     // All tasks return the same value
-    expect_i32("
+    expect_i32(
+        "
         async function same(): Task<number> {
             return 5;
         }
@@ -414,13 +478,16 @@ fn test_waitall_all_same_value() {
             return results[0] + results[1] + results[2] + results[3];
         }
         return await main();
-    ", 20);
+    ",
+        20,
+    );
 }
 
 #[test]
 fn test_nested_waitall() {
     // Inner parallel inside outer parallel
-    expect_i32("
+    expect_i32(
+        "
         async function leaf(x: number): Task<number> {
             return x;
         }
@@ -437,13 +504,16 @@ fn test_nested_waitall() {
             return results[0] + results[1];
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_waitall_with_computation() {
     // Tasks in waitall do real work (not just return constants)
-    expect_i32("
+    expect_i32(
+        "
         async function sum_to(n: number): Task<number> {
             let s: number = 0;
             let i: number = 1;
@@ -458,7 +528,88 @@ fn test_waitall_with_computation() {
             return results[0] + results[1] + results[2];
         }
         return await main();
-    ", 730); // sum(1..10)=55, sum(1..20)=210, sum(1..30)=465 → 55+210+465=730
+    ",
+        730,
+    ); // sum(1..10)=55, sum(1..20)=210, sum(1..30)=465 → 55+210+465=730
+}
+
+#[test]
+fn test_waitall_pointer_results_string_multiple_waves() {
+    // Two consecutive waitall waves returning strings (heap pointers).
+    // Ensures resume handling does not leak state between waves.
+    expect_string(
+        "
+        async function user(id: number): Task<string> {
+            return 'U' + id.toString();
+        }
+        function main(): string {
+            let wave1 = await [user(1), user(2)];
+            let wave2 = await [user(3), user(4)];
+            return wave1[0] + ',' + wave1[1] + '|' + wave2[0] + ',' + wave2[1];
+        }
+        return main();
+    ",
+        "U1,U2|U3,U4",
+    );
+}
+
+#[test]
+fn test_waitall_pointer_results_array_values() {
+    // Each task returns an array (heap pointer) and waitall returns array-of-arrays.
+    expect_i32(
+        "
+        async function row(x: number): Task<number[]> {
+            return [x, x + 1, x + 2];
+        }
+        function main(): number {
+            let rows = await [row(1), row(10), row(100)];
+            return rows[0][2] + rows[1][1] + rows[2][0];
+        }
+        return main();
+    ",
+        114,
+    ); // 3 + 11 + 100
+}
+
+#[test]
+fn test_waitall_failure_with_pointer_task_result() {
+    // One task returns a string (pointer), another fails.
+    // WaitAll should propagate failure rather than misinterpreting pointer values.
+    expect_runtime_error(
+        "
+        async function ok(): Task<string> {
+            return 'done';
+        }
+        async function bad(): Task<string> {
+            throw 'boom';
+        }
+        function main(): void {
+            let _ = await [ok(), bad()];
+        }
+        main();
+    ",
+        "failed in WaitAll",
+    );
+}
+
+#[test]
+fn test_waitall_same_task_array_awaited_twice_with_strings() {
+    // Await the same Task<string>[] twice; both should return cached results in order.
+    expect_string(
+        "
+        async function label(n: number): Task<string> {
+            return 'S' + n.toString();
+        }
+        function main(): string {
+            const tasks = [label(7), label(8), label(9)];
+            const a = await tasks;
+            const b = await tasks;
+            return a[0] + a[1] + a[2] + ':' + b[0] + b[1] + b[2];
+        }
+        return main();
+    ",
+        "S7S8S9:S7S8S9",
+    );
 }
 
 // ============================================================================
@@ -468,7 +619,8 @@ fn test_waitall_with_computation() {
 #[test]
 fn test_spawn_await_in_while_loop() {
     // Repeatedly spawn and await tasks in a loop
-    expect_i32("
+    expect_i32(
+        "
         async function work(x: number): Task<number> {
             return x * 2;
         }
@@ -483,13 +635,16 @@ fn test_spawn_await_in_while_loop() {
             return sum;
         }
         return await main();
-    ", 30); // 2+4+6+8+10 = 30
+    ",
+        30,
+    ); // 2+4+6+8+10 = 30
 }
 
 #[test]
 fn test_batch_spawn_then_batch_await() {
     // Spawn all tasks first, then await them all individually
-    expect_i32("
+    expect_i32(
+        "
         async function work(x: number): Task<number> {
             return x;
         }
@@ -508,13 +663,16 @@ fn test_batch_spawn_then_batch_await() {
             return r1 + r2 + r3 + r4 + r5;
         }
         return await main();
-    ", 15);
+    ",
+        15,
+    );
 }
 
 #[test]
 fn test_task_chain_through_loop() {
     // Each iteration spawns a task that depends on previous result
-    expect_i32("
+    expect_i32(
+        "
         async function addOne(x: number): Task<number> {
             return x + 1;
         }
@@ -528,13 +686,16 @@ fn test_task_chain_through_loop() {
             return value;
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_alternating_sync_async_work() {
     // Mix sync computation with async spawning
-    expect_i32("
+    expect_i32(
+        "
         async function asyncDouble(x: number): Task<number> {
             return x * 2;
         }
@@ -553,7 +714,9 @@ fn test_alternating_sync_async_work() {
             return result;
         }
         return await main();
-    ", 19); // 1+1=2, *2=4, +3=7, *2=14, +5=19
+    ",
+        19,
+    ); // 1+1=2, *2=4, +3=7, *2=14, +5=19
 }
 
 // ============================================================================
@@ -563,7 +726,8 @@ fn test_alternating_sync_async_work() {
 #[test]
 fn test_mutex_two_tasks_increment() {
     // Two tasks each increment a counter 5 times
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         class SharedCounter {
             count: number = 0;
             mu: Mutex = new Mutex();
@@ -586,13 +750,16 @@ fn test_mutex_two_tasks_increment() {
             return c.count;
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_mutex_lock_unlock_cycle() {
     // Lock and unlock multiple times in sequence
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         async function main(): Task<number> {
             let mu = new Mutex();
             let sum: number = 0;
@@ -608,13 +775,16 @@ fn test_mutex_lock_unlock_cycle() {
             return sum;
         }
         return await main();
-    ", 6);
+    ",
+        6,
+    );
 }
 
 #[test]
 fn test_mutex_with_sleep_between() {
     // Lock, sleep, unlock — tests that mutex is held across suspension
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         async function main(): Task<number> {
             let mu = new Mutex();
             mu.lock();
@@ -623,13 +793,16 @@ fn test_mutex_with_sleep_between() {
             return 42;
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_mutex_passed_to_function() {
     // Mutex passed as parameter to function that acquires it
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         function criticalSection(mu: Mutex): number {
             mu.lock();
             let result = 42;
@@ -638,25 +811,31 @@ fn test_mutex_passed_to_function() {
         }
         let mu = new Mutex();
         return criticalSection(mu);
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_mutex_try_lock_while_held() {
     // tryLock should return false when mutex is already locked
-    expect_bool_with_builtins("
+    expect_bool_with_builtins(
+        "
         let mu = new Mutex();
         mu.lock();
         let result = mu.tryLock();
         mu.unlock();
         return result;
-    ", false);
+    ",
+        false,
+    );
 }
 
 #[test]
 fn test_mutex_protects_accumulation() {
     // Multiple tasks accumulate into a shared counter
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         class State {
             total: number = 0;
             mu: Mutex = new Mutex();
@@ -677,7 +856,9 @@ fn test_mutex_protects_accumulation() {
             return s.total;
         }
         return await main();
-    ", 60);
+    ",
+        60,
+    );
 }
 
 // ============================================================================
@@ -687,7 +868,8 @@ fn test_mutex_protects_accumulation() {
 #[test]
 fn test_channel_fifo_ordering() {
     // Verify FIFO: send 1, 2, 3 → receive 1, 2, 3
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         let ch = new Channel<number>(3);
         ch.send(1);
         ch.send(2);
@@ -697,23 +879,29 @@ fn test_channel_fifo_ordering() {
         let c = ch.receive();
         // Encode order: a*100 + b*10 + c
         return a * 100 + b * 10 + c;
-    ", 123);
+    ",
+        123,
+    );
 }
 
 #[test]
 fn test_channel_try_send_full_buffer() {
     // trySend on full buffer returns false
-    expect_bool_with_builtins("
+    expect_bool_with_builtins(
+        "
         let ch = new Channel<number>(1);
         ch.send(1);  // fills buffer
         return ch.trySend(2);  // should fail
-    ", false);
+    ",
+        false,
+    );
 }
 
 #[test]
 fn test_channel_length_tracks_count() {
     // Channel length reflects buffered items
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         let ch = new Channel<number>(5);
         ch.send(1);
         ch.send(2);
@@ -722,32 +910,41 @@ fn test_channel_length_tracks_count() {
         ch.receive();
         let len2 = ch.length();
         return len1 * 10 + len2;
-    ", 32); // 3*10 + 2 = 32
+    ",
+        32,
+    ); // 3*10 + 2 = 32
 }
 
 #[test]
 fn test_channel_is_closed() {
     // isClosed returns true after close()
-    expect_bool_with_builtins("
+    expect_bool_with_builtins(
+        "
         let ch = new Channel<number>(1);
         ch.close();
         return ch.isClosed();
-    ", true);
+    ",
+        true,
+    );
 }
 
 #[test]
 fn test_channel_is_not_closed_initially() {
     // isClosed returns false on fresh channel
-    expect_bool_with_builtins("
+    expect_bool_with_builtins(
+        "
         let ch = new Channel<number>(1);
         return ch.isClosed();
-    ", false);
+    ",
+        false,
+    );
 }
 
 #[test]
 fn test_channel_multiple_values_sequence() {
     // Send and receive multiple values in sequence
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         let ch = new Channel<number>(10);
         let i: number = 0;
         while (i < 5) {
@@ -761,13 +958,16 @@ fn test_channel_multiple_values_sequence() {
             j = j + 1;
         }
         return sum;
-    ", 100); // 0+10+20+30+40 = 100
+    ",
+        100,
+    ); // 0+10+20+30+40 = 100
 }
 
 #[test]
 fn test_channel_producer_consumer_pattern() {
     // Producer sends multiple values, consumer receives them via async
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         async function producer(ch: Channel<number>): Task<void> {
             ch.send(10);
             ch.send(20);
@@ -787,16 +987,21 @@ fn test_channel_producer_consumer_pattern() {
             return await c;
         }
         return await main();
-    ", 60);
+    ",
+        60,
+    );
 }
 
 #[test]
 fn test_channel_capacity_query() {
     // Verify capacity() returns the buffer size
-    expect_i32_with_builtins("
+    expect_i32_with_builtins(
+        "
         let ch = new Channel<number>(7);
         return ch.capacity();
-    ", 7);
+    ",
+        7,
+    );
 }
 
 // ============================================================================
@@ -806,7 +1011,8 @@ fn test_channel_capacity_query() {
 #[test]
 fn test_sleep_zero_as_yield() {
     // sleep(0) should yield control and resume
-    expect_i32("
+    expect_i32(
+        "
         async function work(): Task<number> {
             let x: number = 1;
             sleep(0);
@@ -816,13 +1022,16 @@ fn test_sleep_zero_as_yield() {
             return x;
         }
         return await work();
-    ", 3);
+    ",
+        3,
+    );
 }
 
 #[test]
 fn test_multiple_sequential_sleeps() {
     // Multiple sleeps in a row
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             sleep(0);
             sleep(0);
@@ -830,13 +1039,16 @@ fn test_multiple_sequential_sleeps() {
             return 42;
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_sleep_in_loop() {
     // Sleep inside a loop with work
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let sum: number = 0;
             let i: number = 0;
@@ -848,7 +1060,9 @@ fn test_sleep_in_loop() {
             return sum;
         }
         return await main();
-    ", 10); // 0+1+2+3+4 = 10
+    ",
+        10,
+    ); // 0+1+2+3+4 = 10
 }
 
 // ============================================================================
@@ -858,7 +1072,8 @@ fn test_sleep_in_loop() {
 #[test]
 fn test_closure_used_after_await() {
     // Closure created before async work, used after await
-    expect_i32("
+    expect_i32(
+        "
         async function work(): Task<number> {
             return 5;
         }
@@ -869,13 +1084,16 @@ fn test_closure_used_after_await() {
             return mul(base);
         }
         return await main();
-    ", 15);
+    ",
+        15,
+    );
 }
 
 #[test]
 fn test_multiple_async_tasks_with_closures() {
     // Multiple tasks each using closures with different captures
-    expect_i32("
+    expect_i32(
+        "
         async function makeTask(base: number): Task<number> {
             let add = (x: number): number => x + base;
             return add(10);
@@ -888,25 +1106,31 @@ fn test_multiple_async_tasks_with_closures() {
             return results[0] + results[1] + results[2];
         }
         return await main();
-    ", 36); // 11 + 12 + 13 = 36
+    ",
+        36,
+    ); // 11 + 12 + 13 = 36
 }
 
 #[test]
 fn test_async_function_returning_closure_result() {
     // Async function that builds and calls a closure internally
-    expect_i32("
+    expect_i32(
+        "
         async function compute(a: number, b: number): Task<number> {
             let op = (x: number, y: number): number => x * y + 1;
             return op(a, b);
         }
         return await compute(6, 7);
-    ", 43); // 6*7+1 = 43
+    ",
+        43,
+    ); // 6*7+1 = 43
 }
 
 #[test]
 fn test_closure_captures_task_result() {
     // Create a closure that uses the result of an await
-    expect_i32("
+    expect_i32(
+        "
         async function getData(): Task<number> {
             return 100;
         }
@@ -916,13 +1140,16 @@ fn test_closure_captures_task_result() {
             return process(23);
         }
         return await main();
-    ", 123);
+    ",
+        123,
+    );
 }
 
 #[test]
 fn test_async_function_with_closure_inside() {
     // Async function that creates and uses a closure internally
-    expect_i32("
+    expect_i32(
+        "
         async function compute(factor: number): Task<number> {
             let double = (x: number): number => x * 2;
             return double(factor);
@@ -931,13 +1158,16 @@ fn test_async_function_with_closure_inside() {
             return await compute(5);
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_async_arrow_block_body() {
     // Async arrow with block body (not just expression body)
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let compute = async (): Task<number> => {
                 let x: number = 10;
@@ -947,13 +1177,16 @@ fn test_async_arrow_block_body() {
             return await compute();
         }
         return await main();
-    ", 30);
+    ",
+        30,
+    );
 }
 
 #[test]
 fn test_async_arrow_block_body_with_capture() {
     // Async arrow block body capturing outer variable
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let factor: number = 5;
             let compute = async (): Task<number> => {
@@ -963,13 +1196,16 @@ fn test_async_arrow_block_body_with_capture() {
             return await compute();
         }
         return await main();
-    ", 10);
+    ",
+        10,
+    );
 }
 
 #[test]
 fn test_async_arrow_block_body_with_param() {
     // Async arrow block body with parameters
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let add = async (a: number, b: number): Task<number> => {
                 let sum: number = a + b;
@@ -978,7 +1214,9 @@ fn test_async_arrow_block_body_with_param() {
             return await add(17, 25);
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 // ============================================================================
@@ -988,7 +1226,8 @@ fn test_async_arrow_block_body_with_param() {
 #[test]
 fn test_try_catch_inside_async() {
     // Try-catch within an async function (no cross-task boundary)
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             try {
                 throw 'error';
@@ -997,13 +1236,16 @@ fn test_try_catch_inside_async() {
             }
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_finally_runs_in_async() {
     // Finally block executes in async function
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let result: number = 0;
             try {
@@ -1014,13 +1256,16 @@ fn test_finally_runs_in_async() {
             return result;
         }
         return await main();
-    ", 11);
+    ",
+        11,
+    );
 }
 
 #[test]
 fn test_await_inside_try_catches_task_exception() {
     // Await inside try block where the awaited task throws
-    expect_i32("
+    expect_i32(
+        "
         async function failing(): Task<number> {
             throw 'task error';
         }
@@ -1032,13 +1277,16 @@ fn test_await_inside_try_catches_task_exception() {
             }
         }
         return await main();
-    ", 99);
+    ",
+        99,
+    );
 }
 
 #[test]
 fn test_nested_try_catch_in_async() {
     // Nested try-catch in async function
-    expect_i32("
+    expect_i32(
+        "
         async function main(): Task<number> {
             let result: number = 0;
             try {
@@ -1054,13 +1302,16 @@ fn test_nested_try_catch_in_async() {
             return result;
         }
         return await main();
-    ", 15);
+    ",
+        15,
+    );
 }
 
 #[test]
 fn test_finally_with_cleanup_after_async_error() {
     // Finally runs cleanup even after async exception
-    expect_i32("
+    expect_i32(
+        "
         async function failing(): Task<number> {
             throw 'fail';
         }
@@ -1076,7 +1327,9 @@ fn test_finally_with_cleanup_after_async_error() {
             return cleaned;
         }
         return await main();
-    ", 101);
+    ",
+        101,
+    );
 }
 
 // ============================================================================
@@ -1087,7 +1340,8 @@ fn test_finally_with_cleanup_after_async_error() {
 fn test_multiworker_mutex_counter() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Mutex-protected counter with 4 workers — verifies correctness under true parallelism
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class Counter {
             value: number = 0;
             mu: Mutex = new Mutex();
@@ -1112,14 +1366,18 @@ fn test_multiworker_mutex_counter() {
             return c.value;
         }
         return await main();
-    ", 5, 4);
+    ",
+        5,
+        4,
+    );
 }
 
 #[test]
 fn test_multiworker_channel_producer_consumer() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Channel producer-consumer with 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         async function producer(ch: Channel<number>): Task<void> {
             ch.send(10);
             ch.send(20);
@@ -1139,14 +1397,18 @@ fn test_multiworker_channel_producer_consumer() {
             return await c;
         }
         return await main();
-    ", 60, 4);
+    ",
+        60,
+        4,
+    );
 }
 
 #[test]
 fn test_multiworker_mutex_multiple_tasks() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Multiple tasks with mutex-protected shared state, 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class State {
             sum: number = 0;
             mu: Mutex = new Mutex();
@@ -1177,14 +1439,18 @@ fn test_multiworker_mutex_multiple_tasks() {
             return s.sum;
         }
         return await main();
-    ", 36, 4);
+    ",
+        36,
+        4,
+    );
 }
 
 #[test]
 fn test_multiworker_channel_fifo() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Channel FIFO ordering preserved under 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         async function main(): Task<number> {
             let ch = new Channel<number>(5);
             ch.send(1);
@@ -1196,14 +1462,18 @@ fn test_multiworker_channel_fifo() {
             return a * 100 + b * 10 + c;
         }
         return await main();
-    ", 123, 4);
+    ",
+        123,
+        4,
+    );
 }
 
 #[test]
 fn test_multiworker_parallel_with_mutex() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Parallel tasks with varying work and mutex, 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class Acc {
             total: number = 0;
             mu: Mutex = new Mutex();
@@ -1232,14 +1502,18 @@ fn test_multiworker_parallel_with_mutex() {
             return acc.total;
         }
         return await main();
-    ", 100, 4);
+    ",
+        100,
+        4,
+    );
 }
 
 #[test]
 fn test_multiworker_rapid_channel() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Rapid channel send/receive under 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         async function main(): Task<number> {
             let ch = new Channel<number>(20);
             let i: number = 0;
@@ -1256,14 +1530,18 @@ fn test_multiworker_rapid_channel() {
             return sum;
         }
         return await main();
-    ", 45, 4); // 0+1+2+...+9 = 45
+    ",
+        45,
+        4,
+    ); // 0+1+2+...+9 = 45
 }
 
 #[test]
 fn test_multiworker_mixed_mutex_channel() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Mixed mutex + channel with 4 workers
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class State {
             count: number = 0;
             mu: Mutex = new Mutex();
@@ -1287,14 +1565,18 @@ fn test_multiworker_mixed_mutex_channel() {
             return s.count * 1000 + sum;
         }
         return await main();
-    ", 3060, 4); // count=3, sum=60 → 3000+60
+    ",
+        3060,
+        4,
+    ); // count=3, sum=60 → 3000+60
 }
 
 #[test]
 fn test_multiworker_try_lock_contention() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // tryLock contention under 4 workers — at least one tryLock call works
-    expect_bool_multiworker_with_builtins("
+    expect_bool_multiworker_with_builtins(
+        "
         async function main(): Task<boolean> {
             let mu = new Mutex();
             let success = mu.tryLock();
@@ -1304,7 +1586,10 @@ fn test_multiworker_try_lock_contention() {
             return success;
         }
         return await main();
-    ", true, 4);
+    ",
+        true,
+        4,
+    );
 }
 
 // ============================================================================
@@ -1316,7 +1601,8 @@ fn test_async_recursive_fibonacci_parallel() {
     // Parallel recursive fibonacci: spawns ~177 tasks
     // Each level spawns fib(n-1) and fib(n-2) as separate tasks, awaits both
     // Uses braceless if body: `if (n <= 1) return n;`
-    expect_i32("
+    expect_i32(
+        "
         async function fib(n: number): Task<number> {
             if (n <= 1) return n;
             let t1 = fib(n - 1);
@@ -1325,7 +1611,9 @@ fn test_async_recursive_fibonacci_parallel() {
             return results[0] + results[1];
         }
         return await fib(10);
-    ", 55);
+    ",
+        55,
+    );
 }
 
 #[test]
@@ -1333,7 +1621,8 @@ fn test_async_recursive_fibonacci_sequence() {
     // Compute fib(0)..fib(7) in parallel, verify all values via weighted sum
     // Weights: 1, 2, 4, 8, 16, 32, 64, 128
     // Expected: 0*1 + 1*2 + 1*4 + 2*8 + 3*16 + 5*32 + 8*64 + 13*128 = 2406
-    expect_i32("
+    expect_i32(
+        "
         async function fib(n: number): Task<number> {
             if (n <= 1) { return n; }
             let t1 = fib(n - 1);
@@ -1355,14 +1644,17 @@ fn test_async_recursive_fibonacci_sequence() {
                  + r[4] * 16 + r[5] * 32 + r[6] * 64 + r[7] * 128;
         }
         return await main();
-    ", 2406);
+    ",
+        2406,
+    );
 }
 
 #[test]
 fn test_async_recursive_sum_divide_and_conquer() {
     // Parallel divide-and-conquer sum of 1..100
     // Splits range in half, recurses, combines via parallel await
-    expect_i32("
+    expect_i32(
+        "
         async function rangeSum(lo: number, hi: number): Task<number> {
             if (hi - lo <= 1) {
                 if (lo < hi) { return lo; }
@@ -1376,14 +1668,17 @@ fn test_async_recursive_sum_divide_and_conquer() {
             return results[0] + results[1];
         }
         return await rangeSum(1, 101);
-    ", 5050);
+    ",
+        5050,
+    );
 }
 
 #[test]
 fn test_async_recursive_power() {
     // Fast exponentiation via repeated squaring: pow(2, 10) = 1024
     // Each level spawns a task for the half-power, then squares
-    expect_i32("
+    expect_i32(
+        "
         async function power(base: number, exp: number): Task<number> {
             if (exp == 0) { return 1; }
             if (exp == 1) { return base; }
@@ -1397,7 +1692,9 @@ fn test_async_recursive_power() {
             return halfResult * halfResult * base;
         }
         return await power(2, 10);
-    ", 1024);
+    ",
+        1024,
+    );
 }
 
 // ============================================================================
@@ -1411,7 +1708,8 @@ fn test_parallel_matrix_multiply_16x16() {
     // C[i][j] = 16 * (i+1) * (j+1)
     // Row i sum = 16 * (i+1) * 136
     // Total = 16 * 136 * 136 = 295936
-    expect_i32("
+    expect_i32(
+        "
         function a(i: number, j: number): number { return i + 1; }
         function b(i: number, j: number): number { return j + 1; }
 
@@ -1455,7 +1753,9 @@ fn test_parallel_matrix_multiply_16x16() {
             return s1[0];
         }
         return await main();
-    ", 295936);
+    ",
+        295936,
+    );
 }
 
 #[test]
@@ -1463,7 +1763,8 @@ fn test_parallel_vector_dot_product() {
     // Parallel dot product: [1,2,3,4,5] · [6,7,8,9,10]
     // Each element-wise product computed as a separate task
     // = 6 + 14 + 24 + 36 + 50 = 130
-    expect_i32("
+    expect_i32(
+        "
         async function mul(a: number, b: number): Task<number> {
             return a * b;
         }
@@ -1477,7 +1778,9 @@ fn test_parallel_vector_dot_product() {
             return r[0] + r[1] + r[2] + r[3] + r[4];
         }
         return await main();
-    ", 130);
+    ",
+        130,
+    );
 }
 
 #[test]
@@ -1485,7 +1788,8 @@ fn test_parallel_map_reduce_sum() {
     // Parallel map (square) then reduce (sum)
     // map: [1,2,3,4,5] → [1,4,9,16,25]
     // reduce: 1+4+9+16+25 = 55
-    expect_i32("
+    expect_i32(
+        "
         async function square(x: number): Task<number> {
             return x * x;
         }
@@ -1499,7 +1803,9 @@ fn test_parallel_map_reduce_sum() {
             return r[0] + r[1] + r[2] + r[3] + r[4];
         }
         return await main();
-    ", 55);
+    ",
+        55,
+    );
 }
 
 #[test]
@@ -1508,7 +1814,8 @@ fn test_parallel_pipeline_stages() {
     // pipeline(x) = ((x + 10) * 2) - 5
     // pipeline(1)=17, pipeline(2)=19, pipeline(3)=21, pipeline(4)=23
     // sum = 80
-    expect_i32("
+    expect_i32(
+        "
         async function stage1(x: number): Task<number> { return x + 10; }
         async function stage2(x: number): Task<number> { return x * 2; }
         async function stage3(x: number): Task<number> { return x - 5; }
@@ -1529,7 +1836,9 @@ fn test_parallel_pipeline_stages() {
             return r[0] + r[1] + r[2] + r[3];
         }
         return await main();
-    ", 80);
+    ",
+        80,
+    );
 }
 
 #[test]
@@ -1615,18 +1924,32 @@ fn test_parallel_faster_than_sequential() {
     let par_result = compile_and_run_multiworker_with_builtins(par_source, 4).unwrap();
     let par_time = par_start.elapsed();
 
-    let seq_val = seq_result.as_i32().or_else(|| seq_result.as_f64().map(|f| f as i32)).unwrap();
-    let par_val = par_result.as_i32().or_else(|| par_result.as_f64().map(|f| f as i32)).unwrap();
+    let seq_val = seq_result
+        .as_i32()
+        .or_else(|| seq_result.as_f64().map(|f| f as i32))
+        .unwrap();
+    let par_val = par_result
+        .as_i32()
+        .or_else(|| par_result.as_f64().map(|f| f as i32))
+        .unwrap();
 
-    assert_eq!(seq_val, par_val,
-        "Both should produce same result: seq={}, par={}", seq_val, par_val);
-    assert_eq!(seq_val, 14_796_800,
-        "Expected 14,796,800, got {}", seq_val);
+    assert_eq!(
+        seq_val, par_val,
+        "Both should produce same result: seq={}, par={}",
+        seq_val, par_val
+    );
+    assert_eq!(seq_val, 14_796_800, "Expected 14,796,800, got {}", seq_val);
     let speedup = seq_time.as_nanos() as f64 / par_time.as_nanos() as f64;
-    eprintln!("Sequential: {:?}, Parallel: {:?}, Speedup: {:.2}x", seq_time, par_time, speedup);
-    assert!(par_time < seq_time,
+    eprintln!(
+        "Sequential: {:?}, Parallel: {:?}, Speedup: {:.2}x",
+        seq_time, par_time, speedup
+    );
+    assert!(
+        par_time < seq_time,
         "Parallel ({:?}) should be faster than sequential ({:?})",
-        par_time, seq_time);
+        par_time,
+        seq_time
+    );
 }
 
 // ============================================================================
@@ -1636,7 +1959,8 @@ fn test_parallel_faster_than_sequential() {
 #[test]
 fn test_closure_captures_task_and_awaits() {
     // Async closure captures a task variable and awaits it
-    expect_i32("
+    expect_i32(
+        "
         async function compute(): Task<number> {
             return 42;
         }
@@ -1648,13 +1972,16 @@ fn test_closure_captures_task_and_awaits() {
             return await getResult();
         }
         return await main();
-    ", 42);
+    ",
+        42,
+    );
 }
 
 #[test]
 fn test_nested_closure_captures_outer_task() {
     // Two levels of async closure nesting, inner awaits outer's captured task
-    expect_i32("
+    expect_i32(
+        "
         async function compute(): Task<number> {
             return 100;
         }
@@ -1669,13 +1996,16 @@ fn test_nested_closure_captures_outer_task() {
             return await outer();
         }
         return await main();
-    ", 100);
+    ",
+        100,
+    );
 }
 
 #[test]
 fn test_closure_factory_with_task_spawning() {
     // Closure captures base value, spawns tasks internally, combines results
-    expect_i32("
+    expect_i32(
+        "
         async function compute(x: number): Task<number> {
             return x * 10;
         }
@@ -1691,13 +2021,16 @@ fn test_closure_factory_with_task_spawning() {
             return r[0] + r[1];
         }
         return await main();
-    ", 110); // (30+5) + (70+5) = 110
+    ",
+        110,
+    ); // (30+5) + (70+5) = 110
 }
 
 #[test]
 fn test_multiple_closures_share_captured_task() {
     // Two async closures both capture and await the same task
-    expect_i32("
+    expect_i32(
+        "
         async function compute(): Task<number> {
             return 42;
         }
@@ -1715,13 +2048,16 @@ fn test_multiple_closures_share_captured_task() {
             return r[0] + r[1];
         }
         return await main();
-    ", 87); // 43 + 44 = 87
+    ",
+        87,
+    ); // 43 + 44 = 87
 }
 
 #[test]
 fn test_closure_captures_parallel_await_results() {
     // Closure created after parallel await, uses captured results
-    expect_i32("
+    expect_i32(
+        "
         async function work(x: number): Task<number> {
             return x * x;
         }
@@ -1735,7 +2071,9 @@ fn test_closure_captures_parallel_await_results() {
             return doubler(sum);
         }
         return await main();
-    ", 100); // (9 + 16 + 25) * 2 = 100
+    ",
+        100,
+    ); // (9 + 16 + 25) * 2 = 100
 }
 
 // ============================================================================
@@ -1746,7 +2084,8 @@ fn test_closure_captures_parallel_await_results() {
 fn test_mutex_prevents_lost_updates_heavy() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 4 tasks each increment 100 times with mutex protection — must be exactly 400
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class Counter {
             value: number = 0;
             mu: Mutex = new Mutex();
@@ -1773,7 +2112,10 @@ fn test_mutex_prevents_lost_updates_heavy() {
             return c.value;
         }
         return await main();
-    ", 400, 4);
+    ",
+        400,
+        4,
+    );
 }
 
 #[test]
@@ -1781,7 +2123,8 @@ fn test_mutex_protects_compound_read_modify_write() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Each task reads, computes, writes — compound operation must be atomic
     // 4 tasks each add 1+2+...+10 = 55 → total 220
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class State {
             total: number = 0;
             mu: Mutex = new Mutex();
@@ -1810,7 +2153,10 @@ fn test_mutex_protects_compound_read_modify_write() {
             return s.total;
         }
         return await main();
-    ", 220, 4);
+    ",
+        220,
+        4,
+    );
 }
 
 #[test]
@@ -1819,7 +2165,8 @@ fn test_mutex_bank_transfer_atomicity() {
     // Two accounts, 4 workers each transfer 10 times — total must be preserved
     // A=1000, B=1000. Each task transfers 1 from A to B, 10 times.
     // After: A=960, B=1040. A+B must still be 2000.
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class Bank {
             a: number = 1000;
             b: number = 1000;
@@ -1848,14 +2195,18 @@ fn test_mutex_bank_transfer_atomicity() {
             return bank.a + bank.b;
         }
         return await main();
-    ", 2000, 4);
+    ",
+        2000,
+        4,
+    );
 }
 
 #[test]
 fn test_mutex_protects_running_max() {
     let _guard = MULTIWORKER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // 4 tasks update a shared max value concurrently — result must be 50
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class MaxTracker {
             max: number = 0;
             mu: Mutex = new Mutex();
@@ -1884,7 +2235,10 @@ fn test_mutex_protects_running_max() {
             return t.max;
         }
         return await main();
-    ", 50, 4);
+    ",
+        50,
+        4,
+    );
 }
 
 #[test]
@@ -1893,7 +2247,8 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
     // 2 producers each add 1+2+3+4+5=15, 2 consumers each subtract 1+2+3=6
     // Final: 30 - 12 = 18
     // Uses `class Buffer` to verify user classes can shadow builtin names
-    expect_i32_multiworker_with_builtins("
+    expect_i32_multiworker_with_builtins(
+        "
         class Buffer {
             value: number = 0;
             mu: Mutex = new Mutex();
@@ -1931,5 +2286,8 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
             return buf.value;
         }
         return await main();
-    ", 18, 4);
+    ",
+        18,
+        4,
+    );
 }

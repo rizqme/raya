@@ -137,10 +137,7 @@ pub fn connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
                 Err(e) => return IoCompletion::Error(format!("ws.connect: {}", e)),
             };
 
-            let peer_addr = tcp
-                .peer_addr()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
+            let peer_addr = tcp.peer_addr().map(|a| a.to_string()).unwrap_or_default();
 
             let stream: Box<dyn ReadWrite> = if use_tls {
                 let config = tls::default_client_config();
@@ -190,35 +187,24 @@ pub fn connect_with_protocols(ctx: &dyn NativeContext, args: &[NativeValue]) -> 
             let addr = format!("{}:{}", host, port);
             let tcp = match TcpStream::connect(&addr) {
                 Ok(s) => s,
-                Err(e) => {
-                    return IoCompletion::Error(format!("ws.connectWithProtocols: {}", e))
-                }
+                Err(e) => return IoCompletion::Error(format!("ws.connectWithProtocols: {}", e)),
             };
 
-            let peer_addr = tcp
-                .peer_addr()
-                .map(|a| a.to_string())
-                .unwrap_or_default();
+            let peer_addr = tcp.peer_addr().map(|a| a.to_string()).unwrap_or_default();
 
             let stream: Box<dyn ReadWrite> = if use_tls {
                 let config = tls::default_client_config();
                 match tls::connect_tls(tcp, &host, config) {
                     Ok(tls_stream) => Box::new(tls_stream),
                     Err(e) => {
-                        return IoCompletion::Error(format!(
-                            "ws.connectWithProtocols: TLS: {}",
-                            e
-                        ))
+                        return IoCompletion::Error(format!("ws.connectWithProtocols: TLS: {}", e))
                     }
                 }
             } else {
                 Box::new(tcp)
             };
 
-            let headers = vec![(
-                "Sec-WebSocket-Protocol".to_string(),
-                protocols.clone(),
-            )];
+            let headers = vec![("Sec-WebSocket-Protocol".to_string(), protocols.clone())];
 
             let (ws, protocol) = match ws_client_handshake(&url, stream, Some(headers)) {
                 Ok(v) => v,
@@ -332,20 +318,18 @@ pub fn send(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("ws.send: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match WS_HANDLES.get(handle) {
-                Some(ws_handle) => {
-                    let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
-                        Ok(g) => g,
-                        Err(e) => return IoCompletion::Error(format!("ws.send: lock: {}", e)),
-                    };
-                    match ws.send(Message::Text(message)) {
-                        Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                        Err(e) => IoCompletion::Error(format!("ws.send: {}", e)),
-                    }
+        work: Box::new(move || match WS_HANDLES.get(handle) {
+            Some(ws_handle) => {
+                let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
+                    Ok(g) => g,
+                    Err(e) => return IoCompletion::Error(format!("ws.send: lock: {}", e)),
+                };
+                match ws.send(Message::Text(message)) {
+                    Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+                    Err(e) => IoCompletion::Error(format!("ws.send: {}", e)),
                 }
-                None => IoCompletion::Error(format!("ws.send: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("ws.send: invalid handle {}", handle)),
         }),
     })
 }
@@ -360,22 +344,18 @@ pub fn send_bytes(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
         Err(e) => return NativeCallResult::Error(format!("ws.sendBytes: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match WS_HANDLES.get(handle) {
-                Some(ws_handle) => {
-                    let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
-                        Ok(g) => g,
-                        Err(e) => {
-                            return IoCompletion::Error(format!("ws.sendBytes: lock: {}", e))
-                        }
-                    };
-                    match ws.send(Message::Binary(data)) {
-                        Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                        Err(e) => IoCompletion::Error(format!("ws.sendBytes: {}", e)),
-                    }
+        work: Box::new(move || match WS_HANDLES.get(handle) {
+            Some(ws_handle) => {
+                let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
+                    Ok(g) => g,
+                    Err(e) => return IoCompletion::Error(format!("ws.sendBytes: lock: {}", e)),
+                };
+                match ws.send(Message::Binary(data)) {
+                    Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+                    Err(e) => IoCompletion::Error(format!("ws.sendBytes: {}", e)),
                 }
-                None => IoCompletion::Error(format!("ws.sendBytes: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("ws.sendBytes: invalid handle {}", handle)),
         }),
     })
 }
@@ -391,9 +371,7 @@ pub fn receive(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
                 Some(ws_handle) => {
                     let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
                         Ok(g) => g,
-                        Err(e) => {
-                            return IoCompletion::Error(format!("ws.receive: lock: {}", e))
-                        }
+                        Err(e) => return IoCompletion::Error(format!("ws.receive: lock: {}", e)),
                     };
                     match ws.read() {
                         Ok(msg) => match msg {
@@ -423,31 +401,25 @@ pub fn receive(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
 pub fn receive_bytes(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = read_handle(args);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match WS_HANDLES.get(handle) {
-                Some(ws_handle) => {
-                    let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
-                        Ok(g) => g,
-                        Err(e) => {
-                            return IoCompletion::Error(format!("ws.receiveBytes: lock: {}", e))
+        work: Box::new(move || match WS_HANDLES.get(handle) {
+            Some(ws_handle) => {
+                let mut ws: MutexGuard<'_, WsSocket> = match ws_handle.ws.lock() {
+                    Ok(g) => g,
+                    Err(e) => return IoCompletion::Error(format!("ws.receiveBytes: lock: {}", e)),
+                };
+                match ws.read() {
+                    Ok(msg) => match msg {
+                        Message::Binary(data) => IoCompletion::Bytes(data),
+                        Message::Text(text) => IoCompletion::Bytes(text.into_bytes()),
+                        Message::Close(_) => IoCompletion::Bytes(Vec::new()),
+                        Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
+                            IoCompletion::Bytes(Vec::new())
                         }
-                    };
-                    match ws.read() {
-                        Ok(msg) => match msg {
-                            Message::Binary(data) => IoCompletion::Bytes(data),
-                            Message::Text(text) => IoCompletion::Bytes(text.into_bytes()),
-                            Message::Close(_) => IoCompletion::Bytes(Vec::new()),
-                            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {
-                                IoCompletion::Bytes(Vec::new())
-                            }
-                        },
-                        Err(e) => IoCompletion::Error(format!("ws.receiveBytes: {}", e)),
-                    }
-                }
-                None => {
-                    IoCompletion::Error(format!("ws.receiveBytes: invalid handle {}", handle))
+                    },
+                    Err(e) => IoCompletion::Error(format!("ws.receiveBytes: {}", e)),
                 }
             }
+            None => IoCompletion::Error(format!("ws.receiveBytes: invalid handle {}", handle)),
         }),
     })
 }
@@ -517,9 +489,7 @@ pub fn is_open(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
 pub fn remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = read_handle(args);
     match WS_HANDLES.get(handle) {
-        Some(ws_handle) => {
-            NativeCallResult::Value(ctx.create_string(&ws_handle.peer_addr))
-        }
+        Some(ws_handle) => NativeCallResult::Value(ctx.create_string(&ws_handle.peer_addr)),
         None => NativeCallResult::Error(format!("ws.remoteAddr: invalid handle {}", handle)),
     }
 }
@@ -530,9 +500,7 @@ pub fn remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 pub fn protocol(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = read_handle(args);
     match WS_HANDLES.get(handle) {
-        Some(ws_handle) => {
-            NativeCallResult::Value(ctx.create_string(&ws_handle.protocol))
-        }
+        Some(ws_handle) => NativeCallResult::Value(ctx.create_string(&ws_handle.protocol)),
         None => NativeCallResult::Error(format!("ws.protocol: invalid handle {}", handle)),
     }
 }

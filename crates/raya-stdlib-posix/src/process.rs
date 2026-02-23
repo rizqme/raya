@@ -1,7 +1,7 @@
 //! std:process — Process management
 
 use crate::handles::HandleRegistry;
-use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
+use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::io::{Read, Write};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{LazyLock, Mutex};
@@ -29,7 +29,8 @@ static CHILD_PROCESSES: LazyLock<HandleRegistry<ChildProcessHandle>> =
 
 /// Exit the process
 pub fn exit(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let code = args.first()
+    let code = args
+        .first()
         .and_then(|v| v.as_i32().or_else(|| v.as_f64().map(|f| f as i32)))
         .unwrap_or(0);
     std::process::exit(code);
@@ -42,9 +43,7 @@ pub fn pid(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult 
 
 /// Get command-line arguments
 pub fn argv(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
-    let args: Vec<NativeValue> = std::env::args()
-        .map(|a| ctx.create_string(&a))
-        .collect();
+    let args: Vec<NativeValue> = std::env::args().map(|a| ctx.create_string(&a)).collect();
     NativeCallResult::Value(ctx.create_array(&args))
 }
 
@@ -65,9 +64,13 @@ pub fn exec(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     NativeCallResult::Suspend(IoRequest::BlockingWork {
         work: Box::new(move || {
             let output = if cfg!(target_os = "windows") {
-                std::process::Command::new("cmd").args(["/C", &command]).output()
+                std::process::Command::new("cmd")
+                    .args(["/C", &command])
+                    .output()
             } else {
-                std::process::Command::new("sh").args(["-c", &command]).output()
+                std::process::Command::new("sh")
+                    .args(["-c", &command])
+                    .output()
             };
             match output {
                 Ok(out) => {
@@ -87,7 +90,8 @@ pub fn exec(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 
 /// Get exit code from exec handle
 pub fn exec_get_code(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match EXEC_HANDLES.get(handle) {
@@ -98,29 +102,36 @@ pub fn exec_get_code(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
 
 /// Get stdout from exec handle
 pub fn exec_get_stdout(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match EXEC_HANDLES.get(handle) {
         Some(r) => NativeCallResult::Value(ctx.create_string(&r.stdout)),
-        None => NativeCallResult::Error(format!("process.execGetStdout: invalid handle {}", handle)),
+        None => {
+            NativeCallResult::Error(format!("process.execGetStdout: invalid handle {}", handle))
+        }
     }
 }
 
 /// Get stderr from exec handle
 pub fn exec_get_stderr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match EXEC_HANDLES.get(handle) {
         Some(r) => NativeCallResult::Value(ctx.create_string(&r.stderr)),
-        None => NativeCallResult::Error(format!("process.execGetStderr: invalid handle {}", handle)),
+        None => {
+            NativeCallResult::Error(format!("process.execGetStderr: invalid handle {}", handle))
+        }
     }
 }
 
 /// Release exec handle
 pub fn exec_release(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     EXEC_HANDLES.remove(handle);
@@ -162,7 +173,10 @@ pub fn cpu_usage(ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
     };
     let user_micros = usage.ru_utime.tv_sec as f64 * 1_000_000.0 + usage.ru_utime.tv_usec as f64;
     let system_micros = usage.ru_stime.tv_sec as f64 * 1_000_000.0 + usage.ru_stime.tv_usec as f64;
-    let items = [NativeValue::f64(user_micros), NativeValue::f64(system_micros)];
+    let items = [
+        NativeValue::f64(user_micros),
+        NativeValue::f64(system_micros),
+    ];
     NativeCallResult::Value(ctx.create_array(&items))
 }
 
@@ -188,7 +202,8 @@ pub fn umask_get(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallR
 
 /// Set umask, return old umask
 pub fn umask_set(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let mask = args.first()
+    let mask = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as libc::mode_t;
     // SAFETY: umask is always safe to call
@@ -247,7 +262,12 @@ use std::sync::RwLock;
 static PROCESS_TITLE: LazyLock<RwLock<String>> = LazyLock::new(|| {
     RwLock::new(
         std::env::current_exe()
-            .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+            .map(|p| {
+                p.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            })
             .unwrap_or_default(),
     )
 });
@@ -336,11 +356,18 @@ pub fn trap_signal(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     };
     let sig = match signal_name_to_number(&name) {
         Some(s) => s,
-        None => return NativeCallResult::Error(format!("process.trapSignal: unknown signal '{}'", name)),
+        None => {
+            return NativeCallResult::Error(format!(
+                "process.trapSignal: unknown signal '{}'",
+                name
+            ))
+        }
     };
     let sig_usize = sig as usize;
     if sig_usize >= SIGNAL_FLAGS.len() {
-        return NativeCallResult::Error("process.trapSignal: signal number out of range".to_string());
+        return NativeCallResult::Error(
+            "process.trapSignal: signal number out of range".to_string(),
+        );
     }
     // Mark as trapped and install handler
     SIGNAL_TRAPPED[sig_usize].store(true, Ordering::SeqCst);
@@ -360,11 +387,18 @@ pub fn untrap_signal(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
     };
     let sig = match signal_name_to_number(&name) {
         Some(s) => s,
-        None => return NativeCallResult::Error(format!("process.untrapSignal: unknown signal '{}'", name)),
+        None => {
+            return NativeCallResult::Error(format!(
+                "process.untrapSignal: unknown signal '{}'",
+                name
+            ))
+        }
     };
     let sig_usize = sig as usize;
     if sig_usize >= SIGNAL_FLAGS.len() {
-        return NativeCallResult::Error("process.untrapSignal: signal number out of range".to_string());
+        return NativeCallResult::Error(
+            "process.untrapSignal: signal number out of range".to_string(),
+        );
     }
     SIGNAL_TRAPPED[sig_usize].store(false, Ordering::SeqCst);
     SIGNAL_FLAGS[sig_usize].store(false, Ordering::SeqCst);
@@ -438,7 +472,8 @@ fn get_memory_usage() -> u64 {
         // SAFETY: mach_task_basic_info is safe with properly zeroed struct
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
         let mut count = (mem::size_of::<libc::mach_task_basic_info_data_t>()
-            / mem::size_of::<libc::natural_t>()) as libc::mach_msg_type_number_t;
+            / mem::size_of::<libc::natural_t>())
+            as libc::mach_msg_type_number_t;
         #[allow(deprecated)] // libc deprecates in favor of mach2 crate, but we use libc
         let ret = unsafe {
             libc::task_info(
@@ -611,9 +646,9 @@ pub fn child_wait(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         work: Box::new(move || {
             if let Some(entry) = CHILD_PROCESSES.get(handle) {
                 match entry.child.lock().unwrap().wait() {
-                    Ok(status) => {
-                        IoCompletion::Primitive(NativeValue::f64(status.code().unwrap_or(-1) as f64))
-                    }
+                    Ok(status) => IoCompletion::Primitive(NativeValue::f64(
+                        status.code().unwrap_or(-1) as f64,
+                    )),
                     Err(_) => IoCompletion::Primitive(NativeValue::f64(-1.0)),
                 }
             } else {

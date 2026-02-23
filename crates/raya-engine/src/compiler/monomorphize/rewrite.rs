@@ -106,16 +106,29 @@ impl<'a> CallSiteRewriter<'a> {
                 }
                 None
             }
-            IrInstr::CallMethod { dest: _, object: _, method: _, args: _ } => {
+            IrInstr::CallMethod {
+                dest: _,
+                object: _,
+                method: _,
+                args: _,
+            } => {
                 // Method calls on generic objects may need rewriting too
                 // For now, we just pass through
                 None
             }
-            IrInstr::LoadField { dest: _, object: _, field: _ } => {
+            IrInstr::LoadField {
+                dest: _,
+                object: _,
+                field: _,
+            } => {
                 // Field access on generic objects - pass through for now
                 None
             }
-            IrInstr::StoreField { object: _, field: _, value: _ } => {
+            IrInstr::StoreField {
+                object: _,
+                field: _,
+                value: _,
+            } => {
                 // Field stores on generic objects - pass through for now
                 None
             }

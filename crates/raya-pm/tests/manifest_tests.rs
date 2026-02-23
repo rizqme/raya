@@ -331,10 +331,9 @@ fn test_roundtrip_complex() {
         lint: None,
     };
 
-    manifest.dependencies.insert(
-        "dep1".to_string(),
-        Dependency::Simple("^1.0.0".to_string()),
-    );
+    manifest
+        .dependencies
+        .insert("dep1".to_string(), Dependency::Simple("^1.0.0".to_string()));
 
     manifest.dependencies.insert(
         "dep2".to_string(),

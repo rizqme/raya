@@ -1,7 +1,7 @@
 //! Main task scheduler — wraps Reactor with the same public API
 
-use crate::vm::scheduler::{Reactor, Task, TaskId, TaskState};
 use crate::vm::interpreter::SharedVmState;
+use crate::vm::scheduler::{Reactor, Task, TaskId, TaskState};
 use std::sync::Arc;
 
 /// Scheduler statistics
@@ -98,11 +98,7 @@ impl Scheduler {
 
     /// Create a new scheduler with resource limits
     pub fn with_limits(worker_count: usize, limits: SchedulerLimits) -> Self {
-        Self::with_limits_and_handler(
-            worker_count,
-            limits,
-            Arc::new(crate::vm::NoopNativeHandler),
-        )
+        Self::with_limits_and_handler(worker_count, limits, Arc::new(crate::vm::NoopNativeHandler))
     }
 
     /// Create a new scheduler with resource limits and a custom native handler
@@ -122,12 +118,8 @@ impl Scheduler {
         let injector = Arc::new(crossbeam_deque::Injector::new());
         let tasks = Arc::new(parking_lot::RwLock::new(rustc_hash::FxHashMap::default()));
 
-        let mut state = SharedVmState::with_native_handler(
-            safepoint,
-            tasks,
-            injector,
-            native_handler,
-        );
+        let mut state =
+            SharedVmState::with_native_handler(safepoint, tasks, injector, native_handler);
         state.max_preemptions = limits.max_preemptions;
         state.preempt_threshold_ms = limits.preempt_threshold_ms;
         let shared_state = Arc::new(state);

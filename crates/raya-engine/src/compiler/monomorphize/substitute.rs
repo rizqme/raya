@@ -210,7 +210,11 @@ impl TypeSubstitution {
                 property: property.clone(),
                 value: self.apply_register(value),
             },
-            IrInstr::LateBoundMember { dest, object, property } => IrInstr::LateBoundMember {
+            IrInstr::LateBoundMember {
+                dest,
+                object,
+                property,
+            } => IrInstr::LateBoundMember {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
                 property: property.clone(),
@@ -295,12 +299,19 @@ impl TypeSubstitution {
                 index: *index,
                 value: self.apply_register(value),
             },
-            IrInstr::SetClosureCapture { closure, index, value } => IrInstr::SetClosureCapture {
+            IrInstr::SetClosureCapture {
+                closure,
+                index,
+                value,
+            } => IrInstr::SetClosureCapture {
                 closure: self.apply_register(closure),
                 index: *index,
                 value: self.apply_register(value),
             },
-            IrInstr::NewRefCell { dest, initial_value } => IrInstr::NewRefCell {
+            IrInstr::NewRefCell {
+                dest,
+                initial_value,
+            } => IrInstr::NewRefCell {
                 dest: self.apply_register(dest),
                 initial_value: self.apply_register(initial_value),
             },
@@ -343,7 +354,11 @@ impl TypeSubstitution {
                 func: *func,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
             },
-            IrInstr::SpawnClosure { dest, closure, args } => IrInstr::SpawnClosure {
+            IrInstr::SpawnClosure {
+                dest,
+                closure,
+                args,
+            } => IrInstr::SpawnClosure {
                 dest: self.apply_register(dest),
                 closure: self.apply_register(closure),
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
@@ -385,13 +400,20 @@ impl TypeSubstitution {
                 dest: self.apply_register(dest),
                 array: self.apply_register(array),
             },
-            IrInstr::SetupTry { catch_block, finally_block } => IrInstr::SetupTry {
+            IrInstr::SetupTry {
+                catch_block,
+                finally_block,
+            } => IrInstr::SetupTry {
                 catch_block: *catch_block,
                 finally_block: *finally_block,
             },
             IrInstr::EndTry => IrInstr::EndTry,
             IrInstr::PopToLocal { index } => IrInstr::PopToLocal { index: *index },
-            IrInstr::BindMethod { dest, object, method } => IrInstr::BindMethod {
+            IrInstr::BindMethod {
+                dest,
+                object,
+                method,
+            } => IrInstr::BindMethod {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
                 method: *method,
@@ -460,9 +482,11 @@ impl TypeSubstitution {
     ///
     /// This creates a new function with all types substituted.
     pub fn apply_function(&self, func: &IrFunction) -> IrFunction {
-        let new_params: Vec<Register> = func.params.iter().map(|p| self.apply_register(p)).collect();
+        let new_params: Vec<Register> =
+            func.params.iter().map(|p| self.apply_register(p)).collect();
 
-        let mut new_func = IrFunction::new(func.name.clone(), new_params, self.apply(func.return_ty));
+        let mut new_func =
+            IrFunction::new(func.name.clone(), new_params, self.apply(func.return_ty));
 
         // Apply to locals
         for local in &func.locals {
@@ -542,7 +566,10 @@ mod tests {
 
         let result = sub.apply_instr(&instr);
 
-        if let IrInstr::BinaryOp { dest, left, right, .. } = result {
+        if let IrInstr::BinaryOp {
+            dest, left, right, ..
+        } = result
+        {
             assert_eq!(dest.ty, TypeId::new(1));
             assert_eq!(left.ty, TypeId::new(1));
             assert_eq!(right.ty, TypeId::new(1));
@@ -564,7 +591,12 @@ mod tests {
 
         let result = sub.apply_instr(&instr);
 
-        if let IrInstr::ArrayLiteral { dest, elements, elem_ty } = result {
+        if let IrInstr::ArrayLiteral {
+            dest,
+            elements,
+            elem_ty,
+        } = result
+        {
             assert_eq!(dest.ty, TypeId::new(1));
             assert_eq!(elements[0].ty, TypeId::new(1));
             assert_eq!(elements[1].ty, TypeId::new(1));
@@ -591,11 +623,7 @@ mod tests {
         sub.add(TypeId::new(100), TypeId::new(1)); // T -> number
 
         // Create a simple function: fn identity(x: T) -> T
-        let mut func = IrFunction::new(
-            "identity",
-            vec![make_reg(0, 100)],
-            TypeId::new(100),
-        );
+        let mut func = IrFunction::new("identity", vec![make_reg(0, 100)], TypeId::new(100));
 
         let mut block = crate::ir::block::BasicBlock::new(BasicBlockId(0));
         block.set_terminator(Terminator::Return(Some(make_reg(0, 100))));

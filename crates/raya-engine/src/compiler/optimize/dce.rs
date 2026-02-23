@@ -111,7 +111,11 @@ impl DeadCodeEliminator {
                 used.insert(array.id);
                 used.insert(index.id);
             }
-            IrInstr::StoreElement { array, index, value } => {
+            IrInstr::StoreElement {
+                array,
+                index,
+                value,
+            } => {
                 used.insert(array.id);
                 used.insert(index.id);
                 used.insert(value.id);
@@ -319,7 +323,9 @@ impl Default for DeadCodeEliminator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{BasicBlock, BasicBlockId, IrConstant, IrFunction, IrModule, IrValue, Register};
+    use crate::compiler::ir::{
+        BasicBlock, BasicBlockId, IrConstant, IrFunction, IrModule, IrValue, Register,
+    };
     use crate::parser::TypeId;
 
     fn make_reg(id: u32) -> Register {

@@ -182,7 +182,7 @@ fn test_transform_stream_map() {
              i = i + 1;
          }
          return sum;",
-        12,  // (1*2 + 2*2 + 3*2) = 12
+        12, // (1*2 + 2*2 + 3*2) = 12
     );
 }
 
@@ -211,7 +211,7 @@ fn test_transform_stream_filter() {
          let output = source.pipeThrough<number>(evens);
          let result = output.collect();
          return result.length;",
-        3,  // 2, 4, 6
+        3, // 2, 4, 6
     );
 }
 

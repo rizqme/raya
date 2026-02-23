@@ -296,19 +296,26 @@ impl PermissionStore {
     // ===== Object Permissions =====
 
     /// Set object-level permissions
-    pub fn set_object(&mut self, object_id: usize, permissions: ReflectionPermission) -> Result<(), VmError> {
+    pub fn set_object(
+        &mut self,
+        object_id: usize,
+        permissions: ReflectionPermission,
+    ) -> Result<(), VmError> {
         if self.sealed_objects.contains(&object_id) {
             return Err(VmError::RuntimeError(
                 "Cannot modify sealed object permissions".to_string(),
             ));
         }
-        self.object_permissions.insert(object_id, PermissionEntry::new(permissions));
+        self.object_permissions
+            .insert(object_id, PermissionEntry::new(permissions));
         Ok(())
     }
 
     /// Get object-level permissions (not resolved)
     pub fn get_object(&self, object_id: usize) -> Option<ReflectionPermission> {
-        self.object_permissions.get(&object_id).map(|e| e.permissions)
+        self.object_permissions
+            .get(&object_id)
+            .map(|e| e.permissions)
     }
 
     /// Clear object-level permissions
@@ -335,13 +342,18 @@ impl PermissionStore {
     // ===== Class Permissions =====
 
     /// Set class-level permissions
-    pub fn set_class(&mut self, class_id: usize, permissions: ReflectionPermission) -> Result<(), VmError> {
+    pub fn set_class(
+        &mut self,
+        class_id: usize,
+        permissions: ReflectionPermission,
+    ) -> Result<(), VmError> {
         if self.sealed_classes.contains(&class_id) {
             return Err(VmError::RuntimeError(
                 "Cannot modify sealed class permissions".to_string(),
             ));
         }
-        self.class_permissions.insert(class_id, PermissionEntry::new(permissions));
+        self.class_permissions
+            .insert(class_id, PermissionEntry::new(permissions));
         Ok(())
     }
 
@@ -375,15 +387,15 @@ impl PermissionStore {
 
     /// Set module-level permissions
     pub fn set_module(&mut self, module_name: &str, permissions: ReflectionPermission) {
-        self.module_permissions.insert(
-            module_name.to_string(),
-            PermissionEntry::new(permissions),
-        );
+        self.module_permissions
+            .insert(module_name.to_string(), PermissionEntry::new(permissions));
     }
 
     /// Get module-level permissions (not resolved, direct match only)
     pub fn get_module(&self, module_name: &str) -> Option<ReflectionPermission> {
-        self.module_permissions.get(module_name).map(|e| e.permissions)
+        self.module_permissions
+            .get(module_name)
+            .map(|e| e.permissions)
     }
 
     /// Get module permissions with pattern matching
@@ -547,7 +559,10 @@ impl PermissionStore {
 
 /// Check if code generation is allowed
 pub fn check_code_generation(store: &PermissionStore) -> Result<(), VmError> {
-    if !store.get_global().contains(ReflectionPermission::GENERATE_CODE) {
+    if !store
+        .get_global()
+        .contains(ReflectionPermission::GENERATE_CODE)
+    {
         return Err(VmError::RuntimeError(
             "Permission denied: bytecode generation is not permitted".to_string(),
         ));
@@ -557,7 +572,10 @@ pub fn check_code_generation(store: &PermissionStore) -> Result<(), VmError> {
 
 /// Check if type creation is allowed
 pub fn check_type_creation(store: &PermissionStore) -> Result<(), VmError> {
-    if !store.get_global().contains(ReflectionPermission::CREATE_TYPES) {
+    if !store
+        .get_global()
+        .contains(ReflectionPermission::CREATE_TYPES)
+    {
         return Err(VmError::RuntimeError(
             "Permission denied: type creation is not permitted".to_string(),
         ));
@@ -663,11 +681,26 @@ mod tests {
 
     #[test]
     fn test_permission_from_str() {
-        assert_eq!(ReflectionPermission::from_str("ALL"), Some(ReflectionPermission::ALL));
-        assert_eq!(ReflectionPermission::from_str("all"), Some(ReflectionPermission::ALL));
-        assert_eq!(ReflectionPermission::from_str("PUBLIC_ONLY"), Some(ReflectionPermission::PUBLIC_ONLY));
-        assert_eq!(ReflectionPermission::from_str("0xFF"), Some(ReflectionPermission::ALL));
-        assert_eq!(ReflectionPermission::from_str("255"), Some(ReflectionPermission::ALL));
+        assert_eq!(
+            ReflectionPermission::from_str("ALL"),
+            Some(ReflectionPermission::ALL)
+        );
+        assert_eq!(
+            ReflectionPermission::from_str("all"),
+            Some(ReflectionPermission::ALL)
+        );
+        assert_eq!(
+            ReflectionPermission::from_str("PUBLIC_ONLY"),
+            Some(ReflectionPermission::PUBLIC_ONLY)
+        );
+        assert_eq!(
+            ReflectionPermission::from_str("0xFF"),
+            Some(ReflectionPermission::ALL)
+        );
+        assert_eq!(
+            ReflectionPermission::from_str("255"),
+            Some(ReflectionPermission::ALL)
+        );
     }
 
     #[test]
@@ -691,8 +724,13 @@ mod tests {
     fn test_permission_store_object() {
         let mut store = PermissionStore::new();
 
-        store.set_object(123, ReflectionPermission::READ_PUBLIC).unwrap();
-        assert_eq!(store.get_object(123), Some(ReflectionPermission::READ_PUBLIC));
+        store
+            .set_object(123, ReflectionPermission::READ_PUBLIC)
+            .unwrap();
+        assert_eq!(
+            store.get_object(123),
+            Some(ReflectionPermission::READ_PUBLIC)
+        );
         assert_eq!(store.get_object(456), None);
 
         store.clear_object(123).unwrap();
@@ -703,7 +741,9 @@ mod tests {
     fn test_permission_store_class() {
         let mut store = PermissionStore::new();
 
-        store.set_class(10, ReflectionPermission::FULL_ACCESS).unwrap();
+        store
+            .set_class(10, ReflectionPermission::FULL_ACCESS)
+            .unwrap();
         assert_eq!(store.get_class(10), Some(ReflectionPermission::FULL_ACCESS));
     }
 
@@ -725,8 +765,14 @@ mod tests {
             permissions: ReflectionPermission::PUBLIC_ONLY,
         });
 
-        assert_eq!(store.get_module_resolved("plugins/foo"), Some(ReflectionPermission::PUBLIC_ONLY));
-        assert_eq!(store.get_module_resolved("plugins/bar"), Some(ReflectionPermission::PUBLIC_ONLY));
+        assert_eq!(
+            store.get_module_resolved("plugins/foo"),
+            Some(ReflectionPermission::PUBLIC_ONLY)
+        );
+        assert_eq!(
+            store.get_module_resolved("plugins/bar"),
+            Some(ReflectionPermission::PUBLIC_ONLY)
+        );
         assert_eq!(store.get_module_resolved("plugins"), None); // Exact match doesn't work for prefix/*
         assert_eq!(store.get_module_resolved("other"), None);
     }
@@ -736,7 +782,9 @@ mod tests {
         let mut store = PermissionStore::new();
         store.set_global(ReflectionPermission::ALL);
         let _ = store.set_class(10, ReflectionPermission::FULL_ACCESS);
-        store.set_object(123, ReflectionPermission::READ_PUBLIC).unwrap();
+        store
+            .set_object(123, ReflectionPermission::READ_PUBLIC)
+            .unwrap();
 
         // Object-level takes precedence
         assert_eq!(
@@ -761,7 +809,9 @@ mod tests {
     fn test_sealed_permissions() {
         let mut store = PermissionStore::new();
 
-        store.set_object(123, ReflectionPermission::READ_PUBLIC).unwrap();
+        store
+            .set_object(123, ReflectionPermission::READ_PUBLIC)
+            .unwrap();
         store.seal_object(123);
         assert!(store.is_object_sealed(123));
 
@@ -840,7 +890,9 @@ global = "PUBLIC_ONLY"
         assert!(check_type_creation(&store).is_err());
 
         // Allow type creation but not code gen
-        store.set_global(ReflectionPermission::FULL_ACCESS.union(ReflectionPermission::CREATE_TYPES));
+        store.set_global(
+            ReflectionPermission::FULL_ACCESS.union(ReflectionPermission::CREATE_TYPES),
+        );
         assert!(check_code_generation(&store).is_err());
         assert!(check_type_creation(&store).is_ok());
     }

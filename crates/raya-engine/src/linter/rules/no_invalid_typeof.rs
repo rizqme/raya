@@ -73,16 +73,14 @@ impl LintRule for NoInvalidTypeof {
 
         let (fix, suggestion) = suggest_replacement(&value);
 
-        let mut notes = vec![
-            format!(
-                "Valid typeof results in Raya: {}",
-                VALID_TYPEOF_RESULTS
-                    .iter()
-                    .map(|s| format!("\"{}\"", s))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        ];
+        let mut notes = vec![format!(
+            "Valid typeof results in Raya: {}",
+            VALID_TYPEOF_RESULTS
+                .iter()
+                .map(|s| format!("\"{}\"", s))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )];
         if let Some(ref s) = suggestion {
             notes.push(s.clone());
         }
@@ -106,7 +104,10 @@ fn is_typeof(expr: &ast::Expression) -> bool {
     matches!(expr, ast::Expression::Typeof(_))
 }
 
-fn extract_string(expr: &ast::Expression, ctx: &LintContext<'_>) -> Option<(String, crate::parser::token::Span)> {
+fn extract_string(
+    expr: &ast::Expression,
+    ctx: &LintContext<'_>,
+) -> Option<(String, crate::parser::token::Span)> {
     if let ast::Expression::StringLiteral(s) = expr {
         Some((ctx.interner.resolve(s.value).to_string(), s.span))
     } else {
@@ -125,14 +126,8 @@ fn suggest_replacement(value: &str) -> (Option<String>, Option<String>) {
             Some("\"null\"".to_string()),
             Some("Raya has no undefined — did you mean \"null\"?".to_string()),
         ),
-        "bigint" => (
-            None,
-            Some("Raya has no bigint type".to_string()),
-        ),
-        "symbol" => (
-            None,
-            Some("Raya has no symbol type".to_string()),
-        ),
+        "bigint" => (None, Some("Raya has no bigint type".to_string())),
+        "symbol" => (None, Some("Raya has no symbol type".to_string())),
         _ => (None, None),
     }
 }
@@ -172,7 +167,11 @@ mod tests {
     #[test]
     fn test_invalid_number() {
         let diags = lint(r#"const x: boolean = typeof y == "number";"#);
-        assert!(has_rule(&diags, "L1011"), "should flag 'number', got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1011"),
+            "should flag 'number', got: {:?}",
+            diags
+        );
         assert!(diags.iter().any(|d| d.fix.is_some()), "should be fixable");
     }
 
@@ -210,6 +209,9 @@ mod tests {
     #[test]
     fn test_no_typeof_no_flag() {
         let diags = lint(r#"const x: boolean = y == "number";"#);
-        assert!(!has_rule(&diags, "L1011"), "should not flag non-typeof comparison");
+        assert!(
+            !has_rule(&diags, "L1011"),
+            "should not flag non-typeof comparison"
+        );
     }
 }

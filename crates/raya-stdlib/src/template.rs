@@ -117,9 +117,7 @@ fn template_render(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 
     let data_str = match ctx.read_string(args[1]) {
         Ok(s) => s,
-        Err(e) => {
-            return NativeCallResult::Error(format!("template.render: invalid data: {}", e))
-        }
+        Err(e) => return NativeCallResult::Error(format!("template.render: invalid data: {}", e)),
     };
 
     let tokens = match parse_template(&source) {
@@ -129,9 +127,7 @@ fn template_render(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
 
     let data: JsonValue = match serde_json::from_str(&data_str) {
         Ok(v) => v,
-        Err(e) => {
-            return NativeCallResult::Error(format!("template.render: invalid JSON: {}", e))
-        }
+        Err(e) => return NativeCallResult::Error(format!("template.render: invalid JSON: {}", e)),
     };
 
     match render_tokens(&tokens, &data, &[&data]) {
@@ -151,7 +147,10 @@ fn compiled_render(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         );
     }
 
-    let handle = match args[0].as_f64().or_else(|| args[0].as_i32().map(|i| i as f64)) {
+    let handle = match args[0]
+        .as_f64()
+        .or_else(|| args[0].as_i32().map(|i| i as f64))
+    {
         Some(f) => f as u64,
         None => {
             return NativeCallResult::Error(
@@ -163,20 +162,14 @@ fn compiled_render(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     let data_str = match ctx.read_string(args[1]) {
         Ok(s) => s,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "template.compiledRender: invalid data: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("template.compiledRender: invalid data: {}", e))
         }
     };
 
     let data: JsonValue = match serde_json::from_str(&data_str) {
         Ok(v) => v,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "template.compiledRender: invalid JSON: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("template.compiledRender: invalid JSON: {}", e))
         }
     };
 
@@ -208,7 +201,10 @@ fn compiled_release(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
         );
     }
 
-    let handle = match args[0].as_f64().or_else(|| args[0].as_i32().map(|i| i as f64)) {
+    let handle = match args[0]
+        .as_f64()
+        .or_else(|| args[0].as_i32().map(|i| i as f64))
+    {
         Some(f) => f as u64,
         None => {
             return NativeCallResult::Error(
@@ -263,10 +259,7 @@ fn parse_template(source: &str) -> Result<Vec<TemplateToken>, String> {
                 if let Some(close) = find_substr(bytes, content_start, b"}}") {
                     let content = source[content_start..close].trim();
                     if content.is_empty() {
-                        return Err(format!(
-                            "empty tag at position {}",
-                            tag_start
-                        ));
+                        return Err(format!("empty tag at position {}", tag_start));
                     }
 
                     let first_char = content.as_bytes()[0];
@@ -298,10 +291,7 @@ fn parse_template(source: &str) -> Result<Vec<TemplateToken>, String> {
                     }
                     pos = close + 2;
                 } else {
-                    return Err(format!(
-                        "unclosed tag starting at position {}",
-                        tag_start
-                    ));
+                    return Err(format!("unclosed tag starting at position {}", tag_start));
                 }
             }
         } else {
@@ -383,43 +373,23 @@ fn render_tokens(
                         for item in arr {
                             let mut new_stack: Vec<&JsonValue> = context_stack.to_vec();
                             new_stack.push(item);
-                            output.push_str(&render_tokens(
-                                &section_tokens,
-                                data,
-                                &new_stack,
-                            )?);
+                            output.push_str(&render_tokens(&section_tokens, data, &new_stack)?);
                         }
                     }
                     JsonValue::Object(_) => {
                         // Push object as context
                         let mut new_stack: Vec<&JsonValue> = context_stack.to_vec();
                         new_stack.push(val);
-                        output.push_str(&render_tokens(
-                            &section_tokens,
-                            data,
-                            &new_stack,
-                        )?);
+                        output.push_str(&render_tokens(&section_tokens, data, &new_stack)?);
                     }
                     JsonValue::Bool(true) => {
-                        output.push_str(&render_tokens(
-                            &section_tokens,
-                            data,
-                            context_stack,
-                        )?);
+                        output.push_str(&render_tokens(&section_tokens, data, context_stack)?);
                     }
                     JsonValue::String(s) if !s.is_empty() => {
-                        output.push_str(&render_tokens(
-                            &section_tokens,
-                            data,
-                            context_stack,
-                        )?);
+                        output.push_str(&render_tokens(&section_tokens, data, context_stack)?);
                     }
                     JsonValue::Number(_) => {
-                        output.push_str(&render_tokens(
-                            &section_tokens,
-                            data,
-                            context_stack,
-                        )?);
+                        output.push_str(&render_tokens(&section_tokens, data, context_stack)?);
                     }
                     _ => {
                         // null, false, empty string — do not render
@@ -436,11 +406,7 @@ fn render_tokens(
                 let render = is_falsy(val);
 
                 if render {
-                    output.push_str(&render_tokens(
-                        &section_tokens,
-                        data,
-                        context_stack,
-                    )?);
+                    output.push_str(&render_tokens(&section_tokens, data, context_stack)?);
                 }
 
                 i = end_idx + 1;
@@ -717,8 +683,7 @@ mod tests {
     #[test]
     fn test_render_dot_notation() {
         let tokens = parse_template("{{user.name}}").unwrap();
-        let data: JsonValue =
-            serde_json::from_str(r#"{"user": {"name": "Alice"}}"#).unwrap();
+        let data: JsonValue = serde_json::from_str(r#"{"user": {"name": "Alice"}}"#).unwrap();
         let result = render_tokens(&tokens, &data, &[&data]).unwrap();
         assert_eq!(result, "Alice");
     }
@@ -726,8 +691,7 @@ mod tests {
     #[test]
     fn test_render_section_object() {
         let tokens = parse_template("{{#user}}{{name}}{{/user}}").unwrap();
-        let data: JsonValue =
-            serde_json::from_str(r#"{"user": {"name": "Bob"}}"#).unwrap();
+        let data: JsonValue = serde_json::from_str(r#"{"user": {"name": "Bob"}}"#).unwrap();
         let result = render_tokens(&tokens, &data, &[&data]).unwrap();
         assert_eq!(result, "Bob");
     }

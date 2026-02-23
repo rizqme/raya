@@ -55,10 +55,22 @@ mod tests {
 
     #[test]
     fn test_detect_json_intrinsic() {
-        assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "stringify"), Some("stringify"));
-        assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "parse"), Some("parse"));
-        assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "encode"), Some("encode"));
-        assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "decode"), Some("decode"));
+        assert_eq!(
+            JsonIntrinsic::detect_intrinsic("JSON", "stringify"),
+            Some("stringify")
+        );
+        assert_eq!(
+            JsonIntrinsic::detect_intrinsic("JSON", "parse"),
+            Some("parse")
+        );
+        assert_eq!(
+            JsonIntrinsic::detect_intrinsic("JSON", "encode"),
+            Some("encode")
+        );
+        assert_eq!(
+            JsonIntrinsic::detect_intrinsic("JSON", "decode"),
+            Some("decode")
+        );
         assert_eq!(JsonIntrinsic::detect_intrinsic("JSON", "unknown"), None);
         assert_eq!(JsonIntrinsic::detect_intrinsic("Other", "stringify"), None);
     }

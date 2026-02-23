@@ -1,7 +1,7 @@
+use crate::compiler::Opcode;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::stack::Stack;
-use crate::compiler::Opcode;
 
 impl<'a> Interpreter<'a> {
     pub(in crate::vm::interpreter) fn exec_stack_ops(

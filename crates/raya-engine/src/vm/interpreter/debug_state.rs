@@ -5,10 +5,10 @@
 //! VM blocks while the child runs, and the child blocks while the parent inspects.
 
 use crate::compiler::Module;
+use parking_lot::RwLock;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
-use parking_lot::RwLock;
 
 /// Shared between debugger (parent VM) and debuggee (child interpreter thread).
 pub struct DebugState {
@@ -87,7 +87,10 @@ pub enum StepMode {
     /// Only break at breakpoints
     None,
     /// Step over: same or lower depth + line changed
-    Over { target_depth: usize, start_line: u32 },
+    Over {
+        target_depth: usize,
+        start_line: u32,
+    },
     /// Step into: any depth + line changed
     Into { start_line: u32 },
     /// Step out: depth < target
@@ -160,7 +163,10 @@ impl DebugState {
         let step = self.step_mode.lock().unwrap();
         match *step {
             StepMode::None => None,
-            StepMode::Over { target_depth, start_line } => {
+            StepMode::Over {
+                target_depth,
+                start_line,
+            } => {
                 if frame_depth <= target_depth && current_line != start_line && current_line != 0 {
                     Some(PauseReason::Step)
                 } else {
@@ -188,7 +194,8 @@ impl DebugState {
     pub fn signal_pause(&self, info: PauseInfo) {
         // Store pause metadata for debugger to read
         self.pause_line.store(info.line, Ordering::Release);
-        self.pause_depth.store(info.func_id as u32, Ordering::Release);
+        self.pause_depth
+            .store(info.func_id as u32, Ordering::Release);
         *self.pause_info.lock().unwrap() = Some(info);
 
         // Signal pause and wait for resume
@@ -249,10 +256,14 @@ impl DebugState {
         file: &str,
         target_line: u32,
     ) -> Result<(usize, u32), String> {
-        let debug_info = module.debug_info.as_ref()
+        let debug_info = module
+            .debug_info
+            .as_ref()
             .ok_or("Module compiled without sourcemap — recompile with --sourcemap")?;
 
-        let file_idx = debug_info.source_files.iter()
+        let file_idx = debug_info
+            .source_files
+            .iter()
             .position(|f| f.ends_with(file) || f == file)
             .ok_or_else(|| format!("Source file '{}' not found in debug info", file))?;
 
@@ -282,32 +293,30 @@ impl DebugState {
     }
 
     /// Add a breakpoint. Returns the breakpoint ID.
-    pub fn add_breakpoint(
-        &self,
-        func_id: usize,
-        offset: u32,
-        file: String,
-        line: u32,
-    ) -> u32 {
+    pub fn add_breakpoint(&self, func_id: usize, offset: u32, file: String, line: u32) -> u32 {
         let bp_id = self.next_bp_id.fetch_add(1, Ordering::Relaxed);
 
         // Add to fast-lookup map
-        self.breakpoints.write()
+        self.breakpoints
+            .write()
             .entry(func_id)
             .or_default()
             .insert(offset);
 
         // Add to registry
-        self.bp_registry.write().insert(bp_id, BreakpointEntry {
-            id: bp_id,
-            file,
-            line,
-            func_id,
-            bytecode_offset: offset,
-            enabled: true,
-            condition: None,
-            hit_count: 0,
-        });
+        self.bp_registry.write().insert(
+            bp_id,
+            BreakpointEntry {
+                id: bp_id,
+                file,
+                line,
+                func_id,
+                bytecode_offset: offset,
+                enabled: true,
+                condition: None,
+                hit_count: 0,
+            },
+        );
 
         bp_id
     }

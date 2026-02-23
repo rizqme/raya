@@ -51,10 +51,7 @@ pub fn normalize_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
 }
 
 /// Normalize a union type
-fn normalize_union(
-    ctx: &mut TypeContext,
-    members: &[TypeId],
-) -> TypeId {
+fn normalize_union(ctx: &mut TypeContext, members: &[TypeId]) -> TypeId {
     let never = ctx.never_type();
     let mut normalized_members = Vec::new();
 
@@ -138,15 +135,24 @@ pub fn contains_type_variables(ctx: &TypeContext, ty: TypeId) -> bool {
         Type::TypeVar(_) => true,
         Type::Array(arr) => contains_type_variables(ctx, arr.element),
         Type::Task(task) => contains_type_variables(ctx, task.result),
-        Type::Tuple(tuple) => tuple.elements.iter().any(|&e| contains_type_variables(ctx, e)),
+        Type::Tuple(tuple) => tuple
+            .elements
+            .iter()
+            .any(|&e| contains_type_variables(ctx, e)),
         Type::Function(func) => {
             func.params.iter().any(|&p| contains_type_variables(ctx, p))
                 || contains_type_variables(ctx, func.return_type)
         }
-        Type::Union(union) => union.members.iter().any(|&m| contains_type_variables(ctx, m)),
+        Type::Union(union) => union
+            .members
+            .iter()
+            .any(|&m| contains_type_variables(ctx, m)),
         Type::Generic(gen) => {
             contains_type_variables(ctx, gen.base)
-                || gen.type_args.iter().any(|&a| contains_type_variables(ctx, a))
+                || gen
+                    .type_args
+                    .iter()
+                    .any(|&a| contains_type_variables(ctx, a))
         }
         _ => false,
     }

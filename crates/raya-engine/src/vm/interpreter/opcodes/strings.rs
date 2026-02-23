@@ -31,7 +31,11 @@ impl<'a> Interpreter<'a> {
                     if val.is_null() {
                         "null".to_string()
                     } else if let Some(b) = val.as_bool() {
-                        if b { "true".to_string() } else { "false".to_string() }
+                        if b {
+                            "true".to_string()
+                        } else {
+                            "false".to_string()
+                        }
                     } else if let Some(i) = val.as_i32() {
                         i.to_string()
                     } else if let Some(f) = val.as_f64() {
@@ -194,7 +198,11 @@ impl<'a> Interpreter<'a> {
                 let s = if val.is_null() {
                     "null".to_string()
                 } else if let Some(b) = val.as_bool() {
-                    if b { "true".to_string() } else { "false".to_string() }
+                    if b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    }
                 } else if let Some(i) = val.as_i32() {
                     i.to_string()
                 } else if let Some(f) = val.as_f64() {

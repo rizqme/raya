@@ -24,11 +24,7 @@ impl LintRule for NoDuplicateImports {
         &META
     }
 
-    fn check_module(
-        &self,
-        module: &ast::Module,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_module(&self, module: &ast::Module, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut diagnostics = Vec::new();
 
@@ -84,7 +80,11 @@ import { foo } from "mod_a";
 import { bar } from "mod_a";
 "#;
         let diags = lint(source);
-        assert!(has_rule(&diags, "L1001"), "should flag duplicate imports, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1001"),
+            "should flag duplicate imports, got: {:?}",
+            diags
+        );
     }
 
     #[test]

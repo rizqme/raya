@@ -45,49 +45,49 @@ mod runtime_builder;
 mod snapshot;
 mod type_builder;
 
+pub use bootstrap::{
+    bootstrap_native_ids, core_class_ids, is_bootstrapped, mark_bootstrapped, BootstrapContext,
+    BootstrapInfo, ExecutionOptions, ExecutionResult,
+};
+pub use bytecode_builder::{
+    opcode as bc_opcode, BytecodeBuilder, BytecodeBuilderRegistry, CompiledFunction, ConstantValue,
+    Label, LocalVariable, StackType, ValidationResult,
+};
 pub use class_metadata::{ClassMetadata, ClassMetadataRegistry};
+pub use dynamic_module::{
+    DynamicExport, DynamicModule, DynamicModuleInfo, DynamicModuleRegistry, ImportResolution,
+    ModuleState, DYNAMIC_FUNCTION_BASE, DYNAMIC_MODULE_BASE,
+};
+pub use function_builder::{
+    DecoratorApplication, DecoratorRegistry, DecoratorTargetType, FunctionWrapper, HookType,
+    WrapperFunction, WrapperFunctionRegistry, WrapperHook,
+};
+pub use generic_metadata::{
+    looks_like_monomorphized, parse_monomorphized_name, GenericParameterInfo, GenericTypeInfo,
+    GenericTypeRegistry, SpecializedTypeInfo,
+};
 pub use introspection::{
     get_all_classes, get_class, get_class_by_name, get_class_hierarchy, get_class_id,
     get_type_info_for_value, is_instance_of, is_subclass_of, ConstructorInfo, DecoratorInfo,
     FieldInfo, MethodInfo, Modifiers, ParameterInfo, TypeInfo, TypeKind,
 };
 pub use metadata::{MetadataKey, MetadataStore, PropertyKey};
+pub use permissions::{
+    check_code_generation, check_field_read, check_field_write, check_invoke, check_type_creation,
+    ModulePermissionRule, PermissionStore, ReflectionPermission,
+};
 pub use proxy::{
     get_trap_method, is_proxy, prepare_get_trap, prepare_has_trap, prepare_invoke_trap,
     prepare_set_trap, try_unwrap_proxy, unwrap_proxy_deep, unwrap_proxy_target, TrapMethod,
     TrapResult, UnwrappedProxy,
 };
-pub use snapshot::{FieldSnapshot, ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue, ValueChange};
-pub use type_builder::{
-    DynamicClassBuilder, FieldDefinition, MethodDefinition, ParameterDefinition,
-    SubclassDefinition,
-};
 pub use runtime_builder::{
-    ClassBuilder, ClassBuilderRegistry, DynamicClosure, DynamicFunction,
-    DynamicFunctionRegistry, GenericOrigin, NativeCallbackId, NativeCallbackRegistry,
-    SpecializationCache,
+    ClassBuilder, ClassBuilderRegistry, DynamicClosure, DynamicFunction, DynamicFunctionRegistry,
+    GenericOrigin, NativeCallbackId, NativeCallbackRegistry, SpecializationCache,
 };
-pub use generic_metadata::{
-    GenericParameterInfo, GenericTypeInfo, GenericTypeRegistry, SpecializedTypeInfo,
-    looks_like_monomorphized, parse_monomorphized_name,
+pub use snapshot::{
+    FieldSnapshot, ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue, ValueChange,
 };
-pub use bytecode_builder::{
-    BytecodeBuilder, BytecodeBuilderRegistry, CompiledFunction, ConstantValue,
-    Label, LocalVariable, StackType, ValidationResult, opcode as bc_opcode,
-};
-pub use permissions::{
-    check_code_generation, check_field_read, check_field_write, check_invoke,
-    check_type_creation, ModulePermissionRule, PermissionStore, ReflectionPermission,
-};
-pub use dynamic_module::{
-    DynamicExport, DynamicModule, DynamicModuleInfo, DynamicModuleRegistry,
-    ImportResolution, ModuleState, DYNAMIC_FUNCTION_BASE, DYNAMIC_MODULE_BASE,
-};
-pub use bootstrap::{
-    BootstrapContext, BootstrapInfo, ExecutionOptions, ExecutionResult,
-    core_class_ids, bootstrap_native_ids, is_bootstrapped, mark_bootstrapped,
-};
-pub use function_builder::{
-    DecoratorApplication, DecoratorRegistry, DecoratorTargetType,
-    FunctionWrapper, HookType, WrapperFunction, WrapperFunctionRegistry, WrapperHook,
+pub use type_builder::{
+    DynamicClassBuilder, FieldDefinition, MethodDefinition, ParameterDefinition, SubclassDefinition,
 };

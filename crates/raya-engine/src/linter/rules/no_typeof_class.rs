@@ -93,7 +93,10 @@ fn is_typeof(expr: &ast::Expression) -> bool {
     matches!(expr, ast::Expression::Typeof(_))
 }
 
-fn extract_string(expr: &ast::Expression, ctx: &LintContext<'_>) -> Option<(String, crate::parser::token::Span)> {
+fn extract_string(
+    expr: &ast::Expression,
+    ctx: &LintContext<'_>,
+) -> Option<(String, crate::parser::token::Span)> {
     if let ast::Expression::StringLiteral(s) = expr {
         Some((ctx.interner.resolve(s.value).to_string(), s.span))
     } else {
@@ -118,7 +121,11 @@ mod tests {
     #[test]
     fn test_typeof_class_name_flagged() {
         let diags = lint(r#"const x: boolean = typeof y == "MyClass";"#);
-        assert!(has_rule(&diags, "L1010"), "should flag class name, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1010"),
+            "should flag class name, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -130,7 +137,10 @@ mod tests {
     #[test]
     fn test_typeof_valid_string_ok() {
         let diags = lint(r#"const x: boolean = typeof y == "string";"#);
-        assert!(!has_rule(&diags, "L1010"), "valid typeof string should not be flagged");
+        assert!(
+            !has_rule(&diags, "L1010"),
+            "valid typeof string should not be flagged"
+        );
     }
 
     #[test]
@@ -143,7 +153,10 @@ mod tests {
     fn test_typeof_lowercase_not_class() {
         // Lowercase non-valid strings are handled by no-invalid-typeof, not this rule.
         let diags = lint(r#"const x: boolean = typeof y == "number";"#);
-        assert!(!has_rule(&diags, "L1010"), "lowercase strings should not trigger this rule");
+        assert!(
+            !has_rule(&diags, "L1010"),
+            "lowercase strings should not trigger this rule"
+        );
     }
 
     #[test]

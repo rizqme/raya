@@ -155,10 +155,7 @@ fn test_optional_param_provided() {
 
 #[test]
 fn test_exponentiation_int() {
-    expect_i32(
-        "return 2 ** 5 + 10;",
-        42,
-    );
+    expect_i32("return 2 ** 5 + 10;", 42);
 }
 
 #[test]
@@ -173,10 +170,7 @@ fn test_exponentiation_in_expression() {
 
 #[test]
 fn test_exponentiation_float() {
-    expect_f64(
-        "return 2.0 ** 10.0;",
-        1024.0,
-    );
+    expect_f64("return 2.0 ** 10.0;", 1024.0);
 }
 
 // ============================================================================
@@ -204,18 +198,12 @@ fn test_unary_negation_expression() {
 
 #[test]
 fn test_unary_not_boolean() {
-    expect_bool(
-        "return !false;",
-        true,
-    );
+    expect_bool("return !false;", true);
 }
 
 #[test]
 fn test_unary_not_double() {
-    expect_bool(
-        "return !!true;",
-        true,
-    );
+    expect_bool("return !!true;", true);
 }
 
 // ============================================================================
@@ -225,19 +213,13 @@ fn test_unary_not_double() {
 #[test]
 fn test_bitwise_not() {
     // ~(-43) = 42 (two's complement)
-    expect_i32(
-        "return ~(-43);",
-        42,
-    );
+    expect_i32("return ~(-43);", 42);
 }
 
 #[test]
 fn test_bitwise_not_zero() {
     // ~0 = -1
-    expect_i32(
-        "return ~0;",
-        -1,
-    );
+    expect_i32("return ~0;", -1);
 }
 
 // ============================================================================
@@ -247,19 +229,13 @@ fn test_bitwise_not_zero() {
 #[test]
 fn test_unsigned_right_shift() {
     // -1 >>> 26 = 63 (all ones shifted)
-    expect_i32(
-        "return -1 >>> 26;",
-        63,
-    );
+    expect_i32("return -1 >>> 26;", 63);
 }
 
 #[test]
 fn test_unsigned_right_shift_positive() {
     // 84 >>> 1 = 42
-    expect_i32(
-        "return 84 >>> 1;",
-        42,
-    );
+    expect_i32("return 84 >>> 1;", 42);
 }
 
 // ============================================================================
@@ -268,34 +244,22 @@ fn test_unsigned_right_shift_positive() {
 
 #[test]
 fn test_string_less_than() {
-    expect_bool(
-        "return \"apple\" < \"banana\";",
-        true,
-    );
+    expect_bool("return \"apple\" < \"banana\";", true);
 }
 
 #[test]
 fn test_string_greater_than() {
-    expect_bool(
-        "return \"zebra\" > \"apple\";",
-        true,
-    );
+    expect_bool("return \"zebra\" > \"apple\";", true);
 }
 
 #[test]
 fn test_string_less_equal() {
-    expect_bool(
-        "return \"abc\" <= \"abc\";",
-        true,
-    );
+    expect_bool("return \"abc\" <= \"abc\";", true);
 }
 
 #[test]
 fn test_string_greater_equal() {
-    expect_bool(
-        "return \"xyz\" >= \"abc\";",
-        true,
-    );
+    expect_bool("return \"xyz\" >= \"abc\";", true);
 }
 
 // ============================================================================
@@ -657,34 +621,22 @@ fn test_closure_captures_mutable_loop_var() {
 
 #[test]
 fn test_string_to_lower_case() {
-    expect_string(
-        "return \"HELLO WORLD\".toLowerCase();",
-        "hello world",
-    );
+    expect_string("return \"HELLO WORLD\".toLowerCase();", "hello world");
 }
 
 #[test]
 fn test_string_to_upper_case() {
-    expect_string(
-        "return \"hello world\".toUpperCase();",
-        "HELLO WORLD",
-    );
+    expect_string("return \"hello world\".toUpperCase();", "HELLO WORLD");
 }
 
 #[test]
 fn test_string_trim_start() {
-    expect_string(
-        "return \"   hello\".trimStart();",
-        "hello",
-    );
+    expect_string("return \"   hello\".trimStart();", "hello");
 }
 
 #[test]
 fn test_string_trim_end() {
-    expect_string(
-        "return \"hello   \".trimEnd();",
-        "hello",
-    );
+    expect_string("return \"hello   \".trimEnd();", "hello");
 }
 
 // ============================================================================
@@ -1139,34 +1091,22 @@ fn test_nested_if_else_chain() {
 
 #[test]
 fn test_operator_precedence_add_mul() {
-    expect_i32(
-        "return 2 + 4 * 10;",
-        42,
-    );
+    expect_i32("return 2 + 4 * 10;", 42);
 }
 
 #[test]
 fn test_operator_precedence_parens() {
-    expect_i32(
-        "return (2 + 4) * 7;",
-        42,
-    );
+    expect_i32("return (2 + 4) * 7;", 42);
 }
 
 #[test]
 fn test_mixed_int_arithmetic() {
-    expect_i32(
-        "return 100 / 2 - 8;",
-        42,
-    );
+    expect_i32("return 100 / 2 - 8;", 42);
 }
 
 #[test]
 fn test_modulo_operator() {
-    expect_i32(
-        "return 142 % 100;",
-        42,
-    );
+    expect_i32("return 142 % 100;", 42);
 }
 
 // ============================================================================
@@ -1175,18 +1115,12 @@ fn test_modulo_operator() {
 
 #[test]
 fn test_and_short_circuit_false() {
-    expect_bool(
-        "return false && true;",
-        false,
-    );
+    expect_bool("return false && true;", false);
 }
 
 #[test]
 fn test_or_short_circuit_true() {
-    expect_bool(
-        "return true || false;",
-        true,
-    );
+    expect_bool("return true || false;", true);
 }
 
 #[test]
@@ -1344,19 +1278,13 @@ fn test_class_static_constants_as_enum() {
 #[test]
 fn test_integer_division_truncates() {
     // 85 / 2 should be 42 (integer division)
-    expect_i32(
-        "return 85 / 2;",
-        42,
-    );
+    expect_i32("return 85 / 2;", 42);
 }
 
 #[test]
 fn test_integer_division_negative() {
     // -85 / 2 should be -42 (truncates toward zero)
-    expect_i32(
-        "return -85 / 2;",
-        -42,
-    );
+    expect_i32("return -85 / 2;", -42);
 }
 
 // ============================================================================
@@ -1375,10 +1303,7 @@ fn test_string_concat_plus() {
 
 #[test]
 fn test_string_concat_multiple() {
-    expect_string(
-        "return \"a\" + \"b\" + \"c\";",
-        "abc",
-    );
+    expect_string("return \"a\" + \"b\" + \"c\";", "abc");
 }
 
 // ============================================================================
@@ -1708,10 +1633,7 @@ fn test_not_equal_with_not() {
 
 #[test]
 fn test_not_less_than() {
-    expect_bool(
-        "return !(42 < 10);",
-        true,
-    );
+    expect_bool("return !(42 < 10);", true);
 }
 
 // ============================================================================
@@ -1779,18 +1701,12 @@ fn test_mutual_recursion() {
 
 #[test]
 fn test_strict_equality_same_int() {
-    expect_bool(
-        "return 42 === 42;",
-        true,
-    );
+    expect_bool("return 42 === 42;", true);
 }
 
 #[test]
 fn test_strict_inequality_different() {
-    expect_bool(
-        "return 42 !== 43;",
-        true,
-    );
+    expect_bool("return 42 !== 43;", true);
 }
 
 #[test]
@@ -1817,18 +1733,12 @@ fn test_null_inequality() {
 
 #[test]
 fn test_string_repeat() {
-    expect_string(
-        "return \"ab\".repeat(3);",
-        "ababab",
-    );
+    expect_string("return \"ab\".repeat(3);", "ababab");
 }
 
 #[test]
 fn test_string_repeat_zero() {
-    expect_string(
-        "return \"abc\".repeat(0);",
-        "",
-    );
+    expect_string("return \"abc\".repeat(0);", "");
 }
 
 // ============================================================================

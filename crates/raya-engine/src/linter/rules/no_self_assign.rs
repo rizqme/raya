@@ -81,7 +81,11 @@ mod tests {
     #[test]
     fn test_self_assign_flagged() {
         let diags = lint("function f(): void { let x: int = 1; x = x; }");
-        assert!(has_rule(&diags, "L1002"), "should flag x = x, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1002"),
+            "should flag x = x, got: {:?}",
+            diags
+        );
     }
 
     #[test]

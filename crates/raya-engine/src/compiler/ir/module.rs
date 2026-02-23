@@ -94,9 +94,7 @@ impl IrModule {
 
     /// Get a class by name
     pub fn get_class_by_name(&self, name: &str) -> Option<&IrClass> {
-        self.class_map
-            .get(name)
-            .and_then(|&id| self.get_class(id))
+        self.class_map.get(name).and_then(|&id| self.get_class(id))
     }
 
     /// Get a class ID by name

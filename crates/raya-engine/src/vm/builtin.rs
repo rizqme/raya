@@ -1404,7 +1404,10 @@ mod tests {
 
     #[test]
     fn test_lookup_string_methods() {
-        assert_eq!(lookup_builtin_method("String", "charAt"), Some(string::CHAR_AT));
+        assert_eq!(
+            lookup_builtin_method("String", "charAt"),
+            Some(string::CHAR_AT)
+        );
         assert_eq!(lookup_builtin_method("string", "trim"), Some(string::TRIM));
         assert_eq!(lookup_builtin_method("String", "unknown"), None);
     }

@@ -2,15 +2,17 @@
 
 use crate::handles::HandleRegistry;
 use crate::tls;
-use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
+use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
 use std::sync::LazyLock;
 
-static TCP_LISTENERS: LazyLock<HandleRegistry<net::TcpListener>> = LazyLock::new(HandleRegistry::new);
+static TCP_LISTENERS: LazyLock<HandleRegistry<net::TcpListener>> =
+    LazyLock::new(HandleRegistry::new);
 static TCP_STREAMS: LazyLock<HandleRegistry<net::TcpStream>> = LazyLock::new(HandleRegistry::new);
 static UDP_SOCKETS: LazyLock<HandleRegistry<net::UdpSocket>> = LazyLock::new(HandleRegistry::new);
-static TLS_STREAMS: LazyLock<HandleRegistry<tls::ClientTlsStream>> = LazyLock::new(HandleRegistry::new);
+static TLS_STREAMS: LazyLock<HandleRegistry<tls::ClientTlsStream>> =
+    LazyLock::new(HandleRegistry::new);
 
 // ── TCP Listener ──
 
@@ -20,7 +22,8 @@ pub fn tcp_listen(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tcpListen: {}", e)),
     };
-    let port = args.get(1)
+    let port = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u16;
     let addr = format!("{}:{}", host, port);
@@ -35,28 +38,28 @@ pub fn tcp_listen(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 
 /// Accept a TCP connection (blocking → IO pool)
 pub fn tcp_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_LISTENERS.get(handle) {
-                Some(listener) => match listener.accept() {
-                    Ok((stream, _addr)) => {
-                        let stream_handle = TCP_STREAMS.insert(stream);
-                        IoCompletion::Primitive(NativeValue::f64(stream_handle as f64))
-                    }
-                    Err(e) => IoCompletion::Error(format!("net.tcpAccept: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.tcpAccept: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match TCP_LISTENERS.get(handle) {
+            Some(listener) => match listener.accept() {
+                Ok((stream, _addr)) => {
+                    let stream_handle = TCP_STREAMS.insert(stream);
+                    IoCompletion::Primitive(NativeValue::f64(stream_handle as f64))
+                }
+                Err(e) => IoCompletion::Error(format!("net.tcpAccept: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tcpAccept: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Close TCP listener
 pub fn tcp_listener_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     TCP_LISTENERS.remove(handle);
@@ -65,7 +68,8 @@ pub fn tcp_listener_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> Nat
 
 /// Get TCP listener local address
 pub fn tcp_listener_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match TCP_LISTENERS.get(handle) {
@@ -85,105 +89,105 @@ pub fn tcp_connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tcpConnect: {}", e)),
     };
-    let port = args.get(1)
+    let port = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u16;
     let addr = format!("{}:{}", host, port);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match net::TcpStream::connect(&addr) {
-                Ok(stream) => {
-                    let handle = TCP_STREAMS.insert(stream);
-                    IoCompletion::Primitive(NativeValue::f64(handle as f64))
-                }
-                Err(e) => IoCompletion::Error(format!("net.tcpConnect: {}", e)),
+        work: Box::new(move || match net::TcpStream::connect(&addr) {
+            Ok(stream) => {
+                let handle = TCP_STREAMS.insert(stream);
+                IoCompletion::Primitive(NativeValue::f64(handle as f64))
             }
+            Err(e) => IoCompletion::Error(format!("net.tcpConnect: {}", e)),
         }),
     })
 }
 
 /// Read up to N bytes from TCP stream (blocking → IO pool)
 pub fn tcp_read(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    let size = args.get(1)
+    let size = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(4096.0) as usize;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_STREAMS.get_mut(handle) {
-                Some(mut stream) => {
-                    let mut buf = vec![0u8; size];
-                    match stream.read(&mut buf) {
-                        Ok(n) => {
-                            buf.truncate(n);
-                            IoCompletion::Bytes(buf)
-                        }
-                        Err(e) => IoCompletion::Error(format!("net.tcpRead: {}", e)),
+        work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
+            Some(mut stream) => {
+                let mut buf = vec![0u8; size];
+                match stream.read(&mut buf) {
+                    Ok(n) => {
+                        buf.truncate(n);
+                        IoCompletion::Bytes(buf)
                     }
+                    Err(e) => IoCompletion::Error(format!("net.tcpRead: {}", e)),
                 }
-                None => IoCompletion::Error(format!("net.tcpRead: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("net.tcpRead: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Read all bytes from TCP stream until EOF (blocking → IO pool)
 pub fn tcp_read_all(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_STREAMS.get_mut(handle) {
-                Some(mut stream) => {
-                    let mut buf = Vec::new();
-                    match stream.read_to_end(&mut buf) {
-                        Ok(_) => IoCompletion::Bytes(buf),
-                        Err(e) => IoCompletion::Error(format!("net.tcpReadAll: {}", e)),
-                    }
+        work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
+            Some(mut stream) => {
+                let mut buf = Vec::new();
+                match stream.read_to_end(&mut buf) {
+                    Ok(_) => IoCompletion::Bytes(buf),
+                    Err(e) => IoCompletion::Error(format!("net.tcpReadAll: {}", e)),
                 }
-                None => IoCompletion::Error(format!("net.tcpReadAll: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("net.tcpReadAll: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Read a line from TCP stream (blocking → IO pool)
 pub fn tcp_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_STREAMS.get_mut(handle) {
-                Some(stream) => {
-                    match stream.try_clone() {
-                        Ok(clone) => {
-                            let mut reader = BufReader::new(clone);
-                            let mut line = String::new();
-                            match reader.read_line(&mut line) {
-                                Ok(_) => {
-                                    if line.ends_with('\n') { line.pop(); }
-                                    if line.ends_with('\r') { line.pop(); }
-                                    IoCompletion::String(line)
-                                }
-                                Err(e) => IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
+        work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
+            Some(stream) => match stream.try_clone() {
+                Ok(clone) => {
+                    let mut reader = BufReader::new(clone);
+                    let mut line = String::new();
+                    match reader.read_line(&mut line) {
+                        Ok(_) => {
+                            if line.ends_with('\n') {
+                                line.pop();
                             }
+                            if line.ends_with('\r') {
+                                line.pop();
+                            }
+                            IoCompletion::String(line)
                         }
                         Err(e) => IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
                     }
                 }
-                None => IoCompletion::Error(format!("net.tcpReadLine: invalid handle {}", handle)),
-            }
+                Err(e) => IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tcpReadLine: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Write bytes to TCP stream (blocking → IO pool)
 pub fn tcp_write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_buffer(args[1]) {
@@ -191,21 +195,20 @@ pub fn tcp_write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         Err(e) => return NativeCallResult::Error(format!("net.tcpWrite: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_STREAMS.get_mut(handle) {
-                Some(mut stream) => match stream.write(&data) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.tcpWrite: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.tcpWrite: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
+            Some(mut stream) => match stream.write(&data) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.tcpWrite: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tcpWrite: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Write string to TCP stream (blocking → IO pool)
 pub fn tcp_write_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_string(args[1]) {
@@ -213,21 +216,20 @@ pub fn tcp_write_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         Err(e) => return NativeCallResult::Error(format!("net.tcpWriteText: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TCP_STREAMS.get_mut(handle) {
-                Some(mut stream) => match stream.write(data.as_bytes()) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.tcpWriteText: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.tcpWriteText: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
+            Some(mut stream) => match stream.write(data.as_bytes()) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.tcpWriteText: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tcpWriteText: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Close TCP stream
 pub fn tcp_stream_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     TCP_STREAMS.remove(handle);
@@ -236,7 +238,8 @@ pub fn tcp_stream_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> Nativ
 
 /// Get remote address of TCP stream
 pub fn tcp_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match TCP_STREAMS.get(handle) {
@@ -250,7 +253,8 @@ pub fn tcp_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
 
 /// Get local address of TCP stream
 pub fn tcp_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match TCP_STREAMS.get(handle) {
@@ -270,7 +274,8 @@ pub fn udp_bind(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.udpBind: {}", e)),
     };
-    let port = args.get(1)
+    let port = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u16;
     let addr = format!("{}:{}", host, port);
@@ -285,7 +290,8 @@ pub fn udp_bind(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
 
 /// Send data to UDP address (blocking → IO pool)
 pub fn udp_send_to(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_buffer(args[1]) {
@@ -297,21 +303,20 @@ pub fn udp_send_to(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         Err(e) => return NativeCallResult::Error(format!("net.udpSendTo: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match UDP_SOCKETS.get(handle) {
-                Some(socket) => match socket.send_to(&data, &addr) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.udpSendTo: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.udpSendTo: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match UDP_SOCKETS.get(handle) {
+            Some(socket) => match socket.send_to(&data, &addr) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.udpSendTo: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.udpSendTo: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Send text to UDP address (blocking → IO pool)
 pub fn udp_send_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_string(args[1]) {
@@ -323,48 +328,47 @@ pub fn udp_send_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
         Err(e) => return NativeCallResult::Error(format!("net.udpSendText: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match UDP_SOCKETS.get(handle) {
-                Some(socket) => match socket.send_to(data.as_bytes(), &addr) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.udpSendText: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.udpSendText: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match UDP_SOCKETS.get(handle) {
+            Some(socket) => match socket.send_to(data.as_bytes(), &addr) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.udpSendText: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.udpSendText: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Receive data from UDP socket (blocking → IO pool)
 pub fn udp_receive(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    let size = args.get(1)
+    let size = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(4096.0) as usize;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match UDP_SOCKETS.get(handle) {
-                Some(socket) => {
-                    let mut buf = vec![0u8; size];
-                    match socket.recv_from(&mut buf) {
-                        Ok((n, _addr)) => {
-                            buf.truncate(n);
-                            IoCompletion::Bytes(buf)
-                        }
-                        Err(e) => IoCompletion::Error(format!("net.udpReceive: {}", e)),
+        work: Box::new(move || match UDP_SOCKETS.get(handle) {
+            Some(socket) => {
+                let mut buf = vec![0u8; size];
+                match socket.recv_from(&mut buf) {
+                    Ok((n, _addr)) => {
+                        buf.truncate(n);
+                        IoCompletion::Bytes(buf)
                     }
+                    Err(e) => IoCompletion::Error(format!("net.udpReceive: {}", e)),
                 }
-                None => IoCompletion::Error(format!("net.udpReceive: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("net.udpReceive: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Close UDP socket
 pub fn udp_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     UDP_SOCKETS.remove(handle);
@@ -373,7 +377,8 @@ pub fn udp_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 
 /// Get local address of UDP socket
 pub fn udp_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match UDP_SOCKETS.get(handle) {
@@ -393,25 +398,24 @@ pub fn tls_connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tlsConnect: {}", e)),
     };
-    let port = args.get(1)
+    let port = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(443.0) as u16;
     let addr = format!("{}:{}", host, port);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match net::TcpStream::connect(&addr) {
-                Ok(stream) => {
-                    let config = tls::default_client_config();
-                    match tls::connect_tls(stream, &host, config) {
-                        Ok(tls_stream) => {
-                            let handle = TLS_STREAMS.insert(tls_stream);
-                            IoCompletion::Primitive(NativeValue::f64(handle as f64))
-                        }
-                        Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
+        work: Box::new(move || match net::TcpStream::connect(&addr) {
+            Ok(stream) => {
+                let config = tls::default_client_config();
+                match tls::connect_tls(stream, &host, config) {
+                    Ok(tls_stream) => {
+                        let handle = TLS_STREAMS.insert(tls_stream);
+                        IoCompletion::Primitive(NativeValue::f64(handle as f64))
                     }
+                    Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
                 }
-                Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
             }
+            Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
         }),
     })
 }
@@ -422,7 +426,8 @@ pub fn tls_connect_with_ca(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nat
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tlsConnectWithCa: {}", e)),
     };
-    let port = args.get(1)
+    let port = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(443.0) as u16;
     let ca_pem = match ctx.read_string(args[2]) {
@@ -452,55 +457,55 @@ pub fn tls_connect_with_ca(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nat
 
 /// Read up to N bytes from TLS stream (blocking → IO pool)
 pub fn tls_read(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    let size = args.get(1)
+    let size = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(4096.0) as usize;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TLS_STREAMS.get_mut(handle) {
-                Some(mut stream) => {
-                    let mut buf = vec![0u8; size];
-                    match stream.read(&mut buf) {
-                        Ok(n) => {
-                            buf.truncate(n);
-                            IoCompletion::Bytes(buf)
-                        }
-                        Err(e) => IoCompletion::Error(format!("net.tlsRead: {}", e)),
+        work: Box::new(move || match TLS_STREAMS.get_mut(handle) {
+            Some(mut stream) => {
+                let mut buf = vec![0u8; size];
+                match stream.read(&mut buf) {
+                    Ok(n) => {
+                        buf.truncate(n);
+                        IoCompletion::Bytes(buf)
                     }
+                    Err(e) => IoCompletion::Error(format!("net.tlsRead: {}", e)),
                 }
-                None => IoCompletion::Error(format!("net.tlsRead: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("net.tlsRead: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Read all bytes from TLS stream until EOF (blocking → IO pool)
 pub fn tls_read_all(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TLS_STREAMS.get_mut(handle) {
-                Some(mut stream) => {
-                    let mut buf = Vec::new();
-                    match stream.read_to_end(&mut buf) {
-                        Ok(_) => IoCompletion::Bytes(buf),
-                        Err(e) => IoCompletion::Error(format!("net.tlsReadAll: {}", e)),
-                    }
+        work: Box::new(move || match TLS_STREAMS.get_mut(handle) {
+            Some(mut stream) => {
+                let mut buf = Vec::new();
+                match stream.read_to_end(&mut buf) {
+                    Ok(_) => IoCompletion::Bytes(buf),
+                    Err(e) => IoCompletion::Error(format!("net.tlsReadAll: {}", e)),
                 }
-                None => IoCompletion::Error(format!("net.tlsReadAll: invalid handle {}", handle)),
             }
+            None => IoCompletion::Error(format!("net.tlsReadAll: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Read a line from TLS stream (blocking → IO pool)
 pub fn tls_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
@@ -519,7 +524,9 @@ pub fn tls_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
                                 }
                                 line.push(byte[0]);
                             }
-                            Err(e) => return IoCompletion::Error(format!("net.tlsReadLine: {}", e)),
+                            Err(e) => {
+                                return IoCompletion::Error(format!("net.tlsReadLine: {}", e))
+                            }
                         }
                     }
                     // Strip trailing \r if present
@@ -537,7 +544,8 @@ pub fn tls_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
 
 /// Write bytes to TLS stream (blocking → IO pool)
 pub fn tls_write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_buffer(args[1]) {
@@ -545,21 +553,20 @@ pub fn tls_write(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         Err(e) => return NativeCallResult::Error(format!("net.tlsWrite: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TLS_STREAMS.get_mut(handle) {
-                Some(mut stream) => match stream.write(&data) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.tlsWrite: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.tlsWrite: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match TLS_STREAMS.get_mut(handle) {
+            Some(mut stream) => match stream.write(&data) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.tlsWrite: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tlsWrite: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Write string to TLS stream (blocking → IO pool)
 pub fn tls_write_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     let data = match ctx.read_string(args[1]) {
@@ -567,21 +574,20 @@ pub fn tls_write_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         Err(e) => return NativeCallResult::Error(format!("net.tlsWriteText: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match TLS_STREAMS.get_mut(handle) {
-                Some(mut stream) => match stream.write(data.as_bytes()) {
-                    Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
-                    Err(e) => IoCompletion::Error(format!("net.tlsWriteText: {}", e)),
-                },
-                None => IoCompletion::Error(format!("net.tlsWriteText: invalid handle {}", handle)),
-            }
+        work: Box::new(move || match TLS_STREAMS.get_mut(handle) {
+            Some(mut stream) => match stream.write(data.as_bytes()) {
+                Ok(n) => IoCompletion::Primitive(NativeValue::f64(n as f64)),
+                Err(e) => IoCompletion::Error(format!("net.tlsWriteText: {}", e)),
+            },
+            None => IoCompletion::Error(format!("net.tlsWriteText: invalid handle {}", handle)),
         }),
     })
 }
 
 /// Close TLS stream
 pub fn tls_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     TLS_STREAMS.remove(handle);
@@ -590,7 +596,8 @@ pub fn tls_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
 
 /// Get remote address of TLS stream
 pub fn tls_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match TLS_STREAMS.get(handle) {
@@ -604,7 +611,8 @@ pub fn tls_remote_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
 
 /// Get local address of TLS stream
 pub fn tls_local_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
-    let handle = args.first()
+    let handle = args
+        .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     match TLS_STREAMS.get(handle) {

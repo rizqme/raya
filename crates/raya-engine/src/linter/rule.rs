@@ -98,7 +98,11 @@ pub trait LintRule: Send + Sync {
     }
 
     /// Check a statement node.
-    fn check_statement(&self, _stmt: &ast::Statement, _ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
+    fn check_statement(
+        &self,
+        _stmt: &ast::Statement,
+        _ctx: &LintContext<'_>,
+    ) -> Vec<LintDiagnostic> {
         vec![]
     }
 

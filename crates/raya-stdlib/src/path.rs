@@ -18,19 +18,19 @@ pub fn call_path_method(
     args: &[NativeValue],
 ) -> NativeCallResult {
     match method_id {
-        0x6000 => join(ctx, args),           // JOIN
-        0x6001 => normalize(ctx, args),      // NORMALIZE
-        0x6002 => dirname(ctx, args),        // DIRNAME
-        0x6003 => basename(ctx, args),       // BASENAME
-        0x6004 => extname(ctx, args),        // EXTNAME
-        0x6005 => is_absolute(ctx, args),    // IS_ABSOLUTE
-        0x6006 => resolve(ctx, args),        // RESOLVE
-        0x6007 => relative(ctx, args),       // RELATIVE
-        0x6008 => cwd(ctx, args),            // CWD
-        0x6009 => sep(ctx, args),            // SEP
-        0x600A => delimiter(ctx, args),      // DELIMITER
-        0x600B => strip_ext(ctx, args),      // STRIP_EXT
-        0x600C => with_ext(ctx, args),       // WITH_EXT
+        0x6000 => join(ctx, args),        // JOIN
+        0x6001 => normalize(ctx, args),   // NORMALIZE
+        0x6002 => dirname(ctx, args),     // DIRNAME
+        0x6003 => basename(ctx, args),    // BASENAME
+        0x6004 => extname(ctx, args),     // EXTNAME
+        0x6005 => is_absolute(ctx, args), // IS_ABSOLUTE
+        0x6006 => resolve(ctx, args),     // RESOLVE
+        0x6007 => relative(ctx, args),    // RELATIVE
+        0x6008 => cwd(ctx, args),         // CWD
+        0x6009 => sep(ctx, args),         // SEP
+        0x600A => delimiter(ctx, args),   // DELIMITER
+        0x600B => strip_ext(ctx, args),   // STRIP_EXT
+        0x600C => with_ext(ctx, args),    // WITH_EXT
         _ => NativeCallResult::Unhandled,
     }
 }
@@ -197,8 +197,8 @@ fn relative(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("Invalid to path: {}", e)),
     };
 
-    let rel = pathdiff::diff_paths(&to, &from)
-        .map_or(to.clone(), |p| p.to_string_lossy().to_string());
+    let rel =
+        pathdiff::diff_paths(&to, &from).map_or(to.clone(), |p| p.to_string_lossy().to_string());
     NativeCallResult::Value(ctx.create_string(&rel))
 }
 

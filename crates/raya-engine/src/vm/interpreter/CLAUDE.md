@@ -63,6 +63,7 @@ Interpreter::run(task) → ExecutionResult
 
 - **Frame-based calls:** Function calls, closures, constructors, and callbacks all use `PushFrame` — the main loop pushes an `ExecutionFrame` and continues. No nesting, no separate executor.
 - **Suspend/resume:** `Await`, `Sleep`, `MutexLock` suspend the task. The scheduler re-enqueues it when the wait condition is met.
+- **WaitAll resume rule:** `WaitAll` re-executes with its original array operand preserved on the stack; resumed task values are not pushed for this opcode site.
 - **Compiler intrinsics:** Array callback methods (map/filter/reduce) and replaceWith are lowered to inline for-loops with `CallClosure` by the compiler — callbacks execute as normal frames.
 
 ## Key Types

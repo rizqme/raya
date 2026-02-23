@@ -149,12 +149,7 @@ pub trait NativeHandler: Send + Sync {
 pub struct NoopNativeHandler;
 
 impl NativeHandler for NoopNativeHandler {
-    fn call(
-        &self,
-        _ctx: &dyn NativeContext,
-        _id: u16,
-        _args: &[NativeValue],
-    ) -> NativeCallResult {
+    fn call(&self, _ctx: &dyn NativeContext, _id: u16, _args: &[NativeValue]) -> NativeCallResult {
         NativeCallResult::Unhandled
     }
 }
@@ -167,7 +162,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// A native function handler (for symbolic name-based dispatch)
-pub type NativeHandlerFn = Arc<dyn Fn(&dyn NativeContext, &[NativeValue]) -> NativeCallResult + Send + Sync>;
+pub type NativeHandlerFn =
+    Arc<dyn Fn(&dyn NativeContext, &[NativeValue]) -> NativeCallResult + Send + Sync>;
 
 /// Registry of native functions indexed by symbolic name.
 ///

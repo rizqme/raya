@@ -6,7 +6,7 @@
 
 use rustc_hash::FxHashMap;
 
-use super::{FieldInfo, MethodInfo, ConstructorInfo, TypeInfo};
+use super::{ConstructorInfo, FieldInfo, MethodInfo, TypeInfo};
 
 /// Reflection metadata for a single class
 #[derive(Debug, Clone, Default)]
@@ -116,7 +116,9 @@ impl ClassMetadata {
 
     /// Get method info by name
     pub fn get_method_info(&self, name: &str) -> Option<&MethodInfo> {
-        self.method_indices.get(name).and_then(|&idx| self.methods.get(idx))
+        self.method_indices
+            .get(name)
+            .and_then(|&idx| self.methods.get(idx))
     }
 
     /// Get all method infos
@@ -126,7 +128,9 @@ impl ClassMetadata {
 
     /// Get field info by name
     pub fn get_field_info(&self, name: &str) -> Option<&FieldInfo> {
-        self.field_indices.get(name).and_then(|&idx| self.fields.get(idx))
+        self.field_indices
+            .get(name)
+            .and_then(|&idx| self.fields.get(idx))
     }
 
     /// Get all field infos
@@ -371,14 +375,12 @@ mod tests {
         let method = MethodInfo {
             name: "greet".to_string(),
             return_type: TypeInfo::primitive("string"),
-            parameters: vec![
-                ParameterInfo {
-                    name: "name".to_string(),
-                    type_info: TypeInfo::primitive("string"),
-                    index: 0,
-                    is_optional: false,
-                },
-            ],
+            parameters: vec![ParameterInfo {
+                name: "name".to_string(),
+                type_info: TypeInfo::primitive("string"),
+                index: 0,
+                is_optional: false,
+            }],
             declaring_class_id: 0,
             method_index: 0,
             is_static: false,

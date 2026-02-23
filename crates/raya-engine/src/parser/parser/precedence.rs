@@ -75,9 +75,13 @@ pub fn get_precedence(token: &Token) -> Precedence {
         }
 
         // Relational
-        Token::Less | Token::LessEqual | Token::Greater | Token::GreaterEqual | Token::Instanceof | Token::In | Token::As => {
-            Precedence::Relational
-        }
+        Token::Less
+        | Token::LessEqual
+        | Token::Greater
+        | Token::GreaterEqual
+        | Token::Instanceof
+        | Token::In
+        | Token::As => Precedence::Relational,
 
         // Shift
         Token::LessLess | Token::GreaterGreater | Token::GreaterGreaterGreater => Precedence::Shift,

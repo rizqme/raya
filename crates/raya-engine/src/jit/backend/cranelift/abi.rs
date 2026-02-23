@@ -67,10 +67,14 @@ pub fn emit_box_f64(builder: &mut FunctionBuilder<'_>, val: ir::Value) -> ir::Va
     // Check for NaN-box collision: (bits & 0xFFF8...) == NAN_BOX_BASE
     let nan_base = builder.ins().iconst(i64_type, NAN_BOX_BASE as i64);
     let masked = builder.ins().band(bits, nan_base);
-    let is_collision = builder.ins().icmp(ir::condcodes::IntCC::Equal, masked, nan_base);
+    let is_collision = builder
+        .ins()
+        .icmp(ir::condcodes::IntCC::Equal, masked, nan_base);
 
     // Canonical positive QNaN
-    let canonical_nan = builder.ins().iconst(i64_type, 0x7FF8_0000_0000_0000u64 as i64);
+    let canonical_nan = builder
+        .ins()
+        .iconst(i64_type, 0x7FF8_0000_0000_0000u64 as i64);
 
     // Select: if collision, use canonical NaN; otherwise, use raw bits
     builder.ins().select(is_collision, canonical_nan, bits)
@@ -133,11 +137,11 @@ mod tests {
         // Verify our constants match the engine's Value encoding
         // NAN_BOX_BASE = 0xFFF8..., tags are at bits 48-50
         assert_eq!(NAN_BOX_BASE, 0xFFF8_0000_0000_0000);
-        assert_eq!(I32_TAG_BASE, 0xFFF9_0000_0000_0000);  // base | (1 << 48)
-        assert_eq!(BOOL_TAG_BASE, 0xFFFA_0000_0000_0000);  // base | (2 << 48)
-        assert_eq!(NULL_VALUE, 0xFFFE_0000_0000_0000);     // base | (6 << 48)
-        assert_eq!(TRUE_VALUE, 0xFFFA_0000_0000_0001);     // bool_base | 1
-        assert_eq!(FALSE_VALUE, 0xFFFA_0000_0000_0000);    // bool_base | 0
+        assert_eq!(I32_TAG_BASE, 0xFFF9_0000_0000_0000); // base | (1 << 48)
+        assert_eq!(BOOL_TAG_BASE, 0xFFFA_0000_0000_0000); // base | (2 << 48)
+        assert_eq!(NULL_VALUE, 0xFFFE_0000_0000_0000); // base | (6 << 48)
+        assert_eq!(TRUE_VALUE, 0xFFFA_0000_0000_0001); // bool_base | 1
+        assert_eq!(FALSE_VALUE, 0xFFFA_0000_0000_0000); // bool_base | 0
     }
 
     #[test]

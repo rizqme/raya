@@ -51,7 +51,12 @@ impl Parser {
         // Add EOF token if not present
         if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
             let eof_span = if let Some((_, last_span)) = tokens.last() {
-                Span::new(last_span.end, last_span.end, last_span.line, last_span.column)
+                Span::new(
+                    last_span.end,
+                    last_span.end,
+                    last_span.line,
+                    last_span.column,
+                )
             } else {
                 Span::new(0, 0, 1, 1)
             };
@@ -75,7 +80,12 @@ impl Parser {
         // Add EOF token if not present
         if tokens.is_empty() || !matches!(tokens.last().unwrap().0, Token::Eof) {
             let eof_span = if let Some((_, last_span)) = tokens.last() {
-                Span::new(last_span.end, last_span.end, last_span.line, last_span.column)
+                Span::new(
+                    last_span.end,
+                    last_span.end,
+                    last_span.line,
+                    last_span.column,
+                )
             } else {
                 Span::new(0, 0, 1, 1)
             };
@@ -321,7 +331,10 @@ impl Parser {
     /// Returns a RAII guard that automatically decrements depth on drop.
     /// Returns error if maximum depth exceeded.
     #[inline]
-    pub fn enter_depth(&mut self, name: &'static str) -> Result<guards::DepthGuard<'_>, ParseError> {
+    pub fn enter_depth(
+        &mut self,
+        name: &'static str,
+    ) -> Result<guards::DepthGuard<'_>, ParseError> {
         guards::DepthGuard::new(&mut self.depth, name)
     }
 
@@ -417,38 +430,40 @@ mod tests {
         let (module, _) = parser.parse().unwrap();
 
         match &module.statements[0] {
-            Statement::Expression(expr_stmt) => {
-                match &expr_stmt.expression {
-                    Expression::Call(call) => {
-                        assert!(call.type_args.is_some(), "Should have type arguments");
-                        let type_args = call.type_args.as_ref().unwrap();
-                        assert_eq!(type_args.len(), 1, "Should have 1 type argument");
-                    }
-                    other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Call(call) => {
+                    assert!(call.type_args.is_some(), "Should have type arguments");
+                    let type_args = call.type_args.as_ref().unwrap();
+                    assert_eq!(type_args.len(), 1, "Should have 1 type argument");
                 }
-            }
-            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+                other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+            },
+            other => panic!(
+                "Expected Expression statement, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 
     #[test]
     fn test_less_than_still_works() {
-        use crate::parser::ast::{Expression, Statement, BinaryOperator};
+        use crate::parser::ast::{BinaryOperator, Expression, Statement};
 
         let source = "a < b";
         let parser = Parser::new(source).unwrap();
         let (module, _) = parser.parse().unwrap();
 
         match &module.statements[0] {
-            Statement::Expression(expr_stmt) => {
-                match &expr_stmt.expression {
-                    Expression::Binary(bin) => {
-                        assert!(matches!(bin.operator, BinaryOperator::LessThan));
-                    }
-                    other => panic!("Expected Binary, got {:?}", std::mem::discriminant(other)),
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Binary(bin) => {
+                    assert!(matches!(bin.operator, BinaryOperator::LessThan));
                 }
-            }
-            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+                other => panic!("Expected Binary, got {:?}", std::mem::discriminant(other)),
+            },
+            other => panic!(
+                "Expected Expression statement, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 
@@ -461,17 +476,18 @@ mod tests {
         let (module, _) = parser.parse().unwrap();
 
         match &module.statements[0] {
-            Statement::Expression(expr_stmt) => {
-                match &expr_stmt.expression {
-                    Expression::Call(call) => {
-                        assert!(call.type_args.is_some(), "Should have type arguments");
-                        let type_args = call.type_args.as_ref().unwrap();
-                        assert_eq!(type_args.len(), 2, "Should have 2 type arguments");
-                    }
-                    other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Call(call) => {
+                    assert!(call.type_args.is_some(), "Should have type arguments");
+                    let type_args = call.type_args.as_ref().unwrap();
+                    assert_eq!(type_args.len(), 2, "Should have 2 type arguments");
                 }
-            }
-            other => panic!("Expected Expression statement, got {:?}", std::mem::discriminant(other)),
+                other => panic!("Expected Call, got {:?}", std::mem::discriminant(other)),
+            },
+            other => panic!(
+                "Expected Expression statement, got {:?}",
+                std::mem::discriminant(other)
+            ),
         }
     }
 }

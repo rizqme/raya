@@ -59,13 +59,14 @@ pub fn parse_jsx(parser: &mut Parser) -> Result<Expression, ParseError> {
 }
 
 /// Parse JSX fragment: <>children</>
-fn parse_jsx_fragment(parser: &mut Parser, start_span: crate::parser::token::Span) -> Result<Expression, ParseError> {
+fn parse_jsx_fragment(
+    parser: &mut Parser,
+    start_span: crate::parser::token::Span,
+) -> Result<Expression, ParseError> {
     // Opening: <>
     let opening_span = parser.current_span();
     parser.expect(Token::Greater)?;
-    let opening = JsxOpeningFragment {
-        span: opening_span,
-    };
+    let opening = JsxOpeningFragment { span: opening_span };
 
     // Parse children until we hit </>
     let children = parse_jsx_children_until_fragment_close(parser)?;
@@ -75,9 +76,7 @@ fn parse_jsx_fragment(parser: &mut Parser, start_span: crate::parser::token::Spa
     parser.expect(Token::Slash)?;
     let closing_span = parser.current_span();
     parser.expect(Token::Greater)?;
-    let closing = JsxClosingFragment {
-        span: closing_span,
-    };
+    let closing = JsxClosingFragment { span: closing_span };
 
     let span = parser.combine_spans(&start_span, &parser.current_span());
 
@@ -367,7 +366,9 @@ fn parse_jsx_children(
 }
 
 /// Parse JSX children for fragments until we hit </>
-fn parse_jsx_children_until_fragment_close(parser: &mut Parser) -> Result<Vec<JsxChild>, ParseError> {
+fn parse_jsx_children_until_fragment_close(
+    parser: &mut Parser,
+) -> Result<Vec<JsxChild>, ParseError> {
     let mut children = vec![];
     let mut guard = super::guards::LoopGuard::new("jsx_fragment_children");
 
@@ -476,7 +477,7 @@ pub fn looks_like_jsx(parser: &Parser) -> bool {
     // - / (closing tag, but this would be an error in expression position): </
     match parser.peek() {
         Some(Token::Identifier(_)) => true,
-        Some(Token::Greater) => true,  // Fragment
+        Some(Token::Greater) => true, // Fragment
         _ => false,
     }
 }

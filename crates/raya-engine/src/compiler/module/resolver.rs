@@ -244,7 +244,11 @@ impl PackageResolverConfig {
 
         let lockfile_path = {
             let path = project_root.join("raya.lock");
-            if path.exists() { Some(path) } else { None }
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
         };
 
         let cache_dir = dirs::home_dir()
@@ -263,18 +267,24 @@ impl ModuleResolver {
     /// Create a new module resolver
     pub fn new(project_root: PathBuf) -> Self {
         let package_resolver = PackageResolverConfig::from_project_root(&project_root);
-        Self { project_root, package_resolver }
+        Self {
+            project_root,
+            package_resolver,
+        }
     }
 
     /// Create a module resolver without package resolution
     pub fn local_only(project_root: PathBuf) -> Self {
-        Self { project_root, package_resolver: None }
+        Self {
+            project_root,
+            package_resolver: None,
+        }
     }
 
     /// Create a module resolver with the current directory as project root
     pub fn current_dir() -> Result<Self, ResolveError> {
-        let project_root = std::env::current_dir()
-            .map_err(|e| ResolveError::IoError(e.to_string()))?;
+        let project_root =
+            std::env::current_dir().map_err(|e| ResolveError::IoError(e.to_string()))?;
         Ok(Self::new(project_root))
     }
 
@@ -301,7 +311,11 @@ impl ModuleResolver {
     /// For `import { x } from "my-local-pkg"` (with path dependency in raya.toml):
     /// 1. Check raya.toml for `my-local-pkg = { path = "./local/path" }`
     /// 2. Resolve to local package entry point
-    pub fn resolve(&self, specifier: &str, from_file: &Path) -> Result<ResolvedModule, ResolveError> {
+    pub fn resolve(
+        &self,
+        specifier: &str,
+        from_file: &Path,
+    ) -> Result<ResolvedModule, ResolveError> {
         // Check for std: namespace imports (handled by StdModuleRegistry, not file resolution)
         if specifier.starts_with(super::STD_MODULE_PREFIX) {
             return Err(ResolveError::StdModule(specifier.to_string()));
@@ -324,28 +338,37 @@ impl ModuleResolver {
     /// Resolve a URL import
     fn resolve_url(&self, url: &str) -> Result<ResolvedModule, ResolveError> {
         // Check if package resolver is available (needed for lockfile access)
-        let config = self.package_resolver.as_ref()
+        let config = self
+            .package_resolver
+            .as_ref()
             .ok_or_else(|| ResolveError::UrlNotLocked(url.to_string()))?;
 
         // Load lockfile to find cached URL
-        let lockfile = config.lockfile_path.as_ref()
+        let lockfile = config
+            .lockfile_path
+            .as_ref()
             .and_then(|p| raya_pm::Lockfile::from_file(p).ok());
 
-        let lockfile = lockfile
-            .ok_or_else(|| ResolveError::UrlNotLocked(url.to_string()))?;
+        let lockfile = lockfile.ok_or_else(|| ResolveError::UrlNotLocked(url.to_string()))?;
 
         // Find the URL in lockfile
-        let locked = lockfile.packages.iter()
+        let locked = lockfile
+            .packages
+            .iter()
             .find(|p| matches!(&p.source, raya_pm::Source::Url { url: u } if u == url))
             .ok_or_else(|| ResolveError::UrlNotLocked(url.to_string()))?;
 
         // Convert checksum
-        let checksum_bytes = hex::decode(&locked.checksum)
-            .map_err(|_| ResolveError::IoError(format!("Invalid checksum format: {}", locked.checksum)))?;
+        let checksum_bytes = hex::decode(&locked.checksum).map_err(|_| {
+            ResolveError::IoError(format!("Invalid checksum format: {}", locked.checksum))
+        })?;
 
         let mut checksum_arr = [0u8; 32];
         if checksum_bytes.len() != 32 {
-            return Err(ResolveError::IoError(format!("Invalid checksum length: {}", locked.checksum.len())));
+            return Err(ResolveError::IoError(format!(
+                "Invalid checksum length: {}",
+                locked.checksum.len()
+            )));
         }
         checksum_arr.copy_from_slice(&checksum_bytes);
 
@@ -353,11 +376,9 @@ impl ModuleResolver {
         let cache_dir = config.cache_dir.join(&locked.checksum);
 
         // Find entry point in cache
-        let entry_point = self.find_url_entry_point(&cache_dir)
-            .ok_or_else(|| ResolveError::IoError(format!(
-                "URL '{}' is cached but has no entry point",
-                url
-            )))?;
+        let entry_point = self.find_url_entry_point(&cache_dir).ok_or_else(|| {
+            ResolveError::IoError(format!("URL '{}' is cached but has no entry point", url))
+        })?;
 
         Ok(ResolvedModule {
             path: entry_point,
@@ -417,10 +438,9 @@ impl ModuleResolver {
         let pkg = PackageSpecifier::parse(specifier);
 
         // Check if package resolver is available
-        let config = self.package_resolver.as_ref()
-            .ok_or_else(|| ResolveError::PackageNotSupported(
-                format!("{} (no raya.toml found)", specifier)
-            ))?;
+        let config = self.package_resolver.as_ref().ok_or_else(|| {
+            ResolveError::PackageNotSupported(format!("{} (no raya.toml found)", specifier))
+        })?;
 
         // Try to resolve from manifest and lockfile
         self.resolve_package_from_config(&pkg, config)
@@ -432,13 +452,15 @@ impl ModuleResolver {
         pkg: &PackageSpecifier,
         config: &PackageResolverConfig,
     ) -> Result<ResolvedModule, ResolveError> {
-        use raya_pm::{PackageManifest, Lockfile};
+        use raya_pm::{Lockfile, PackageManifest};
 
         // 1. Load manifest and check if package is a dependency
         let manifest = PackageManifest::from_file(&config.manifest_path)
             .map_err(|e| ResolveError::IoError(format!("Failed to read raya.toml: {}", e)))?;
 
-        let dep = manifest.dependencies.get(&pkg.name)
+        let dep = manifest
+            .dependencies
+            .get(&pkg.name)
             .or_else(|| manifest.dev_dependencies.get(&pkg.name))
             .ok_or_else(|| ResolveError::PackageNotInDependencies(pkg.name.clone()))?;
 
@@ -451,11 +473,13 @@ impl ModuleResolver {
                 is_index: false,
                 package_info: None, // Local path, no cache info
                 url_info: None,
-                });
+            });
         }
 
         // 3. Load lockfile to get exact version and checksum
-        let lockfile = config.lockfile_path.as_ref()
+        let lockfile = config
+            .lockfile_path
+            .as_ref()
             .and_then(|p| Lockfile::from_file(p).ok());
 
         let (version, checksum) = if let Some(ref lock) = lockfile {
@@ -480,7 +504,10 @@ impl ModuleResolver {
 
         let mut checksum_arr = [0u8; 32];
         if checksum_bytes.len() != 32 {
-            return Err(ResolveError::IoError(format!("Invalid checksum length: {}", checksum.len())));
+            return Err(ResolveError::IoError(format!(
+                "Invalid checksum length: {}",
+                checksum.len()
+            )));
         }
         checksum_arr.copy_from_slice(&checksum_bytes);
 
@@ -566,9 +593,12 @@ impl ModuleResolver {
     }
 
     /// Resolve a local import (./path or ../path)
-    fn resolve_local(&self, specifier: &str, from_file: &Path) -> Result<ResolvedModule, ResolveError> {
-        let from_dir = from_file.parent()
-            .ok_or(ResolveError::NoParentDirectory)?;
+    fn resolve_local(
+        &self,
+        specifier: &str,
+        from_file: &Path,
+    ) -> Result<ResolvedModule, ResolveError> {
+        let from_dir = from_file.parent().ok_or(ResolveError::NoParentDirectory)?;
 
         let mut tried = Vec::new();
 
@@ -585,7 +615,7 @@ impl ModuleResolver {
                     is_index: false,
                     package_info: None,
                     url_info: None,
-                        });
+                });
             }
 
             // Try 2: specifier/index.raya
@@ -597,7 +627,7 @@ impl ModuleResolver {
                     is_index: true,
                     package_info: None,
                     url_info: None,
-                        });
+                });
             }
         } else {
             // Explicit .raya extension
@@ -608,7 +638,7 @@ impl ModuleResolver {
                     is_index: false,
                     package_info: None,
                     url_info: None,
-                        });
+                });
             }
         }
 
@@ -620,8 +650,9 @@ impl ModuleResolver {
 
     /// Canonicalize a path to absolute form
     fn canonicalize(&self, path: &Path) -> Result<PathBuf, ResolveError> {
-        path.canonicalize()
-            .map_err(|e| ResolveError::IoError(format!("Failed to canonicalize {}: {}", path.display(), e)))
+        path.canonicalize().map_err(|e| {
+            ResolveError::IoError(format!("Failed to canonicalize {}: {}", path.display(), e))
+        })
     }
 
     /// Get the project root
@@ -713,13 +744,20 @@ mod tests {
         // Create src/main.raya and src/utils.raya
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.raya"), "import { foo } from \"./utils\";").unwrap();
+        fs::write(
+            src_dir.join("main.raya"),
+            "import { foo } from \"./utils\";",
+        )
+        .unwrap();
         fs::write(src_dir.join("utils.raya"), "export function foo() {}").unwrap();
 
         let main_file = src_dir.join("main.raya");
         let resolved = resolver.resolve("./utils", &main_file).unwrap();
 
-        assert_eq!(resolved.path, src_dir.join("utils.raya").canonicalize().unwrap());
+        assert_eq!(
+            resolved.path,
+            src_dir.join("utils.raya").canonicalize().unwrap()
+        );
         assert!(!resolved.is_index);
         assert!(resolved.package_info.is_none());
     }
@@ -738,7 +776,10 @@ mod tests {
         let main_file = src_dir.join("main.raya");
         let resolved = resolver.resolve("./lib", &main_file).unwrap();
 
-        assert_eq!(resolved.path, lib_dir.join("index.raya").canonicalize().unwrap());
+        assert_eq!(
+            resolved.path,
+            lib_dir.join("index.raya").canonicalize().unwrap()
+        );
         assert!(resolved.is_index);
     }
 
@@ -750,13 +791,20 @@ mod tests {
         let src_dir = temp_dir.path().join("src");
         let nested_dir = src_dir.join("nested");
         fs::create_dir_all(&nested_dir).unwrap();
-        fs::write(nested_dir.join("module.raya"), "import { x } from \"../shared\";").unwrap();
+        fs::write(
+            nested_dir.join("module.raya"),
+            "import { x } from \"../shared\";",
+        )
+        .unwrap();
         fs::write(src_dir.join("shared.raya"), "export const x = 42;").unwrap();
 
         let module_file = nested_dir.join("module.raya");
         let resolved = resolver.resolve("../shared", &module_file).unwrap();
 
-        assert_eq!(resolved.path, src_dir.join("shared.raya").canonicalize().unwrap());
+        assert_eq!(
+            resolved.path,
+            src_dir.join("shared.raya").canonicalize().unwrap()
+        );
     }
 
     #[test]
@@ -765,7 +813,11 @@ mod tests {
 
         let src_dir = temp_dir.path().join("src");
         fs::create_dir_all(&src_dir).unwrap();
-        fs::write(src_dir.join("main.raya"), "import { x } from \"./missing\";").unwrap();
+        fs::write(
+            src_dir.join("main.raya"),
+            "import { x } from \"./missing\";",
+        )
+        .unwrap();
 
         let main_file = src_dir.join("main.raya");
         let result = resolver.resolve("./missing", &main_file);
@@ -809,7 +861,8 @@ version = "1.0.0"
 
         // Create lockfile with URL entry
         let checksum = "a".repeat(64);
-        let lockfile = format!(r#"
+        let lockfile = format!(
+            r#"
 version = 1
 
 [[packages]]
@@ -817,7 +870,9 @@ name = "remote-lib"
 version = "1.0.0"
 checksum = "{}"
 source = {{ type = "url", url = "https://example.com/lib.tar.gz" }}
-"#, checksum);
+"#,
+            checksum
+        );
         fs::write(temp_dir.path().join("raya.lock"), lockfile).unwrap();
 
         // Create cache directory with entry point
@@ -837,7 +892,10 @@ source = {{ type = "url", url = "https://example.com/lib.tar.gz" }}
         assert!(result.is_ok(), "Expected Ok, got {:?}", result);
         let resolved = result.unwrap();
         assert!(resolved.url_info.is_some());
-        assert_eq!(resolved.url_info.as_ref().unwrap().url, "https://example.com/lib.tar.gz");
+        assert_eq!(
+            resolved.url_info.as_ref().unwrap().url,
+            "https://example.com/lib.tar.gz"
+        );
         assert!(resolved.path.ends_with("main.raya"));
 
         // Clean up cache directory
@@ -905,7 +963,10 @@ version = "1.0.0"
         let main_file = temp_dir.path().join("main.raya");
         let result = resolver.resolve("logging", &main_file);
 
-        assert!(matches!(result, Err(ResolveError::PackageNotInDependencies(_))));
+        assert!(matches!(
+            result,
+            Err(ResolveError::PackageNotInDependencies(_))
+        ));
     }
 
     #[test]
@@ -917,7 +978,11 @@ version = "1.0.0"
         assert!(config.is_none());
 
         // With raya.toml
-        fs::write(temp_dir.path().join("raya.toml"), "[package]\nname = \"test\"\nversion = \"1.0.0\"").unwrap();
+        fs::write(
+            temp_dir.path().join("raya.toml"),
+            "[package]\nname = \"test\"\nversion = \"1.0.0\"",
+        )
+        .unwrap();
         let config = PackageResolverConfig::from_project_root(temp_dir.path());
         assert!(config.is_some());
 
@@ -930,7 +995,11 @@ version = "1.0.0"
     fn test_package_resolver_config_with_lockfile() {
         let temp_dir = TempDir::new().unwrap();
 
-        fs::write(temp_dir.path().join("raya.toml"), "[package]\nname = \"test\"\nversion = \"1.0.0\"").unwrap();
+        fs::write(
+            temp_dir.path().join("raya.toml"),
+            "[package]\nname = \"test\"\nversion = \"1.0.0\"",
+        )
+        .unwrap();
         fs::write(temp_dir.path().join("raya.lock"), "version = 1\n").unwrap();
 
         let config = PackageResolverConfig::from_project_root(temp_dir.path()).unwrap();
@@ -954,14 +1023,17 @@ version = "1.0.0"
         let project_dir = temp_dir.path().join("my-project");
         fs::create_dir_all(&project_dir).unwrap();
 
-        let manifest = format!(r#"
+        let manifest = format!(
+            r#"
 [package]
 name = "my-project"
 version = "1.0.0"
 
 [dependencies]
 my-lib = {{ path = "{}" }}
-"#, lib_dir.display());
+"#,
+            lib_dir.display()
+        );
         fs::write(project_dir.join("raya.toml"), manifest).unwrap();
 
         let resolver = ModuleResolver::new(project_dir.clone());
@@ -990,7 +1062,11 @@ version = "1.0.0"
 main = "lib/entry.raya"
 "#;
         fs::write(lib_dir.join("raya.toml"), lib_manifest).unwrap();
-        fs::write(lib_dir.join("lib/entry.raya"), "export function helper() {}").unwrap();
+        fs::write(
+            lib_dir.join("lib/entry.raya"),
+            "export function helper() {}",
+        )
+        .unwrap();
 
         // Create main project
         let project_dir = temp_dir.path().join("project");
@@ -1053,12 +1129,20 @@ lib-b = { path = "../libs/lib-b" }
 
         // Test lib-a
         let result_a = resolver.resolve("lib-a", &main_file);
-        assert!(result_a.is_ok(), "Expected Ok for lib-a, got {:?}", result_a);
+        assert!(
+            result_a.is_ok(),
+            "Expected Ok for lib-a, got {:?}",
+            result_a
+        );
         assert!(result_a.unwrap().path.ends_with("index.raya"));
 
         // Test lib-b
         let result_b = resolver.resolve("lib-b", &main_file);
-        assert!(result_b.is_ok(), "Expected Ok for lib-b, got {:?}", result_b);
+        assert!(
+            result_b.is_ok(),
+            "Expected Ok for lib-b, got {:?}",
+            result_b
+        );
         assert!(result_b.unwrap().path.ends_with("index.raya"));
     }
 }

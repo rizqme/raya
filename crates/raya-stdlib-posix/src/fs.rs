@@ -1,6 +1,6 @@
 //! std:fs — Filesystem operations
 
-use raya_sdk::{NativeCallResult, NativeContext, NativeValue, IoRequest, IoCompletion};
+use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::time::UNIX_EPOCH;
 
 /// Read file as binary Buffer
@@ -10,11 +10,9 @@ pub fn read_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         Err(e) => return NativeCallResult::Error(format!("fs.readFile: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::read(&path) {
-                Ok(data) => IoCompletion::Bytes(data),
-                Err(e) => IoCompletion::Error(format!("fs.readFile: {}", e)),
-            }
+        work: Box::new(move || match std::fs::read(&path) {
+            Ok(data) => IoCompletion::Bytes(data),
+            Err(e) => IoCompletion::Error(format!("fs.readFile: {}", e)),
         }),
     })
 }
@@ -26,11 +24,9 @@ pub fn read_text_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         Err(e) => return NativeCallResult::Error(format!("fs.readTextFile: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::read_to_string(&path) {
-                Ok(data) => IoCompletion::String(data),
-                Err(e) => IoCompletion::Error(format!("fs.readTextFile: {}", e)),
-            }
+        work: Box::new(move || match std::fs::read_to_string(&path) {
+            Ok(data) => IoCompletion::String(data),
+            Err(e) => IoCompletion::Error(format!("fs.readTextFile: {}", e)),
         }),
     })
 }
@@ -46,11 +42,9 @@ pub fn write_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
         Err(e) => return NativeCallResult::Error(format!("fs.writeFile: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::write(&path, &data) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.writeFile: {}", e)),
-            }
+        work: Box::new(move || match std::fs::write(&path, &data) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.writeFile: {}", e)),
         }),
     })
 }
@@ -66,11 +60,9 @@ pub fn write_text_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
         Err(e) => return NativeCallResult::Error(format!("fs.writeTextFile: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::write(&path, data.as_bytes()) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.writeTextFile: {}", e)),
-            }
+        work: Box::new(move || match std::fs::write(&path, data.as_bytes()) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.writeTextFile: {}", e)),
         }),
     })
 }
@@ -88,7 +80,11 @@ pub fn append_file(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
     NativeCallResult::Suspend(IoRequest::BlockingWork {
         work: Box::new(move || {
             use std::io::Write;
-            match std::fs::OpenOptions::new().append(true).create(true).open(&path) {
+            match std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&path)
+            {
                 Ok(mut file) => match file.write_all(data.as_bytes()) {
                     Ok(_) => IoCompletion::Primitive(NativeValue::null()),
                     Err(e) => IoCompletion::Error(format!("fs.appendFile: {}", e)),
@@ -158,11 +154,9 @@ pub fn file_size(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
         Err(e) => return NativeCallResult::Error(format!("fs.fileSize: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::metadata(&path) {
-                Ok(m) => IoCompletion::Primitive(NativeValue::f64(m.len() as f64)),
-                Err(e) => IoCompletion::Error(format!("fs.fileSize: {}", e)),
-            }
+        work: Box::new(move || match std::fs::metadata(&path) {
+            Ok(m) => IoCompletion::Primitive(NativeValue::f64(m.len() as f64)),
+            Err(e) => IoCompletion::Error(format!("fs.fileSize: {}", e)),
         }),
     })
 }
@@ -174,18 +168,17 @@ pub fn last_modified(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
         Err(e) => return NativeCallResult::Error(format!("fs.lastModified: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::metadata(&path) {
-                Ok(m) => {
-                    let ms = m.modified()
-                        .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as f64)
-                        .unwrap_or(0.0);
-                    IoCompletion::Primitive(NativeValue::f64(ms))
-                }
-                Err(e) => IoCompletion::Error(format!("fs.lastModified: {}", e)),
+        work: Box::new(move || match std::fs::metadata(&path) {
+            Ok(m) => {
+                let ms = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as f64)
+                    .unwrap_or(0.0);
+                IoCompletion::Primitive(NativeValue::f64(ms))
             }
+            Err(e) => IoCompletion::Error(format!("fs.lastModified: {}", e)),
         }),
     })
 }
@@ -204,13 +197,19 @@ pub fn stat(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let size = meta.len() as f64;
     let is_file = if meta.is_file() { 1.0 } else { 0.0 };
     let is_dir = if meta.is_dir() { 1.0 } else { 0.0 };
-    let is_symlink = if meta.file_type().is_symlink() { 1.0 } else { 0.0 };
-    let modified = meta.modified()
+    let is_symlink = if meta.file_type().is_symlink() {
+        1.0
+    } else {
+        0.0
+    };
+    let modified = meta
+        .modified()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as f64)
         .unwrap_or(0.0);
-    let created = meta.created()
+    let created = meta
+        .created()
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as f64)
@@ -242,11 +241,9 @@ pub fn mkdir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
         Err(e) => return NativeCallResult::Error(format!("fs.mkdir: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::create_dir(&path) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.mkdir: {}", e)),
-            }
+        work: Box::new(move || match std::fs::create_dir(&path) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.mkdir: {}", e)),
         }),
     })
 }
@@ -258,11 +255,9 @@ pub fn mkdir_recursive(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
         Err(e) => return NativeCallResult::Error(format!("fs.mkdirRecursive: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::create_dir_all(&path) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.mkdirRecursive: {}", e)),
-            }
+        work: Box::new(move || match std::fs::create_dir_all(&path) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.mkdirRecursive: {}", e)),
         }),
     })
 }
@@ -274,17 +269,15 @@ pub fn read_dir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         Err(e) => return NativeCallResult::Error(format!("fs.readDir: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::read_dir(&path) {
-                Ok(entries) => {
-                    let mut items = Vec::new();
-                    for entry in entries.flatten() {
-                        items.push(entry.file_name().to_string_lossy().into_owned());
-                    }
-                    IoCompletion::StringArray(items)
+        work: Box::new(move || match std::fs::read_dir(&path) {
+            Ok(entries) => {
+                let mut items = Vec::new();
+                for entry in entries.flatten() {
+                    items.push(entry.file_name().to_string_lossy().into_owned());
                 }
-                Err(e) => IoCompletion::Error(format!("fs.readDir: {}", e)),
+                IoCompletion::StringArray(items)
             }
+            Err(e) => IoCompletion::Error(format!("fs.readDir: {}", e)),
         }),
     })
 }
@@ -296,11 +289,9 @@ pub fn rmdir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
         Err(e) => return NativeCallResult::Error(format!("fs.rmdir: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::remove_dir(&path) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.rmdir: {}", e)),
-            }
+        work: Box::new(move || match std::fs::remove_dir(&path) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.rmdir: {}", e)),
         }),
     })
 }
@@ -312,11 +303,9 @@ pub fn remove(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
         Err(e) => return NativeCallResult::Error(format!("fs.remove: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::remove_file(&path) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.remove: {}", e)),
-            }
+        work: Box::new(move || match std::fs::remove_file(&path) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.remove: {}", e)),
         }),
     })
 }
@@ -332,11 +321,9 @@ pub fn rename(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult
         Err(e) => return NativeCallResult::Error(format!("fs.rename: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::rename(&from, &to) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.rename: {}", e)),
-            }
+        work: Box::new(move || match std::fs::rename(&from, &to) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.rename: {}", e)),
         }),
     })
 }
@@ -352,11 +339,9 @@ pub fn copy(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
         Err(e) => return NativeCallResult::Error(format!("fs.copy: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::copy(&from, &to) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.copy: {}", e)),
-            }
+        work: Box::new(move || match std::fs::copy(&from, &to) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.copy: {}", e)),
         }),
     })
 }
@@ -368,7 +353,8 @@ pub fn chmod(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("fs.chmod: {}", e)),
     };
-    let mode = args.get(1)
+    let mode = args
+        .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u32;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
@@ -400,11 +386,9 @@ pub fn symlink(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
         Err(e) => return NativeCallResult::Error(format!("fs.symlink: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::os::unix::fs::symlink(&target, &link) {
-                Ok(_) => IoCompletion::Primitive(NativeValue::null()),
-                Err(e) => IoCompletion::Error(format!("fs.symlink: {}", e)),
-            }
+        work: Box::new(move || match std::os::unix::fs::symlink(&target, &link) {
+            Ok(_) => IoCompletion::Primitive(NativeValue::null()),
+            Err(e) => IoCompletion::Error(format!("fs.symlink: {}", e)),
         }),
     })
 }
@@ -421,11 +405,9 @@ pub fn readlink(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         Err(e) => return NativeCallResult::Error(format!("fs.readlink: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::read_link(&path) {
-                Ok(target) => IoCompletion::String(target.to_string_lossy().into_owned()),
-                Err(e) => IoCompletion::Error(format!("fs.readlink: {}", e)),
-            }
+        work: Box::new(move || match std::fs::read_link(&path) {
+            Ok(target) => IoCompletion::String(target.to_string_lossy().into_owned()),
+            Err(e) => IoCompletion::Error(format!("fs.readlink: {}", e)),
         }),
     })
 }
@@ -437,11 +419,9 @@ pub fn realpath(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResu
         Err(e) => return NativeCallResult::Error(format!("fs.realpath: {}", e)),
     };
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match std::fs::canonicalize(&path) {
-                Ok(abs) => IoCompletion::String(abs.to_string_lossy().into_owned()),
-                Err(e) => IoCompletion::Error(format!("fs.realpath: {}", e)),
-            }
+        work: Box::new(move || match std::fs::canonicalize(&path) {
+            Ok(abs) => IoCompletion::String(abs.to_string_lossy().into_owned()),
+            Err(e) => IoCompletion::Error(format!("fs.realpath: {}", e)),
         }),
     })
 }

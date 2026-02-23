@@ -21,16 +21,15 @@ mod typedef;
 pub const STD_MODULE_PREFIX: &str = "std:";
 
 pub use cache::ModuleCache;
-pub use compiler::{CompiledModule, ModuleCompiler, ModuleCompileError};
-pub use exports::{ExportedSymbol, ExportRegistry, ModuleExports};
+pub use compiler::{CompiledModule, ModuleCompileError, ModuleCompiler};
+pub use exports::{ExportRegistry, ExportedSymbol, ModuleExports};
 pub use graph::{ModuleGraph, ModuleNode};
 pub use resolver::{
-    ModuleResolver, PackageResolverConfig, PackageSpecifier,
-    ResolveError, ResolvedModule, ResolvedPackageInfo,
+    ModuleResolver, PackageResolverConfig, PackageSpecifier, ResolveError, ResolvedModule,
+    ResolvedPackageInfo,
 };
 pub use std_modules::StdModuleRegistry;
 pub use typedef::{
-    ClassMemberSignature, ClassSignature, FunctionSignature, TypeAliasSignature,
+    load_typedef, ClassMemberSignature, ClassSignature, FunctionSignature, TypeAliasSignature,
     TypeDefError, TypeDefExport, TypeDefFile, TypeDefParser, VariableSignature,
-    load_typedef,
 };

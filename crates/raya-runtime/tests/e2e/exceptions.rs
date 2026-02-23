@@ -380,7 +380,6 @@ fn test_error_to_string_direct() {
     );
 }
 
-
 #[test]
 fn test_error_to_string() {
     // Test Error.toString()

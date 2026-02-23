@@ -215,7 +215,10 @@ fn test_const_string() {
 #[test]
 fn test_const_in_expression() {
     // Const should be inlined directly in expressions
-    expect_i32("const BASE = 100; let result = BASE + 23; return result;", 123);
+    expect_i32(
+        "const BASE = 100; let result = BASE + 23; return result;",
+        123,
+    );
 }
 
 #[test]

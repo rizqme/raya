@@ -57,7 +57,11 @@ impl LoopGuard {
     /// Create a loop guard with custom limit
     #[inline]
     pub fn with_limit(name: &'static str, max: usize) -> Self {
-        Self { name, count: 0, max }
+        Self {
+            name,
+            count: 0,
+            max,
+        }
     }
 
     /// Check iteration count, return error if exceeded
@@ -104,7 +108,10 @@ impl<'a> DepthGuard<'a> {
         if *depth > MAX_PARSE_DEPTH {
             *depth -= 1; // Reset before returning error
             return Err(ParseError::parser_limit_exceeded(
-                format!("Maximum nesting depth ({}) exceeded in {}", MAX_PARSE_DEPTH, name),
+                format!(
+                    "Maximum nesting depth ({}) exceeded in {}",
+                    MAX_PARSE_DEPTH, name
+                ),
                 default_span(),
             ));
         }

@@ -8,8 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
 use std::sync::LazyLock;
 
-static RESPONSES: LazyLock<HandleRegistry<HttpResponseData>> =
-    LazyLock::new(HandleRegistry::new);
+static RESPONSES: LazyLock<HandleRegistry<HttpResponseData>> = LazyLock::new(HandleRegistry::new);
 
 /// Parsed HTTP response data
 struct HttpResponseData {
@@ -33,15 +32,15 @@ pub fn request(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
     let extra_headers = ctx.read_string(args[3]).unwrap_or_default();
 
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || {
-            match do_http_request(&method, &url, &body, &extra_headers) {
+        work: Box::new(
+            move || match do_http_request(&method, &url, &body, &extra_headers) {
                 Ok(resp) => {
                     let handle = RESPONSES.insert(resp);
                     IoCompletion::Primitive(NativeValue::f64(handle as f64))
                 }
                 Err(e) => IoCompletion::Error(format!("fetch.request: {}", e)),
-            }
-        }),
+            },
+        ),
     })
 }
 
@@ -67,9 +66,7 @@ pub fn res_status_text(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
         .unwrap_or(0.0) as u64;
     match RESPONSES.get(handle) {
         Some(resp) => NativeCallResult::Value(ctx.create_string(&resp.status_text)),
-        None => {
-            NativeCallResult::Error(format!("fetch.resStatusText: invalid handle {}", handle))
-        }
+        None => NativeCallResult::Error(format!("fetch.resStatusText: invalid handle {}", handle)),
     }
 }
 
@@ -220,13 +217,7 @@ fn do_http_request(
     }
 }
 
-fn build_request(
-    method: &str,
-    host: &str,
-    path: &str,
-    body: &str,
-    extra_headers: &str,
-) -> String {
+fn build_request(method: &str, host: &str, path: &str, body: &str, extra_headers: &str) -> String {
     let mut request = format!("{} {} HTTP/1.1\r\n", method, path);
     request.push_str(&format!("Host: {}\r\n", host));
     request.push_str("Connection: close\r\n");

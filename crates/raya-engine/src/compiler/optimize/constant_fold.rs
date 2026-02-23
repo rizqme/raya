@@ -2,7 +2,9 @@
 //!
 //! Evaluates constant expressions at compile time.
 
-use crate::compiler::ir::{BasicBlock, BinaryOp, IrConstant, IrFunction, IrInstr, IrModule, IrValue, RegisterId, UnaryOp};
+use crate::compiler::ir::{
+    BasicBlock, BinaryOp, IrConstant, IrFunction, IrInstr, IrModule, IrValue, RegisterId, UnaryOp,
+};
 use rustc_hash::FxHashMap;
 
 /// Constant folding optimizer
@@ -39,7 +41,11 @@ impl ConstantFolder {
     }
 
     /// Fold constants in a basic block
-    fn fold_block(&self, block: &mut BasicBlock, constants: &mut FxHashMap<RegisterId, IrConstant>) {
+    fn fold_block(
+        &self,
+        block: &mut BasicBlock,
+        constants: &mut FxHashMap<RegisterId, IrConstant>,
+    ) {
         let mut new_instrs = Vec::with_capacity(block.instructions.len());
 
         for instr in &block.instructions {
@@ -52,7 +58,12 @@ impl ConstantFolder {
                     new_instrs.push(instr.clone());
                 }
 
-                IrInstr::BinaryOp { dest, op, left, right } => {
+                IrInstr::BinaryOp {
+                    dest,
+                    op,
+                    left,
+                    right,
+                } => {
                     // Try to fold binary operations with constant operands
                     let left_const = constants.get(&left.id).cloned();
                     let right_const = constants.get(&right.id).cloned();
@@ -101,7 +112,12 @@ impl ConstantFolder {
     }
 
     /// Evaluate a binary operation on constants
-    fn eval_binary(&self, op: BinaryOp, left: &IrConstant, right: &IrConstant) -> Option<IrConstant> {
+    fn eval_binary(
+        &self,
+        op: BinaryOp,
+        left: &IrConstant,
+        right: &IrConstant,
+    ) -> Option<IrConstant> {
         match (op, left, right) {
             // Integer arithmetic
             (BinaryOp::Add, IrConstant::I32(a), IrConstant::I32(b)) => {
@@ -128,18 +144,10 @@ impl ConstantFolder {
             }
 
             // Float arithmetic
-            (BinaryOp::Add, IrConstant::F64(a), IrConstant::F64(b)) => {
-                Some(IrConstant::F64(a + b))
-            }
-            (BinaryOp::Sub, IrConstant::F64(a), IrConstant::F64(b)) => {
-                Some(IrConstant::F64(a - b))
-            }
-            (BinaryOp::Mul, IrConstant::F64(a), IrConstant::F64(b)) => {
-                Some(IrConstant::F64(a * b))
-            }
-            (BinaryOp::Div, IrConstant::F64(a), IrConstant::F64(b)) => {
-                Some(IrConstant::F64(a / b))
-            }
+            (BinaryOp::Add, IrConstant::F64(a), IrConstant::F64(b)) => Some(IrConstant::F64(a + b)),
+            (BinaryOp::Sub, IrConstant::F64(a), IrConstant::F64(b)) => Some(IrConstant::F64(a - b)),
+            (BinaryOp::Mul, IrConstant::F64(a), IrConstant::F64(b)) => Some(IrConstant::F64(a * b)),
+            (BinaryOp::Div, IrConstant::F64(a), IrConstant::F64(b)) => Some(IrConstant::F64(a / b)),
             (BinaryOp::Pow, IrConstant::F64(a), IrConstant::F64(b)) => {
                 Some(IrConstant::F64(a.powf(*b)))
             }
@@ -244,7 +252,9 @@ impl Default for ConstantFolder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{BasicBlock, BasicBlockId, IrFunction, IrModule, Register, Terminator};
+    use crate::compiler::ir::{
+        BasicBlock, BasicBlockId, IrFunction, IrModule, Register, Terminator,
+    };
     use crate::parser::TypeId;
 
     fn make_reg(id: u32) -> Register {
@@ -292,8 +302,10 @@ mod tests {
         let block = func.get_block(BasicBlockId(0)).unwrap();
 
         // Last instruction should be an assign of 42
-        if let IrInstr::Assign { value: IrValue::Constant(IrConstant::I32(42)), .. } =
-            &block.instructions[2]
+        if let IrInstr::Assign {
+            value: IrValue::Constant(IrConstant::I32(42)),
+            ..
+        } = &block.instructions[2]
         {
             // Success
         } else {

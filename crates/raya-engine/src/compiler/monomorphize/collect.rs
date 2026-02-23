@@ -295,10 +295,8 @@ mod tests {
         let mut tracker = InstantiationTracker::new();
 
         // First instantiation should return None and add to pending
-        let result = tracker.record_function_instantiation(
-            FunctionId::new(0),
-            vec![TypeId::new(1)],
-        );
+        let result =
+            tracker.record_function_instantiation(FunctionId::new(0), vec![TypeId::new(1)]);
         assert!(result.is_none());
         assert_eq!(tracker.pending().len(), 1);
 
@@ -307,10 +305,8 @@ mod tests {
         tracker.complete_function_instantiation(key.clone(), FunctionId::new(5));
 
         // Second instantiation with same args should return the specialized ID
-        let result2 = tracker.record_function_instantiation(
-            FunctionId::new(0),
-            vec![TypeId::new(1)],
-        );
+        let result2 =
+            tracker.record_function_instantiation(FunctionId::new(0), vec![TypeId::new(1)]);
         assert_eq!(result2, Some(FunctionId::new(5)));
     }
 

@@ -2,11 +2,14 @@
 //!
 //! Converts AST expressions to IR instructions.
 
-use super::{ClassFieldInfo, ConstantValue, Lowerer, UNRESOLVED, UNRESOLVED_TYPE_ID,
-    NUMBER_TYPE_ID, STRING_TYPE_ID, BOOLEAN_TYPE_ID, NULL_TYPE_ID,
-    UNKNOWN_TYPE_ID, REGEXP_TYPE_ID, TASK_TYPE_ID, CHANNEL_TYPE_ID,
-    INT_TYPE_ID, JSON_TYPE_ID};
-use crate::compiler::ir::{BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp};
+use super::{
+    ClassFieldInfo, ConstantValue, Lowerer, BOOLEAN_TYPE_ID, CHANNEL_TYPE_ID, INT_TYPE_ID,
+    JSON_TYPE_ID, NULL_TYPE_ID, NUMBER_TYPE_ID, REGEXP_TYPE_ID, STRING_TYPE_ID, TASK_TYPE_ID,
+    UNKNOWN_TYPE_ID, UNRESOLVED, UNRESOLVED_TYPE_ID,
+};
+use crate::compiler::ir::{
+    BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp,
+};
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
 use crate::parser::{TypeContext as TC, TypeId};
@@ -161,7 +164,11 @@ impl<'a> Lowerer<'a> {
         if let Some(&local_idx) = self.local_map.get(&ident.name) {
             // Check if this is a RefCell variable
             if self.refcell_registers.contains_key(&local_idx) {
-                let inner_ty = self.refcell_inner_types.get(&local_idx).copied().unwrap_or(UNRESOLVED);
+                let inner_ty = self
+                    .refcell_inner_types
+                    .get(&local_idx)
+                    .copied()
+                    .unwrap_or(UNRESOLVED);
                 // Load the RefCell pointer
                 let refcell_reg = self.alloc_register(inner_ty);
                 self.emit(IrInstr::LoadLocal {
@@ -269,12 +276,20 @@ impl<'a> Lowerer<'a> {
 
         // Check module-level variables (stored as globals)
         if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-            let ty = self.global_type_map.get(&global_idx).copied().unwrap_or(UNRESOLVED);
+            let ty = self
+                .global_type_map
+                .get(&global_idx)
+                .copied()
+                .unwrap_or(UNRESOLVED);
             let dest = self.alloc_register(ty);
             self.emit(IrInstr::LoadGlobal {
                 dest: dest.clone(),
                 index: global_idx,
             });
+            // Propagate object field layout so destructuring can resolve field names
+            if let Some(fields) = self.variable_object_fields.get(&ident.name).cloned() {
+                self.register_object_fields.insert(dest.id, fields);
+            }
             return dest;
         }
 
@@ -315,8 +330,10 @@ impl<'a> Lowerer<'a> {
         // Handle increment/decrement operators specially — they need to
         // compute new_value = old ± 1 and store back to the variable
         match unary.operator {
-            ast::UnaryOperator::PostfixIncrement | ast::UnaryOperator::PrefixIncrement |
-            ast::UnaryOperator::PostfixDecrement | ast::UnaryOperator::PrefixDecrement => {
+            ast::UnaryOperator::PostfixIncrement
+            | ast::UnaryOperator::PrefixIncrement
+            | ast::UnaryOperator::PostfixDecrement
+            | ast::UnaryOperator::PrefixDecrement => {
                 return self.lower_increment_decrement(unary);
             }
             _ => {}
@@ -335,10 +352,14 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_increment_decrement(&mut self, unary: &ast::UnaryExpression) -> Register {
-        let is_increment = matches!(unary.operator,
-            ast::UnaryOperator::PostfixIncrement | ast::UnaryOperator::PrefixIncrement);
-        let is_prefix = matches!(unary.operator,
-            ast::UnaryOperator::PrefixIncrement | ast::UnaryOperator::PrefixDecrement);
+        let is_increment = matches!(
+            unary.operator,
+            ast::UnaryOperator::PostfixIncrement | ast::UnaryOperator::PrefixIncrement
+        );
+        let is_prefix = matches!(
+            unary.operator,
+            ast::UnaryOperator::PrefixIncrement | ast::UnaryOperator::PrefixDecrement
+        );
 
         // Lower operand to get current value
         let old_value = self.lower_expr(&unary.operand);
@@ -347,18 +368,28 @@ impl<'a> Lowerer<'a> {
         let int_ty = TypeId::new(INT_TYPE_ID);
         let one = if old_value.ty == int_ty {
             let r = self.alloc_register(int_ty);
-            self.emit(IrInstr::Assign { dest: r.clone(), value: IrValue::Constant(IrConstant::I32(1)) });
+            self.emit(IrInstr::Assign {
+                dest: r.clone(),
+                value: IrValue::Constant(IrConstant::I32(1)),
+            });
             r
         } else {
             let num_ty = TypeId::new(NUMBER_TYPE_ID);
             let r = self.alloc_register(num_ty);
-            self.emit(IrInstr::Assign { dest: r.clone(), value: IrValue::Constant(IrConstant::F64(1.0)) });
+            self.emit(IrInstr::Assign {
+                dest: r.clone(),
+                value: IrValue::Constant(IrConstant::F64(1.0)),
+            });
             r
         };
 
         // Compute new value: old ± 1
         let new_value = self.alloc_register(old_value.ty);
-        let op = if is_increment { BinaryOp::Add } else { BinaryOp::Sub };
+        let op = if is_increment {
+            BinaryOp::Add
+        } else {
+            BinaryOp::Sub
+        };
         self.emit(IrInstr::BinaryOp {
             dest: new_value.clone(),
             op,
@@ -369,12 +400,24 @@ impl<'a> Lowerer<'a> {
         // Store new value back to the variable
         if let Expression::Identifier(ident) = &*unary.operand {
             if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                self.emit(IrInstr::StoreLocal { index: local_idx, value: new_value.clone() });
+                self.emit(IrInstr::StoreLocal {
+                    index: local_idx,
+                    value: new_value.clone(),
+                });
+            } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                self.emit(IrInstr::StoreGlobal {
+                    index: global_idx,
+                    value: new_value.clone(),
+                });
             }
         }
 
         // Return old value for postfix, new value for prefix
-        if is_prefix { new_value } else { old_value }
+        if is_prefix {
+            new_value
+        } else {
+            old_value
+        }
     }
 
     fn lower_call(&mut self, call: &ast::CallExpression, full_expr: &Expression) -> Register {
@@ -485,7 +528,10 @@ impl<'a> Lowerer<'a> {
                                     ConstantValue::F64(v) => *v as u16,
                                     _ => {
                                         let name = self.interner.resolve(id_expr.name);
-                                        eprintln!("Warning: __NATIVE_CALL constant '{}' is not a number", name);
+                                        eprintln!(
+                                            "Warning: __NATIVE_CALL constant '{}' is not a number",
+                                            name
+                                        );
                                         0
                                     }
                                 }
@@ -539,9 +585,7 @@ impl<'a> Lowerer<'a> {
 
             // Handle __OPCODE_MUTEX_NEW intrinsic: creates a new mutex handle
             if name == "__OPCODE_MUTEX_NEW" {
-                self.emit(IrInstr::NewMutex {
-                    dest: dest.clone(),
-                });
+                self.emit(IrInstr::NewMutex { dest: dest.clone() });
                 return dest;
             }
 
@@ -654,11 +698,14 @@ impl<'a> Lowerer<'a> {
                 // parameters (e.g., T extends HasLength). Unconstrained generics are handled
                 // correctly by the normal monomorphization pipeline.
                 let effective_func_id = if call.type_args.is_some() {
-                    let needs_specialization = self.generic_function_asts.get(&ident.name)
+                    let needs_specialization = self
+                        .generic_function_asts
+                        .get(&ident.name)
                         .map(|func_ast| {
-                            func_ast.type_params.as_ref().is_some_and(|tps| {
-                                tps.iter().any(|tp| tp.constraint.is_some())
-                            })
+                            func_ast
+                                .type_params
+                                .as_ref()
+                                .is_some_and(|tps| tps.iter().any(|tp| tp.constraint.is_some()))
                         })
                         .unwrap_or(false);
                     if needs_specialization {
@@ -674,7 +721,10 @@ impl<'a> Lowerer<'a> {
                 // Check if this is an async function - emit Spawn instead of Call
                 if self.async_functions.contains(&effective_func_id) {
                     // Use proper Task type for the destination register
-                    let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
+                    let task_ty = self
+                        .type_ctx
+                        .generic_task_type()
+                        .unwrap_or(TypeId::new(TASK_TYPE_ID));
                     let task_dest = self.alloc_register(task_ty);
                     self.emit(IrInstr::Spawn {
                         dest: task_dest.clone(),
@@ -740,7 +790,8 @@ impl<'a> Lowerer<'a> {
 
                 // Propagate return type for bound method calls
                 if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name)) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name))
+                    {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
                         }
@@ -757,15 +808,32 @@ impl<'a> Lowerer<'a> {
                     dest: closure.clone(),
                     index: global_idx,
                 });
-                self.emit(IrInstr::CallClosure {
-                    dest: Some(dest.clone()),
-                    closure,
-                    args,
-                });
+                if let Some(&func_id) = self.closure_globals.get(&global_idx) {
+                    if self.async_closures.contains(&func_id) {
+                        self.emit(IrInstr::SpawnClosure {
+                            dest: dest.clone(),
+                            closure,
+                            args,
+                        });
+                    } else {
+                        self.emit(IrInstr::CallClosure {
+                            dest: Some(dest.clone()),
+                            closure,
+                            args,
+                        });
+                    }
+                } else {
+                    self.emit(IrInstr::CallClosure {
+                        dest: Some(dest.clone()),
+                        closure,
+                        args,
+                    });
+                }
 
                 // Propagate return type for bound method calls (global variable path)
                 if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name)) {
+                    if let Some(&ret_ty) = self.method_return_type_map.get(&(class_id, method_name))
+                    {
                         if ret_ty != UNRESOLVED {
                             dest.ty = ret_ty;
                         }
@@ -786,7 +854,7 @@ impl<'a> Lowerer<'a> {
                 let obj_name = self.interner.resolve(ident.name);
                 if obj_name == "JSON" {
                     use crate::compiler::intrinsic::JsonIntrinsic;
-                    use crate::compiler::native_id::{JSON_STRINGIFY, JSON_PARSE};
+                    use crate::compiler::native_id::{JSON_PARSE, JSON_STRINGIFY};
 
                     if let Some(intrinsic) = JsonIntrinsic::detect_intrinsic("JSON", method_name) {
                         match intrinsic {
@@ -824,7 +892,6 @@ impl<'a> Lowerer<'a> {
                             "decode" => {
                                 // JSON.decode<T>(json) -> typed decoder
                                 // If type argument is provided, use specialized decoder
-                                
 
                                 if let Some(type_args) = &call.type_args {
                                     if let Some(first_type) = type_args.first() {
@@ -857,7 +924,6 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
-
             }
 
             // Check if this is a Task method call (e.g., task.cancel())
@@ -904,11 +970,16 @@ impl<'a> Lowerer<'a> {
             if let Expression::Identifier(ident) = &*member.object {
                 if let Some(&class_id) = self.class_map.get(&ident.name) {
                     // This is a class identifier, check for static methods
-                    if let Some(&func_id) = self.static_method_map.get(&(class_id, method_name_symbol)) {
+                    if let Some(&func_id) =
+                        self.static_method_map.get(&(class_id, method_name_symbol))
+                    {
                         // Static method call - no 'this' parameter
                         // Check if async method - emit Spawn instead of Call
                         if self.async_functions.contains(&func_id) {
-                            let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
+                            let task_ty = self
+                                .type_ctx
+                                .generic_task_type()
+                                .unwrap_or(TypeId::new(TASK_TYPE_ID));
                             let task_dest = self.alloc_register(task_ty);
                             self.emit(IrInstr::Spawn {
                                 dest: task_dest.clone(),
@@ -956,10 +1027,11 @@ impl<'a> Lowerer<'a> {
             // are dispatched via the type registry (native calls / class methods)
             if let Some(cid) = class_id {
                 let is_builtin = self.class_map.iter().any(|(&sym, &id)| {
-                    id == cid && matches!(
-                        self.interner.resolve(sym),
-                        "string" | "number" | "Array" | "RegExp"
-                    )
+                    id == cid
+                        && matches!(
+                            self.interner.resolve(sym),
+                            "string" | "number" | "Array" | "RegExp"
+                        )
                 });
                 if is_builtin {
                     class_id = None;
@@ -1006,7 +1078,10 @@ impl<'a> Lowerer<'a> {
                     if self.async_functions.contains(&func_id) {
                         let mut method_args = vec![object];
                         method_args.extend(args);
-                        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
+                        let task_ty = self
+                            .type_ctx
+                            .generic_task_type()
+                            .unwrap_or(TypeId::new(TASK_TYPE_ID));
                         let task_dest = self.alloc_register(task_ty);
                         self.emit(IrInstr::Spawn {
                             dest: task_dest.clone(),
@@ -1036,10 +1111,17 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Propagate generic return type for Map/Set methods
-                    self.propagate_container_return_type(&mut dest, class_id, method_name, &member.object);
+                    self.propagate_container_return_type(
+                        &mut dest,
+                        class_id,
+                        method_name,
+                        &member.object,
+                    );
 
                     return dest;
-                } else if let Some(&slot) = self.method_slot_map.get(&(class_id, method_name_symbol)) {
+                } else if let Some(&slot) =
+                    self.method_slot_map.get(&(class_id, method_name_symbol))
+                {
                     // Abstract method with vtable slot - use virtual dispatch.
                     // The actual implementation is provided by a derived class.
                     let object = self.lower_expr(&member.object);
@@ -1076,7 +1158,9 @@ impl<'a> Lowerer<'a> {
 
             // For no-arg calls like length(), check registry properties (opcode dispatch)
             if args.is_empty() && obj_type_id != UNRESOLVED_TYPE_ID {
-                if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) = self.type_registry.lookup_property(obj_type_id, method_name) {
+                if let Some(crate::compiler::type_registry::DispatchAction::Opcode(kind)) =
+                    self.type_registry.lookup_property(obj_type_id, method_name)
+                {
                     let len_dest = self.alloc_register(TypeId::new(INT_TYPE_ID));
                     match kind {
                         crate::compiler::type_registry::OpcodeKind::StringLen => {
@@ -1102,7 +1186,10 @@ impl<'a> Lowerer<'a> {
                     match action {
                         crate::compiler::type_registry::DispatchAction::NativeCall(mut id) => {
                             // Special handling: string methods with RegExp argument
-                            if obj_type_id == STRING_TYPE_ID && !args.is_empty() && args[0].ty.as_u32() == REGEXP_TYPE_ID {
+                            if obj_type_id == STRING_TYPE_ID
+                                && !args.is_empty()
+                                && args[0].ty.as_u32() == REGEXP_TYPE_ID
+                            {
                                 use crate::vm::builtin::string as bs;
                                 match method_name {
                                     "replace" => id = bs::REPLACE_REGEXP,
@@ -1112,7 +1199,10 @@ impl<'a> Lowerer<'a> {
                             }
                             id
                         }
-                        crate::compiler::type_registry::DispatchAction::ClassMethod(ref cm_type, ref cm_method) => {
+                        crate::compiler::type_registry::DispatchAction::ClassMethod(
+                            ref cm_type,
+                            ref cm_method,
+                        ) => {
                             // Build or retrieve the pre-compiled class method function
                             let func_id = self.get_or_build_class_method(cm_type, cm_method);
                             // Emit Call with object as first arg (function takes `this` as param[0])
@@ -1177,7 +1267,8 @@ impl<'a> Lowerer<'a> {
         let func_id = FunctionId::new(self.next_function_id);
         self.next_function_id += 1;
 
-        self.pending_arrow_functions.push((func_id.as_u32(), ir_func));
+        self.pending_arrow_functions
+            .push((func_id.as_u32(), ir_func));
         self.class_method_cache.insert(key, func_id);
 
         func_id
@@ -1316,16 +1407,15 @@ impl<'a> Lowerer<'a> {
         } else {
             // Check variable_object_fields for decoded object field layout
             let obj_field_idx = match &*member.object {
-                Expression::Identifier(ident) => {
-                    self.variable_object_fields
-                        .get(&ident.name)
-                        .and_then(|fields| {
-                            fields
-                                .iter()
-                                .find(|(name, _)| name == prop_name)
-                                .map(|(_, idx)| *idx as u16)
-                        })
-                }
+                Expression::Identifier(ident) => self
+                    .variable_object_fields
+                    .get(&ident.name)
+                    .and_then(|fields| {
+                        fields
+                            .iter()
+                            .find(|(name, _)| name == prop_name)
+                            .map(|(_, idx)| *idx as u16)
+                    }),
                 _ => None,
             };
 
@@ -1337,15 +1427,27 @@ impl<'a> Lowerer<'a> {
                 let type_field_idx = self.type_ctx.get(expr_ty).and_then(|ty| {
                     if let crate::parser::types::ty::Type::Object(obj) = ty {
                         obj.properties.iter().enumerate().find_map(|(i, p)| {
-                            if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
+                            if p.name == prop_name {
+                                Some((i as u16, p.ty))
+                            } else {
+                                None
+                            }
                         })
                     } else if let crate::parser::types::ty::Type::Union(union) = ty {
                         // Search union members for the property
                         for &member_id in &union.members {
-                            if let Some(crate::parser::types::ty::Type::Object(obj)) = self.type_ctx.get(member_id) {
-                                if let Some(result) = obj.properties.iter().enumerate().find_map(|(i, p)| {
-                                    if p.name == prop_name { Some((i as u16, p.ty)) } else { None }
-                                }) {
+                            if let Some(crate::parser::types::ty::Type::Object(obj)) =
+                                self.type_ctx.get(member_id)
+                            {
+                                if let Some(result) =
+                                    obj.properties.iter().enumerate().find_map(|(i, p)| {
+                                        if p.name == prop_name {
+                                            Some((i as u16, p.ty))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                {
                                     return Some(result);
                                 }
                             }
@@ -1363,17 +1465,21 @@ impl<'a> Lowerer<'a> {
         // so the post-monomorphization pass can resolve to the correct opcode.
         if obj_ty_id == UNRESOLVED_TYPE_ID && class_id.is_none() {
             let expr_ty = self.get_expr_type(&member.object);
-            let is_typevar = self.type_ctx.get(expr_ty).is_some_and(|ty| {
-                matches!(ty, crate::parser::types::ty::Type::TypeVar(_))
-            });
+            let is_typevar = self
+                .type_ctx
+                .get(expr_ty)
+                .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)));
             // Also check register type for TypeVar
-            let is_typevar = is_typevar || self.type_ctx.get(object.ty).is_some_and(|ty| {
-                matches!(ty, crate::parser::types::ty::Type::TypeVar(_))
-            });
+            let is_typevar = is_typevar
+                || self
+                    .type_ctx
+                    .get(object.ty)
+                    .is_some_and(|ty| matches!(ty, crate::parser::types::ty::Type::TypeVar(_)));
 
             if is_typevar {
                 // Resolve dest type from the constraint's property if possible
-                let constraint_prop_ty = self.resolve_typevar_property_type(&member.object, prop_name);
+                let constraint_prop_ty =
+                    self.resolve_typevar_property_type(&member.object, prop_name);
                 let dest_ty = constraint_prop_ty.unwrap_or(UNRESOLVED);
                 let dest = self.alloc_register(dest_ty);
                 self.emit(IrInstr::LateBoundMember {
@@ -1411,9 +1517,10 @@ impl<'a> Lowerer<'a> {
 
     fn lower_array(&mut self, array: &ast::ArrayExpression, full_expr: &Expression) -> Register {
         // Check if any element is a spread
-        let has_spread = array.elements.iter().any(|elem_opt| {
-            matches!(elem_opt, Some(ast::ArrayElement::Spread(_)))
-        });
+        let has_spread = array
+            .elements
+            .iter()
+            .any(|elem_opt| matches!(elem_opt, Some(ast::ArrayElement::Spread(_))));
 
         let checker_ty = self.get_expr_type(full_expr);
         // NewArray always creates an array — use ARRAY_TYPE_ID when checker type is unknown
@@ -1517,7 +1624,10 @@ impl<'a> Lowerer<'a> {
                     ast::ArrayElement::Spread(_) => unreachable!(),
                 }
             }
-            let elem_ty = elements.first().map(|r| r.ty).unwrap_or(TypeId::new(NUMBER_TYPE_ID));
+            let elem_ty = elements
+                .first()
+                .map(|r| r.ty)
+                .unwrap_or(TypeId::new(NUMBER_TYPE_ID));
             let dest = self.alloc_register(array_ty);
             self.emit(IrInstr::ArrayLiteral {
                 dest: dest.clone(),
@@ -1584,7 +1694,10 @@ impl<'a> Lowerer<'a> {
 
             // Null path: evaluate RHS and assign to LHS
             self.current_function_mut()
-                .add_block(crate::ir::BasicBlock::with_label(assign_block, "nca.assign"));
+                .add_block(crate::ir::BasicBlock::with_label(
+                    assign_block,
+                    "nca.assign",
+                ));
             self.current_block = assign_block;
             let rhs = self.lower_expr(&assign.right);
             // Store to LHS (identifier case)
@@ -1612,7 +1725,8 @@ impl<'a> Lowerer<'a> {
                         index: global_idx,
                         value: rhs,
                     });
-                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
+                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name)
+                {
                     // Captured variable from outer scope
                     let is_refcell = self.captures[idx].is_refcell;
                     let capture_idx = self.captures[idx].capture_idx;
@@ -1751,7 +1865,9 @@ impl<'a> Lowerer<'a> {
                         // Check for self-recursive closure: if we just assigned a closure
                         // that captured this variable, patch the closure's capture
                         if let Some((closure_reg, ref captures)) = self.last_closure_info.take() {
-                            if let Some(&(_, capture_idx)) = captures.iter().find(|(sym, _)| *sym == ident.name) {
+                            if let Some(&(_, capture_idx)) =
+                                captures.iter().find(|(sym, _)| *sym == ident.name)
+                            {
                                 // This closure captured the variable we're assigning to
                                 // Emit SetClosureCapture to patch the closure with itself
                                 self.emit(IrInstr::SetClosureCapture {
@@ -1762,7 +1878,8 @@ impl<'a> Lowerer<'a> {
                             }
                         }
                     }
-                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name) {
+                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name)
+                {
                     // Variable is captured - handle assignment to captured variable
                     let is_refcell = self.captures[idx].is_refcell;
                     let capture_idx = self.captures[idx].capture_idx;
@@ -1843,13 +1960,12 @@ impl<'a> Lowerer<'a> {
                 // Check for static field write: ClassName.staticField = value
                 if let Expression::Identifier(ident) = &*member.object {
                     if let Some(&class_id) = self.class_map.get(&ident.name) {
-                        let global_index =
-                            self.class_info_map.get(&class_id).and_then(|info| {
-                                info.static_fields
-                                    .iter()
-                                    .find(|f| self.interner.resolve(f.name) == prop_name)
-                                    .map(|sf| sf.global_index)
-                            });
+                        let global_index = self.class_info_map.get(&class_id).and_then(|info| {
+                            info.static_fields
+                                .iter()
+                                .find(|f| self.interner.resolve(f.name) == prop_name)
+                                .map(|sf| sf.global_index)
+                        });
                         if let Some(index) = global_index {
                             self.emit(IrInstr::StoreGlobal {
                                 index,
@@ -1944,7 +2060,10 @@ impl<'a> Lowerer<'a> {
         let dest = self.alloc_register(then_result.ty);
         self.emit(IrInstr::Phi {
             dest: dest.clone(),
-            sources: vec![(then_exit_block, then_result), (else_exit_block, else_result)],
+            sources: vec![
+                (then_exit_block, then_result),
+                (else_exit_block, else_result),
+            ],
         });
 
         dest
@@ -2148,7 +2267,8 @@ impl<'a> Lowerer<'a> {
 
         // Take the completed arrow function and add to pending with its func_id
         let arrow_func = self.current_function.take().unwrap();
-        self.pending_arrow_functions.push((func_id.as_u32(), arrow_func));
+        self.pending_arrow_functions
+            .push((func_id.as_u32(), arrow_func));
 
         // Restore saved state
         self.next_register = saved_register;
@@ -2245,14 +2365,19 @@ impl<'a> Lowerer<'a> {
                             // Add to parent's captures (propagate up)
                             // Look up where the CURRENT (parent) function gets this variable from
                             // using the child's ancestor_variables (which describes the parent's sources)
-                            let (source, is_refcell) = if let Some(ref ancestors) = child_ancestor_variables {
+                            let (source, is_refcell) = if let Some(ref ancestors) =
+                                child_ancestor_variables
+                            {
                                 if let Some(ancestor_var) = ancestors.get(&cap.symbol) {
                                     (ancestor_var.source, ancestor_var.is_refcell)
                                 } else {
                                     // Variable not in child's ancestors - should not happen
                                     // Fall back to loading from locals if available
                                     if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
-                                        (super::AncestorSource::ImmediateParentLocal(local_idx), cap.is_refcell)
+                                        (
+                                            super::AncestorSource::ImmediateParentLocal(local_idx),
+                                            cap.is_refcell,
+                                        )
                                     } else {
                                         (super::AncestorSource::Ancestor, cap.is_refcell)
                                     }
@@ -2261,8 +2386,12 @@ impl<'a> Lowerer<'a> {
                                 // No child ancestors - check our own locals
                                 if let Some(&local_idx) = self.local_map.get(&cap.symbol) {
                                     // Check if it's a RefCell
-                                    let is_refcell = self.refcell_registers.contains_key(&local_idx);
-                                    (super::AncestorSource::ImmediateParentLocal(local_idx), is_refcell)
+                                    let is_refcell =
+                                        self.refcell_registers.contains_key(&local_idx);
+                                    (
+                                        super::AncestorSource::ImmediateParentLocal(local_idx),
+                                        is_refcell,
+                                    )
                                 } else {
                                     (super::AncestorSource::Ancestor, cap.is_refcell)
                                 }
@@ -2451,23 +2580,29 @@ impl<'a> Lowerer<'a> {
         if let Expression::Array(arr) = &*await_expr.argument {
             // Lower all elements (each should be a Task)
             // We only handle simple expressions (no spread, no holes)
-            let elements: Vec<Register> = arr.elements.iter().filter_map(|e| {
-                match e {
-                    Some(ast::ArrayElement::Expression(expr)) => Some(self.lower_expr(expr)),
-                    _ => None, // Skip spread elements and holes for now
-                }
-            }).collect();
+            let elements: Vec<Register> = arr
+                .elements
+                .iter()
+                .filter_map(|e| {
+                    match e {
+                        Some(ast::ArrayElement::Expression(expr)) => Some(self.lower_expr(expr)),
+                        _ => None, // Skip spread elements and holes for now
+                    }
+                })
+                .collect();
 
-            // Create the array of tasks
-            let tasks_array = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Task[] type
+            // Create the array of tasks - Task IDs are stored as u64 values
+            let task_ty = TypeId::new(TASK_TYPE_ID); // For type tracking
+            let tasks_array = self.alloc_register(task_ty);
             self.emit(IrInstr::ArrayLiteral {
                 dest: tasks_array.clone(),
                 elements,
-                elem_ty: TypeId::new(NUMBER_TYPE_ID), // Task type
+                elem_ty: task_ty, // Element type is Task (u64 internally)
             });
 
             // Emit await_all instruction
-            let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Result array type
+            // Result is an array (use generic ARRAY_TYPE_ID)
+            let dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
             self.emit(IrInstr::AwaitAll {
                 dest: dest.clone(),
                 tasks: tasks_array,
@@ -2475,24 +2610,56 @@ impl<'a> Lowerer<'a> {
             return dest;
         }
 
-        // Lower the awaited expression (should be a Task)
-        let task = self.lower_expr(&await_expr.argument);
+        // Lower the awaited expression
+        let task_or_array = self.lower_expr(&await_expr.argument);
 
-        // Emit await instruction
-        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID)); // Result type
+        // Check if the expression type is an array - if so, use AwaitAll
+        let expr_type = self.get_expr_type(&await_expr.argument);
+        if matches!(
+            self.type_ctx.get(expr_type),
+            Some(crate::parser::types::ty::Type::Array(_))
+        ) {
+            // Awaiting an array variable - emit AwaitAll
+            // Result is an array (use generic ARRAY_TYPE_ID)
+            let dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
+            self.emit(IrInstr::AwaitAll {
+                dest: dest.clone(),
+                tasks: task_or_array,
+            });
+            return dest;
+        }
+
+        // Extract the result type from Task<T>
+        let result_type = if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
+            self.type_ctx.get(expr_type)
+        {
+            task_ty.result
+        } else {
+            TypeId::new(NUMBER_TYPE_ID) // Fallback to number if not a Task type
+        };
+
+        // Emit await instruction for single task
+        let dest = self.alloc_register(result_type);
         self.emit(IrInstr::Await {
             dest: dest.clone(),
-            task,
+            task: task_or_array,
         });
         dest
     }
 
     fn lower_async_call(&mut self, async_call: &ast::AsyncCallExpression) -> Register {
         // Lower arguments first
-        let args: Vec<Register> = async_call.arguments.iter().map(|a| self.lower_expr(a)).collect();
+        let args: Vec<Register> = async_call
+            .arguments
+            .iter()
+            .map(|a| self.lower_expr(a))
+            .collect();
 
         // Destination for the Task handle - use proper Task type
-        let task_ty = self.type_ctx.generic_task_type().unwrap_or(TypeId::new(TASK_TYPE_ID));
+        let task_ty = self
+            .type_ctx
+            .generic_task_type()
+            .unwrap_or(TypeId::new(TASK_TYPE_ID));
         let dest = self.alloc_register(task_ty);
 
         // Handle different callee types
@@ -2539,7 +2706,9 @@ impl<'a> Lowerer<'a> {
             // Check if it's a static method call
             if let Expression::Identifier(ident) = &*member.object {
                 if let Some(&class_id) = self.class_map.get(&ident.name) {
-                    if let Some(&func_id) = self.static_method_map.get(&(class_id, method_name_symbol)) {
+                    if let Some(&func_id) =
+                        self.static_method_map.get(&(class_id, method_name_symbol))
+                    {
                         // Spawn static method
                         self.emit(IrInstr::Spawn {
                             dest: dest.clone(),
@@ -2670,7 +2839,10 @@ impl<'a> Lowerer<'a> {
             Type::Primitive(_) => true,
             Type::Reference(type_ref) => {
                 let name = self.interner.resolve(type_ref.name.name);
-                matches!(name, "string" | "number" | "boolean" | "int" | "void" | "null")
+                matches!(
+                    name,
+                    "string" | "number" | "boolean" | "int" | "void" | "null"
+                )
             }
             _ => false,
         }
@@ -2753,11 +2925,18 @@ impl<'a> Lowerer<'a> {
         let specialized_id = FunctionId::new(self.next_function_id);
         self.next_function_id += 1;
 
+        // Preserve async marker from original function
+        if func_ast.is_async {
+            self.async_functions.insert(specialized_id);
+        }
+
         // Cache before lowering (prevents infinite recursion for recursive generics)
-        self.specialized_function_cache.insert(mangled_name.clone(), specialized_id);
+        self.specialized_function_cache
+            .insert(mangled_name.clone(), specialized_id);
 
         // Save per-function lowering state (we're interrupting another function's lowering)
-        let saved_substitutions = std::mem::replace(&mut self.type_param_substitutions, substitutions);
+        let saved_substitutions =
+            std::mem::replace(&mut self.type_param_substitutions, substitutions);
         let saved_current_function = self.current_function.take();
         let saved_current_block = self.current_block;
         let saved_next_register = self.next_register;
@@ -2787,7 +2966,8 @@ impl<'a> Lowerer<'a> {
         self.loop_captured_vars = saved_loop_captured_vars;
 
         // Add to pending functions
-        self.pending_arrow_functions.push((specialized_id.as_u32(), ir_func));
+        self.pending_arrow_functions
+            .push((specialized_id.as_u32(), ir_func));
 
         Some(specialized_id)
     }
@@ -2803,7 +2983,9 @@ impl<'a> Lowerer<'a> {
         object_expr: &Expression,
     ) {
         // Check if class is Map or Set
-        let class_name = self.class_map.iter()
+        let class_name = self
+            .class_map
+            .iter()
             .find(|(&_sym, &id)| id == class_id)
             .map(|(&sym, _)| self.interner.resolve(sym).to_string());
         let class_name = match class_name {
@@ -2818,15 +3000,21 @@ impl<'a> Lowerer<'a> {
 
         match class_name.as_str() {
             "Map" => match method_name {
-                "get" => { dest.ty = value_type; }
+                "get" => {
+                    dest.ty = value_type;
+                }
                 "keys" | "values" | "entries" => {
                     dest.ty = TypeId::new(super::ARRAY_TYPE_ID);
                 }
                 _ => {}
             },
             "Set" => match method_name {
-                "values" => { dest.ty = TypeId::new(super::ARRAY_TYPE_ID); }
-                "has" => { dest.ty = TypeId::new(BOOLEAN_TYPE_ID); } // boolean
+                "values" => {
+                    dest.ty = TypeId::new(super::ARRAY_TYPE_ID);
+                }
+                "has" => {
+                    dest.ty = TypeId::new(BOOLEAN_TYPE_ID);
+                } // boolean
                 _ => {}
             },
             _ => {}
@@ -2835,7 +3023,11 @@ impl<'a> Lowerer<'a> {
 
     /// Resolve a property type from a TypeVar's constraint.
     /// For `x: T extends { length: number }`, resolves `x.length` → number TypeId.
-    fn resolve_typevar_property_type(&self, object_expr: &Expression, prop_name: &str) -> Option<TypeId> {
+    fn resolve_typevar_property_type(
+        &self,
+        object_expr: &Expression,
+        prop_name: &str,
+    ) -> Option<TypeId> {
         let expr_ty = self.get_expr_type(object_expr);
         let ty = self.type_ctx.get(expr_ty)?;
         let constraint_id = match ty {
@@ -2843,11 +3035,11 @@ impl<'a> Lowerer<'a> {
             _ => {
                 // Try register type
                 let obj_reg_ty = match object_expr {
-                    Expression::Identifier(ident) => {
-                        self.local_map.get(&ident.name)
-                            .and_then(|&idx| self.local_registers.get(&idx))
-                            .map(|r| r.ty)
-                    }
+                    Expression::Identifier(ident) => self
+                        .local_map
+                        .get(&ident.name)
+                        .and_then(|&idx| self.local_registers.get(&idx))
+                        .map(|r| r.ty),
                     _ => None,
                 };
                 let reg_ty = obj_reg_ty?;
@@ -2860,9 +3052,11 @@ impl<'a> Lowerer<'a> {
         // Look up the property in the constraint type (which should be an object type)
         let constraint_ty = self.type_ctx.get(constraint_id)?;
         match constraint_ty {
-            crate::parser::types::ty::Type::Object(obj) => {
-                obj.properties.iter().find(|p| p.name == prop_name).map(|p| p.ty)
-            }
+            crate::parser::types::ty::Type::Object(obj) => obj
+                .properties
+                .iter()
+                .find(|p| p.name == prop_name)
+                .map(|p| p.ty),
             _ => None,
         }
     }
@@ -2955,7 +3149,10 @@ impl<'a> Lowerer<'a> {
                     // Only return a class if there's an explicit return class mapping.
                     // Don't assume methods return the same class (e.g., Map.get() returns
                     // the value type, not Map).
-                    if let Some(&ret_class_id) = self.method_return_class_map.get(&(obj_class_id, method_name)) {
+                    if let Some(&ret_class_id) = self
+                        .method_return_class_map
+                        .get(&(obj_class_id, method_name))
+                    {
                         return Some(ret_class_id);
                     }
                 }
@@ -2971,8 +3168,11 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                     // Check if callee is a bound method variable
-                    if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name) {
-                        if let Some(&ret_class_id) = self.method_return_class_map.get(&(class_id, method_name)) {
+                    if let Some(&(class_id, method_name)) = self.bound_method_vars.get(&ident.name)
+                    {
+                        if let Some(&ret_class_id) =
+                            self.method_return_class_map.get(&(class_id, method_name))
+                        {
                             return Some(ret_class_id);
                         }
                     }
@@ -3080,7 +3280,10 @@ impl<'a> Lowerer<'a> {
         }
 
         // Check if all parts are strings - we can concatenate at compile time
-        let all_strings = template.parts.iter().all(|p| matches!(p, TemplatePart::String(_)));
+        let all_strings = template
+            .parts
+            .iter()
+            .all(|p| matches!(p, TemplatePart::String(_)));
 
         if all_strings {
             // Compile-time concatenation
@@ -3432,18 +3635,10 @@ impl<'a> Lowerer<'a> {
     /// Lower a single JSX attribute value
     fn lower_jsx_attr_value(&mut self, value: &Option<ast::JsxAttributeValue>) -> Register {
         match value {
-            Some(ast::JsxAttributeValue::StringLiteral(lit)) => {
-                self.lower_string_literal(lit)
-            }
-            Some(ast::JsxAttributeValue::Expression(expr)) => {
-                self.lower_expr(expr)
-            }
-            Some(ast::JsxAttributeValue::JsxElement(jsx)) => {
-                self.lower_jsx_element(jsx)
-            }
-            Some(ast::JsxAttributeValue::JsxFragment(jsx)) => {
-                self.lower_jsx_fragment(jsx)
-            }
+            Some(ast::JsxAttributeValue::StringLiteral(lit)) => self.lower_string_literal(lit),
+            Some(ast::JsxAttributeValue::Expression(expr)) => self.lower_expr(expr),
+            Some(ast::JsxAttributeValue::JsxElement(jsx)) => self.lower_jsx_element(jsx),
+            Some(ast::JsxAttributeValue::JsxFragment(jsx)) => self.lower_jsx_fragment(jsx),
             None => {
                 // Boolean attribute: <input disabled /> → true
                 let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID)); // Boolean

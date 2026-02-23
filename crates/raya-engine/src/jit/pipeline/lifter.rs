@@ -5,12 +5,12 @@
 //! virtual register, and at merge points (multiple predecessors)
 //! Phi nodes are inserted when registers differ.
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use crate::compiler::bytecode::{Module, Function, Opcode};
+use crate::compiler::bytecode::{Function, Module, Opcode};
+use crate::jit::analysis::cfg::{build_cfg, BlockId, BranchKind, CfgTerminator, ControlFlowGraph};
 use crate::jit::analysis::decoder::{decode_function, DecodedInstr, Operands};
-use crate::jit::analysis::cfg::{build_cfg, BlockId, ControlFlowGraph, CfgTerminator, BranchKind};
-use crate::jit::ir::types::JitType;
 use crate::jit::ir::instr::*;
+use crate::jit::ir::types::JitType;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Error during lifting
 #[derive(Debug, thiserror::Error)]
@@ -100,9 +100,8 @@ fn identify_loop_headers(
     rpo: &[BlockId],
     cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
 ) -> FxHashSet<JitBlockId> {
-    let rpo_index: FxHashMap<BlockId, usize> = rpo.iter().enumerate()
-        .map(|(i, &id)| (id, i))
-        .collect();
+    let rpo_index: FxHashMap<BlockId, usize> =
+        rpo.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     let mut headers = FxHashSet::default();
     for block in &cfg.blocks {
@@ -131,7 +130,8 @@ fn merge_stacks(
     cfg_to_jit: &FxHashMap<BlockId, JitBlockId>,
 ) -> StackState {
     // Gather only predecessors that have been processed (have exit stacks)
-    let available: Vec<_> = predecessors.iter()
+    let available: Vec<_> = predecessors
+        .iter()
         .filter(|p| exit_stacks.contains_key(p))
         .copied()
         .collect();
@@ -141,7 +141,8 @@ fn merge_stacks(
     }
 
     // Use the minimum depth (safe: structured control flow should agree)
-    let depth = available.iter()
+    let depth = available
+        .iter()
         .map(|p| exit_stacks[p].len())
         .min()
         .unwrap_or(0);
@@ -160,10 +161,13 @@ fn merge_stacks(
             // Different registers — insert Phi
             let ty = func.reg_type(first_reg);
             let dest = func.alloc_reg(ty);
-            let sources: Vec<(JitBlockId, Reg)> = available.iter()
+            let sources: Vec<(JitBlockId, Reg)> = available
+                .iter()
                 .map(|p| (cfg_to_jit[p], exit_stacks[p][slot]))
                 .collect();
-            func.block_mut(jit_block).instrs.push(JitInstr::Phi { dest, sources });
+            func.block_mut(jit_block)
+                .instrs
+                .push(JitInstr::Phi { dest, sources });
             merged.push(dest);
         }
     }
@@ -206,14 +210,18 @@ pub fn lift_function(
     // Wire up JIT block predecessors from CFG predecessor data
     for cfg_block in &cfg.blocks {
         let jit_id = cfg_to_jit[&cfg_block.id];
-        let jit_preds: Vec<JitBlockId> = cfg_block.predecessors.iter()
+        let jit_preds: Vec<JitBlockId> = cfg_block
+            .predecessors
+            .iter()
             .filter_map(|p| cfg_to_jit.get(p).copied())
             .collect();
         jit_func.block_mut(jit_id).predecessors = jit_preds;
     }
 
     // Build CFG block lookup by ID
-    let cfg_block_map: FxHashMap<BlockId, usize> = cfg.blocks.iter()
+    let cfg_block_map: FxHashMap<BlockId, usize> = cfg
+        .blocks
+        .iter()
         .enumerate()
         .map(|(i, b)| (b.id, i))
         .collect();
@@ -260,57 +268,55 @@ pub fn lift_function(
 
         // Set terminator based on CFG terminator
         let term = match &cfg_block.terminator {
-            CfgTerminator::Fallthrough(target) => {
-                JitTerminator::Jump(cfg_to_jit[target])
-            }
+            CfgTerminator::Fallthrough(target) => JitTerminator::Jump(cfg_to_jit[target]),
             CfgTerminator::Jump(target) => {
                 // Detect back-edge: target has lower or equal block ID (loop back-jump)
                 if target.0 <= cfg_block_id.0 {
                     // Insert preemption check before backward jump
-                    jit_func.block_mut(jit_block_id).instrs.push(JitInstr::CheckPreemption);
+                    jit_func
+                        .block_mut(jit_block_id)
+                        .instrs
+                        .push(JitInstr::CheckPreemption);
                 }
                 JitTerminator::Jump(cfg_to_jit[target])
             }
-            CfgTerminator::Branch { kind, then_block, else_block } => {
+            CfgTerminator::Branch {
+                kind,
+                then_block,
+                else_block,
+            } => {
                 let cond = stack.peek().unwrap_or(Reg(0));
                 // Check for back-edge branches too (e.g. JmpIfTrue looping back)
                 if then_block.0 <= cfg_block_id.0 || else_block.0 <= cfg_block_id.0 {
-                    jit_func.block_mut(jit_block_id).instrs.push(JitInstr::CheckPreemption);
+                    jit_func
+                        .block_mut(jit_block_id)
+                        .instrs
+                        .push(JitInstr::CheckPreemption);
                 }
                 match kind {
-                    BranchKind::IfFalse | BranchKind::IfTrue => {
-                        JitTerminator::Branch {
-                            cond,
-                            then_block: cfg_to_jit[then_block],
-                            else_block: cfg_to_jit[else_block],
-                        }
-                    }
-                    BranchKind::IfNull | BranchKind::IfNotNull => {
-                        JitTerminator::BranchNull {
-                            value: cond,
-                            null_block: cfg_to_jit[then_block],
-                            not_null_block: cfg_to_jit[else_block],
-                        }
-                    }
+                    BranchKind::IfFalse | BranchKind::IfTrue => JitTerminator::Branch {
+                        cond,
+                        then_block: cfg_to_jit[then_block],
+                        else_block: cfg_to_jit[else_block],
+                    },
+                    BranchKind::IfNull | BranchKind::IfNotNull => JitTerminator::BranchNull {
+                        value: cond,
+                        null_block: cfg_to_jit[then_block],
+                        not_null_block: cfg_to_jit[else_block],
+                    },
                 }
             }
             CfgTerminator::Return => {
                 let val = stack.peek();
                 JitTerminator::Return(val)
             }
-            CfgTerminator::ReturnVoid => {
-                JitTerminator::Return(None)
-            }
+            CfgTerminator::ReturnVoid => JitTerminator::Return(None),
             CfgTerminator::Throw => {
                 let val = stack.peek().unwrap_or(Reg(0));
                 JitTerminator::Throw(val)
             }
-            CfgTerminator::Trap(_code) => {
-                JitTerminator::Unreachable
-            }
-            CfgTerminator::None => {
-                JitTerminator::None
-            }
+            CfgTerminator::Trap(_code) => JitTerminator::Unreachable,
+            CfgTerminator::None => JitTerminator::None,
         };
 
         jit_func.block_mut(jit_block_id).terminator = term;
@@ -320,13 +326,13 @@ pub fn lift_function(
     // Phase 2: Fix up Phi nodes at loop headers.
     // Back-edge predecessors weren't processed when the header was lifted,
     // so their stack entries are missing from Phi sources.
-    let rpo_index: FxHashMap<BlockId, usize> = rpo.iter().enumerate()
-        .map(|(i, &id)| (id, i))
-        .collect();
+    let rpo_index: FxHashMap<BlockId, usize> =
+        rpo.iter().enumerate().map(|(i, &id)| (id, i)).collect();
 
     for &header_jit_id in &loop_headers {
         // Find the CFG block for this header
-        let header_cfg_id = cfg_to_jit.iter()
+        let header_cfg_id = cfg_to_jit
+            .iter()
             .find(|(_, &jit)| jit == header_jit_id)
             .map(|(&cfg_id, _)| cfg_id)
             .unwrap();
@@ -335,7 +341,9 @@ pub fn lift_function(
         let header_rpo = rpo_index[&header_cfg_id];
 
         // Collect back-edge predecessors and their exit stacks
-        let back_edge_preds: Vec<(JitBlockId, Vec<Reg>)> = cfg_block.predecessors.iter()
+        let back_edge_preds: Vec<(JitBlockId, Vec<Reg>)> = cfg_block
+            .predecessors
+            .iter()
             .filter_map(|pred| {
                 let pred_rpo = rpo_index.get(pred)?;
                 if *pred_rpo >= header_rpo {
@@ -355,7 +363,10 @@ pub fn lift_function(
         let block = jit_func.block_mut(header_jit_id);
         let mut phi_slot = 0usize;
         for i in 0..block.instrs.len() {
-            if let JitInstr::Phi { ref mut sources, .. } = block.instrs[i] {
+            if let JitInstr::Phi {
+                ref mut sources, ..
+            } = block.instrs[i]
+            {
                 for (pred_jit, exit_stack) in &back_edge_preds {
                     let already_has = sources.iter().any(|(b, _)| b == pred_jit);
                     if !already_has && phi_slot < exit_stack.len() {
@@ -387,7 +398,10 @@ fn lift_instruction(
         Opcode::Dup => {
             let top = stack.pop(instr.offset)?;
             let dup = func.alloc_reg(func.reg_type(top));
-            func.block_mut(block).instrs.push(JitInstr::Move { dest: dup, src: top });
+            func.block_mut(block).instrs.push(JitInstr::Move {
+                dest: dup,
+                src: top,
+            });
             stack.push(top);
             stack.push(dup);
         }
@@ -401,44 +415,60 @@ fn lift_instruction(
         // ===== Constants =====
         Opcode::ConstNull => {
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::ConstNull { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ConstNull { dest });
             stack.push(dest);
         }
         Opcode::ConstTrue => {
             let dest = func.alloc_reg(JitType::Bool);
-            func.block_mut(block).instrs.push(JitInstr::ConstBool { dest, value: true });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ConstBool { dest, value: true });
             stack.push(dest);
         }
         Opcode::ConstFalse => {
             let dest = func.alloc_reg(JitType::Bool);
-            func.block_mut(block).instrs.push(JitInstr::ConstBool { dest, value: false });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ConstBool { dest, value: false });
             stack.push(dest);
         }
         Opcode::ConstI32 => {
             if let Operands::I32(value) = instr.operands {
                 let dest = func.alloc_reg(JitType::I32);
-                func.block_mut(block).instrs.push(JitInstr::ConstI32 { dest, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::ConstI32 { dest, value });
                 stack.push(dest);
             }
         }
         Opcode::ConstF64 => {
             if let Operands::F64(value) = instr.operands {
                 let dest = func.alloc_reg(JitType::F64);
-                func.block_mut(block).instrs.push(JitInstr::ConstF64 { dest, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::ConstF64 { dest, value });
                 stack.push(dest);
             }
         }
         Opcode::ConstStr => {
             if let Operands::U16(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::ConstStr { dest, str_index: index });
+                func.block_mut(block).instrs.push(JitInstr::ConstStr {
+                    dest,
+                    str_index: index,
+                });
                 stack.push(dest);
             }
         }
         Opcode::LoadConst => {
             if let Operands::U32(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadConst { dest, const_index: index });
+                func.block_mut(block).instrs.push(JitInstr::LoadConst {
+                    dest,
+                    const_index: index,
+                });
                 stack.push(dest);
             }
         }
@@ -447,33 +477,45 @@ fn lift_instruction(
         Opcode::LoadLocal => {
             if let Operands::U16(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadLocal { dest, index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::LoadLocal { dest, index });
                 stack.push(dest);
             }
         }
         Opcode::LoadLocal0 => {
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::LoadLocal { dest, index: 0 });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::LoadLocal { dest, index: 0 });
             stack.push(dest);
         }
         Opcode::LoadLocal1 => {
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::LoadLocal { dest, index: 1 });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::LoadLocal { dest, index: 1 });
             stack.push(dest);
         }
         Opcode::StoreLocal => {
             if let Operands::U16(index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreLocal { index, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::StoreLocal { index, value });
             }
         }
         Opcode::StoreLocal0 => {
             let value = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::StoreLocal { index: 0, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::StoreLocal { index: 0, value });
         }
         Opcode::StoreLocal1 => {
             let value = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::StoreLocal { index: 1, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::StoreLocal { index: 1, value });
         }
         Opcode::GetArgCount => {
             // GetArgCount doesn't have any runtime effect in JIT (it reads from call frame)
@@ -485,80 +527,341 @@ fn lift_instruction(
             // For now, just push 0 as a placeholder
             let _index = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::ConstI32 { dest, value: 0 });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ConstI32 { dest, value: 0 });
             stack.push(dest);
         }
 
         // ===== Integer Arithmetic =====
-        Opcode::Iadd => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IAdd { dest: d, left: l, right: r })?,
-        Opcode::Isub => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::ISub { dest: d, left: l, right: r })?,
-        Opcode::Imul => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IMul { dest: d, left: l, right: r })?,
-        Opcode::Idiv => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IDiv { dest: d, left: l, right: r })?,
-        Opcode::Imod => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IMod { dest: d, left: l, right: r })?,
-        Opcode::Ipow => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IPow { dest: d, left: l, right: r })?,
-        Opcode::Ineg => lift_unary_i32(func, block, stack, instr.offset, |d, o| JitInstr::INeg { dest: d, operand: o })?,
+        Opcode::Iadd => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IAdd {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Isub => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::ISub {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Imul => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IMul {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Idiv => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IDiv {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Imod => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IMod {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Ipow => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IPow {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Ineg => lift_unary_i32(func, block, stack, instr.offset, |d, o| JitInstr::INeg {
+            dest: d,
+            operand: o,
+        })?,
 
         // ===== Integer Bitwise =====
-        Opcode::Ishl => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IShl { dest: d, left: l, right: r })?,
-        Opcode::Ishr => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IShr { dest: d, left: l, right: r })?,
-        Opcode::Iushr => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IUshr { dest: d, left: l, right: r })?,
-        Opcode::Iand => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IAnd { dest: d, left: l, right: r })?,
-        Opcode::Ior => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IOr { dest: d, left: l, right: r })?,
-        Opcode::Ixor => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IXor { dest: d, left: l, right: r })?,
-        Opcode::Inot => lift_unary_i32(func, block, stack, instr.offset, |d, o| JitInstr::INot { dest: d, operand: o })?,
+        Opcode::Ishl => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IShl {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Ishr => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IShr {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Iushr => lift_binary_i32(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::IUshr {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Iand => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IAnd {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Ior => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IOr {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Ixor => {
+            lift_binary_i32(func, block, stack, instr.offset, |d, l, r| JitInstr::IXor {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Inot => lift_unary_i32(func, block, stack, instr.offset, |d, o| JitInstr::INot {
+            dest: d,
+            operand: o,
+        })?,
 
         // ===== Float Arithmetic =====
-        Opcode::Fadd => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FAdd { dest: d, left: l, right: r })?,
-        Opcode::Fsub => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FSub { dest: d, left: l, right: r })?,
-        Opcode::Fmul => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FMul { dest: d, left: l, right: r })?,
-        Opcode::Fdiv => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FDiv { dest: d, left: l, right: r })?,
-        Opcode::Fneg => lift_unary_f64(func, block, stack, instr.offset, |d, o| JitInstr::FNeg { dest: d, operand: o })?,
-        Opcode::Fpow => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FPow { dest: d, left: l, right: r })?,
-        Opcode::Fmod => lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FMod { dest: d, left: l, right: r })?,
+        Opcode::Fadd => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FAdd {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Fsub => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FSub {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Fmul => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FMul {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Fdiv => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FDiv {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Fneg => lift_unary_f64(func, block, stack, instr.offset, |d, o| JitInstr::FNeg {
+            dest: d,
+            operand: o,
+        })?,
+        Opcode::Fpow => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FPow {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Fmod => {
+            lift_binary_f64(func, block, stack, instr.offset, |d, l, r| JitInstr::FMod {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
 
         // ===== Integer Comparison =====
-        Opcode::Ieq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpEq { dest: d, left: l, right: r })?,
-        Opcode::Ine => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpNe { dest: d, left: l, right: r })?,
-        Opcode::Ilt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpLt { dest: d, left: l, right: r })?,
-        Opcode::Ile => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpLe { dest: d, left: l, right: r })?,
-        Opcode::Igt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpGt { dest: d, left: l, right: r })?,
-        Opcode::Ige => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::ICmpGe { dest: d, left: l, right: r })?,
+        Opcode::Ieq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpEq {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Ine => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpNe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Ilt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpLt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Ile => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpLe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Igt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpGt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Ige => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::ICmpGe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
 
         // ===== Float Comparison =====
-        Opcode::Feq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpEq { dest: d, left: l, right: r })?,
-        Opcode::Fne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpNe { dest: d, left: l, right: r })?,
-        Opcode::Flt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpLt { dest: d, left: l, right: r })?,
-        Opcode::Fle => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpLe { dest: d, left: l, right: r })?,
-        Opcode::Fgt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpGt { dest: d, left: l, right: r })?,
-        Opcode::Fge => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::FCmpGe { dest: d, left: l, right: r })?,
+        Opcode::Feq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpEq {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Fne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpNe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Flt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpLt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Fle => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpLe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Fgt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpGt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Fge => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::FCmpGe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
 
         // ===== String Comparison =====
-        Opcode::Seq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpEq { dest: d, left: l, right: r })?,
-        Opcode::Sne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpNe { dest: d, left: l, right: r })?,
-        Opcode::Slt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpLt { dest: d, left: l, right: r })?,
-        Opcode::Sle => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpLe { dest: d, left: l, right: r })?,
-        Opcode::Sgt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpGt { dest: d, left: l, right: r })?,
-        Opcode::Sge => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::SCmpGe { dest: d, left: l, right: r })?,
+        Opcode::Seq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpEq {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Sne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpNe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Slt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpLt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Sle => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpLe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Sgt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpGt {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::Sge => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::SCmpGe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
 
         // ===== Generic Comparison =====
-        Opcode::Eq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Eq { dest: d, left: l, right: r })?,
-        Opcode::Ne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Ne { dest: d, left: l, right: r })?,
-        Opcode::StrictEq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::StrictEq { dest: d, left: l, right: r })?,
-        Opcode::StrictNe => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::StrictNe { dest: d, left: l, right: r })?,
+        Opcode::Eq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Eq {
+            dest: d,
+            left: l,
+            right: r,
+        })?,
+        Opcode::Ne => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Ne {
+            dest: d,
+            left: l,
+            right: r,
+        })?,
+        Opcode::StrictEq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::StrictEq {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
+        Opcode::StrictNe => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+            JitInstr::StrictNe {
+                dest: d,
+                left: l,
+                right: r,
+            }
+        })?,
 
         // ===== Logical =====
         Opcode::Not => {
             let operand = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Bool);
-            func.block_mut(block).instrs.push(JitInstr::Not { dest, operand });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::Not { dest, operand });
             stack.push(dest);
         }
-        Opcode::And => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::And { dest: d, left: l, right: r })?,
-        Opcode::Or => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Or { dest: d, left: l, right: r })?,
+        Opcode::And => {
+            lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::And {
+                dest: d,
+                left: l,
+                right: r,
+            })?
+        }
+        Opcode::Or => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| JitInstr::Or {
+            dest: d,
+            left: l,
+            right: r,
+        })?,
         Opcode::Typeof => {
             let operand = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::Typeof { dest, operand });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::Typeof { dest, operand });
             stack.push(dest);
         }
 
@@ -567,19 +870,25 @@ fn lift_instruction(
             let right = stack.pop(instr.offset)?;
             let left = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::SConcat { dest, left, right });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::SConcat { dest, left, right });
             stack.push(dest);
         }
         Opcode::Slen => {
             let string = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::I32);
-            func.block_mut(block).instrs.push(JitInstr::SLen { dest, string });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::SLen { dest, string });
             stack.push(dest);
         }
         Opcode::ToString => {
             let value = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::ToString { dest, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ToString { dest, value });
             stack.push(dest);
         }
 
@@ -587,27 +896,35 @@ fn lift_instruction(
         Opcode::LoadGlobal => {
             if let Operands::U32(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadGlobal { dest, index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::LoadGlobal { dest, index });
                 stack.push(dest);
             }
         }
         Opcode::StoreGlobal => {
             if let Operands::U32(index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreGlobal { index, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::StoreGlobal { index, value });
             }
         }
         Opcode::LoadStatic => {
             if let Operands::U32(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadStatic { dest, index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::LoadStatic { dest, index });
                 stack.push(dest);
             }
         }
         Opcode::StoreStatic => {
             if let Operands::U32(index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreStatic { index, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::StoreStatic { index, value });
             }
         }
 
@@ -615,7 +932,9 @@ fn lift_instruction(
         Opcode::New => {
             if let Operands::U32(class_id) = instr.operands {
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::NewObject { dest, class_id });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::NewObject { dest, class_id });
                 stack.push(dest);
             }
         }
@@ -623,7 +942,11 @@ fn lift_instruction(
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadField { dest, object, offset });
+                func.block_mut(block).instrs.push(JitInstr::LoadField {
+                    dest,
+                    object,
+                    offset,
+                });
                 stack.push(dest);
             }
         }
@@ -631,14 +954,22 @@ fn lift_instruction(
             if let Operands::U16(offset) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreField { object, offset, value });
+                func.block_mut(block).instrs.push(JitInstr::StoreField {
+                    object,
+                    offset,
+                    value,
+                });
             }
         }
         Opcode::LoadFieldFast => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadFieldFast { dest, object, offset });
+                func.block_mut(block).instrs.push(JitInstr::LoadFieldFast {
+                    dest,
+                    object,
+                    offset,
+                });
                 stack.push(dest);
             }
         }
@@ -646,14 +977,22 @@ fn lift_instruction(
             if let Operands::U16(offset) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreFieldFast { object, offset, value });
+                func.block_mut(block).instrs.push(JitInstr::StoreFieldFast {
+                    object,
+                    offset,
+                    value,
+                });
             }
         }
         Opcode::OptionalField => {
             if let Operands::U16(offset) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::OptionalField { dest, object, offset });
+                func.block_mut(block).instrs.push(JitInstr::OptionalField {
+                    dest,
+                    object,
+                    offset,
+                });
                 stack.push(dest);
             }
         }
@@ -663,13 +1002,21 @@ fn lift_instruction(
             let _class_val = stack.pop(instr.offset)?;
             // The class ID is typically encoded differently, but for now treat as value
             let dest = func.alloc_reg(JitType::Bool);
-            func.block_mut(block).instrs.push(JitInstr::InstanceOf { dest, object, class_id: 0 });
+            func.block_mut(block).instrs.push(JitInstr::InstanceOf {
+                dest,
+                object,
+                class_id: 0,
+            });
             stack.push(dest);
         }
         Opcode::Cast => {
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::Cast { dest, object, class_id: 0 });
+            func.block_mut(block).instrs.push(JitInstr::Cast {
+                dest,
+                object,
+                class_id: 0,
+            });
             stack.push(dest);
         }
 
@@ -677,7 +1024,9 @@ fn lift_instruction(
         Opcode::NewArray => {
             if let Operands::U32(type_index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::NewArray { dest, type_index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::NewArray { dest, type_index });
                 stack.push(dest);
             }
         }
@@ -685,30 +1034,42 @@ fn lift_instruction(
             let index = stack.pop(instr.offset)?;
             let array = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::LoadElem { dest, array, index });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::LoadElem { dest, array, index });
             stack.push(dest);
         }
         Opcode::StoreElem => {
             let value = stack.pop(instr.offset)?;
             let index = stack.pop(instr.offset)?;
             let array = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::StoreElem { array, index, value });
+            func.block_mut(block).instrs.push(JitInstr::StoreElem {
+                array,
+                index,
+                value,
+            });
         }
         Opcode::ArrayLen => {
             let array = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::I32);
-            func.block_mut(block).instrs.push(JitInstr::ArrayLen { dest, array });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ArrayLen { dest, array });
             stack.push(dest);
         }
         Opcode::ArrayPush => {
             let value = stack.pop(instr.offset)?;
             let array = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::ArrayPush { array, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ArrayPush { array, value });
         }
         Opcode::ArrayPop => {
             let array = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::ArrayPop { dest, array });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::ArrayPop { dest, array });
             stack.push(dest);
         }
         Opcode::ArrayLiteral => {
@@ -719,7 +1080,11 @@ fn lift_instruction(
                 }
                 elements.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::ArrayLiteral { dest, type_index, elements });
+                func.block_mut(block).instrs.push(JitInstr::ArrayLiteral {
+                    dest,
+                    type_index,
+                    elements,
+                });
                 stack.push(dest);
             }
         }
@@ -731,26 +1096,42 @@ fn lift_instruction(
                 }
                 elements.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::InitArray { dest, count, elements });
+                func.block_mut(block).instrs.push(JitInstr::InitArray {
+                    dest,
+                    count,
+                    elements,
+                });
                 stack.push(dest);
             }
         }
 
         // ===== Function Calls =====
         Opcode::Call => {
-            if let Operands::Call { func_index: target, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: target,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::Call { dest: Some(dest), func_index: target, args });
+                func.block_mut(block).instrs.push(JitInstr::Call {
+                    dest: Some(dest),
+                    func_index: target,
+                    args,
+                });
                 stack.push(dest);
             }
         }
         Opcode::CallMethod => {
-            if let Operands::Call { func_index: method_index, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: method_index,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
@@ -758,95 +1139,154 @@ fn lift_instruction(
                 args.reverse();
                 let receiver = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallMethod { dest: Some(dest), method_index, receiver, args });
+                func.block_mut(block).instrs.push(JitInstr::CallMethod {
+                    dest: Some(dest),
+                    method_index,
+                    receiver,
+                    args,
+                });
                 stack.push(dest);
             }
         }
         Opcode::CallConstructor => {
-            if let Operands::Call { func_index: class_id, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: class_id,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::CallConstructor { dest, class_id, args });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::CallConstructor {
+                        dest,
+                        class_id,
+                        args,
+                    });
                 stack.push(dest);
             }
         }
         Opcode::CallSuper => {
-            if let Operands::Call { func_index: method_index, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: method_index,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallSuper { dest: Some(dest), method_index, args });
+                func.block_mut(block).instrs.push(JitInstr::CallSuper {
+                    dest: Some(dest),
+                    method_index,
+                    args,
+                });
                 stack.push(dest);
             }
         }
         Opcode::CallStatic => {
-            if let Operands::Call { func_index: target, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: target,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallStatic { dest: Some(dest), func_index: target, args });
+                func.block_mut(block).instrs.push(JitInstr::CallStatic {
+                    dest: Some(dest),
+                    func_index: target,
+                    args,
+                });
                 stack.push(dest);
             }
         }
         Opcode::NativeCall | Opcode::ModuleNativeCall => {
-            if let Operands::NativeCall { native_id, arg_count } = instr.operands {
+            if let Operands::NativeCall {
+                native_id,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::CallNative { dest: Some(dest), native_id, args });
+                func.block_mut(block).instrs.push(JitInstr::CallNative {
+                    dest: Some(dest),
+                    native_id,
+                    args,
+                });
                 stack.push(dest);
             }
         }
 
         // ===== Closures =====
         Opcode::MakeClosure => {
-            if let Operands::MakeClosure { func_index: target, capture_count } = instr.operands {
+            if let Operands::MakeClosure {
+                func_index: target,
+                capture_count,
+            } = instr.operands
+            {
                 let mut captures = Vec::new();
                 for _ in 0..capture_count {
                     captures.push(stack.pop(instr.offset)?);
                 }
                 captures.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::MakeClosure { dest, func_index: target, captures });
+                func.block_mut(block).instrs.push(JitInstr::MakeClosure {
+                    dest,
+                    func_index: target,
+                    captures,
+                });
                 stack.push(dest);
             }
         }
         Opcode::LoadCaptured => {
             if let Operands::U16(index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::LoadCaptured { dest, index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::LoadCaptured { dest, index });
                 stack.push(dest);
             }
         }
         Opcode::StoreCaptured => {
             if let Operands::U16(index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::StoreCaptured { index, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::StoreCaptured { index, value });
             }
         }
         Opcode::SetClosureCapture => {
             if let Operands::U16(index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let closure = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::SetClosureCapture { closure, index, value });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::SetClosureCapture {
+                        closure,
+                        index,
+                        value,
+                    });
             }
         }
         Opcode::CloseVar => {
             if let Operands::U16(index) = instr.operands {
-                func.block_mut(block).instrs.push(JitInstr::CloseVar { index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::CloseVar { index });
             }
         }
 
@@ -854,31 +1294,45 @@ fn lift_instruction(
         Opcode::NewRefCell => {
             let value = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::NewRefCell { dest, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::NewRefCell { dest, value });
             stack.push(dest);
         }
         Opcode::LoadRefCell => {
             let cell = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::LoadRefCell { dest, cell });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::LoadRefCell { dest, cell });
             stack.push(dest);
         }
         Opcode::StoreRefCell => {
             let value = stack.pop(instr.offset)?;
             let cell = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::StoreRefCell { cell, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::StoreRefCell { cell, value });
         }
 
         // ===== Concurrency =====
         Opcode::Spawn => {
-            if let Operands::Spawn { func_index: target, arg_count } = instr.operands {
+            if let Operands::Spawn {
+                func_index: target,
+                arg_count,
+            } = instr.operands
+            {
                 let mut args = Vec::new();
                 for _ in 0..arg_count {
                     args.push(stack.pop(instr.offset)?);
                 }
                 args.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::Spawn { dest, func_index: target, args });
+                func.block_mut(block).instrs.push(JitInstr::Spawn {
+                    dest,
+                    func_index: target,
+                    args,
+                });
                 stack.push(dest);
             }
         }
@@ -891,14 +1345,20 @@ fn lift_instruction(
                 args.reverse();
                 let closure = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::SpawnClosure { dest, closure, args });
+                func.block_mut(block).instrs.push(JitInstr::SpawnClosure {
+                    dest,
+                    closure,
+                    args,
+                });
                 stack.push(dest);
             }
         }
         Opcode::Await => {
             let task = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::Await { dest, task });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::Await { dest, task });
             stack.push(dest);
         }
         Opcode::Yield => {
@@ -906,85 +1366,126 @@ fn lift_instruction(
         }
         Opcode::Sleep => {
             let duration = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::Sleep { duration });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::Sleep { duration });
         }
         Opcode::NewMutex => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::NewMutex { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::NewMutex { dest });
             stack.push(dest);
         }
         Opcode::MutexLock => {
             let mutex = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::MutexLock { mutex });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::MutexLock { mutex });
         }
         Opcode::MutexUnlock => {
             let mutex = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::MutexUnlock { mutex });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::MutexUnlock { mutex });
         }
         Opcode::NewChannel => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::NewChannel { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::NewChannel { dest });
             stack.push(dest);
         }
         Opcode::NewSemaphore => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::NewSemaphore { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::NewSemaphore { dest });
             stack.push(dest);
         }
         Opcode::SemAcquire => {
             let sem = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::SemAcquire { sem });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::SemAcquire { sem });
         }
         Opcode::SemRelease => {
             let sem = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::SemRelease { sem });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::SemRelease { sem });
         }
         Opcode::WaitAll => {
             let tasks = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::WaitAll { dest, tasks });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::WaitAll { dest, tasks });
             stack.push(dest);
         }
         Opcode::TaskCancel => {
             let task = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::TaskCancel { task });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::TaskCancel { task });
         }
         Opcode::TaskThen => {
             if let Operands::U32(callback_index) = instr.operands {
                 let task = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::TaskThen { task, callback_index });
+                func.block_mut(block).instrs.push(JitInstr::TaskThen {
+                    task,
+                    callback_index,
+                });
             }
         }
 
         // ===== Object/Tuple Literals =====
         Opcode::ObjectLiteral => {
-            if let Operands::Call { func_index: type_index, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: type_index,
+                arg_count,
+            } = instr.operands
+            {
                 let mut fields = Vec::new();
                 for _ in 0..arg_count {
                     fields.push(stack.pop(instr.offset)?);
                 }
                 fields.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::ObjectLiteral { dest, type_index, fields });
+                func.block_mut(block).instrs.push(JitInstr::ObjectLiteral {
+                    dest,
+                    type_index,
+                    fields,
+                });
                 stack.push(dest);
             }
         }
         Opcode::TupleLiteral => {
-            if let Operands::Call { func_index: type_index, arg_count } = instr.operands {
+            if let Operands::Call {
+                func_index: type_index,
+                arg_count,
+            } = instr.operands
+            {
                 let mut elements = Vec::new();
                 for _ in 0..arg_count {
                     elements.push(stack.pop(instr.offset)?);
                 }
                 elements.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::TupleLiteral { dest, type_index, elements });
+                func.block_mut(block).instrs.push(JitInstr::TupleLiteral {
+                    dest,
+                    type_index,
+                    elements,
+                });
                 stack.push(dest);
             }
         }
         Opcode::TupleGet => {
             let tuple = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::TupleGet { dest, tuple });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::TupleGet { dest, tuple });
             stack.push(dest);
         }
         Opcode::InitObject => {
@@ -995,7 +1496,11 @@ fn lift_instruction(
                 }
                 fields.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::InitObject { dest, count, fields });
+                func.block_mut(block).instrs.push(JitInstr::InitObject {
+                    dest,
+                    count,
+                    fields,
+                });
                 stack.push(dest);
             }
         }
@@ -1007,7 +1512,11 @@ fn lift_instruction(
                 }
                 elements.reverse();
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::InitTuple { dest, count, elements });
+                func.block_mut(block).instrs.push(JitInstr::InitTuple {
+                    dest,
+                    count,
+                    elements,
+                });
                 stack.push(dest);
             }
         }
@@ -1016,14 +1525,20 @@ fn lift_instruction(
         Opcode::LoadModule => {
             if let Operands::U32(module_index) = instr.operands {
                 let dest = func.alloc_reg(JitType::Ptr);
-                func.block_mut(block).instrs.push(JitInstr::LoadModule { dest, module_index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::LoadModule { dest, module_index });
                 stack.push(dest);
             }
         }
 
         // ===== Exception Handling =====
         Opcode::Try => {
-            if let Operands::Try { catch_offset, finally_offset } = instr.operands {
+            if let Operands::Try {
+                catch_offset,
+                finally_offset,
+            } = instr.operands
+            {
                 let _catch_target = ((instr.offset as i64) + (catch_offset as i64)) as usize;
                 let _finally_target = if finally_offset > 0 {
                     Some(((instr.offset as i64) + (finally_offset as i64)) as usize)
@@ -1054,7 +1569,11 @@ fn lift_instruction(
             if let Operands::U32(key_index) = instr.operands {
                 let object = stack.pop(instr.offset)?;
                 let dest = func.alloc_reg(JitType::Value);
-                func.block_mut(block).instrs.push(JitInstr::JsonGet { dest, object, key_index });
+                func.block_mut(block).instrs.push(JitInstr::JsonGet {
+                    dest,
+                    object,
+                    key_index,
+                });
                 stack.push(dest);
             }
         }
@@ -1062,59 +1581,85 @@ fn lift_instruction(
             if let Operands::U32(key_index) = instr.operands {
                 let value = stack.pop(instr.offset)?;
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::JsonSet { object, key_index, value });
+                func.block_mut(block).instrs.push(JitInstr::JsonSet {
+                    object,
+                    key_index,
+                    value,
+                });
             }
         }
         Opcode::JsonDelete => {
             if let Operands::U32(key_index) = instr.operands {
                 let object = stack.pop(instr.offset)?;
-                func.block_mut(block).instrs.push(JitInstr::JsonDelete { object, key_index });
+                func.block_mut(block)
+                    .instrs
+                    .push(JitInstr::JsonDelete { object, key_index });
             }
         }
         Opcode::JsonIndex => {
             let index = stack.pop(instr.offset)?;
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::JsonIndex { dest, object, index });
+            func.block_mut(block).instrs.push(JitInstr::JsonIndex {
+                dest,
+                object,
+                index,
+            });
             stack.push(dest);
         }
         Opcode::JsonIndexSet => {
             let value = stack.pop(instr.offset)?;
             let index = stack.pop(instr.offset)?;
             let object = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::JsonIndexSet { object, index, value });
+            func.block_mut(block).instrs.push(JitInstr::JsonIndexSet {
+                object,
+                index,
+                value,
+            });
         }
         Opcode::JsonPush => {
             let value = stack.pop(instr.offset)?;
             let array = stack.pop(instr.offset)?;
-            func.block_mut(block).instrs.push(JitInstr::JsonPush { array, value });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonPush { array, value });
         }
         Opcode::JsonPop => {
             let array = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Value);
-            func.block_mut(block).instrs.push(JitInstr::JsonPop { dest, array });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonPop { dest, array });
             stack.push(dest);
         }
         Opcode::JsonNewObject => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::JsonNewObject { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonNewObject { dest });
             stack.push(dest);
         }
         Opcode::JsonNewArray => {
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::JsonNewArray { dest });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonNewArray { dest });
             stack.push(dest);
         }
         Opcode::JsonKeys => {
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::Ptr);
-            func.block_mut(block).instrs.push(JitInstr::JsonKeys { dest, object });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonKeys { dest, object });
             stack.push(dest);
         }
         Opcode::JsonLength => {
             let object = stack.pop(instr.offset)?;
             let dest = func.alloc_reg(JitType::I32);
-            func.block_mut(block).instrs.push(JitInstr::JsonLength { dest, object });
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::JsonLength { dest, object });
             stack.push(dest);
         }
 
@@ -1165,7 +1710,9 @@ fn lift_binary_i32(
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
     let dest = func.alloc_reg(JitType::I32);
-    func.block_mut(block).instrs.push(make_instr(dest, left, right));
+    func.block_mut(block)
+        .instrs
+        .push(make_instr(dest, left, right));
     stack.push(dest);
     Ok(())
 }
@@ -1194,7 +1741,9 @@ fn lift_binary_f64(
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
     let dest = func.alloc_reg(JitType::F64);
-    func.block_mut(block).instrs.push(make_instr(dest, left, right));
+    func.block_mut(block)
+        .instrs
+        .push(make_instr(dest, left, right));
     stack.push(dest);
     Ok(())
 }
@@ -1223,7 +1772,9 @@ fn lift_binary_bool(
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
     let dest = func.alloc_reg(JitType::Bool);
-    func.block_mut(block).instrs.push(make_instr(dest, left, right));
+    func.block_mut(block)
+        .instrs
+        .push(make_instr(dest, left, right));
     stack.push(dest);
     Ok(())
 }
@@ -1264,7 +1815,9 @@ mod tests {
         }
     }
 
-    fn emit(code: &mut Vec<u8>, op: Opcode) { code.push(op as u8); }
+    fn emit(code: &mut Vec<u8>, op: Opcode) {
+        code.push(op as u8);
+    }
     fn emit_i32(code: &mut Vec<u8>, val: i32) {
         code.push(Opcode::ConstI32 as u8);
         code.extend_from_slice(&val.to_le_bytes());
@@ -1296,7 +1849,10 @@ mod tests {
         assert!(!jit_func.blocks.is_empty());
         // Should have a ConstI32 instruction
         let entry = jit_func.block(jit_func.entry);
-        assert!(entry.instrs.iter().any(|i| matches!(i, JitInstr::ConstI32 { value: 42, .. })));
+        assert!(entry
+            .instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::ConstI32 { value: 42, .. })));
     }
 
     #[test]
@@ -1312,7 +1868,10 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         let entry = jit_func.block(jit_func.entry);
-        assert!(entry.instrs.iter().any(|i| matches!(i, JitInstr::IAdd { .. })));
+        assert!(entry
+            .instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::IAdd { .. })));
     }
 
     #[test]
@@ -1329,8 +1888,14 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         let entry = jit_func.block(jit_func.entry);
-        assert!(entry.instrs.iter().any(|i| matches!(i, JitInstr::StoreLocal { index: 0, .. })));
-        assert!(entry.instrs.iter().any(|i| matches!(i, JitInstr::LoadLocal { index: 0, .. })));
+        assert!(entry
+            .instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::StoreLocal { index: 0, .. })));
+        assert!(entry
+            .instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::LoadLocal { index: 0, .. })));
     }
 
     #[test]
@@ -1346,7 +1911,10 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         let entry = jit_func.block(jit_func.entry);
-        assert!(entry.instrs.iter().any(|i| matches!(i, JitInstr::FAdd { .. })));
+        assert!(entry
+            .instrs
+            .iter()
+            .any(|i| matches!(i, JitInstr::FAdd { .. })));
     }
 
     #[test]
@@ -1398,18 +1966,25 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         // Should have multiple blocks (header, body, exit)
-        assert!(jit_func.blocks.len() >= 3, "expected >= 3 blocks, got {}", jit_func.blocks.len());
+        assert!(
+            jit_func.blocks.len() >= 3,
+            "expected >= 3 blocks, got {}",
+            jit_func.blocks.len()
+        );
 
         // Should have at least one CheckPreemption (at the back-edge)
         let has_preemption = jit_func.blocks.iter().any(|b| {
-            b.instrs.iter().any(|i| matches!(i, JitInstr::CheckPreemption))
+            b.instrs
+                .iter()
+                .any(|i| matches!(i, JitInstr::CheckPreemption))
         });
         assert!(has_preemption, "expected CheckPreemption at back-edge");
 
         // Should have a backward Jump terminator (back-edge to header)
-        let has_back_edge = jit_func.blocks.iter().any(|b| {
-            matches!(b.terminator, JitTerminator::Jump(target) if target.0 < b.id.0)
-        });
+        let has_back_edge = jit_func
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, JitTerminator::Jump(target) if target.0 < b.id.0));
         assert!(has_back_edge, "expected backward Jump (back-edge)");
     }
 
@@ -1451,31 +2026,41 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         // Should have 4 blocks: init, header, body, exit
-        assert!(jit_func.blocks.len() >= 4, "expected >= 4 blocks, got {}", jit_func.blocks.len());
+        assert!(
+            jit_func.blocks.len() >= 4,
+            "expected >= 4 blocks, got {}",
+            jit_func.blocks.len()
+        );
 
         // Verify LoadLocal/StoreLocal in loop body
         let has_store_local = jit_func.blocks.iter().any(|b| {
-            b.instrs.iter().any(|i| matches!(i, JitInstr::StoreLocal { index: 0, .. }))
+            b.instrs
+                .iter()
+                .any(|i| matches!(i, JitInstr::StoreLocal { index: 0, .. }))
         });
         assert!(has_store_local, "expected StoreLocal 0 in loop body");
 
         // Verify IAdd is present
-        let has_iadd = jit_func.blocks.iter().any(|b| {
-            b.instrs.iter().any(|i| matches!(i, JitInstr::IAdd { .. }))
-        });
+        let has_iadd = jit_func
+            .blocks
+            .iter()
+            .any(|b| b.instrs.iter().any(|i| matches!(i, JitInstr::IAdd { .. })));
         assert!(has_iadd, "expected IAdd in loop body");
 
         // Verify CheckPreemption before back-edge
         let has_preemption = jit_func.blocks.iter().any(|b| {
-            b.instrs.iter().any(|i| matches!(i, JitInstr::CheckPreemption))
+            b.instrs
+                .iter()
+                .any(|i| matches!(i, JitInstr::CheckPreemption))
         });
         assert!(has_preemption, "expected CheckPreemption at back-edge");
 
         // Verify predecessors are wired — loop header should have 2 predecessors
-        let header_block = jit_func.blocks.iter().find(|b| {
-            b.predecessors.len() >= 2
-        });
-        assert!(header_block.is_some(), "expected loop header with >= 2 predecessors");
+        let header_block = jit_func.blocks.iter().find(|b| b.predecessors.len() >= 2);
+        assert!(
+            header_block.is_some(),
+            "expected loop header with >= 2 predecessors"
+        );
     }
 
     #[test]
@@ -1508,10 +2093,16 @@ mod tests {
         let jit_func = lift_function(&func, &module, 0).unwrap();
 
         // Should have at least 2 CheckPreemption instructions (one per back-edge)
-        let preemption_count: usize = jit_func.blocks.iter()
+        let preemption_count: usize = jit_func
+            .blocks
+            .iter()
             .flat_map(|b| &b.instrs)
             .filter(|i| matches!(i, JitInstr::CheckPreemption))
             .count();
-        assert!(preemption_count >= 2, "expected >= 2 CheckPreemption, got {}", preemption_count);
+        assert!(
+            preemption_count >= 2,
+            "expected >= 2 CheckPreemption, got {}",
+            preemption_count
+        );
     }
 }

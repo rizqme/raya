@@ -81,10 +81,7 @@ pub enum ClassMemberSignature {
         span: Span,
     },
     /// Constructor signature
-    Constructor {
-        params: Vec<Parameter>,
-        span: Span,
-    },
+    Constructor { params: Vec<Parameter>, span: Span },
 }
 
 /// Type alias signature
@@ -153,8 +150,8 @@ impl TypeDefParser {
 
     /// Parse a type definition file from path
     pub fn parse_file(&mut self, path: &Path) -> Result<TypeDefFile, TypeDefError> {
-        let source = std::fs::read_to_string(path)
-            .map_err(|e| TypeDefError::IoError(e.to_string()))?;
+        let source =
+            std::fs::read_to_string(path).map_err(|e| TypeDefError::IoError(e.to_string()))?;
 
         self.parse_source(&source, path)
     }
@@ -173,9 +170,9 @@ impl TypeDefParser {
         })?;
 
         // Parse the module
-        let (module, interner) = parser.parse().map_err(|errors| {
-            TypeDefError::ParseError(errors.into_iter().next().unwrap())
-        })?;
+        let (module, interner) = parser
+            .parse()
+            .map_err(|errors| TypeDefError::ParseError(errors.into_iter().next().unwrap()))?;
 
         self.interner = interner;
 
@@ -220,10 +217,7 @@ impl TypeDefParser {
     }
 
     /// Convert a declaration statement to a type definition export
-    fn convert_declaration(
-        &self,
-        stmt: &Statement,
-    ) -> Result<Option<TypeDefExport>, TypeDefError> {
+    fn convert_declaration(&self, stmt: &Statement) -> Result<Option<TypeDefExport>, TypeDefError> {
         match stmt {
             Statement::FunctionDecl(func) => {
                 // In .d.raya files, function bodies should be empty or contain only a semicolon
@@ -267,8 +261,9 @@ impl TypeDefParser {
                 // Variable declarations in .d.raya must have type annotations
                 let type_annotation = var.type_annotation.clone().ok_or_else(|| {
                     TypeDefError::MissingTypeAnnotation {
-                        message: "Variable declarations in .d.raya files must have type annotations"
-                            .to_string(),
+                        message:
+                            "Variable declarations in .d.raya files must have type annotations"
+                                .to_string(),
                         span: var.span,
                     }
                 })?;
@@ -568,7 +563,10 @@ mod tests {
         "#;
 
         let result = parse_source(source);
-        assert!(matches!(result, Err(TypeDefError::MissingTypeAnnotation { .. })));
+        assert!(matches!(
+            result,
+            Err(TypeDefError::MissingTypeAnnotation { .. })
+        ));
     }
 
     #[test]
@@ -609,7 +607,9 @@ mod tests {
                 assert_eq!(sig.members.len(), 3);
 
                 match &sig.members[0] {
-                    ClassMemberSignature::Field { name, visibility, .. } => {
+                    ClassMemberSignature::Field {
+                        name, visibility, ..
+                    } => {
                         assert_eq!(name, "host");
                         assert_eq!(*visibility, Visibility::Public);
                     }
@@ -617,7 +617,9 @@ mod tests {
                 }
 
                 match &sig.members[1] {
-                    ClassMemberSignature::Field { name, visibility, .. } => {
+                    ClassMemberSignature::Field {
+                        name, visibility, ..
+                    } => {
                         assert_eq!(name, "port");
                         assert_eq!(*visibility, Visibility::Private);
                     }
@@ -625,7 +627,9 @@ mod tests {
                 }
 
                 match &sig.members[2] {
-                    ClassMemberSignature::Field { name, is_static, .. } => {
+                    ClassMemberSignature::Field {
+                        name, is_static, ..
+                    } => {
                         assert_eq!(name, "DEFAULT_PORT");
                         assert!(*is_static);
                     }

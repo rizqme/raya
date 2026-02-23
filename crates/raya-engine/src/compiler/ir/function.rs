@@ -140,10 +140,7 @@ impl IrFunction {
 
         // Check that entry block exists
         if self.get_block(self.entry_block).is_none() {
-            return Err(format!(
-                "Entry block {} does not exist",
-                self.entry_block
-            ));
+            return Err(format!("Entry block {} does not exist", self.entry_block));
         }
 
         // Check that all blocks are properly terminated

@@ -1,11 +1,11 @@
 //! Code generation from AST to bytecode
 
+use crate::compiler::bytecode::{Module, Opcode};
 use crate::compiler::error::{CompileError, CompileResult};
 use crate::compiler::module_builder::{FunctionBuilder, ModuleBuilder};
-use crate::compiler::bytecode::{Module, Opcode};
 use crate::parser::ast::*;
-use crate::parser::{Interner, Symbol as ParserSymbol};
 use crate::parser::TypeContext;
+use crate::parser::{Interner, Symbol as ParserSymbol};
 use rustc_hash::FxHashMap;
 
 /// Main code generator
@@ -35,7 +35,10 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a complete module
-    pub fn compile_program(&mut self, module: &crate::parser::ast::Module) -> CompileResult<Module> {
+    pub fn compile_program(
+        &mut self,
+        module: &crate::parser::ast::Module,
+    ) -> CompileResult<Module> {
         // Create main function to hold top-level code
         let mut main_fn = FunctionBuilder::new("main".to_string(), 0);
 
@@ -52,7 +55,8 @@ impl<'a> CodeGenerator<'a> {
         self.module_builder.add_function(main_function);
 
         // Take ownership and build the module
-        let builder = std::mem::replace(&mut self.module_builder, ModuleBuilder::new(String::new()));
+        let builder =
+            std::mem::replace(&mut self.module_builder, ModuleBuilder::new(String::new()));
         Ok(builder.build())
     }
 
@@ -70,7 +74,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a variable declaration
-    fn compile_var_decl(&mut self, func: &mut FunctionBuilder, decl: &VariableDecl) -> CompileResult<()> {
+    fn compile_var_decl(
+        &mut self,
+        func: &mut FunctionBuilder,
+        decl: &VariableDecl,
+    ) -> CompileResult<()> {
         // Only support simple identifier patterns for now
         let name = match &decl.pattern {
             Pattern::Identifier(ident) => self.resolve(ident.name),
@@ -99,7 +107,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile an expression statement
-    fn compile_expr_stmt(&mut self, func: &mut FunctionBuilder, expr_stmt: &ExpressionStatement) -> CompileResult<()> {
+    fn compile_expr_stmt(
+        &mut self,
+        func: &mut FunctionBuilder,
+        expr_stmt: &ExpressionStatement,
+    ) -> CompileResult<()> {
         self.compile_expr(func, &expr_stmt.expression)?;
         // Pop the result since expression statements don't use the value
         func.emit(Opcode::Pop);
@@ -107,7 +119,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a block statement
-    fn compile_block(&mut self, func: &mut FunctionBuilder, block: &BlockStatement) -> CompileResult<()> {
+    fn compile_block(
+        &mut self,
+        func: &mut FunctionBuilder,
+        block: &BlockStatement,
+    ) -> CompileResult<()> {
         for stmt in &block.statements {
             self.compile_stmt(func, stmt)?;
         }
@@ -115,7 +131,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a return statement
-    fn compile_return(&mut self, func: &mut FunctionBuilder, ret: &ReturnStatement) -> CompileResult<()> {
+    fn compile_return(
+        &mut self,
+        func: &mut FunctionBuilder,
+        ret: &ReturnStatement,
+    ) -> CompileResult<()> {
         if let Some(ref value) = ret.value {
             self.compile_expr(func, value)?;
         } else {
@@ -147,7 +167,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile an integer literal
-    fn compile_int_literal(&mut self, func: &mut FunctionBuilder, lit: &IntLiteral) -> CompileResult<()> {
+    fn compile_int_literal(
+        &mut self,
+        func: &mut FunctionBuilder,
+        lit: &IntLiteral,
+    ) -> CompileResult<()> {
         if lit.value >= i32::MIN as i64 && lit.value <= i32::MAX as i64 {
             func.emit(Opcode::ConstI32);
             func.emit_i32(lit.value as i32);
@@ -160,14 +184,22 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a float literal
-    fn compile_float_literal(&mut self, func: &mut FunctionBuilder, lit: &FloatLiteral) -> CompileResult<()> {
+    fn compile_float_literal(
+        &mut self,
+        func: &mut FunctionBuilder,
+        lit: &FloatLiteral,
+    ) -> CompileResult<()> {
         func.emit(Opcode::ConstF64);
         func.emit_f64(lit.value);
         Ok(())
     }
 
     /// Compile a string literal
-    fn compile_string_literal(&mut self, func: &mut FunctionBuilder, lit: &StringLiteral) -> CompileResult<()> {
+    fn compile_string_literal(
+        &mut self,
+        func: &mut FunctionBuilder,
+        lit: &StringLiteral,
+    ) -> CompileResult<()> {
         // Add string to constant pool
         let const_index = self.module_builder.add_string(self.resolve(lit.value))?;
         func.emit(Opcode::ConstStr);
@@ -176,7 +208,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a boolean literal
-    fn compile_boolean_literal(&mut self, func: &mut FunctionBuilder, lit: &BooleanLiteral) -> CompileResult<()> {
+    fn compile_boolean_literal(
+        &mut self,
+        func: &mut FunctionBuilder,
+        lit: &BooleanLiteral,
+    ) -> CompileResult<()> {
         if lit.value {
             func.emit(Opcode::ConstTrue);
         } else {
@@ -186,7 +222,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile an identifier expression
-    fn compile_identifier(&mut self, func: &mut FunctionBuilder, ident: &Identifier) -> CompileResult<()> {
+    fn compile_identifier(
+        &mut self,
+        func: &mut FunctionBuilder,
+        ident: &Identifier,
+    ) -> CompileResult<()> {
         let name = self.resolve(ident.name);
         // Try to find as local variable
         if let Some(local_index) = func.get_local(&name) {
@@ -199,7 +239,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a binary expression
-    fn compile_binary(&mut self, func: &mut FunctionBuilder, binary: &BinaryExpression) -> CompileResult<()> {
+    fn compile_binary(
+        &mut self,
+        func: &mut FunctionBuilder,
+        binary: &BinaryExpression,
+    ) -> CompileResult<()> {
         // Compile left and right operands
         self.compile_expr(func, &binary.left)?;
         self.compile_expr(func, &binary.right)?;
@@ -228,7 +272,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a logical expression (handled separately from binary)
-    fn compile_logical(&mut self, func: &mut FunctionBuilder, logical: &LogicalExpression) -> CompileResult<()> {
+    fn compile_logical(
+        &mut self,
+        func: &mut FunctionBuilder,
+        logical: &LogicalExpression,
+    ) -> CompileResult<()> {
         match logical.operator {
             LogicalOperator::And => {
                 // Compile left operand
@@ -281,7 +329,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile a unary expression
-    fn compile_unary(&mut self, func: &mut FunctionBuilder, unary: &UnaryExpression) -> CompileResult<()> {
+    fn compile_unary(
+        &mut self,
+        func: &mut FunctionBuilder,
+        unary: &UnaryExpression,
+    ) -> CompileResult<()> {
         // Compile the operand
         self.compile_expr(func, &unary.operand)?;
 
@@ -300,7 +352,11 @@ impl<'a> CodeGenerator<'a> {
     }
 
     /// Compile an assignment expression
-    fn compile_assign(&mut self, func: &mut FunctionBuilder, assign: &AssignmentExpression) -> CompileResult<()> {
+    fn compile_assign(
+        &mut self,
+        func: &mut FunctionBuilder,
+        assign: &AssignmentExpression,
+    ) -> CompileResult<()> {
         // Compile the value expression
         self.compile_expr(func, &assign.right)?;
 

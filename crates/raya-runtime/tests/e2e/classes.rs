@@ -658,4 +658,3 @@ fn test_bound_method_different_instances() {
         "Hello, Alice and Hello, Bob",
     );
 }
-

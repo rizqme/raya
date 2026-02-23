@@ -103,31 +103,36 @@ impl FunctionWrapper {
 
     /// Add a before hook
     pub fn with_before(mut self, function_id: usize) -> Self {
-        self.hooks.push(WrapperHook::with_function(HookType::Before, function_id));
+        self.hooks
+            .push(WrapperHook::with_function(HookType::Before, function_id));
         self
     }
 
     /// Add an after hook
     pub fn with_after(mut self, function_id: usize) -> Self {
-        self.hooks.push(WrapperHook::with_function(HookType::After, function_id));
+        self.hooks
+            .push(WrapperHook::with_function(HookType::After, function_id));
         self
     }
 
     /// Add an around hook
     pub fn with_around(mut self, function_id: usize) -> Self {
-        self.hooks.push(WrapperHook::with_function(HookType::Around, function_id));
+        self.hooks
+            .push(WrapperHook::with_function(HookType::Around, function_id));
         self
     }
 
     /// Add an error hook
     pub fn with_on_error(mut self, function_id: usize) -> Self {
-        self.hooks.push(WrapperHook::with_function(HookType::OnError, function_id));
+        self.hooks
+            .push(WrapperHook::with_function(HookType::OnError, function_id));
         self
     }
 
     /// Add a hook with closure
     pub fn with_hook_closure(mut self, hook_type: HookType, closure: Value) -> Self {
-        self.hooks.push(WrapperHook::with_closure(hook_type, closure));
+        self.hooks
+            .push(WrapperHook::with_closure(hook_type, closure));
         self
     }
 
@@ -165,7 +170,9 @@ impl FunctionWrapper {
     /// ```
     pub fn build(self) -> Result<WrapperFunction, VmError> {
         let wrapper_id = generate_wrapper_id();
-        let name = self.name.unwrap_or_else(|| format!("wrapper_{}", wrapper_id));
+        let name = self
+            .name
+            .unwrap_or_else(|| format!("wrapper_{}", wrapper_id));
 
         // For now, we create a simple wrapper structure
         // The actual bytecode generation would require more infrastructure
@@ -176,18 +183,26 @@ impl FunctionWrapper {
             name,
             original_func_id: self.original_func_id,
             param_count: self.param_count,
-            before_hooks: self.hooks.iter()
+            before_hooks: self
+                .hooks
+                .iter()
                 .filter(|h| h.hook_type == HookType::Before)
                 .cloned()
                 .collect(),
-            after_hooks: self.hooks.iter()
+            after_hooks: self
+                .hooks
+                .iter()
                 .filter(|h| h.hook_type == HookType::After)
                 .cloned()
                 .collect(),
-            around_hook: self.hooks.iter()
+            around_hook: self
+                .hooks
+                .iter()
                 .find(|h| h.hook_type == HookType::Around)
                 .cloned(),
-            error_hooks: self.hooks.iter()
+            error_hooks: self
+                .hooks
+                .iter()
                 .filter(|h| h.hook_type == HookType::OnError)
                 .cloned()
                 .collect(),
@@ -411,7 +426,11 @@ impl DecoratorRegistry {
     }
 
     /// Get decorators on a method
-    pub fn get_method_decorators(&self, class_id: usize, method_name: &str) -> Vec<&DecoratorApplication> {
+    pub fn get_method_decorators(
+        &self,
+        class_id: usize,
+        method_name: &str,
+    ) -> Vec<&DecoratorApplication> {
         self.method_decorators
             .get(&(class_id, method_name.to_string()))
             .map(|v| v.iter().collect())
@@ -419,7 +438,11 @@ impl DecoratorRegistry {
     }
 
     /// Get decorators on a field
-    pub fn get_field_decorators(&self, class_id: usize, field_name: &str) -> Vec<&DecoratorApplication> {
+    pub fn get_field_decorators(
+        &self,
+        class_id: usize,
+        field_name: &str,
+    ) -> Vec<&DecoratorApplication> {
         self.field_decorators
             .get(&(class_id, field_name.to_string()))
             .map(|v| v.iter().collect())
@@ -491,9 +514,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_wrapper() {
-        let wrapper = FunctionWrapper::new(42, 2)
-            .build()
-            .unwrap();
+        let wrapper = FunctionWrapper::new(42, 2).build().unwrap();
 
         assert!(!wrapper.has_hooks());
         assert!(wrapper.is_passthrough());
@@ -595,13 +616,17 @@ mod tests {
         };
 
         registry.register_field_decorator(1, "name".to_string(), decorator.clone());
-        registry.register_field_decorator(1, "age".to_string(), DecoratorApplication {
-            name: "Column".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Field,
-            property_key: Some("age".to_string()),
-            parameter_index: None,
-        });
+        registry.register_field_decorator(
+            1,
+            "age".to_string(),
+            DecoratorApplication {
+                name: "Column".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Field,
+                property_key: Some("age".to_string()),
+                parameter_index: None,
+            },
+        );
 
         let decorators = registry.get_field_decorators(1, "name");
         assert_eq!(decorators.len(), 1);
@@ -624,13 +649,18 @@ mod tests {
         };
 
         registry.register_parameter_decorator(1, "constructor".to_string(), 0, decorator.clone());
-        registry.register_parameter_decorator(1, "constructor".to_string(), 1, DecoratorApplication {
-            name: "Inject".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Parameter,
-            property_key: Some("constructor".to_string()),
-            parameter_index: Some(1),
-        });
+        registry.register_parameter_decorator(
+            1,
+            "constructor".to_string(),
+            1,
+            DecoratorApplication {
+                name: "Inject".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Parameter,
+                property_key: Some("constructor".to_string()),
+                parameter_index: Some(1),
+            },
+        );
 
         let param0_decorators = registry.get_parameter_decorators(1, "constructor", 0);
         assert_eq!(param0_decorators.len(), 1);
@@ -645,27 +675,37 @@ mod tests {
         let mut registry = DecoratorRegistry::new();
 
         // Register multiple decorators on same class
-        registry.register_class_decorator(1, DecoratorApplication {
-            name: "Injectable".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Class,
-            property_key: None,
-            parameter_index: None,
-        });
-        registry.register_class_decorator(1, DecoratorApplication {
-            name: "Singleton".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Class,
-            property_key: None,
-            parameter_index: None,
-        });
+        registry.register_class_decorator(
+            1,
+            DecoratorApplication {
+                name: "Injectable".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Class,
+                property_key: None,
+                parameter_index: None,
+            },
+        );
+        registry.register_class_decorator(
+            1,
+            DecoratorApplication {
+                name: "Singleton".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Class,
+                property_key: None,
+                parameter_index: None,
+            },
+        );
 
         let decorators = registry.get_class_decorators(1);
         assert_eq!(decorators.len(), 2);
 
         // Class should appear in both decorator queries
-        assert!(registry.get_classes_with_decorator("Injectable").contains(&1));
-        assert!(registry.get_classes_with_decorator("Singleton").contains(&1));
+        assert!(registry
+            .get_classes_with_decorator("Injectable")
+            .contains(&1));
+        assert!(registry
+            .get_classes_with_decorator("Singleton")
+            .contains(&1));
     }
 
     #[test]
@@ -673,20 +713,28 @@ mod tests {
         let mut registry = DecoratorRegistry::new();
 
         // Register multiple decorators on same method
-        registry.register_method_decorator(1, "getUsers".to_string(), DecoratorApplication {
-            name: "GET".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Method,
-            property_key: Some("getUsers".to_string()),
-            parameter_index: None,
-        });
-        registry.register_method_decorator(1, "getUsers".to_string(), DecoratorApplication {
-            name: "Auth".to_string(),
-            args: vec![],
-            target_type: DecoratorTargetType::Method,
-            property_key: Some("getUsers".to_string()),
-            parameter_index: None,
-        });
+        registry.register_method_decorator(
+            1,
+            "getUsers".to_string(),
+            DecoratorApplication {
+                name: "GET".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Method,
+                property_key: Some("getUsers".to_string()),
+                parameter_index: None,
+            },
+        );
+        registry.register_method_decorator(
+            1,
+            "getUsers".to_string(),
+            DecoratorApplication {
+                name: "Auth".to_string(),
+                args: vec![],
+                target_type: DecoratorTargetType::Method,
+                property_key: Some("getUsers".to_string()),
+                parameter_index: None,
+            },
+        );
 
         let decorators = registry.get_method_decorators(1, "getUsers");
         assert_eq!(decorators.len(), 2);
@@ -702,9 +750,13 @@ mod tests {
 
         // Queries on empty registry should return empty
         assert!(registry.get_class_decorators(999).is_empty());
-        assert!(registry.get_method_decorators(999, "nonexistent").is_empty());
+        assert!(registry
+            .get_method_decorators(999, "nonexistent")
+            .is_empty());
         assert!(registry.get_field_decorators(999, "nonexistent").is_empty());
-        assert!(registry.get_parameter_decorators(999, "nonexistent", 0).is_empty());
+        assert!(registry
+            .get_parameter_decorators(999, "nonexistent", 0)
+            .is_empty());
         assert!(registry.get_classes_with_decorator("Unknown").is_empty());
         assert!(!registry.class_has_decorator(999, "Unknown"));
     }

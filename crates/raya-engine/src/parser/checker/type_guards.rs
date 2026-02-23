@@ -174,7 +174,9 @@ pub fn extract_type_guard(expr: &Expression, interner: &Interner) -> Option<Type
 pub fn extract_call_type_guard(expr: &Expression, interner: &Interner) -> Option<TypeGuard> {
     // Handle negation: !Array.isArray(x)
     let (call_expr, negated) = match expr {
-        Expression::Unary(unary) if matches!(unary.operator, crate::parser::ast::UnaryOperator::Not) => {
+        Expression::Unary(unary)
+            if matches!(unary.operator, crate::parser::ast::UnaryOperator::Not) =>
+        {
             match &*unary.operand {
                 Expression::Call(call) => (call, true),
                 _ => return None,

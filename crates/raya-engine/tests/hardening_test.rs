@@ -10,8 +10,8 @@
 
 #![cfg(feature = "hardening-tests")]
 
-use raya_engine::parser::Parser;
 use raya_engine::parser::parser::ParseErrorKind;
+use raya_engine::parser::Parser;
 
 // ============================================================================
 // Infinite Loop Prevention
@@ -26,7 +26,10 @@ fn test_malformed_jsx_attributes_no_hang() {
     let result = parser.parse();
 
     // Should succeed (not hang)
-    assert!(result.is_ok(), "Parser should not hang on hyphenated attributes");
+    assert!(
+        result.is_ok(),
+        "Parser should not hang on hyphenated attributes"
+    );
 }
 
 #[test]
@@ -114,7 +117,10 @@ fn test_max_nesting_depth_objects() {
     let result = parser.parse();
 
     // Should fail with depth limit error (depth guard triggers before stack overflow)
-    assert!(result.is_err(), "Should reject extremely deep object nesting");
+    assert!(
+        result.is_err(),
+        "Should reject extremely deep object nesting"
+    );
 }
 
 #[test]
@@ -127,7 +133,10 @@ fn test_max_nesting_depth_expressions() {
     let result = parser.parse();
 
     // Should fail with depth limit error
-    assert!(result.is_err(), "Should reject extremely deep expression nesting");
+    assert!(
+        result.is_err(),
+        "Should reject extremely deep expression nesting"
+    );
 }
 
 #[test]
@@ -155,7 +164,10 @@ fn test_array_pattern_with_many_elements() {
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
 
-    assert!(result.is_ok(), "Should handle array pattern with many elements");
+    assert!(
+        result.is_ok(),
+        "Should handle array pattern with many elements"
+    );
 }
 
 #[test]
@@ -167,7 +179,10 @@ fn test_object_pattern_with_many_properties() {
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
 
-    assert!(result.is_ok(), "Should handle object pattern with many properties");
+    assert!(
+        result.is_ok(),
+        "Should handle object pattern with many properties"
+    );
 }
 
 #[test]
@@ -297,7 +312,10 @@ fn test_array_with_holes() {
     let parser = Parser::new(source).unwrap();
     let result = parser.parse();
 
-    assert!(result.is_ok(), "Should handle array patterns with many holes");
+    assert!(
+        result.is_ok(),
+        "Should handle array patterns with many holes"
+    );
 }
 
 #[test]
@@ -368,7 +386,7 @@ fn test_jsx_deeply_nested_elements() {
 #[test]
 fn test_realistic_nesting_depth() {
     use raya_engine::parser::Parser;
-    
+
     // Test realistic code patterns - around 10-15 levels of nesting
     let source = r#"
         function processData(data) {
@@ -393,17 +411,20 @@ fn test_realistic_nesting_depth() {
             return [];
         }
     "#;
-    
+
     let parser = Parser::new(source).unwrap();
     let result = parser.parse();
-    
-    assert!(result.is_ok(), "Should handle realistic nesting depth (10-15 levels)");
+
+    assert!(
+        result.is_ok(),
+        "Should handle realistic nesting depth (10-15 levels)"
+    );
 }
 
 #[test]
 fn test_deeply_nested_realistic() {
     use raya_engine::parser::Parser;
-    
+
     // Test around 20 levels - still reasonable for complex apps
     let source = r#"
         let config = {
@@ -429,37 +450,40 @@ fn test_deeply_nested_realistic() {
             }
         };
     "#;
-    
+
     let parser = Parser::new(source).unwrap();
     let result = parser.parse();
-    
+
     assert!(result.is_ok(), "Should handle 20 levels of object nesting");
 }
 #[test]
 fn test_depth_limit_41() {
     use raya_engine::parser::Parser;
-    
+
     // 41 levels - just over the limit of 40
     let depth = 41;
     let source = "[".repeat(depth) + "1" + &"]".repeat(depth);
-    
+
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
-    
+
     // Should be rejected by depth guard
-    assert!(result.is_err(), "Should reject 41 levels (over limit of 40)");
+    assert!(
+        result.is_err(),
+        "Should reject 41 levels (over limit of 40)"
+    );
 }
 #[test]
 fn test_object_depth_10() {
     use raya_engine::parser::Parser;
-    
+
     let depth = 10;
     let source = "let x = ".to_string() + &"{a:".repeat(depth) + "1" + &"}".repeat(depth) + ";";
     println!("Source: {}", source);
-    
+
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
-    
+
     assert!(result.is_ok(), "Should handle 10 levels of object nesting");
 }
 #[test]
@@ -474,7 +498,10 @@ fn test_object_depth_at_limit() {
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
 
-    assert!(result.is_ok(), "Should handle 28 levels of object nesting (at limit)");
+    assert!(
+        result.is_ok(),
+        "Should handle 28 levels of object nesting (at limit)"
+    );
 }
 #[test]
 fn test_obj_38() {
@@ -526,5 +553,8 @@ fn test_depth_over_limit() {
     let source = "let x = ".to_string() + &"{a:".repeat(29) + "1" + &"}".repeat(29) + ";";
     let parser = Parser::new(&source).unwrap();
     let result = parser.parse();
-    assert!(result.is_err(), "Should reject 29 levels (total depth 31, over limit of 30)");
+    assert!(
+        result.is_err(),
+        "Should reject 29 levels (total depth 31, over limit of 30)"
+    );
 }

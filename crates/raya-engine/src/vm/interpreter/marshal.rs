@@ -3,8 +3,8 @@
 //! Marshalling provides safe, controlled data transfer between VmContexts.
 //! Values are deep-copied across context boundaries to maintain heap isolation.
 
-use crate::vm::value::Value;
 use crate::vm::interpreter::VmContext;
+use crate::vm::value::Value;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;

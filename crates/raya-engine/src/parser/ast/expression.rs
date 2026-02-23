@@ -531,10 +531,18 @@ impl JsxElementName {
         match self {
             JsxElementName::Identifier(id) => interner.resolve(id.name).to_string(),
             JsxElementName::Namespaced { namespace, name } => {
-                format!("{}:{}", interner.resolve(namespace.name), interner.resolve(name.name))
+                format!(
+                    "{}:{}",
+                    interner.resolve(namespace.name),
+                    interner.resolve(name.name)
+                )
             }
             JsxElementName::MemberExpression { object, property } => {
-                format!("{}.{}", object.to_string(interner), interner.resolve(property.name))
+                format!(
+                    "{}.{}",
+                    object.to_string(interner),
+                    interner.resolve(property.name)
+                )
             }
         }
     }
@@ -542,9 +550,11 @@ impl JsxElementName {
     /// Check if this is an intrinsic element (lowercase HTML tag)
     pub fn is_intrinsic(&self, interner: &crate::parser::interner::Interner) -> bool {
         match self {
-            JsxElementName::Identifier(id) => {
-                interner.resolve(id.name).chars().next().is_some_and(|c| c.is_lowercase())
-            }
+            JsxElementName::Identifier(id) => interner
+                .resolve(id.name)
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_lowercase()),
             _ => false,
         }
     }

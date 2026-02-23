@@ -319,14 +319,13 @@ impl<'a> NativeObject<'a> {
 
     /// Get field by name
     pub fn get(&self, name: &str) -> AbiResult<NativeValue> {
-        let index = self
-            .schema
-            .field_index(name)
-            .ok_or_else(|| NativeError::AbiError(format!(
+        let index = self.schema.field_index(name).ok_or_else(|| {
+            NativeError::AbiError(format!(
                 "Field '{}' not found in class '{}'",
                 name,
                 self.schema.class_name()
-            )))?;
+            ))
+        })?;
         self.ctx.object_get_field(self.value, index)
     }
 
@@ -367,14 +366,13 @@ impl<'a> NativeObject<'a> {
 
     /// Set field by name
     pub fn set(&self, name: &str, value: NativeValue) -> AbiResult<()> {
-        let index = self
-            .schema
-            .field_index(name)
-            .ok_or_else(|| NativeError::AbiError(format!(
+        let index = self.schema.field_index(name).ok_or_else(|| {
+            NativeError::AbiError(format!(
                 "Field '{}' not found in class '{}'",
                 name,
                 self.schema.class_name()
-            )))?;
+            ))
+        })?;
         self.ctx.object_set_field(self.value, index, value)
     }
 
@@ -540,19 +538,17 @@ pub struct NativeMethod {
 
 impl NativeMethod {
     /// Resolve a method from class metadata
-    pub fn resolve(
-        ctx: &dyn NativeContext,
-        class_id: usize,
-        method_name: &str,
-    ) -> AbiResult<Self> {
+    pub fn resolve(ctx: &dyn NativeContext, class_id: usize, method_name: &str) -> AbiResult<Self> {
         let methods = ctx.class_method_entries(class_id)?;
         let (_, vtable_index) = methods
             .iter()
             .find(|(name, _)| name == method_name)
-            .ok_or_else(|| NativeError::AbiError(format!(
-                "Method '{}' not found in class {}",
-                method_name, class_id
-            )))?;
+            .ok_or_else(|| {
+                NativeError::AbiError(format!(
+                    "Method '{}' not found in class {}",
+                    method_name, class_id
+                ))
+            })?;
 
         // For now, function_id = vtable_index (resolved at call time by engine)
         Ok(Self {

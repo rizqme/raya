@@ -112,14 +112,19 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 
 ## Integration Tests
 
-26 tests in `tests/cli_integration.rs` covering:
+40 tests in `tests/cli_integration.rs` covering:
 - Run .raya file, compile .raya file, run .ryb file, bytecode roundtrip
 - Run with manifest (raya.toml), local path dependencies, URL deps (cached + error)
 - Package dep resolution, mixed deps (ryb + source), .ryb with separate library
 - Eval expressions, eval functions, eval complex expressions
+- Eval async/waitall programs and bare-expression wrapping equivalence
 - Script manifest parsing, script file targets
 - Build to .ryb, runtime with options, runtime defaults
 - Session: eval, variable persistence, function persistence, reset, format_value, multiple evals
+- Session REPL-style complex flows and error-recovery continuity
+- RYB edge cases: invalid bytecode rejection and complex async/class roundtrip execution
+- Eval/REPL/RYB edge cases for `await` array + `import io` + method calls inside function scope
+- Duplicate top-level async declaration protection: duplicated pasted REPL/eval program now errors (duplicate declaration) instead of hanging
 
 13 unit tests in `src/commands/repl.rs` covering:
 - `is_incomplete()`: braces, strings, comments, nesting, escapes
@@ -131,6 +136,8 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 - `repl.rs` uses `raya_runtime::Session` which accumulates declarations and re-compiles each eval
 - **REPL commands** (no dot prefix): `help`, `clear`, `load`, `type`, `exit` (changed from `.help`, `.clear`, etc.)
 - REPL features: multi-line input, colored output, history (~/.raya/repl_history)
+- REPL keybinding: `Shift+Enter` inserts a newline (does not submit current input)
+- Terminal fallback bindings for multiline in REPL: `Alt+Enter` and `Ctrl+J` also insert newline
 - `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
 - `pkg` is the canonical PM namespace — all PM commands live in `PkgCommands` enum
 - Top-level `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade` are aliases that delegate to the same implementations

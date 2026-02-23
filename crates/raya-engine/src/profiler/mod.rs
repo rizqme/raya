@@ -204,12 +204,7 @@ impl Profiler {
     /// one atomic load (`enabled`) + one atomic load (`last_sample_time`) +
     /// a timestamp comparison.
     #[inline(always)]
-    pub fn maybe_sample(
-        &self,
-        task: &Arc<Task>,
-        current_func_id: usize,
-        current_ip: usize,
-    ) {
+    pub fn maybe_sample(&self, task: &Arc<Task>, current_func_id: usize, current_ip: usize) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }

@@ -3,10 +3,10 @@
 //! Provides data structures and algorithms for analyzing which variables
 //! are captured by arrow functions (closures).
 
-use crate::parser::Span;
-use crate::parser::types::TypeId;
-use rustc_hash::{FxHashMap, FxHashSet};
 use super::symbols::ScopeId;
+use crate::parser::types::TypeId;
+use crate::parser::Span;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Information about a single captured variable
 #[derive(Debug, Clone)]
@@ -41,7 +41,8 @@ impl ClosureCaptures {
     /// Add a capture to the set
     pub fn add(&mut self, info: CaptureInfo) {
         if !self.capture_indices.contains_key(&info.name) {
-            self.capture_indices.insert(info.name.clone(), self.captures.len());
+            self.capture_indices
+                .insert(info.name.clone(), self.captures.len());
             self.captures.push(info);
         }
     }
@@ -60,7 +61,9 @@ impl ClosureCaptures {
 
     /// Get capture info by name
     pub fn get(&self, name: &str) -> Option<&CaptureInfo> {
-        self.capture_indices.get(name).map(|&idx| &self.captures[idx])
+        self.capture_indices
+            .get(name)
+            .map(|&idx| &self.captures[idx])
     }
 
     /// Get number of captures

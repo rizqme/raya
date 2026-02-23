@@ -248,26 +248,17 @@ fn test_string_trim() {
 
 #[test]
 fn test_string_starts_with() {
-    expect_bool(
-        "return \"hello world\".startsWith(\"hello\");",
-        true,
-    );
+    expect_bool("return \"hello world\".startsWith(\"hello\");", true);
 }
 
 #[test]
 fn test_string_ends_with() {
-    expect_bool(
-        "return \"hello world\".endsWith(\"world\");",
-        true,
-    );
+    expect_bool("return \"hello world\".endsWith(\"world\");", true);
 }
 
 #[test]
 fn test_string_includes() {
-    expect_bool(
-        "return \"hello world\".includes(\"lo wo\");",
-        true,
-    );
+    expect_bool("return \"hello world\".includes(\"lo wo\");", true);
 }
 
 #[test]
@@ -290,18 +281,12 @@ fn test_string_split() {
 
 #[test]
 fn test_string_repeat() {
-    expect_string(
-        "return \"ab\".repeat(3);",
-        "ababab",
-    );
+    expect_string("return \"ab\".repeat(3);", "ababab");
 }
 
 #[test]
 fn test_string_pad_start() {
-    expect_string(
-        "return \"42\".padStart(5, \"0\");",
-        "00042",
-    );
+    expect_string("return \"42\".padStart(5, \"0\");", "00042");
 }
 
 // ============================================================================

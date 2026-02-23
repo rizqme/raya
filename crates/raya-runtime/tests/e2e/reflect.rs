@@ -367,7 +367,11 @@ fn test_reflect_get_class() {
     match result {
         Ok(value) => {
             let class_id = value.as_i32().expect("Expected i32 class ID");
-            assert!(class_id > 0, "Class ID should be positive, got {}", class_id);
+            assert!(
+                class_id > 0,
+                "Class ID should be positive, got {}",
+                class_id
+            );
         }
         Err(e) => panic!("getClass should work: {}", e),
     }
@@ -415,11 +419,7 @@ fn test_reflect_inspect() {
         return reflect.inspect(42);
     "#,
     );
-    assert!(
-        result.is_ok(),
-        "inspect should work: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "inspect should work: {:?}", result.err());
 }
 
 #[test]

@@ -323,11 +323,23 @@ impl std::fmt::Debug for NativeValue {
         } else {
             match self.get_tag() {
                 0 => write!(f, "NativeValue::Ptr({:#x})", self.0 & PAYLOAD_MASK),
-                1 => write!(f, "NativeValue::I32({})", (self.0 & PAYLOAD_MASK) as i64 as i32),
+                1 => write!(
+                    f,
+                    "NativeValue::I32({})",
+                    (self.0 & PAYLOAD_MASK) as i64 as i32
+                ),
                 2 => write!(f, "NativeValue::Bool({})", (self.0 & PAYLOAD_MASK) != 0),
                 3 => write!(f, "NativeValue::U32({})", (self.0 & PAYLOAD_MASK_32) as u32),
-                4 => write!(f, "NativeValue::F32({})", f32::from_bits((self.0 & PAYLOAD_MASK_32) as u32)),
-                5 => write!(f, "NativeValue::I64({})", (self.0 & PAYLOAD_MASK_32) as i32 as i64),
+                4 => write!(
+                    f,
+                    "NativeValue::F32({})",
+                    f32::from_bits((self.0 & PAYLOAD_MASK_32) as u32)
+                ),
+                5 => write!(
+                    f,
+                    "NativeValue::I64({})",
+                    (self.0 & PAYLOAD_MASK_32) as i32 as i64
+                ),
                 6 => write!(f, "NativeValue::Null"),
                 7 => write!(f, "NativeValue::U64({})", self.0 & PAYLOAD_MASK),
                 _ => write!(f, "NativeValue::Unknown({:#x})", self.0),

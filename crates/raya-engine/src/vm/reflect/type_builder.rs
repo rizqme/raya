@@ -248,7 +248,12 @@ impl DynamicClassBuilder {
 
         // Create the Class object
         let mut class = if static_field_count > 0 {
-            Class::with_static_fields(class_id, name.clone(), instance_field_count, static_field_count)
+            Class::with_static_fields(
+                class_id,
+                name.clone(),
+                instance_field_count,
+                static_field_count,
+            )
         } else {
             Class::new(class_id, name.clone(), instance_field_count)
         };
@@ -290,12 +295,7 @@ impl DynamicClassBuilder {
         let static_field_count = definition.static_field_count();
 
         // Create the Class object with parent
-        let mut class = Class::with_parent(
-            class_id,
-            name.clone(),
-            total_field_count,
-            parent.id,
-        );
+        let mut class = Class::with_parent(class_id, name.clone(), total_field_count, parent.id);
 
         // Copy static fields from definition
         if static_field_count > 0 {
@@ -316,12 +316,8 @@ impl DynamicClassBuilder {
         }
 
         // Create metadata (inheriting from parent if available)
-        let metadata = self.build_subclass_metadata(
-            class_id,
-            inherited_fields,
-            parent_metadata,
-            definition,
-        );
+        let metadata =
+            self.build_subclass_metadata(class_id, inherited_fields, parent_metadata, definition);
 
         (class, metadata)
     }
@@ -337,12 +333,8 @@ impl DynamicClassBuilder {
         self.next_id += 1;
 
         // Count new instance fields
-        let new_instance_fields: usize = new_fields.iter()
-            .filter(|f| !f.is_static)
-            .count();
-        let new_static_fields: usize = new_fields.iter()
-            .filter(|f| f.is_static)
-            .count();
+        let new_instance_fields: usize = new_fields.iter().filter(|f| !f.is_static).count();
+        let new_static_fields: usize = new_fields.iter().filter(|f| f.is_static).count();
 
         let total_field_count = original.field_count + new_instance_fields;
 
@@ -394,7 +386,11 @@ impl DynamicClassBuilder {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
                 declaring_class_id: class_id,
-                field_index: if field_def.is_static { static_index } else { field_index },
+                field_index: if field_def.is_static {
+                    static_index
+                } else {
+                    field_index
+                },
                 is_static: field_def.is_static,
                 is_readonly: field_def.is_readonly,
             };
@@ -412,14 +408,17 @@ impl DynamicClassBuilder {
             let method_info = MethodInfo {
                 name: method_def.name.clone(),
                 return_type: method_def.return_type.clone(),
-                parameters: method_def.parameters.iter().enumerate().map(|(i, p)| {
-                    crate::vm::reflect::ParameterInfo {
+                parameters: method_def
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| crate::vm::reflect::ParameterInfo {
                         name: p.name.clone(),
                         type_info: p.type_info.clone(),
                         index: i,
                         is_optional: p.is_optional,
-                    }
-                }).collect(),
+                    })
+                    .collect(),
                 declaring_class_id: class_id,
                 method_index,
                 is_static: method_def.is_static,
@@ -468,7 +467,11 @@ impl DynamicClassBuilder {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
                 declaring_class_id: class_id,
-                field_index: if field_def.is_static { static_index } else { field_index },
+                field_index: if field_def.is_static {
+                    static_index
+                } else {
+                    field_index
+                },
                 is_static: field_def.is_static,
                 is_readonly: field_def.is_readonly,
             };
@@ -488,14 +491,17 @@ impl DynamicClassBuilder {
             let method_info = MethodInfo {
                 name: method_def.name.clone(),
                 return_type: method_def.return_type.clone(),
-                parameters: method_def.parameters.iter().enumerate().map(|(i, p)| {
-                    crate::vm::reflect::ParameterInfo {
+                parameters: method_def
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| crate::vm::reflect::ParameterInfo {
                         name: p.name.clone(),
                         type_info: p.type_info.clone(),
                         index: i,
                         is_optional: p.is_optional,
-                    }
-                }).collect(),
+                    })
+                    .collect(),
                 declaring_class_id: class_id,
                 method_index,
                 is_static: method_def.is_static,
@@ -546,7 +552,11 @@ impl DynamicClassBuilder {
                 name: field_def.name.clone(),
                 type_info: field_def.type_info.clone(),
                 declaring_class_id: class_id,
-                field_index: if field_def.is_static { static_index } else { field_index },
+                field_index: if field_def.is_static {
+                    static_index
+                } else {
+                    field_index
+                },
                 is_static: field_def.is_static,
                 is_readonly: field_def.is_readonly,
             };
@@ -583,8 +593,7 @@ mod tests {
 
     #[test]
     fn test_static_field() {
-        let field = FieldDefinition::new("count".to_string(), "number")
-            .as_static();
+        let field = FieldDefinition::new("count".to_string(), "number").as_static();
 
         assert!(field.is_static);
         assert!(!field.is_readonly);
@@ -648,7 +657,8 @@ mod tests {
         let parent_def = SubclassDefinition::new()
             .add_field(FieldDefinition::new("x".to_string(), "number"))
             .add_field(FieldDefinition::new("y".to_string(), "number"));
-        let (parent_class, parent_meta) = builder.create_root_class("Point".to_string(), &parent_def);
+        let (parent_class, parent_meta) =
+            builder.create_root_class("Point".to_string(), &parent_def);
 
         // Create subclass
         let child_def = SubclassDefinition::new()
@@ -678,19 +688,14 @@ mod tests {
         let mut builder = DynamicClassBuilder::new(0);
 
         // Create original class
-        let orig_def = SubclassDefinition::new()
-            .add_field(FieldDefinition::new("x".to_string(), "number"));
+        let orig_def =
+            SubclassDefinition::new().add_field(FieldDefinition::new("x".to_string(), "number"));
         let (orig_class, orig_meta) = builder.create_root_class("Point".to_string(), &orig_def);
 
         // Extend with new field
-        let new_fields = vec![
-            FieldDefinition::new("y".to_string(), "number"),
-        ];
-        let (extended_class, extended_meta) = builder.extend_with_fields(
-            &orig_class,
-            Some(&orig_meta),
-            &new_fields,
-        );
+        let new_fields = vec![FieldDefinition::new("y".to_string(), "number")];
+        let (extended_class, extended_meta) =
+            builder.extend_with_fields(&orig_class, Some(&orig_meta), &new_fields);
 
         assert_eq!(extended_class.id, 1);
         assert_eq!(extended_class.name, "Point$Extended");

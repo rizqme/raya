@@ -59,7 +59,9 @@ impl ModuleCache {
     /// Returns `None` if not in cache or if the source file has been modified.
     pub fn get(&mut self, path: &PathBuf) -> Option<&CachedModule> {
         // First check if entry exists and is valid
-        let is_valid = self.bytecode_cache.get(path)
+        let is_valid = self
+            .bytecode_cache
+            .get(path)
             .map(|cached| self.is_valid(cached))
             .unwrap_or(false);
 
@@ -80,15 +82,16 @@ impl ModuleCache {
 
     /// Insert a compiled module into the cache
     pub fn insert(&mut self, path: PathBuf, bytecode: BytecodeModule) {
-        let mtime = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok();
+        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
 
-        self.bytecode_cache.insert(path.clone(), CachedModule {
-            path,
-            mtime,
-            bytecode,
-        });
+        self.bytecode_cache.insert(
+            path.clone(),
+            CachedModule {
+                path,
+                mtime,
+                bytecode,
+            },
+        );
     }
 
     /// Check if a cached entry is still valid

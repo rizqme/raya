@@ -31,7 +31,11 @@ pub fn execute(
     }
 
     // Select the appropriate script based on mode
-    let script = if dap { DAP_ADAPTER_SCRIPT } else { DEBUGGER_SCRIPT };
+    let script = if dap {
+        DAP_ADAPTER_SCRIPT
+    } else {
+        DEBUGGER_SCRIPT
+    };
 
     // Inject CLI args as constants prepended to the script.
     // This avoids needing to manipulate process.argv().

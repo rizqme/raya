@@ -19,7 +19,7 @@ pub mod semver;
 pub mod url;
 
 pub use cache::{Cache, CacheError, ModuleMetadata};
-pub use lockfile::{Lockfile, LockfileError, LockedPackage, Source};
+pub use lockfile::{LockedPackage, Lockfile, LockfileError, Source};
 pub use manifest::{
     AssetsConfig, BundleConfig, Dependency, ManifestError, PackageInfo, PackageManifest,
     RegistryConfig,

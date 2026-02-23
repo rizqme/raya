@@ -52,12 +52,10 @@ fn test_parse_array_type() {
         Statement::VariableDecl(decl) => {
             let ty = decl.type_annotation.as_ref().unwrap();
             match &ty.ty {
-                Type::Array(array_ty) => {
-                    match &array_ty.element_type.ty {
-                        Type::Primitive(PrimitiveType::Number) => (),
-                        _ => panic!("Expected number element type"),
-                    }
-                }
+                Type::Array(array_ty) => match &array_ty.element_type.ty {
+                    Type::Primitive(PrimitiveType::Number) => (),
+                    _ => panic!("Expected number element type"),
+                },
                 _ => panic!("Expected array type"),
             }
         }

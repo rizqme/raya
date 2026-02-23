@@ -486,4 +486,3 @@ fn test_diag_two_globals_fn_no_mutation() {
         42,
     );
 }
-

@@ -215,7 +215,10 @@ impl Lockfile {
     }
 
     /// Verify checksums for all packages
-    pub fn verify_checksums(&self, verify_fn: impl Fn(&str, &str) -> Result<String, String>) -> Result<(), LockfileError> {
+    pub fn verify_checksums(
+        &self,
+        verify_fn: impl Fn(&str, &str) -> Result<String, String>,
+    ) -> Result<(), LockfileError> {
         for pkg in &self.packages {
             match verify_fn(&pkg.name, &pkg.version) {
                 Ok(actual_checksum) => {
@@ -431,7 +434,10 @@ source = { type = "registry" }
             "dep2".to_string(),
             "2.0.0".to_string(),
             "b".repeat(64),
-            Source::git("https://github.com/user/repo".to_string(), "abc123".to_string()),
+            Source::git(
+                "https://github.com/user/repo".to_string(),
+                "abc123".to_string(),
+            ),
         ));
 
         lock.sort_packages();

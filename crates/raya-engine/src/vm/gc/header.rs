@@ -60,7 +60,14 @@ pub struct GcHeader {
 
 impl GcHeader {
     /// Create a new GC header
-    pub fn new(context_id: VmContextId, type_id: TypeId, size: usize, value_offset: u8, drop_fn: Option<DropFn>, element_count: usize) -> Self {
+    pub fn new(
+        context_id: VmContextId,
+        type_id: TypeId,
+        size: usize,
+        value_offset: u8,
+        drop_fn: Option<DropFn>,
+        element_count: usize,
+    ) -> Self {
         Self {
             marked: false,
             _padding: [0; 7],

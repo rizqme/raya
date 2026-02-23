@@ -4,16 +4,18 @@
 //! type-safe. It uses the symbol table for name resolution and the type
 //! context for type operations.
 
+use super::captures::{
+    CaptureInfo, ClosureCaptures, ClosureId, FreeVariableCollector, ModuleCaptureInfo,
+};
 use super::error::{CheckError, CheckWarning};
-use super::symbols::{SymbolKind, SymbolTable};
-use super::type_guards::{extract_type_guard, extract_all_type_guards, TypeGuard};
-use super::narrowing::{apply_type_guard, TypeEnv};
 use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
-use super::captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo, FreeVariableCollector};
+use super::narrowing::{apply_type_guard, TypeEnv};
+use super::symbols::{SymbolKind, SymbolTable};
+use super::type_guards::{extract_all_type_guards, extract_type_guard, TypeGuard};
 use crate::parser::ast::*;
-use crate::{Interner, Symbol as ParserSymbol};
-use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
 use crate::parser::types::normalize::contains_type_variables;
+use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
+use crate::{Interner, Symbol as ParserSymbol};
 use rustc_hash::FxHashMap;
 
 /// Get the variable name from a type guard
@@ -53,12 +55,21 @@ pub struct CheckResult {
 /// Negate a type guard
 fn negate_guard(guard: &TypeGuard) -> TypeGuard {
     match guard {
-        TypeGuard::TypeOf { var, type_name, negated } => TypeGuard::TypeOf {
+        TypeGuard::TypeOf {
+            var,
+            type_name,
+            negated,
+        } => TypeGuard::TypeOf {
             var: var.clone(),
             type_name: type_name.clone(),
             negated: !negated,
         },
-        TypeGuard::Discriminant { var, field, variant, negated } => TypeGuard::Discriminant {
+        TypeGuard::Discriminant {
+            var,
+            field,
+            variant,
+            negated,
+        } => TypeGuard::Discriminant {
             var: var.clone(),
             field: field.clone(),
             variant: variant.clone(),
@@ -84,7 +95,11 @@ fn negate_guard(guard: &TypeGuard) -> TypeGuard {
             var: var.clone(),
             negated: !negated,
         },
-        TypeGuard::TypePredicate { var, predicate, negated } => TypeGuard::TypePredicate {
+        TypeGuard::TypePredicate {
+            var,
+            predicate,
+            negated,
+        } => TypeGuard::TypePredicate {
             var: var.clone(),
             predicate: predicate.clone(),
             negated: !negated,
@@ -152,7 +167,11 @@ pub struct TypeChecker<'a> {
 
 impl<'a> TypeChecker<'a> {
     /// Create a new type checker
-    pub fn new(type_ctx: &'a mut TypeContext, symbols: &'a SymbolTable, interner: &'a Interner) -> Self {
+    pub fn new(
+        type_ctx: &'a mut TypeContext,
+        symbols: &'a SymbolTable,
+        interner: &'a Interner,
+    ) -> Self {
         TypeChecker {
             type_ctx,
             symbols,
@@ -162,7 +181,7 @@ impl<'a> TypeChecker<'a> {
             current_function_return_type: None,
             type_env: TypeEnv::new(),
             current_scope: super::symbols::ScopeId(0), // Start at global scope
-            next_scope_id: 1, // Global is 0, next scope will be 1
+            next_scope_id: 1,                          // Global is 0, next scope will be 1
             scope_stack: vec![super::symbols::ScopeId(0)], // Start with global on stack
             inferred_var_types: FxHashMap::default(),
             capture_info: ModuleCaptureInfo::new(),
@@ -302,7 +321,9 @@ impl<'a> TypeChecker<'a> {
                     self.exit_scope();
                 }
             }
-            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.check_stmt(inner_stmt),
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
+                self.check_stmt(inner_stmt)
+            }
             _ => {}
         }
     }
@@ -319,28 +340,27 @@ impl<'a> TypeChecker<'a> {
                     // Determine the variable's type
                     let var_ty = if decl.type_annotation.is_some() {
                         // Get the declared type from symbol table
-                        if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                        if let Some(symbol) =
+                            self.symbols.resolve_from_scope(&name, self.current_scope)
+                        {
                             self.check_assignable(init_ty, symbol.ty, *init.span());
                             symbol.ty
                         } else {
                             // Inside arrow bodies, the binder never visited — resolve
                             // the annotation and store in inferred_var_types so
                             // subsequent references can find this variable
-                            let resolved_ty = self.resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
+                            let resolved_ty = self
+                                .resolve_type_annotation(decl.type_annotation.as_ref().unwrap());
                             self.check_assignable(init_ty, resolved_ty, *init.span());
-                            self.inferred_var_types.insert(
-                                (self.current_scope.0, name.clone()),
-                                resolved_ty,
-                            );
+                            self.inferred_var_types
+                                .insert((self.current_scope.0, name.clone()), resolved_ty);
                             resolved_ty
                         }
                     } else {
                         // No type annotation - infer type from initializer
                         // Store the inferred type for later lookups
-                        self.inferred_var_types.insert(
-                            (self.current_scope.0, name.clone()),
-                            init_ty
-                        );
+                        self.inferred_var_types
+                            .insert((self.current_scope.0, name.clone()), init_ty);
                         init_ty
                     };
 
@@ -362,15 +382,15 @@ impl<'a> TypeChecker<'a> {
         match pattern {
             Pattern::Identifier(ident) => {
                 let name = self.resolve(ident.name);
-                self.inferred_var_types.insert(
-                    (self.current_scope.0, name.clone()),
-                    value_ty,
-                );
+                self.inferred_var_types
+                    .insert((self.current_scope.0, name.clone()), value_ty);
                 self.type_env.set(name, value_ty);
             }
             Pattern::Array(array_pat) => {
                 // Extract element type from the array type
-                let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(value_ty).cloned() {
+                let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) =
+                    self.type_ctx.get(value_ty).cloned()
+                {
                     arr.element
                 } else {
                     self.type_ctx.unknown_type()
@@ -387,7 +407,9 @@ impl<'a> TypeChecker<'a> {
             Pattern::Object(obj_pat) => {
                 // Look up class fields from value type
                 let class_props: Option<Vec<crate::parser::types::ty::PropertySignature>> =
-                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(value_ty).cloned() {
+                    if let Some(crate::parser::types::Type::Class(class)) =
+                        self.type_ctx.get(value_ty).cloned()
+                    {
                         Some(class.properties.clone())
                     } else {
                         None
@@ -395,7 +417,8 @@ impl<'a> TypeChecker<'a> {
 
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = class_props.as_ref()
+                    let prop_ty = class_props
+                        .as_ref()
                         .and_then(|props| props.iter().find(|p| p.name == prop_name))
                         .map(|p| p.ty);
                     // If there's a default expression, use its type when property is missing
@@ -410,10 +433,8 @@ impl<'a> TypeChecker<'a> {
                 if let Some(rest_ident) = &obj_pat.rest {
                     let unknown = self.type_ctx.unknown_type();
                     let name = self.resolve(rest_ident.name);
-                    self.inferred_var_types.insert(
-                        (self.current_scope.0, name.clone()),
-                        unknown,
-                    );
+                    self.inferred_var_types
+                        .insert((self.current_scope.0, name.clone()), unknown);
                     self.type_env.set(name, unknown);
                 }
             }
@@ -427,14 +448,21 @@ impl<'a> TypeChecker<'a> {
     fn check_function(&mut self, func: &FunctionDecl) {
         // Get return type from symbol table
         let func_name = self.resolve(func.name.name);
-        if let Some(symbol) = self.symbols.resolve_from_scope(&func_name, self.current_scope) {
-            if let Some(crate::parser::types::Type::Function(func_ty)) = self.type_ctx.get(symbol.ty) {
+        if let Some(symbol) = self
+            .symbols
+            .resolve_from_scope(&func_name, self.current_scope)
+        {
+            if let Some(crate::parser::types::Type::Function(func_ty)) =
+                self.type_ctx.get(symbol.ty)
+            {
                 let mut return_ty = func_ty.return_type;
 
                 // For async functions, the declared return type is Task<T>,
                 // but return statements should check against T (the inner type)
                 if func.is_async {
-                    if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(return_ty) {
+                    if let Some(crate::parser::types::Type::Task(task_ty)) =
+                        self.type_ctx.get(return_ty)
+                    {
                         return_ty = task_ty.result;
                     }
                 }
@@ -470,7 +498,11 @@ impl<'a> TypeChecker<'a> {
         // (binder lines 743-778)
         for member in &class.members {
             if let crate::parser::ast::ClassMember::Method(method) = member {
-                if method.type_params.as_ref().is_some_and(|tps| !tps.is_empty()) {
+                if method
+                    .type_params
+                    .as_ref()
+                    .is_some_and(|tps| !tps.is_empty())
+                {
                     self.enter_scope();
                     self.exit_scope();
                 }
@@ -581,7 +613,9 @@ impl<'a> TypeChecker<'a> {
                     self.exit_scope();
                 }
             }
-            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => self.sync_stmt_scopes(inner_stmt),
+            Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
+                self.sync_stmt_scopes(inner_stmt)
+            }
             // Other statements don't create scopes
             _ => {}
         }
@@ -598,7 +632,10 @@ impl<'a> TypeChecker<'a> {
         // Get the class type for 'this' checking inside methods
         let class_name = self.resolve(class.name.name);
         let prev_class_type = self.current_class_type;
-        if let Some(symbol) = self.symbols.resolve_from_scope(&class_name, self.current_scope) {
+        if let Some(symbol) = self
+            .symbols
+            .resolve_from_scope(&class_name, self.current_scope)
+        {
             self.current_class_type = Some(symbol.ty);
         }
 
@@ -692,7 +729,10 @@ impl<'a> TypeChecker<'a> {
         // arrow bodies that the binder never visited (no symbol table entries)
         if self.arrow_depth > 0 {
             // Check inferred type at current scope (arrow bodies store at outer scope)
-            if let Some(&ty) = self.inferred_var_types.get(&(self.current_scope.0, name.to_string())) {
+            if let Some(&ty) = self
+                .inferred_var_types
+                .get(&(self.current_scope.0, name.to_string()))
+            {
                 return Some(ty);
             }
             // Walk up the scope stack
@@ -719,7 +759,9 @@ impl<'a> TypeChecker<'a> {
         };
         // Resolve class name from type annotation
         let class_name = match &instanceof.type_name.ty {
-            crate::parser::ast::types::Type::Reference(type_ref) => self.resolve(type_ref.name.name),
+            crate::parser::ast::types::Type::Reference(type_ref) => {
+                self.resolve(type_ref.name.name)
+            }
             _ => return None,
         };
         // Look up the class type in the symbol table
@@ -731,12 +773,15 @@ impl<'a> TypeChecker<'a> {
     fn stmt_definitely_returns(stmt: &Statement) -> bool {
         match stmt {
             Statement::Return(_) | Statement::Throw(_) => true,
-            Statement::Block(block) => {
-                block.statements.last().is_some_and(Self::stmt_definitely_returns)
-            }
+            Statement::Block(block) => block
+                .statements
+                .last()
+                .is_some_and(Self::stmt_definitely_returns),
             Statement::If(if_stmt) => {
                 let then_returns = Self::stmt_definitely_returns(&if_stmt.then_branch);
-                let else_returns = if_stmt.else_branch.as_ref()
+                let else_returns = if_stmt
+                    .else_branch
+                    .as_ref()
                     .is_some_and(|e| Self::stmt_definitely_returns(e));
                 then_returns && else_returns
             }
@@ -754,8 +799,12 @@ impl<'a> TypeChecker<'a> {
         let is_union_or_nullable = matches!(
             self.type_ctx.get(cond_ty),
             Some(crate::parser::types::Type::Union(_))
-                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::String))
-                | Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::Number))
+                | Some(crate::parser::types::Type::Primitive(
+                    crate::parser::types::PrimitiveType::String
+                ))
+                | Some(crate::parser::types::Type::Primitive(
+                    crate::parser::types::PrimitiveType::Number
+                ))
         );
         if !is_union_or_nullable {
             self.check_assignable(cond_ty, bool_ty, *if_stmt.condition.span());
@@ -805,7 +854,9 @@ impl<'a> TypeChecker<'a> {
                 let negated_guard = negate_guard(guard);
                 let var_name = get_guard_var(&negated_guard);
                 if let Some(var_ty) = self.get_var_type(var_name) {
-                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &negated_guard) {
+                    if let Some(narrowed_ty) =
+                        apply_type_guard(self.type_ctx, var_ty, &negated_guard)
+                    {
                         self.type_env.set(var_name.clone(), narrowed_ty);
                     }
                 }
@@ -820,7 +871,9 @@ impl<'a> TypeChecker<'a> {
                 let negated_guard = negate_guard(guard);
                 let var_name = get_guard_var(&negated_guard);
                 if let Some(var_ty) = self.get_var_type(var_name) {
-                    if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &negated_guard) {
+                    if let Some(narrowed_ty) =
+                        apply_type_guard(self.type_ctx, var_ty, &negated_guard)
+                    {
                         self.type_env.set(var_name.clone(), narrowed_ty);
                     }
                 }
@@ -919,18 +972,19 @@ impl<'a> TypeChecker<'a> {
 
         // Get the element type from the array
         // For now, we only support arrays
-        let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(iterable_ty) {
-            arr.element
-        } else {
-            // Not an array - report error and use unknown type
-            self.errors.push(CheckError::TypeMismatch {
-                expected: "array".to_string(),
-                actual: self.format_type(iterable_ty),
-                span: *for_of.right.span(),
-                note: Some("for-of loops require an iterable (array)".to_string()),
-            });
-            self.type_ctx.unknown_type()
-        };
+        let elem_ty =
+            if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(iterable_ty) {
+                arr.element
+            } else {
+                // Not an array - report error and use unknown type
+                self.errors.push(CheckError::TypeMismatch {
+                    expected: "array".to_string(),
+                    actual: self.format_type(iterable_ty),
+                    span: *for_of.right.span(),
+                    note: Some("for-of loops require an iterable (array)".to_string()),
+                });
+                self.type_ctx.unknown_type()
+            };
 
         // Handle the loop variable (left side)
         // The binder should have already registered the variable
@@ -943,10 +997,8 @@ impl<'a> TypeChecker<'a> {
                     Pattern::Identifier(ident) => {
                         let name = self.resolve(ident.name);
                         // Store inferred type for the loop variable
-                        self.inferred_var_types.insert(
-                            (self.current_scope.0, name),
-                            elem_ty
-                        );
+                        self.inferred_var_types
+                            .insert((self.current_scope.0, name), elem_ty);
                     }
                     Pattern::Array(_) | Pattern::Object(_) => {
                         self.check_destructure_pattern(&decl.pattern, elem_ty);
@@ -972,12 +1024,8 @@ impl<'a> TypeChecker<'a> {
         let discriminant_ty = self.check_expr(&switch_stmt.discriminant);
 
         // Check exhaustiveness for discriminated unions
-        let exhaustiveness = check_switch_exhaustiveness(
-            self.type_ctx,
-            discriminant_ty,
-            switch_stmt,
-            self.interner,
-        );
+        let exhaustiveness =
+            check_switch_exhaustiveness(self.type_ctx, discriminant_ty, switch_stmt, self.interner);
 
         // Report non-exhaustive matches
         if let ExhaustivenessResult::NonExhaustive(missing) = exhaustiveness {
@@ -1031,9 +1079,7 @@ impl<'a> TypeChecker<'a> {
     /// Check expression (returns inferred type)
     fn check_expr(&mut self, expr: &Expression) -> TypeId {
         let ty = match expr {
-            Expression::IntLiteral(_) | Expression::FloatLiteral(_) => {
-                self.type_ctx.number_type()
-            }
+            Expression::IntLiteral(_) | Expression::FloatLiteral(_) => self.type_ctx.number_type(),
             Expression::StringLiteral(_) | Expression::TemplateLiteral(_) => {
                 self.type_ctx.string_type()
             }
@@ -1110,11 +1156,15 @@ impl<'a> TypeChecker<'a> {
                 // Inside arrow bodies, variables may be declared in this body
                 // but not in the binder's symbol table. Check inferred_var_types.
                 if self.arrow_depth > 0 {
-                    if let Some(&ty) = self.inferred_var_types.get(&(self.current_scope.0, name.clone())) {
+                    if let Some(&ty) = self
+                        .inferred_var_types
+                        .get(&(self.current_scope.0, name.clone()))
+                    {
                         return ty;
                     }
                     for scope_id in self.scope_stack.iter().rev() {
-                        if let Some(&ty) = self.inferred_var_types.get(&(scope_id.0, name.clone())) {
+                        if let Some(&ty) = self.inferred_var_types.get(&(scope_id.0, name.clone()))
+                        {
                             return ty;
                         }
                     }
@@ -1255,7 +1305,9 @@ impl<'a> TypeChecker<'a> {
         // Check if it's a union type
         if let Some(union) = self.type_ctx.get(ty).and_then(|t| t.as_union()) {
             // Filter out null from the union members
-            let non_null_members: Vec<TypeId> = union.members.iter()
+            let non_null_members: Vec<TypeId> = union
+                .members
+                .iter()
                 .filter(|&&m| m != null_ty)
                 .copied()
                 .collect();
@@ -1314,7 +1366,9 @@ impl<'a> TypeChecker<'a> {
         let callee_ty = self.check_expr(&call.callee);
 
         // Check all argument types first (before creating GenericContext)
-        let arg_types: Vec<(TypeId, crate::parser::Span)> = call.arguments.iter()
+        let arg_types: Vec<(TypeId, crate::parser::Span)> = call
+            .arguments
+            .iter()
             .map(|arg| (self.check_expr(arg), *arg.span()))
             .collect();
 
@@ -1342,12 +1396,17 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Check if this is a generic function (contains type variables)
-                let is_generic = func.params.iter().any(|&p| contains_type_variables(self.type_ctx, p))
+                let is_generic = func
+                    .params
+                    .iter()
+                    .any(|&p| contains_type_variables(self.type_ctx, p))
                     || contains_type_variables(self.type_ctx, func.return_type);
 
                 // Extract rest parameter element type if present (before gen_ctx borrow)
                 let rest_elem_ty = func.rest_param.and_then(|rest_ty| {
-                    if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(rest_ty) {
+                    if let Some(crate::parser::types::Type::Array(arr_ty)) =
+                        self.type_ctx.get(rest_ty)
+                    {
                         Some(arr_ty.element)
                     } else {
                         None
@@ -1473,7 +1532,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 match &inner_arrow.body {
-                    ArrowBody::Expression(e) => self.collect_free_vars_expr(e, &mut inner_collector),
+                    ArrowBody::Expression(e) => {
+                        self.collect_free_vars_expr(e, &mut inner_collector)
+                    }
                     ArrowBody::Block(b) => self.collect_free_vars_block(b, &mut inner_collector),
                 }
                 // Free vars of inner closure that aren't bound locally are our free vars too
@@ -1509,7 +1570,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Collect free variables from a block
-    fn collect_free_vars_block(&self, block: &BlockStatement, collector: &mut FreeVariableCollector) {
+    fn collect_free_vars_block(
+        &self,
+        block: &BlockStatement,
+        collector: &mut FreeVariableCollector,
+    ) {
         for stmt in &block.statements {
             self.collect_free_vars_stmt(stmt, collector);
         }
@@ -1666,11 +1731,17 @@ impl<'a> TypeChecker<'a> {
         let mut closure_captures = ClosureCaptures::new();
         for var_name in collector.free_variables() {
             // Look up the variable in outer scopes
-            if let Some(symbol) = self.symbols.resolve_from_scope(var_name, self.current_scope) {
+            if let Some(symbol) = self
+                .symbols
+                .resolve_from_scope(var_name, self.current_scope)
+            {
                 // Check if this is actually from an outer scope (not global built-in)
-                if symbol.scope_id.0 < self.current_scope.0 || symbol.scope_id == super::symbols::ScopeId(0) {
+                if symbol.scope_id.0 < self.current_scope.0
+                    || symbol.scope_id == super::symbols::ScopeId(0)
+                {
                     // Get the type (prefer inferred type if available)
-                    let ty = self.inferred_var_types
+                    let ty = self
+                        .inferred_var_types
                         .get(&(symbol.scope_id.0, var_name.clone()))
                         .copied()
                         .unwrap_or(symbol.ty);
@@ -1688,7 +1759,8 @@ impl<'a> TypeChecker<'a> {
 
         // Store capture info for this closure
         if !closure_captures.is_empty() {
-            self.capture_info.insert(ClosureId(arrow.span), closure_captures);
+            self.capture_info
+                .insert(ClosureId(arrow.span), closure_captures);
         }
 
         // Determine return type
@@ -1750,30 +1822,38 @@ impl<'a> TypeChecker<'a> {
         self.type_env = saved_env;
 
         // Check for rest parameter
-        let rest_param = arrow.params.iter()
-            .find(|p| p.is_rest)
-            .map(|param| {
-                // Get the rest parameter's type (array type)
-                param.type_annotation
-                    .as_ref()
-                    .map(|t| self.resolve_type_annotation(t))
-                    .unwrap_or_else(|| self.type_ctx.unknown_type())
-            });
+        let rest_param = arrow.params.iter().find(|p| p.is_rest).map(|param| {
+            // Get the rest parameter's type (array type)
+            param
+                .type_annotation
+                .as_ref()
+                .map(|t| self.resolve_type_annotation(t))
+                .unwrap_or_else(|| self.type_ctx.unknown_type())
+        });
 
         // Create function type with min_params for optional/default params
         // If there's a rest parameter, min_params is the count of non-rest params
         let min_params = if rest_param.is_some() {
-            arrow.params.iter()
+            arrow
+                .params
+                .iter()
                 .filter(|p| !p.is_rest && p.default_value.is_none() && !p.optional)
                 .count()
         } else {
-            arrow.params.iter()
+            arrow
+                .params
+                .iter()
                 .filter(|p| p.default_value.is_none() && !p.optional)
                 .count()
         };
 
-        self.type_ctx
-            .function_type_with_rest(param_types, return_ty, arrow.is_async, min_params, rest_param)
+        self.type_ctx.function_type_with_rest(
+            param_types,
+            return_ty,
+            arrow.is_async,
+            min_params,
+            rest_param,
+        )
     }
 
     /// Check index access
@@ -1797,8 +1877,14 @@ impl<'a> TypeChecker<'a> {
             let name = self.resolve(ident.name);
 
             // Resolve type arguments if present
-            let resolved_type_args: Vec<TypeId> = new_expr.type_args.as_ref()
-                .map(|args| args.iter().map(|arg| self.resolve_type_annotation(arg)).collect())
+            let resolved_type_args: Vec<TypeId> = new_expr
+                .type_args
+                .as_ref()
+                .map(|args| {
+                    args.iter()
+                        .map(|arg| self.resolve_type_annotation(arg))
+                        .collect()
+                })
                 .unwrap_or_default();
 
             // Check for built-in types with type parameters
@@ -1808,7 +1894,10 @@ impl<'a> TypeChecker<'a> {
                 "Map" => {
                     // Map<K, V> - expect 2 type arguments
                     if resolved_type_args.len() == 2 {
-                        Some(self.type_ctx.map_type_with(resolved_type_args[0], resolved_type_args[1]))
+                        Some(
+                            self.type_ctx
+                                .map_type_with(resolved_type_args[0], resolved_type_args[1]),
+                        )
                     } else {
                         Some(self.type_ctx.map_type())
                     }
@@ -1845,7 +1934,9 @@ impl<'a> TypeChecker<'a> {
             if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                 if symbol.kind == SymbolKind::Class {
                     // Check if the class is abstract (cannot be instantiated)
-                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                    if let Some(crate::parser::types::Type::Class(class)) =
+                        self.type_ctx.get(symbol.ty).cloned()
+                    {
                         if class.is_abstract {
                             self.errors.push(CheckError::AbstractClassInstantiation {
                                 name: name.clone(),
@@ -1862,7 +1953,9 @@ impl<'a> TypeChecker<'a> {
                     // If the class has type parameters and we have type arguments,
                     // create an instantiated class type with type vars substituted
                     if !resolved_type_args.is_empty() {
-                        if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                        if let Some(crate::parser::types::Type::Class(class)) =
+                            self.type_ctx.get(symbol.ty).cloned()
+                        {
                             if class.type_params.len() == resolved_type_args.len() {
                                 return self.instantiate_class_type(&class, &resolved_type_args);
                             }
@@ -1912,7 +2005,9 @@ impl<'a> TypeChecker<'a> {
 
         // If the argument is Task<T>[], return T[] (parallel await)
         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(arg_ty) {
-            if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(arr_ty.element) {
+            if let Some(crate::parser::types::Type::Task(task_ty)) =
+                self.type_ctx.get(arr_ty.element)
+            {
                 return self.type_ctx.array_type(task_ty.result);
             }
         }
@@ -2010,7 +2105,10 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check instanceof expression: expr instanceof ClassName
-    fn check_instanceof(&mut self, instanceof: &crate::parser::ast::InstanceOfExpression) -> TypeId {
+    fn check_instanceof(
+        &mut self,
+        instanceof: &crate::parser::ast::InstanceOfExpression,
+    ) -> TypeId {
         // Check the object expression
         self.check_expr(&instanceof.object);
 
@@ -2028,7 +2126,6 @@ impl<'a> TypeChecker<'a> {
         let _object_ty = self.check_expr(&cast.object);
 
         // Resolve the target type from the type annotation
-        
 
         // TODO: Validate that the cast is safe (object type is related to target type)
         // For now, we allow all casts (like TypeScript's `as` keyword)
@@ -2059,10 +2156,15 @@ impl<'a> TypeChecker<'a> {
         // This happens when the object is an identifier that resolves to a class symbol
         if let Expression::Identifier(ident) = &*member.object {
             let class_name = self.resolve(ident.name);
-            if let Some(symbol) = self.symbols.resolve_from_scope(&class_name, self.current_scope) {
+            if let Some(symbol) = self
+                .symbols
+                .resolve_from_scope(&class_name, self.current_scope)
+            {
                 if symbol.kind == SymbolKind::Class {
                     // This is static member access (e.g., Date.now())
-                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty) {
+                    if let Some(crate::parser::types::Type::Class(class)) =
+                        self.type_ctx.get(symbol.ty)
+                    {
                         // Check static properties
                         for prop in &class.static_properties {
                             if prop.name == property_name {
@@ -2098,14 +2200,20 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Check for built-in string methods
-        if let Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::String)) = &obj_type {
+        if let Some(crate::parser::types::Type::Primitive(
+            crate::parser::types::PrimitiveType::String,
+        )) = &obj_type
+        {
             if let Some(method_type) = self.get_string_method_type(&property_name) {
                 return method_type;
             }
         }
 
         // Check for built-in number methods
-        if let Some(crate::parser::types::Type::Primitive(crate::parser::types::PrimitiveType::Number)) = &obj_type {
+        if let Some(crate::parser::types::Type::Primitive(
+            crate::parser::types::PrimitiveType::Number,
+        )) = &obj_type
+        {
             if let Some(method_type) = self.get_number_method_type(&property_name) {
                 return method_type;
             }
@@ -2129,7 +2237,9 @@ impl<'a> TypeChecker<'a> {
 
         // Check for built-in Map methods
         if let Some(crate::parser::types::Type::Map(map_ty)) = &obj_type {
-            if let Some(method_type) = self.get_map_method_type(&property_name, map_ty.key, map_ty.value) {
+            if let Some(method_type) =
+                self.get_map_method_type(&property_name, map_ty.key, map_ty.value)
+            {
                 return method_type;
             }
         }
@@ -2155,7 +2265,8 @@ impl<'a> TypeChecker<'a> {
 
         // Check for built-in Channel methods
         if let Some(crate::parser::types::Type::Channel(chan_ty)) = &obj_type {
-            if let Some(method_type) = self.get_channel_method_type(&property_name, chan_ty.message) {
+            if let Some(method_type) = self.get_channel_method_type(&property_name, chan_ty.message)
+            {
                 return method_type;
             }
         }
@@ -2165,7 +2276,10 @@ impl<'a> TypeChecker<'a> {
             // If this is a placeholder class type (empty methods), look up the symbol to get the full type
             let actual_class = if class.methods.is_empty() && class.properties.is_empty() {
                 // Look up class by name in symbol table
-                if let Some(symbol) = self.symbols.resolve_from_scope(&class.name, self.current_scope) {
+                if let Some(symbol) = self
+                    .symbols
+                    .resolve_from_scope(&class.name, self.current_scope)
+                {
                     if symbol.kind == SymbolKind::Class {
                         self.type_ctx.get(symbol.ty).and_then(|t| {
                             if let crate::parser::types::Type::Class(c) = t {
@@ -2192,7 +2306,9 @@ impl<'a> TypeChecker<'a> {
                 if vis == crate::parser::ast::Visibility::Private {
                     // Check if we're inside the same class
                     let accessing_own_class = self.current_class_type.is_some_and(|ct| {
-                        if let Some(crate::parser::types::Type::Class(cur_class)) = self.type_ctx.get(ct) {
+                        if let Some(crate::parser::types::Type::Class(cur_class)) =
+                            self.type_ctx.get(ct)
+                        {
                             cur_class.name == class_to_use.name
                         } else {
                             false
@@ -2236,16 +2352,24 @@ impl<'a> TypeChecker<'a> {
             let null_ty = self.type_ctx.null_type();
 
             // Try Class members first (nullable class unions)
-            let class_members: Vec<_> = union.members.iter()
+            let class_members: Vec<_> = union
+                .members
+                .iter()
                 .filter(|&&m| m != null_ty)
                 .filter_map(|&m| {
                     self.type_ctx.get(m).and_then(|t| {
-                        if let crate::parser::types::Type::Class(c) = t { Some(c.clone()) } else { None }
+                        if let crate::parser::types::Type::Class(c) = t {
+                            Some(c.clone())
+                        } else {
+                            None
+                        }
                     })
                 })
                 .collect();
             if class_members.len() == 1 {
-                if let Some((ty, _vis)) = self.lookup_class_member(&class_members[0], &property_name) {
+                if let Some((ty, _vis)) =
+                    self.lookup_class_member(&class_members[0], &property_name)
+                {
                     return ty;
                 }
             }
@@ -2253,7 +2377,8 @@ impl<'a> TypeChecker<'a> {
             // Try Object members (for discriminated unions: type X = | { a: T } | { b: U })
             let mut found_types = Vec::new();
             for &member_id in &union.members {
-                if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(member_id) {
+                if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(member_id)
+                {
                     for prop in &obj.properties {
                         if prop.name == property_name && !found_types.contains(&prop.ty) {
                             found_types.push(prop.ty);
@@ -2282,7 +2407,9 @@ impl<'a> TypeChecker<'a> {
                             }
                         }
                         crate::parser::types::Type::Class(class) => {
-                            if let Some((ty, _vis)) = self.lookup_class_member(class, &property_name) {
+                            if let Some((ty, _vis)) =
+                                self.lookup_class_member(class, &property_name)
+                            {
                                 return ty;
                             }
                         }
@@ -2299,9 +2426,13 @@ impl<'a> TypeChecker<'a> {
     /// Look up a property or method in a class hierarchy, including parent classes
     /// Create an instantiated class type by substituting type parameters with concrete types.
     /// E.g., ReadableStream<T> with [number] → ReadableStream<number> with T→number in all methods.
-    fn instantiate_class_type(&mut self, class: &crate::parser::types::ty::ClassType, type_args: &[TypeId]) -> TypeId {
+    fn instantiate_class_type(
+        &mut self,
+        class: &crate::parser::types::ty::ClassType,
+        type_args: &[TypeId],
+    ) -> TypeId {
+        use crate::parser::types::ty::{MethodSignature, PropertySignature};
         use crate::parser::types::GenericContext;
-        use crate::parser::types::ty::{PropertySignature, MethodSignature};
 
         // Build substitution map: type_param_name → concrete type
         let mut gen_ctx = GenericContext::new(self.type_ctx);
@@ -2310,16 +2441,35 @@ impl<'a> TypeChecker<'a> {
         }
 
         // Substitute in properties
-        let properties: Vec<PropertySignature> = class.properties.iter().map(|prop| {
-            let ty = gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty);
-            PropertySignature { name: prop.name.clone(), ty, optional: prop.optional, readonly: prop.readonly, visibility: prop.visibility }
-        }).collect();
+        let properties: Vec<PropertySignature> = class
+            .properties
+            .iter()
+            .map(|prop| {
+                let ty = gen_ctx.apply_substitution(prop.ty).unwrap_or(prop.ty);
+                PropertySignature {
+                    name: prop.name.clone(),
+                    ty,
+                    optional: prop.optional,
+                    readonly: prop.readonly,
+                    visibility: prop.visibility,
+                }
+            })
+            .collect();
 
         // Substitute in methods
-        let methods: Vec<MethodSignature> = class.methods.iter().map(|method| {
-            let ty = gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty);
-            MethodSignature { name: method.name.clone(), ty, type_params: method.type_params.clone(), visibility: method.visibility }
-        }).collect();
+        let methods: Vec<MethodSignature> = class
+            .methods
+            .iter()
+            .map(|method| {
+                let ty = gen_ctx.apply_substitution(method.ty).unwrap_or(method.ty);
+                MethodSignature {
+                    name: method.name.clone(),
+                    ty,
+                    type_params: method.type_params.clone(),
+                    visibility: method.visibility,
+                }
+            })
+            .collect();
 
         // Create the instantiated class type (clear type_params since they're resolved)
         let instantiated = crate::parser::types::ty::ClassType {
@@ -2334,10 +2484,15 @@ impl<'a> TypeChecker<'a> {
             is_abstract: class.is_abstract,
         };
 
-        self.type_ctx.intern(crate::parser::types::Type::Class(instantiated))
+        self.type_ctx
+            .intern(crate::parser::types::Type::Class(instantiated))
     }
 
-    fn lookup_class_member(&self, class: &crate::parser::types::ty::ClassType, property_name: &str) -> Option<(TypeId, crate::parser::ast::Visibility)> {
+    fn lookup_class_member(
+        &self,
+        class: &crate::parser::types::ty::ClassType,
+        property_name: &str,
+    ) -> Option<(TypeId, crate::parser::ast::Visibility)> {
         // Check own properties first
         for prop in &class.properties {
             if prop.name == property_name {
@@ -2353,7 +2508,9 @@ impl<'a> TypeChecker<'a> {
 
         // If not found and class has a parent, check parent class
         if let Some(parent_ty) = class.extends {
-            if let Some(crate::parser::types::Type::Class(parent_class)) = self.type_ctx.get(parent_ty) {
+            if let Some(crate::parser::types::Type::Class(parent_class)) =
+                self.type_ctx.get(parent_ty)
+            {
                 // Recursively check parent class
                 return self.lookup_class_member(parent_class, property_name);
             }
@@ -2381,79 +2538,155 @@ impl<'a> TypeChecker<'a> {
             // unshift(value: T) -> number
             "unshift" => Some(self.type_ctx.function_type(vec![elem_ty], number_ty, false)),
             // indexOf(value: T, fromIndex?: number) -> number
-            "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
+            "indexOf" => Some(self.type_ctx.function_type_with_min_params(
+                vec![elem_ty, number_ty],
+                number_ty,
+                false,
+                1,
+            )),
             // includes(value: T) -> boolean
-            "includes" => Some(self.type_ctx.function_type(vec![elem_ty], boolean_ty, false)),
+            "includes" => Some(
+                self.type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false),
+            ),
             // slice(start: number, end?: number) -> Array<T>
-            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], array_ty, false, 1)),
+            "slice" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, number_ty],
+                array_ty,
+                false,
+                1,
+            )),
             // concat(other: Array<T>) -> Array<T>
             "concat" => Some(self.type_ctx.function_type(vec![array_ty], array_ty, false)),
             // join(separator: string) -> string
-            "join" => Some(self.type_ctx.function_type(vec![string_ty], string_ty, false)),
+            "join" => Some(
+                self.type_ctx
+                    .function_type(vec![string_ty], string_ty, false),
+            ),
             // reverse() -> Array<T>
             "reverse" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
             // forEach(fn: (elem: T) => void) -> void
             "forEach" => {
                 let callback_ty = self.type_ctx.function_type(vec![elem_ty], void_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![callback_ty], void_ty, false),
+                )
             }
             // filter(predicate: (elem: T) => boolean) -> Array<T>
             "filter" => {
-                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
-                Some(self.type_ctx.function_type(vec![predicate_ty], array_ty, false))
+                let predicate_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![predicate_ty], array_ty, false),
+                )
             }
             // find(predicate: (elem: T) => boolean) -> T | null
             "find" => {
-                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
+                let predicate_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false);
                 let null_ty = self.type_ctx.null_type();
                 let nullable_elem = self.type_ctx.union_type(vec![elem_ty, null_ty]);
-                Some(self.type_ctx.function_type(vec![predicate_ty], nullable_elem, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![predicate_ty], nullable_elem, false),
+                )
             }
             // findIndex(predicate: (elem: T) => boolean) -> number
             "findIndex" => {
-                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
-                Some(self.type_ctx.function_type(vec![predicate_ty], number_ty, false))
+                let predicate_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![predicate_ty], number_ty, false),
+                )
             }
             // every(predicate: (elem: T) => boolean) -> boolean
             "every" => {
-                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
-                Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
+                let predicate_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![predicate_ty], boolean_ty, false),
+                )
             }
             // some(predicate: (elem: T) => boolean) -> boolean
             "some" => {
-                let predicate_ty = self.type_ctx.function_type(vec![elem_ty], boolean_ty, false);
-                Some(self.type_ctx.function_type(vec![predicate_ty], boolean_ty, false))
+                let predicate_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], boolean_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![predicate_ty], boolean_ty, false),
+                )
             }
             // length -> number (property, not method)
             "length" => Some(number_ty),
             // lastIndexOf(value: T, fromIndex?: number) -> number
-            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty], number_ty, false, 1)),
+            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(
+                vec![elem_ty, number_ty],
+                number_ty,
+                false,
+                1,
+            )),
             // sort(compareFn?: (a: T, b: T) => number) -> Array<T>
             "sort" => {
-                let compare_fn_ty = self.type_ctx.function_type(vec![elem_ty, elem_ty], number_ty, false);
-                Some(self.type_ctx.function_type_with_min_params(vec![compare_fn_ty], array_ty, false, 0))
+                let compare_fn_ty =
+                    self.type_ctx
+                        .function_type(vec![elem_ty, elem_ty], number_ty, false);
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![compare_fn_ty],
+                    array_ty,
+                    false,
+                    0,
+                ))
             }
             // map(fn: (elem: T) => T) -> Array<T> (simplified - without generic U)
             // map<U>(fn: (elem: T) => U) -> Array<U>
             "map" => {
                 let map_result_ty = self.type_ctx.type_variable("__array_map_u");
-                let callback_ty = self.type_ctx.function_type(vec![elem_ty], map_result_ty, false);
+                let callback_ty = self
+                    .type_ctx
+                    .function_type(vec![elem_ty], map_result_ty, false);
                 let mapped_array_ty = self.type_ctx.array_type(map_result_ty);
-                Some(self.type_ctx.function_type(vec![callback_ty], mapped_array_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![callback_ty], mapped_array_ty, false),
+                )
             }
             // reduce<U>(fn: (acc: U, elem: T) => U, initial: U) -> U
             "reduce" => {
                 let acc_ty = self.type_ctx.type_variable("__array_reduce_u");
-                let callback_ty = self.type_ctx.function_type(vec![acc_ty, elem_ty], acc_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty, acc_ty], acc_ty, false))
+                let callback_ty = self
+                    .type_ctx
+                    .function_type(vec![acc_ty, elem_ty], acc_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![callback_ty, acc_ty], acc_ty, false),
+                )
             }
             // fill(value: T, start?: number, end?: number) -> Array<T>
-            "fill" => Some(self.type_ctx.function_type_with_min_params(vec![elem_ty, number_ty, number_ty], array_ty, false, 1)),
+            "fill" => Some(self.type_ctx.function_type_with_min_params(
+                vec![elem_ty, number_ty, number_ty],
+                array_ty,
+                false,
+                1,
+            )),
             // flat() -> Array<T> (simplified - single level flatten)
             "flat" => Some(self.type_ctx.function_type(vec![], array_ty, false)),
             // splice(start: number, deleteCount?: number, ...items: T[]) -> Array<T>
             // Note: simplified type signature - actual splice takes variable arguments
-            "splice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty, elem_ty, elem_ty, elem_ty, elem_ty], array_ty, false, 1)),
+            "splice" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, number_ty, elem_ty, elem_ty, elem_ty, elem_ty],
+                array_ty,
+                false,
+                1,
+            )),
             _ => None,
         }
     }
@@ -2468,11 +2701,24 @@ impl<'a> TypeChecker<'a> {
             // length property
             "length" => Some(number_ty),
             // charAt(index: number) -> string
-            "charAt" => Some(self.type_ctx.function_type(vec![number_ty], string_ty, false)),
+            "charAt" => Some(
+                self.type_ctx
+                    .function_type(vec![number_ty], string_ty, false),
+            ),
             // substring(start: number, end?: number) -> string
-            "substring" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], string_ty, false, 1)),
+            "substring" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, number_ty],
+                string_ty,
+                false,
+                1,
+            )),
             // slice(start: number, end?: number) -> string
-            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], string_ty, false, 1)),
+            "slice" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, number_ty],
+                string_ty,
+                false,
+                1,
+            )),
             // toUpperCase() -> string
             "toUpperCase" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // toLowerCase() -> string
@@ -2480,40 +2726,85 @@ impl<'a> TypeChecker<'a> {
             // trim() -> string
             "trim" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // indexOf(searchStr: string, fromIndex?: number) -> number
-            "indexOf" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], number_ty, false, 1)),
+            "indexOf" => Some(self.type_ctx.function_type_with_min_params(
+                vec![string_ty, number_ty],
+                number_ty,
+                false,
+                1,
+            )),
             // includes(searchStr: string) -> boolean
-            "includes" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            "includes" => Some(
+                self.type_ctx
+                    .function_type(vec![string_ty], boolean_ty, false),
+            ),
             // startsWith(prefix: string) -> boolean
-            "startsWith" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            "startsWith" => Some(
+                self.type_ctx
+                    .function_type(vec![string_ty], boolean_ty, false),
+            ),
             // endsWith(suffix: string) -> boolean
-            "endsWith" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            "endsWith" => Some(
+                self.type_ctx
+                    .function_type(vec![string_ty], boolean_ty, false),
+            ),
             // split(separator: string | RegExp, limit?: number) -> Array<string>
             "split" => {
                 let regexp_ty = self.type_ctx.regexp_type();
                 let search_ty = self.type_ctx.union_type(vec![string_ty, regexp_ty]);
                 let arr_ty = self.type_ctx.array_type(string_ty);
-                Some(self.type_ctx.function_type_with_min_params(vec![search_ty, number_ty], arr_ty, false, 1))
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![search_ty, number_ty],
+                    arr_ty,
+                    false,
+                    1,
+                ))
             }
             // replace(search: string | RegExp, replacement: string) -> string
             "replace" => {
                 let regexp_ty = self.type_ctx.regexp_type();
                 let search_ty = self.type_ctx.union_type(vec![string_ty, regexp_ty]);
-                Some(self.type_ctx.function_type(vec![search_ty, string_ty], string_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![search_ty, string_ty], string_ty, false),
+                )
             }
             // repeat(count: number = 1) -> string
-            "repeat" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            "repeat" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty],
+                string_ty,
+                false,
+                0,
+            )),
             // charCodeAt(index: number) -> number
-            "charCodeAt" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            "charCodeAt" => Some(
+                self.type_ctx
+                    .function_type(vec![number_ty], number_ty, false),
+            ),
             // lastIndexOf(searchStr: string, fromIndex?: number) -> number
-            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], number_ty, false, 1)),
+            "lastIndexOf" => Some(self.type_ctx.function_type_with_min_params(
+                vec![string_ty, number_ty],
+                number_ty,
+                false,
+                1,
+            )),
             // trimStart() -> string
             "trimStart" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // trimEnd() -> string
             "trimEnd" => Some(self.type_ctx.function_type(vec![], string_ty, false)),
             // padStart(length: number, pad?: string) -> string
-            "padStart" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, string_ty], string_ty, false, 1)),
+            "padStart" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, string_ty],
+                string_ty,
+                false,
+                1,
+            )),
             // padEnd(length: number, pad?: string) -> string
-            "padEnd" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, string_ty], string_ty, false, 1)),
+            "padEnd" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, string_ty],
+                string_ty,
+                false,
+                1,
+            )),
             // match(pattern: RegExp) -> string[] | null
             // Returns array of matches or null if no match
             "match" => {
@@ -2521,7 +2812,10 @@ impl<'a> TypeChecker<'a> {
                 let arr_ty = self.type_ctx.array_type(string_ty);
                 let null_ty = self.type_ctx.null_type();
                 let result_ty = self.type_ctx.union_type(vec![arr_ty, null_ty]);
-                Some(self.type_ctx.function_type(vec![regexp_ty], result_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![regexp_ty], result_ty, false),
+                )
             }
             // matchAll(pattern: RegExp) -> Array<string[]>
             "matchAll" => {
@@ -2534,7 +2828,10 @@ impl<'a> TypeChecker<'a> {
             // Returns index of first match, or -1 if no match
             "search" => {
                 let regexp_ty = self.type_ctx.regexp_type();
-                Some(self.type_ctx.function_type(vec![regexp_ty], number_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![regexp_ty], number_ty, false),
+                )
             }
             // replaceWith(pattern: RegExp, replacer: (match: Array<string | number>) => string) -> string
             // Callback receives [matchedText, index, ...groups] for each match
@@ -2543,8 +2840,13 @@ impl<'a> TypeChecker<'a> {
                 // Callback type: (Array<string | number>) => string
                 let union_elem_ty = self.type_ctx.union_type(vec![string_ty, number_ty]);
                 let match_arr_ty = self.type_ctx.array_type(union_elem_ty);
-                let callback_ty = self.type_ctx.function_type(vec![match_arr_ty], string_ty, false);
-                Some(self.type_ctx.function_type(vec![regexp_ty, callback_ty], string_ty, false))
+                let callback_ty = self
+                    .type_ctx
+                    .function_type(vec![match_arr_ty], string_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![regexp_ty, callback_ty], string_ty, false),
+                )
             }
             _ => None,
         }
@@ -2557,11 +2859,26 @@ impl<'a> TypeChecker<'a> {
 
         match method_name {
             // toFixed(digits: number = 0) -> string
-            "toFixed" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            "toFixed" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty],
+                string_ty,
+                false,
+                0,
+            )),
             // toPrecision(precision?: number) -> string
-            "toPrecision" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            "toPrecision" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty],
+                string_ty,
+                false,
+                0,
+            )),
             // toString(radix: number = 10) -> string
-            "toString" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty], string_ty, false, 0)),
+            "toString" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty],
+                string_ty,
+                false,
+                0,
+            )),
             _ => None,
         }
     }
@@ -2588,24 +2905,42 @@ impl<'a> TypeChecker<'a> {
 
         match method_name {
             // test(str: string) -> boolean
-            "test" => Some(self.type_ctx.function_type(vec![string_ty], boolean_ty, false)),
+            "test" => Some(
+                self.type_ctx
+                    .function_type(vec![string_ty], boolean_ty, false),
+            ),
             // exec(str: string) -> string | null (simplified - returns matched string or null)
             "exec" => {
                 let null_ty = self.type_ctx.null_type();
                 let result_ty = self.type_ctx.union_type(vec![string_ty, null_ty]);
-                Some(self.type_ctx.function_type(vec![string_ty], result_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![string_ty], result_ty, false),
+                )
             }
             // execAll(str: string) -> string[]
             "execAll" => {
                 let array_ty = self.type_ctx.array_type(string_ty);
-                Some(self.type_ctx.function_type(vec![string_ty], array_ty, false))
+                Some(
+                    self.type_ctx
+                        .function_type(vec![string_ty], array_ty, false),
+                )
             }
             // replace(str: string, replacement: string) -> string
-            "replace" => Some(self.type_ctx.function_type(vec![string_ty, string_ty], string_ty, false)),
+            "replace" => Some(self.type_ctx.function_type(
+                vec![string_ty, string_ty],
+                string_ty,
+                false,
+            )),
             // split(str: string, limit?: number) -> string[]
             "split" => {
                 let array_ty = self.type_ctx.array_type(string_ty);
-                Some(self.type_ctx.function_type_with_min_params(vec![string_ty, number_ty], array_ty, false, 1))
+                Some(self.type_ctx.function_type_with_min_params(
+                    vec![string_ty, number_ty],
+                    array_ty,
+                    false,
+                    1,
+                ))
             }
             // source property -> string
             "source" => Some(string_ty),
@@ -2621,8 +2956,13 @@ impl<'a> TypeChecker<'a> {
             "lastIndex" => Some(number_ty),
             // replaceWith(str: string, replacer: (match: string) => string) -> string
             "replaceWith" => {
-                let replacer_ty = self.type_ctx.function_type(vec![string_ty], string_ty, false);
-                Some(self.type_ctx.function_type(vec![string_ty, replacer_ty], string_ty, false))
+                let replacer_ty = self
+                    .type_ctx
+                    .function_type(vec![string_ty], string_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![string_ty, replacer_ty], string_ty, false),
+                )
             }
             // dotAll property -> boolean
             "dotAll" => Some(boolean_ty),
@@ -2633,7 +2973,12 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Get the type of a built-in Map method
-    fn get_map_method_type(&mut self, method_name: &str, key_ty: TypeId, value_ty: TypeId) -> Option<TypeId> {
+    fn get_map_method_type(
+        &mut self,
+        method_name: &str,
+        key_ty: TypeId,
+        value_ty: TypeId,
+    ) -> Option<TypeId> {
         let number_ty = self.type_ctx.number_type();
         let boolean_ty = self.type_ctx.boolean_type();
         let void_ty = self.type_ctx.void_type();
@@ -2648,7 +2993,10 @@ impl<'a> TypeChecker<'a> {
                 Some(self.type_ctx.function_type(vec![key_ty], result_ty, false))
             }
             // set(key: K, value: V) -> void
-            "set" => Some(self.type_ctx.function_type(vec![key_ty, value_ty], void_ty, false)),
+            "set" => Some(
+                self.type_ctx
+                    .function_type(vec![key_ty, value_ty], void_ty, false),
+            ),
             // has(key: K) -> boolean
             "has" => Some(self.type_ctx.function_type(vec![key_ty], boolean_ty, false)),
             // delete(key: K) -> boolean
@@ -2673,8 +3021,13 @@ impl<'a> TypeChecker<'a> {
             }
             // forEach(fn: (value: V, key: K) => void) -> void
             "forEach" => {
-                let callback_ty = self.type_ctx.function_type(vec![value_ty, key_ty], void_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+                let callback_ty =
+                    self.type_ctx
+                        .function_type(vec![value_ty, key_ty], void_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![callback_ty], void_ty, false),
+                )
             }
             _ => None,
         }
@@ -2690,11 +3043,20 @@ impl<'a> TypeChecker<'a> {
             // size() -> number
             "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
             // add(value: T) -> void
-            "add" => Some(self.type_ctx.function_type(vec![element_ty], void_ty, false)),
+            "add" => Some(
+                self.type_ctx
+                    .function_type(vec![element_ty], void_ty, false),
+            ),
             // has(value: T) -> boolean
-            "has" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
+            "has" => Some(
+                self.type_ctx
+                    .function_type(vec![element_ty], boolean_ty, false),
+            ),
             // delete(value: T) -> boolean
-            "delete" => Some(self.type_ctx.function_type(vec![element_ty], boolean_ty, false)),
+            "delete" => Some(
+                self.type_ctx
+                    .function_type(vec![element_ty], boolean_ty, false),
+            ),
             // clear() -> void
             "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
             // values() -> Array<T>
@@ -2704,8 +3066,13 @@ impl<'a> TypeChecker<'a> {
             }
             // forEach(fn: (value: T) => void) -> void
             "forEach" => {
-                let callback_ty = self.type_ctx.function_type(vec![element_ty], void_ty, false);
-                Some(self.type_ctx.function_type(vec![callback_ty], void_ty, false))
+                let callback_ty = self
+                    .type_ctx
+                    .function_type(vec![element_ty], void_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![callback_ty], void_ty, false),
+                )
             }
             // union(other: Set<T>) -> Set<T>
             "union" => {
@@ -2736,23 +3103,59 @@ impl<'a> TypeChecker<'a> {
             // length() -> number
             "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
             // getByte(index: number) -> number
-            "getByte" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            "getByte" => Some(
+                self.type_ctx
+                    .function_type(vec![number_ty], number_ty, false),
+            ),
             // setByte(index: number, value: number) -> void
-            "setByte" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            "setByte" => Some(self.type_ctx.function_type(
+                vec![number_ty, number_ty],
+                void_ty,
+                false,
+            )),
             // getInt32(index: number) -> number
-            "getInt32" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            "getInt32" => Some(
+                self.type_ctx
+                    .function_type(vec![number_ty], number_ty, false),
+            ),
             // setInt32(index: number, value: number) -> void
-            "setInt32" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            "setInt32" => Some(self.type_ctx.function_type(
+                vec![number_ty, number_ty],
+                void_ty,
+                false,
+            )),
             // getFloat64(index: number) -> number
-            "getFloat64" => Some(self.type_ctx.function_type(vec![number_ty], number_ty, false)),
+            "getFloat64" => Some(
+                self.type_ctx
+                    .function_type(vec![number_ty], number_ty, false),
+            ),
             // setFloat64(index: number, value: number) -> void
-            "setFloat64" => Some(self.type_ctx.function_type(vec![number_ty, number_ty], void_ty, false)),
+            "setFloat64" => Some(self.type_ctx.function_type(
+                vec![number_ty, number_ty],
+                void_ty,
+                false,
+            )),
             // slice(start: number, end?: number) -> Buffer
-            "slice" => Some(self.type_ctx.function_type_with_min_params(vec![number_ty, number_ty], buffer_ty, false, 1)),
+            "slice" => Some(self.type_ctx.function_type_with_min_params(
+                vec![number_ty, number_ty],
+                buffer_ty,
+                false,
+                1,
+            )),
             // copy(target: Buffer, targetStart?: number, sourceStart?: number, sourceEnd?: number) -> number
-            "copy" => Some(self.type_ctx.function_type_with_min_params(vec![buffer_ty, number_ty, number_ty, number_ty], number_ty, false, 1)),
+            "copy" => Some(self.type_ctx.function_type_with_min_params(
+                vec![buffer_ty, number_ty, number_ty, number_ty],
+                number_ty,
+                false,
+                1,
+            )),
             // toString(encoding?: string) -> string
-            "toString" => Some(self.type_ctx.function_type_with_min_params(vec![string_ty], string_ty, false, 0)),
+            "toString" => Some(self.type_ctx.function_type_with_min_params(
+                vec![string_ty],
+                string_ty,
+                false,
+                0,
+            )),
             _ => None,
         }
     }
@@ -2769,11 +3172,17 @@ impl<'a> TypeChecker<'a> {
 
         match method_name {
             // send(value: T) -> void
-            "send" => Some(self.type_ctx.function_type(vec![message_ty], void_ty, false)),
+            "send" => Some(
+                self.type_ctx
+                    .function_type(vec![message_ty], void_ty, false),
+            ),
             // receive() -> T
             "receive" => Some(self.type_ctx.function_type(vec![], message_ty, false)),
             // trySend(value: T) -> boolean
-            "trySend" => Some(self.type_ctx.function_type(vec![message_ty], boolean_ty, false)),
+            "trySend" => Some(
+                self.type_ctx
+                    .function_type(vec![message_ty], boolean_ty, false),
+            ),
             // tryReceive() -> T | null
             "tryReceive" => {
                 let result_ty = self.type_ctx.union_type(vec![message_ty, null_ty]);
@@ -2808,7 +3217,9 @@ impl<'a> TypeChecker<'a> {
                 ArrayElement::Expression(expr) => self.check_expr(expr),
                 ArrayElement::Spread(expr) => {
                     let spread_ty = self.check_expr(expr);
-                    if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(spread_ty).cloned() {
+                    if let Some(crate::parser::types::Type::Array(arr_ty)) =
+                        self.type_ctx.get(spread_ty).cloned()
+                    {
                         arr_ty.element
                     } else {
                         spread_ty
@@ -2834,7 +3245,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check object literal
     fn check_object(&mut self, obj: &ObjectExpression) -> TypeId {
-        use crate::parser::types::ty::{PropertySignature, ClassType};
+        use crate::parser::types::ty::{ClassType, PropertySignature};
 
         let mut properties = Vec::new();
         for prop in &obj.properties {
@@ -2872,7 +3283,8 @@ impl<'a> TypeChecker<'a> {
             implements: vec![],
             is_abstract: false,
         };
-        self.type_ctx.intern(crate::parser::types::Type::Class(class_type))
+        self.type_ctx
+            .intern(crate::parser::types::Type::Class(class_type))
     }
 
     /// Check conditional (ternary) expression
@@ -2927,7 +3339,8 @@ impl<'a> TypeChecker<'a> {
         // even though `val` was narrowed from `T | null` to `T`.
         let (left_ty, clear_var) = if let Expression::Identifier(ident) = &*assign.left {
             let name = self.resolve(ident.name);
-            let declared_ty = self.get_var_declared_type(&name)
+            let declared_ty = self
+                .get_var_declared_type(&name)
                 .unwrap_or_else(|| self.check_expr(&assign.left));
             (declared_ty, Some(name))
         } else {
@@ -3064,10 +3477,13 @@ impl<'a> TypeChecker<'a> {
                     // If this is a generic class with type arguments, instantiate it
                     if let Some(ref type_args) = type_ref.type_args {
                         if !type_args.is_empty() {
-                            let resolved_args: Vec<TypeId> = type_args.iter()
+                            let resolved_args: Vec<TypeId> = type_args
+                                .iter()
                                 .map(|arg| self.resolve_type_annotation(arg))
                                 .collect();
-                            if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(symbol.ty).cloned() {
+                            if let Some(crate::parser::types::Type::Class(class)) =
+                                self.type_ctx.get(symbol.ty).cloned()
+                            {
                                 if class.type_params.len() == resolved_args.len() {
                                     return self.instantiate_class_type(&class, &resolved_args);
                                 }
@@ -3109,9 +3525,15 @@ impl<'a> TypeChecker<'a> {
                 let mut merged_properties = Vec::new();
                 for ty_annot in &intersection.types {
                     let ty_id = self.resolve_type_annotation(ty_annot);
-                    if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(ty_id).cloned() {
+                    if let Some(crate::parser::types::Type::Object(obj)) =
+                        self.type_ctx.get(ty_id).cloned()
+                    {
                         for prop in &obj.properties {
-                            if !merged_properties.iter().any(|p: &crate::parser::types::ty::PropertySignature| p.name == prop.name) {
+                            if !merged_properties.iter().any(
+                                |p: &crate::parser::types::ty::PropertySignature| {
+                                    p.name == prop.name
+                                },
+                            ) {
                                 merged_properties.push(prop.clone());
                             }
                         }
@@ -3142,21 +3564,15 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx.unknown_type()
             }
 
-            AstType::StringLiteral(s) => {
-                self.type_ctx.string_literal(self.interner.resolve(*s).to_string())
-            }
+            AstType::StringLiteral(s) => self
+                .type_ctx
+                .string_literal(self.interner.resolve(*s).to_string()),
 
-            AstType::NumberLiteral(n) => {
-                self.type_ctx.number_literal(*n)
-            }
+            AstType::NumberLiteral(n) => self.type_ctx.number_literal(*n),
 
-            AstType::BooleanLiteral(b) => {
-                self.type_ctx.boolean_literal(*b)
-            }
+            AstType::BooleanLiteral(b) => self.type_ctx.boolean_literal(*b),
 
-            AstType::Parenthesized(inner) => {
-                self.resolve_type_annotation(inner)
-            }
+            AstType::Parenthesized(inner) => self.resolve_type_annotation(inner),
         }
     }
 
@@ -3247,7 +3663,11 @@ impl<'a> TypeChecker<'a> {
     ///
     /// The type-constrained style allows decorators to constrain which methods they
     /// can be applied to based on the method's signature.
-    fn check_method_decorator(&mut self, decorator: &crate::parser::ast::Decorator, method_ty: TypeId) {
+    fn check_method_decorator(
+        &mut self,
+        decorator: &crate::parser::ast::Decorator,
+        method_ty: TypeId,
+    ) {
         // Get the type of the decorator expression
         let decorator_ty = self.check_expr(&decorator.expression);
 
@@ -3277,7 +3697,9 @@ impl<'a> TypeChecker<'a> {
                     let param_ty = func.params[0];
 
                     // Check if the parameter is a function type (type-constrained decorator)
-                    if let Some(crate::parser::types::Type::Function(_)) = self.type_ctx.get(param_ty) {
+                    if let Some(crate::parser::types::Type::Function(_)) =
+                        self.type_ctx.get(param_ty)
+                    {
                         // This is a type-constrained decorator
                         // Check if the method type is assignable to the parameter type
                         let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
@@ -3422,7 +3844,8 @@ impl<'a> TypeChecker<'a> {
                 if !assign_ctx.is_assignable(string_ty, func.params[1]) {
                     self.errors.push(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
-                        expected: "ParameterDecorator<T> - second param should be string".to_string(),
+                        expected: "ParameterDecorator<T> - second param should be string"
+                            .to_string(),
                         span: decorator.span,
                     });
                 }
@@ -3431,7 +3854,8 @@ impl<'a> TypeChecker<'a> {
                 if !assign_ctx.is_assignable(number_ty, func.params[2]) {
                     self.errors.push(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
-                        expected: "ParameterDecorator<T> - third param should be number".to_string(),
+                        expected: "ParameterDecorator<T> - third param should be number"
+                            .to_string(),
                         span: decorator.span,
                     });
                 }
@@ -3481,17 +3905,24 @@ impl<'a> TypeChecker<'a> {
             self.type_ctx.void_type()
         };
 
-        let min_params = method.params.iter()
+        let min_params = method
+            .params
+            .iter()
             .filter(|p| p.default_value.is_none() && !p.optional)
             .count();
-        self.type_ctx.function_type_with_min_params(param_types, return_ty, method.is_async, min_params)
+        self.type_ctx.function_type_with_min_params(
+            param_types,
+            return_ty,
+            method.is_async,
+            min_params,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::binder::Binder;
+    use super::*;
     use crate::Parser;
 
     fn parse_and_check(source: &str) -> Result<(), Vec<CheckError>> {
@@ -3537,12 +3968,14 @@ mod tests {
     #[test]
     fn test_class_decorator_valid() {
         // A valid class decorator is a function that takes Class<T> and returns Class<T> | void
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Injectable<T>(target: T): void {}
 
             @Injectable
             class Service {}
-        "#);
+        "#,
+        );
         // Should pass - decorator function is valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3551,14 +3984,16 @@ mod tests {
     fn test_class_decorator_factory_valid() {
         // Decorator factory is a function that returns a decorator
         // Use arrow function since function expressions are not supported
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Controller<T>(prefix: string): (target: T) => void {
                 return (target: T): void => {};
             }
 
             @Controller("/api")
             class ApiController {}
-        "#);
+        "#,
+        );
         // Should pass - decorator factory is valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3566,7 +4001,8 @@ mod tests {
     #[test]
     fn test_method_decorator_valid() {
         // A valid method decorator takes a function and returns a function
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Logged<F>(method: F): F {
                 return method;
             }
@@ -3575,7 +4011,8 @@ mod tests {
                 @Logged
                 doWork(): void {}
             }
-        "#);
+        "#,
+        );
         // Should pass - decorator matches method signature
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3583,14 +4020,16 @@ mod tests {
     #[test]
     fn test_field_decorator_valid() {
         // A valid field decorator takes (target, fieldName) and returns void
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Column<T>(target: T, fieldName: string): void {}
 
             class User {
                 @Column
                 name: string;
             }
-        "#);
+        "#,
+        );
         // Should pass - decorator signature is valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3600,13 +4039,15 @@ mod tests {
         // A valid parameter decorator takes (target, methodName, index) and returns void
         // Note: Parameter decorators on constructor params may not be fully supported by parser
         // So we test on method parameters instead
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Inject<T>(target: T, methodName: string, parameterIndex: number): void {}
 
             class Service {
                 doWork(@Inject dep: number): void {}
             }
-        "#);
+        "#,
+        );
         // Should pass - decorator signature is valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3614,39 +4055,48 @@ mod tests {
     #[test]
     fn test_decorator_not_a_function() {
         // Non-function as decorator should error
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             let notAFunction: number = 42;
 
             @notAFunction
             class Service {}
-        "#);
+        "#,
+        );
         // Should fail - decorator is not a function
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, CheckError::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::InvalidDecorator { .. })));
     }
 
     #[test]
     fn test_field_decorator_wrong_param_count() {
         // Field decorator with wrong parameter count should error
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function BadDecorator<T>(target: T): void {}
 
             class User {
                 @BadDecorator
                 name: string;
             }
-        "#);
+        "#,
+        );
         // Should fail - field decorator expects 2 params
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, CheckError::InvalidDecorator { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::InvalidDecorator { .. })));
     }
 
     #[test]
     fn test_field_decorator_wrong_return_type() {
         // Field decorator must return void
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function BadReturn<T>(target: T, fieldName: string): string {
                 return fieldName;
             }
@@ -3655,24 +4105,29 @@ mod tests {
                 @BadReturn
                 name: string;
             }
-        "#);
+        "#,
+        );
         // Should fail - return type is not void
         assert!(result.is_err());
         let errors = result.unwrap_err();
-        assert!(errors.iter().any(|e| matches!(e, CheckError::DecoratorReturnMismatch { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::DecoratorReturnMismatch { .. })));
     }
 
     #[test]
     fn test_multiple_decorators_on_class() {
         // Multiple decorators on a class
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Dec1<T>(target: T): void {}
             function Dec2<T>(target: T): void {}
 
             @Dec1
             @Dec2
             class Service {}
-        "#);
+        "#,
+        );
         // Should pass - both decorators are valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3680,7 +4135,8 @@ mod tests {
     #[test]
     fn test_multiple_decorators_on_method() {
         // Multiple decorators on a method
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Log<F>(method: F): F { return method; }
             function Measure<F>(method: F): F { return method; }
 
@@ -3689,7 +4145,8 @@ mod tests {
                 @Measure
                 doWork(): void {}
             }
-        "#);
+        "#,
+        );
         // Should pass - both decorators are valid
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
@@ -3701,7 +4158,8 @@ mod tests {
     #[test]
     fn test_class_decorator_type_alias_registered() {
         // Verify ClassDecorator type alias is registered and can be referenced
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             // Use ClassDecorator type alias in function declaration
             function makeSealed<T>(target: T): T | void {
                 return target;
@@ -3709,14 +4167,16 @@ mod tests {
 
             @makeSealed
             class MyClass {}
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 
     #[test]
     fn test_method_decorator_type_alias_registered() {
         // Verify MethodDecorator type alias concept works
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             // Method decorator function that takes function and returns function
             function log<F>(method: F): F {
                 return method;
@@ -3726,14 +4186,16 @@ mod tests {
                 @log
                 process(): void {}
             }
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 
     #[test]
     fn test_field_decorator_type_alias_registered() {
         // Verify FieldDecorator signature works
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             // Field decorator with correct signature
             function validate<T>(target: T, fieldName: string): void {}
 
@@ -3741,7 +4203,8 @@ mod tests {
                 @validate
                 name: string;
             }
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 
@@ -3749,7 +4212,8 @@ mod tests {
     fn test_class_interface_registered() {
         // Verify Class<T> is registered as a type
         // This test uses Class-like pattern
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             class Foo {}
 
             // Function that accepts class-like object
@@ -3758,14 +4222,16 @@ mod tests {
             }
 
             let name: string = getClassName(Foo);
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 
     #[test]
     fn test_decorator_with_generic_constraint() {
         // Verify decorator with generic type parameter works
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Injectable<T>(target: T): void {}
 
             @Injectable
@@ -3773,21 +4239,24 @@ mod tests {
 
             @Injectable
             class ProductService {}
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 
     #[test]
     fn test_decorator_factory_with_generic() {
         // Verify decorator factory with generic works
-        let result = parse_and_check(r#"
+        let result = parse_and_check(
+            r#"
             function Route<T>(path: string): (target: T) => void {
                 return (target: T): void => {};
             }
 
             @Route("/users")
             class UserController {}
-        "#);
+        "#,
+        );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
 }

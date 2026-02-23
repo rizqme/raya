@@ -17,13 +17,15 @@
 
 use std::any::TypeId;
 
-use raya_engine::vm::{Object, RayaString, Vm, Value};
 use raya_engine::vm::gc::GcHeader;
-use raya_engine::vm::object::{Array, BoundMethod, Closure, MapObject, SetObject, Buffer, DateObject, ChannelObject, RegExpObject};
+use raya_engine::vm::object::{
+    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, RegExpObject,
+    SetObject,
+};
+use raya_engine::vm::{Object, RayaString, Value, Vm};
 
-use crate::{compile, vm_setup, RuntimeOptions};
 use crate::error::RuntimeError;
-
+use crate::{compile, vm_setup, RuntimeOptions};
 
 /// A persistent evaluation session that maintains state across evals.
 ///
@@ -63,7 +65,9 @@ impl Session {
         let (module, _interner) = compile::compile_source(&full_source)?;
 
         let mut vm = vm_setup::create_vm(&self.options);
-        let result = vm.execute(&module)?;
+        // REPL/session should execute only the compiler entry main and avoid
+        // implicit invocation of user-defined `main`.
+        let result = vm.execute_entry_only(&module)?;
 
         // If successful and this is a declaration, accumulate it
         let trimmed = code.trim();

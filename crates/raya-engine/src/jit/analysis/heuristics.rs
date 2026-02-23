@@ -4,8 +4,8 @@
 //! CPU-intensive functions (math-heavy, string processing, no I/O) score high;
 //! I/O-bound functions (spawn, await, mutex) score low.
 
-use crate::compiler::bytecode::{Function, Module, Opcode};
 use super::decoder::{decode_function, Operands};
+use crate::compiler::bytecode::{Function, Module, Opcode};
 
 /// Analysis result for a single function
 #[derive(Debug, Clone)]
@@ -95,7 +95,11 @@ impl HeuristicsAnalyzer {
         for instr in &instrs {
             match instr.opcode {
                 // === Loops (backward jumps) ===
-                Opcode::Jmp | Opcode::JmpIfTrue | Opcode::JmpIfFalse | Opcode::JmpIfNull | Opcode::JmpIfNotNull => {
+                Opcode::Jmp
+                | Opcode::JmpIfTrue
+                | Opcode::JmpIfFalse
+                | Opcode::JmpIfNull
+                | Opcode::JmpIfNotNull => {
                     if let Operands::I32(offset) = instr.operands {
                         if offset < 0 {
                             has_loops = true;
@@ -105,49 +109,90 @@ impl HeuristicsAnalyzer {
                 }
 
                 // === Integer arithmetic ===
-                Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv | Opcode::Imod
-                | Opcode::Ineg | Opcode::Ipow => {
+                Opcode::Iadd
+                | Opcode::Isub
+                | Opcode::Imul
+                | Opcode::Idiv
+                | Opcode::Imod
+                | Opcode::Ineg
+                | Opcode::Ipow => {
                     score += WEIGHT_INT_ARITH;
                     arithmetic_ops += 1;
                 }
 
                 // === Float arithmetic ===
-                Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv
-                | Opcode::Fneg | Opcode::Fpow | Opcode::Fmod => {
+                Opcode::Fadd
+                | Opcode::Fsub
+                | Opcode::Fmul
+                | Opcode::Fdiv
+                | Opcode::Fneg
+                | Opcode::Fpow
+                | Opcode::Fmod => {
                     score += WEIGHT_FLOAT_ARITH;
                     arithmetic_ops += 1;
                 }
 
                 // === Bitwise ===
-                Opcode::Ishl | Opcode::Ishr | Opcode::Iushr
-                | Opcode::Iand | Opcode::Ior | Opcode::Ixor | Opcode::Inot => {
+                Opcode::Ishl
+                | Opcode::Ishr
+                | Opcode::Iushr
+                | Opcode::Iand
+                | Opcode::Ior
+                | Opcode::Ixor
+                | Opcode::Inot => {
                     score += WEIGHT_BITWISE;
                     arithmetic_ops += 1;
                 }
 
                 // === Comparison ===
-                Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile | Opcode::Igt | Opcode::Ige
-                | Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle | Opcode::Fgt | Opcode::Fge
-                | Opcode::Seq | Opcode::Sne | Opcode::Slt | Opcode::Sle | Opcode::Sgt | Opcode::Sge
-                | Opcode::Eq | Opcode::Ne => {
+                Opcode::Ieq
+                | Opcode::Ine
+                | Opcode::Ilt
+                | Opcode::Ile
+                | Opcode::Igt
+                | Opcode::Ige
+                | Opcode::Feq
+                | Opcode::Fne
+                | Opcode::Flt
+                | Opcode::Fle
+                | Opcode::Fgt
+                | Opcode::Fge
+                | Opcode::Seq
+                | Opcode::Sne
+                | Opcode::Slt
+                | Opcode::Sle
+                | Opcode::Sgt
+                | Opcode::Sge
+                | Opcode::Eq
+                | Opcode::Ne => {
                     score += WEIGHT_COMPARISON;
                 }
 
                 // === Array access ===
-                Opcode::LoadElem | Opcode::StoreElem | Opcode::ArrayLen
-                | Opcode::ArrayPush | Opcode::ArrayPop => {
+                Opcode::LoadElem
+                | Opcode::StoreElem
+                | Opcode::ArrayLen
+                | Opcode::ArrayPush
+                | Opcode::ArrayPop => {
                     score += WEIGHT_ARRAY_ACCESS;
                 }
 
                 // === Local load/store ===
-                Opcode::LoadLocal | Opcode::StoreLocal
-                | Opcode::LoadLocal0 | Opcode::LoadLocal1 => {
+                Opcode::LoadLocal
+                | Opcode::StoreLocal
+                | Opcode::LoadLocal0
+                | Opcode::LoadLocal1 => {
                     score += WEIGHT_LOCAL;
                 }
 
                 // === Constants ===
-                Opcode::ConstI32 | Opcode::ConstF64 | Opcode::ConstTrue | Opcode::ConstFalse
-                | Opcode::ConstNull | Opcode::ConstStr | Opcode::LoadConst => {
+                Opcode::ConstI32
+                | Opcode::ConstF64
+                | Opcode::ConstTrue
+                | Opcode::ConstFalse
+                | Opcode::ConstNull
+                | Opcode::ConstStr
+                | Opcode::LoadConst => {
                     score += WEIGHT_CONSTANT;
                 }
 
@@ -177,8 +222,11 @@ impl HeuristicsAnalyzer {
                 Opcode::NativeCall | Opcode::ModuleNativeCall => {
                     score += PENALTY_NATIVE_CALL;
                 }
-                Opcode::Call | Opcode::CallMethod | Opcode::CallConstructor
-                | Opcode::CallSuper | Opcode::CallStatic => {
+                Opcode::Call
+                | Opcode::CallMethod
+                | Opcode::CallConstructor
+                | Opcode::CallSuper
+                | Opcode::CallStatic => {
                     score += PENALTY_CALL;
                 }
 
@@ -188,10 +236,17 @@ impl HeuristicsAnalyzer {
                 }
 
                 // === Penalties: JSON ops ===
-                Opcode::JsonGet | Opcode::JsonSet | Opcode::JsonDelete
-                | Opcode::JsonIndex | Opcode::JsonIndexSet | Opcode::JsonPush
-                | Opcode::JsonPop | Opcode::JsonNewObject | Opcode::JsonNewArray
-                | Opcode::JsonKeys | Opcode::JsonLength => {
+                Opcode::JsonGet
+                | Opcode::JsonSet
+                | Opcode::JsonDelete
+                | Opcode::JsonIndex
+                | Opcode::JsonIndexSet
+                | Opcode::JsonPush
+                | Opcode::JsonPop
+                | Opcode::JsonNewObject
+                | Opcode::JsonNewArray
+                | Opcode::JsonKeys
+                | Opcode::JsonLength => {
                     score += PENALTY_JSON;
                 }
 
@@ -219,7 +274,10 @@ impl HeuristicsAnalyzer {
 
     /// Analyze all functions in a module
     pub fn analyze_module(&self, module: &Module) -> Vec<FunctionScore> {
-        module.functions.iter().enumerate()
+        module
+            .functions
+            .iter()
+            .enumerate()
             .map(|(idx, func)| self.analyze_function(func, idx))
             .collect()
     }
@@ -236,7 +294,11 @@ impl HeuristicsAnalyzer {
         });
 
         // Sort by score descending (best candidates first)
-        scores.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scores.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         scores
     }
@@ -255,7 +317,10 @@ mod tests {
             constants: ConstantPool::new(),
             functions,
             classes: vec![],
-            metadata: Metadata { name: "test".to_string(), source_file: None },
+            metadata: Metadata {
+                name: "test".to_string(),
+                source_file: None,
+            },
             exports: vec![],
             imports: vec![],
             checksum: [0; 32],
@@ -270,7 +335,9 @@ mod tests {
         code.push(Opcode::ConstI32 as u8);
         code.extend_from_slice(&val.to_le_bytes());
     }
-    fn emit(code: &mut Vec<u8>, op: Opcode) { code.push(op as u8); }
+    fn emit(code: &mut Vec<u8>, op: Opcode) {
+        code.push(op as u8);
+    }
     fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
         code.push(op as u8);
         code.extend_from_slice(&offset.to_le_bytes());
@@ -297,7 +364,11 @@ mod tests {
         let analyzer = HeuristicsAnalyzer::new();
         let score = analyzer.analyze_function(&func, 0);
 
-        assert!(score.score < 10.0, "Trivial function should score low: {}", score.score);
+        assert!(
+            score.score < 10.0,
+            "Trivial function should score low: {}",
+            score.score
+        );
         assert!(!score.has_loops);
         assert!(score.is_cpu_bound);
     }
@@ -306,30 +377,30 @@ mod tests {
     fn test_math_loop_high_score() {
         // Simulate: for (i = 0; i < n; i++) { sum += arr[i] * 2 }
         let mut code = Vec::new();
-        emit_i32(&mut code, 0);                              // const 0
-        emit_local(&mut code, Opcode::StoreLocal, 0);        // i = 0
-        emit_i32(&mut code, 100);                            // const 100
-        emit_local(&mut code, Opcode::StoreLocal, 1);        // n = 100
-        // loop start
+        emit_i32(&mut code, 0); // const 0
+        emit_local(&mut code, Opcode::StoreLocal, 0); // i = 0
+        emit_i32(&mut code, 100); // const 100
+        emit_local(&mut code, Opcode::StoreLocal, 1); // n = 100
+                                                      // loop start
         let loop_start = code.len();
-        emit_local(&mut code, Opcode::LoadLocal, 0);         // load i
-        emit_local(&mut code, Opcode::LoadLocal, 1);         // load n
-        emit(&mut code, Opcode::Ilt);                         // i < n
+        emit_local(&mut code, Opcode::LoadLocal, 0); // load i
+        emit_local(&mut code, Opcode::LoadLocal, 1); // load n
+        emit(&mut code, Opcode::Ilt); // i < n
         let jmp_offset_pos = code.len();
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 0);          // placeholder
-        // loop body
-        emit_local(&mut code, Opcode::LoadLocal, 0);         // load i
-        emit_i32(&mut code, 2);                              // const 2
-        emit(&mut code, Opcode::Imul);                        // i * 2
-        emit_local(&mut code, Opcode::LoadLocal, 2);         // load sum
-        emit(&mut code, Opcode::Iadd);                        // sum + (i * 2)
-        emit_local(&mut code, Opcode::StoreLocal, 2);        // sum = ...
-        // increment i
-        emit_local(&mut code, Opcode::LoadLocal, 0);         // load i
-        emit_i32(&mut code, 1);                              // const 1
-        emit(&mut code, Opcode::Iadd);                        // i + 1
-        emit_local(&mut code, Opcode::StoreLocal, 0);        // i = ...
-        // backward jump
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 0); // placeholder
+                                                    // loop body
+        emit_local(&mut code, Opcode::LoadLocal, 0); // load i
+        emit_i32(&mut code, 2); // const 2
+        emit(&mut code, Opcode::Imul); // i * 2
+        emit_local(&mut code, Opcode::LoadLocal, 2); // load sum
+        emit(&mut code, Opcode::Iadd); // sum + (i * 2)
+        emit_local(&mut code, Opcode::StoreLocal, 2); // sum = ...
+                                                      // increment i
+        emit_local(&mut code, Opcode::LoadLocal, 0); // load i
+        emit_i32(&mut code, 1); // const 1
+        emit(&mut code, Opcode::Iadd); // i + 1
+        emit_local(&mut code, Opcode::StoreLocal, 0); // i = ...
+                                                      // backward jump
         let back_offset = (loop_start as i32) - (code.len() as i32) - 5; // -5 for Jmp + i32
         emit_jmp(&mut code, Opcode::Jmp, back_offset);
         // fix forward jump
@@ -350,7 +421,11 @@ mod tests {
         let analyzer = HeuristicsAnalyzer::new();
         let score = analyzer.analyze_function(&func, 0);
 
-        assert!(score.score >= 10.0, "Math loop should score high: {}", score.score);
+        assert!(
+            score.score >= 10.0,
+            "Math loop should score high: {}",
+            score.score
+        );
         assert!(score.has_loops);
         assert!(score.is_cpu_bound);
         assert!(score.arithmetic_density > 0.0);
@@ -377,8 +452,15 @@ mod tests {
         let analyzer = HeuristicsAnalyzer::new();
         let score = analyzer.analyze_function(&func, 0);
 
-        assert!(!score.is_cpu_bound, "Spawning function should not be CPU-bound");
-        assert!(score.score < 0.0, "Should have negative score due to spawn penalty: {}", score.score);
+        assert!(
+            !score.is_cpu_bound,
+            "Spawning function should not be CPU-bound"
+        );
+        assert!(
+            score.score < 0.0,
+            "Should have negative score due to spawn penalty: {}",
+            score.score
+        );
     }
 
     #[test]
@@ -420,9 +502,24 @@ mod tests {
         emit(&mut io_code, Opcode::Return);
 
         let module = make_module(vec![
-            Function { name: "compute".to_string(), param_count: 0, local_count: 3, code: math_code },
-            Function { name: "trivial".to_string(), param_count: 0, local_count: 0, code: trivial_code },
-            Function { name: "io_bound".to_string(), param_count: 0, local_count: 0, code: io_code },
+            Function {
+                name: "compute".to_string(),
+                param_count: 0,
+                local_count: 3,
+                code: math_code,
+            },
+            Function {
+                name: "trivial".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: trivial_code,
+            },
+            Function {
+                name: "io_bound".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: io_code,
+            },
         ]);
 
         let analyzer = HeuristicsAnalyzer::new();
@@ -469,7 +566,11 @@ mod tests {
         let score = analyzer.analyze_function(&func, 0);
 
         // 4 ConstF64 (0.4) + 2 Fmul (3.0) + 1 Fadd (1.5) = 4.9
-        assert!(score.score > 4.0, "Float-heavy should score decently: {}", score.score);
+        assert!(
+            score.score > 4.0,
+            "Float-heavy should score decently: {}",
+            score.score
+        );
         assert!(score.is_cpu_bound);
         assert!(score.arithmetic_density > 0.3);
     }
@@ -515,14 +616,27 @@ mod tests {
         emit_jmp(&mut slow_code, Opcode::Jmp, back_offset2);
 
         let module = make_module(vec![
-            Function { name: "slower".to_string(), param_count: 0, local_count: 0, code: slow_code },
-            Function { name: "faster".to_string(), param_count: 0, local_count: 0, code: fast_code },
+            Function {
+                name: "slower".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: slow_code,
+            },
+            Function {
+                name: "faster".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: fast_code,
+            },
         ]);
 
         let analyzer = HeuristicsAnalyzer::new();
         let candidates = analyzer.select_candidates(&module);
 
         assert!(candidates.len() >= 2);
-        assert!(candidates[0].score >= candidates[1].score, "Should be sorted by score descending");
+        assert!(
+            candidates[0].score >= candidates[1].score,
+            "Should be sorted by score descending"
+        );
     }
 }

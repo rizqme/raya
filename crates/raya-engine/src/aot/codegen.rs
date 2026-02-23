@@ -23,7 +23,7 @@ use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 
 use super::lowering::{self, aot_entry_signature};
-use super::traits::{AotCompilable, AotError, compile_to_state_machine};
+use super::traits::{compile_to_state_machine, AotCompilable, AotError};
 
 // =============================================================================
 // Public types
@@ -164,7 +164,8 @@ const FUNC_ALIGN: usize = 16;
 /// Create the native code ISA for the current platform.
 pub fn create_native_isa() -> Result<Arc<dyn TargetIsa>, AotError> {
     let mut flag_builder = settings::builder();
-    flag_builder.set("opt_level", "speed")
+    flag_builder
+        .set("opt_level", "speed")
         .map_err(|e| AotError::CodegenFailed(format!("Failed to set opt_level: {}", e)))?;
 
     let flags = settings::Flags::new(flag_builder);
@@ -206,34 +207,26 @@ pub fn compile_functions(
         // 2. Build Cranelift IR
         let mut codegen_ctx = Context::new();
         codegen_ctx.func.signature = aot_entry_signature(call_conv);
-        codegen_ctx.func.name = UserFuncName::user(
-            compilable.module_index as u32,
-            compilable.func_index as u32,
-        );
+        codegen_ctx.func.name =
+            UserFuncName::user(compilable.module_index as u32, compilable.func_index as u32);
 
         {
-            let builder = FunctionBuilder::new(
-                &mut codegen_ctx.func,
-                &mut func_builder_ctx,
-            );
+            let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
 
-            lowering::lower_function(&sm_func, builder)
-                .map_err(|e| AotError::LoweringFailed(format!(
-                    "Failed to lower '{}': {}", func_name, e
-                )))?;
+            lowering::lower_function(&sm_func, builder).map_err(|e| {
+                AotError::LoweringFailed(format!("Failed to lower '{}': {}", func_name, e))
+            })?;
         }
 
         // 3. Compile to machine code
         let mut ctrl_plane = cranelift_codegen::control::ControlPlane::default();
-        codegen_ctx.compile(&*isa, &mut ctrl_plane)
-            .map_err(|e| AotError::CodegenFailed(format!(
-                "Failed to compile '{}': {:?}", func_name, e
-            )))?;
+        codegen_ctx.compile(&*isa, &mut ctrl_plane).map_err(|e| {
+            AotError::CodegenFailed(format!("Failed to compile '{}': {:?}", func_name, e))
+        })?;
 
-        let compiled = codegen_ctx.compiled_code()
-            .ok_or_else(|| AotError::CodegenFailed(format!(
-                "No compiled code for '{}'", func_name
-            )))?;
+        let compiled = codegen_ctx.compiled_code().ok_or_else(|| {
+            AotError::CodegenFailed(format!("No compiled code for '{}'", func_name))
+        })?;
 
         let machine_code = compiled.code_buffer();
 
@@ -271,8 +264,8 @@ pub fn compile_functions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::aot::statemachine::*;
     use crate::aot::analysis::SuspensionAnalysis;
+    use crate::aot::statemachine::*;
 
     #[test]
     fn test_global_func_id() {
@@ -326,9 +319,15 @@ mod tests {
             }]
         }
 
-        fn param_count(&self) -> u32 { self.param_count }
-        fn local_count(&self) -> u32 { self.local_count }
-        fn name(&self) -> Option<&str> { Some(&self.name) }
+        fn param_count(&self) -> u32 {
+            self.param_count
+        }
+        fn local_count(&self) -> u32 {
+            self.local_count
+        }
+        fn name(&self) -> Option<&str> {
+            Some(&self.name)
+        }
     }
 
     #[test]
@@ -418,7 +417,9 @@ mod tests {
         /// A function that does: unbox a, unbox b, add, box result
         struct AddFunc;
         impl AotCompilable for AddFunc {
-            fn analyze(&self) -> SuspensionAnalysis { SuspensionAnalysis::none() }
+            fn analyze(&self) -> SuspensionAnalysis {
+                SuspensionAnalysis::none()
+            }
             fn emit_blocks(&self) -> Vec<SmBlock> {
                 vec![SmBlock {
                     id: SmBlockId(0),
@@ -428,15 +429,26 @@ mod tests {
                         SmInstr::LoadLocal { dest: 1, index: 1 },
                         SmInstr::UnboxI32 { dest: 2, src: 0 },
                         SmInstr::UnboxI32 { dest: 3, src: 1 },
-                        SmInstr::I32BinOp { dest: 4, op: SmI32BinOp::Add, left: 2, right: 3 },
+                        SmInstr::I32BinOp {
+                            dest: 4,
+                            op: SmI32BinOp::Add,
+                            left: 2,
+                            right: 3,
+                        },
                         SmInstr::BoxI32 { dest: 5, src: 4 },
                     ],
                     terminator: SmTerminator::Return { value: 5 },
                 }]
             }
-            fn param_count(&self) -> u32 { 2 }
-            fn local_count(&self) -> u32 { 2 }
-            fn name(&self) -> Option<&str> { Some("add") }
+            fn param_count(&self) -> u32 {
+                2
+            }
+            fn local_count(&self) -> u32 {
+                2
+            }
+            fn name(&self) -> Option<&str> {
+                Some("add")
+            }
         }
 
         let func = AddFunc;

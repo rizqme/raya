@@ -178,10 +178,7 @@ pub fn clear_to_end_of_line(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> 
 }
 
 /// Clear from cursor to end of screen
-pub fn clear_to_end_of_screen(
-    _ctx: &dyn NativeContext,
-    _args: &[NativeValue],
-) -> NativeCallResult {
+pub fn clear_to_end_of_screen(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallResult {
     write_ansi("\x1b[J")
 }
 
@@ -306,9 +303,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                                         if got_termios {
                                             termios.c_cc[libc::VMIN] = 0;
                                             termios.c_cc[libc::VTIME] = 1;
-                                            unsafe {
-                                                libc::tcsetattr(0, libc::TCSANOW, &termios)
-                                            };
+                                            unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) };
                                         }
 
                                         let n3: usize = handle.read(&mut tilde).unwrap_or_default();
@@ -316,9 +311,7 @@ pub fn read_key(_ctx: &dyn NativeContext, _args: &[NativeValue]) -> NativeCallRe
                                         if got_termios {
                                             termios.c_cc[libc::VMIN] = old_vmin;
                                             termios.c_cc[libc::VTIME] = old_vtime;
-                                            unsafe {
-                                                libc::tcsetattr(0, libc::TCSANOW, &termios)
-                                            };
+                                            unsafe { libc::tcsetattr(0, libc::TCSANOW, &termios) };
                                         }
 
                                         if n3 == 1 && tilde[0] == b'~' {

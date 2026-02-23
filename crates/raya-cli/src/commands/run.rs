@@ -1,8 +1,8 @@
 //! `raya run` — dual-mode: run scripts from raya.toml or execute files directly.
 
 use anyhow::{anyhow, Context};
-use raya_runtime::{Runtime, RuntimeOptions};
 use raya_pm::PackageManifest;
+use raya_runtime::{Runtime, RuntimeOptions};
 use std::path::Path;
 use std::process::Command;
 
@@ -73,9 +73,7 @@ fn run_file(rt: &Runtime, path: &str) -> anyhow::Result<()> {
         anyhow::bail!("File not found: {}", path);
     }
 
-    let exit_code = rt
-        .run_file(Path::new(path))
-        .map_err(|e| anyhow!("{}", e))?;
+    let exit_code = rt.run_file(Path::new(path)).map_err(|e| anyhow!("{}", e))?;
 
     if exit_code != 0 {
         std::process::exit(exit_code);
@@ -112,24 +110,28 @@ fn run_default(rt: &Runtime, _args: &RunArgs) -> anyhow::Result<()> {
 }
 
 fn run_script(name: &str, rt: &Runtime) -> anyhow::Result<()> {
-    let manifest = load_manifest()
-        .context("Cannot run scripts without a raya.toml in the project")?;
+    let manifest =
+        load_manifest().context("Cannot run scripts without a raya.toml in the project")?;
 
-    let cmd = manifest
-        .scripts
-        .get(name)
-        .ok_or_else(|| {
-            let available: Vec<&String> = manifest.scripts.keys().collect();
-            if available.is_empty() {
-                anyhow!("Unknown script '{}'. No scripts defined in raya.toml.", name)
-            } else {
-                anyhow!(
-                    "Unknown script '{}'. Available scripts: {}",
-                    name,
-                    available.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-                )
-            }
-        })?;
+    let cmd = manifest.scripts.get(name).ok_or_else(|| {
+        let available: Vec<&String> = manifest.scripts.keys().collect();
+        if available.is_empty() {
+            anyhow!(
+                "Unknown script '{}'. No scripts defined in raya.toml.",
+                name
+            )
+        } else {
+            anyhow!(
+                "Unknown script '{}'. Available scripts: {}",
+                name,
+                available
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    })?;
 
     println!("Running script: {} → {}", name, cmd);
     run_script_cmd(cmd, rt)
@@ -160,8 +162,7 @@ fn run_script_cmd(cmd: &str, rt: &Runtime) -> anyhow::Result<()> {
 }
 
 fn list_scripts() -> anyhow::Result<()> {
-    let manifest = load_manifest()
-        .context("No raya.toml found in this directory or any parent")?;
+    let manifest = load_manifest().context("No raya.toml found in this directory or any parent")?;
 
     if manifest.scripts.is_empty() {
         println!("No scripts defined in raya.toml.");

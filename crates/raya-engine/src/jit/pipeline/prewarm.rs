@@ -61,9 +61,7 @@ pub fn prewarm_module<B: CodegenBackend>(
     let candidates = config.analyzer.select_candidates(module);
 
     // Step 2: Take top N
-    let to_compile: Vec<&FunctionScore> = candidates.iter()
-        .take(config.max_functions)
-        .collect();
+    let to_compile: Vec<&FunctionScore> = candidates.iter().take(config.max_functions).collect();
 
     // Step 3: Compile each candidate
     for candidate in to_compile {
@@ -103,8 +101,8 @@ pub fn prewarm_module<B: CodegenBackend>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jit::backend::StubBackend;
     use crate::compiler::bytecode::{ConstantPool, Function, Metadata, Opcode};
+    use crate::jit::backend::StubBackend;
 
     fn make_module(functions: Vec<Function>) -> Module {
         Module {
@@ -114,7 +112,10 @@ mod tests {
             constants: ConstantPool::new(),
             functions,
             classes: vec![],
-            metadata: Metadata { name: "test".to_string(), source_file: None },
+            metadata: Metadata {
+                name: "test".to_string(),
+                source_file: None,
+            },
             exports: vec![],
             imports: vec![],
             checksum: [0; 32],
@@ -129,7 +130,9 @@ mod tests {
         code.push(Opcode::ConstI32 as u8);
         code.extend_from_slice(&val.to_le_bytes());
     }
-    fn emit(code: &mut Vec<u8>, op: Opcode) { code.push(op as u8); }
+    fn emit(code: &mut Vec<u8>, op: Opcode) {
+        code.push(op as u8);
+    }
     fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
         code.push(op as u8);
         code.extend_from_slice(&offset.to_le_bytes());
@@ -164,8 +167,18 @@ mod tests {
         emit(&mut trivial_code, Opcode::Return);
 
         let module = make_module(vec![
-            Function { name: "compute".to_string(), param_count: 0, local_count: 0, code: math_code },
-            Function { name: "trivial".to_string(), param_count: 0, local_count: 0, code: trivial_code },
+            Function {
+                name: "compute".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: math_code,
+            },
+            Function {
+                name: "trivial".to_string(),
+                param_count: 0,
+                local_count: 0,
+                code: trivial_code,
+            },
         ]);
 
         let pipeline = JitPipeline::new(StubBackend);
@@ -227,6 +240,9 @@ mod tests {
 
         let result = prewarm_module(&module, &config, &pipeline);
 
-        assert!(result.compiled.len() <= 5, "Should respect max_functions limit");
+        assert!(
+            result.compiled.len() <= 5,
+            "Should respect max_functions limit"
+        );
     }
 }

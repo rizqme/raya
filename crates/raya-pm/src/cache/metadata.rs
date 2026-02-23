@@ -199,20 +199,23 @@ mod tests {
         metadata.add_dependency("dep2".to_string(), "~2.1.0".to_string());
 
         assert_eq!(metadata.dependencies.len(), 2);
-        assert_eq!(metadata.dependencies.get("dep1"), Some(&"^1.0.0".to_string()));
-        assert_eq!(metadata.dependencies.get("dep2"), Some(&"~2.1.0".to_string()));
+        assert_eq!(
+            metadata.dependencies.get("dep1"),
+            Some(&"^1.0.0".to_string())
+        );
+        assert_eq!(
+            metadata.dependencies.get("dep2"),
+            Some(&"~2.1.0".to_string())
+        );
     }
 
     #[test]
     fn test_builder_methods() {
-        let metadata = ModuleMetadata::new(
-            "test".to_string(),
-            "1.0.0".to_string(),
-            "abc".to_string(),
-        )
-        .with_description("A test module".to_string())
-        .with_author("Test Author".to_string())
-        .with_license("MIT".to_string());
+        let metadata =
+            ModuleMetadata::new("test".to_string(), "1.0.0".to_string(), "abc".to_string())
+                .with_description("A test module".to_string())
+                .with_author("Test Author".to_string())
+                .with_license("MIT".to_string());
 
         assert_eq!(metadata.description, Some("A test module".to_string()));
         assert_eq!(metadata.author, Some("Test Author".to_string()));
@@ -235,11 +238,8 @@ mod tests {
 
     #[test]
     fn test_timestamp() {
-        let metadata = ModuleMetadata::new(
-            "test".to_string(),
-            "1.0.0".to_string(),
-            "abc".to_string(),
-        );
+        let metadata =
+            ModuleMetadata::new("test".to_string(), "1.0.0".to_string(), "abc".to_string());
 
         // Should have a reasonable timestamp (not 0)
         assert!(metadata.cached_at > 0);

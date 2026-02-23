@@ -4,9 +4,9 @@
 //! in conditional expressions. It tracks narrowed types through control
 //! flow branches and merges environments at join points.
 
-use rustc_hash::FxHashMap;
-use crate::parser::types::{Type, TypeContext, TypeId};
 use super::type_guards::TypeGuard;
+use crate::parser::types::{Type, TypeContext, TypeId};
+use rustc_hash::FxHashMap;
 
 /// Type environment tracking narrowed types for variables
 ///
@@ -45,11 +45,7 @@ impl TypeEnv {
     ///
     /// For variables present in both environments, creates a union type.
     /// Variables only in one environment are dropped (not guaranteed to be narrowed).
-    pub fn merge(
-        &self,
-        other: &TypeEnv,
-        ctx: &mut TypeContext,
-    ) -> TypeEnv {
+    pub fn merge(&self, other: &TypeEnv, ctx: &mut TypeContext) -> TypeEnv {
         let mut merged = TypeEnv::new();
 
         // For each variable in both environments, union the types
@@ -82,36 +78,25 @@ impl Default for TypeEnv {
 ///
 /// Returns the narrowed type based on the guard, or None if the guard
 /// cannot narrow the type (e.g., type guard doesn't match the type).
-pub fn apply_type_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    guard: &TypeGuard,
-) -> Option<TypeId> {
+pub fn apply_type_guard(ctx: &mut TypeContext, ty: TypeId, guard: &TypeGuard) -> Option<TypeId> {
     match guard {
-        TypeGuard::TypeOf { type_name, negated, .. } => {
-            apply_typeof_guard(ctx, ty, type_name, *negated)
-        }
-        TypeGuard::Discriminant { field, variant, negated, .. } => {
-            apply_discriminant_guard(ctx, ty, field, variant, *negated)
-        }
-        TypeGuard::Nullish { negated, .. } => {
-            apply_nullish_guard(ctx, ty, *negated)
-        }
-        TypeGuard::IsArray { negated, .. } => {
-            apply_is_array_guard(ctx, ty, *negated)
-        }
-        TypeGuard::IsInteger { negated, .. } => {
-            apply_is_integer_guard(ctx, ty, *negated)
-        }
-        TypeGuard::IsNaN { negated, .. } => {
-            apply_is_nan_guard(ctx, ty, *negated)
-        }
-        TypeGuard::IsFinite { negated, .. } => {
-            apply_is_finite_guard(ctx, ty, *negated)
-        }
-        TypeGuard::TypePredicate { predicate, negated, .. } => {
-            apply_type_predicate_guard(ctx, ty, predicate, *negated)
-        }
+        TypeGuard::TypeOf {
+            type_name, negated, ..
+        } => apply_typeof_guard(ctx, ty, type_name, *negated),
+        TypeGuard::Discriminant {
+            field,
+            variant,
+            negated,
+            ..
+        } => apply_discriminant_guard(ctx, ty, field, variant, *negated),
+        TypeGuard::Nullish { negated, .. } => apply_nullish_guard(ctx, ty, *negated),
+        TypeGuard::IsArray { negated, .. } => apply_is_array_guard(ctx, ty, *negated),
+        TypeGuard::IsInteger { negated, .. } => apply_is_integer_guard(ctx, ty, *negated),
+        TypeGuard::IsNaN { negated, .. } => apply_is_nan_guard(ctx, ty, *negated),
+        TypeGuard::IsFinite { negated, .. } => apply_is_finite_guard(ctx, ty, *negated),
+        TypeGuard::TypePredicate {
+            predicate, negated, ..
+        } => apply_type_predicate_guard(ctx, ty, predicate, *negated),
         TypeGuard::Truthiness { negated, .. } => {
             // Truthiness narrows by removing null (and potentially other falsy types)
             let null_ty = ctx.null_type();
@@ -157,7 +142,7 @@ fn apply_typeof_guard(
         "boolean" => ctx.boolean_type(),
         "function" => return Some(ty), // TODO: filter to function types only
         "object" => return Some(ty),   // TODO: filter to object types only
-        _ => return Some(ty), // Unknown type name, no narrowing
+        _ => return Some(ty),          // Unknown type name, no narrowing
     };
 
     if negated {
@@ -209,7 +194,9 @@ fn remove_primitive_from_bare_union(
     };
 
     // Filter out the primitive to remove
-    let remaining: Vec<TypeId> = union.members.iter()
+    let remaining: Vec<TypeId> = union
+        .members
+        .iter()
         .filter(|&&member| {
             if let Some(Type::Primitive(prim)) = ctx.get(member) {
                 *prim != to_remove
@@ -302,11 +289,7 @@ fn apply_discriminant_guard(
 }
 
 /// Apply a nullish guard (x !== null or x === null)
-fn apply_nullish_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    negated: bool,
-) -> Option<TypeId> {
+fn apply_nullish_guard(ctx: &mut TypeContext, ty: TypeId, negated: bool) -> Option<TypeId> {
     let null_ty = ctx.null_type();
 
     if negated {
@@ -322,17 +305,14 @@ fn apply_nullish_guard(
 ///
 /// If `ty` is a union containing `remove_ty`, returns a new union without it.
 /// If `ty` is not a union or doesn't contain `remove_ty`, returns `ty` unchanged.
-fn remove_from_union(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    remove_ty: TypeId,
-) -> Option<TypeId> {
+fn remove_from_union(ctx: &mut TypeContext, ty: TypeId, remove_ty: TypeId) -> Option<TypeId> {
     let type_def = ctx.get(ty)?.clone();
 
     match type_def {
         Type::Union(union_ty) => {
             // Filter out the type to remove
-            let remaining: Vec<TypeId> = union_ty.members
+            let remaining: Vec<TypeId> = union_ty
+                .members
                 .into_iter()
                 .filter(|member| *member != remove_ty)
                 .collect();
@@ -523,17 +503,13 @@ mod tests {
 }
 
 /// Apply Array.isArray guard
-fn apply_is_array_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    negated: bool,
-) -> Option<TypeId> {
-    
-
+fn apply_is_array_guard(ctx: &mut TypeContext, ty: TypeId, negated: bool) -> Option<TypeId> {
     if negated {
         // !Array.isArray(x) - remove array types from union
         if let Some(Type::Union(union)) = ctx.get(ty) {
-            let remaining: Vec<TypeId> = union.members.iter()
+            let remaining: Vec<TypeId> = union
+                .members
+                .iter()
                 .filter(|&&member| !matches!(ctx.get(member), Some(Type::Array(_))))
                 .copied()
                 .collect();
@@ -553,7 +529,9 @@ fn apply_is_array_guard(
             Some(ty)
         } else if let Some(Type::Union(union)) = ctx.get(ty) {
             // Find array members
-            let arrays: Vec<TypeId> = union.members.iter()
+            let arrays: Vec<TypeId> = union
+                .members
+                .iter()
                 .filter(|&&member| matches!(ctx.get(member), Some(Type::Array(_))))
                 .copied()
                 .collect();
@@ -576,11 +554,7 @@ fn apply_is_array_guard(
 ///
 /// Note: In Raya, we don't distinguish int/float at runtime for bare unions,
 /// but this can still be useful for documentation and future optimizations.
-fn apply_is_integer_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    negated: bool,
-) -> Option<TypeId> {
+fn apply_is_integer_guard(ctx: &mut TypeContext, ty: TypeId, negated: bool) -> Option<TypeId> {
     use crate::parser::types::PrimitiveType;
 
     // For now, Number.isInteger just validates it's a number
@@ -595,9 +569,14 @@ fn apply_is_integer_guard(
             Some(ty)
         } else if let Some(Type::Union(union)) = ctx.get(ty) {
             // Find number members
-            let numbers: Vec<TypeId> = union.members.iter()
+            let numbers: Vec<TypeId> = union
+                .members
+                .iter()
                 .filter(|&&member| {
-                    matches!(ctx.get(member), Some(Type::Primitive(PrimitiveType::Number)))
+                    matches!(
+                        ctx.get(member),
+                        Some(Type::Primitive(PrimitiveType::Number))
+                    )
                 })
                 .copied()
                 .collect();
@@ -616,11 +595,7 @@ fn apply_is_integer_guard(
 }
 
 /// Apply Number.isNaN guard
-fn apply_is_nan_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    negated: bool,
-) -> Option<TypeId> {
+fn apply_is_nan_guard(ctx: &mut TypeContext, ty: TypeId, negated: bool) -> Option<TypeId> {
     // NaN is a special number value
     // For negated (!Number.isNaN), we know it's not NaN but still could be number
     // For non-negated, we know it IS NaN
@@ -636,11 +611,7 @@ fn apply_is_nan_guard(
 }
 
 /// Apply Number.isFinite guard
-fn apply_is_finite_guard(
-    ctx: &mut TypeContext,
-    ty: TypeId,
-    negated: bool,
-) -> Option<TypeId> {
+fn apply_is_finite_guard(ctx: &mut TypeContext, ty: TypeId, negated: bool) -> Option<TypeId> {
     use crate::parser::types::PrimitiveType;
 
     if negated {
@@ -652,9 +623,14 @@ fn apply_is_finite_guard(
         if matches!(ctx.get(ty), Some(Type::Primitive(PrimitiveType::Number))) {
             Some(ty)
         } else if let Some(Type::Union(union)) = ctx.get(ty) {
-            let numbers: Vec<TypeId> = union.members.iter()
+            let numbers: Vec<TypeId> = union
+                .members
+                .iter()
                 .filter(|&&member| {
-                    matches!(ctx.get(member), Some(Type::Primitive(PrimitiveType::Number)))
+                    matches!(
+                        ctx.get(member),
+                        Some(Type::Primitive(PrimitiveType::Number))
+                    )
                 })
                 .copied()
                 .collect();
@@ -679,8 +655,6 @@ fn apply_type_predicate_guard(
     predicate: &str,
     negated: bool,
 ) -> Option<TypeId> {
-    
-
     // Map predicate names to types
     let target_ty = match predicate {
         "isString" => Some(ctx.string_type()),

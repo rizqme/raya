@@ -42,8 +42,7 @@ unsafe extern "C" fn helper_alloc_frame(
     let total_size = frame_size + locals_size;
     let align = std::mem::align_of::<AotFrame>();
 
-    let layout = Layout::from_size_align(total_size, align)
-        .expect("Invalid frame layout");
+    let layout = Layout::from_size_align(total_size, align).expect("Invalid frame layout");
 
     let ptr = alloc::alloc_zeroed(layout) as *mut AotFrame;
     if ptr.is_null() {
@@ -81,8 +80,8 @@ unsafe extern "C" fn helper_free_frame(frame: *mut AotFrame) {
     let total_size = frame_size + locals_size;
     let align = std::mem::align_of::<AotFrame>();
 
-    let layout = Layout::from_size_align(total_size, align)
-        .expect("Invalid frame layout for dealloc");
+    let layout =
+        Layout::from_size_align(total_size, align).expect("Invalid frame layout for dealloc");
 
     alloc::dealloc(frame as *mut u8, layout);
 }
@@ -122,11 +121,7 @@ unsafe extern "C" fn helper_alloc_string(
 // Value operations (stubs — require value system integration)
 // =============================================================================
 
-unsafe extern "C" fn helper_string_concat(
-    _ctx: *mut AotTaskContext,
-    _a: u64,
-    _b: u64,
-) -> u64 {
+unsafe extern "C" fn helper_string_concat(_ctx: *mut AotTaskContext, _a: u64, _b: u64) -> u64 {
     // TODO: Concatenate two NaN-boxed strings
     abi::NULL_VALUE
 }
@@ -151,18 +146,18 @@ unsafe extern "C" fn helper_array_set(_array: u64, _index: u64, _value: u64) {
     // TODO: Array element store
 }
 
-unsafe extern "C" fn helper_array_push(
-    _ctx: *mut AotTaskContext,
-    _array: u64,
-    _value: u64,
-) {
+unsafe extern "C" fn helper_array_push(_ctx: *mut AotTaskContext, _array: u64, _value: u64) {
     // TODO: Array push
 }
 
 unsafe extern "C" fn helper_generic_equals(a: u64, b: u64) -> u8 {
     // Simple equality: raw bit comparison
     // TODO: Proper deep equality with type-aware comparison
-    if a == b { 1 } else { 0 }
+    if a == b {
+        1
+    } else {
+        0
+    }
 }
 
 unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
@@ -173,7 +168,11 @@ unsafe extern "C" fn helper_generic_less_than(a: u64, b: u64) -> u8 {
         // Both are f64 — compare as f64
         let fa = f64::from_bits(a);
         let fb = f64::from_bits(b);
-        if fa < fb { 1 } else { 0 }
+        if fa < fb {
+            1
+        } else {
+            0
+        }
     } else {
         0
     }
@@ -250,10 +249,7 @@ unsafe extern "C" fn helper_get_aot_func_ptr(_func_id: u32) -> AotEntryFn {
 }
 
 /// Placeholder function for unresolved AOT calls.
-unsafe extern "C" fn helper_trap_fn(
-    _frame: *mut AotFrame,
-    _ctx: *mut AotTaskContext,
-) -> u64 {
+unsafe extern "C" fn helper_trap_fn(_frame: *mut AotFrame, _ctx: *mut AotTaskContext) -> u64 {
     panic!("AOT function call to unresolved function");
 }
 

@@ -17,10 +17,10 @@ use std::sync::Arc;
 use raya_sdk::{AbiResult, ClassInfo, NativeContext, NativeValue};
 
 use crate::vm::gc::GarbageCollector as Gc;
-use crate::vm::object::{Array, Buffer, ChannelObject, Object, RayaString};
-use crate::vm::scheduler::TaskId;
 use crate::vm::interpreter::ClassRegistry;
+use crate::vm::object::{Array, Buffer, ChannelObject, Object, RayaString};
 use crate::vm::reflect::ClassMetadataRegistry;
+use crate::vm::scheduler::TaskId;
 use crate::vm::value::Value;
 
 // ============================================================================
@@ -104,7 +104,7 @@ impl NativeContext for EngineContext<'_> {
         for (i, &byte) in data.iter().enumerate() {
             let _ = buffer.set_byte(i, byte);
         }
-        
+
         // Look up Buffer class_id
         let buffer_class_id = {
             let classes = self.classes.read();
@@ -117,27 +117,25 @@ impl NativeContext for EngineContext<'_> {
                 }
             }
         };
-        
+
         // Allocate Buffer and Object in single GC lock
         let obj_ptr = {
             let mut gc = self.gc.lock();
-            
+
             // Allocate raw Buffer
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
-            
+
             // Create Buffer object wrapping the handle
             let mut obj = Object::new(buffer_class_id, 1);
             let _ = obj.set_field(0, Value::u64(handle));
-            
+
             // Allocate Object
             gc.allocate(obj)
         };
-        
+
         // Convert to NativeValue
-        let value = unsafe {
-            Value::from_ptr(NonNull::new(obj_ptr.as_ptr()).unwrap())
-        };
+        let value = unsafe { Value::from_ptr(NonNull::new(obj_ptr.as_ptr()).unwrap()) };
         value_to_native(value)
     }
 
@@ -170,8 +168,8 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected string, got non-pointer".into());
         }
-        let s_ptr = unsafe { v.as_ptr::<RayaString>() }
-            .ok_or_else(|| "Expected string".to_string())?;
+        let s_ptr =
+            unsafe { v.as_ptr::<RayaString>() }.ok_or_else(|| "Expected string".to_string())?;
         let s = unsafe { &*s_ptr.as_ptr() };
         Ok(s.data.clone())
     }
@@ -181,26 +179,28 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Buffer, got non-pointer".into());
         }
-        
+
         // Buffer is now an Object with bufferPtr field (field index 0)
         // First get the Object, then extract the handle from field[0]
-        let obj_ptr = unsafe { v.as_ptr::<Object>() }
-            .ok_or_else(|| "Expected Buffer object".to_string())?;
+        let obj_ptr =
+            unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Buffer object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
-        
+
         // Get bufferPtr from field 0
-        let handle_val = obj.get_field(0)
+        let handle_val = obj
+            .get_field(0)
             .ok_or_else(|| "Buffer object missing bufferPtr field".to_string())?;
-        let handle = handle_val.as_u64()
+        let handle = handle_val
+            .as_u64()
             .ok_or_else(|| "Buffer bufferPtr is not a valid handle".to_string())?;
-        
+
         // Dereference the handle to get the actual Buffer
         let buf_ptr = handle as *const Buffer;
         if buf_ptr.is_null() {
             return Err("Invalid buffer handle (null)".into());
         }
         let buffer = unsafe { &*buf_ptr };
-        
+
         Ok((0..buffer.length())
             .filter_map(|i| buffer.get_byte(i))
             .collect())
@@ -215,8 +215,7 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Array, got non-pointer".into());
         }
-        let arr_ptr = unsafe { v.as_ptr::<Array>() }
-            .ok_or_else(|| "Expected Array".to_string())?;
+        let arr_ptr = unsafe { v.as_ptr::<Array>() }.ok_or_else(|| "Expected Array".to_string())?;
         let array = unsafe { &*arr_ptr.as_ptr() };
         Ok(array.len())
     }
@@ -226,13 +225,11 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Array, got non-pointer".into());
         }
-        let arr_ptr = unsafe { v.as_ptr::<Array>() }
-            .ok_or_else(|| "Expected Array".to_string())?;
+        let arr_ptr = unsafe { v.as_ptr::<Array>() }.ok_or_else(|| "Expected Array".to_string())?;
         let array = unsafe { &*arr_ptr.as_ptr() };
-        array
-            .get(index)
-            .map(value_to_native)
-            .ok_or_else(|| format!("Array index {} out of bounds (len={})", index, array.len()).into())
+        array.get(index).map(value_to_native).ok_or_else(|| {
+            format!("Array index {} out of bounds (len={})", index, array.len()).into()
+        })
     }
 
     // ========================================================================
@@ -244,8 +241,8 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Object, got non-pointer".into());
         }
-        let obj_ptr = unsafe { v.as_ptr::<Object>() }
-            .ok_or_else(|| "Expected Object".to_string())?;
+        let obj_ptr =
+            unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         obj.get_field(index)
             .map(value_to_native)
@@ -262,8 +259,8 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Object, got non-pointer".into());
         }
-        let obj_ptr = unsafe { v.as_ptr::<Object>() }
-            .ok_or_else(|| "Expected Object".to_string())?;
+        let obj_ptr =
+            unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &mut *obj_ptr.as_ptr() };
         let _ = obj.set_field(index, native_to_value(value));
         Ok(())
@@ -274,8 +271,8 @@ impl NativeContext for EngineContext<'_> {
         if !v.is_ptr() {
             return Err("Expected Object, got non-pointer".into());
         }
-        let obj_ptr = unsafe { v.as_ptr::<Object>() }
-            .ok_or_else(|| "Expected Object".to_string())?;
+        let obj_ptr =
+            unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
         let obj = unsafe { &*obj_ptr.as_ptr() };
         Ok(obj.class_id)
     }
@@ -475,8 +472,7 @@ pub fn buffer_read_bytes(val: NativeValue) -> AbiResult<Vec<u8>> {
     if !v.is_ptr() {
         return Err("Expected Buffer, got non-pointer".into());
     }
-    let buf_ptr = unsafe { v.as_ptr::<Buffer>() }
-        .ok_or_else(|| "Expected Buffer".to_string())?;
+    let buf_ptr = unsafe { v.as_ptr::<Buffer>() }.ok_or_else(|| "Expected Buffer".to_string())?;
     let buffer = unsafe { &*buf_ptr.as_ptr() };
     Ok((0..buffer.length())
         .filter_map(|i| buffer.get_byte(i))
@@ -494,8 +490,7 @@ pub fn string_read(val: NativeValue) -> AbiResult<String> {
     if !v.is_ptr() {
         return Err("Expected string, got non-pointer".into());
     }
-    let s_ptr = unsafe { v.as_ptr::<RayaString>() }
-        .ok_or_else(|| "Expected string".to_string())?;
+    let s_ptr = unsafe { v.as_ptr::<RayaString>() }.ok_or_else(|| "Expected string".to_string())?;
     let s = unsafe { &*s_ptr.as_ptr() };
     Ok(s.data.clone())
 }
@@ -511,8 +506,7 @@ pub fn array_length(val: NativeValue) -> AbiResult<usize> {
     if !v.is_ptr() {
         return Err("Expected Array, got non-pointer".into());
     }
-    let arr_ptr = unsafe { v.as_ptr::<Array>() }
-        .ok_or_else(|| "Expected Array".to_string())?;
+    let arr_ptr = unsafe { v.as_ptr::<Array>() }.ok_or_else(|| "Expected Array".to_string())?;
     Ok(unsafe { &*arr_ptr.as_ptr() }.len())
 }
 
@@ -522,8 +516,7 @@ pub fn array_get(val: NativeValue, index: usize) -> AbiResult<NativeValue> {
     if !v.is_ptr() {
         return Err("Expected Array, got non-pointer".into());
     }
-    let arr_ptr = unsafe { v.as_ptr::<Array>() }
-        .ok_or_else(|| "Expected Array".to_string())?;
+    let arr_ptr = unsafe { v.as_ptr::<Array>() }.ok_or_else(|| "Expected Array".to_string())?;
     let array = unsafe { &*arr_ptr.as_ptr() };
     array
         .get(index)
@@ -542,8 +535,7 @@ pub fn object_get_field(val: NativeValue, field_index: usize) -> AbiResult<Nativ
     if !v.is_ptr() {
         return Err("Expected Object, got non-pointer".into());
     }
-    let obj_ptr = unsafe { v.as_ptr::<Object>() }
-        .ok_or_else(|| "Expected Object".to_string())?;
+    let obj_ptr = unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
     let obj = unsafe { &*obj_ptr.as_ptr() };
     obj.get_field(field_index)
         .map(value_to_native)
@@ -556,8 +548,7 @@ pub fn object_set_field(val: NativeValue, field_index: usize, value: NativeValue
     if !v.is_ptr() {
         return Err("Expected Object, got non-pointer".into());
     }
-    let obj_ptr = unsafe { v.as_ptr::<Object>() }
-        .ok_or_else(|| "Expected Object".to_string())?;
+    let obj_ptr = unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
     let obj = unsafe { &mut *obj_ptr.as_ptr() };
     let _ = obj.set_field(field_index, native_to_value(value));
     Ok(())
@@ -569,13 +560,16 @@ pub fn object_class_id(val: NativeValue) -> AbiResult<usize> {
     if !v.is_ptr() {
         return Err("Expected Object, got non-pointer".into());
     }
-    let obj_ptr = unsafe { v.as_ptr::<Object>() }
-        .ok_or_else(|| "Expected Object".to_string())?;
+    let obj_ptr = unsafe { v.as_ptr::<Object>() }.ok_or_else(|| "Expected Object".to_string())?;
     Ok(unsafe { &*obj_ptr.as_ptr() }.class_id)
 }
 
 /// Allocate a new Object
-pub fn object_allocate(ctx: &EngineContext<'_>, class_id: usize, field_count: usize) -> NativeValue {
+pub fn object_allocate(
+    ctx: &EngineContext<'_>,
+    class_id: usize,
+    field_count: usize,
+) -> NativeValue {
     let obj = Object::new(class_id, field_count);
     ctx.alloc_ptr(obj)
 }

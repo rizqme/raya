@@ -39,12 +39,18 @@ fn test_if_else_false() {
 
 #[test]
 fn test_if_else_with_comparison() {
-    expect_i32("let n = 3; if (n % 2 == 0) { return 1; } else { return 2; }", 2);
+    expect_i32(
+        "let n = 3; if (n % 2 == 0) { return 1; } else { return 2; }",
+        2,
+    );
 }
 
 #[test]
 fn test_if_else_even_odd() {
-    expect_i32("let n = 4; if (n % 2 == 0) { return 1; } else { return 0; }", 1);
+    expect_i32(
+        "let n = 4; if (n % 2 == 0) { return 1; } else { return 0; }",
+        1,
+    );
 }
 
 // ============================================================================

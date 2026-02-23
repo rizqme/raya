@@ -415,8 +415,8 @@ impl Annotation {
             return None;
         }
         match &self.value {
-            None => None,  // Use struct field name
-            Some(v) if v == "-" => None,  // Skip
+            None => None,                // Use struct field name
+            Some(v) if v == "-" => None, // Skip
             Some(v) => {
                 // Split on comma to get just the field name (without options)
                 Some(v.split(',').next().unwrap_or(v))

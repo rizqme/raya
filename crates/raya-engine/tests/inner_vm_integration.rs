@@ -7,12 +7,12 @@
 
 use raya_engine::compiler::{Function, Module, Opcode};
 use raya_engine::vm::gc::GarbageCollector;
-use raya_engine::vm::value::Value;
 use raya_engine::vm::interpreter::{marshal, unmarshal, MarshalledValue};
 use raya_engine::vm::interpreter::{
-    Capability, CapabilityError, CapabilityRegistry, ContextRegistry, ResourceLimits,
-    VmContext, VmContextId, VmOptions,
+    Capability, CapabilityError, CapabilityRegistry, ContextRegistry, ResourceLimits, VmContext,
+    VmContextId, VmOptions,
 };
+use raya_engine::vm::value::Value;
 use raya_engine::vm::Vm;
 use std::sync::Arc;
 
@@ -80,13 +80,17 @@ fn test_heap_isolation() {
     // Allocate in ctx1
     {
         let gc1 = ctx1.gc_mut();
-        let _ptr1 = gc1.allocate(raya_engine::vm::object::RayaString::new("Hello".to_string()));
+        let _ptr1 = gc1.allocate(raya_engine::vm::object::RayaString::new(
+            "Hello".to_string(),
+        ));
     }
 
     // Allocate in ctx2
     {
         let gc2 = ctx2.gc_mut();
-        let _ptr2 = gc2.allocate(raya_engine::vm::object::RayaString::new("World".to_string()));
+        let _ptr2 = gc2.allocate(raya_engine::vm::object::RayaString::new(
+            "World".to_string(),
+        ));
     }
 
     // Verify heaps are independent (contexts have different IDs)
@@ -399,7 +403,9 @@ fn test_unmarshal_string() {
 
     // Verify string was allocated in ctx's heap
     unsafe {
-        let str_ptr = value.as_ptr::<raya_engine::vm::object::RayaString>().unwrap();
+        let str_ptr = value
+            .as_ptr::<raya_engine::vm::object::RayaString>()
+            .unwrap();
         let string = &*str_ptr.as_ptr();
         assert_eq!(string.data, "Test String");
     }

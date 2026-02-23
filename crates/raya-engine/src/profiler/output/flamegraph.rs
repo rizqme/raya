@@ -21,10 +21,7 @@ impl ResolvedProfileData {
                     if f.source_file.is_empty() {
                         f.function_name.clone()
                     } else {
-                        format!(
-                            "{} ({}:{})",
-                            f.function_name, f.source_file, f.line_number
-                        )
+                        format!("{} ({}:{})", f.function_name, f.source_file, f.line_number)
                     }
                 })
                 .collect::<Vec<_>>()
@@ -89,10 +86,7 @@ mod tests {
             end_time_us: 20_000,
         };
         let output = data.to_flamegraph();
-        assert_eq!(
-            output.trim(),
-            "main (app.raya:1);fibonacci (app.raya:10) 1"
-        );
+        assert_eq!(output.trim(), "main (app.raya:1);fibonacci (app.raya:10) 1");
     }
 
     #[test]

@@ -186,27 +186,42 @@ fn test_array_includes_false() {
 
 #[test]
 fn test_array_slice() {
-    expect_i32("let arr = [1, 2, 3, 4, 5]; let s = arr.slice(1, 3); return s.length;", 2);
+    expect_i32(
+        "let arr = [1, 2, 3, 4, 5]; let s = arr.slice(1, 3); return s.length;",
+        2,
+    );
 }
 
 #[test]
 fn test_array_slice_content() {
-    expect_i32("let arr = [10, 20, 30, 40, 50]; let s = arr.slice(1, 3); return s[0];", 20);
+    expect_i32(
+        "let arr = [10, 20, 30, 40, 50]; let s = arr.slice(1, 3); return s[0];",
+        20,
+    );
 }
 
 #[test]
 fn test_array_slice_second_element() {
-    expect_i32("let arr = [10, 20, 30, 40, 50]; let s = arr.slice(1, 3); return s[1];", 30);
+    expect_i32(
+        "let arr = [10, 20, 30, 40, 50]; let s = arr.slice(1, 3); return s[1];",
+        30,
+    );
 }
 
 #[test]
 fn test_array_concat() {
-    expect_i32("let a = [1, 2]; let b = [3, 4]; let c = a.concat(b); return c.length;", 4);
+    expect_i32(
+        "let a = [1, 2]; let b = [3, 4]; let c = a.concat(b); return c.length;",
+        4,
+    );
 }
 
 #[test]
 fn test_array_concat_content() {
-    expect_i32("let a = [1, 2]; let b = [3, 4]; let c = a.concat(b); return c[2];", 3);
+    expect_i32(
+        "let a = [1, 2]; let b = [3, 4]; let c = a.concat(b); return c[2];",
+        3,
+    );
 }
 
 #[test]

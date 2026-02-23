@@ -169,12 +169,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Specialize a generic function
-    fn specialize_function(
-        &mut self,
-        module: &mut IrModule,
-        key: &MonoKey,
-        func_id: FunctionId,
-    ) {
+    fn specialize_function(&mut self, module: &mut IrModule, key: &MonoKey, func_id: FunctionId) {
         // Check if already specialized
         if self.ctx.has_function(key) {
             return;
@@ -215,12 +210,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Specialize a generic class
-    fn specialize_class(
-        &mut self,
-        module: &mut IrModule,
-        key: &MonoKey,
-        class_id: ClassId,
-    ) {
+    fn specialize_class(&mut self, module: &mut IrModule, key: &MonoKey, class_id: ClassId) {
         // Check if already specialized
         if self.ctx.has_class(key) {
             return;
@@ -244,7 +234,8 @@ impl<'a> Monomorphizer<'a> {
         let substitution = TypeSubstitution::from_params_and_args(&type_params, &key.type_args);
 
         // Create specialized class
-        let mut specialized = IrClass::new(self.mangle_class_name(&generic_class.name, &key.type_args));
+        let mut specialized =
+            IrClass::new(self.mangle_class_name(&generic_class.name, &key.type_args));
 
         // Substitute field types
         for field in &generic_class.fields {

@@ -17,9 +17,7 @@ pub fn execute(
     let rt = Runtime::new();
     let out_dir = PathBuf::from(&out_dir);
 
-    let options = CompileOptions {
-        sourcemap,
-    };
+    let options = CompileOptions { sourcemap };
 
     // Collect .raya files from input paths
     let source_files = collect_raya_files(&files)?;
@@ -34,7 +32,11 @@ pub fn execute(
         let out_path = compute_output_path(src_path, &out_dir);
 
         if dry_run {
-            println!("  {} → {} (dry run)", src_path.display(), out_path.display());
+            println!(
+                "  {} → {} (dry run)",
+                src_path.display(),
+                out_path.display()
+            );
             continue;
         }
 

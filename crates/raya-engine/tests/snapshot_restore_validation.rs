@@ -17,10 +17,10 @@
 //! cargo test --test snapshot_restore_validation
 //! ```
 
+use raya_engine::vm::interpreter::{ResourceLimits, VmContext, VmOptions};
 use raya_engine::vm::scheduler::{Scheduler, TaskId};
 use raya_engine::vm::snapshot::{SerializedTask, SnapshotReader, SnapshotWriter};
 use raya_engine::vm::value::Value;
-use raya_engine::vm::interpreter::{ResourceLimits, VmContext, VmOptions};
 use std::io::Cursor;
 
 // ===== VmContext Snapshot/Restore Tests =====

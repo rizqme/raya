@@ -1,10 +1,10 @@
 //! Expression parsing
 
+use super::precedence::{get_precedence, is_right_associative, Precedence};
 use super::{ParseError, ParseErrorKind, Parser};
 use crate::parser::ast::*;
 use crate::parser::interner::Symbol;
 use crate::parser::token::{Span, Token};
-use super::precedence::{get_precedence, is_right_associative, Precedence};
 
 /// Check if a token is a keyword that can be used as a property/method name.
 /// Returns the keyword string for keywords.
@@ -68,9 +68,7 @@ pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
 fn get_property_name_symbol(parser: &mut Parser) -> Option<Symbol> {
     match parser.current() {
         Token::Identifier(sym) => Some(*sym),
-        token => {
-            keyword_as_property_name(token).map(|name| parser.intern(name))
-        }
+        token => keyword_as_property_name(token).map(|name| parser.intern(name)),
     }
 }
 
@@ -81,7 +79,10 @@ pub fn parse_expression(parser: &mut Parser) -> Result<Expression, ParseError> {
     if parser.depth > super::guards::MAX_PARSE_DEPTH {
         parser.depth -= 1;
         return Err(ParseError::parser_limit_exceeded(
-            format!("Maximum nesting depth ({}) exceeded in expression", super::guards::MAX_PARSE_DEPTH),
+            format!(
+                "Maximum nesting depth ({}) exceeded in expression",
+                super::guards::MAX_PARSE_DEPTH
+            ),
             parser.current_span(),
         ));
     }
@@ -115,11 +116,18 @@ fn parse_expression_with_precedence(
         // Note: Token::Less is included for type arguments in calls (foo<T>())
         let is_postfix = matches!(
             parser.current(),
-            Token::LeftParen | Token::Dot | Token::QuestionDot | Token::LeftBracket
-                | Token::PlusPlus | Token::MinusMinus | Token::Less
+            Token::LeftParen
+                | Token::Dot
+                | Token::QuestionDot
+                | Token::LeftBracket
+                | Token::PlusPlus
+                | Token::MinusMinus
+                | Token::Less
         );
 
-        if !is_postfix && (current_precedence == Precedence::None || current_precedence < min_precedence) {
+        if !is_postfix
+            && (current_precedence == Precedence::None || current_precedence < min_precedence)
+        {
             break;
         }
 
@@ -262,7 +270,10 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     } else {
                         let expr = parse_expression(parser)?;
                         let span = *expr.span();
-                        (crate::parser::ast::ArrowBody::Expression(Box::new(expr)), span)
+                        (
+                            crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
+                            span,
+                        )
                     };
 
                     let span = parser.combine_spans(&start_span, &body_span);
@@ -308,10 +319,12 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     let param = crate::parser::ast::Parameter {
                         decorators: vec![],
                         visibility: None,
-                        pattern: crate::parser::ast::Pattern::Identifier(crate::parser::ast::Identifier {
-                            name: param_name,
-                            span: ident_span,
-                        }),
+                        pattern: crate::parser::ast::Pattern::Identifier(
+                            crate::parser::ast::Identifier {
+                                name: param_name,
+                                span: ident_span,
+                            },
+                        ),
                         type_annotation: None,
                         optional: false,
                         default_value: None,
@@ -328,7 +341,10 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                     } else {
                         let expr = parse_expression(parser)?;
                         let span = *expr.span();
-                        (crate::parser::ast::ArrowBody::Expression(Box::new(expr)), span)
+                        (
+                            crate::parser::ast::ArrowBody::Expression(Box::new(expr)),
+                            span,
+                        )
                     };
 
                     let span = parser.combine_spans(&start_span, &body_span);
@@ -411,16 +427,14 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
         }
 
         // delete and void (TODO: not yet implemented)
-        Token::Delete | Token::Void => {
-            Err(ParseError {
-                kind: ParseErrorKind::InvalidSyntax {
-                    reason: "delete and void operators not yet implemented".to_string(),
-                },
-                span: start_span,
-                message: "delete/void not supported yet".to_string(),
-                suggestion: None,
-            })
-        }
+        Token::Delete | Token::Void => Err(ParseError {
+            kind: ParseErrorKind::InvalidSyntax {
+                reason: "delete and void operators not yet implemented".to_string(),
+            },
+            span: start_span,
+            message: "delete/void not supported yet".to_string(),
+            suggestion: None,
+        }),
 
         // new operator
         Token::New => {
@@ -1093,7 +1107,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
 
                 if parser.check(&Token::Arrow) {
                     parser.advance(); // consume =>
-                    return parse_arrow_function_body_with_type(parser, vec![], return_type, start_span);
+                    return parse_arrow_function_body_with_type(
+                        parser,
+                        vec![],
+                        return_type,
+                        start_span,
+                    );
                 }
 
                 // Not an arrow function - error (empty parens not valid as expression)
@@ -1127,7 +1146,12 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
                 // Must have arrow
                 if parser.check(&Token::Arrow) {
                     parser.advance();
-                    return parse_arrow_function_body_with_type(parser, params, return_type, start_span);
+                    return parse_arrow_function_body_with_type(
+                        parser,
+                        params,
+                        return_type,
+                        start_span,
+                    );
                 }
 
                 return Err(ParseError {
@@ -1211,21 +1235,17 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
         }
 
         // Function expression (TODO: not in AST yet)
-        Token::Function => {
-            Err(ParseError {
-                kind: ParseErrorKind::InvalidSyntax {
-                    reason: "Function expressions not yet implemented".to_string(),
-                },
-                span: start_span,
-                message: "Function expressions not supported yet".to_string(),
-                suggestion: Some("Use arrow functions instead".to_string()),
-            })
-        }
+        Token::Function => Err(ParseError {
+            kind: ParseErrorKind::InvalidSyntax {
+                reason: "Function expressions not yet implemented".to_string(),
+            },
+            span: start_span,
+            message: "Function expressions not supported yet".to_string(),
+            suggestion: Some("Use arrow functions instead".to_string()),
+        }),
 
         // JSX element or fragment: <div>...</div> or <>...</>
-        Token::Less if super::jsx::looks_like_jsx(parser) => {
-            super::jsx::parse_jsx(parser)
-        }
+        Token::Less if super::jsx::looks_like_jsx(parser) => super::jsx::parse_jsx(parser),
 
         _ => Err(ParseError {
             kind: ParseErrorKind::UnexpectedToken {
@@ -1340,22 +1360,14 @@ fn parse_object_property(parser: &mut Parser) -> Result<ObjectProperty, ParseErr
         };
 
         let span = parser.combine_spans(&start_span, value.span());
-        return Ok(ObjectProperty::Property(Property {
-            key,
-            value,
-            span,
-        }));
+        return Ok(ObjectProperty::Property(Property { key, value, span }));
     }
 
     parser.expect(Token::Colon)?;
     let value = parse_expression(parser)?;
     let span = parser.combine_spans(&start_span, value.span());
 
-    Ok(ObjectProperty::Property(Property {
-        key,
-        value,
-        span,
-    }))
+    Ok(ObjectProperty::Property(Property { key, value, span }))
 }
 
 /// Convert token template parts to AST template parts.

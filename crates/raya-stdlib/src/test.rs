@@ -74,10 +74,7 @@ pub fn register_test(registry: &mut NativeFunctionRegistry, results: SharedTestR
     // test.reportStart(count: number)
     let r = results.clone();
     registry.register("test.reportStart", move |_ctx, args| {
-        let count = args
-            .first()
-            .and_then(|v| v.as_i32())
-            .unwrap_or(0) as usize;
+        let count = args.first().and_then(|v| v.as_i32()).unwrap_or(0) as usize;
         r.lock().total_registered = count;
         NativeCallResult::null()
     });
@@ -89,10 +86,7 @@ pub fn register_test(registry: &mut NativeFunctionRegistry, results: SharedTestR
             .first()
             .and_then(|v| ctx.read_string(*v).ok())
             .unwrap_or_default();
-        let duration = args
-            .get(1)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let duration = args.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
         r.lock().results.push(TestResult {
             name,
             passed: true,
@@ -113,10 +107,7 @@ pub fn register_test(registry: &mut NativeFunctionRegistry, results: SharedTestR
             .get(1)
             .and_then(|v| ctx.read_string(*v).ok())
             .unwrap_or_default();
-        let duration = args
-            .get(2)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+        let duration = args.get(2).and_then(|v| v.as_f64()).unwrap_or(0.0);
         r.lock().results.push(TestResult {
             name,
             passed: false,
@@ -127,9 +118,7 @@ pub fn register_test(registry: &mut NativeFunctionRegistry, results: SharedTestR
     });
 
     // test.reportEnd(passed: number, failed: number)
-    registry.register("test.reportEnd", |_ctx, _args| {
-        NativeCallResult::null()
-    });
+    registry.register("test.reportEnd", |_ctx, _args| NativeCallResult::null());
 
     // test.deepEqual(a: any, b: any) -> boolean
     registry.register("test.deepEqual", |ctx, args| {
@@ -239,7 +228,11 @@ fn stringify_value(ctx: &dyn NativeContext, val: NativeValue) -> String {
         return "null".to_string();
     }
     if let Some(b) = val.as_bool() {
-        return if b { "true".to_string() } else { "false".to_string() };
+        return if b {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        };
     }
     if let Some(i) = val.as_i32() {
         return i.to_string();

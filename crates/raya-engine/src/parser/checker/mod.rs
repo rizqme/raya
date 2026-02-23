@@ -10,25 +10,27 @@
 //! - Exhaustiveness checking for discriminated unions
 //! - Closure capture analysis
 
-pub mod symbols;
 pub mod binder;
-pub mod checker;
-pub mod error;
-pub mod type_guards;
-pub mod narrowing;
-pub mod exhaustiveness;
-pub mod diagnostic;
-pub mod captures;
 pub mod builtins;
+pub mod captures;
+pub mod checker;
+pub mod diagnostic;
+pub mod error;
+pub mod exhaustiveness;
+pub mod narrowing;
+pub mod symbols;
+pub mod type_guards;
 
 // Re-export main types
-pub use symbols::{Symbol, SymbolKind, SymbolTable, SymbolFlags, Scope, ScopeId, ScopeKind};
 pub use binder::Binder;
-pub use checker::{TypeChecker, InferredTypes, CheckResult};
-pub use error::{BindError, CheckError, CheckWarning, WarningCode, WarningConfig};
-pub use type_guards::TypeGuard;
-pub use narrowing::TypeEnv;
-pub use exhaustiveness::ExhaustivenessResult;
-pub use diagnostic::{Diagnostic, ErrorCode, SimpleFiles, create_files};
+pub use builtins::{
+    BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty, BuiltinSignatures,
+};
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
-pub use builtins::{BuiltinSignatures, BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty};
+pub use checker::{CheckResult, InferredTypes, TypeChecker};
+pub use diagnostic::{create_files, Diagnostic, ErrorCode, SimpleFiles};
+pub use error::{BindError, CheckError, CheckWarning, WarningCode, WarningConfig};
+pub use exhaustiveness::ExhaustivenessResult;
+pub use narrowing::TypeEnv;
+pub use symbols::{Scope, ScopeId, ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
+pub use type_guards::TypeGuard;

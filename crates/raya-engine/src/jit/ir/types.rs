@@ -29,7 +29,10 @@ impl JitType {
 
     /// Whether this type needs NaN-boxing to be stored in a Value slot
     pub fn needs_boxing(&self) -> bool {
-        matches!(self, JitType::I32 | JitType::F64 | JitType::Bool | JitType::Ptr)
+        matches!(
+            self,
+            JitType::I32 | JitType::F64 | JitType::Bool | JitType::Ptr
+        )
     }
 
     /// Whether this type is already a NaN-boxed value

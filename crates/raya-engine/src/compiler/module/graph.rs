@@ -23,7 +23,12 @@ pub enum GraphError {
 fn format_cycle(cycle: &[PathBuf]) -> String {
     cycle
         .iter()
-        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().to_string())
+        .map(|p| {
+            p.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        })
         .collect::<Vec<_>>()
         .join(" -> ")
 }
@@ -68,7 +73,8 @@ impl ModuleGraph {
     /// Add a module to the graph
     pub fn add_module(&mut self, path: PathBuf) {
         if !self.nodes.contains_key(&path) {
-            self.nodes.insert(path.clone(), ModuleNode::new(path.clone()));
+            self.nodes
+                .insert(path.clone(), ModuleNode::new(path.clone()));
             self.entry_points.insert(path);
         }
     }
@@ -133,7 +139,9 @@ impl ModuleGraph {
 
         for start in self.nodes.keys() {
             if !visited.contains(start) {
-                if let Some(cycle) = self.dfs_detect_cycle(start, &mut visited, &mut rec_stack, &mut path) {
+                if let Some(cycle) =
+                    self.dfs_detect_cycle(start, &mut visited, &mut rec_stack, &mut path)
+                {
                     return Err(GraphError::CircularDependency(cycle));
                 }
             }

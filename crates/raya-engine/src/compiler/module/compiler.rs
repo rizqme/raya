@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::compiler::bytecode::Module as BytecodeModule;
-use crate::compiler::{Compiler, CompileError};
-use crate::parser::ast::{Module as AstModule, Statement, ImportSpecifier};
-use crate::parser::checker::{Binder, TypeChecker, Symbol, SymbolFlags, ScopeId};
-use crate::parser::{Interner, Parser, TypeContext, Span};
+use crate::compiler::{CompileError, Compiler};
+use crate::parser::ast::{ImportSpecifier, Module as AstModule, Statement};
+use crate::parser::checker::{Binder, ScopeId, Symbol, SymbolFlags, TypeChecker};
+use crate::parser::{Interner, Parser, Span, TypeContext};
 
 use super::cache::ModuleCache;
 use super::exports::{ExportRegistry, ExportedSymbol, ModuleExports};
@@ -127,12 +127,12 @@ impl ModuleCompiler {
     /// Uses cross-module symbol resolution for imports.
     pub fn compile(&mut self, entry_point: &Path) -> ModuleCompileResult<Vec<CompiledModule>> {
         // Canonicalize the entry point
-        let entry_path = entry_point.canonicalize().map_err(|e| {
-            ModuleCompileError::IoError {
+        let entry_path = entry_point
+            .canonicalize()
+            .map_err(|e| ModuleCompileError::IoError {
                 path: entry_point.to_path_buf(),
                 message: e.to_string(),
-            }
-        })?;
+            })?;
 
         // Discover all modules and build the dependency graph
         self.discover_modules(&entry_path)?;
@@ -203,7 +203,8 @@ impl ModuleCompiler {
             for import_specifier in imports {
                 match self.resolver.resolve(&import_specifier, &path) {
                     Ok(resolved) => {
-                        self.graph.add_dependency(path.clone(), resolved.path.clone());
+                        self.graph
+                            .add_dependency(path.clone(), resolved.path.clone());
                         if !visited.contains(&resolved.path) {
                             to_visit.push(resolved.path);
                         }
@@ -250,7 +251,10 @@ impl ModuleCompiler {
     /// Compile a single module with cross-module symbol resolution
     ///
     /// Returns the bytecode and the module's exports for use by dependent modules.
-    fn compile_single_with_exports(&self, path: &PathBuf) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
+    fn compile_single_with_exports(
+        &self,
+        path: &PathBuf,
+    ) -> ModuleCompileResult<(BytecodeModule, ModuleExports)> {
         // Read source
         let source = fs::read_to_string(path).map_err(|e| ModuleCompileError::IoError {
             path: path.clone(),
@@ -279,10 +283,12 @@ impl ModuleCompiler {
         // Inject imported symbols from the export registry
         self.inject_imports(&ast, path, &mut binder, &interner)?;
 
-        let mut symbols = binder.bind_module(&ast).map_err(|e| ModuleCompileError::TypeError {
-            path: path.clone(),
-            message: format!("Binding error: {:?}", e),
-        })?;
+        let mut symbols = binder
+            .bind_module(&ast)
+            .map_err(|e| ModuleCompileError::TypeError {
+                path: path.clone(),
+                message: format!("Binding error: {:?}", e),
+            })?;
 
         // Type check
         let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
@@ -296,26 +302,26 @@ impl ModuleCompiler {
 
         // Apply inferred types
         for ((scope_id, name), ty) in check_result.inferred_types {
-            symbols.update_type(
-                ScopeId(scope_id),
-                &name,
-                ty,
-            );
+            symbols.update_type(ScopeId(scope_id), &name, ty);
         }
 
         // Extract exports for dependent modules
         let module_exports = self.extract_exports(path, &symbols);
 
         // Compile
-        let mut compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+        let mut compiler =
+            Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
         if let Some(ref jsx_opts) = self.jsx_options {
             compiler = compiler.with_jsx(jsx_opts.clone());
         }
 
-        let bytecode = compiler.compile_via_ir(&ast).map_err(|e| ModuleCompileError::CompileError {
-            path: path.clone(),
-            source: e,
-        })?;
+        let bytecode =
+            compiler
+                .compile_via_ir(&ast)
+                .map_err(|e| ModuleCompileError::CompileError {
+                    path: path.clone(),
+                    source: e,
+                })?;
 
         Ok((bytecode, module_exports))
     }
@@ -335,8 +341,8 @@ impl ModuleCompiler {
                 // Resolve the import path
                 let resolved = match self.resolver.resolve(&specifier, current_path) {
                     Ok(r) => r,
-                    Err(ResolveError::PackageNotSupported(_)) |
-                    Err(ResolveError::UrlNotLocked(_)) => continue,
+                    Err(ResolveError::PackageNotSupported(_))
+                    | Err(ResolveError::UrlNotLocked(_)) => continue,
                     Err(e) => return Err(e.into()),
                 };
 
@@ -412,7 +418,11 @@ impl ModuleCompiler {
     }
 
     /// Extract exported symbols from a compiled module's symbol table
-    fn extract_exports(&self, path: &Path, symbols: &crate::parser::checker::SymbolTable) -> ModuleExports {
+    fn extract_exports(
+        &self,
+        path: &Path,
+        symbols: &crate::parser::checker::SymbolTable,
+    ) -> ModuleExports {
         let mut exports = ModuleExports::new(path.to_path_buf());
 
         for symbol in symbols.get_exported_symbols() {
@@ -492,7 +502,7 @@ mod tests {
         fs::write(
             &main_path,
             r#"import { value } from "./utils";
-               let x: number = value + 1;"#,  // Uses imported `value`
+               let x: number = value + 1;"#, // Uses imported `value`
         )
         .unwrap();
 
@@ -506,16 +516,10 @@ mod tests {
         assert_eq!(compiled.len(), 2);
 
         // utils should be first (dependency)
-        assert_eq!(
-            compiled[0].path,
-            utils_path.canonicalize().unwrap()
-        );
+        assert_eq!(compiled[0].path, utils_path.canonicalize().unwrap());
 
         // main should be second
-        assert_eq!(
-            compiled[1].path,
-            main_path.canonicalize().unwrap()
-        );
+        assert_eq!(compiled[1].path, main_path.canonicalize().unwrap());
     }
 
     #[test]
@@ -528,13 +532,17 @@ mod tests {
         // Note: Function calling across modules requires TypeContext merging
         // which is tracked as a follow-up issue. For now, we verify the symbol
         // is imported (even if calling it doesn't work due to type mismatch).
-        fs::write(&utils_path, r#"export function add(a: number, b: number): number {
+        fs::write(
+            &utils_path,
+            r#"export function add(a: number, b: number): number {
             return a + b;
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         fs::write(
             &main_path,
             r#"import { add } from "./utils";
-               let x: number = 42;"#,  // Reference add but don't call it
+               let x: number = 42;"#, // Reference add but don't call it
         )
         .unwrap();
 
@@ -579,8 +587,16 @@ mod tests {
         let a_path = temp_dir.path().join("a.raya");
         let b_path = temp_dir.path().join("b.raya");
 
-        fs::write(&a_path, r#"import { y } from "./b"; export let x: number = 1;"#).unwrap();
-        fs::write(&b_path, r#"import { x } from "./a"; export let y: number = 2;"#).unwrap();
+        fs::write(
+            &a_path,
+            r#"import { y } from "./b"; export let x: number = 1;"#,
+        )
+        .unwrap();
+        fs::write(
+            &b_path,
+            r#"import { x } from "./a"; export let y: number = 2;"#,
+        )
+        .unwrap();
 
         let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
         let result = compiler.compile(&a_path);
@@ -601,13 +617,21 @@ mod tests {
 
         // Phase 3: Full cross-module symbol resolution
         fs::write(&shared_path, "export let value: number = 42;").unwrap();
-        fs::write(&a_path, r#"import { value } from "./shared"; export let a: number = value + 1;"#).unwrap();
-        fs::write(&b_path, r#"import { value } from "./shared"; export let b: number = value + 2;"#).unwrap();
+        fs::write(
+            &a_path,
+            r#"import { value } from "./shared"; export let a: number = value + 1;"#,
+        )
+        .unwrap();
+        fs::write(
+            &b_path,
+            r#"import { value } from "./shared"; export let b: number = value + 2;"#,
+        )
+        .unwrap();
         fs::write(
             &main_path,
             r#"import { a } from "./a";
                import { b } from "./b";
-               let result: number = a + b;"#,  // Uses imported symbols
+               let result: number = a + b;"#, // Uses imported symbols
         )
         .unwrap();
 
@@ -621,16 +645,10 @@ mod tests {
         assert_eq!(compiled.len(), 4);
 
         // shared should be first
-        assert_eq!(
-            compiled[0].path,
-            shared_path.canonicalize().unwrap()
-        );
+        assert_eq!(compiled[0].path, shared_path.canonicalize().unwrap());
 
         // main should be last
-        assert_eq!(
-            compiled[3].path,
-            main_path.canonicalize().unwrap()
-        );
+        assert_eq!(compiled[3].path, main_path.canonicalize().unwrap());
     }
 
     #[test]
@@ -638,11 +656,7 @@ mod tests {
         let temp_dir = create_test_project();
         let main_path = temp_dir.path().join("main.raya");
 
-        fs::write(
-            &main_path,
-            r#"import { foo } from "./nonexistent";"#,
-        )
-        .unwrap();
+        fs::write(&main_path, r#"import { foo } from "./nonexistent";"#).unwrap();
 
         let mut compiler = ModuleCompiler::new(temp_dir.path().to_path_buf());
         let result = compiler.compile(&main_path);

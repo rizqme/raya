@@ -74,9 +74,7 @@ fn gzip(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 /// compress.gunzip(data: Buffer): Buffer
 fn gunzip(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "compress.gunzip requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("compress.gunzip requires 1 argument".to_string());
     }
 
     let data = match ctx.read_buffer(args[0]) {
@@ -124,9 +122,7 @@ fn deflate(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
 /// compress.inflate(data: Buffer): Buffer
 fn inflate(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "compress.inflate requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("compress.inflate requires 1 argument".to_string());
     }
 
     let data = match ctx.read_buffer(args[0]) {
@@ -140,9 +136,7 @@ fn inflate(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let mut decompressed = Vec::new();
     match decoder.read_to_end(&mut decompressed) {
         Ok(_) => NativeCallResult::Value(ctx.create_buffer(&decompressed)),
-        Err(e) => {
-            NativeCallResult::Error(format!("compress.inflate: decompression error: {}", e))
-        }
+        Err(e) => NativeCallResult::Error(format!("compress.inflate: decompression error: {}", e)),
     }
 }
 
@@ -157,10 +151,7 @@ fn zlib_compress(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
     let data = match ctx.read_buffer(args[0]) {
         Ok(b) => b,
         Err(e) => {
-            return NativeCallResult::Error(format!(
-                "compress.zlibCompress: invalid buffer: {}",
-                e
-            ))
+            return NativeCallResult::Error(format!("compress.zlibCompress: invalid buffer: {}", e))
         }
     };
 
@@ -172,18 +163,14 @@ fn zlib_compress(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
     }
     match encoder.finish() {
         Ok(compressed) => NativeCallResult::Value(ctx.create_buffer(&compressed)),
-        Err(e) => {
-            NativeCallResult::Error(format!("compress.zlibCompress: finish error: {}", e))
-        }
+        Err(e) => NativeCallResult::Error(format!("compress.zlibCompress: finish error: {}", e)),
     }
 }
 
 /// compress.zlibDecompress(data: Buffer): Buffer
 fn zlib_decompress(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.is_empty() {
-        return NativeCallResult::Error(
-            "compress.zlibDecompress requires 1 argument".to_string(),
-        );
+        return NativeCallResult::Error("compress.zlibDecompress requires 1 argument".to_string());
     }
 
     let data = match ctx.read_buffer(args[0]) {

@@ -70,10 +70,7 @@ impl std::fmt::Display for TypeAliasId {
 #[derive(Debug, Clone)]
 pub enum IrInstr {
     /// Assignment: dest = value
-    Assign {
-        dest: Register,
-        value: IrValue,
-    },
+    Assign { dest: Register, value: IrValue },
 
     /// Binary operation: dest = left op right
     BinaryOp {
@@ -146,46 +143,27 @@ pub enum IrInstr {
     },
 
     /// Load from local variable: dest = locals[index]
-    LoadLocal {
-        dest: Register,
-        index: u16,
-    },
+    LoadLocal { dest: Register, index: u16 },
 
     /// Store to local variable: locals[index] = value
-    StoreLocal {
-        index: u16,
-        value: Register,
-    },
+    StoreLocal { index: u16, value: Register },
 
     /// Load actual argument count at runtime: dest = arg_count
-    LoadArgCount {
-        dest: Register,
-    },
+    LoadArgCount { dest: Register },
 
     /// Load argument by dynamic index: dest = locals[dynamic_index]
     /// Used for rest parameter collection where index is computed at runtime
-    LoadArgLocal {
-        dest: Register,
-        index: Register,
-    },
+    LoadArgLocal { dest: Register, index: Register },
 
     /// Pop from stack to local variable (for catch parameters)
     /// The VM pushes the exception value before jumping to catch block
-    PopToLocal {
-        index: u16,
-    },
+    PopToLocal { index: u16 },
 
     /// Load from global variable (for static fields): dest = globals[index]
-    LoadGlobal {
-        dest: Register,
-        index: u16,
-    },
+    LoadGlobal { dest: Register, index: u16 },
 
     /// Store to global variable (for static fields): globals[index] = value
-    StoreGlobal {
-        index: u16,
-        value: Register,
-    },
+    StoreGlobal { index: u16, value: Register },
 
     /// Load object field: dest = object.field
     LoadField {
@@ -243,10 +221,7 @@ pub enum IrInstr {
     },
 
     /// Create new object: dest = new class
-    NewObject {
-        dest: Register,
-        class: ClassId,
-    },
+    NewObject { dest: Register, class: ClassId },
 
     /// Create new array: dest = new elem_ty[len]
     NewArray {
@@ -270,34 +245,19 @@ pub enum IrInstr {
     },
 
     /// Get array length: dest = array.length
-    ArrayLen {
-        dest: Register,
-        array: Register,
-    },
+    ArrayLen { dest: Register, array: Register },
 
     /// Push element to array: array.push(element)
-    ArrayPush {
-        array: Register,
-        element: Register,
-    },
+    ArrayPush { array: Register, element: Register },
 
     /// Pop element from array: dest = array.pop()
-    ArrayPop {
-        dest: Register,
-        array: Register,
-    },
+    ArrayPop { dest: Register, array: Register },
 
     /// Get string length: dest = string.length
-    StringLen {
-        dest: Register,
-        string: Register,
-    },
+    StringLen { dest: Register, string: Register },
 
     /// Typeof operation: dest = typeof operand
-    Typeof {
-        dest: Register,
-        operand: Register,
-    },
+    Typeof { dest: Register, operand: Register },
 
     /// Phi node (for SSA form - future use)
     Phi {
@@ -313,16 +273,10 @@ pub enum IrInstr {
     },
 
     /// Load a captured variable: dest = captured[index]
-    LoadCaptured {
-        dest: Register,
-        index: u16,
-    },
+    LoadCaptured { dest: Register, index: u16 },
 
     /// Store to a captured variable: captured[index] = value
-    StoreCaptured {
-        index: u16,
-        value: Register,
-    },
+    StoreCaptured { index: u16, value: Register },
 
     /// Set a closure's capture: closure.captures[index] = value
     /// Used for recursive closures where the closure captures itself
@@ -340,16 +294,10 @@ pub enum IrInstr {
     },
 
     /// Load value from RefCell: dest = refcell.value
-    LoadRefCell {
-        dest: Register,
-        refcell: Register,
-    },
+    LoadRefCell { dest: Register, refcell: Register },
 
     /// Store value to RefCell: refcell.value = value
-    StoreRefCell {
-        refcell: Register,
-        value: Register,
-    },
+    StoreRefCell { refcell: Register, value: Register },
 
     /// Call a closure: dest = closure(args)
     CallClosure {
@@ -371,10 +319,7 @@ pub enum IrInstr {
     },
 
     /// Convert value to string: dest = String(operand)
-    ToString {
-        dest: Register,
-        operand: Register,
-    },
+    ToString { dest: Register, operand: Register },
 
     /// Spawn a new task: dest = spawn func(args)
     /// Creates a new green thread (Task) that executes the function
@@ -393,23 +338,15 @@ pub enum IrInstr {
 
     /// Await a task: dest = await task
     /// Suspends current task until the awaited task completes
-    Await {
-        dest: Register,
-        task: Register,
-    },
+    Await { dest: Register, task: Register },
 
     /// Await multiple tasks: dest = await [tasks]
     /// Suspends current task until all tasks complete, returns array of results
-    AwaitAll {
-        dest: Register,
-        tasks: Register,
-    },
+    AwaitAll { dest: Register, tasks: Register },
 
     /// Sleep for a duration in milliseconds
     /// Suspends the current task for the specified duration
-    Sleep {
-        duration_ms: Register,
-    },
+    Sleep { duration_ms: Register },
 
     /// Yield execution to the scheduler
     /// Allows other tasks to run
@@ -420,32 +357,21 @@ pub enum IrInstr {
 
     /// Create a new mutex
     /// Returns a mutex reference
-    NewMutex {
-        dest: Register,
-    },
+    NewMutex { dest: Register },
 
     /// Acquire mutex lock (blocking)
     /// Suspends current task until lock is acquired
-    MutexLock {
-        mutex: Register,
-    },
+    MutexLock { mutex: Register },
 
     /// Release mutex lock
-    MutexUnlock {
-        mutex: Register,
-    },
+    MutexUnlock { mutex: Register },
 
     /// Create a new channel with given capacity
     /// capacity = 0 means unbuffered (synchronous)
-    NewChannel {
-        dest: Register,
-        capacity: Register,
-    },
+    NewChannel { dest: Register, capacity: Register },
 
     /// Cancel a task
-    TaskCancel {
-        task: Register,
-    },
+    TaskCancel { task: Register },
 
     /// Set up exception handler for try block
     /// catch_block: BasicBlockId to jump to on exception (receives exception value)
@@ -609,7 +535,12 @@ impl BinaryOp {
     pub fn is_arithmetic(&self) -> bool {
         matches!(
             self,
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod | BinaryOp::Pow
+            BinaryOp::Add
+                | BinaryOp::Sub
+                | BinaryOp::Mul
+                | BinaryOp::Div
+                | BinaryOp::Mod
+                | BinaryOp::Pow
         )
     }
 

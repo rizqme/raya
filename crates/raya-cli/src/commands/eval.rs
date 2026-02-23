@@ -2,12 +2,7 @@
 
 use raya_runtime::{Runtime, RuntimeOptions, Value};
 
-pub fn execute(
-    code: String,
-    print: bool,
-    no_print: bool,
-    no_jit: bool,
-) -> anyhow::Result<()> {
+pub fn execute(code: String, print: bool, no_print: bool, no_jit: bool) -> anyhow::Result<()> {
     let rt = Runtime::with_options(RuntimeOptions {
         no_jit,
         ..Default::default()

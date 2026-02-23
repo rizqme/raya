@@ -135,7 +135,11 @@ fn test_parse_binary_precedence() {
             match &expr_stmt.expression {
                 Expression::Binary(bin) => {
                     println!("Binary operator: {:?}", bin.operator);
-                    assert!(matches!(bin.operator, BinaryOperator::Add), "Expected Add, got {:?}", bin.operator);
+                    assert!(
+                        matches!(bin.operator, BinaryOperator::Add),
+                        "Expected Add, got {:?}",
+                        bin.operator
+                    );
                     // Left is 1
                     match &*bin.left {
                         Expression::IntLiteral(lit) => assert_eq!(lit.value, 1),
@@ -152,7 +156,7 @@ fn test_parse_binary_precedence() {
                 }
                 other => panic!("Expected binary expression, got {:?}", other),
             }
-        },
+        }
         _ => panic!("Expected expression statement"),
     }
 }
@@ -208,8 +212,12 @@ fn test_parse_array_literal() {
                 assert_eq!(arr.elements.len(), 3);
                 // Check first element is 1
                 match &arr.elements[0] {
-                    Some(ArrayElement::Expression(Expression::IntLiteral(lit))) => assert_eq!(lit.value, 1),
-                    Some(ArrayElement::Expression(Expression::FloatLiteral(lit))) => assert_eq!(lit.value, 1.0),
+                    Some(ArrayElement::Expression(Expression::IntLiteral(lit))) => {
+                        assert_eq!(lit.value, 1)
+                    }
+                    Some(ArrayElement::Expression(Expression::FloatLiteral(lit))) => {
+                        assert_eq!(lit.value, 1.0)
+                    }
                     _ => panic!("Expected element"),
                 }
             }
@@ -250,7 +258,9 @@ fn test_parse_object_literal() {
                 match &obj.properties[0] {
                     ObjectProperty::Property(prop) => {
                         match &prop.key {
-                            PropertyKey::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
+                            PropertyKey::Identifier(id) => {
+                                assert_eq!(interner.resolve(id.name), "x")
+                            }
                             _ => panic!("Expected identifier key"),
                         }
                         match &prop.value {
@@ -315,12 +325,10 @@ fn test_parse_computed_member_access() {
 
     match &module.statements[0] {
         Statement::Expression(expr_stmt) => match &expr_stmt.expression {
-            Expression::Index(idx) => {
-                match &*idx.index {
-                    Expression::StringLiteral(lit) => assert_eq!(interner.resolve(lit.value), "key"),
-                    _ => panic!("Expected string literal"),
-                }
-            }
+            Expression::Index(idx) => match &*idx.index {
+                Expression::StringLiteral(lit) => assert_eq!(interner.resolve(lit.value), "key"),
+                _ => panic!("Expected string literal"),
+            },
             _ => panic!("Expected index expression"),
         },
         _ => panic!("Expected expression statement"),

@@ -229,12 +229,10 @@ fn test_parse_while_statement() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::While(while_stmt) => {
-            match &*while_stmt.body {
-                Statement::Block(_) => (),
-                _ => panic!("Expected block statement for while body"),
-            }
-        }
+        Statement::While(while_stmt) => match &*while_stmt.body {
+            Statement::Block(_) => (),
+            _ => panic!("Expected block statement for while body"),
+        },
         _ => panic!("Expected while statement"),
     }
 }
@@ -364,12 +362,10 @@ fn test_parse_throw_statement() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::Throw(throw_stmt) => {
-            match &throw_stmt.value {
-                Expression::New(_) => (),
-                _ => panic!("Expected new expression"),
-            }
-        }
+        Statement::Throw(throw_stmt) => match &throw_stmt.value {
+            Expression::New(_) => (),
+            _ => panic!("Expected new expression"),
+        },
         _ => panic!("Expected throw statement"),
     }
 }
@@ -832,7 +828,9 @@ fn test_parse_export_named() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Named { specifiers, source, .. }) => {
+        Statement::ExportDecl(ExportDecl::Named {
+            specifiers, source, ..
+        }) => {
             assert_eq!(specifiers.len(), 2);
             assert_eq!(interner.resolve(specifiers[0].name.name), "foo");
             assert_eq!(interner.resolve(specifiers[1].name.name), "bar");
@@ -850,7 +848,9 @@ fn test_parse_export_reexport() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Named { specifiers, source, .. }) => {
+        Statement::ExportDecl(ExportDecl::Named {
+            specifiers, source, ..
+        }) => {
             assert_eq!(specifiers.len(), 1);
             assert_eq!(interner.resolve(specifiers[0].name.name), "foo");
             assert!(source.is_some());
@@ -883,18 +883,16 @@ fn test_parse_export_const() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Declaration(decl)) => {
-            match decl.as_ref() {
-                Statement::VariableDecl(var) => {
-                    assert!(matches!(var.kind, VariableKind::Const));
-                    match &var.pattern {
-                        Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
-                        _ => panic!("Expected identifier pattern"),
-                    }
+        Statement::ExportDecl(ExportDecl::Declaration(decl)) => match decl.as_ref() {
+            Statement::VariableDecl(var) => {
+                assert!(matches!(var.kind, VariableKind::Const));
+                match &var.pattern {
+                    Pattern::Identifier(id) => assert_eq!(interner.resolve(id.name), "x"),
+                    _ => panic!("Expected identifier pattern"),
                 }
-                _ => panic!("Expected variable declaration"),
             }
-        }
+            _ => panic!("Expected variable declaration"),
+        },
         _ => panic!("Expected export declaration"),
     }
 }
@@ -907,14 +905,12 @@ fn test_parse_export_function() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Declaration(decl)) => {
-            match decl.as_ref() {
-                Statement::FunctionDecl(func) => {
-                    assert_eq!(interner.resolve(func.name.name), "add");
-                }
-                _ => panic!("Expected function declaration"),
+        Statement::ExportDecl(ExportDecl::Declaration(decl)) => match decl.as_ref() {
+            Statement::FunctionDecl(func) => {
+                assert_eq!(interner.resolve(func.name.name), "add");
             }
-        }
+            _ => panic!("Expected function declaration"),
+        },
         _ => panic!("Expected export declaration"),
     }
 }
@@ -927,14 +923,12 @@ fn test_parse_export_class() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Declaration(decl)) => {
-            match decl.as_ref() {
-                Statement::ClassDecl(class) => {
-                    assert_eq!(interner.resolve(class.name.name), "Point");
-                }
-                _ => panic!("Expected class declaration"),
+        Statement::ExportDecl(ExportDecl::Declaration(decl)) => match decl.as_ref() {
+            Statement::ClassDecl(class) => {
+                assert_eq!(interner.resolve(class.name.name), "Point");
             }
-        }
+            _ => panic!("Expected class declaration"),
+        },
         _ => panic!("Expected export declaration"),
     }
 }
@@ -947,14 +941,12 @@ fn test_parse_export_type_alias() {
 
     assert_eq!(module.statements.len(), 1);
     match &module.statements[0] {
-        Statement::ExportDecl(ExportDecl::Declaration(decl)) => {
-            match decl.as_ref() {
-                Statement::TypeAliasDecl(type_alias) => {
-                    assert_eq!(interner.resolve(type_alias.name.name), "ID");
-                }
-                _ => panic!("Expected type alias declaration"),
+        Statement::ExportDecl(ExportDecl::Declaration(decl)) => match decl.as_ref() {
+            Statement::TypeAliasDecl(type_alias) => {
+                assert_eq!(interner.resolve(type_alias.name.name), "ID");
             }
-        }
+            _ => panic!("Expected type alias declaration"),
+        },
         _ => panic!("Expected export declaration"),
     }
 }

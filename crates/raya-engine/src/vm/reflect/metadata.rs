@@ -186,7 +186,11 @@ impl MetadataStore {
     /// Get all metadata keys on a property
     ///
     /// `Reflect.getMetadataKeys(target, propertyKey)`
-    pub fn get_metadata_keys_property(&self, target: Value, property_key: &str) -> Vec<MetadataKey> {
+    pub fn get_metadata_keys_property(
+        &self,
+        target: Value,
+        property_key: &str,
+    ) -> Vec<MetadataKey> {
         let Some(id) = Self::target_id(target) else {
             return Vec::new();
         };

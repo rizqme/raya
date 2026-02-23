@@ -473,7 +473,8 @@ impl FunctionDebugInfo {
         }
 
         // Binary search for the largest offset <= bytecode_offset
-        let idx = self.line_table
+        let idx = self
+            .line_table
             .partition_point(|e| e.bytecode_offset <= bytecode_offset);
 
         if idx == 0 {
@@ -738,7 +739,11 @@ impl Method {
         // Read slot index
         let slot = reader.read_u32()? as usize;
 
-        Ok(Self { name, function_id, slot })
+        Ok(Self {
+            name,
+            function_id,
+            slot,
+        })
     }
 }
 
@@ -834,7 +839,11 @@ impl Export {
         // Read index
         let index = reader.read_u32()? as usize;
 
-        Ok(Self { name, symbol_type, index })
+        Ok(Self {
+            name,
+            symbol_type,
+            index,
+        })
     }
 }
 
@@ -843,7 +852,9 @@ impl Import {
     fn encode(&self, writer: &mut BytecodeWriter) {
         // Write module specifier
         writer.emit_u32(self.module_specifier.len() as u32);
-        writer.buffer.extend_from_slice(self.module_specifier.as_bytes());
+        writer
+            .buffer
+            .extend_from_slice(self.module_specifier.as_bytes());
 
         // Write symbol name
         writer.emit_u32(self.symbol.len() as u32);
@@ -987,7 +998,7 @@ impl Module {
     /// - Import table
     /// - Metadata
     pub fn encode(&self) -> Vec<u8> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut writer = BytecodeWriter::new();
 
@@ -1088,7 +1099,7 @@ impl Module {
 
     /// Decode a module from binary format
     pub fn decode(data: &[u8]) -> Result<Self, ModuleError> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         let mut reader = BytecodeReader::new(data);
 
@@ -1467,9 +1478,16 @@ mod tests {
         ));
         class_reflection.method_names.push("greet".to_string());
         class_reflection.method_names.push("compute".to_string());
-        class_reflection.static_field_names.push("CONSTANT".to_string());
+        class_reflection
+            .static_field_names
+            .push("CONSTANT".to_string());
 
-        module.reflection.as_mut().unwrap().classes.push(class_reflection);
+        module
+            .reflection
+            .as_mut()
+            .unwrap()
+            .classes
+            .push(class_reflection);
 
         // Also add a corresponding class definition
         module.classes.push(ClassDef {
@@ -1525,13 +1543,15 @@ mod tests {
         module.enable_debug_info();
 
         // Add source file
-        let file_idx = module.debug_info_mut().add_source_file("src/main.raya".to_string());
+        let file_idx = module
+            .debug_info_mut()
+            .add_source_file("src/main.raya".to_string());
         assert_eq!(file_idx, 0);
 
         // Add function debug info
         let mut func_debug = FunctionDebugInfo::new(0, 10, 1, 25, 1);
-        func_debug.add_line_entry(0, 11, 5);  // first instruction at line 11
-        func_debug.add_line_entry(5, 12, 5);  // next instruction at line 12
+        func_debug.add_line_entry(0, 11, 5); // first instruction at line 11
+        func_debug.add_line_entry(5, 12, 5); // next instruction at line 12
         func_debug.add_line_entry(10, 15, 5); // jump at line 15
         module.debug_info_mut().functions.push(func_debug);
 
@@ -1610,8 +1630,16 @@ mod tests {
     fn test_jit_hints_roundtrip() {
         let mut module = Module::new("jit_test".to_string());
         module.jit_hints = vec![
-            JitHint { func_index: 0, score: 25.7, is_cpu_bound: true },
-            JitHint { func_index: 3, score: 12.3, is_cpu_bound: false },
+            JitHint {
+                func_index: 0,
+                score: 25.7,
+                is_cpu_bound: true,
+            },
+            JitHint {
+                func_index: 3,
+                score: 12.3,
+                is_cpu_bound: false,
+            },
         ];
         module.flags |= flags::HAS_JIT_HINTS;
 

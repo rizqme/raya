@@ -378,7 +378,11 @@ impl Runtime {
         };
 
         if let Err(e) = std::fs::write(path, &output) {
-            eprintln!("Warning: failed to write profile to {}: {}", path.display(), e);
+            eprintln!(
+                "Warning: failed to write profile to {}: {}",
+                path.display(),
+                e
+            );
         } else {
             eprintln!("Profile written to {}", path.display());
         }

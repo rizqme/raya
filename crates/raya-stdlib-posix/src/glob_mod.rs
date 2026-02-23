@@ -37,15 +37,11 @@ pub fn glob_find(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRes
 pub fn glob_find_in_dir(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let pattern = match ctx.read_string(args[0]) {
         Ok(s) => s,
-        Err(_) => {
-            return NativeCallResult::Error("glob.findInDir: expected pattern string".into())
-        }
+        Err(_) => return NativeCallResult::Error("glob.findInDir: expected pattern string".into()),
     };
     let cwd = match args.get(1).and_then(|v| ctx.read_string(*v).ok()) {
         Some(s) => s,
-        None => {
-            return NativeCallResult::Error("glob.findInDir: expected cwd string".into())
-        }
+        None => return NativeCallResult::Error("glob.findInDir: expected cwd string".into()),
     };
 
     NativeCallResult::Suspend(IoRequest::BlockingWork {

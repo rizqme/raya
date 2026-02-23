@@ -23,66 +23,40 @@ pub struct ParseError {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseErrorKind {
     /// Unexpected token found
-    UnexpectedToken {
-        expected: Vec<Token>,
-        found: Token,
-    },
+    UnexpectedToken { expected: Vec<Token>, found: Token },
 
     /// Unexpected end of file
-    UnexpectedEof {
-        expected: Vec<Token>,
-    },
+    UnexpectedEof { expected: Vec<Token> },
 
     /// Invalid syntax
-    InvalidSyntax {
-        reason: String,
-    },
+    InvalidSyntax { reason: String },
 
     /// Duplicate declaration
-    DuplicateDeclaration {
-        name: String,
-    },
+    DuplicateDeclaration { name: String },
 
     /// Invalid number literal
-    InvalidNumber {
-        value: String,
-    },
+    InvalidNumber { value: String },
 
     /// Invalid string literal
-    InvalidString {
-        reason: String,
-    },
+    InvalidString { reason: String },
 
     /// Missing semicolon
     MissingSemicolon,
 
     /// Missing closing delimiter
-    UnclosedDelimiter {
-        open: Token,
-        expected_close: Token,
-    },
+    UnclosedDelimiter { open: Token, expected_close: Token },
 
     /// Banned feature used
-    BannedFeature {
-        feature: String,
-        reason: String,
-    },
+    BannedFeature { feature: String, reason: String },
 
     /// Context-dependent operator used incorrectly
-    InvalidOperatorContext {
-        operator: String,
-        context: String,
-    },
+    InvalidOperatorContext { operator: String, context: String },
 
     /// Parser exceeded iteration/depth/size limit
-    ParserLimitExceeded {
-        message: String,
-    },
+    ParserLimitExceeded { message: String },
 
     /// Parser got stuck (position didn't advance)
-    ParserStuck {
-        message: String,
-    },
+    ParserStuck { message: String },
 
     /// Error was recovered, parsing continued
     Recovered,
@@ -153,7 +127,11 @@ impl ParseError {
     }
 
     /// Create a "banned feature" error.
-    pub fn banned_feature(feature: impl Into<String>, reason: impl Into<String>, span: Span) -> Self {
+    pub fn banned_feature(
+        feature: impl Into<String>,
+        reason: impl Into<String>,
+        span: Span,
+    ) -> Self {
         let feature = feature.into();
         let reason = reason.into();
 

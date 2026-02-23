@@ -89,26 +89,40 @@ mod tests {
     #[test]
     fn test_discarded_async_call_flagged() {
         let diags = lint("function foo(): void {}\nasync foo();");
-        assert!(has_rule(&diags, "L1007"), "should flag discarded async call, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L1007"),
+            "should flag discarded async call, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_assigned_async_call_ok() {
         let diags = lint("function foo(): void {}\nlet task: Task<void> = async foo();");
-        assert!(!has_rule(&diags, "L1007"), "assigned async call should be ok");
+        assert!(
+            !has_rule(&diags, "L1007"),
+            "assigned async call should be ok"
+        );
     }
 
     #[test]
     fn test_awaited_async_call_ok() {
         let diags = lint("function foo(): int { return 1; }\nlet x: int = await async foo();");
-        assert!(!has_rule(&diags, "L1007"), "awaited async call should be ok");
+        assert!(
+            !has_rule(&diags, "L1007"),
+            "awaited async call should be ok"
+        );
     }
 
     #[test]
     fn test_async_block_ok() {
         // async { ... } is a fire-and-forget pattern — should not be flagged.
         let diags = lint("async { const x: int = 1; }");
-        assert!(!has_rule(&diags, "L1007"), "async block should not be flagged, got: {:?}", diags);
+        assert!(
+            !has_rule(&diags, "L1007"),
+            "async block should not be flagged, got: {:?}",
+            diags
+        );
     }
 
     #[test]

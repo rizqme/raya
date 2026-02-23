@@ -507,10 +507,7 @@ fn test_int_comparison_operators() {
 
 #[test]
 fn test_int_modulo() {
-    expect_i32(
-        "return 42 % 100;",
-        42,
-    );
+    expect_i32("return 42 % 100;", 42);
 }
 
 // ============================================================================
@@ -581,10 +578,7 @@ fn test_boolean_in_condition_directly() {
 
 #[test]
 fn test_boolean_negation_chain() {
-    expect_bool(
-        "return !!!false;",
-        true,
-    );
+    expect_bool("return !!!false;", true);
 }
 
 #[test]

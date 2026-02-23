@@ -4,8 +4,8 @@
 //! Instructions operate on virtual registers (Reg) and are grouped into basic
 //! blocks with explicit terminators.
 
-use rustc_hash::FxHashMap;
 use super::types::JitType;
+use rustc_hash::FxHashMap;
 
 /// Virtual register in the JIT IR (SSA form)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -55,202 +55,673 @@ pub struct DeoptState {
 #[derive(Debug, Clone)]
 pub enum JitInstr {
     // ===== Constants =====
-    ConstI32 { dest: Reg, value: i32 },
-    ConstF64 { dest: Reg, value: f64 },
-    ConstBool { dest: Reg, value: bool },
-    ConstNull { dest: Reg },
-    ConstString { dest: Reg, pool_index: u32 },
+    ConstI32 {
+        dest: Reg,
+        value: i32,
+    },
+    ConstF64 {
+        dest: Reg,
+        value: f64,
+    },
+    ConstBool {
+        dest: Reg,
+        value: bool,
+    },
+    ConstNull {
+        dest: Reg,
+    },
+    ConstString {
+        dest: Reg,
+        pool_index: u32,
+    },
 
     // ===== Integer Arithmetic (unboxed i32) =====
-    IAdd { dest: Reg, left: Reg, right: Reg },
-    ISub { dest: Reg, left: Reg, right: Reg },
-    IMul { dest: Reg, left: Reg, right: Reg },
-    IDiv { dest: Reg, left: Reg, right: Reg },
-    IMod { dest: Reg, left: Reg, right: Reg },
-    INeg { dest: Reg, operand: Reg },
-    IPow { dest: Reg, left: Reg, right: Reg },
+    IAdd {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ISub {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IMul {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IDiv {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IMod {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    INeg {
+        dest: Reg,
+        operand: Reg,
+    },
+    IPow {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== Integer Bitwise (unboxed i32) =====
-    IShl { dest: Reg, left: Reg, right: Reg },
-    IShr { dest: Reg, left: Reg, right: Reg },
-    IUshr { dest: Reg, left: Reg, right: Reg },
-    IAnd { dest: Reg, left: Reg, right: Reg },
-    IOr { dest: Reg, left: Reg, right: Reg },
-    IXor { dest: Reg, left: Reg, right: Reg },
-    INot { dest: Reg, operand: Reg },
+    IShl {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IShr {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IUshr {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IAnd {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IOr {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    IXor {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    INot {
+        dest: Reg,
+        operand: Reg,
+    },
 
     // ===== Float Arithmetic (unboxed f64) =====
-    FAdd { dest: Reg, left: Reg, right: Reg },
-    FSub { dest: Reg, left: Reg, right: Reg },
-    FMul { dest: Reg, left: Reg, right: Reg },
-    FDiv { dest: Reg, left: Reg, right: Reg },
-    FNeg { dest: Reg, operand: Reg },
-    FPow { dest: Reg, left: Reg, right: Reg },
-    FMod { dest: Reg, left: Reg, right: Reg },
+    FAdd {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FSub {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FMul {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FDiv {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FNeg {
+        dest: Reg,
+        operand: Reg,
+    },
+    FPow {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FMod {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== Integer Comparison (unboxed) =====
-    ICmpEq { dest: Reg, left: Reg, right: Reg },
-    ICmpNe { dest: Reg, left: Reg, right: Reg },
-    ICmpLt { dest: Reg, left: Reg, right: Reg },
-    ICmpLe { dest: Reg, left: Reg, right: Reg },
-    ICmpGt { dest: Reg, left: Reg, right: Reg },
-    ICmpGe { dest: Reg, left: Reg, right: Reg },
+    ICmpEq {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ICmpNe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ICmpLt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ICmpLe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ICmpGt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    ICmpGe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== Float Comparison (unboxed) =====
-    FCmpEq { dest: Reg, left: Reg, right: Reg },
-    FCmpNe { dest: Reg, left: Reg, right: Reg },
-    FCmpLt { dest: Reg, left: Reg, right: Reg },
-    FCmpLe { dest: Reg, left: Reg, right: Reg },
-    FCmpGt { dest: Reg, left: Reg, right: Reg },
-    FCmpGe { dest: Reg, left: Reg, right: Reg },
+    FCmpEq {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FCmpNe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FCmpLt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FCmpLe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FCmpGt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    FCmpGe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== String Comparison (boxed, calls runtime) =====
-    SCmpEq { dest: Reg, left: Reg, right: Reg },
-    SCmpNe { dest: Reg, left: Reg, right: Reg },
-    SCmpLt { dest: Reg, left: Reg, right: Reg },
-    SCmpLe { dest: Reg, left: Reg, right: Reg },
-    SCmpGt { dest: Reg, left: Reg, right: Reg },
-    SCmpGe { dest: Reg, left: Reg, right: Reg },
+    SCmpEq {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SCmpNe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SCmpLt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SCmpLe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SCmpGt {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SCmpGe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== Generic Comparison (boxed Value) =====
-    Eq { dest: Reg, left: Reg, right: Reg },
-    Ne { dest: Reg, left: Reg, right: Reg },
-    StrictEq { dest: Reg, left: Reg, right: Reg },
-    StrictNe { dest: Reg, left: Reg, right: Reg },
+    Eq {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    Ne {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    StrictEq {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    StrictNe {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== Logical =====
-    Not { dest: Reg, operand: Reg },
-    And { dest: Reg, left: Reg, right: Reg },
-    Or { dest: Reg, left: Reg, right: Reg },
+    Not {
+        dest: Reg,
+        operand: Reg,
+    },
+    And {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    Or {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
 
     // ===== NaN-box Conversion (explicit in IR → optimizable) =====
-    BoxI32 { dest: Reg, src: Reg },
-    BoxF64 { dest: Reg, src: Reg },
-    BoxBool { dest: Reg, src: Reg },
-    BoxPtr { dest: Reg, src: Reg },
-    UnboxI32 { dest: Reg, src: Reg },
-    UnboxF64 { dest: Reg, src: Reg },
-    UnboxBool { dest: Reg, src: Reg },
-    UnboxPtr { dest: Reg, src: Reg },
+    BoxI32 {
+        dest: Reg,
+        src: Reg,
+    },
+    BoxF64 {
+        dest: Reg,
+        src: Reg,
+    },
+    BoxBool {
+        dest: Reg,
+        src: Reg,
+    },
+    BoxPtr {
+        dest: Reg,
+        src: Reg,
+    },
+    UnboxI32 {
+        dest: Reg,
+        src: Reg,
+    },
+    UnboxF64 {
+        dest: Reg,
+        src: Reg,
+    },
+    UnboxBool {
+        dest: Reg,
+        src: Reg,
+    },
+    UnboxPtr {
+        dest: Reg,
+        src: Reg,
+    },
 
     // ===== Local Variable Access =====
-    LoadLocal { dest: Reg, index: u16 },
-    StoreLocal { index: u16, value: Reg },
+    LoadLocal {
+        dest: Reg,
+        index: u16,
+    },
+    StoreLocal {
+        index: u16,
+        value: Reg,
+    },
 
     // ===== Global Variable Access =====
-    LoadGlobal { dest: Reg, index: u32 },
-    StoreGlobal { index: u32, value: Reg },
+    LoadGlobal {
+        dest: Reg,
+        index: u32,
+    },
+    StoreGlobal {
+        index: u32,
+        value: Reg,
+    },
 
     // ===== Static Field Access =====
-    LoadStatic { dest: Reg, index: u32 },
-    StoreStatic { index: u32, value: Reg },
+    LoadStatic {
+        dest: Reg,
+        index: u32,
+    },
+    StoreStatic {
+        index: u32,
+        value: Reg,
+    },
 
     // ===== Object Operations =====
-    NewObject { dest: Reg, class_id: u32 },
-    LoadField { dest: Reg, object: Reg, offset: u16 },
-    StoreField { object: Reg, offset: u16, value: Reg },
-    LoadFieldFast { dest: Reg, object: Reg, offset: u16 },
-    StoreFieldFast { object: Reg, offset: u16, value: Reg },
-    InstanceOf { dest: Reg, object: Reg, class_id: u32 },
-    Cast { dest: Reg, object: Reg, class_id: u32 },
-    Typeof { dest: Reg, operand: Reg },
+    NewObject {
+        dest: Reg,
+        class_id: u32,
+    },
+    LoadField {
+        dest: Reg,
+        object: Reg,
+        offset: u16,
+    },
+    StoreField {
+        object: Reg,
+        offset: u16,
+        value: Reg,
+    },
+    LoadFieldFast {
+        dest: Reg,
+        object: Reg,
+        offset: u16,
+    },
+    StoreFieldFast {
+        object: Reg,
+        offset: u16,
+        value: Reg,
+    },
+    InstanceOf {
+        dest: Reg,
+        object: Reg,
+        class_id: u32,
+    },
+    Cast {
+        dest: Reg,
+        object: Reg,
+        class_id: u32,
+    },
+    Typeof {
+        dest: Reg,
+        operand: Reg,
+    },
 
     // ===== Array Operations =====
-    NewArray { dest: Reg, type_index: u32 },
-    LoadElem { dest: Reg, array: Reg, index: Reg },
-    StoreElem { array: Reg, index: Reg, value: Reg },
-    ArrayLen { dest: Reg, array: Reg },
-    ArrayPush { array: Reg, value: Reg },
-    ArrayPop { dest: Reg, array: Reg },
-    ArrayLiteral { dest: Reg, type_index: u32, elements: Vec<Reg> },
-    InitArray { dest: Reg, count: u16, elements: Vec<Reg> },
+    NewArray {
+        dest: Reg,
+        type_index: u32,
+    },
+    LoadElem {
+        dest: Reg,
+        array: Reg,
+        index: Reg,
+    },
+    StoreElem {
+        array: Reg,
+        index: Reg,
+        value: Reg,
+    },
+    ArrayLen {
+        dest: Reg,
+        array: Reg,
+    },
+    ArrayPush {
+        array: Reg,
+        value: Reg,
+    },
+    ArrayPop {
+        dest: Reg,
+        array: Reg,
+    },
+    ArrayLiteral {
+        dest: Reg,
+        type_index: u32,
+        elements: Vec<Reg>,
+    },
+    InitArray {
+        dest: Reg,
+        count: u16,
+        elements: Vec<Reg>,
+    },
 
     // ===== String Operations =====
-    SConcat { dest: Reg, left: Reg, right: Reg },
-    SLen { dest: Reg, string: Reg },
-    ToString { dest: Reg, value: Reg },
+    SConcat {
+        dest: Reg,
+        left: Reg,
+        right: Reg,
+    },
+    SLen {
+        dest: Reg,
+        string: Reg,
+    },
+    ToString {
+        dest: Reg,
+        value: Reg,
+    },
 
     // ===== Function Calls =====
-    Call { dest: Option<Reg>, func_index: u32, args: Vec<Reg> },
-    CallMethod { dest: Option<Reg>, method_index: u32, receiver: Reg, args: Vec<Reg> },
-    CallConstructor { dest: Reg, class_id: u32, args: Vec<Reg> },
-    CallSuper { dest: Option<Reg>, method_index: u32, args: Vec<Reg> },
-    CallStatic { dest: Option<Reg>, func_index: u32, args: Vec<Reg> },
-    CallNative { dest: Option<Reg>, native_id: u16, args: Vec<Reg> },
-    CallClosure { dest: Option<Reg>, closure: Reg, args: Vec<Reg> },
+    Call {
+        dest: Option<Reg>,
+        func_index: u32,
+        args: Vec<Reg>,
+    },
+    CallMethod {
+        dest: Option<Reg>,
+        method_index: u32,
+        receiver: Reg,
+        args: Vec<Reg>,
+    },
+    CallConstructor {
+        dest: Reg,
+        class_id: u32,
+        args: Vec<Reg>,
+    },
+    CallSuper {
+        dest: Option<Reg>,
+        method_index: u32,
+        args: Vec<Reg>,
+    },
+    CallStatic {
+        dest: Option<Reg>,
+        func_index: u32,
+        args: Vec<Reg>,
+    },
+    CallNative {
+        dest: Option<Reg>,
+        native_id: u16,
+        args: Vec<Reg>,
+    },
+    CallClosure {
+        dest: Option<Reg>,
+        closure: Reg,
+        args: Vec<Reg>,
+    },
 
     // ===== Closures =====
-    MakeClosure { dest: Reg, func_index: u32, captures: Vec<Reg> },
-    LoadCaptured { dest: Reg, index: u16 },
-    StoreCaptured { index: u16, value: Reg },
-    SetClosureCapture { closure: Reg, index: u16, value: Reg },
-    CloseVar { index: u16 },
+    MakeClosure {
+        dest: Reg,
+        func_index: u32,
+        captures: Vec<Reg>,
+    },
+    LoadCaptured {
+        dest: Reg,
+        index: u16,
+    },
+    StoreCaptured {
+        index: u16,
+        value: Reg,
+    },
+    SetClosureCapture {
+        closure: Reg,
+        index: u16,
+        value: Reg,
+    },
+    CloseVar {
+        index: u16,
+    },
 
     // ===== RefCell (closure-captured mutable variables) =====
-    NewRefCell { dest: Reg, value: Reg },
-    LoadRefCell { dest: Reg, cell: Reg },
-    StoreRefCell { cell: Reg, value: Reg },
+    NewRefCell {
+        dest: Reg,
+        value: Reg,
+    },
+    LoadRefCell {
+        dest: Reg,
+        cell: Reg,
+    },
+    StoreRefCell {
+        cell: Reg,
+        value: Reg,
+    },
 
     // ===== Concurrency (always exit to runtime) =====
-    Spawn { dest: Reg, func_index: u16, args: Vec<Reg> },
-    SpawnClosure { dest: Reg, closure: Reg, args: Vec<Reg> },
-    Await { dest: Reg, task: Reg },
+    Spawn {
+        dest: Reg,
+        func_index: u16,
+        args: Vec<Reg>,
+    },
+    SpawnClosure {
+        dest: Reg,
+        closure: Reg,
+        args: Vec<Reg>,
+    },
+    Await {
+        dest: Reg,
+        task: Reg,
+    },
     Yield,
-    Sleep { duration: Reg },
-    NewMutex { dest: Reg },
-    MutexLock { mutex: Reg },
-    MutexUnlock { mutex: Reg },
-    NewChannel { dest: Reg },
-    NewSemaphore { dest: Reg },
-    SemAcquire { sem: Reg },
-    SemRelease { sem: Reg },
-    WaitAll { dest: Reg, tasks: Reg },
-    TaskCancel { task: Reg },
-    TaskThen { task: Reg, callback_index: u32 },
+    Sleep {
+        duration: Reg,
+    },
+    NewMutex {
+        dest: Reg,
+    },
+    MutexLock {
+        mutex: Reg,
+    },
+    MutexUnlock {
+        mutex: Reg,
+    },
+    NewChannel {
+        dest: Reg,
+    },
+    NewSemaphore {
+        dest: Reg,
+    },
+    SemAcquire {
+        sem: Reg,
+    },
+    SemRelease {
+        sem: Reg,
+    },
+    WaitAll {
+        dest: Reg,
+        tasks: Reg,
+    },
+    TaskCancel {
+        task: Reg,
+    },
+    TaskThen {
+        task: Reg,
+        callback_index: u32,
+    },
 
     // ===== Object/Tuple Literal =====
-    ObjectLiteral { dest: Reg, type_index: u32, fields: Vec<Reg> },
-    TupleLiteral { dest: Reg, type_index: u32, elements: Vec<Reg> },
-    TupleGet { dest: Reg, tuple: Reg },
-    InitObject { dest: Reg, count: u16, fields: Vec<Reg> },
-    InitTuple { dest: Reg, count: u16, elements: Vec<Reg> },
+    ObjectLiteral {
+        dest: Reg,
+        type_index: u32,
+        fields: Vec<Reg>,
+    },
+    TupleLiteral {
+        dest: Reg,
+        type_index: u32,
+        elements: Vec<Reg>,
+    },
+    TupleGet {
+        dest: Reg,
+        tuple: Reg,
+    },
+    InitObject {
+        dest: Reg,
+        count: u16,
+        fields: Vec<Reg>,
+    },
+    InitTuple {
+        dest: Reg,
+        count: u16,
+        elements: Vec<Reg>,
+    },
 
     // ===== Module =====
-    LoadModule { dest: Reg, module_index: u32 },
-    LoadConst { dest: Reg, const_index: u32 },
+    LoadModule {
+        dest: Reg,
+        module_index: u32,
+    },
+    LoadConst {
+        dest: Reg,
+        const_index: u32,
+    },
 
     // ===== JSON Operations =====
-    JsonGet { dest: Reg, object: Reg, key_index: u32 },
-    JsonSet { object: Reg, key_index: u32, value: Reg },
-    JsonDelete { object: Reg, key_index: u32 },
-    JsonIndex { dest: Reg, object: Reg, index: Reg },
-    JsonIndexSet { object: Reg, index: Reg, value: Reg },
-    JsonPush { array: Reg, value: Reg },
-    JsonPop { dest: Reg, array: Reg },
-    JsonNewObject { dest: Reg },
-    JsonNewArray { dest: Reg },
-    JsonKeys { dest: Reg, object: Reg },
-    JsonLength { dest: Reg, object: Reg },
+    JsonGet {
+        dest: Reg,
+        object: Reg,
+        key_index: u32,
+    },
+    JsonSet {
+        object: Reg,
+        key_index: u32,
+        value: Reg,
+    },
+    JsonDelete {
+        object: Reg,
+        key_index: u32,
+    },
+    JsonIndex {
+        dest: Reg,
+        object: Reg,
+        index: Reg,
+    },
+    JsonIndexSet {
+        object: Reg,
+        index: Reg,
+        value: Reg,
+    },
+    JsonPush {
+        array: Reg,
+        value: Reg,
+    },
+    JsonPop {
+        dest: Reg,
+        array: Reg,
+    },
+    JsonNewObject {
+        dest: Reg,
+    },
+    JsonNewArray {
+        dest: Reg,
+    },
+    JsonKeys {
+        dest: Reg,
+        object: Reg,
+    },
+    JsonLength {
+        dest: Reg,
+        object: Reg,
+    },
 
     // ===== Runtime Integration =====
     GcSafepoint,
     CheckPreemption,
 
     // ===== SSA =====
-    Phi { dest: Reg, sources: Vec<(JitBlockId, Reg)> },
-    Move { dest: Reg, src: Reg },
+    Phi {
+        dest: Reg,
+        sources: Vec<(JitBlockId, Reg)>,
+    },
+    Move {
+        dest: Reg,
+        src: Reg,
+    },
 
     // ===== Exception Handling =====
-    SetupTry { catch_block: JitBlockId, finally_block: Option<JitBlockId> },
+    SetupTry {
+        catch_block: JitBlockId,
+        finally_block: Option<JitBlockId>,
+    },
     EndTry,
-    Throw { value: Reg },
+    Throw {
+        value: Reg,
+    },
     Rethrow,
 
     // ===== Optional Field =====
-    OptionalField { dest: Reg, object: Reg, offset: u16 },
+    OptionalField {
+        dest: Reg,
+        object: Reg,
+        offset: u16,
+    },
 
     // ===== ConstStr (string from constant pool by u16 index) =====
-    ConstStr { dest: Reg, str_index: u16 },
+    ConstStr {
+        dest: Reg,
+        str_index: u16,
+    },
 }
 
 impl JitInstr {
@@ -314,9 +785,9 @@ impl JitInstr {
             | JitInstr::StrictNe { dest, .. } => Some(*dest),
 
             // Logical
-            JitInstr::Not { dest, .. }
-            | JitInstr::And { dest, .. }
-            | JitInstr::Or { dest, .. } => Some(*dest),
+            JitInstr::Not { dest, .. } | JitInstr::And { dest, .. } | JitInstr::Or { dest, .. } => {
+                Some(*dest)
+            }
 
             // Boxing
             JitInstr::BoxI32 { dest, .. }
@@ -361,12 +832,10 @@ impl JitInstr {
             JitInstr::CallConstructor { dest, .. } => Some(*dest),
 
             // Closures
-            JitInstr::MakeClosure { dest, .. }
-            | JitInstr::LoadCaptured { dest, .. } => Some(*dest),
+            JitInstr::MakeClosure { dest, .. } | JitInstr::LoadCaptured { dest, .. } => Some(*dest),
 
             // RefCell
-            JitInstr::NewRefCell { dest, .. }
-            | JitInstr::LoadRefCell { dest, .. } => Some(*dest),
+            JitInstr::NewRefCell { dest, .. } | JitInstr::LoadRefCell { dest, .. } => Some(*dest),
 
             // Concurrency
             JitInstr::Spawn { dest, .. }
@@ -385,8 +854,7 @@ impl JitInstr {
             | JitInstr::InitTuple { dest, .. } => Some(*dest),
 
             // Module
-            JitInstr::LoadModule { dest, .. }
-            | JitInstr::LoadConst { dest, .. } => Some(*dest),
+            JitInstr::LoadModule { dest, .. } | JitInstr::LoadConst { dest, .. } => Some(*dest),
 
             // JSON
             JitInstr::JsonGet { dest, .. }
@@ -398,8 +866,7 @@ impl JitInstr {
             | JitInstr::JsonLength { dest, .. } => Some(*dest),
 
             // SSA
-            JitInstr::Phi { dest, .. }
-            | JitInstr::Move { dest, .. } => Some(*dest),
+            JitInstr::Phi { dest, .. } | JitInstr::Move { dest, .. } => Some(*dest),
 
             // No destination
             JitInstr::StoreLocal { .. }
@@ -444,42 +911,78 @@ impl JitInstr {
             | JitInstr::ConstNull { .. }
             | JitInstr::ConstString { .. }
             | JitInstr::ConstStr { .. }
-            | JitInstr::IAdd { .. } | JitInstr::ISub { .. } | JitInstr::IMul { .. }
-            | JitInstr::IDiv { .. } | JitInstr::IMod { .. } | JitInstr::INeg { .. }
+            | JitInstr::IAdd { .. }
+            | JitInstr::ISub { .. }
+            | JitInstr::IMul { .. }
+            | JitInstr::IDiv { .. }
+            | JitInstr::IMod { .. }
+            | JitInstr::INeg { .. }
             | JitInstr::IPow { .. }
-            | JitInstr::IShl { .. } | JitInstr::IShr { .. } | JitInstr::IUshr { .. }
-            | JitInstr::IAnd { .. } | JitInstr::IOr { .. } | JitInstr::IXor { .. }
+            | JitInstr::IShl { .. }
+            | JitInstr::IShr { .. }
+            | JitInstr::IUshr { .. }
+            | JitInstr::IAnd { .. }
+            | JitInstr::IOr { .. }
+            | JitInstr::IXor { .. }
             | JitInstr::INot { .. }
-            | JitInstr::FAdd { .. } | JitInstr::FSub { .. } | JitInstr::FMul { .. }
-            | JitInstr::FDiv { .. } | JitInstr::FNeg { .. } | JitInstr::FPow { .. }
+            | JitInstr::FAdd { .. }
+            | JitInstr::FSub { .. }
+            | JitInstr::FMul { .. }
+            | JitInstr::FDiv { .. }
+            | JitInstr::FNeg { .. }
+            | JitInstr::FPow { .. }
             | JitInstr::FMod { .. }
-            | JitInstr::ICmpEq { .. } | JitInstr::ICmpNe { .. }
-            | JitInstr::ICmpLt { .. } | JitInstr::ICmpLe { .. }
-            | JitInstr::ICmpGt { .. } | JitInstr::ICmpGe { .. }
-            | JitInstr::FCmpEq { .. } | JitInstr::FCmpNe { .. }
-            | JitInstr::FCmpLt { .. } | JitInstr::FCmpLe { .. }
-            | JitInstr::FCmpGt { .. } | JitInstr::FCmpGe { .. }
-            | JitInstr::SCmpEq { .. } | JitInstr::SCmpNe { .. }
-            | JitInstr::SCmpLt { .. } | JitInstr::SCmpLe { .. }
-            | JitInstr::SCmpGt { .. } | JitInstr::SCmpGe { .. }
-            | JitInstr::Eq { .. } | JitInstr::Ne { .. }
-            | JitInstr::StrictEq { .. } | JitInstr::StrictNe { .. }
-            | JitInstr::Not { .. } | JitInstr::And { .. } | JitInstr::Or { .. }
-            | JitInstr::BoxI32 { .. } | JitInstr::BoxF64 { .. }
-            | JitInstr::BoxBool { .. } | JitInstr::BoxPtr { .. }
-            | JitInstr::UnboxI32 { .. } | JitInstr::UnboxF64 { .. }
-            | JitInstr::UnboxBool { .. } | JitInstr::UnboxPtr { .. }
-            | JitInstr::LoadLocal { .. } | JitInstr::LoadGlobal { .. }
+            | JitInstr::ICmpEq { .. }
+            | JitInstr::ICmpNe { .. }
+            | JitInstr::ICmpLt { .. }
+            | JitInstr::ICmpLe { .. }
+            | JitInstr::ICmpGt { .. }
+            | JitInstr::ICmpGe { .. }
+            | JitInstr::FCmpEq { .. }
+            | JitInstr::FCmpNe { .. }
+            | JitInstr::FCmpLt { .. }
+            | JitInstr::FCmpLe { .. }
+            | JitInstr::FCmpGt { .. }
+            | JitInstr::FCmpGe { .. }
+            | JitInstr::SCmpEq { .. }
+            | JitInstr::SCmpNe { .. }
+            | JitInstr::SCmpLt { .. }
+            | JitInstr::SCmpLe { .. }
+            | JitInstr::SCmpGt { .. }
+            | JitInstr::SCmpGe { .. }
+            | JitInstr::Eq { .. }
+            | JitInstr::Ne { .. }
+            | JitInstr::StrictEq { .. }
+            | JitInstr::StrictNe { .. }
+            | JitInstr::Not { .. }
+            | JitInstr::And { .. }
+            | JitInstr::Or { .. }
+            | JitInstr::BoxI32 { .. }
+            | JitInstr::BoxF64 { .. }
+            | JitInstr::BoxBool { .. }
+            | JitInstr::BoxPtr { .. }
+            | JitInstr::UnboxI32 { .. }
+            | JitInstr::UnboxF64 { .. }
+            | JitInstr::UnboxBool { .. }
+            | JitInstr::UnboxPtr { .. }
+            | JitInstr::LoadLocal { .. }
+            | JitInstr::LoadGlobal { .. }
             | JitInstr::LoadStatic { .. }
-            | JitInstr::LoadField { .. } | JitInstr::LoadFieldFast { .. }
-            | JitInstr::LoadElem { .. } | JitInstr::ArrayLen { .. }
-            | JitInstr::LoadCaptured { .. } | JitInstr::LoadRefCell { .. }
+            | JitInstr::LoadField { .. }
+            | JitInstr::LoadFieldFast { .. }
+            | JitInstr::LoadElem { .. }
+            | JitInstr::ArrayLen { .. }
+            | JitInstr::LoadCaptured { .. }
+            | JitInstr::LoadRefCell { .. }
             | JitInstr::SLen { .. }
-            | JitInstr::InstanceOf { .. } | JitInstr::Typeof { .. }
+            | JitInstr::InstanceOf { .. }
+            | JitInstr::Typeof { .. }
             | JitInstr::OptionalField { .. }
-            | JitInstr::LoadModule { .. } | JitInstr::LoadConst { .. }
+            | JitInstr::LoadModule { .. }
+            | JitInstr::LoadConst { .. }
             | JitInstr::TupleGet { .. }
-            | JitInstr::Phi { .. } | JitInstr::Move { .. } => false,
+            | JitInstr::Phi { .. }
+            | JitInstr::Move { .. } => false,
 
             // Everything else has side effects
             _ => true,

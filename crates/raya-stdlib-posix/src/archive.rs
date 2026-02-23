@@ -130,8 +130,7 @@ fn create_zip_impl(output_path: &str, input_paths: &[String]) -> io::Result<()> 
             io::copy(&mut f, &mut zip)?;
         }
     }
-    zip.finish()
-        .map_err(io::Error::other)?;
+    zip.finish().map_err(io::Error::other)?;
     Ok(())
 }
 
@@ -154,8 +153,7 @@ fn add_dir_to_zip<W: Write + io::Seek>(
                 .map_err(io::Error::other)?;
             add_dir_to_zip(zip, base, &path, options)?;
         } else {
-            zip.start_file(&name, options)
-                .map_err(io::Error::other)?;
+            zip.start_file(&name, options).map_err(io::Error::other)?;
             let mut f = File::open(&path)?;
             io::copy(&mut f, zip)?;
         }
@@ -165,14 +163,11 @@ fn add_dir_to_zip<W: Write + io::Seek>(
 
 fn extract_zip_impl(archive_path: &str, output_dir: &str) -> io::Result<()> {
     let file = File::open(archive_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(io::Error::other)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(io::Error::other)?;
     let out = Path::new(output_dir);
 
     for i in 0..archive.len() {
-        let mut entry = archive
-            .by_index(i)
-            .map_err(io::Error::other)?;
+        let mut entry = archive.by_index(i).map_err(io::Error::other)?;
         let entry_path = match entry.enclosed_name() {
             Some(p) => out.join(p),
             None => continue,
@@ -193,13 +188,10 @@ fn extract_zip_impl(archive_path: &str, output_dir: &str) -> io::Result<()> {
 
 fn list_zip_impl(archive_path: &str) -> io::Result<Vec<String>> {
     let file = File::open(archive_path)?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(io::Error::other)?;
+    let mut archive = zip::ZipArchive::new(file).map_err(io::Error::other)?;
     let mut entries = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
-        let entry = archive
-            .by_index_raw(i)
-            .map_err(io::Error::other)?;
+        let entry = archive.by_index_raw(i).map_err(io::Error::other)?;
         entries.push(entry.name().to_owned());
     }
     Ok(entries)

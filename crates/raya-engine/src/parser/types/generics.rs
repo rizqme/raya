@@ -73,9 +73,13 @@ impl<'a> GenericContext<'a> {
 
     fn apply_substitution_inner(&mut self, ty: TypeId) -> Result<TypeId, TypeError> {
         // Clone the type data to avoid borrow checker issues
-        let ty_data = self.type_ctx.get(ty).ok_or_else(|| TypeError::Generic {
-            message: format!("Invalid type ID: {:?}", ty),
-        })?.clone();
+        let ty_data = self
+            .type_ctx
+            .get(ty)
+            .ok_or_else(|| TypeError::Generic {
+                message: format!("Invalid type ID: {:?}", ty),
+            })?
+            .clone();
 
         match ty_data {
             Type::TypeVar(tv) => {
@@ -165,9 +169,12 @@ impl<'a> GenericContext<'a> {
         generic_ty: TypeId,
         type_args: &[TypeId],
     ) -> Result<TypeId, TypeError> {
-        let ty_data = self.type_ctx.get(generic_ty).ok_or_else(|| TypeError::Generic {
-            message: format!("Invalid type ID: {:?}", generic_ty),
-        })?;
+        let ty_data = self
+            .type_ctx
+            .get(generic_ty)
+            .ok_or_else(|| TypeError::Generic {
+                message: format!("Invalid type ID: {:?}", generic_ty),
+            })?;
 
         match ty_data {
             Type::TypeVar(tv) => {
@@ -266,13 +273,21 @@ impl<'a> GenericContext<'a> {
         }
 
         // Clone the types to avoid borrow checker issues
-        let ty1_data = self.type_ctx.get(ty1).ok_or_else(|| TypeError::Generic {
-            message: format!("Invalid type ID: {:?}", ty1),
-        })?.clone();
+        let ty1_data = self
+            .type_ctx
+            .get(ty1)
+            .ok_or_else(|| TypeError::Generic {
+                message: format!("Invalid type ID: {:?}", ty1),
+            })?
+            .clone();
 
-        let ty2_data = self.type_ctx.get(ty2).ok_or_else(|| TypeError::Generic {
-            message: format!("Invalid type ID: {:?}", ty2),
-        })?.clone();
+        let ty2_data = self
+            .type_ctx
+            .get(ty2)
+            .ok_or_else(|| TypeError::Generic {
+                message: format!("Invalid type ID: {:?}", ty2),
+            })?
+            .clone();
 
         match (&ty1_data, &ty2_data) {
             // Type variable unification

@@ -41,8 +41,14 @@ mod tests {
     fn test_default_config() {
         let config = LintConfig::new();
         // No overrides → falls back to the provided default
-        assert_eq!(config.effective_severity("no-empty-block", Severity::Warn), Severity::Warn);
-        assert_eq!(config.effective_severity("no-empty-block", Severity::Error), Severity::Error);
+        assert_eq!(
+            config.effective_severity("no-empty-block", Severity::Warn),
+            Severity::Warn
+        );
+        assert_eq!(
+            config.effective_severity("no-empty-block", Severity::Error),
+            Severity::Error
+        );
     }
 
     #[test]
@@ -50,9 +56,15 @@ mod tests {
         let mut config = LintConfig::new();
         config.set_severity("prefer-const", Severity::Error);
 
-        assert_eq!(config.effective_severity("prefer-const", Severity::Warn), Severity::Error);
+        assert_eq!(
+            config.effective_severity("prefer-const", Severity::Warn),
+            Severity::Error
+        );
         // Other rules unaffected
-        assert_eq!(config.effective_severity("no-empty-block", Severity::Warn), Severity::Warn);
+        assert_eq!(
+            config.effective_severity("no-empty-block", Severity::Warn),
+            Severity::Warn
+        );
     }
 
     #[test]
@@ -62,6 +74,9 @@ mod tests {
 
         assert!(config.is_disabled("no-empty-block"));
         assert!(!config.is_disabled("prefer-const"));
-        assert_eq!(config.effective_severity("no-empty-block", Severity::Warn), Severity::Off);
+        assert_eq!(
+            config.effective_severity("no-empty-block", Severity::Warn),
+            Severity::Off
+        );
     }
 }

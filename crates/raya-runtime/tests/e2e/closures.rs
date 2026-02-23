@@ -209,7 +209,7 @@ fn test_closure_capture_in_loop_multiple() {
              if (i == 2) { c2 = (): number => i; }
          }
          return c0() + c1() * 10 + c2() * 100;",
-        210,  // 0 + 10 + 200
+        210, // 0 + 10 + 200
     );
 }
 
@@ -237,7 +237,7 @@ fn test_closure_in_array_multiple() {
          closures.push((): number => b);
          closures.push((): number => c);
          return closures[0]() + closures[1]() * 10 + closures[2]() * 100;",
-        321,  // 1 + 20 + 300
+        321, // 1 + 20 + 300
     );
 }
 
@@ -251,7 +251,7 @@ fn test_closure_in_array_loop_same_var() {
              closures.push((): number => i);
          }
          return closures[0]() + closures[1]() * 10 + closures[2]() * 100;",
-        210,  // 0 + 10 + 200
+        210, // 0 + 10 + 200
     );
 }
 
@@ -265,7 +265,7 @@ fn test_closure_in_array_loop_with_temp() {
              closures.push(closure);
          }
          return closures[0]() + closures[1]() * 10 + closures[2]() * 100;",
-        210,  // 0 + 10 + 200
+        210, // 0 + 10 + 200
     );
 }
 
@@ -279,7 +279,7 @@ fn test_closure_in_loop_unconditional() {
              closure = (): number => i;
          }
          return closure();",
-        2,  // Last iteration: i=2
+        2, // Last iteration: i=2
     );
 }
 

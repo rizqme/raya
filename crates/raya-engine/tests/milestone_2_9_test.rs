@@ -1,8 +1,8 @@
 //! Comprehensive tests for Milestone 2.9 features
 //! Tests destructuring patterns, JSX parsing, spread operators, and computed properties
 
-use raya_engine::parser::Parser;
 use raya_engine::parser::ast::*;
+use raya_engine::parser::Parser;
 
 // ============================================================================
 // Destructuring Pattern Tests
@@ -207,9 +207,10 @@ fn test_array_spread() {
     if let Statement::VariableDecl(decl) = &module.statements[0] {
         if let Some(Expression::Array(arr)) = &decl.initializer {
             // Verify we have spread elements
-            let has_spread = arr.elements.iter().any(|elem| {
-                matches!(elem, Some(ArrayElement::Spread(_)))
-            });
+            let has_spread = arr
+                .elements
+                .iter()
+                .any(|elem| matches!(elem, Some(ArrayElement::Spread(_))));
             assert!(has_spread);
         } else {
             panic!("Expected array expression");
@@ -226,9 +227,10 @@ fn test_object_spread() {
     if let Statement::VariableDecl(decl) = &module.statements[0] {
         if let Some(Expression::Object(obj)) = &decl.initializer {
             // Verify we have spread properties
-            let has_spread = obj.properties.iter().any(|prop| {
-                matches!(prop, ObjectProperty::Spread(_))
-            });
+            let has_spread = obj
+                .properties
+                .iter()
+                .any(|prop| matches!(prop, ObjectProperty::Spread(_)));
             assert!(has_spread);
         } else {
             panic!("Expected object expression");
@@ -318,7 +320,10 @@ fn test_complex_object_with_all_features() {
             // Verify mix of spread, regular, and computed properties
             assert!(obj.properties.len() >= 3);
 
-            let has_spread = obj.properties.iter().any(|p| matches!(p, ObjectProperty::Spread(_)));
+            let has_spread = obj
+                .properties
+                .iter()
+                .any(|p| matches!(p, ObjectProperty::Spread(_)));
             let has_computed = obj.properties.iter().any(|p| {
                 matches!(p, ObjectProperty::Property(prop) if matches!(prop.key, PropertyKey::Computed(_)))
             });
@@ -341,9 +346,11 @@ fn test_jsx_with_spread_and_computed() {
         if let Some(Expression::JsxElement(jsx)) = &decl.initializer {
             assert!(jsx.opening.attributes.len() >= 2);
 
-            let has_spread = jsx.opening.attributes.iter().any(|attr| {
-                matches!(attr, JsxAttribute::Spread { .. })
-            });
+            let has_spread = jsx
+                .opening
+                .attributes
+                .iter()
+                .any(|attr| matches!(attr, JsxAttribute::Spread { .. }));
             assert!(has_spread);
         } else {
             panic!("Expected JSX element");

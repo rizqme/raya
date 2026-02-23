@@ -28,7 +28,12 @@ impl LoopStack {
     }
 
     /// Push a new loop context
-    pub fn push(&mut self, break_target: BasicBlockId, continue_target: BasicBlockId, label: Option<String>) {
+    pub fn push(
+        &mut self,
+        break_target: BasicBlockId,
+        continue_target: BasicBlockId,
+        label: Option<String>,
+    ) {
         self.loops.push(LoopContext {
             break_target,
             continue_target,
@@ -96,17 +101,15 @@ impl BlockOrdering {
     /// Create a new block ordering
     pub fn new(blocks: impl IntoIterator<Item = BasicBlockId>) -> Self {
         let order: Vec<_> = blocks.into_iter().collect();
-        let positions: FxHashMap<_, _> = order
-            .iter()
-            .enumerate()
-            .map(|(i, &id)| (id, i))
-            .collect();
+        let positions: FxHashMap<_, _> = order.iter().enumerate().map(|(i, &id)| (id, i)).collect();
         Self { order, positions }
     }
 
     /// Check if a block comes immediately after another
     pub fn is_fallthrough(&self, from: BasicBlockId, to: BasicBlockId) -> bool {
-        if let (Some(&from_pos), Some(&to_pos)) = (self.positions.get(&from), self.positions.get(&to)) {
+        if let (Some(&from_pos), Some(&to_pos)) =
+            (self.positions.get(&from), self.positions.get(&to))
+        {
             to_pos == from_pos + 1
         } else {
             false
@@ -138,7 +141,11 @@ mod tests {
         assert_eq!(stack.break_target(), Some(BasicBlockId(10)));
         assert_eq!(stack.continue_target(), Some(BasicBlockId(5)));
 
-        stack.push(BasicBlockId(20), BasicBlockId(15), Some("inner".to_string()));
+        stack.push(
+            BasicBlockId(20),
+            BasicBlockId(15),
+            Some("inner".to_string()),
+        );
         assert_eq!(stack.break_target(), Some(BasicBlockId(20)));
         assert_eq!(stack.labeled_break_target("inner"), Some(BasicBlockId(20)));
 

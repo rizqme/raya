@@ -989,34 +989,22 @@ fn test_generic_function_multiple_type_params() {
 
 #[test]
 fn test_string_less_than() {
-    expect_bool(
-        "return \"apple\" < \"banana\";",
-        true,
-    );
+    expect_bool("return \"apple\" < \"banana\";", true);
 }
 
 #[test]
 fn test_string_greater_than() {
-    expect_bool(
-        "return \"banana\" > \"apple\";",
-        true,
-    );
+    expect_bool("return \"banana\" > \"apple\";", true);
 }
 
 #[test]
 fn test_string_less_equal() {
-    expect_bool(
-        "return \"abc\" <= \"abc\";",
-        true,
-    );
+    expect_bool("return \"abc\" <= \"abc\";", true);
 }
 
 #[test]
 fn test_string_greater_equal() {
-    expect_bool(
-        "return \"xyz\" >= \"abc\";",
-        true,
-    );
+    expect_bool("return \"xyz\" >= \"abc\";", true);
 }
 
 // ============================================================================

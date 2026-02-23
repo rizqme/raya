@@ -191,7 +191,10 @@ fn test_parse_rest_pattern_must_be_last_in_array() {
     let source = "let [...rest, last] = arr;";
     let parser = Parser::new(source).unwrap();
     let result = parser.parse();
-    assert!(result.is_err(), "Rest element must be last in array pattern");
+    assert!(
+        result.is_err(),
+        "Rest element must be last in array pattern"
+    );
 }
 
 #[test]
@@ -199,5 +202,8 @@ fn test_parse_rest_pattern_must_be_last_in_object() {
     let source = "let { ...rest, last } = obj;";
     let parser = Parser::new(source).unwrap();
     let result = parser.parse();
-    assert!(result.is_err(), "Rest element must be last in object pattern");
+    assert!(
+        result.is_err(),
+        "Rest element must be last in object pattern"
+    );
 }

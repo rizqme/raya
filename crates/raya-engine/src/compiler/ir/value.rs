@@ -160,7 +160,10 @@ mod tests {
         assert_eq!(format!("{}", IrConstant::I32(42)), "42");
         assert_eq!(format!("{}", IrConstant::Boolean(true)), "true");
         assert_eq!(format!("{}", IrConstant::Null), "null");
-        assert_eq!(format!("{}", IrConstant::String("hello".to_string())), "\"hello\"");
+        assert_eq!(
+            format!("{}", IrConstant::String("hello".to_string())),
+            "\"hello\""
+        );
     }
 
     #[test]

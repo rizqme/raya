@@ -1,7 +1,9 @@
 //! Synchronous VM facade for testing and simple execution
 
-
 use super::SafepointCoordinator;
+use crate::compiler::Module;
+use crate::compiler::bytecode::verify::operand_size as bytecode_operand_size;
+use crate::compiler::bytecode::Opcode;
 use crate::vm::{
     object::{Object, RayaString},
     scheduler::{Scheduler, Task, TaskState},
@@ -9,7 +11,6 @@ use crate::vm::{
     value::Value,
     VmError, VmResult,
 };
-use crate::compiler::Module;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -67,7 +68,10 @@ impl Vm {
     }
 
     /// Create a new VM with specified worker count and native handler
-    pub fn with_native_handler(worker_count: usize, native_handler: std::sync::Arc<dyn crate::vm::NativeHandler>) -> Self {
+    pub fn with_native_handler(
+        worker_count: usize,
+        native_handler: std::sync::Arc<dyn crate::vm::NativeHandler>,
+    ) -> Self {
         let mut scheduler = Scheduler::with_native_handler(worker_count, native_handler);
         scheduler.start();
 
@@ -81,7 +85,10 @@ impl Vm {
     }
 
     /// Create a new VM with specified scheduler limits
-    pub fn with_scheduler_limits(worker_count: usize, limits: crate::vm::scheduler::SchedulerLimits) -> Self {
+    pub fn with_scheduler_limits(
+        worker_count: usize,
+        limits: crate::vm::scheduler::SchedulerLimits,
+    ) -> Self {
         let mut scheduler = Scheduler::with_limits(worker_count, limits);
         scheduler.start();
 
@@ -146,8 +153,8 @@ impl Vm {
     /// then registers it in the shared module registry along with its
     /// classes and native function table.
     pub fn load_rbin_bytes(&mut self, bytes: &[u8]) -> VmResult<()> {
-        let module = Module::decode(bytes)
-            .map_err(|e| VmError::InvalidBinaryFormat(format!("{}", e)))?;
+        let module =
+            Module::decode(bytes).map_err(|e| VmError::InvalidBinaryFormat(format!("{}", e)))?;
 
         self.scheduler
             .shared_state()
@@ -180,7 +187,11 @@ impl Vm {
 
     /// Register a class with the VM's shared class registry
     pub fn register_class(&self, class: crate::vm::object::Class) {
-        self.scheduler.shared_state().classes.write().register_class(class);
+        self.scheduler
+            .shared_state()
+            .classes
+            .write()
+            .register_class(class);
     }
 
     /// Trigger garbage collection on the shared GC
@@ -234,11 +245,29 @@ impl Vm {
     /// This method runs the main function as a task, enabling full cooperative
     /// scheduling with proper suspension for await, sleep, mutex, and channel operations.
     pub fn execute(&mut self, module: &Module) -> VmResult<Value> {
+        self.execute_internal(module, true)
+    }
+
+    /// Execute a module but do not apply legacy user-main fallback behavior.
+    ///
+    /// This is useful for REPL/incremental evaluation where defining
+    /// `function main()` should not implicitly invoke it.
+    pub fn execute_entry_only(&mut self, module: &Module) -> VmResult<Value> {
+        self.execute_internal(module, false)
+    }
+
+    fn execute_internal(
+        &mut self,
+        module: &Module,
+        allow_user_main_fallback: bool,
+    ) -> VmResult<Value> {
         // Validate module
         module.validate().map_err(VmError::RuntimeError)?;
 
         // Register module: classes, native linkage, and module registry
-        self.scheduler.shared_state().register_module(Arc::new(module.clone()))
+        self.scheduler
+            .shared_state()
+            .register_module(Arc::new(module.clone()))
             .map_err(VmError::RuntimeError)?;
 
         // JIT: start background thread and submit prewarm candidates (non-blocking)
@@ -246,10 +275,13 @@ impl Vm {
         if let Some(ref config) = self.jit_config {
             // Create profiling counters for adaptive compilation
             if config.adaptive_compilation {
-                let profile = Arc::new(
-                    crate::jit::profiling::counters::ModuleProfile::new(module.functions.len())
-                );
-                self.scheduler.shared_state().module_profiles.write()
+                let profile = Arc::new(crate::jit::profiling::counters::ModuleProfile::new(
+                    module.functions.len(),
+                ));
+                self.scheduler
+                    .shared_state()
+                    .module_profiles
+                    .write()
                     .insert(module.checksum, profile);
             }
 
@@ -264,16 +296,25 @@ impl Vm {
                 let candidates = Self::collect_prewarm_candidates(module, config);
                 if !candidates.is_empty() {
                     let module_arc = Arc::new(module.clone());
-                    let profile = self.scheduler.shared_state().module_profiles.read()
-                        .get(&module.checksum).cloned()
-                        .unwrap_or_else(|| Arc::new(
-                            crate::jit::profiling::counters::ModuleProfile::new(module.functions.len())
-                        ));
+                    let profile = self
+                        .scheduler
+                        .shared_state()
+                        .module_profiles
+                        .read()
+                        .get(&module.checksum)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Arc::new(crate::jit::profiling::counters::ModuleProfile::new(
+                                module.functions.len(),
+                            ))
+                        });
 
                     for &func_index in candidates.iter().take(config.max_prewarm_functions) {
                         // Mark as compiling to prevent adaptive re-submission
                         if let Some(fp) = profile.get(func_index) {
-                            if !fp.try_start_compile() { continue; }
+                            if !fp.try_start_compile() {
+                                continue;
+                            }
                         }
                         let _ = bg_compiler.try_submit(crate::jit::profiling::CompilationRequest {
                             module: module_arc.clone(),
@@ -286,38 +327,96 @@ impl Vm {
             }
         }
 
-        // Find main function
-        let main_fn_id = module
+        // Execute the entry `main` (the last one emitted by the compiler).
+        let entry_main_fn_id = module
             .functions
             .iter()
-            .position(|f| f.name == "main")
+            .rposition(|f| f.name == "main")
             .ok_or_else(|| VmError::RuntimeError("No main function".to_string()))?;
+        let result = self.execute_main_task(module, entry_main_fn_id)?;
 
+        // Legacy compatibility: if the entry main returned null and the module
+        // also contains a user-declared `main`, run the first `main`.
+        //
+        // Runtime/CLI tests and script semantics still expect this behavior.
+        if allow_user_main_fallback && result.is_null() {
+            if let Some(user_main_fn_id) = module.functions.iter().position(|f| f.name == "main") {
+                if user_main_fn_id != entry_main_fn_id {
+                    let entry_calls_user_main =
+                        Self::function_calls_target(module, entry_main_fn_id, user_main_fn_id);
+                    if !entry_calls_user_main {
+                        return self.execute_main_task(module, user_main_fn_id);
+                    }
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    fn function_calls_target(module: &Module, caller_fn_id: usize, target_fn_id: usize) -> bool {
+        let Some(function) = module.functions.get(caller_fn_id) else {
+            return false;
+        };
+        let code = &function.code;
+        let mut ip = 0usize;
+
+        while ip < code.len() {
+            let Some(opcode) = Opcode::from_u8(code[ip]) else {
+                // Malformed bytecode should not trigger fallback suppression.
+                return false;
+            };
+            ip += 1;
+
+            if opcode == Opcode::Call {
+                // CALL operands: u32 function index + u16 arg count
+                if ip + 6 > code.len() {
+                    return false;
+                }
+                let callee_fn_id =
+                    u32::from_le_bytes([code[ip], code[ip + 1], code[ip + 2], code[ip + 3]])
+                        as usize;
+                if callee_fn_id == target_fn_id {
+                    return true;
+                }
+            }
+
+            let operand_len = bytecode_operand_size(opcode);
+            if ip + operand_len > code.len() {
+                // Malformed/truncated bytecode should not trigger fallback suppression.
+                return false;
+            }
+            ip += operand_len;
+        }
+
+        false
+    }
+
+    fn execute_main_task(&mut self, module: &Module, main_fn_id: usize) -> VmResult<Value> {
         // Create main task
         let main_task = Arc::new(Task::new(main_fn_id, Arc::new(module.clone()), None));
         let _task_id = main_task.id();
 
         // Spawn main task
         if self.scheduler.spawn(main_task.clone()).is_none() {
-            return Err(VmError::RuntimeError("Failed to spawn main task".to_string()));
+            return Err(VmError::RuntimeError(
+                "Failed to spawn main task".to_string(),
+            ));
         }
 
         // Block until main task completes using condvar (no busy-waiting)
         let final_state = main_task.wait_completion();
 
         match final_state {
-            TaskState::Completed => {
-                Ok(main_task.result().unwrap_or_default())
-            }
+            TaskState::Completed => Ok(main_task.result().unwrap_or_default()),
             TaskState::Failed => {
                 let msg = Self::extract_exception_message(&main_task);
                 Err(VmError::RuntimeError(msg))
             }
-            other => {
-                Err(VmError::RuntimeError(format!(
-                    "Main task ended in unexpected state: {:?}", other
-                )))
-            }
+            other => Err(VmError::RuntimeError(format!(
+                "Main task ended in unexpected state: {:?}",
+                other
+            ))),
         }
     }
 
@@ -329,14 +428,18 @@ impl Vm {
     fn collect_prewarm_candidates(module: &Module, config: &crate::jit::JitConfig) -> Vec<usize> {
         if !module.jit_hints.is_empty() {
             // Use pre-computed hints from compile time
-            return module.jit_hints.iter()
+            return module
+                .jit_hints
+                .iter()
                 .filter(|h| h.score >= config.min_score && h.is_cpu_bound)
                 .map(|h| h.func_index as usize)
                 .collect();
         }
         // Fallback: run heuristics at runtime (for modules compiled without JIT)
         let analyzer = crate::jit::analysis::heuristics::HeuristicsAnalyzer::new();
-        analyzer.select_candidates(module).iter()
+        analyzer
+            .select_candidates(module)
+            .iter()
             .map(|c| c.func_index)
             .collect()
     }
@@ -421,8 +524,8 @@ impl Vm {
     /// (via `load_rbin` / `load_rbin_bytes`) before calling restore.
     /// Tasks are reconstructed and re-inserted into the scheduler's task map.
     pub fn restore_from_file(&mut self, path: &Path) -> VmResult<()> {
-        let reader = SnapshotReader::from_file(path)
-            .map_err(|e| VmError::IoError(format!("{}", e)))?;
+        let reader =
+            SnapshotReader::from_file(path).map_err(|e| VmError::IoError(format!("{}", e)))?;
         self.apply_snapshot(reader)
     }
 
@@ -732,18 +835,22 @@ mod tests {
                 0,
                 0,
                 Opcode::StoreLocal as u8,
-                0, 0, // u16 index 0
+                0,
+                0, // u16 index 0
                 Opcode::ConstI32 as u8,
                 10,
                 0,
                 0,
                 0,
                 Opcode::StoreLocal as u8,
-                1, 0, // u16 index 1
+                1,
+                0, // u16 index 1
                 Opcode::LoadLocal as u8,
-                0, 0, // u16 index 0
+                0,
+                0, // u16 index 0
                 Opcode::LoadLocal as u8,
-                1, 0, // u16 index 1
+                1,
+                0, // u16 index 1
                 Opcode::Iadd as u8,
                 Opcode::Return as u8,
             ],
@@ -966,9 +1073,7 @@ mod tests {
         let module = Arc::new(module);
 
         // Register the module
-        vm.shared_state()
-            .register_module(module.clone())
-            .unwrap();
+        vm.shared_state().register_module(module.clone()).unwrap();
 
         // Manually add a task to the task registry
         let task = Arc::new(Task::new(0, module.clone(), None));
@@ -982,9 +1087,7 @@ mod tests {
 
         // Restore into a fresh VM
         let mut vm2 = Vm::new();
-        vm2.shared_state()
-            .register_module(module.clone())
-            .unwrap();
+        vm2.shared_state().register_module(module.clone()).unwrap();
         vm2.restore_from_bytes(&bytes).unwrap();
 
         // Verify the task was restored
@@ -1014,9 +1117,7 @@ mod tests {
         });
         let module = Arc::new(module);
 
-        vm.shared_state()
-            .register_module(module.clone())
-            .unwrap();
+        vm.shared_state().register_module(module.clone()).unwrap();
 
         let task = Arc::new(Task::new(0, module.clone(), None));
         let task_id = task.id();
@@ -1030,9 +1131,7 @@ mod tests {
 
         // Restore
         let mut vm2 = Vm::new();
-        vm2.shared_state()
-            .register_module(module.clone())
-            .unwrap();
+        vm2.shared_state().register_module(module.clone()).unwrap();
         vm2.restore_from_file(&path).unwrap();
 
         let tasks = vm2.shared_state().tasks.read();
@@ -1129,27 +1228,49 @@ mod tests {
             local_count: 1,
             code: vec![
                 // x = 0
-                Opcode::ConstI32 as u8, 0, 0, 0, 0,       // 0-4
-                Opcode::StoreLocal as u8, 0, 0,             // 5-7
+                Opcode::ConstI32 as u8,
+                0,
+                0,
+                0,
+                0, // 0-4
+                Opcode::StoreLocal as u8,
+                0,
+                0, // 5-7
                 // loop start (offset 8):
-                Opcode::LoadLocal as u8, 0, 0,              // 8-10
-                Opcode::ConstI32 as u8, 0xe8, 0x03, 0, 0,  // 11-15 (1000)
-                Opcode::Ilt as u8,                          // 16
-                Opcode::JmpIfFalse as u8, 14, 0,            // 17-19 → offset 33
+                Opcode::LoadLocal as u8,
+                0,
+                0, // 8-10
+                Opcode::ConstI32 as u8,
+                0xe8,
+                0x03,
+                0,
+                0,                 // 11-15 (1000)
+                Opcode::Ilt as u8, // 16
+                Opcode::JmpIfFalse as u8,
+                14,
+                0, // 17-19 → offset 33
                 // x = x + 1
-                Opcode::LoadLocal as u8, 0, 0,              // 20-22
-                Opcode::ConstI32 as u8, 1, 0, 0, 0,        // 23-27
-                Opcode::Iadd as u8,                         // 28
-                Opcode::StoreLocal as u8, 0, 0,             // 29-31
+                Opcode::LoadLocal as u8,
+                0,
+                0, // 20-22
+                Opcode::ConstI32 as u8,
+                1,
+                0,
+                0,
+                0,                  // 23-27
+                Opcode::Iadd as u8, // 28
+                Opcode::StoreLocal as u8,
+                0,
+                0, // 29-31
                 // backward jump to loop start
                 Opcode::Jmp as u8,
                 (-24i16 as u16 & 0xFF) as u8,
-                ((-24i16 as u16) >> 8) as u8,               // 32-34 → offset 8
-                // exit (offset 35):
-                // JmpIfFalse lands here: 19 + 14 = 33... let me recalculate
-                // Actually JmpIfFalse at offset 17, reads 2 bytes (18-19), then IP = 20
-                // Offset = 14, so target = 20 + 14 = 34... hmm
-                // Let me just use a simple straight-line program instead
+                ((-24i16 as u16) >> 8) as u8, // 32-34 → offset 8
+                                              // exit (offset 35):
+                                              // JmpIfFalse lands here: 19 + 14 = 33... let me recalculate
+                                              // Actually JmpIfFalse at offset 17, reads 2 bytes (18-19), then IP = 20
+                                              // Offset = 14, so target = 20 + 14 = 34... hmm
+                                              // Let me just use a simple straight-line program instead
             ],
         });
 

@@ -59,11 +59,18 @@ impl NativeModuleRegistry {
     /// # Returns
     /// * `Ok(())` - Module registered successfully
     /// * `Err(String)` - Registration failed
-    pub fn register_as(&mut self, name: impl Into<String>, module: Arc<NativeModule>) -> Result<(), String> {
+    pub fn register_as(
+        &mut self,
+        name: impl Into<String>,
+        module: Arc<NativeModule>,
+    ) -> Result<(), String> {
         let name_str = name.into();
 
         if self.by_name.contains_key(&name_str) {
-            return Err(format!("Native module '{}' is already registered", name_str));
+            return Err(format!(
+                "Native module '{}' is already registered",
+                name_str
+            ));
         }
 
         self.by_name.insert(name_str, module);
@@ -225,8 +232,12 @@ mod tests {
     fn test_clear() {
         let mut registry = NativeModuleRegistry::new();
 
-        registry.register(Arc::new(create_test_module("test1"))).unwrap();
-        registry.register(Arc::new(create_test_module("test2"))).unwrap();
+        registry
+            .register(Arc::new(create_test_module("test1")))
+            .unwrap();
+        registry
+            .register(Arc::new(create_test_module("test2")))
+            .unwrap();
 
         assert_eq!(registry.module_count(), 2);
 

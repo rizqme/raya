@@ -16,7 +16,9 @@ use raya_sdk::{NativeCallResult, NativeContext, NativeValue};
 /// Closes dst when done. Returns the number of items forwarded.
 pub fn forward(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
-        return NativeCallResult::Error("stream.forward requires 2 arguments (src, dst)".to_string());
+        return NativeCallResult::Error(
+            "stream.forward requires 2 arguments (src, dst)".to_string(),
+        );
     }
 
     let src = args[0];
@@ -32,7 +34,9 @@ pub fn forward(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
             }
             // dst full, use blocking send
             match ctx.channel_send(dst, val) {
-                Ok(true) => { count += 1; }
+                Ok(true) => {
+                    count += 1;
+                }
                 _ => break, // dst closed or error
             }
             continue;
@@ -47,7 +51,9 @@ pub fn forward(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
         match ctx.channel_receive(src) {
             Ok(Some(val)) => {
                 match ctx.channel_send(dst, val) {
-                    Ok(true) => { count += 1; }
+                    Ok(true) => {
+                        count += 1;
+                    }
                     _ => break, // dst closed or error
                 }
             }
@@ -124,7 +130,9 @@ pub fn receive(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResul
 /// Returns true if sent, false if channel is closed.
 pub fn send(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     if args.len() < 2 {
-        return NativeCallResult::Error("stream.send requires 2 arguments (channel, value)".to_string());
+        return NativeCallResult::Error(
+            "stream.send requires 2 arguments (channel, value)".to_string(),
+        );
     }
 
     let ch = args[0];
@@ -158,7 +166,9 @@ pub fn count(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult 
         }
 
         match ctx.channel_receive(ch) {
-            Ok(Some(_)) => { count += 1; }
+            Ok(Some(_)) => {
+                count += 1;
+            }
             _ => break,
         }
     }

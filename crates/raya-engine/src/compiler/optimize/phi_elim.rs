@@ -76,8 +76,10 @@ impl PhiEliminator {
     fn eliminate_in_function(&self, func: &mut IrFunction) {
         // First, collect all PHI instructions and their copy targets
         // Map from predecessor block ID to list of (dest, source) copies to insert
-        let mut copies_to_insert: FxHashMap<BasicBlockId, Vec<(crate::ir::Register, crate::ir::Register)>> =
-            FxHashMap::default();
+        let mut copies_to_insert: FxHashMap<
+            BasicBlockId,
+            Vec<(crate::ir::Register, crate::ir::Register)>,
+        > = FxHashMap::default();
 
         // Also track which blocks have PHIs to remove
         let mut blocks_with_phis: Vec<(BasicBlockId, Vec<usize>)> = Vec::new();
@@ -140,8 +142,10 @@ impl Default for PhiEliminator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compiler::ir::{BasicBlock, IrInstr, IrModule, IrFunction, IrValue, IrConstant, Terminator};
     use crate::compiler::ir::value::{Register, RegisterId};
+    use crate::compiler::ir::{
+        BasicBlock, IrConstant, IrFunction, IrInstr, IrModule, IrValue, Terminator,
+    };
     use crate::parser::TypeId;
 
     fn make_reg(id: u32, ty: u32) -> Register {
@@ -214,7 +218,9 @@ mod tests {
         let func = &module.functions[0];
         let bb3 = func.get_block(BasicBlockId(3)).unwrap();
         assert!(
-            !bb3.instructions.iter().any(|i| matches!(i, IrInstr::Phi { .. })),
+            !bb3.instructions
+                .iter()
+                .any(|i| matches!(i, IrInstr::Phi { .. })),
             "PHI should be eliminated"
         );
 

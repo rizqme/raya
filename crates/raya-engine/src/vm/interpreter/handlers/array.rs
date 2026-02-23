@@ -25,7 +25,8 @@ impl<'a> Interpreter<'a> {
             array::PUSH => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.push expects 1 argument, got {}", arg_count
+                        "Array.push expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let value = stack.pop()?;
@@ -42,7 +43,8 @@ impl<'a> Interpreter<'a> {
             array::POP => {
                 if arg_count != 0 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.pop expects 0 arguments, got {}", arg_count
+                        "Array.pop expects 0 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let array_val = stack.pop()?;
@@ -58,7 +60,8 @@ impl<'a> Interpreter<'a> {
             array::SHIFT => {
                 if arg_count != 0 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.shift expects 0 arguments, got {}", arg_count
+                        "Array.shift expects 0 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let array_val = stack.pop()?;
@@ -74,7 +77,8 @@ impl<'a> Interpreter<'a> {
             array::UNSHIFT => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.unshift expects 1 argument, got {}", arg_count
+                        "Array.unshift expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let value = stack.pop()?;
@@ -91,7 +95,8 @@ impl<'a> Interpreter<'a> {
             array::INDEX_OF => {
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.indexOf expects 1-2 arguments, got {}", arg_count
+                        "Array.indexOf expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let from_index = if arg_count == 2 {
@@ -142,7 +147,8 @@ impl<'a> Interpreter<'a> {
             array::INCLUDES => {
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.includes expects 1 argument, got {}", arg_count
+                        "Array.includes expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let value = stack.pop()?;
@@ -159,8 +165,16 @@ impl<'a> Interpreter<'a> {
             array::SLICE => {
                 // slice(start, end?) - arg_count is 1 or 2
                 // Supports negative indices: -1 = last element, -2 = second-to-last, etc.
-                let end_val = if arg_count >= 2 { Some(stack.pop()?) } else { None };
-                let start_val = if arg_count >= 1 { stack.pop()? } else { Value::i32(0) };
+                let end_val = if arg_count >= 2 {
+                    Some(stack.pop()?)
+                } else {
+                    None
+                };
+                let start_val = if arg_count >= 1 {
+                    stack.pop()?
+                } else {
+                    Value::i32(0)
+                };
                 let array_val = stack.pop()?;
 
                 if !array_val.is_ptr() {
@@ -170,7 +184,7 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
                 let len = arr.len();
-                
+
                 // Normalize negative indices
                 let start_raw = start_val.as_i32().unwrap_or(0);
                 let start = if start_raw < 0 {
@@ -178,7 +192,7 @@ impl<'a> Interpreter<'a> {
                 } else {
                     (start_raw as usize).min(len)
                 };
-                
+
                 let end = end_val
                     .and_then(|v| v.as_i32())
                     .map(|e| {
@@ -199,7 +213,8 @@ impl<'a> Interpreter<'a> {
                     }
                 }
                 let gc_ptr = self.gc.lock().allocate(new_arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -208,7 +223,8 @@ impl<'a> Interpreter<'a> {
                 // Returns array of removed elements
                 if arg_count < 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.splice expects at least 1 argument, got {}", arg_count
+                        "Array.splice expects at least 1 argument, got {}",
+                        arg_count
                     )));
                 }
 
@@ -248,9 +264,7 @@ impl<'a> Interpreter<'a> {
                 let end = (start + delete_count).min(len);
 
                 // Collect removed elements
-                let removed_vals: Vec<Value> = (start..end)
-                    .filter_map(|i| arr.get(i))
-                    .collect();
+                let removed_vals: Vec<Value> = (start..end).filter_map(|i| arr.get(i)).collect();
 
                 // Build new elements list: [0..start] + items + [end..len]
                 let mut new_elements: Vec<Value> = Vec::new();
@@ -277,14 +291,16 @@ impl<'a> Interpreter<'a> {
 
                 // Return removed elements
                 let gc_ptr = self.gc.lock().allocate(removed);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
             array::REVERSE => {
                 if arg_count != 0 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.reverse expects 0 arguments, got {}", arg_count
+                        "Array.reverse expects 0 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let array_val = stack.pop()?;
@@ -301,7 +317,8 @@ impl<'a> Interpreter<'a> {
                 // concat(other): merge two arrays
                 if arg_count != 1 {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.concat expects 1 argument, got {}", arg_count
+                        "Array.concat expects 1 argument, got {}",
+                        arg_count
                     )));
                 }
                 let other_val = stack.pop()?;
@@ -325,7 +342,8 @@ impl<'a> Interpreter<'a> {
                 }
 
                 let gc_ptr = self.gc.lock().allocate(new_arr);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -333,7 +351,8 @@ impl<'a> Interpreter<'a> {
                 // lastIndexOf(value, fromIndex?): find last occurrence
                 if !(1..=2).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.lastIndexOf expects 1-2 arguments, got {}", arg_count
+                        "Array.lastIndexOf expects 1-2 arguments, got {}",
+                        arg_count
                     )));
                 }
                 let from_index = if arg_count == 2 {
@@ -390,7 +409,8 @@ impl<'a> Interpreter<'a> {
                 // fill(value, start?, end?): fill with value
                 if !(1..=3).contains(&arg_count) {
                     return Err(VmError::RuntimeError(format!(
-                        "Array.fill expects 1-3 arguments, got {}", arg_count
+                        "Array.fill expects 1-3 arguments, got {}",
+                        arg_count
                     )));
                 }
 
@@ -410,8 +430,16 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &mut *arr_ptr.unwrap().as_ptr() };
 
                 let fill_value = args[0];
-                let start = if arg_count >= 2 { args[1].as_i32().unwrap_or(0).max(0) as usize } else { 0 };
-                let end = if arg_count >= 3 { args[2].as_i32().unwrap_or(arr.len() as i32).max(0) as usize } else { arr.len() };
+                let start = if arg_count >= 2 {
+                    args[1].as_i32().unwrap_or(0).max(0) as usize
+                } else {
+                    0
+                };
+                let end = if arg_count >= 3 {
+                    args[2].as_i32().unwrap_or(arr.len() as i32).max(0) as usize
+                } else {
+                    arr.len()
+                };
 
                 for i in start..end.min(arr.len()) {
                     arr.elements[i] = fill_value;
@@ -438,7 +466,11 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
                 // `_gc` will be needed when flatten allocates GC-managed sub-arrays.
-                fn flatten(_gc: &parking_lot::Mutex<crate::vm::gc::GarbageCollector>, arr: &Array, depth: usize) -> Array {
+                fn flatten(
+                    _gc: &parking_lot::Mutex<crate::vm::gc::GarbageCollector>,
+                    arr: &Array,
+                    depth: usize,
+                ) -> Array {
                     let mut result = Array::new(0, 0);
                     for elem in arr.elements.iter() {
                         if depth > 0 && elem.is_ptr() {
@@ -458,7 +490,8 @@ impl<'a> Interpreter<'a> {
 
                 let result = flatten(self.gc, arr, depth);
                 let gc_ptr = self.gc.lock().allocate(result);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }
@@ -487,25 +520,30 @@ impl<'a> Interpreter<'a> {
                 let arr = unsafe { &*arr_ptr.unwrap().as_ptr() };
 
                 // Convert elements to strings and join
-                let parts: Vec<String> = arr.elements.iter().map(|v| {
-                    if let Some(ptr) = unsafe { v.as_ptr::<RayaString>() } {
-                        unsafe { &*ptr.as_ptr() }.data.clone()
-                    } else if let Some(i) = v.as_i32() {
-                        i.to_string()
-                    } else if let Some(f) = v.as_f64() {
-                        f.to_string()
-                    } else if v.is_null() {
-                        String::new()
-                    } else if let Some(b) = v.as_bool() {
-                        b.to_string()
-                    } else {
-                        String::new()
-                    }
-                }).collect();
+                let parts: Vec<String> = arr
+                    .elements
+                    .iter()
+                    .map(|v| {
+                        if let Some(ptr) = unsafe { v.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else if let Some(i) = v.as_i32() {
+                            i.to_string()
+                        } else if let Some(f) = v.as_f64() {
+                            f.to_string()
+                        } else if v.is_null() {
+                            String::new()
+                        } else if let Some(b) = v.as_bool() {
+                            b.to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect();
                 let result = parts.join(&sep);
                 let raya_string = RayaString::new(result);
                 let gc_ptr = self.gc.lock().allocate(raya_string);
-                let value = unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                let value =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
                 stack.push(value)?;
                 Ok(())
             }

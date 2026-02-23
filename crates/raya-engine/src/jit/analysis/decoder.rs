@@ -42,7 +42,10 @@ pub enum Operands {
     /// Call: func_index (u32) + arg_count (u16)
     Call { func_index: u32, arg_count: u16 },
     /// Try: catch_offset (i32) + finally_offset (i32)
-    Try { catch_offset: i32, finally_offset: i32 },
+    Try {
+        catch_offset: i32,
+        finally_offset: i32,
+    },
     /// NativeCall: native_id (u16) + arg_count (u8)
     NativeCall { native_id: u16, arg_count: u8 },
     /// MakeClosure: func_index (u32) + capture_count (u16)
@@ -67,7 +70,12 @@ pub fn decode_function(code: &[u8]) -> Result<Vec<DecodedInstr>, DecodeError> {
         let operands = decode_operands(opcode, code, &mut pos, offset)?;
         let size = pos - offset;
 
-        instrs.push(DecodedInstr { offset, opcode, operands, size });
+        instrs.push(DecodedInstr {
+            offset,
+            opcode,
+            operands,
+            size,
+        });
     }
 
     Ok(instrs)
@@ -81,55 +89,125 @@ fn decode_operands(
 ) -> Result<Operands, DecodeError> {
     match opcode {
         // No operands (1 byte total)
-        Opcode::Nop | Opcode::Pop | Opcode::Dup | Opcode::Swap
-        | Opcode::ConstNull | Opcode::ConstTrue | Opcode::ConstFalse
-        | Opcode::LoadLocal0 | Opcode::LoadLocal1
-        | Opcode::StoreLocal0 | Opcode::StoreLocal1
-        | Opcode::GetArgCount | Opcode::LoadArgLocal
-        | Opcode::Iadd | Opcode::Isub | Opcode::Imul | Opcode::Idiv
-        | Opcode::Imod | Opcode::Ineg | Opcode::Ipow
-        | Opcode::Ishl | Opcode::Ishr | Opcode::Iushr
-        | Opcode::Iand | Opcode::Ior | Opcode::Ixor | Opcode::Inot
-        | Opcode::Fadd | Opcode::Fsub | Opcode::Fmul | Opcode::Fdiv
-        | Opcode::Fneg | Opcode::Fpow | Opcode::Fmod
-        | Opcode::Ieq | Opcode::Ine | Opcode::Ilt | Opcode::Ile
-        | Opcode::Igt | Opcode::Ige
-        | Opcode::Feq | Opcode::Fne | Opcode::Flt | Opcode::Fle
-        | Opcode::Fgt | Opcode::Fge
-        | Opcode::Eq | Opcode::Ne | Opcode::StrictEq | Opcode::StrictNe
-        | Opcode::Not | Opcode::And | Opcode::Or | Opcode::Typeof
-        | Opcode::Sconcat | Opcode::Slen
-        | Opcode::Seq | Opcode::Sne | Opcode::Slt | Opcode::Sle
-        | Opcode::Sgt | Opcode::Sge | Opcode::ToString
-        | Opcode::Return | Opcode::ReturnVoid
-        | Opcode::LoadElem | Opcode::StoreElem | Opcode::ArrayLen
-        | Opcode::Await | Opcode::Yield
-        | Opcode::NewMutex | Opcode::NewChannel
-        | Opcode::MutexLock | Opcode::MutexUnlock
-        | Opcode::NewSemaphore | Opcode::SemAcquire | Opcode::SemRelease
-        | Opcode::WaitAll | Opcode::Sleep | Opcode::TaskCancel
-        | Opcode::JsonIndex | Opcode::JsonIndexSet
-        | Opcode::JsonPush | Opcode::JsonPop
-        | Opcode::JsonNewObject | Opcode::JsonNewArray
-        | Opcode::JsonKeys | Opcode::JsonLength
-        | Opcode::Throw | Opcode::EndTry | Opcode::Rethrow
+        Opcode::Nop
+        | Opcode::Pop
+        | Opcode::Dup
+        | Opcode::Swap
+        | Opcode::ConstNull
+        | Opcode::ConstTrue
+        | Opcode::ConstFalse
+        | Opcode::LoadLocal0
+        | Opcode::LoadLocal1
+        | Opcode::StoreLocal0
+        | Opcode::StoreLocal1
+        | Opcode::GetArgCount
+        | Opcode::LoadArgLocal
+        | Opcode::Iadd
+        | Opcode::Isub
+        | Opcode::Imul
+        | Opcode::Idiv
+        | Opcode::Imod
+        | Opcode::Ineg
+        | Opcode::Ipow
+        | Opcode::Ishl
+        | Opcode::Ishr
+        | Opcode::Iushr
+        | Opcode::Iand
+        | Opcode::Ior
+        | Opcode::Ixor
+        | Opcode::Inot
+        | Opcode::Fadd
+        | Opcode::Fsub
+        | Opcode::Fmul
+        | Opcode::Fdiv
+        | Opcode::Fneg
+        | Opcode::Fpow
+        | Opcode::Fmod
+        | Opcode::Ieq
+        | Opcode::Ine
+        | Opcode::Ilt
+        | Opcode::Ile
+        | Opcode::Igt
+        | Opcode::Ige
+        | Opcode::Feq
+        | Opcode::Fne
+        | Opcode::Flt
+        | Opcode::Fle
+        | Opcode::Fgt
+        | Opcode::Fge
+        | Opcode::Eq
+        | Opcode::Ne
+        | Opcode::StrictEq
+        | Opcode::StrictNe
+        | Opcode::Not
+        | Opcode::And
+        | Opcode::Or
+        | Opcode::Typeof
+        | Opcode::Sconcat
+        | Opcode::Slen
+        | Opcode::Seq
+        | Opcode::Sne
+        | Opcode::Slt
+        | Opcode::Sle
+        | Opcode::Sgt
+        | Opcode::Sge
+        | Opcode::ToString
+        | Opcode::Return
+        | Opcode::ReturnVoid
+        | Opcode::LoadElem
+        | Opcode::StoreElem
+        | Opcode::ArrayLen
+        | Opcode::Await
+        | Opcode::Yield
+        | Opcode::NewMutex
+        | Opcode::NewChannel
+        | Opcode::MutexLock
+        | Opcode::MutexUnlock
+        | Opcode::NewSemaphore
+        | Opcode::SemAcquire
+        | Opcode::SemRelease
+        | Opcode::WaitAll
+        | Opcode::Sleep
+        | Opcode::TaskCancel
+        | Opcode::JsonIndex
+        | Opcode::JsonIndexSet
+        | Opcode::JsonPush
+        | Opcode::JsonPop
+        | Opcode::JsonNewObject
+        | Opcode::JsonNewArray
+        | Opcode::JsonKeys
+        | Opcode::JsonLength
+        | Opcode::Throw
+        | Opcode::EndTry
+        | Opcode::Rethrow
         | Opcode::TupleGet
-        | Opcode::NewRefCell | Opcode::LoadRefCell | Opcode::StoreRefCell
-        | Opcode::ArrayPush | Opcode::ArrayPop
-        | Opcode::InstanceOf | Opcode::Cast
+        | Opcode::NewRefCell
+        | Opcode::LoadRefCell
+        | Opcode::StoreRefCell
+        | Opcode::ArrayPush
+        | Opcode::ArrayPop
+        | Opcode::InstanceOf
+        | Opcode::Cast
         | Opcode::Debugger => Ok(Operands::None),
 
         // u16 operand (3 bytes total)
-        Opcode::LoadLocal | Opcode::StoreLocal
-        | Opcode::LoadField | Opcode::StoreField
-        | Opcode::LoadFieldFast | Opcode::StoreFieldFast
+        Opcode::LoadLocal
+        | Opcode::StoreLocal
+        | Opcode::LoadField
+        | Opcode::StoreField
+        | Opcode::LoadFieldFast
+        | Opcode::StoreFieldFast
         | Opcode::OptionalField
         | Opcode::ConstStr
         | Opcode::CloseVar
-        | Opcode::LoadCaptured | Opcode::StoreCaptured
+        | Opcode::LoadCaptured
+        | Opcode::StoreCaptured
         | Opcode::SetClosureCapture
-        | Opcode::InitObject | Opcode::InitArray | Opcode::InitTuple
-        | Opcode::Trap | Opcode::BindMethod => {
+        | Opcode::InitObject
+        | Opcode::InitArray
+        | Opcode::InitTuple
+        | Opcode::Trap
+        | Opcode::BindMethod => {
             let v = read_u16(code, pos, offset)?;
             Ok(Operands::U16(v))
         }
@@ -141,8 +219,11 @@ fn decode_operands(
         }
 
         // i32 operand — jumps (5 bytes total)
-        Opcode::Jmp | Opcode::JmpIfFalse | Opcode::JmpIfTrue
-        | Opcode::JmpIfNull | Opcode::JmpIfNotNull => {
+        Opcode::Jmp
+        | Opcode::JmpIfFalse
+        | Opcode::JmpIfTrue
+        | Opcode::JmpIfNull
+        | Opcode::JmpIfNotNull => {
             let v = read_i32(code, pos, offset)?;
             Ok(Operands::I32(v))
         }
@@ -160,21 +241,34 @@ fn decode_operands(
         }
 
         // u32 operand (5 bytes total)
-        Opcode::LoadConst | Opcode::New | Opcode::NewArray
-        | Opcode::TaskThen | Opcode::LoadModule
-        | Opcode::LoadGlobal | Opcode::StoreGlobal
-        | Opcode::LoadStatic | Opcode::StoreStatic
-        | Opcode::JsonGet | Opcode::JsonSet | Opcode::JsonDelete => {
+        Opcode::LoadConst
+        | Opcode::New
+        | Opcode::NewArray
+        | Opcode::TaskThen
+        | Opcode::LoadModule
+        | Opcode::LoadGlobal
+        | Opcode::StoreGlobal
+        | Opcode::LoadStatic
+        | Opcode::StoreStatic
+        | Opcode::JsonGet
+        | Opcode::JsonSet
+        | Opcode::JsonDelete => {
             let v = read_u32(code, pos, offset)?;
             Ok(Operands::U32(v))
         }
 
         // u32 + u16 operands — calls (7 bytes total)
-        Opcode::Call | Opcode::CallMethod
-        | Opcode::CallConstructor | Opcode::CallSuper | Opcode::CallStatic => {
+        Opcode::Call
+        | Opcode::CallMethod
+        | Opcode::CallConstructor
+        | Opcode::CallSuper
+        | Opcode::CallStatic => {
             let func_index = read_u32(code, pos, offset)?;
             let arg_count = read_u16(code, pos, offset)?;
-            Ok(Operands::Call { func_index, arg_count })
+            Ok(Operands::Call {
+                func_index,
+                arg_count,
+            })
         }
 
         // u32 + u16 — Spawn
@@ -182,21 +276,30 @@ fn decode_operands(
             let raw = read_u32(code, pos, offset)?;
             let func_index = raw as u16;
             let arg_count = read_u16(code, pos, offset)?;
-            Ok(Operands::Spawn { func_index, arg_count })
+            Ok(Operands::Spawn {
+                func_index,
+                arg_count,
+            })
         }
 
         // u32 + u16 — ObjectLiteral, TupleLiteral
         Opcode::ObjectLiteral | Opcode::TupleLiteral => {
             let type_index = read_u32(code, pos, offset)?;
             let count = read_u16(code, pos, offset)?;
-            Ok(Operands::Call { func_index: type_index, arg_count: count })
+            Ok(Operands::Call {
+                func_index: type_index,
+                arg_count: count,
+            })
         }
 
         // u32 + u16 — MakeClosure
         Opcode::MakeClosure => {
             let func_index = read_u32(code, pos, offset)?;
             let capture_count = read_u16(code, pos, offset)?;
-            Ok(Operands::MakeClosure { func_index, capture_count })
+            Ok(Operands::MakeClosure {
+                func_index,
+                capture_count,
+            })
         }
 
         // u32 + u32 — ArrayLiteral
@@ -210,14 +313,20 @@ fn decode_operands(
         Opcode::Try => {
             let catch_offset = read_i32(code, pos, offset)?;
             let finally_offset = read_i32(code, pos, offset)?;
-            Ok(Operands::Try { catch_offset, finally_offset })
+            Ok(Operands::Try {
+                catch_offset,
+                finally_offset,
+            })
         }
 
         // u16 + u8 — NativeCall, ModuleNativeCall
         Opcode::NativeCall | Opcode::ModuleNativeCall => {
             let native_id = read_u16(code, pos, offset)?;
             let arg_count = read_u8(code, pos, offset)?;
-            Ok(Operands::NativeCall { native_id, arg_count })
+            Ok(Operands::NativeCall {
+                native_id,
+                arg_count,
+            })
         }
     }
 }
@@ -263,8 +372,14 @@ fn read_f64(code: &[u8], pos: &mut usize, offset: usize) -> Result<f64, DecodeEr
         return Err(DecodeError::UnexpectedEnd(offset));
     }
     let v = f64::from_le_bytes([
-        code[*pos], code[*pos + 1], code[*pos + 2], code[*pos + 3],
-        code[*pos + 4], code[*pos + 5], code[*pos + 6], code[*pos + 7],
+        code[*pos],
+        code[*pos + 1],
+        code[*pos + 2],
+        code[*pos + 3],
+        code[*pos + 4],
+        code[*pos + 5],
+        code[*pos + 6],
+        code[*pos + 7],
     ]);
     *pos += 8;
     Ok(v)
@@ -309,8 +424,11 @@ mod tests {
         assert_eq!(instrs.len(), 1);
         assert_eq!(instrs[0].opcode, Opcode::ConstF64);
         assert_eq!(instrs[0].size, 9);
-        if let Operands::F64(v) = instrs[0].operands { assert!((v - 3.14).abs() < 1e-10); }
-        else { panic!("expected F64 operand"); }
+        if let Operands::F64(v) = instrs[0].operands {
+            assert!((v - 3.14).abs() < 1e-10);
+        } else {
+            panic!("expected F64 operand");
+        }
     }
 
     #[test]
@@ -329,7 +447,13 @@ mod tests {
         code.extend_from_slice(&3u16.to_le_bytes());
         let instrs = decode_function(&code).unwrap();
         assert_eq!(instrs.len(), 1);
-        assert!(matches!(instrs[0].operands, Operands::Call { func_index: 10, arg_count: 3 }));
+        assert!(matches!(
+            instrs[0].operands,
+            Operands::Call {
+                func_index: 10,
+                arg_count: 3
+            }
+        ));
     }
 
     #[test]
@@ -350,7 +474,10 @@ mod tests {
         assert_eq!(instrs.len(), 1);
         assert!(matches!(
             instrs[0].operands,
-            Operands::Try { catch_offset: 20, finally_offset: -1 }
+            Operands::Try {
+                catch_offset: 20,
+                finally_offset: -1
+            }
         ));
     }
 
@@ -363,7 +490,10 @@ mod tests {
         assert_eq!(instrs.len(), 1);
         assert!(matches!(
             instrs[0].operands,
-            Operands::NativeCall { native_id: 0x0100, arg_count: 2 }
+            Operands::NativeCall {
+                native_id: 0x0100,
+                arg_count: 2
+            }
         ));
     }
 

@@ -24,7 +24,13 @@ impl PrettyPrint for IrModule {
         for class in &self.classes {
             writeln!(output, "; class {}", class.name).unwrap();
             for field in &class.fields {
-                writeln!(output, ";   field {}: type{}", field.name, field.ty.as_u32()).unwrap();
+                writeln!(
+                    output,
+                    ";   field {}: type{}",
+                    field.name,
+                    field.ty.as_u32()
+                )
+                .unwrap();
             }
             writeln!(output).unwrap();
         }
@@ -158,11 +164,7 @@ fn format_instr(instr: &IrInstr) -> String {
                     args_str.join(", ")
                 )
             } else {
-                format!(
-                    "native_call {}({})",
-                    native_name,
-                    args_str.join(", ")
-                )
+                format!("native_call {}({})", native_name, args_str.join(", "))
             }
         }
         IrInstr::ModuleNativeCall {
@@ -186,10 +188,23 @@ fn format_instr(instr: &IrInstr) -> String {
                 )
             }
         }
-        IrInstr::InstanceOf { dest, object, class_id } => {
-            format!("{} = {} instanceof class{}", dest, object, class_id.as_u32())
+        IrInstr::InstanceOf {
+            dest,
+            object,
+            class_id,
+        } => {
+            format!(
+                "{} = {} instanceof class{}",
+                dest,
+                object,
+                class_id.as_u32()
+            )
         }
-        IrInstr::Cast { dest, object, class_id } => {
+        IrInstr::Cast {
+            dest,
+            object,
+            class_id,
+        } => {
             format!("{} = {} as class{}", dest, object, class_id.as_u32())
         }
         IrInstr::LoadLocal { dest, index } => {
@@ -213,7 +228,11 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreGlobal { index, value } => {
             format!("store_global {} = {}", index, value)
         }
-        IrInstr::LoadField { dest, object, field } => {
+        IrInstr::LoadField {
+            dest,
+            object,
+            field,
+        } => {
             format!("{} = load_field {}.field{}", dest, object, field)
         }
         IrInstr::StoreField {
@@ -223,7 +242,11 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("store_field {}.field{} = {}", object, field, value)
         }
-        IrInstr::JsonLoadProperty { dest, object, property } => {
+        IrInstr::JsonLoadProperty {
+            dest,
+            object,
+            property,
+        } => {
             format!("{} = json_get {}.\"{}\"", dest, object, property)
         }
         IrInstr::JsonStoreProperty {
@@ -233,7 +256,11 @@ fn format_instr(instr: &IrInstr) -> String {
         } => {
             format!("json_set {}.\"{}\" = {}", object, property, value)
         }
-        IrInstr::LateBoundMember { dest, object, property } => {
+        IrInstr::LateBoundMember {
+            dest,
+            object,
+            property,
+        } => {
             format!("{} = late_bound {}.{}", dest, object, property)
         }
         IrInstr::LoadElement { dest, array, index } => {
@@ -265,7 +292,11 @@ fn format_instr(instr: &IrInstr) -> String {
                 elems.join(", ")
             )
         }
-        IrInstr::ObjectLiteral { dest, class, fields } => {
+        IrInstr::ObjectLiteral {
+            dest,
+            class,
+            fields,
+        } => {
             let field_strs: Vec<String> = fields
                 .iter()
                 .map(|(idx, val)| format!("field{}: {}", idx, val))
@@ -299,7 +330,11 @@ fn format_instr(instr: &IrInstr) -> String {
                 .collect();
             format!("{} = phi {}", dest, srcs.join(", "))
         }
-        IrInstr::MakeClosure { dest, func, captures } => {
+        IrInstr::MakeClosure {
+            dest,
+            func,
+            captures,
+        } => {
             let caps: Vec<String> = captures.iter().map(|c| format!("{}", c)).collect();
             format!("{} = make_closure {}({})", dest, func, caps.join(", "))
         }
@@ -309,10 +344,20 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreCaptured { index, value } => {
             format!("store_captured {} = {}", index, value)
         }
-        IrInstr::SetClosureCapture { closure, index, value } => {
-            format!("set_closure_capture {}.captures[{}] = {}", closure, index, value)
+        IrInstr::SetClosureCapture {
+            closure,
+            index,
+            value,
+        } => {
+            format!(
+                "set_closure_capture {}.captures[{}] = {}",
+                closure, index, value
+            )
         }
-        IrInstr::NewRefCell { dest, initial_value } => {
+        IrInstr::NewRefCell {
+            dest,
+            initial_value,
+        } => {
             format!("{} = new_refcell({})", dest, initial_value)
         }
         IrInstr::LoadRefCell { dest, refcell } => {
@@ -321,7 +366,11 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::StoreRefCell { refcell, value } => {
             format!("store_refcell {} = {}", refcell, value)
         }
-        IrInstr::CallClosure { dest, closure, args } => {
+        IrInstr::CallClosure {
+            dest,
+            closure,
+            args,
+        } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
             if let Some(d) = dest {
                 format!("{} = call_closure {}({})", d, closure, args_str.join(", "))
@@ -329,19 +378,40 @@ fn format_instr(instr: &IrInstr) -> String {
                 format!("call_closure {}({})", closure, args_str.join(", "))
             }
         }
-        IrInstr::StringCompare { dest, left, right, mode, negate } => {
+        IrInstr::StringCompare {
+            dest,
+            left,
+            right,
+            mode,
+            negate,
+        } => {
             let op = if *negate { "!=" } else { "==" };
-            format!("{} = string_compare({}) {} {} {}", dest, mode, left, op, right)
+            format!(
+                "{} = string_compare({}) {} {} {}",
+                dest, mode, left, op, right
+            )
         }
         IrInstr::ToString { dest, operand } => {
             format!("{} = to_string {}", dest, operand)
         }
         IrInstr::Spawn { dest, func, args } => {
-            let args_str = args.iter().map(|a| format!("{}", a)).collect::<Vec<_>>().join(", ");
+            let args_str = args
+                .iter()
+                .map(|a| format!("{}", a))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{} = spawn {}({})", dest, func, args_str)
         }
-        IrInstr::SpawnClosure { dest, closure, args } => {
-            let args_str = args.iter().map(|a| format!("{}", a)).collect::<Vec<_>>().join(", ");
+        IrInstr::SpawnClosure {
+            dest,
+            closure,
+            args,
+        } => {
+            let args_str = args
+                .iter()
+                .map(|a| format!("{}", a))
+                .collect::<Vec<_>>()
+                .join(", ");
             format!("{} = spawn_closure {}({})", dest, closure, args_str)
         }
         IrInstr::Await { dest, task } => {
@@ -353,12 +423,8 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::Sleep { duration_ms } => {
             format!("sleep {}", duration_ms)
         }
-        IrInstr::Debugger => {
-            "debugger".to_string()
-        }
-        IrInstr::Yield => {
-            "yield".to_string()
-        }
+        IrInstr::Debugger => "debugger".to_string(),
+        IrInstr::Yield => "yield".to_string(),
         IrInstr::NewMutex { dest } => {
             format!("{} = new_mutex", dest)
         }
@@ -374,17 +440,22 @@ fn format_instr(instr: &IrInstr) -> String {
         IrInstr::TaskCancel { task } => {
             format!("task_cancel {}", task)
         }
-        IrInstr::SetupTry { catch_block, finally_block } => {
+        IrInstr::SetupTry {
+            catch_block,
+            finally_block,
+        } => {
             if let Some(finally) = finally_block {
                 format!("setup_try catch={}, finally={}", catch_block, finally)
             } else {
                 format!("setup_try catch={}", catch_block)
             }
         }
-        IrInstr::EndTry => {
-            "end_try".to_string()
-        }
-        IrInstr::BindMethod { dest, object, method } => {
+        IrInstr::EndTry => "end_try".to_string(),
+        IrInstr::BindMethod {
+            dest,
+            object,
+            method,
+        } => {
             format!("{} = bind_method {}.method{}", dest, object, method)
         }
     }

@@ -40,11 +40,16 @@ impl LintRule for ExplicitVisibility {
                     vec![LintDiagnostic {
                         rule: META.name,
                         code: META.code,
-                        message: format!("Field '{}' is missing an explicit visibility modifier", name),
+                        message: format!(
+                            "Field '{}' is missing an explicit visibility modifier",
+                            name
+                        ),
                         span: f.name.span,
                         severity: META.default_severity,
                         fix: None,
-                        notes: vec!["Add 'public', 'private', or 'protected' before the field".to_string()],
+                        notes: vec![
+                            "Add 'public', 'private', or 'protected' before the field".to_string()
+                        ],
                     }]
                 } else {
                     vec![]
@@ -56,11 +61,16 @@ impl LintRule for ExplicitVisibility {
                     vec![LintDiagnostic {
                         rule: META.name,
                         code: META.code,
-                        message: format!("Method '{}' is missing an explicit visibility modifier", name),
+                        message: format!(
+                            "Method '{}' is missing an explicit visibility modifier",
+                            name
+                        ),
                         span: m.name.span,
                         severity: META.default_severity,
                         fix: None,
-                        notes: vec!["Add 'public', 'private', or 'protected' before the method".to_string()],
+                        notes: vec![
+                            "Add 'public', 'private', or 'protected' before the method".to_string()
+                        ],
                     }]
                 } else {
                     vec![]
@@ -113,38 +123,60 @@ mod tests {
     #[test]
     fn test_off_by_default() {
         let linter = Linter::new();
-        let diags = linter.lint_source("class Foo { name: string = \"x\"; }", "test.raya").diagnostics;
-        assert!(!has_rule(&diags, "L2006"), "should not fire when Off by default");
+        let diags = linter
+            .lint_source("class Foo { name: string = \"x\"; }", "test.raya")
+            .diagnostics;
+        assert!(
+            !has_rule(&diags, "L2006"),
+            "should not fire when Off by default"
+        );
     }
 
     #[test]
     fn test_field_without_visibility_flagged() {
         let diags = lint("class Foo { name: string = \"x\"; }");
-        assert!(has_rule(&diags, "L2006"), "should flag field without visibility, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2006"),
+            "should flag field without visibility, got: {:?}",
+            diags
+        );
     }
 
     #[test]
     fn test_field_with_public_ok() {
         let diags = lint("class Foo { public name: string = \"x\"; }");
-        assert!(!has_rule(&diags, "L2006"), "should not flag explicit public");
+        assert!(
+            !has_rule(&diags, "L2006"),
+            "should not flag explicit public"
+        );
     }
 
     #[test]
     fn test_field_with_private_ok() {
         let diags = lint("class Foo { private name: string = \"x\"; }");
-        assert!(!has_rule(&diags, "L2006"), "should not flag explicit private");
+        assert!(
+            !has_rule(&diags, "L2006"),
+            "should not flag explicit private"
+        );
     }
 
     #[test]
     fn test_field_with_protected_ok() {
         let diags = lint("class Foo { protected name: string = \"x\"; }");
-        assert!(!has_rule(&diags, "L2006"), "should not flag explicit protected");
+        assert!(
+            !has_rule(&diags, "L2006"),
+            "should not flag explicit protected"
+        );
     }
 
     #[test]
     fn test_method_without_visibility_flagged() {
         let diags = lint("class Foo { greet(): void {} }");
-        assert!(has_rule(&diags, "L2006"), "should flag method without visibility, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L2006"),
+            "should flag method without visibility, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -156,6 +188,9 @@ mod tests {
     #[test]
     fn test_constructor_ok() {
         let diags = lint("class Foo { constructor() {} }");
-        assert!(!has_rule(&diags, "L2006"), "constructors should not require visibility");
+        assert!(
+            !has_rule(&diags, "L2006"),
+            "constructors should not require visibility"
+        );
     }
 }

@@ -8,8 +8,8 @@
 //! 5. Executes the module and returns collected results
 
 use raya_engine::vm::Vm;
-use raya_stdlib::StdNativeHandler;
 use raya_stdlib::test::{self, SharedTestResults};
+use raya_stdlib::StdNativeHandler;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -182,7 +182,11 @@ mod tests {
             &options,
         );
         let r = result.expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 1);
         assert_eq!(r.passed(), 0);
         assert_eq!(r.failed(), 1);
@@ -198,7 +202,11 @@ test("also passes", () => { expect(42).toBe(42); });
         let options = RuntimeOptions::default();
         let r = run_test_source(source, Path::new("mixed.test.raya"), &options)
             .expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 3);
         assert_eq!(r.passed(), 2);
         assert_eq!(r.failed(), 1);
@@ -215,7 +223,11 @@ describe("Math", () => {
         let options = RuntimeOptions::default();
         let r = run_test_source(source, Path::new("describe.test.raya"), &options)
             .expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 2);
         assert_eq!(r.passed(), 2);
     }
@@ -229,7 +241,11 @@ test("not.toBeNull", () => { expect(42).not.toBeNull(); });
         let options = RuntimeOptions::default();
         let r = run_test_source(source, Path::new("not.test.raya"), &options)
             .expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 2);
         assert_eq!(r.passed(), 2);
     }
@@ -247,7 +263,11 @@ test("catches non-throw", () => {
         let options = RuntimeOptions::default();
         let r = run_test_source(source, Path::new("throw.test.raya"), &options)
             .expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 2);
         assert_eq!(r.passed(), 2);
     }
@@ -263,7 +283,11 @@ test("second", () => { expect(count).toBe(2); });
         let options = RuntimeOptions::default();
         let r = run_test_source(source, Path::new("hooks.test.raya"), &options)
             .expect("should compile and run");
-        assert!(r.execution_error.is_none(), "no execution error: {:?}", r.execution_error);
+        assert!(
+            r.execution_error.is_none(),
+            "no execution error: {:?}",
+            r.execution_error
+        );
         assert_eq!(r.total(), 2);
         assert_eq!(r.passed(), 2);
     }

@@ -23,8 +23,8 @@ pub use loader::{Library, LoadError};
 pub use c_api::{
     raya_error_free, raya_error_message, raya_module_free, raya_module_load_bytes,
     raya_module_load_file, raya_value_bool, raya_value_free, raya_value_i32, raya_value_null,
-    raya_version, raya_vm_destroy, raya_vm_execute, raya_vm_new, RayaError, RayaModule, RayaValue,
-    RayaVM,
+    raya_version, raya_vm_destroy, raya_vm_execute, raya_vm_new, RayaError, RayaModule, RayaVM,
+    RayaValue,
 };
 
 // ============================================================================

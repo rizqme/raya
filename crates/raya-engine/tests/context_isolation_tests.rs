@@ -16,12 +16,12 @@
 //! cargo test --test context_isolation_tests
 //! ```
 
-use raya_engine::vm::scheduler::TaskId;
-use raya_engine::vm::value::Value;
 use raya_engine::vm::interpreter::{
     CapabilityRegistry, ContextRegistry, HttpCapability, LogCapability, ResourceLimits, VmContext,
     VmOptions,
 };
+use raya_engine::vm::scheduler::TaskId;
+use raya_engine::vm::value::Value;
 use std::sync::Arc;
 
 // ===== Heap Isolation Tests =====

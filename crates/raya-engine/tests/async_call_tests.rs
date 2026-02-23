@@ -76,7 +76,9 @@ fn test_parse_async_call_member() {
                     Expression::Member(member) => {
                         assert_eq!(interner.resolve(member.property.name), "method");
                         match &*member.object {
-                            Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "obj"),
+                            Expression::Identifier(id) => {
+                                assert_eq!(interner.resolve(id.name), "obj")
+                            }
                             _ => panic!("Expected identifier object"),
                         }
                     }
@@ -129,17 +131,13 @@ fn test_parse_async_call_in_assignment() {
     let (module, interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
-        Statement::VariableDecl(decl) => {
-            match &decl.initializer {
-                Some(Expression::AsyncCall(async_call)) => {
-                    match &*async_call.callee {
-                        Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myFn"),
-                        _ => panic!("Expected identifier callee"),
-                    }
-                }
-                _ => panic!("Expected async call initializer"),
-            }
-        }
+        Statement::VariableDecl(decl) => match &decl.initializer {
+            Some(Expression::AsyncCall(async_call)) => match &*async_call.callee {
+                Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "myFn"),
+                _ => panic!("Expected identifier callee"),
+            },
+            _ => panic!("Expected async call initializer"),
+        },
         _ => panic!("Expected variable declaration"),
     }
 }
@@ -156,7 +154,9 @@ fn test_parse_async_call_assigned_to_const() {
             match &decl.initializer {
                 Some(Expression::AsyncCall(async_call)) => {
                     match &*async_call.callee {
-                        Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "fetchData"),
+                        Expression::Identifier(id) => {
+                            assert_eq!(interner.resolve(id.name), "fetchData")
+                        }
                         _ => panic!("Expected identifier callee"),
                     }
                     assert_eq!(async_call.arguments.len(), 1);
@@ -183,7 +183,9 @@ fn test_parse_async_call_with_type_args() {
             Expression::AsyncCall(async_call) => {
                 // Check that callee is genericFn
                 match &*async_call.callee {
-                    Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "genericFn"),
+                    Expression::Identifier(id) => {
+                        assert_eq!(interner.resolve(id.name), "genericFn")
+                    }
                     _ => panic!("Expected identifier callee"),
                 }
                 // Check type arguments
@@ -308,10 +310,7 @@ fn test_parse_multiple_async_calls() {
     for stmt in &module.statements {
         match stmt {
             Statement::VariableDecl(decl) => {
-                assert!(matches!(
-                    decl.initializer,
-                    Some(Expression::AsyncCall(_))
-                ));
+                assert!(matches!(decl.initializer, Some(Expression::AsyncCall(_))));
             }
             _ => panic!("Expected variable declaration"),
         }
@@ -330,12 +329,12 @@ fn test_parse_async_call_as_argument() {
                 assert_eq!(call.arguments.len(), 1);
                 // Argument should be an async call
                 match &call.arguments[0] {
-                    Expression::AsyncCall(async_call) => {
-                        match &*async_call.callee {
-                            Expression::Identifier(id) => assert_eq!(interner.resolve(id.name), "compute"),
-                            _ => panic!("Expected identifier"),
+                    Expression::AsyncCall(async_call) => match &*async_call.callee {
+                        Expression::Identifier(id) => {
+                            assert_eq!(interner.resolve(id.name), "compute")
                         }
-                    }
+                        _ => panic!("Expected identifier"),
+                    },
                     _ => panic!("Expected async call argument"),
                 }
             }

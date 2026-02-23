@@ -8,9 +8,9 @@
 //! files for `//@@builtin_primitive` classes, extracting native IDs from
 //! `__NATIVE_CALL(CONST, ...)` patterns, and `//@@opcode` annotations.
 
-use rustc_hash::{FxHashMap, FxHashSet};
 use crate::parser::types::ty::{Type, TypeId};
 use crate::parser::TypeContext;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Sentinel TypeId for when the lowerer cannot determine the type.
 /// Distinct from TypeId(0) (Number) and TypeId(6) (Unknown).
@@ -97,9 +97,8 @@ impl TypeRegistry {
         // Build reverse name lookup from TypeContext's named types
         // We check all known type names
         let known_names = [
-            "number", "string", "boolean", "null", "void", "never", "unknown",
-            "Mutex", "RegExp", "Date", "Buffer", "Task", "Channel", "Map", "Set",
-            "Json", "int", "Array",
+            "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex", "RegExp",
+            "Date", "Buffer", "Task", "Channel", "Map", "Set", "Json", "int", "Array",
         ];
         for name in &known_names {
             if let Some(id) = type_ctx.lookup_named_type(name) {
@@ -131,7 +130,9 @@ impl TypeRegistry {
             type_ctx.lookup_named_type("int"),
         ) {
             if let Some(num_methods) = registry.method_dispatch.get(&num_id.as_u32()).cloned() {
-                registry.method_dispatch.insert(int_id.as_u32(), num_methods);
+                registry
+                    .method_dispatch
+                    .insert(int_id.as_u32(), num_methods);
             }
         }
 
@@ -147,54 +148,103 @@ impl TypeRegistry {
     /// These are classes whose methods are handled natively by the VM.
     /// Eventually these will be migrated to .raya files.
     fn register_builtin_class_dispatch(&mut self, type_ctx: &TypeContext) {
-        use crate::vm::builtin::{map, set, channel, buffer, date, mutex, task};
+        use crate::vm::builtin::{buffer, channel, date, map, mutex, set, task};
 
         let builtin_types: &[(&str, &[(&str, u16)])] = &[
-            ("Map", &[
-                ("get", map::GET), ("set", map::SET), ("has", map::HAS),
-                ("delete", map::DELETE), ("clear", map::CLEAR), ("keys", map::KEYS),
-                ("values", map::VALUES), ("entries", map::ENTRIES),
-                ("forEach", map::FOR_EACH), ("size", map::SIZE),
-            ]),
-            ("Set", &[
-                ("add", set::ADD), ("has", set::HAS), ("delete", set::DELETE),
-                ("clear", set::CLEAR), ("values", set::VALUES),
-                ("forEach", set::FOR_EACH), ("size", set::SIZE),
-                ("union", set::UNION), ("intersection", set::INTERSECTION),
-                ("difference", set::DIFFERENCE),
-            ]),
-            ("Channel", &[
-                ("send", channel::SEND), ("receive", channel::RECEIVE),
-                ("trySend", channel::TRY_SEND), ("tryReceive", channel::TRY_RECEIVE),
-                ("close", channel::CLOSE), ("isClosed", channel::IS_CLOSED),
-                ("length", channel::LENGTH), ("capacity", channel::CAPACITY),
-            ]),
-            ("Buffer", &[
-                ("length", buffer::LENGTH), ("getByte", buffer::GET_BYTE),
-                ("setByte", buffer::SET_BYTE), ("getInt32", buffer::GET_INT32),
-                ("setInt32", buffer::SET_INT32), ("getFloat64", buffer::GET_FLOAT64),
-                ("setFloat64", buffer::SET_FLOAT64), ("slice", buffer::SLICE),
-                ("copy", buffer::COPY), ("toString", buffer::TO_STRING),
-            ]),
-            ("Date", &[
-                ("getTime", date::GET_TIME), ("getFullYear", date::GET_FULL_YEAR),
-                ("getMonth", date::GET_MONTH), ("getDate", date::GET_DATE),
-                ("getDay", date::GET_DAY), ("getHours", date::GET_HOURS),
-                ("getMinutes", date::GET_MINUTES), ("getSeconds", date::GET_SECONDS),
-                ("getMilliseconds", date::GET_MILLISECONDS),
-                ("setFullYear", date::SET_FULL_YEAR), ("setMonth", date::SET_MONTH),
-                ("setDate", date::SET_DATE), ("setHours", date::SET_HOURS),
-                ("setMinutes", date::SET_MINUTES), ("setSeconds", date::SET_SECONDS),
-                ("setMilliseconds", date::SET_MILLISECONDS),
-                ("toString", date::TO_STRING), ("toISOString", date::TO_ISO_STRING),
-                ("toDateString", date::TO_DATE_STRING), ("toTimeString", date::TO_TIME_STRING),
-            ]),
-            ("Mutex", &[
-                ("tryLock", mutex::TRY_LOCK), ("isLocked", mutex::IS_LOCKED),
-            ]),
-            ("Task", &[
-                ("isDone", task::IS_DONE), ("isCancelled", task::IS_CANCELLED),
-            ]),
+            (
+                "Map",
+                &[
+                    ("get", map::GET),
+                    ("set", map::SET),
+                    ("has", map::HAS),
+                    ("delete", map::DELETE),
+                    ("clear", map::CLEAR),
+                    ("keys", map::KEYS),
+                    ("values", map::VALUES),
+                    ("entries", map::ENTRIES),
+                    ("forEach", map::FOR_EACH),
+                    ("size", map::SIZE),
+                ],
+            ),
+            (
+                "Set",
+                &[
+                    ("add", set::ADD),
+                    ("has", set::HAS),
+                    ("delete", set::DELETE),
+                    ("clear", set::CLEAR),
+                    ("values", set::VALUES),
+                    ("forEach", set::FOR_EACH),
+                    ("size", set::SIZE),
+                    ("union", set::UNION),
+                    ("intersection", set::INTERSECTION),
+                    ("difference", set::DIFFERENCE),
+                ],
+            ),
+            (
+                "Channel",
+                &[
+                    ("send", channel::SEND),
+                    ("receive", channel::RECEIVE),
+                    ("trySend", channel::TRY_SEND),
+                    ("tryReceive", channel::TRY_RECEIVE),
+                    ("close", channel::CLOSE),
+                    ("isClosed", channel::IS_CLOSED),
+                    ("length", channel::LENGTH),
+                    ("capacity", channel::CAPACITY),
+                ],
+            ),
+            (
+                "Buffer",
+                &[
+                    ("length", buffer::LENGTH),
+                    ("getByte", buffer::GET_BYTE),
+                    ("setByte", buffer::SET_BYTE),
+                    ("getInt32", buffer::GET_INT32),
+                    ("setInt32", buffer::SET_INT32),
+                    ("getFloat64", buffer::GET_FLOAT64),
+                    ("setFloat64", buffer::SET_FLOAT64),
+                    ("slice", buffer::SLICE),
+                    ("copy", buffer::COPY),
+                    ("toString", buffer::TO_STRING),
+                ],
+            ),
+            (
+                "Date",
+                &[
+                    ("getTime", date::GET_TIME),
+                    ("getFullYear", date::GET_FULL_YEAR),
+                    ("getMonth", date::GET_MONTH),
+                    ("getDate", date::GET_DATE),
+                    ("getDay", date::GET_DAY),
+                    ("getHours", date::GET_HOURS),
+                    ("getMinutes", date::GET_MINUTES),
+                    ("getSeconds", date::GET_SECONDS),
+                    ("getMilliseconds", date::GET_MILLISECONDS),
+                    ("setFullYear", date::SET_FULL_YEAR),
+                    ("setMonth", date::SET_MONTH),
+                    ("setDate", date::SET_DATE),
+                    ("setHours", date::SET_HOURS),
+                    ("setMinutes", date::SET_MINUTES),
+                    ("setSeconds", date::SET_SECONDS),
+                    ("setMilliseconds", date::SET_MILLISECONDS),
+                    ("toString", date::TO_STRING),
+                    ("toISOString", date::TO_ISO_STRING),
+                    ("toDateString", date::TO_DATE_STRING),
+                    ("toTimeString", date::TO_TIME_STRING),
+                ],
+            ),
+            (
+                "Mutex",
+                &[("tryLock", mutex::TRY_LOCK), ("isLocked", mutex::IS_LOCKED)],
+            ),
+            (
+                "Task",
+                &[
+                    ("isDone", task::IS_DONE),
+                    ("isCancelled", task::IS_CANCELLED),
+                ],
+            ),
         ];
 
         for &(type_name, methods) in builtin_types {
@@ -202,7 +252,10 @@ impl TypeRegistry {
                 let tid = id.as_u32();
                 let meths = self.method_dispatch.entry(tid).or_default();
                 for &(method_name, native_id) in methods {
-                    meths.insert(method_name.to_string(), DispatchAction::NativeCall(native_id));
+                    meths.insert(
+                        method_name.to_string(),
+                        DispatchAction::NativeCall(native_id),
+                    );
                 }
             }
         }
@@ -236,11 +289,16 @@ impl TypeRegistry {
         if type_name == crate::parser::TypeContext::ARRAY_TYPE_NAME {
             // Array has special dispatch: matches any array TypeId
             for (prop_name, kind) in &opcode_props {
-                self.array_properties.insert(prop_name.clone(), DispatchAction::Opcode(*kind));
+                self.array_properties
+                    .insert(prop_name.clone(), DispatchAction::Opcode(*kind));
             }
             for &(ref method_name, native_id, ref ret_type) in &methods {
-                self.array_methods.insert(method_name.clone(), DispatchAction::NativeCall(native_id));
-                if let Some(ret_tid) = ret_type.as_ref().and_then(|rt| resolve_return_type_str(type_ctx, rt)) {
+                self.array_methods
+                    .insert(method_name.clone(), DispatchAction::NativeCall(native_id));
+                if let Some(ret_tid) = ret_type
+                    .as_ref()
+                    .and_then(|rt| resolve_return_type_str(type_ctx, rt))
+                {
                     self.method_return_types.insert(native_id, ret_tid);
                 }
             }
@@ -270,7 +328,10 @@ impl TypeRegistry {
                     let meths = self.method_dispatch.entry(tid).or_default();
                     for &(ref method_name, native_id, ref ret_type) in &methods {
                         meths.insert(method_name.clone(), DispatchAction::NativeCall(native_id));
-                        if let Some(ret_tid) = ret_type.as_ref().and_then(|rt| resolve_return_type_str(type_ctx, rt)) {
+                        if let Some(ret_tid) = ret_type
+                            .as_ref()
+                            .and_then(|rt| resolve_return_type_str(type_ctx, rt))
+                        {
                             self.method_return_types.insert(native_id, ret_tid);
                         }
                     }
@@ -392,7 +453,8 @@ impl TypeRegistry {
                     P::Void => "void",
                     P::Int => "int",
                 };
-                Ok(type_ctx.lookup_named_type(name)
+                Ok(type_ctx
+                    .lookup_named_type(name)
                     .map(|id| id.as_u32())
                     .unwrap_or(UNRESOLVED_TYPE_ID))
             }
@@ -411,9 +473,9 @@ impl TypeRegistry {
                 // Must use the pre-interned IDs (from TypeContext::new()), not lookup_named_type,
                 // because the binder may register a different ClassType under the same name.
                 match class_type.name.as_str() {
-                    "number" => Ok(0),  // Pre-interned: Primitive(Number)
-                    "string" => Ok(1),  // Pre-interned: Primitive(String)
-                    "RegExp" => Ok(8),  // Pre-interned: Type::RegExp
+                    "number" => Ok(0),                         // Pre-interned: Primitive(Number)
+                    "string" => Ok(1),                         // Pre-interned: Primitive(String)
+                    "RegExp" => Ok(8),                         // Pre-interned: Type::RegExp
                     "Array" => Ok(TypeContext::ARRAY_TYPE_ID), // 17
                     _ => Ok(UNRESOLVED_TYPE_ID),
                 }
@@ -492,11 +554,7 @@ impl TypeRegistry {
                 // Multiple incompatible types — build error message
                 let type_names: Vec<String> = candidates
                     .iter()
-                    .map(|&id| {
-                        self.type_name(id)
-                            .unwrap_or("unknown")
-                            .to_string()
-                    })
+                    .map(|&id| self.type_name(id).unwrap_or("unknown").to_string())
                     .collect();
 
                 Err(format!(
@@ -514,7 +572,8 @@ impl TypeRegistry {
 
 /// Look up a named type, returning UNRESOLVED_TYPE_ID if not found.
 fn lookup_or_unresolved(type_ctx: &TypeContext, name: &str) -> u32 {
-    type_ctx.lookup_named_type(name)
+    type_ctx
+        .lookup_named_type(name)
         .map(|id| id.as_u32())
         .unwrap_or(UNRESOLVED_TYPE_ID)
 }
@@ -600,7 +659,10 @@ fn extract_opcode_properties(source: &str) -> Vec<(String, OpcodeKind)> {
 ///
 /// Methods with loops, conditionals, or other complex logic are skipped —
 /// they use vtable dispatch instead.
-fn extract_methods(source: &str, constants: &FxHashMap<String, u16>) -> Vec<(String, u16, Option<String>)> {
+fn extract_methods(
+    source: &str,
+    constants: &FxHashMap<String, u16>,
+) -> Vec<(String, u16, Option<String>)> {
     let mut result = Vec::new();
     let chars: Vec<char> = source.chars().collect();
     let len = chars.len();
@@ -636,10 +698,12 @@ fn extract_methods(source: &str, constants: &FxHashMap<String, u16>) -> Vec<(Str
             // Find the opening brace of the method body
             if let Some(open_brace) = find_char_after(&chars, open_paren, '{') {
                 // Extract return type from between `)` and `{`
-                let return_type_str = find_matching_paren(&chars, open_paren)
-                    .and_then(|close_paren| {
+                let return_type_str =
+                    find_matching_paren(&chars, open_paren).and_then(|close_paren| {
                         let between: String = chars[close_paren + 1..open_brace].iter().collect();
-                        between.find(':').map(|colon_idx| between[colon_idx + 1..].trim().to_string())
+                        between
+                            .find(':')
+                            .map(|colon_idx| between[colon_idx + 1..].trim().to_string())
                     });
 
                 // Find the matching closing brace
@@ -674,7 +738,9 @@ fn extract_constructor(source: &str, constants: &FxHashMap<String, u16>) -> Opti
     let mut pos = 0;
 
     while pos < len {
-        if try_match_keyword(&chars, pos, "constructor(") || try_match_keyword(&chars, pos, "constructor (") {
+        if try_match_keyword(&chars, pos, "constructor(")
+            || try_match_keyword(&chars, pos, "constructor (")
+        {
             // Find the opening brace
             if let Some(open_brace) = find_char_after(&chars, pos, '{') {
                 if let Some(close_brace) = find_matching_brace(&chars, open_brace) {
@@ -994,13 +1060,21 @@ class Array<T> {
         assert!(registry.lookup_method(str_id, "charAt").is_some());
         assert!(registry.lookup_method(str_id, "substring").is_some());
         assert!(registry.lookup_method(str_id, "trim").is_some());
-        assert!(registry.lookup_method(str_id, "indexOf").is_some(), "indexOf should be registered for string");
-        assert!(registry.lookup_method(str_id, "split").is_some(), "split should be registered for string");
+        assert!(
+            registry.lookup_method(str_id, "indexOf").is_some(),
+            "indexOf should be registered for string"
+        );
+        assert!(
+            registry.lookup_method(str_id, "split").is_some(),
+            "split should be registered for string"
+        );
         assert!(registry.lookup_property(str_id, "length").is_some());
 
         // replaceWith should be a ClassMethod (Raya loop, not NativeCall)
-        assert!(matches!(registry.lookup_method(str_id, "replaceWith"),
-            Some(DispatchAction::ClassMethod(_, _))));
+        assert!(matches!(
+            registry.lookup_method(str_id, "replaceWith"),
+            Some(DispatchAction::ClassMethod(_, _))
+        ));
 
         // Verify Array methods
         let arr_id = TypeContext::ARRAY_TYPE_ID;
@@ -1009,12 +1083,18 @@ class Array<T> {
         assert!(registry.lookup_property(arr_id, "length").is_some());
 
         // Callback methods should be ClassMethods (Raya loops, not NativeCall)
-        assert!(matches!(registry.lookup_method(arr_id, "map"),
-            Some(DispatchAction::ClassMethod(_, _))));
-        assert!(matches!(registry.lookup_method(arr_id, "filter"),
-            Some(DispatchAction::ClassMethod(_, _))));
-        assert!(matches!(registry.lookup_method(arr_id, "forEach"),
-            Some(DispatchAction::ClassMethod(_, _))));
+        assert!(matches!(
+            registry.lookup_method(arr_id, "map"),
+            Some(DispatchAction::ClassMethod(_, _))
+        ));
+        assert!(matches!(
+            registry.lookup_method(arr_id, "filter"),
+            Some(DispatchAction::ClassMethod(_, _))
+        ));
+        assert!(matches!(
+            registry.lookup_method(arr_id, "forEach"),
+            Some(DispatchAction::ClassMethod(_, _))
+        ));
 
         // Verify constructors
         assert!(registry.constructor_native_id("Array").is_some());
@@ -1034,8 +1114,10 @@ class Array<T> {
         assert!(registry.lookup_method(re_id, "test").is_some());
         assert!(registry.lookup_method(re_id, "exec").is_some());
         // replaceWith should be a ClassMethod
-        assert!(matches!(registry.lookup_method(re_id, "replaceWith"),
-            Some(DispatchAction::ClassMethod(_, _))));
+        assert!(matches!(
+            registry.lookup_method(re_id, "replaceWith"),
+            Some(DispatchAction::ClassMethod(_, _))
+        ));
     }
 
     #[test]
@@ -1119,29 +1201,38 @@ class Array<T> {
         let int_id = type_ctx.lookup_named_type("int").unwrap().as_u32();
 
         // String methods — return types from string.raya
-        assert_eq!(registry.lookup_return_type(0x0200), Some(str_id));   // charAt → string
-        assert_eq!(registry.lookup_return_type(0x0201), Some(str_id));   // substring → string
-        assert_eq!(registry.lookup_return_type(0x0205), Some(int_id));   // indexOf → int
-        assert_eq!(registry.lookup_return_type(0x0206), Some(bool_id));  // includes → boolean
-        assert_eq!(registry.lookup_return_type(0x020E), Some(int_id));   // charCodeAt → int
-        assert_eq!(registry.lookup_return_type(0x0212), Some(TypeContext::ARRAY_TYPE_ID)); // match → string[] | null → Array
-        assert_eq!(registry.lookup_return_type(0x0213), Some(TypeContext::ARRAY_TYPE_ID)); // matchAll → string[][] → Array
-        assert_eq!(registry.lookup_return_type(0x0214), Some(int_id));   // search → int
+        assert_eq!(registry.lookup_return_type(0x0200), Some(str_id)); // charAt → string
+        assert_eq!(registry.lookup_return_type(0x0201), Some(str_id)); // substring → string
+        assert_eq!(registry.lookup_return_type(0x0205), Some(int_id)); // indexOf → int
+        assert_eq!(registry.lookup_return_type(0x0206), Some(bool_id)); // includes → boolean
+        assert_eq!(registry.lookup_return_type(0x020E), Some(int_id)); // charCodeAt → int
+        assert_eq!(
+            registry.lookup_return_type(0x0212),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        ); // match → string[] | null → Array
+        assert_eq!(
+            registry.lookup_return_type(0x0213),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        ); // matchAll → string[][] → Array
+        assert_eq!(registry.lookup_return_type(0x0214), Some(int_id)); // search → int
 
         // Variant IDs (compiler-internal remaps)
-        assert_eq!(registry.lookup_return_type(0x0215), Some(str_id));   // REPLACE_REGEXP → string
-        assert_eq!(registry.lookup_return_type(0x0216), Some(TypeContext::ARRAY_TYPE_ID)); // SPLIT_REGEXP → string[]
+        assert_eq!(registry.lookup_return_type(0x0215), Some(str_id)); // REPLACE_REGEXP → string
+        assert_eq!(
+            registry.lookup_return_type(0x0216),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        ); // SPLIT_REGEXP → string[]
 
         // Number methods — return types from number.raya
-        assert_eq!(registry.lookup_return_type(0x0F00), Some(str_id));   // toFixed → string
-        assert_eq!(registry.lookup_return_type(0x0F01), Some(str_id));   // toPrecision → string
-        assert_eq!(registry.lookup_return_type(0x0F02), Some(str_id));   // toString → string
+        assert_eq!(registry.lookup_return_type(0x0F00), Some(str_id)); // toFixed → string
+        assert_eq!(registry.lookup_return_type(0x0F01), Some(str_id)); // toPrecision → string
+        assert_eq!(registry.lookup_return_type(0x0F02), Some(str_id)); // toString → string
 
         // RegExp methods — return types from regexp.raya
-        assert_eq!(registry.lookup_return_type(0x0A01), Some(bool_id));  // test → boolean
+        assert_eq!(registry.lookup_return_type(0x0A01), Some(bool_id)); // test → boolean
 
         // Array push → return type is number (from array.raya)
-        assert_eq!(registry.lookup_return_type(0x0100), Some(num_id));   // push → number
+        assert_eq!(registry.lookup_return_type(0x0100), Some(num_id)); // push → number
     }
 
     #[test]
@@ -1188,9 +1279,18 @@ class Array<T> {
         assert_eq!(resolve_return_type_str(&type_ctx, "string"), Some(str_id));
         assert_eq!(resolve_return_type_str(&type_ctx, "number"), Some(num_id));
         assert_eq!(resolve_return_type_str(&type_ctx, "boolean"), Some(bool_id));
-        assert_eq!(resolve_return_type_str(&type_ctx, "string[]"), Some(TypeContext::ARRAY_TYPE_ID));
-        assert_eq!(resolve_return_type_str(&type_ctx, "string[][]"), Some(TypeContext::ARRAY_TYPE_ID));
-        assert_eq!(resolve_return_type_str(&type_ctx, "string[] | null"), Some(TypeContext::ARRAY_TYPE_ID));
+        assert_eq!(
+            resolve_return_type_str(&type_ctx, "string[]"),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        );
+        assert_eq!(
+            resolve_return_type_str(&type_ctx, "string[][]"),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        );
+        assert_eq!(
+            resolve_return_type_str(&type_ctx, "string[] | null"),
+            Some(TypeContext::ARRAY_TYPE_ID)
+        );
         assert_eq!(resolve_return_type_str(&type_ctx, "T"), None); // Generic — no propagation
     }
 }

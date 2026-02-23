@@ -257,18 +257,12 @@ fn test_array_map_int_to_bool() {
 
 #[test]
 fn test_assign_null_to_non_nullable_errors() {
-    expect_compile_error(
-        "let x: int = null;",
-        "TypeMismatch",
-    );
+    expect_compile_error("let x: int = null;", "TypeMismatch");
 }
 
 #[test]
 fn test_return_null_from_non_nullable_function_errors() {
-    expect_compile_error(
-        "function f(): int { return null; }",
-        "TypeMismatch",
-    );
+    expect_compile_error("function f(): int { return null; }", "TypeMismatch");
 }
 
 // ============================================================================
@@ -497,42 +491,27 @@ fn test_three_level_abstract_hierarchy() {
 // FIXED: `typeof 42` now returns "int" for i32 values
 #[test]
 fn test_typeof_int() {
-    expect_string(
-        "return typeof 42;",
-        "int",
-    );
+    expect_string("return typeof 42;", "int");
 }
 
 #[test]
 fn test_typeof_number() {
-    expect_string(
-        "return typeof 3.14;",
-        "number",
-    );
+    expect_string("return typeof 3.14;", "number");
 }
 
 #[test]
 fn test_typeof_string() {
-    expect_string(
-        "return typeof \"hello\";",
-        "string",
-    );
+    expect_string("return typeof \"hello\";", "string");
 }
 
 #[test]
 fn test_typeof_boolean() {
-    expect_string(
-        "return typeof true;",
-        "boolean",
-    );
+    expect_string("return typeof true;", "boolean");
 }
 
 #[test]
 fn test_typeof_null() {
-    expect_string(
-        "return typeof null;",
-        "null",
-    );
+    expect_string("return typeof null;", "null");
 }
 
 // ============================================================================

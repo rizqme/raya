@@ -1,41 +1,104 @@
 <div align="center">
   <img src="raya-logo.svg" alt="Raya Logo" width="200"/>
+
   <h1>Raya Programming Language</h1>
 
-  [![CI](https://github.com/rizqme/raya/workflows/CI/badge.svg)](https://github.com/rizqme/raya/actions)
-  [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+  [![CI](https://github.com/rizqme/raya/actions/workflows/ci.yml/badge.svg)](https://github.com/rizqme/raya/actions/workflows/ci.yml)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-  <p>A <strong>statically-typed language with TypeScript syntax</strong> and a custom VM built for <strong>predictable performance</strong> and <strong>goroutine-style concurrency</strong>.</p>
+  <p>
+    A <strong>statically typed language with TypeScript syntax</strong> powered by a 
+    <strong>modern VM</strong> designed for <strong>predictable performance</strong> 
+    and <strong>native multi-core concurrency</strong>.
+  </p>
 </div>
 
 ---
 
-Raya is a **statically-typed language with TypeScript syntax** and a custom VM built for **predictable performance** and **goroutine-style concurrency**.
+# Raya Programming Language
 
-If you like TypeScript ergonomics but want stronger compile-time guarantees and a tighter runtime model, Raya is built for that.
+Raya is a **statically typed language with TypeScript syntax** powered by a **custom virtual machine** built for modern hardware.
 
-**[Documentation](https://raya.land)**
+TypeScript today compiles to JavaScript — meaning your types are erased and your runtime behavior is still governed by JavaScript semantics and its single-threaded event loop model.
 
----
-
-## Why software engineers care
-
-- **Runtime for TypeScript-like syntax, without JavaScript legacy baggage**  
-  Keep familiar developer ergonomics while avoiding historical JS runtime quirks.
-- **TypeScript-like syntax, stricter semantics**  
-  Familiar syntax with no `any`, no runtime type assertions, and no hidden coercion.
-- **Concurrency as a first-class model**  
-  Lightweight `Task`s, immediate start with `async`, cooperative `await`, work-stealing scheduler.
-- **Compile-time specialization**  
-  Monomorphization and typed bytecode (`IADD`, `FADD`, etc.) for predictable execution paths.
-- **No runtime type checks in hot code**  
-  Type safety is enforced at compile time.
+Raya keeps the **ergonomics and expressiveness of TypeScript**, while replacing the runtime entirely.
 
 ---
 
-## Quick example
+## Why Raya Exists
 
-```typescript
+Raya is built for engineers who:
+
+- Like **TypeScript’s syntax and developer experience**
+- Want **stronger compile-time guarantees**
+- Need **predictable runtime behavior**
+- Care about **real concurrency on multi-core systems**
+- Prefer a **clean execution model without JavaScript legacy constraints**
+
+Raya is not a JavaScript alternative.
+
+It is a **new language + runtime designed from first principles**.
+
+---
+
+## Core Ideas
+
+### **TypeScript Ergonomics — Without JavaScript**
+
+Raya uses familiar TypeScript-like syntax, but:
+
+- No JavaScript compatibility layer
+- No `any`
+- No implicit coercions
+- No runtime type assertions in hot paths
+
+Types are **real semantic constructs**, not erased hints.
+
+---
+
+### **Concurrency as a First-Class Runtime Feature**
+
+Async functions create **lightweight Tasks**:
+
+- Tasks start immediately
+- Minimal scheduling overhead
+- Cooperative `await`
+- Work-stealing scheduler
+- Designed for multi-core execution
+
+Concurrency is a **runtime primitive**, not an afterthought.
+
+---
+
+### **Static Types That Shape Execution**
+
+Raya compiles into:
+
+- Typed IR
+- Typed bytecode (`IADD`, `FADD`, etc.)
+
+This enables:
+
+- Predictable execution paths
+- No dynamic type checks in hot code
+- Better optimization opportunities (JIT / AOT)
+
+---
+
+### **Predictable Runtime Semantics**
+
+Raya prioritizes:
+
+- Explicit behavior
+- No hidden conversions
+- No surprising runtime coercions
+- Deterministic execution model
+
+---
+
+## Quick Example
+
+```ts
 import io from "std:io";
 
 // Async functions create lightweight Tasks
@@ -43,18 +106,17 @@ async function fetchUser(id: number): Task<string> {
   return `User ${id}`;
 }
 
-function main(): void {
-  // Tasks start immediately - no explicit spawn
+async function main(): Task<void> {
+  // Tasks start immediately
   const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
-  
-  // Await array of tasks - returns array of results
+
+  // Await multiple tasks
   const users = await tasks;
-  
+
   for (const user of users) {
     io.writeln(user);
   }
 }
-```
 
 ---
 
@@ -78,6 +140,11 @@ source (.raya)
   -> typed bytecode
   -> VM interpreter (and optional JIT/AOT paths)
 ```
+
+Runtime concurrency uses a **reactor model**:
+
+- **I/O threads** run the reactor/event loop for polling and wakeups
+- **Task worker threads** execute scheduled language tasks (work-stealing)
 
 Project layout:
 
@@ -116,7 +183,6 @@ Raya is active and moving quickly.
 If you’re evaluating for production, track changes closely and pin versions.
 
 ---
-
 ## Build & test
 
 Requires Rust stable.
@@ -138,11 +204,7 @@ cargo build --release -p raya-cli
 
 ---
 
-## License
+## Author & License
 
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
+Author: Ahmad Rizqi Meydiarso
+MIT License ([LICENSE](LICENSE))

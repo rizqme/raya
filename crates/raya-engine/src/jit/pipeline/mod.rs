@@ -11,11 +11,11 @@ pub mod lifter;
 pub mod optimize;
 pub mod prewarm;
 
+use self::lifter::LiftError;
+use self::optimize::JitOptimizer;
 use crate::compiler::bytecode::{Function, Module};
 use crate::jit::backend::traits::{CodegenBackend, CodegenError, CompiledCode, ModuleContext};
 use crate::jit::ir::instr::JitFunction;
-use self::lifter::LiftError;
-use self::optimize::JitOptimizer;
 
 /// Errors from the compilation pipeline
 #[derive(Debug, thiserror::Error)]
@@ -110,8 +110,8 @@ impl<B: CodegenBackend> JitPipeline<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jit::backend::StubBackend;
     use crate::compiler::bytecode::{ConstantPool, Metadata, Opcode};
+    use crate::jit::backend::StubBackend;
 
     fn make_module_with_func(code: Vec<u8>, param_count: usize, local_count: usize) -> Module {
         Module {
@@ -140,7 +140,9 @@ mod tests {
         }
     }
 
-    fn emit(code: &mut Vec<u8>, op: Opcode) { code.push(op as u8); }
+    fn emit(code: &mut Vec<u8>, op: Opcode) {
+        code.push(op as u8);
+    }
     fn emit_i32(code: &mut Vec<u8>, val: i32) {
         code.push(Opcode::ConstI32 as u8);
         code.extend_from_slice(&val.to_le_bytes());
@@ -172,9 +174,9 @@ mod tests {
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let (jit_func, compiled) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, compiled) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         assert_eq!(jit_func.name, "test_func");
         assert!(!compiled.code.is_empty());
@@ -192,9 +194,9 @@ mod tests {
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let (jit_func, _) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, _) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         // After constant folding, the IAdd(3,5) should be folded to ConstI32(8)
         let display = format!("{}", jit_func);
@@ -213,9 +215,9 @@ mod tests {
         let module = make_module_with_func(code, 0, 1);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let (jit_func, compiled) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, compiled) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         assert_eq!(jit_func.local_count, 1);
         assert!(!compiled.code.is_empty());
@@ -233,9 +235,9 @@ mod tests {
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let (jit_func, _) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, _) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         let display = format!("{}", jit_func);
         assert!(display.contains("const.f64") || display.contains("fadd"));
@@ -245,19 +247,19 @@ mod tests {
     fn test_pipeline_branch() {
         // ConstTrue, JmpIfFalse +7, ConstI32 1, Return, ConstI32 2, Return
         let mut code = Vec::new();
-        emit(&mut code, Opcode::ConstTrue);              // offset 0
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 11);     // offset 1, target=12
-        emit_i32(&mut code, 1);                           // offset 6
-        emit(&mut code, Opcode::Return);                  // offset 11
-        emit_i32(&mut code, 2);                           // offset 12
-        emit(&mut code, Opcode::Return);                  // offset 17
+        emit(&mut code, Opcode::ConstTrue); // offset 0
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 11); // offset 1, target=12
+        emit_i32(&mut code, 1); // offset 6
+        emit(&mut code, Opcode::Return); // offset 11
+        emit_i32(&mut code, 2); // offset 12
+        emit(&mut code, Opcode::Return); // offset 17
 
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let (jit_func, _) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, _) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         // Should have multiple blocks
         assert!(jit_func.blocks.len() >= 3);
@@ -279,11 +281,24 @@ mod tests {
             flags: 0,
             constants: ConstantPool::new(),
             functions: vec![
-                Function { name: "func_a".to_string(), param_count: 0, local_count: 0, code: code1 },
-                Function { name: "func_b".to_string(), param_count: 0, local_count: 0, code: code2 },
+                Function {
+                    name: "func_a".to_string(),
+                    param_count: 0,
+                    local_count: 0,
+                    code: code1,
+                },
+                Function {
+                    name: "func_b".to_string(),
+                    param_count: 0,
+                    local_count: 0,
+                    code: code2,
+                },
             ],
             classes: vec![],
-            metadata: Metadata { name: "multi".to_string(), source_file: None },
+            metadata: Metadata {
+                name: "multi".to_string(),
+                source_file: None,
+            },
             exports: vec![],
             imports: vec![],
             checksum: [0; 32],
@@ -306,9 +321,7 @@ mod tests {
         let module = make_module_with_func(vec![], 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let result = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        );
+        let result = pipeline.compile_function(&module.functions[0], &module, 0);
         assert!(result.is_ok());
     }
 
@@ -328,10 +341,12 @@ mod tests {
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let result = pipeline.compile_function(
-            &module.functions[0], &module, 0
+        let result = pipeline.compile_function(&module.functions[0], &module, 0);
+        assert!(
+            result.is_ok(),
+            "Loop should compile through pipeline: {:?}",
+            result.err()
         );
-        assert!(result.is_ok(), "Loop should compile through pipeline: {:?}", result.err());
 
         let (jit_func, _) = result.unwrap();
         assert!(jit_func.blocks.len() >= 3, "expected >= 3 blocks for loop");
@@ -341,27 +356,29 @@ mod tests {
     fn test_pipeline_loop_with_locals() {
         // i = 0; while (i < 10) { i = i + 1; } return i;
         let mut code = Vec::new();
-        emit_i32(&mut code, 0);                       // offset 0
-        emit_store_local(&mut code, 0);                // offset 5
-        emit_load_local(&mut code, 0);                 // offset 8 — loop header
-        emit_i32(&mut code, 10);                       // offset 11
-        emit(&mut code, Opcode::Ilt);                  // offset 16
-        emit_jmp(&mut code, Opcode::JmpIfFalse, 22);  // offset 17, target=39
-        emit_load_local(&mut code, 0);                 // offset 22 — loop body
-        emit_i32(&mut code, 1);                        // offset 25
-        emit(&mut code, Opcode::Iadd);                 // offset 30
-        emit_store_local(&mut code, 0);                // offset 31
-        emit_jmp(&mut code, Opcode::Jmp, -26);        // offset 34, target=8
-        emit_load_local(&mut code, 0);                 // offset 39 — exit
-        emit(&mut code, Opcode::Return);               // offset 42
+        emit_i32(&mut code, 0); // offset 0
+        emit_store_local(&mut code, 0); // offset 5
+        emit_load_local(&mut code, 0); // offset 8 — loop header
+        emit_i32(&mut code, 10); // offset 11
+        emit(&mut code, Opcode::Ilt); // offset 16
+        emit_jmp(&mut code, Opcode::JmpIfFalse, 22); // offset 17, target=39
+        emit_load_local(&mut code, 0); // offset 22 — loop body
+        emit_i32(&mut code, 1); // offset 25
+        emit(&mut code, Opcode::Iadd); // offset 30
+        emit_store_local(&mut code, 0); // offset 31
+        emit_jmp(&mut code, Opcode::Jmp, -26); // offset 34, target=8
+        emit_load_local(&mut code, 0); // offset 39 — exit
+        emit(&mut code, Opcode::Return); // offset 42
 
         let module = make_module_with_func(code, 0, 1);
         let pipeline = JitPipeline::new(StubBackend);
 
-        let result = pipeline.compile_function(
-            &module.functions[0], &module, 0
+        let result = pipeline.compile_function(&module.functions[0], &module, 0);
+        assert!(
+            result.is_ok(),
+            "Loop with locals should compile: {:?}",
+            result.err()
         );
-        assert!(result.is_ok(), "Loop with locals should compile: {:?}", result.err());
 
         let (jit_func, compiled) = result.unwrap();
         assert!(jit_func.blocks.len() >= 4);
@@ -379,9 +396,9 @@ mod tests {
         let module = make_module_with_func(code, 0, 0);
         let pipeline = JitPipeline::with_optimizer(StubBackend, JitOptimizer::empty());
 
-        let (jit_func, _) = pipeline.compile_function(
-            &module.functions[0], &module, 0
-        ).unwrap();
+        let (jit_func, _) = pipeline
+            .compile_function(&module.functions[0], &module, 0)
+            .unwrap();
 
         // Without optimizer, IAdd should remain (not folded)
         let display = format!("{}", jit_func);

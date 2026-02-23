@@ -6,20 +6,20 @@
 
 #![warn(missing_docs)]
 
+pub mod compress;
+pub mod crypto;
+pub mod encoding;
 pub mod handler;
+pub mod json_toml;
 pub mod logger;
 pub mod math;
-pub mod crypto;
-pub mod compress;
 pub mod path;
+pub mod registry;
+pub mod semver_mod;
 pub mod stream;
 pub mod template;
-pub mod url;
-pub mod encoding;
-pub mod json_toml;
-pub mod semver_mod;
 pub mod test;
-pub mod registry;
+pub mod url;
 
 pub use handler::StdNativeHandler;
 pub use registry::register_stdlib;

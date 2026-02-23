@@ -96,7 +96,10 @@ impl SuspensionAnalysis {
 impl SuspensionKind {
     /// Whether this kind of suspension always suspends (vs. may suspend).
     pub fn always_suspends(&self) -> bool {
-        matches!(self, SuspensionKind::Await | SuspensionKind::Yield | SuspensionKind::Sleep)
+        matches!(
+            self,
+            SuspensionKind::Await | SuspensionKind::Yield | SuspensionKind::Sleep
+        )
     }
 
     /// Whether this suspension involves a child frame (callee that suspended).

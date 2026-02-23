@@ -21,8 +21,8 @@ impl CodegenBackend for StubBackend {
     ) -> Result<CompiledCode, CodegenError> {
         // Emit a single-byte trap instruction as placeholder
         let trap_byte = match self.target_info().arch {
-            TargetArch::X86_64 => 0xCC,   // INT3
-            TargetArch::AArch64 => 0x00,   // BRK #0 (placeholder)
+            TargetArch::X86_64 => 0xCC,  // INT3
+            TargetArch::AArch64 => 0x00, // BRK #0 (placeholder)
         };
 
         Ok(CompiledCode {
@@ -46,13 +46,28 @@ impl CodegenBackend for StubBackend {
 
     fn target_info(&self) -> TargetInfo {
         #[cfg(target_arch = "x86_64")]
-        { TargetInfo { arch: TargetArch::X86_64, pointer_size: 8 } }
+        {
+            TargetInfo {
+                arch: TargetArch::X86_64,
+                pointer_size: 8,
+            }
+        }
 
         #[cfg(target_arch = "aarch64")]
-        { TargetInfo { arch: TargetArch::AArch64, pointer_size: 8 } }
+        {
+            TargetInfo {
+                arch: TargetArch::AArch64,
+                pointer_size: 8,
+            }
+        }
 
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-        { TargetInfo { arch: TargetArch::X86_64, pointer_size: 8 } }
+        {
+            TargetInfo {
+                arch: TargetArch::X86_64,
+                pointer_size: 8,
+            }
+        }
     }
 }
 
@@ -114,8 +129,12 @@ mod tests {
 
         struct NoResolver;
         impl SymbolResolver for NoResolver {
-            fn resolve_runtime_helper(&self, _: RuntimeHelper) -> Option<usize> { None }
-            fn resolve_jit_function(&self, _: u32) -> Option<usize> { None }
+            fn resolve_runtime_helper(&self, _: RuntimeHelper) -> Option<usize> {
+                None
+            }
+            fn resolve_jit_function(&self, _: u32) -> Option<usize> {
+                None
+            }
         }
 
         let result = stub.finalize(&mut code, &NoResolver);

@@ -62,9 +62,10 @@ impl UrlCache {
 
     /// Check if a URL is already cached (by checking lockfile)
     pub fn is_cached(&self, url: &str, lockfile: Option<&crate::Lockfile>) -> Option<CachedUrl> {
-        let locked = lockfile?.packages.iter().find(|p| {
-            matches!(&p.source, Source::Url { url: u } if u == url)
-        })?;
+        let locked = lockfile?
+            .packages
+            .iter()
+            .find(|p| matches!(&p.source, Source::Url { url: u } if u == url))?;
 
         let cache_dir = self.cache_dir(&locked.checksum);
 

@@ -221,7 +221,9 @@ pub enum CheckError {
     },
 
     /// Forbidden access to internal bare union fields ($type, $value)
-    #[error("Cannot access internal field '{field}' on bare union. Use typeof for type narrowing.")]
+    #[error(
+        "Cannot access internal field '{field}' on bare union. Use typeof for type narrowing."
+    )]
     ForbiddenFieldAccess {
         /// Field name ($type or $value)
         field: String,
@@ -277,7 +279,6 @@ pub enum CheckError {
     // ========================================================================
     // Decorator Errors
     // ========================================================================
-
     /// Decorator is not a valid decorator type
     #[error("Expression is not a valid decorator")]
     InvalidDecorator {
@@ -451,8 +452,7 @@ impl CheckWarning {
 }
 
 /// Configuration for which warnings are enabled/disabled
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct WarningConfig {
     /// Disabled warning codes (suppressed)
     pub disabled: std::collections::HashSet<WarningCode>,
@@ -462,11 +462,13 @@ pub struct WarningConfig {
     pub strict: bool,
 }
 
-
 impl WarningConfig {
     /// Strict mode — all warnings are errors
     pub fn strict() -> Self {
-        Self { strict: true, ..Self::default() }
+        Self {
+            strict: true,
+            ..Self::default()
+        }
     }
 
     /// Check if a warning should be emitted
@@ -497,11 +499,26 @@ mod tests {
 
     #[test]
     fn test_warning_code_from_name() {
-        assert_eq!(WarningCode::from_name("unused-variable"), Some(WarningCode::UnusedVariable));
-        assert_eq!(WarningCode::from_name("unused-import"), Some(WarningCode::UnusedImport));
-        assert_eq!(WarningCode::from_name("unused-parameter"), Some(WarningCode::UnusedParameter));
-        assert_eq!(WarningCode::from_name("unreachable-code"), Some(WarningCode::UnreachableCode));
-        assert_eq!(WarningCode::from_name("shadowed-variable"), Some(WarningCode::ShadowedVariable));
+        assert_eq!(
+            WarningCode::from_name("unused-variable"),
+            Some(WarningCode::UnusedVariable)
+        );
+        assert_eq!(
+            WarningCode::from_name("unused-import"),
+            Some(WarningCode::UnusedImport)
+        );
+        assert_eq!(
+            WarningCode::from_name("unused-parameter"),
+            Some(WarningCode::UnusedParameter)
+        );
+        assert_eq!(
+            WarningCode::from_name("unreachable-code"),
+            Some(WarningCode::UnreachableCode)
+        );
+        assert_eq!(
+            WarningCode::from_name("shadowed-variable"),
+            Some(WarningCode::ShadowedVariable)
+        );
         assert_eq!(WarningCode::from_name("unknown"), None);
         assert_eq!(WarningCode::from_name(""), None);
     }
@@ -511,7 +528,10 @@ mod tests {
     #[test]
     fn test_check_warning_span() {
         let span = Span::new(10, 20, 1, 5);
-        let w = CheckWarning::UnusedVariable { name: "x".to_string(), span };
+        let w = CheckWarning::UnusedVariable {
+            name: "x".to_string(),
+            span,
+        };
         assert_eq!(w.span().start, 10);
         assert_eq!(w.span().end, 20);
 
@@ -530,10 +550,25 @@ mod tests {
     #[test]
     fn test_check_warning_code() {
         let span = Span::new(0, 1, 1, 1);
-        assert_eq!(CheckWarning::UnusedVariable { name: "x".into(), span }.code(), WarningCode::UnusedVariable);
-        assert_eq!(CheckWarning::UnreachableCode { span }.code(), WarningCode::UnreachableCode);
         assert_eq!(
-            CheckWarning::ShadowedVariable { name: "x".into(), original: span, shadow: span }.code(),
+            CheckWarning::UnusedVariable {
+                name: "x".into(),
+                span
+            }
+            .code(),
+            WarningCode::UnusedVariable
+        );
+        assert_eq!(
+            CheckWarning::UnreachableCode { span }.code(),
+            WarningCode::UnreachableCode
+        );
+        assert_eq!(
+            CheckWarning::ShadowedVariable {
+                name: "x".into(),
+                original: span,
+                shadow: span
+            }
+            .code(),
             WarningCode::ShadowedVariable
         );
     }

@@ -1,7 +1,10 @@
 //! Pattern parsing (for destructuring and parameter bindings)
 
 use super::{ParseError, Parser};
-use crate::parser::ast::{ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement, RestPattern};
+use crate::parser::ast::{
+    ArrayPattern, Identifier, ObjectPattern, ObjectPatternProperty, Pattern, PatternElement,
+    RestPattern,
+};
 use crate::parser::interner::Symbol;
 use crate::parser::token::Token;
 
@@ -12,7 +15,10 @@ pub fn parse_pattern(parser: &mut Parser) -> Result<Pattern, ParseError> {
     if parser.depth > super::guards::MAX_PARSE_DEPTH {
         parser.depth -= 1;
         return Err(ParseError::parser_limit_exceeded(
-            format!("Maximum nesting depth ({}) exceeded in pattern", super::guards::MAX_PARSE_DEPTH),
+            format!(
+                "Maximum nesting depth ({}) exceeded in pattern",
+                super::guards::MAX_PARSE_DEPTH
+            ),
             parser.current_span(),
         ));
     }

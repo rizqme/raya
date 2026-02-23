@@ -43,9 +43,7 @@ impl PathResolver {
     /// Create a new path resolver
     pub fn new(project_root: PathBuf) -> Self {
         // Canonicalize the project root to handle symlinks consistently
-        let project_root = project_root
-            .canonicalize()
-            .unwrap_or(project_root);
+        let project_root = project_root.canonicalize().unwrap_or(project_root);
         Self { project_root }
     }
 
@@ -148,7 +146,9 @@ impl PathResolver {
         absolute
             .strip_prefix(&self.project_root)
             .map(|p| p.to_path_buf())
-            .map_err(|_| PathError::InvalidPath(format!("{:?} is not within project root", absolute)))
+            .map_err(|_| {
+                PathError::InvalidPath(format!("{:?} is not within project root", absolute))
+            })
     }
 }
 
@@ -176,8 +176,11 @@ mod tests {
         let root = temp.path().to_path_buf();
 
         // Create project structure
-        fs::write(root.join("raya.toml"), "[package]\nname = \"root\"\nversion = \"1.0.0\"\n")
-            .unwrap();
+        fs::write(
+            root.join("raya.toml"),
+            "[package]\nname = \"root\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
 
         (temp, root)
     }

@@ -13,7 +13,10 @@ pub fn parse_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     if parser.depth > super::guards::MAX_PARSE_DEPTH {
         parser.depth -= 1;
         return Err(ParseError::parser_limit_exceeded(
-            format!("Maximum nesting depth ({}) exceeded in statement", super::guards::MAX_PARSE_DEPTH),
+            format!(
+                "Maximum nesting depth ({}) exceeded in statement",
+                super::guards::MAX_PARSE_DEPTH
+            ),
             parser.current_span(),
         ));
     }
@@ -302,9 +305,18 @@ fn parse_function_parameters(parser: &mut Parser) -> Result<Vec<Parameter>, Pars
 
         // Parse optional visibility modifier for constructor parameter properties
         let visibility = match parser.current() {
-            Token::Public => { parser.advance(); Some(Visibility::Public) }
-            Token::Private => { parser.advance(); Some(Visibility::Private) }
-            Token::Protected => { parser.advance(); Some(Visibility::Protected) }
+            Token::Public => {
+                parser.advance();
+                Some(Visibility::Public)
+            }
+            Token::Private => {
+                parser.advance();
+                Some(Visibility::Private)
+            }
+            Token::Protected => {
+                parser.advance();
+                Some(Visibility::Protected)
+            }
             _ => None,
         };
 
@@ -667,7 +679,8 @@ fn pattern_to_expression(pattern: Pattern) -> Result<Expression, ParseError> {
             use super::ParseErrorKind;
             Err(ParseError {
                 kind: ParseErrorKind::InvalidSyntax {
-                    reason: "Cannot use destructuring pattern in for loop initializer expression".to_string(),
+                    reason: "Cannot use destructuring pattern in for loop initializer expression"
+                        .to_string(),
                 },
                 span: *pattern.span(),
                 message: "Invalid for loop initializer".to_string(),
@@ -679,7 +692,10 @@ fn pattern_to_expression(pattern: Pattern) -> Result<Expression, ParseError> {
 
 /// Continue parsing an expression starting from a base expression (identifier)
 /// This handles assignment expressions like `i = 0`
-fn parse_expression_from_base(parser: &mut Parser, base: Expression) -> Result<Expression, ParseError> {
+fn parse_expression_from_base(
+    parser: &mut Parser,
+    base: Expression,
+) -> Result<Expression, ParseError> {
     // Check for assignment operators
     let operator = match parser.current() {
         Token::Equal => Some(AssignmentOperator::Assign),
@@ -1994,13 +2010,17 @@ class Foo {
         let module = parse(source);
         if let crate::parser::ast::Statement::ClassDecl(class) = &module.statements[0] {
             assert_eq!(class.members.len(), 7);
-            let names: Vec<_> = class.members.iter().filter_map(|m| {
-                if let crate::parser::ast::ClassMember::Method(method) = m {
-                    Some(method.name.name)
-                } else {
-                    None
-                }
-            }).collect();
+            let names: Vec<_> = class
+                .members
+                .iter()
+                .filter_map(|m| {
+                    if let crate::parser::ast::ClassMember::Method(method) = m {
+                        Some(method.name.name)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             assert_eq!(names.len(), 7);
         } else {
             panic!("Expected ClassDecl");

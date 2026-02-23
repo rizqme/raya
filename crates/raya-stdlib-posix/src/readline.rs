@@ -102,10 +102,7 @@ pub fn readline_load_history(ctx: &dyn NativeContext, args: &[NativeValue]) -> N
                 }
                 Err(e) => IoCompletion::Error(format!("readline.loadHistory: {}", e)),
             },
-            None => IoCompletion::Error(format!(
-                "readline.loadHistory: invalid handle {}",
-                handle
-            )),
+            None => IoCompletion::Error(format!("readline.loadHistory: invalid handle {}", handle)),
         }),
     })
 }
@@ -129,10 +126,7 @@ pub fn readline_save_history(ctx: &dyn NativeContext, args: &[NativeValue]) -> N
                     Err(e) => IoCompletion::Error(format!("readline.saveHistory: {}", e)),
                 }
             }
-            None => IoCompletion::Error(format!(
-                "readline.saveHistory: invalid handle {}",
-                handle
-            )),
+            None => IoCompletion::Error(format!("readline.saveHistory: invalid handle {}", handle)),
         }),
     })
 }
@@ -156,19 +150,14 @@ pub fn readline_clear_history(_ctx: &dyn NativeContext, args: &[NativeValue]) ->
 // ── readline.historySize(handle) -> number ──
 
 /// Get the number of history entries.
-pub fn readline_history_size(
-    _ctx: &dyn NativeContext,
-    args: &[NativeValue],
-) -> NativeCallResult {
+pub fn readline_history_size(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let handle = extract_handle(args);
     match READLINE_HANDLES.get(handle) {
         Some(entry) => {
             let len = entry.lock().unwrap().history.len();
             NativeCallResult::f64(len as f64)
         }
-        None => {
-            NativeCallResult::Error(format!("readline.historySize: invalid handle {}", handle))
-        }
+        None => NativeCallResult::Error(format!("readline.historySize: invalid handle {}", handle)),
     }
 }
 
@@ -184,10 +173,7 @@ pub fn readline_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeC
 // ── readline.simplePrompt(text) -> string ──
 
 /// One-shot prompt: show text, read line. No handle needed.
-pub fn readline_simple_prompt(
-    ctx: &dyn NativeContext,
-    args: &[NativeValue],
-) -> NativeCallResult {
+pub fn readline_simple_prompt(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
     let prompt_text = match ctx.read_string(args[0]) {
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("readline.simplePrompt: {}", e)),

@@ -14,8 +14,8 @@
 //! cargo test --test concurrent_task_tests
 //! ```
 
-use raya_engine::vm::scheduler::{Scheduler, TaskId};
 use raya_engine::vm::interpreter::VmContext;
+use raya_engine::vm::scheduler::{Scheduler, TaskId};
 
 // ===== Basic Task Execution Tests =====
 

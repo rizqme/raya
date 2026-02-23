@@ -4,9 +4,20 @@
 
 use raya_runtime::{Runtime, RuntimeOptions};
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("raya-cli-{}-{}", prefix, ts));
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    dir
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -26,7 +37,10 @@ fn test_compile_raya_file() {
     let rt = Runtime::new();
     let path = fixtures_dir().join("simple/main.raya");
     let compiled = rt.compile_file(&path).expect("compile_file failed");
-    assert!(!compiled.encode().is_empty(), "Bytecode should not be empty");
+    assert!(
+        !compiled.encode().is_empty(),
+        "Bytecode should not be empty"
+    );
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -64,7 +78,9 @@ fn test_load_bytecode_roundtrip() {
     // Compile → encode → decode
     let compiled = rt.compile_file(&src_path).expect("compile failed");
     let bytes = compiled.encode();
-    let loaded = rt.load_bytecode_bytes(&bytes).expect("load bytecode failed");
+    let loaded = rt
+        .load_bytecode_bytes(&bytes)
+        .expect("load bytecode failed");
 
     // Execute the loaded bytecode
     let value = rt.execute(&loaded).expect("execute failed");
@@ -166,12 +182,15 @@ fn test_url_dep_from_cache() {
     let rt = Runtime::new();
 
     // Compile a simple module to .ryb
-    let dep_source = "function helper(): number { return 99; }\nfunction main(): number { return helper(); }";
+    let dep_source =
+        "function helper(): number { return 99; }\nfunction main(): number { return helper(); }";
     let compiled = rt.compile(dep_source).expect("compile dep failed");
     let bytes = compiled.encode();
 
     // Verify we can load and execute it (simulates loading from URL cache)
-    let loaded = rt.load_bytecode_bytes(&bytes).expect("load from cache failed");
+    let loaded = rt
+        .load_bytecode_bytes(&bytes)
+        .expect("load from cache failed");
     let value = rt.execute(&loaded).expect("execute cached dep failed");
     assert!(
         value.as_i32() == Some(99) || value.as_f64() == Some(99.0),
@@ -361,6 +380,105 @@ function main(): number {
     );
 }
 
+#[test]
+fn test_eval_async_waitall_complex_program() {
+    let rt = Runtime::new();
+
+    let source = r#"
+async function worker(x: number): Task<number> {
+    return x * x;
+}
+function main(): number {
+    const tasks = [worker(2), worker(3), worker(4), worker(5)];
+    const values = await tasks;
+    return values[0] + values[1] + values[2] + values[3];
+}
+return main();
+"#;
+
+    let value = rt.eval(source).expect("eval waitall failed");
+    assert!(
+        value.as_i32() == Some(54) || value.as_f64() == Some(54.0),
+        "Expected 54, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_eval_async_waitall_with_imported_io_method_calls() {
+    let rt = Runtime::new();
+
+    let source = r#"
+import io from "std:io";
+
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+
+function main(): number {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+    return users.length;
+}
+
+return main();
+"#;
+
+    let value = rt.eval(source).expect("eval io+waitall program failed");
+    assert!(
+        value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
+        "Expected 3, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_eval_top_level_main_call_with_waitall_runs_once() {
+    let rt = Runtime::new();
+    let source = r#"
+let runCount: number = 0;
+
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+
+function main(): void {
+    if (runCount == 1) { throw "main executed twice"; }
+    runCount = runCount + 1;
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    let _first = users[0];
+}
+
+main();
+"#;
+
+    let value = rt.eval(source).expect("eval should not run main twice");
+    assert!(
+        value.is_null(),
+        "Expected null for top-level main() call program, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_eval_bare_expression_wrapping_equivalent() {
+    let rt = Runtime::new();
+    let wrapped = rt.eval("return 1 + 2 * 3;").expect("wrapped eval failed");
+    assert!(
+        wrapped.as_i32() == Some(7) || wrapped.as_f64() == Some(7.0),
+        "Expected 7, got {:?}",
+        wrapped
+    );
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Test 10: raya run <script> — script resolution
 // ────────────────────────────────────────────────────────────────────────────
@@ -372,9 +490,18 @@ fn test_script_manifest_parsing() {
     let manifest =
         raya_pm::PackageManifest::from_file(&manifest_path).expect("parse manifest failed");
 
-    assert_eq!(manifest.scripts.get("dev").map(|s| s.as_str()), Some("src/main.raya"));
-    assert_eq!(manifest.scripts.get("start").map(|s| s.as_str()), Some("src/main.raya"));
-    assert_eq!(manifest.scripts.get("greet").map(|s| s.as_str()), Some("echo hello"));
+    assert_eq!(
+        manifest.scripts.get("dev").map(|s| s.as_str()),
+        Some("src/main.raya")
+    );
+    assert_eq!(
+        manifest.scripts.get("start").map(|s| s.as_str()),
+        Some("src/main.raya")
+    );
+    assert_eq!(
+        manifest.scripts.get("greet").map(|s| s.as_str()),
+        Some("echo hello")
+    );
 }
 
 #[test]
@@ -411,6 +538,36 @@ fn test_build_to_ryb() {
         "Expected 42 after roundtrip, got {:?}",
         value
     );
+}
+
+#[test]
+fn test_build_then_run_generated_ryb_via_runtime() {
+    let rt = Runtime::new();
+    let tmp_dir = unique_temp_dir("build-run-ryb");
+
+    let source = r#"
+function square(x: number): number { return x * x; }
+function main(): number { return square(11); }
+"#;
+    let src_path = tmp_dir.join("main.raya");
+    std::fs::write(&src_path, source).expect("write source");
+
+    let out_dir = tmp_dir.join("dist");
+    let compiled = rt.compile_file(&src_path).expect("compile source");
+    std::fs::create_dir_all(&out_dir).expect("create dist");
+    std::fs::write(out_dir.join("main.ryb"), compiled.encode()).expect("write .ryb");
+
+    let ryb_path = out_dir.join("main.ryb");
+    assert!(
+        ryb_path.exists(),
+        "Expected built file at {}",
+        ryb_path.display()
+    );
+
+    let exit = rt.run_file(&ryb_path).expect("run built .ryb");
+    assert_eq!(exit, 0);
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -536,6 +693,302 @@ fn test_session_multiple_evals() {
     assert!(
         value.as_i32() == Some(6) || value.as_f64() == Some(6.0),
         "Expected 6, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_session_repl_complex_stateful_flow() {
+    let mut session = Session::new(&RuntimeOptions::default());
+
+    session
+        .eval(
+            r#"
+let base: number = 10;
+function addToBase(x: number): number {
+    return base + x;
+}
+"#,
+        )
+        .expect("setup failed");
+
+    let v1 = session
+        .eval("return addToBase(1);")
+        .expect("call #1 failed");
+    let v2 = session
+        .eval("return addToBase(5);")
+        .expect("call #2 failed");
+    let v3 = session
+        .eval("return addToBase(0);")
+        .expect("call #3 failed");
+
+    assert_eq!(
+        v1.as_i32().or_else(|| v1.as_f64().map(|n| n as i32)),
+        Some(11)
+    );
+    assert_eq!(
+        v2.as_i32().or_else(|| v2.as_f64().map(|n| n as i32)),
+        Some(15)
+    );
+    assert_eq!(
+        v3.as_i32().or_else(|| v3.as_f64().map(|n| n as i32)),
+        Some(10)
+    );
+}
+
+#[test]
+fn test_session_repl_error_recovery_then_continue() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    session
+        .eval("let base: number = 10;")
+        .expect("setup failed");
+
+    let err = session.eval("return missingVar + 1;");
+    assert!(err.is_err(), "Expected undefined variable error");
+
+    let ok = session
+        .eval("return base + 5;")
+        .expect("session did not recover");
+    assert!(
+        ok.as_i32() == Some(15) || ok.as_f64() == Some(15.0),
+        "Expected 15 after error recovery, got {:?}",
+        ok
+    );
+}
+
+#[test]
+fn test_session_repl_waitall_and_imported_io_method_calls() {
+    let mut session = Session::new(&RuntimeOptions::default());
+
+    let value = session
+        .eval(
+            r#"
+import io from "std:io";
+
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+
+function main(): number {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+    return users.length;
+}
+
+return main();
+"#,
+        )
+        .expect("session eval io+waitall program failed");
+
+    assert!(
+        value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
+        "Expected 3, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_session_repl_waitall_persists_async_defs_across_cells() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    session
+        .eval(
+            r#"
+let base: number = 10;
+"#,
+        )
+        .expect("define base failed");
+
+    let value = session
+        .eval(
+            r#"
+async function addBase(n: number): Task<number> {
+    return base + n;
+}
+const values = await [addBase(1), addBase(2), addBase(3)];
+return values[0] + values[1] + values[2];
+"#,
+        )
+        .expect("waitall across cells failed");
+
+    assert!(
+        value.as_i32() == Some(36) || value.as_f64() == Some(36.0),
+        "Expected 36, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_ryb_roundtrip_complex_async_class_program() {
+    let rt = Runtime::new();
+    let source = r#"
+class Acc {
+    sum: number = 0;
+    add(n: number): void { this.sum = this.sum + n; }
+}
+async function square(n: number): Task<number> { return n * n; }
+function main(): number {
+    const acc = new Acc();
+    const values = await [square(1), square(2), square(3), square(4)];
+    acc.add(values[0]);
+    acc.add(values[1]);
+    acc.add(values[2]);
+    acc.add(values[3]);
+    return acc.sum;
+}
+return main();
+"#;
+
+    let compiled = rt.compile(source).expect("compile failed");
+    let bytes = compiled.encode();
+    let loaded = rt
+        .load_bytecode_bytes(&bytes)
+        .expect("load bytecode failed");
+    let value = rt.execute(&loaded).expect("execute bytecode failed");
+    assert!(
+        value.as_i32() == Some(30) || value.as_f64() == Some(30.0),
+        "Expected 30, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_ryb_invalid_bytes_returns_error() {
+    let rt = Runtime::new();
+    let invalid = b"NOTRAYA\x01\x02\x03";
+    let result = rt.load_bytecode_bytes(invalid);
+    assert!(result.is_err(), "Expected invalid .ryb bytes to fail");
+}
+
+#[test]
+fn test_ryb_roundtrip_waitall_with_imported_io_method_calls() {
+    let rt = Runtime::new();
+    let source = r#"
+import io from "std:io";
+
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+
+function main(): number {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+    return users.length;
+}
+
+return main();
+"#;
+
+    let compiled = rt.compile(source).expect("compile failed");
+    let bytes = compiled.encode();
+    let loaded = rt
+        .load_bytecode_bytes(&bytes)
+        .expect("load bytecode failed");
+    let value = rt.execute(&loaded).expect("execute bytecode failed");
+    assert!(
+        value.as_i32() == Some(3) || value.as_f64() == Some(3.0),
+        "Expected 3, got {:?}",
+        value
+    );
+}
+
+#[test]
+fn test_eval_duplicate_toplevel_async_program_returns_error_not_hang() {
+    let rt = Runtime::new();
+    let snippet = r#"
+import io from "std:io";
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+function main(): void {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+}
+main();
+"#;
+    let duplicated = format!("{}\n{}", snippet, snippet);
+    let err = rt
+        .eval(&duplicated)
+        .expect_err("duplicated top-level program should return a duplicate declaration error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Duplicate function declaration"),
+        "Expected duplicate declaration error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_session_repl_paste_same_async_program_twice_returns_error() {
+    let mut session = Session::new(&RuntimeOptions::default());
+    let snippet = r#"
+import io from "std:io";
+async function fetchUser(id: number): Task<string> {
+    if (id == 1) return "User 1";
+    if (id == 2) return "User 2";
+    return "User 3";
+}
+function main(): void {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+}
+main();
+"#;
+
+    let first = session.eval(snippet);
+    assert!(
+        first.is_ok(),
+        "first paste should execute, got: {:?}",
+        first.err()
+    );
+
+    let second = session.eval(snippet);
+    let err = second.expect_err("second paste should error, not hang");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Duplicate function declaration"),
+        "Expected duplicate declaration error, got: {}",
+        msg
+    );
+}
+
+#[test]
+fn test_eval_declared_main_not_called_returns_null() {
+    let rt = Runtime::new();
+    let source = r#"
+import io from "std:io";
+async function fetchUser(id: number): Task<string> {
+    return "User " + id.toString();
+}
+function main(): void {
+    const tasks = [fetchUser(1), fetchUser(2), fetchUser(3)];
+    const users = await tasks;
+    io.writeln(users[0]);
+    io.writeln(users[1]);
+    io.writeln(users[2]);
+}
+"#;
+    let value = rt.eval(source).expect("eval should succeed");
+    assert!(
+        value.is_null(),
+        "expected null when main is not called, got {:?}",
         value
     );
 }

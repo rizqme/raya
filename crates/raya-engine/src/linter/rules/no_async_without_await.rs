@@ -6,7 +6,10 @@
 //! explicit separation of concurrent vs. suspending functions.
 
 use crate::linter::rule::*;
-use crate::parser::ast::{self, visitor::{Visitor, walk_expression}};
+use crate::parser::ast::{
+    self,
+    visitor::{walk_expression, Visitor},
+};
 
 pub struct NoAsyncWithoutAwait;
 
@@ -24,11 +27,7 @@ impl LintRule for NoAsyncWithoutAwait {
         &META
     }
 
-    fn check_statement(
-        &self,
-        stmt: &ast::Statement,
-        ctx: &LintContext<'_>,
-    ) -> Vec<LintDiagnostic> {
+    fn check_statement(&self, stmt: &ast::Statement, ctx: &LintContext<'_>) -> Vec<LintDiagnostic> {
         let func = match stmt {
             ast::Statement::FunctionDecl(f) => f,
             _ => return vec![],
@@ -141,14 +140,26 @@ mod tests {
     #[test]
     fn test_off_by_default() {
         let linter = Linter::new();
-        let diags = linter.lint_source("async function f(): void { const x: int = 1; }", "test.raya").diagnostics;
-        assert!(!has_rule(&diags, "L3002"), "should NOT fire when Off by default");
+        let diags = linter
+            .lint_source(
+                "async function f(): void { const x: int = 1; }",
+                "test.raya",
+            )
+            .diagnostics;
+        assert!(
+            !has_rule(&diags, "L3002"),
+            "should NOT fire when Off by default"
+        );
     }
 
     #[test]
     fn test_async_without_await_flagged() {
         let diags = lint("async function f(): void { const x: int = 1; }");
-        assert!(has_rule(&diags, "L3002"), "should flag async without await when enabled, got: {:?}", diags);
+        assert!(
+            has_rule(&diags, "L3002"),
+            "should flag async without await when enabled, got: {:?}",
+            diags
+        );
     }
 
     #[test]
@@ -160,6 +171,9 @@ mod tests {
     #[test]
     fn test_non_async_ok() {
         let diags = lint("function f(): void { const x: int = 1; }");
-        assert!(!has_rule(&diags, "L3002"), "non-async should not be flagged");
+        assert!(
+            !has_rule(&diags, "L3002"),
+            "non-async should not be flagged"
+        );
     }
 }

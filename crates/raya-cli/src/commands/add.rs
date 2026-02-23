@@ -2,12 +2,7 @@
 
 use raya_runtime::Runtime;
 
-pub fn execute(
-    package: String,
-    dev: bool,
-    exact: bool,
-    no_install: bool,
-) -> anyhow::Result<()> {
+pub fn execute(package: String, dev: bool, exact: bool, no_install: bool) -> anyhow::Result<()> {
     let rt = Runtime::new();
     let cwd = std::env::current_dir()?
         .display()

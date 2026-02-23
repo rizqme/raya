@@ -124,7 +124,11 @@ fn test_crypto_hmac_sha512() {
         return mac;
     "#,
     );
-    assert!(result.is_ok(), "HMAC-SHA512 should work: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "HMAC-SHA512 should work: {:?}",
+        result.err()
+    );
 }
 
 // ============================================================================
@@ -241,11 +245,7 @@ fn test_crypto_random_uuid_returns_string() {
         return id;
     "#,
     );
-    assert!(
-        result.is_ok(),
-        "randomUUID should work: {:?}",
-        result.err()
-    );
+    assert!(result.is_ok(), "randomUUID should work: {:?}", result.err());
 }
 
 #[test]

@@ -785,7 +785,7 @@ fn test_pipethrough_manual_inline() {
              i = i + 1;
          }
          return sum;",
-        60,  // (10*2 + 20*2) = 60
+        60, // (10*2 + 20*2) = 60
     );
 }
 

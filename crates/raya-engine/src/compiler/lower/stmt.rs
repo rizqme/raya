@@ -3,10 +3,10 @@
 //! Converts AST statements to IR instructions.
 
 use super::{Lowerer, UNRESOLVED};
+use crate::compiler::ir::block::BasicBlockId;
 use crate::compiler::ir::{
     BinaryOp, IrConstant, IrInstr, IrValue, Register, StringCompareMode, Terminator,
 };
-use crate::compiler::ir::block::BasicBlockId;
 use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
 
@@ -129,7 +129,10 @@ impl<'a> Lowerer<'a> {
 
         // Body block
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(body_block, "dowhile.body"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                body_block,
+                "dowhile.body",
+            ));
         self.current_block = body_block;
         self.lower_stmt(&do_while.body);
         if !self.current_block_is_terminated() {
@@ -141,7 +144,10 @@ impl<'a> Lowerer<'a> {
 
         // Condition block
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(cond_block, "dowhile.cond"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                cond_block,
+                "dowhile.cond",
+            ));
         self.current_block = cond_block;
         let cond = self.lower_expr(&do_while.condition);
         self.set_terminator(Terminator::Branch {
@@ -152,7 +158,10 @@ impl<'a> Lowerer<'a> {
 
         // Exit block
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(exit_block, "dowhile.exit"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                exit_block,
+                "dowhile.exit",
+            ));
         self.current_block = exit_block;
     }
 
@@ -203,7 +212,10 @@ impl<'a> Lowerer<'a> {
 
         // Header block: compare index < length
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(header_block, "forof.header"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                header_block,
+                "forof.header",
+            ));
         self.current_block = header_block;
 
         // Load current index
@@ -270,7 +282,9 @@ impl<'a> Lowerer<'a> {
             ast::ForOfLeft::VariableDecl(decl) => {
                 if let ast::Pattern::Identifier(ident) = &decl.pattern {
                     Some(ident.name)
-                } else { None }
+                } else {
+                    None
+                }
             }
             ast::ForOfLeft::Pattern(ast::Pattern::Identifier(ident)) => Some(ident.name),
             _ => None,
@@ -309,33 +323,37 @@ impl<'a> Lowerer<'a> {
 
         // Bind the loop variable (supports destructuring patterns)
         // Clone elem_reg before binding so we can use it for RefCell wrapping
-        let elem_for_refcell = if is_captured { Some(elem_reg.clone()) } else { None };
+        let elem_for_refcell = if is_captured {
+            Some(elem_reg.clone())
+        } else {
+            None
+        };
 
         match &for_of.left {
             ast::ForOfLeft::VariableDecl(decl) => {
                 self.bind_pattern(&decl.pattern, elem_reg);
             }
-            ast::ForOfLeft::Pattern(pattern) => {
-                match pattern {
-                    ast::Pattern::Identifier(ident) => {
-                        if let Some(local_idx) = self.lookup_local(ident.name) {
-                            self.emit(IrInstr::StoreLocal {
-                                index: local_idx,
-                                value: elem_reg,
-                            });
-                        }
-                    }
-                    _ => {
-                        self.bind_pattern(pattern, elem_reg);
+            ast::ForOfLeft::Pattern(pattern) => match pattern {
+                ast::Pattern::Identifier(ident) => {
+                    if let Some(local_idx) = self.lookup_local(ident.name) {
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: elem_reg,
+                        });
                     }
                 }
-            }
+                _ => {
+                    self.bind_pattern(pattern, elem_reg);
+                }
+            },
         }
 
         // Per-iteration RefCell binding for captured loop variables
         if is_captured {
             if let Some(var_name) = loop_var_name {
-                if let (Some(&local_idx), Some(value_reg)) = (self.local_map.get(&var_name), elem_for_refcell) {
+                if let (Some(&local_idx), Some(value_reg)) =
+                    (self.local_map.get(&var_name), elem_for_refcell)
+                {
                     let inner_ty = value_reg.ty;
                     let refcell_ty = TypeId::new(0);
                     let refcell_reg = self.alloc_register(refcell_ty);
@@ -344,7 +362,8 @@ impl<'a> Lowerer<'a> {
                         initial_value: value_reg,
                     });
                     self.local_registers.insert(local_idx, refcell_reg.clone());
-                    self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_registers
+                        .insert(local_idx, refcell_reg.clone());
                     self.refcell_inner_types.insert(local_idx, inner_ty);
                     self.emit(IrInstr::StoreLocal {
                         index: local_idx,
@@ -367,7 +386,10 @@ impl<'a> Lowerer<'a> {
 
         // Update block: _idx = _idx + 1
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(update_block, "forof.update"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                update_block,
+                "forof.update",
+            ));
         self.current_block = update_block;
 
         // Load current index
@@ -421,7 +443,8 @@ impl<'a> Lowerer<'a> {
                         initial_value: value_reg.clone(),
                     });
                     self.local_registers.insert(local_idx, refcell_reg.clone());
-                    self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                    self.refcell_registers
+                        .insert(local_idx, refcell_reg.clone());
                     self.refcell_inner_types.insert(local_idx, value_reg.ty);
                     self.emit(IrInstr::StoreLocal {
                         index: local_idx,
@@ -467,8 +490,9 @@ impl<'a> Lowerer<'a> {
                             });
 
                             // In-bounds path: load element, then check for null
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(load_block, "destr.load"));
+                            self.current_function_mut().add_block(
+                                crate::ir::BasicBlock::with_label(load_block, "destr.load"),
+                            );
                             self.current_block = load_block;
                             let elem_reg = self.alloc_register(TypeId::new(0));
                             self.emit(IrInstr::LoadElement {
@@ -485,8 +509,9 @@ impl<'a> Lowerer<'a> {
                                 not_null_block,
                             });
 
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(not_null_block, "destr.hasval"));
+                            self.current_function_mut().add_block(
+                                crate::ir::BasicBlock::with_label(not_null_block, "destr.hasval"),
+                            );
                             self.current_block = not_null_block;
                             self.emit(IrInstr::Assign {
                                 dest: final_val.clone(),
@@ -495,8 +520,9 @@ impl<'a> Lowerer<'a> {
                             self.set_terminator(Terminator::Jump(merge_block));
 
                             // Default path: evaluate default expression
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(default_block, "destr.default"));
+                            self.current_function_mut().add_block(
+                                crate::ir::BasicBlock::with_label(default_block, "destr.default"),
+                            );
                             self.current_block = default_block;
                             let default_val = self.lower_expr(default_expr);
                             self.emit(IrInstr::Assign {
@@ -506,8 +532,9 @@ impl<'a> Lowerer<'a> {
                             self.set_terminator(Terminator::Jump(merge_block));
 
                             // Merge
-                            self.current_function_mut()
-                                .add_block(crate::ir::BasicBlock::with_label(merge_block, "destr.merge"));
+                            self.current_function_mut().add_block(
+                                crate::ir::BasicBlock::with_label(merge_block, "destr.merge"),
+                            );
                             self.current_block = merge_block;
 
                             self.bind_pattern(&elem.pattern, final_val);
@@ -611,14 +638,19 @@ impl<'a> Lowerer<'a> {
 
                     // Find field index by name from the field layout
                     let field_index = if let Some(ref layout) = field_layout {
-                        layout.iter()
+                        layout
+                            .iter()
                             .find(|(name, _)| name == &prop_name)
                             .map(|(_, idx)| *idx as u16)
                     } else {
                         // Fallback: use positional index (no layout available)
-                        Some(obj_pat.properties.iter()
-                            .position(|p| p.key.name == property.key.name)
-                            .unwrap_or(0) as u16)
+                        Some(
+                            obj_pat
+                                .properties
+                                .iter()
+                                .position(|p| p.key.name == property.key.name)
+                                .unwrap_or(0) as u16,
+                        )
                     };
 
                     // If the field doesn't exist in the layout and there's a default,
@@ -655,7 +687,10 @@ impl<'a> Lowerer<'a> {
                         });
 
                         self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(not_null_block, "objd.hasval"));
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                not_null_block,
+                                "objd.hasval",
+                            ));
                         self.current_block = not_null_block;
                         self.emit(IrInstr::Assign {
                             dest: final_val.clone(),
@@ -664,7 +699,10 @@ impl<'a> Lowerer<'a> {
                         self.set_terminator(Terminator::Jump(merge_block));
 
                         self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(default_block, "objd.default"));
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                default_block,
+                                "objd.default",
+                            ));
                         self.current_block = default_block;
                         let default_val = self.lower_expr(default_expr);
                         self.emit(IrInstr::Assign {
@@ -674,7 +712,10 @@ impl<'a> Lowerer<'a> {
                         self.set_terminator(Terminator::Jump(merge_block));
 
                         self.current_function_mut()
-                            .add_block(crate::ir::BasicBlock::with_label(merge_block, "objd.merge"));
+                            .add_block(crate::ir::BasicBlock::with_label(
+                                merge_block,
+                                "objd.merge",
+                            ));
                         self.current_block = merge_block;
 
                         self.bind_pattern(&property.value, final_val);
@@ -721,68 +762,88 @@ impl<'a> Lowerer<'a> {
         // functions can access them via LoadGlobal/StoreGlobal.
         // Only at module scope (depth 0) — inside function bodies, `let x` creates a local
         // even if a module-level `x` exists (shadowing).
-        if self.function_depth == 0 {
-        if let Some(&global_idx) = self.module_var_globals.get(&name) {
-            if let Some(init) = &decl.initializer {
-                // Track class type from type annotation (same as local path)
-                if let Some(type_ann) = &decl.type_annotation {
-                    if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
-                        self.variable_class_map.insert(name, class_id);
+        if self.function_depth == 0 && self.block_depth == 0 {
+            if let Some(&global_idx) = self.module_var_globals.get(&name) {
+                if let Some(init) = &decl.initializer {
+                    // Track class type from type annotation (same as local path)
+                    if let Some(type_ann) = &decl.type_annotation {
+                        if let Some(class_id) = self.try_extract_class_from_type(type_ann) {
+                            self.variable_class_map.insert(name, class_id);
+                        }
+                        if let ast::Type::Array(arr_ty) = &type_ann.ty {
+                            if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
+                                if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
+                                    self.array_element_class_map.insert(name, class_id);
+                                }
+                            }
+                        }
                     }
-                    if let ast::Type::Array(arr_ty) = &type_ann.ty {
-                        if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
-                            if let Some(&class_id) = self.class_map.get(&elem_ref.name.name) {
-                                self.array_element_class_map.insert(name, class_id);
+
+                    // Track class type from new expression (e.g., `let x = new MyClass()`)
+                    if !self.variable_class_map.contains_key(&name) {
+                        if let ast::Expression::New(new_expr) = init {
+                            if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                                if let Some(&class_id) = self.class_map.get(&ident.name) {
+                                    self.variable_class_map.insert(name, class_id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Infer class type from method call return types
+                    if !self.variable_class_map.contains_key(&name) {
+                        if let Some(class_id) = self.infer_class_id(init) {
+                            self.variable_class_map.insert(name, class_id);
+                        }
+                    }
+
+                    // Track bound method variables (e.g., `let f = obj.method`)
+                    if let ast::Expression::Member(member) = init {
+                        if let Some(class_id) = self.infer_class_id(&member.object) {
+                            if self
+                                .method_slot_map
+                                .contains_key(&(class_id, member.property.name))
+                            {
+                                self.bound_method_vars
+                                    .insert(name, (class_id, member.property.name));
+                            }
+                        }
+                    }
+
+                    // Track if this is an async arrow function assigned to a global
+                    let is_async_arrow = if let ast::Expression::Arrow(arrow) = init {
+                        arrow.is_async
+                    } else {
+                        false
+                    };
+
+                    let value = self.lower_expr(init);
+
+                    // Track the global's type so LoadGlobal preserves it
+                    self.global_type_map.insert(global_idx, value.ty);
+
+                    // Transfer object field layout from register to variable
+                    if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
+                        self.variable_object_fields.insert(name, fields);
+                    }
+
+                    self.emit(IrInstr::StoreGlobal {
+                        index: global_idx,
+                        value,
+                    });
+
+                    // Track async global closures so call lowering can emit SpawnClosure
+                    if is_async_arrow {
+                        if let Some(func_id) = self.last_arrow_func_id.take() {
+                            if self.async_closures.contains(&func_id) {
+                                self.closure_globals.insert(global_idx, func_id);
                             }
                         }
                     }
                 }
-
-                // Track class type from new expression (e.g., `let x = new MyClass()`)
-                if !self.variable_class_map.contains_key(&name) {
-                    if let ast::Expression::New(new_expr) = init {
-                        if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                            if let Some(&class_id) = self.class_map.get(&ident.name) {
-                                self.variable_class_map.insert(name, class_id);
-                            }
-                        }
-                    }
-                }
-
-                // Infer class type from method call return types
-                if !self.variable_class_map.contains_key(&name) {
-                    if let Some(class_id) = self.infer_class_id(init) {
-                        self.variable_class_map.insert(name, class_id);
-                    }
-                }
-
-                // Track bound method variables (e.g., `let f = obj.method`)
-                if let ast::Expression::Member(member) = init {
-                    if let Some(class_id) = self.infer_class_id(&member.object) {
-                        if self.method_slot_map.contains_key(&(class_id, member.property.name)) {
-                            self.bound_method_vars.insert(name, (class_id, member.property.name));
-                        }
-                    }
-                }
-
-                let value = self.lower_expr(init);
-
-                // Track the global's type so LoadGlobal preserves it
-                self.global_type_map.insert(global_idx, value.ty);
-
-                // Transfer object field layout from register to variable
-                if let Some(fields) = self.register_object_fields.get(&value.id).cloned() {
-                    self.variable_object_fields.insert(name, fields);
-                }
-
-                self.emit(IrInstr::StoreGlobal {
-                    index: global_idx,
-                    value,
-                });
+                // No local allocation — resolved via LoadGlobal/StoreGlobal
+                return;
             }
-            // No local allocation — resolved via LoadGlobal/StoreGlobal
-            return;
-        }
         }
 
         // Allocate local slot (only for non-constant or non-literal variables)
@@ -833,8 +894,12 @@ impl<'a> Lowerer<'a> {
             // Track bound method variables (e.g., `let f = obj.method`)
             if let ast::Expression::Member(member) = init {
                 if let Some(class_id) = self.infer_class_id(&member.object) {
-                    if self.method_slot_map.contains_key(&(class_id, member.property.name)) {
-                        self.bound_method_vars.insert(name, (class_id, member.property.name));
+                    if self
+                        .method_slot_map
+                        .contains_key(&(class_id, member.property.name))
+                    {
+                        self.bound_method_vars
+                            .insert(name, (class_id, member.property.name));
                     }
                 }
             }
@@ -874,7 +939,8 @@ impl<'a> Lowerer<'a> {
                 });
                 // Store the RefCell pointer as the local
                 self.local_registers.insert(local_idx, refcell_reg.clone());
-                self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_registers
+                    .insert(local_idx, refcell_reg.clone());
                 self.refcell_inner_types.insert(local_idx, value.ty);
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
@@ -891,7 +957,10 @@ impl<'a> Lowerer<'a> {
                     // in precompiled builtin class methods), keep inferred initializer type.
                     if ann_ty != value.ty && ann_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                         use crate::compiler::ir::Register;
-                        Register { id: value.id, ty: ann_ty }
+                        Register {
+                            id: value.id,
+                            ty: ann_ty,
+                        }
                     } else {
                         value.clone()
                     }
@@ -923,9 +992,13 @@ impl<'a> Lowerer<'a> {
                     initial_value: null_reg,
                 });
                 // Create a typed register for the local
-                let typed_reg = Register { id: refcell_reg.id, ty: refcell_ty };
+                let typed_reg = Register {
+                    id: refcell_reg.id,
+                    ty: refcell_ty,
+                };
                 self.local_registers.insert(local_idx, typed_reg.clone());
-                self.refcell_registers.insert(local_idx, refcell_reg.clone());
+                self.refcell_registers
+                    .insert(local_idx, refcell_reg.clone());
                 self.refcell_inner_types.insert(local_idx, UNRESOLVED);
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
@@ -933,7 +1006,10 @@ impl<'a> Lowerer<'a> {
                 });
             } else {
                 // Create a typed register for the local
-                let typed_reg = Register { id: null_reg.id, ty };
+                let typed_reg = Register {
+                    id: null_reg.id,
+                    ty,
+                };
                 self.local_registers.insert(local_idx, typed_reg.clone());
                 self.emit(IrInstr::StoreLocal {
                     index: local_idx,
@@ -979,8 +1055,7 @@ impl<'a> Lowerer<'a> {
         // Inline finally blocks from innermost to outermost.
         // Drain the stack to prevent recursive re-inlining: if a finally block
         // itself contains a return, that nested lower_return sees an empty stack.
-        let entries: Vec<super::TryFinallyEntry> =
-            self.try_finally_stack.drain(..).rev().collect();
+        let entries: Vec<super::TryFinallyEntry> = self.try_finally_stack.drain(..).rev().collect();
         for entry in &entries {
             if entry.in_try_body {
                 self.emit(IrInstr::EndTry);
@@ -1022,10 +1097,18 @@ impl<'a> Lowerer<'a> {
                     if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
                         let old = self.variable_class_map.insert(ident.name, class_id);
                         Some((ident.name, old))
-                    } else { None }
-                } else { None }
-            } else { None }
-        } else { None };
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Lower then branch
         self.current_function_mut()
@@ -1073,7 +1156,10 @@ impl<'a> Lowerer<'a> {
 
         // Header block: evaluate condition
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(header_block, "while.header"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                header_block,
+                "while.header",
+            ));
         self.current_block = header_block;
         let cond = self.lower_expr(&while_stmt.condition);
         self.set_terminator(Terminator::Branch {
@@ -1153,7 +1239,10 @@ impl<'a> Lowerer<'a> {
 
         // Header block: evaluate condition
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(header_block, "for.header"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                header_block,
+                "for.header",
+            ));
         self.current_block = header_block;
 
         if let Some(cond) = &for_stmt.test {
@@ -1183,38 +1272,41 @@ impl<'a> Lowerer<'a> {
 
         // Per-iteration binding setup: if the loop variable is captured,
         // create a fresh RefCell for this iteration and copy the current value into it
-        let original_refcell: Option<(u16, Register)> = if let Some((_sym, local_idx)) = &loop_var_info {
-            if let Some(orig_refcell) = self.refcell_registers.get(local_idx).cloned() {
-                // Load current value from loop variable's RefCell
-                let refcell_ty = TypeId::new(0);
-                let value_reg = self.alloc_register(refcell_ty);
-                self.emit(IrInstr::LoadRefCell {
-                    dest: value_reg.clone(),
-                    refcell: orig_refcell.clone(),
-                });
+        let original_refcell: Option<(u16, Register)> =
+            if let Some((_sym, local_idx)) = &loop_var_info {
+                if let Some(orig_refcell) = self.refcell_registers.get(local_idx).cloned() {
+                    // Load current value from loop variable's RefCell
+                    let refcell_ty = TypeId::new(0);
+                    let value_reg = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::LoadRefCell {
+                        dest: value_reg.clone(),
+                        refcell: orig_refcell.clone(),
+                    });
 
-                // Create per-iteration RefCell with this value
-                let iter_refcell = self.alloc_register(refcell_ty);
-                self.emit(IrInstr::NewRefCell {
-                    dest: iter_refcell.clone(),
-                    initial_value: value_reg,
-                });
+                    // Create per-iteration RefCell with this value
+                    let iter_refcell = self.alloc_register(refcell_ty);
+                    self.emit(IrInstr::NewRefCell {
+                        dest: iter_refcell.clone(),
+                        initial_value: value_reg,
+                    });
 
-                // Replace mappings so closures in the body capture the per-iteration RefCell
-                self.refcell_registers.insert(*local_idx, iter_refcell.clone());
-                self.local_registers.insert(*local_idx, iter_refcell.clone());
-                self.emit(IrInstr::StoreLocal {
-                    index: *local_idx,
-                    value: iter_refcell,
-                });
+                    // Replace mappings so closures in the body capture the per-iteration RefCell
+                    self.refcell_registers
+                        .insert(*local_idx, iter_refcell.clone());
+                    self.local_registers
+                        .insert(*local_idx, iter_refcell.clone());
+                    self.emit(IrInstr::StoreLocal {
+                        index: *local_idx,
+                        value: iter_refcell,
+                    });
 
-                Some((*local_idx, orig_refcell))
+                    Some((*local_idx, orig_refcell))
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         self.lower_stmt(&for_stmt.body);
 
@@ -1238,8 +1330,10 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Restore original RefCell mapping for update expression
-                self.refcell_registers.insert(*local_idx, orig_refcell.clone());
-                self.local_registers.insert(*local_idx, orig_refcell.clone());
+                self.refcell_registers
+                    .insert(*local_idx, orig_refcell.clone());
+                self.local_registers
+                    .insert(*local_idx, orig_refcell.clone());
                 self.emit(IrInstr::StoreLocal {
                     index: *local_idx,
                     value: orig_refcell.clone(),
@@ -1256,7 +1350,10 @@ impl<'a> Lowerer<'a> {
 
         // Update block
         self.current_function_mut()
-            .add_block(crate::ir::BasicBlock::with_label(update_block, "for.update"));
+            .add_block(crate::ir::BasicBlock::with_label(
+                update_block,
+                "for.update",
+            ));
         self.current_block = update_block;
         if let Some(update) = &for_stmt.update {
             self.lower_expr(update);
@@ -1274,6 +1371,7 @@ impl<'a> Lowerer<'a> {
         // This allows nested scopes to shadow outer variables without
         // overwriting the outer variable's slot mapping
         let saved_local_map = self.local_map.clone();
+        self.block_depth += 1;
 
         for stmt in &block.statements {
             self.lower_stmt(stmt);
@@ -1285,6 +1383,7 @@ impl<'a> Lowerer<'a> {
         // Restore local_map to exit the block scope
         // This ensures outer variables are accessible again after the block
         self.local_map = saved_local_map;
+        self.block_depth = self.block_depth.saturating_sub(1);
     }
 
     fn lower_break(&mut self, _brk: &ast::BreakStatement) {

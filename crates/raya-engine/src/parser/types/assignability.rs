@@ -57,7 +57,9 @@ impl<'a> AssignabilityContext<'a> {
             (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
 
             // number ~> string
-            (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => true,
+            (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => {
+                true
+            }
 
             // int ~> string
             (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String)) => true,

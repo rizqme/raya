@@ -115,7 +115,8 @@ fn snapshot_round_trip_with_jit_preserves_task_state() {
     let mut vm2 = Vm::new();
     // Load the module first (required for restore)
     let encoded = module.encode();
-    vm2.load_rbin_bytes(&encoded).expect("Failed to load module");
+    vm2.load_rbin_bytes(&encoded)
+        .expect("Failed to load module");
 
     vm2.restore_from_bytes(&snap).expect("Restore failed");
 
@@ -145,7 +146,8 @@ fn snapshot_round_trip_jit_to_jit() {
     vm2.enable_jit().expect("Failed to enable JIT on VM2");
 
     let encoded = module.encode();
-    vm2.load_rbin_bytes(&encoded).expect("Failed to load module");
+    vm2.load_rbin_bytes(&encoded)
+        .expect("Failed to load module");
 
     vm2.restore_from_bytes(&snap).expect("Restore failed");
 
@@ -170,7 +172,8 @@ fn execute_after_restore_with_jit() {
     // VM2: restore, then enable JIT, then execute a NEW module
     let mut vm2 = Vm::new();
     let encoded = module1.encode();
-    vm2.load_rbin_bytes(&encoded).expect("Failed to load module");
+    vm2.load_rbin_bytes(&encoded)
+        .expect("Failed to load module");
     vm2.restore_from_bytes(&snap).expect("Restore failed");
 
     vm2.enable_jit().expect("Failed to enable JIT on VM2");
@@ -194,7 +197,8 @@ fn snapshot_after_jit_prewarm_execution() {
     };
 
     let mut vm = Vm::new();
-    vm.enable_jit_with_config(config).expect("Failed to enable JIT");
+    vm.enable_jit_with_config(config)
+        .expect("Failed to enable JIT");
 
     let module = make_jit_eligible_module();
     let result = vm.execute(&module).expect("Execution failed");
@@ -209,7 +213,8 @@ fn snapshot_after_jit_prewarm_execution() {
     // Restore to a new VM
     let mut vm2 = Vm::new();
     let encoded = module.encode();
-    vm2.load_rbin_bytes(&encoded).expect("Failed to load module");
+    vm2.load_rbin_bytes(&encoded)
+        .expect("Failed to load module");
     vm2.restore_from_bytes(&snap).expect("Restore failed");
 
     let task_count = vm2.shared_state().tasks.read().len();
@@ -235,15 +240,21 @@ fn snapshot_file_round_trip_with_jit() {
     let result = vm1.execute(&module).expect("Execution failed");
     assert_eq!(result, Value::i32(55));
 
-    vm1.snapshot_to_file(&snap_path).expect("Snapshot to file failed");
+    vm1.snapshot_to_file(&snap_path)
+        .expect("Snapshot to file failed");
     assert!(snap_path.exists(), "Snapshot file should exist");
 
     // VM2: restore from file (no JIT — proving JIT state isn't needed)
     let mut vm2 = Vm::new();
     let encoded = module.encode();
-    vm2.load_rbin_bytes(&encoded).expect("Failed to load module");
-    vm2.restore_from_file(&snap_path).expect("Restore from file failed");
+    vm2.load_rbin_bytes(&encoded)
+        .expect("Failed to load module");
+    vm2.restore_from_file(&snap_path)
+        .expect("Restore from file failed");
 
     let task_count = vm2.shared_state().tasks.read().len();
-    assert!(task_count >= 1, "Should have at least 1 task after file restore");
+    assert!(
+        task_count >= 1,
+        "Should have at least 1 task after file restore"
+    );
 }
