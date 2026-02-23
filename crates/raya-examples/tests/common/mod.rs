@@ -26,6 +26,17 @@ pub fn unique_tmp_dir(prefix: &str) -> PathBuf {
 fn raya_cli_bin(workspace: &Path) -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
+        if let Some(path) = std::env::var_os("RAYA_CLI_BIN") {
+            let p = PathBuf::from(path);
+            assert!(p.exists(), "RAYA_CLI_BIN does not exist: {}", p.display());
+            return p;
+        }
+
+        let bin = workspace.join("target").join("debug").join("raya");
+        if bin.exists() {
+            return bin;
+        }
+
         let build = Command::new("cargo")
             .current_dir(workspace)
             .arg("build")
@@ -41,7 +52,7 @@ fn raya_cli_bin(workspace: &Path) -> PathBuf {
             String::from_utf8_lossy(&build.stdout),
             String::from_utf8_lossy(&build.stderr)
         );
-        workspace.join("target").join("debug").join("raya")
+        bin
     })
     .clone()
 }

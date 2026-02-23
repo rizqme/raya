@@ -44,6 +44,30 @@ fn todo_kv_persistence_recovery() {
     let db = std::fs::read_to_string(tmp_dir.join("raya-examples-todo-kv/kv.db")).expect("kv.db");
     assert!(db.contains("alpha=3"), "db content: {db}");
     assert!(!db.contains("beta=2"), "db content: {db}");
+    assert_eq!(
+        db.matches("alpha=3").count(),
+        1,
+        "alpha should not duplicate across reruns: {db}"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn todo_kv_artifacts_contract() {
+    let workspace = workspace_root();
+    let tmp_dir = unique_tmp_dir("todo-kv-artifacts");
+
+    let out = run_cli_script(&workspace, &todo_kv_entry(), &tmp_dir);
+    assert_ok_run(&out);
+
+    let dir = tmp_dir.join("raya-examples-todo-kv");
+    let summary = std::fs::read_to_string(dir.join("result.txt")).expect("todo result");
+    let db = std::fs::read_to_string(dir.join("kv.db")).expect("kv.db");
+
+    assert!(summary.contains("ok=true"), "{summary}");
+    assert!(summary.contains("recovered=true"), "{summary}");
+    assert_eq!(db.trim(), "alpha=3", "db={db:?}");
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

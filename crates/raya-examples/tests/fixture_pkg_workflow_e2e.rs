@@ -43,6 +43,26 @@ fn pkg_workflow_manifest_and_lock_present() {
     assert!(manifest.contains("local-lib"));
     assert!(lock.contains("name = \"local-lib\""));
     assert!(lock.contains("version = \"0.2.0\""));
+    assert!(lock.contains("type = \"path\""));
+
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn pkg_workflow_dependency_source_contract() {
+    let workspace = workspace_root();
+    let tmp_dir = unique_tmp_dir("pkg-workflow-dep-contract");
+
+    let out = run_cli_script(&workspace, &pkg_workflow_entry(), &tmp_dir);
+    assert_ok_run(&out);
+
+    let dir = tmp_dir.join("raya-examples-pkg-workflow");
+    let dep_lib =
+        std::fs::read_to_string(dir.join("deps/local-lib/src/lib.raya")).expect("dep lib source");
+    let summary = std::fs::read_to_string(dir.join("result.txt")).expect("pkg result");
+    assert!(dep_lib.contains("function answer(): number"), "{dep_lib}");
+    assert!(summary.contains("dep=true"), "{summary}");
+    assert!(summary.contains("semver=true"), "{summary}");
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
