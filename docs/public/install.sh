@@ -13,10 +13,10 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.raya/bin}"
 VERSION="${VERSION:-latest}"
 DRY_RUN=false
 
-# Print functions
-info() { echo -e "${GREEN}[INFO]${NC} $1"; }
-warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
-error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
+# Print functions (stderr so command substitution captures only data output)
+info() { printf "%b[INFO]%b %s\n" "${GREEN}" "${NC}" "${1:-}" >&2; }
+warn() { printf "%b[WARN]%b %s\n" "${YELLOW}" "${NC}" "${1:-}" >&2; }
+error() { printf "%b[ERROR]%b %s\n" "${RED}" "${NC}" "${1:-}" >&2; exit 1; }
 
 # Help message
 show_help() {
@@ -24,7 +24,7 @@ show_help() {
 Install Raya programming language
 
 USAGE:
-    curl -fsSL https://raya.land/install.sh | sh [OPTIONS]
+    curl -fsSL https://raya.land/install.sh | bash [OPTIONS]
 
 OPTIONS:
     --version <version>    Install specific version (default: latest)
@@ -37,9 +37,9 @@ ENVIRONMENT VARIABLES:
     INSTALL_DIR            Installation directory
 
 EXAMPLES:
-    curl -fsSL https://raya.land/install.sh | sh
-    curl -fsSL https://raya.land/install.sh | sh -s -- --version v0.1.0
-    INSTALL_DIR=/usr/local/bin curl -fsSL https://raya.land/install.sh | sh
+    curl -fsSL https://raya.land/install.sh | bash
+    curl -fsSL https://raya.land/install.sh | bash -s -- --version v0.1.0
+    INSTALL_DIR=/usr/local/bin curl -fsSL https://raya.land/install.sh | bash
 EOF
 }
 

@@ -117,13 +117,20 @@ async function main(): Task<void> {
     io.writeln(user);
   }
 }
+```
+
+---
+
+## Docs
+
+- 📚 Documentation: [https://raya.land](https://raya.land)
 
 ---
 
 ## 60-second local run
 
 ```bash
-curl -fsSL https://raya.land/install.sh | sh
+curl -fsSL https://raya.land/install.sh | bash
 raya --help
 raya check examples/hello.raya
 raya eval "1 + 2 * 3"
