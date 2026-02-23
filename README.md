@@ -11,6 +11,7 @@
     <strong>modern VM</strong> designed for <strong>predictable performance</strong> 
     and <strong>native multi-core concurrency</strong>.
   </p>
+  <div>📚 Documentation: [https://raya.land](https://raya.land)</div>
 </div>
 
 ---
@@ -34,10 +35,6 @@ Raya is built for engineers who:
 - Need **predictable runtime behavior**
 - Care about **real concurrency on multi-core systems**
 - Prefer a **clean execution model without JavaScript legacy constraints**
-
-Raya is not a JavaScript alternative.
-
-It is a **new language + runtime designed from first principles**.
 
 ---
 
@@ -85,14 +82,19 @@ This enables:
 
 ---
 
-### **Predictable Runtime Semantics**
+## Installation
 
-Raya prioritizes:
+```bash
+curl -fsSL https://raya.land/install.sh | sh
+```
 
-- Explicit behavior
-- No hidden conversions
-- No surprising runtime coercions
-- Deterministic execution model
+**Build from source:**
+
+```bash
+git clone https://github.com/rizqme/raya.git
+cd raya
+cargo build --release -p raya-cli
+```
 
 ---
 
@@ -117,23 +119,6 @@ async function main(): Task<void> {
     io.writeln(user);
   }
 }
-```
-
----
-
-## Docs
-
-- 📚 Documentation: [https://raya.land](https://raya.land)
-
----
-
-## 60-second local run
-
-```bash
-curl -fsSL https://raya.land/install.sh | bash
-raya --help
-raya check examples/hello.raya
-raya eval "1 + 2 * 3"
 ```
 
 ---
@@ -188,19 +173,6 @@ Raya is active and moving quickly.
 - API and behavior may still evolve as milestones complete.
 
 If you’re evaluating for production, track changes closely and pin versions.
-
----
-## Build & test
-
-Requires Rust stable.
-
-```bash
-cargo build --workspace
-cargo test --workspace
-cargo build --release -p raya-cli
-```
-
----
 
 ## Design principles
 
