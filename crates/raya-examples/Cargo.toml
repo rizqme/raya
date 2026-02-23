@@ -12,3 +12,6 @@ description = "Raya example applications and CLI-driven end-to-end tests"
 name = "raya_examples"
 path = "src/lib.rs"
 doctest = false
+
+[dev-dependencies]
+serde_json.workspace = true

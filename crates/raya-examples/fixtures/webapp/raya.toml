@@ -6,3 +6,4 @@ main = "src/server.raya"
 [scripts]
 server = "src/server.raya"
 client = "src/client.raya"
+stress = "src/stress_client.raya"

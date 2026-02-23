@@ -137,4 +137,5 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 - `StdNativeHandler` implementation lives in `raya-stdlib/src/handler.rs`, re-exported here for backward compat
 - When adding new stdlib modules, implement in `raya-stdlib`, route in `handler.rs`
 - The `builtins.rs` file uses `include_str!` to embed builtin + std `.raya` source at compile time
+- `compile.rs` error formatting now labels failures in prepended builtin/std sections as `prelude line N` to make upstream checker regressions debuggable
 - Run runtime tests with: `cargo test -p raya-runtime`

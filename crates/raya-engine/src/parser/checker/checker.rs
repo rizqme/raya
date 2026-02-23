@@ -163,6 +163,11 @@ pub struct TypeChecker<'a> {
 
     /// Warnings collected during type checking
     warnings: Vec<CheckWarning>,
+
+    /// If set, class declarations whose span starts before this byte offset
+    /// will skip full member body checking and only sync scopes.
+    /// Used by runtime compile pipeline to trust prepended builtin/stdlib sources.
+    skip_class_bodies_before: Option<usize>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -189,7 +194,16 @@ impl<'a> TypeChecker<'a> {
             in_constructor: false,
             arrow_depth: 0,
             warnings: Vec::new(),
+            skip_class_bodies_before: None,
         }
+    }
+
+    /// Skip full class member body checking for classes before `offset`.
+    /// This keeps checker strict for user code while avoiding false positives
+    /// from prepended trusted prelude sources.
+    pub fn with_skip_class_bodies_before(mut self, offset: usize) -> Self {
+        self.skip_class_bodies_before = Some(offset);
+        self
     }
 
     /// Resolve a parser Symbol to a String
@@ -639,37 +653,114 @@ impl<'a> TypeChecker<'a> {
             self.current_class_type = Some(symbol.ty);
         }
 
-        // Check decorators on methods, fields, and constructors
+        // Trusted prelude class: keep scope IDs in sync but skip deep body checks.
+        if self
+            .skip_class_bodies_before
+            .is_some_and(|offset| class.span.start < offset)
+        {
+            self.current_class_type = prev_class_type;
+            self.sync_class_scopes(class);
+            return;
+        }
+
+        // Enter class scope (mirrors binder's push_scope for class)
+        self.enter_scope();
+
+        // Mirror binder's temporary scope for methods with type params during type resolution.
+        // This keeps scope IDs in sync before checking method/ctor bodies.
         for member in &class.members {
-            match member {
-                crate::parser::ast::ClassMember::Method(method) => {
-                    // Build method type for decorator checking
-                    let method_ty = self.build_method_type(method);
-                    // Check method decorators
-                    self.check_method_decorators(method, method_ty);
-                    // Check parameter decorators
-                    for param in &method.params {
-                        self.check_parameter_decorators(param);
-                    }
-                }
-                crate::parser::ast::ClassMember::Constructor(ctor) => {
-                    // Check parameter decorators
-                    for param in &ctor.params {
-                        self.check_parameter_decorators(param);
-                    }
-                }
-                crate::parser::ast::ClassMember::Field(field) => {
-                    self.check_field_decorators(field);
+            if let crate::parser::ast::ClassMember::Method(method) = member {
+                if method
+                    .type_params
+                    .as_ref()
+                    .is_some_and(|tps| !tps.is_empty())
+                {
+                    self.enter_scope();
+                    self.exit_scope();
                 }
             }
         }
 
+        // Check decorators + bodies for methods, constructors, and fields.
+        for member in &class.members {
+            match member {
+                crate::parser::ast::ClassMember::Method(method) => {
+                    let method_ty = self.build_method_type(method);
+                    self.check_method_decorators(method, method_ty);
+                    for param in &method.params {
+                        self.check_parameter_decorators(param);
+                    }
+
+                    if let Some(ref body) = method.body {
+                        // Enter method scope (binder creates one for every concrete method body)
+                        self.enter_scope();
+
+                        // Set return type for return statement checking
+                        let prev_return_ty = self.current_function_return_type;
+                        let mut return_ty = method
+                            .return_type
+                            .as_ref()
+                            .map(|t| self.resolve_type_annotation(t))
+                            .unwrap_or_else(|| self.type_ctx.void_type());
+
+                        // For async methods, return statements are checked against Task<T>'s inner T
+                        if method.is_async {
+                            if let Some(crate::parser::types::Type::Task(task_ty)) =
+                                self.type_ctx.get(return_ty)
+                            {
+                                return_ty = task_ty.result;
+                            }
+                        }
+                        self.current_function_return_type = Some(return_ty);
+
+                        for stmt in &body.statements {
+                            self.check_stmt(stmt);
+                        }
+
+                        self.current_function_return_type = prev_return_ty;
+                        self.exit_scope();
+                    }
+                }
+                crate::parser::ast::ClassMember::Constructor(ctor) => {
+                    for param in &ctor.params {
+                        self.check_parameter_decorators(param);
+                    }
+
+                    // Enter constructor scope (binder always creates one)
+                    self.enter_scope();
+
+                    let prev_return_ty = self.current_function_return_type;
+                    let prev_in_ctor = self.in_constructor;
+                    self.current_function_return_type = Some(self.type_ctx.void_type());
+                    self.in_constructor = true;
+
+                    for stmt in &ctor.body.statements {
+                        self.check_stmt(stmt);
+                    }
+
+                    self.in_constructor = prev_in_ctor;
+                    self.current_function_return_type = prev_return_ty;
+                    self.exit_scope();
+                }
+                crate::parser::ast::ClassMember::Field(field) => {
+                    self.check_field_decorators(field);
+
+                    if let Some(ref init) = field.initializer {
+                        let init_ty = self.check_expr(init);
+                        if let Some(ref ann) = field.type_annotation {
+                            let field_ty = self.resolve_type_annotation(ann);
+                            self.check_assignable(init_ty, field_ty, *init.span());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Exit class scope
+        self.exit_scope();
+
         // Restore previous class type (for nested classes)
         self.current_class_type = prev_class_type;
-
-        // Now sync all scopes to keep scope IDs in sync with binder
-        // This uses the existing sync_class_scopes logic
-        self.sync_class_scopes(class);
     }
 
     /// Check return statement
@@ -769,10 +860,14 @@ impl<'a> TypeChecker<'a> {
         Some((var_name, class_sym.ty))
     }
 
-    /// Returns true if the statement definitely exits (return/throw).
+    /// Returns true if the statement definitely exits the current control-flow path
+    /// (return/throw/break/continue).
     fn stmt_definitely_returns(stmt: &Statement) -> bool {
         match stmt {
-            Statement::Return(_) | Statement::Throw(_) => true,
+            Statement::Return(_)
+            | Statement::Throw(_)
+            | Statement::Break(_)
+            | Statement::Continue(_) => true,
             Statement::Block(block) => block
                 .statements
                 .last()
@@ -1354,6 +1449,30 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function call
     fn check_call(&mut self, call: &CallExpression) -> TypeId {
+        // super(...) constructor call
+        if let Expression::Super(_) = call.callee.as_ref() {
+            for arg in &call.arguments {
+                self.check_expr(arg);
+            }
+
+            if self.in_constructor {
+                if let Some(class_ty) = self.current_class_type {
+                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(class_ty)
+                    {
+                        if class.extends.is_some() {
+                            return self.type_ctx.void_type();
+                        }
+                    }
+                }
+            }
+
+            self.errors.push(CheckError::NotCallable {
+                ty: "super".to_string(),
+                span: call.span,
+            });
+            return self.type_ctx.unknown_type();
+        }
+
         // Check for compiler intrinsics first
         if let Some(intrinsic_ty) = self.try_check_intrinsic(call) {
             // Still type-check the arguments for error detection
@@ -1463,7 +1582,7 @@ impl<'a> TypeChecker<'a> {
             }
             _ => {
                 self.errors.push(CheckError::NotCallable {
-                    ty: format!("{:?}", callee_ty),
+                    ty: self.format_type(callee_ty),
                     span: call.span,
                 });
                 self.type_ctx.unknown_type()
@@ -2074,7 +2193,7 @@ impl<'a> TypeChecker<'a> {
     fn get_opcode_intrinsic_type(&mut self, opcode_name: &str) -> TypeId {
         match opcode_name {
             // Mutex operations
-            "MUTEX_NEW" => self.type_ctx.unknown_type(), // Returns Mutex type
+            "MUTEX_NEW" => self.type_ctx.number_type(), // Returns native mutex handle
             "MUTEX_LOCK" | "MUTEX_UNLOCK" => self.type_ctx.void_type(),
 
             // Channel operations
@@ -2913,10 +3032,15 @@ impl<'a> TypeChecker<'a> {
     /// Get the type of a built-in Task method
     fn get_task_method_type(&mut self, method_name: &str) -> Option<TypeId> {
         let void_ty = self.type_ctx.void_type();
+        let bool_ty = self.type_ctx.boolean_type();
 
         match method_name {
             // cancel() -> void
             "cancel" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
+            // isDone() -> boolean
+            "isDone" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
+            // isCancelled() -> boolean
+            "isCancelled" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
             _ => None,
         }
     }
@@ -3377,10 +3501,46 @@ impl<'a> TypeChecker<'a> {
         if let Some(name) = clear_var {
             self.type_env.remove(&name);
         }
+        let mut target_ty = left_ty;
 
-        self.check_assignable(right_ty, left_ty, *assign.right.span());
+        // Deep fix: support mutable `let x = null; x = value;` by widening the
+        // inferred declared type to `null | T` for unannotated variables.
+        // This preserves strictness for annotated variables and const bindings.
+        if let Expression::Identifier(ident) = &*assign.left {
+            let name = self.resolve(ident.name);
+            if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                let scope_id = symbol.scope_id.0;
+                let inferred_key = (scope_id, name.clone());
+                let inferred_current = self.inferred_var_types.get(&inferred_key).copied();
+                let unknown_ty = TypeId(TypeContext::UNKNOWN_TYPE_ID);
+                let null_ty = self.type_ctx.null_type();
 
-        left_ty
+                // Variable has no explicit annotation (binder stores unknown).
+                if symbol.ty == unknown_ty && !symbol.flags.is_const {
+                    match inferred_current {
+                        // `let x = null; x = <T>;` => widen declaration to `null | T`
+                        Some(inferred_ty) if inferred_ty == null_ty && right_ty != null_ty => {
+                            let widened = self.type_ctx.union_type(vec![inferred_ty, right_ty]);
+                            self.inferred_var_types.insert(inferred_key, widened);
+                            target_ty = widened;
+                        }
+                        // `let x; x = <T>;` => first concrete assignment sets inferred declaration.
+                        None => {
+                            self.inferred_var_types.insert(inferred_key, right_ty);
+                            target_ty = right_ty;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Assignment updates current flow type (used by branch merges).
+                self.type_env.set(name, right_ty);
+            }
+        }
+
+        self.check_assignable(right_ty, target_ty, *assign.right.span());
+
+        target_ty
     }
 
     /// Check if source type is assignable to target type
@@ -3429,9 +3589,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Format a type for display in error messages
     fn format_type(&self, ty: TypeId) -> String {
-        // For now, use Debug formatting
-        // TODO: Implement proper type formatting (e.g., "string | number" instead of "TypeId(...)")
-        format!("{:?}", ty)
+        self.type_ctx.display(ty)
     }
 
     /// Get type of expression (for external use)
@@ -3487,12 +3645,31 @@ impl<'a> TypeChecker<'a> {
                     return self.type_ctx.regexp_type();
                 }
                 if name == TC::CHANNEL_TYPE_NAME {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let msg_ty = self.resolve_type_annotation(&type_args[0]);
+                            return self.type_ctx.channel_type_with(msg_ty);
+                        }
+                    }
                     return self.type_ctx.channel_type();
                 }
                 if name == TC::MAP_TYPE_NAME {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 2 {
+                            let key_ty = self.resolve_type_annotation(&type_args[0]);
+                            let value_ty = self.resolve_type_annotation(&type_args[1]);
+                            return self.type_ctx.map_type_with(key_ty, value_ty);
+                        }
+                    }
                     return self.type_ctx.map_type();
                 }
                 if name == TC::SET_TYPE_NAME {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let elem_ty = self.resolve_type_annotation(&type_args[0]);
+                            return self.type_ctx.set_type_with(elem_ty);
+                        }
+                    }
                     return self.type_ctx.set_type();
                 }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
@@ -3983,6 +4160,147 @@ mod tests {
         let errors = result.unwrap_err();
         assert_eq!(errors.len(), 1);
         assert!(matches!(errors[0], CheckError::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn test_null_initialized_let_can_widen_on_assignment() {
+        let result = parse_and_check(
+            r#"
+            let x = null;
+            x = 42;
+            let y: number = x;
+        "#,
+        );
+        assert!(result.is_ok(), "Expected ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_null_initialized_let_branch_assignments_flow_to_use() {
+        let result = parse_and_check(
+            r#"
+            class Resp {
+                status(): number { return 200; }
+            }
+
+            let res = null;
+            if (true) {
+                res = new Resp();
+            } else {
+                res = new Resp();
+            }
+
+            let s: number = res.status();
+        "#,
+        );
+        assert!(result.is_ok(), "Expected ok, got {:?}", result);
+    }
+
+    #[test]
+    fn test_non_null_inferred_let_stays_strict_on_assignment() {
+        let result = parse_and_check(
+            r#"
+            let x = 1;
+            x = "oops";
+        "#,
+        );
+        assert!(result.is_err(), "Expected type error, got {:?}", result);
+    }
+
+    #[test]
+    fn test_class_method_body_is_type_checked() {
+        let result = parse_and_check(
+            r#"
+            class C {
+                static run(): number {
+                    return missingSymbol();
+                }
+            }
+        "#,
+        );
+        assert!(result.is_err(), "Expected unresolved symbol error, got {:?}", result);
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::UndefinedVariable { .. })));
+    }
+
+    #[test]
+    fn test_class_field_initializer_type_checked() {
+        let result = parse_and_check(
+            r#"
+            class C {
+                value: number = "bad";
+            }
+        "#,
+        );
+        assert!(result.is_err(), "Expected field type mismatch, got {:?}", result);
+        let errors = result.unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, CheckError::TypeMismatch { .. })));
+    }
+
+    #[test]
+    fn test_super_constructor_call_is_callable() {
+        let result = parse_and_check(
+            r#"
+            class Base {
+                constructor(message: string) {}
+            }
+
+            class Derived extends Base {
+                constructor() {
+                    super("ok");
+                }
+            }
+        "#,
+        );
+        assert!(result.is_ok(), "Expected super(...) call to type-check, got {:?}", result);
+    }
+
+    #[test]
+    fn test_loop_guard_narrows_after_break() {
+        let result = parse_and_check(
+            r#"
+            class TcpStream {}
+
+            function useStream(stream: TcpStream): void {}
+
+            function serve(stream: TcpStream | null): void {
+                while (true) {
+                    if (stream == null) {
+                        break;
+                    }
+                    useStream(stream);
+                    break;
+                }
+            }
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected stream to be narrowed after break-guard, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_task_is_cancelled_method_type_checked() {
+        let result = parse_and_check(
+            r#"
+            async function job(): Task<number> { return 1; }
+            async function main(): Task<boolean> {
+                const t = job();
+                t.cancel();
+                return t.isCancelled();
+            }
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected Task.isCancelled() to type-check, got {:?}",
+            result
+        );
     }
 
     // ========================================================================

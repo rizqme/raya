@@ -46,6 +46,16 @@ impl<'a> SubtypingContext<'a> {
             None => return false,
         };
 
+        // Bridge specialized builtin container/runtime types with their class-type names.
+        // In checker/runtime-prelude flows we can see either side represented as:
+        // - Type::Map/Set/Channel/Task/Array (specialized builtin types), or
+        // - Type::Class { name: "Map" | "Set" | ... } (from class declarations).
+        // They denote the same runtime entities and should be mutually compatible.
+        if self.is_builtin_class_bridge(sub_ty, sup_ty) || self.is_builtin_class_bridge(sup_ty, sub_ty)
+        {
+            return true;
+        }
+
         match (sub_ty, sup_ty) {
             // Never is subtype of everything
             (Type::Never, _) => true,
@@ -294,6 +304,21 @@ impl<'a> SubtypingContext<'a> {
             }
 
             // No other subtyping relationships
+            _ => false,
+        }
+    }
+
+    fn is_builtin_class_bridge(&self, lhs: &Type, rhs: &Type) -> bool {
+        match (lhs, rhs) {
+            (Type::Array(_), Type::Class(c)) => c.name == "Array",
+            (Type::Task(_), Type::Class(c)) => c.name == "Task",
+            (Type::Channel(_), Type::Class(c)) => c.name == "Channel",
+            (Type::Map(_), Type::Class(c)) => c.name == "Map",
+            (Type::Set(_), Type::Class(c)) => c.name == "Set",
+            (Type::RegExp, Type::Class(c)) => c.name == "RegExp",
+            (Type::Date, Type::Class(c)) => c.name == "Date",
+            (Type::Buffer, Type::Class(c)) => c.name == "Buffer",
+            (Type::Mutex, Type::Class(c)) => c.name == "Mutex",
             _ => false,
         }
     }

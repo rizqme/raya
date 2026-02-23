@@ -1,10 +1,21 @@
 import logger from "std:logger";
 import math from "std:math";
 import crypto from "std:crypto";
+import time from "std:time";
 import path from "std:path";
 import fs from "std:fs";
 import encoding from "std:encoding";
+import semver from "std:semver";
+import { Url, UrlSearchParams } from "std:url";
+import template from "std:template";
+import compress from "std:compress";
+import env from "std:env";
+import process from "std:process";
+import os from "std:os";
+import glob from "std:glob";
+import { ReadableStream, ReadableController } from "std:stream";
 import archive from "std:archive";
+import { HttpRequest } from "std:http";
 
 class AppCommon {
     static appDir(root: string): string {
@@ -41,6 +52,144 @@ class AppCommon {
         logger.info(`health:${rowCount}:${total}:${hash}`);
         fs.writeTextFile(path.join(dir, "health.ok"), "ok");
         return "OK";
+    }
+
+    static appendRequestLog(root: string, req: HttpRequest): void {
+        AppCommon.ensureDir(AppCommon.appDir(root));
+        const line = `${req.method()} ${req.path()} ?${req.query()}\n`;
+        fs.appendFile(path.join(AppCommon.appDir(root), "request.log"), line);
+    }
+
+    static computeEcho(req: HttpRequest): string {
+        const out = encoding.json.newObject();
+        out.set("method", encoding.json.fromString(req.method()));
+        out.set("path", encoding.json.fromString(req.path()));
+        out.set("query", encoding.json.fromString(req.query()));
+        out.set("body", encoding.json.fromString(req.body()));
+        out.set("bodyLength", encoding.json.fromNumber(req.body().length));
+        out.set("trace", encoding.json.fromString(req.header("x-trace")));
+        out.set("bodyHash", encoding.json.fromString(crypto.hash("sha256", req.body())));
+        const text = out.stringify();
+        out.release();
+        return text;
+    }
+
+    static computeDiagnostics(root: string, query: string): string {
+        const dir = AppCommon.appDir(root);
+        AppCommon.ensureDir(dir);
+        logger.info("diag:1");
+
+        // health/report baseline
+        const reportPath = path.join(dir, "health.csv");
+        fs.writeTextFile(reportPath, "name,value\nstatus,ok\nanswer,42\n");
+        const report = fs.readTextFile(reportPath);
+        const csv = encoding.csv.parseWithHeaders(report);
+        const rowCount = csv.rowCount();
+        const statusCol = csv.column("name");
+        const csvOk = rowCount == 2 && statusCol.length == 2;
+        csv.release();
+        logger.info("diag:2");
+
+        const mathOk = math.round(41.6) == 42 && math.sqrt(144) == 12;
+        const hash = crypto.hash("sha256", "raya-examples");
+        const cryptoOk = hash.length == 64;
+        logger.info("diag:3");
+
+        const t0 = time.monotonic();
+        time.sleep(2);
+        const dt = time.elapsed(t0);
+        const timeOk = dt >= 0 && time.hrtime() > 0;
+        logger.info("diag:4");
+
+        const archivePath = path.join(dir, "health.tar");
+        archive.tarCreate(archivePath, [reportPath]);
+        const tarEntries = archive.tarList(archivePath);
+        const archiveOk = tarEntries.length >= 1;
+        logger.info("diag:5");
+
+        const globMatches = glob.findInDir("*.csv", dir);
+        const globOk = globMatches.length >= 1 && glob.matches("health.csv", "*.csv");
+        logger.info("diag:6");
+
+        const b32 = encoding.base32.encode(crypto.fromHex("48656c6c6f"));
+        const b32round = crypto.toHex(encoding.base32.decode(b32));
+        const base32Ok = b32round == "48656c6c6f";
+        logger.info("diag:7");
+
+        const semverOk = semver.valid("1.2.3") && semver.satisfies("1.2.3", ">=1.0.0, <2.0.0");
+        logger.info("diag:8");
+
+        const u = new Url("https://example.com/diag?q=1&tag=two", "");
+        const params = new UrlSearchParams("a=1&b=2");
+        params.append("a", "3");
+        const urlOk = u.pathname() == "/diag" && u.search() == "?q=1&tag=two" && params.getAll("a").length == 2;
+        logger.info("diag:9");
+
+        const rendered = template.render("Hello {{name}} #{{n}}", "{\"name\":\"raya\",\"n\":7}");
+        const templateOk = rendered == "Hello raya #7";
+        logger.info("diag:10");
+
+        const zipped = compress.gzip(crypto.fromHex("0102030405"));
+        const unzipped = compress.gunzip(zipped);
+        const compressOk = crypto.toHex(unzipped) == "0102030405";
+        logger.info("diag:11");
+
+        const envOk = env.cwd().length > 0 && env.get("RAYA_EXAMPLES_TMPDIR").length > 0;
+        const processOk = process.pid() > 0 && process.execPath().length > 0;
+        const osOk = os.platform().length > 0 && os.cpus() >= 1 && os.tmpdir().length > 0;
+        logger.info("diag:12");
+
+        const source = new ReadableStream<number>(
+            (ctrl: ReadableController<number>): void => {
+                ctrl.push(1);
+                ctrl.push(2);
+                ctrl.push(3);
+                ctrl.close();
+            },
+            8
+        );
+        const transformed = source.collect();
+        const streamOk = transformed.length == 3 && transformed[0] == 1 && transformed[2] == 3;
+        logger.info("diag:13");
+
+        const checks = encoding.json.newObject();
+        checks.set("csv", encoding.json.fromBool(csvOk));
+        checks.set("math", encoding.json.fromBool(mathOk));
+        checks.set("crypto", encoding.json.fromBool(cryptoOk));
+        checks.set("time", encoding.json.fromBool(timeOk));
+        checks.set("archive", encoding.json.fromBool(archiveOk));
+        checks.set("glob", encoding.json.fromBool(globOk));
+        checks.set("base32", encoding.json.fromBool(base32Ok));
+        checks.set("semver", encoding.json.fromBool(semverOk));
+        checks.set("url", encoding.json.fromBool(urlOk));
+        checks.set("template", encoding.json.fromBool(templateOk));
+        checks.set("compress", encoding.json.fromBool(compressOk));
+        checks.set("env", encoding.json.fromBool(envOk));
+        checks.set("process", encoding.json.fromBool(processOk));
+        checks.set("os", encoding.json.fromBool(osOk));
+        checks.set("stream", encoding.json.fromBool(streamOk));
+        logger.info("diag:14");
+
+        const allPass =
+            csvOk && mathOk && cryptoOk && timeOk &&
+            archiveOk && globOk && base32Ok && semverOk &&
+            urlOk && templateOk && compressOk && envOk &&
+            processOk && osOk && streamOk;
+
+        const result = encoding.json.newObject();
+        result.set("ok", encoding.json.fromBool(true));
+        result.set("allPass", encoding.json.fromBool(allPass));
+        result.set("query", encoding.json.fromString(query));
+        result.set("hash", encoding.json.fromString(hash));
+        result.set("rowCount", encoding.json.fromNumber(rowCount));
+        result.set("checks", checks);
+        logger.info("diag:15");
+
+        const text = result.stringifyPretty();
+        fs.writeTextFile(path.join(dir, "diag.result.json"), text);
+        result.release();
+        logger.info("diag:16");
+        return text;
     }
 }
 

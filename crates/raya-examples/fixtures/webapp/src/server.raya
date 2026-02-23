@@ -20,26 +20,44 @@ function markReady(root: string, addr: string): void {
     fs.writeTextFile(path.join(root, "server.ready"), addr);
 }
 
-function main(): number {
-    const root = tmpRoot();
-    const server = new HttpServer(HOST, PORT);
-    const addr = server.localAddr();
+const root = tmpRoot();
+const server = new HttpServer(HOST, PORT);
+const addr = server.localAddr();
 
-    markReady(root, addr);
-    logger.info(`server listening on ${addr}`);
+markReady(root, addr);
+logger.info(`server listening on ${addr}`);
 
+while (true) {
     const req = server.accept();
+    AppCommon.appendRequestLog(root, req);
+
+    if (req.path() == "/shutdown") {
+        server.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], "bye");
+        server.close();
+        break;
+    }
+
     if (req.path() == "/health") {
         const body = AppCommon.computeHealth(root);
         server.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], body);
-        server.close();
-        if (body == "OK") {
-            return 0;
-        }
-        return 2;
+        continue;
     }
 
-    server.respond(req._handle, 404, "not-found");
-    server.close();
-    return 1;
+    if (req.path() == "/diag") {
+        const body = AppCommon.computeDiagnostics(root, req.query());
+        server.respondWithHeaders(req._handle, 200, ["Content-Type", "application/json"], body);
+        continue;
+    }
+
+    if (req.path() == "/echo") {
+        if (req.method() == "POST") {
+            const body = AppCommon.computeEcho(req);
+            server.respondWithHeaders(req._handle, 201, ["Content-Type", "application/json"], body);
+        } else {
+            server.respondWithHeaders(req._handle, 405, ["Content-Type", "text/plain"], "method-not-allowed");
+        }
+        continue;
+    }
+
+    server.respondWithHeaders(req._handle, 404, ["Content-Type", "text/plain"], "not-found");
 }

@@ -1,0 +1,38 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import encoding from "std:encoding";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-systems");
+ensureDir(dir);
+
+const csvPath = path.join(dir, "state.csv");
+if (!fs.exists(csvPath)) {
+    fs.writeTextFile(csvPath, "id,value\n");
+}
+
+fs.appendFile(csvPath, "1,alpha\n");
+fs.appendFile(csvPath, "2,beta\n");
+
+const csvText = fs.readTextFile(csvPath);
+const csv = encoding.csv.parseWithHeaders(csvText);
+const rows = csv.rowCount();
+csv.release();
+
+const ok = rows >= 2;
+fs.writeTextFile(path.join(dir, "stateful.result.txt"), `ok=${ok},rows=${rows}`);

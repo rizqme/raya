@@ -1,0 +1,42 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import net from "std:net";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-systems");
+ensureDir(dir);
+
+const port = 39181;
+const listener = net.listen("127.0.0.1", port);
+const client = net.connect("127.0.0.1", port);
+const serverStream = listener.accept();
+
+let ok = false;
+if (serverStream != null) {
+    client.writeText("PING\n");
+    const req = serverStream.readLine();
+    serverStream.writeText("PONG\n");
+    const res = client.readLine();
+    ok = req == "PING" && res == "PONG";
+    serverStream.close();
+}
+
+client.close();
+listener.close();
+
+fs.writeTextFile(path.join(dir, "tcp.result.txt"), `ok=${ok}`);

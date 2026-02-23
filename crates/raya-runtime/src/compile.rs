@@ -261,7 +261,12 @@ fn format_check_error(error: &CheckError, user_offset: usize, full_source: &str)
     if line > 0 {
         format!("{} (line {})", error, line)
     } else {
-        error.to_string()
+        let abs_line = full_source[..span.start.min(full_source.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1;
+        format!("{} (prelude line {})", error, abs_line)
     }
 }
 
@@ -272,7 +277,12 @@ fn format_bind_error(error: &BindError, user_offset: usize, full_source: &str) -
     if line > 0 {
         format!("{} (line {})", error, line)
     } else {
-        error.to_string()
+        let abs_line = full_source[..span.start.min(full_source.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count()
+            + 1;
+        format!("{} (prelude line {})", error, abs_line)
     }
 }
 

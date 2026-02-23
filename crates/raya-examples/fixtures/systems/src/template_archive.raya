@@ -1,0 +1,40 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import template from "std:template";
+import archive from "std:archive";
+import compress from "std:compress";
+import crypto from "std:crypto";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-systems");
+ensureDir(dir);
+
+const report = template.render("Report {{name}} value={{value}}", "{\"name\":\"suite\",\"value\":42}");
+const reportPath = path.join(dir, "report.txt");
+fs.writeTextFile(reportPath, report);
+
+const tarPath = path.join(dir, "report.tar");
+archive.tarCreate(tarPath, [reportPath]);
+const entries = archive.tarList(tarPath);
+
+const gz = compress.gzip(crypto.fromHex("746573742d7265706f7274"));
+const plain = compress.gunzip(gz);
+const roundtrip = crypto.toHex(plain) == "746573742d7265706f7274";
+
+const ok = entries.length >= 1 && roundtrip;
+fs.writeTextFile(path.join(dir, "pipeline.result.txt"), `ok=${ok},entries=${entries.length}`);

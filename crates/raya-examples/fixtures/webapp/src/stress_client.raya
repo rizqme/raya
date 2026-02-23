@@ -1,0 +1,42 @@
+import fetch from "std:fetch";
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import { AppCommon } from "./app/common.raya";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+const root = tmpRoot();
+const readyPath = path.join(root, "server.ready");
+const addr = fs.readTextFile(readyPath);
+
+const health = fetch.get("http://" + addr + "/health");
+const healthOk = health.status() == 200 && health.text() == "OK";
+health.release();
+
+const diag = fetch.get("http://" + addr + "/diag?mode=stress");
+const diagBody = diag.text();
+const diagOk = diag.status() == 200 && diagBody.includes("\"allPass\": true");
+diag.release();
+
+const echo = fetch.request("POST", "http://" + addr + "/echo", "payload-stress", "X-Trace: stress-1");
+const echoBody = echo.text();
+const echoOk = echo.status() == 201 && echoBody.includes("\"trace\":\"stress-1\"") && echoBody.includes("\"body\":\"payload-stress\"");
+echo.release();
+
+const missing = fetch.get("http://" + addr + "/missing");
+const missingOk = missing.status() == 404;
+missing.release();
+
+const shutdown = fetch.get("http://" + addr + "/shutdown");
+const shutdownOk = shutdown.status() == 200;
+shutdown.release();
+
+const summary = `health=${healthOk},diag=${diagOk},echo=${echoOk},missing=${missingOk},shutdown=${shutdownOk}`;
+fs.writeTextFile(path.join(AppCommon.appDir(root), "stress.result.txt"), summary);

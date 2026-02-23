@@ -13,25 +13,63 @@ function tmpRoot(): string {
     return env.cwd();
 }
 
-function main(): number {
-    const readyPath = path.join(tmpRoot(), "server.ready");
-    const addr = fs.readTextFile(readyPath);
-    const url = "http://" + addr + "/health";
+const root = tmpRoot();
+const readyPath = path.join(root, "server.ready");
+const addr = fs.readTextFile(readyPath);
+const routeCfg = env.get("RAYA_EXAMPLES_CLIENT_ROUTE");
+const methodCfg = env.get("RAYA_EXAMPLES_CLIENT_METHOD");
+const bodyCfg = env.get("RAYA_EXAMPLES_CLIENT_BODY");
+const headersCfg = env.get("RAYA_EXAMPLES_CLIENT_HEADERS");
 
-    const res = fetch.get(url);
-    const status = res.status();
-    const body = res.text();
+const route = routeCfg.length > 0 ? routeCfg : "/health";
+const method = methodCfg.length > 0 ? methodCfg : "GET";
+const requestUrl = "http://" + addr + route;
+
+let status = 0;
+let statusText = "";
+let body = "";
+if (method == "GET") {
+    const res = fetch.get(requestUrl);
+    status = res.status();
+    statusText = res.statusText();
+    body = res.text();
     res.release();
+} else {
+    const res = fetch.request(method, requestUrl, bodyCfg, headersCfg);
+    status = res.status();
+    statusText = res.statusText();
+    body = res.text();
+    res.release();
+}
 
-    const output = `${status}:${body}`;
-    const resultPath = path.join(AppCommon.appDir(tmpRoot()), "client.result.txt");
-    fs.writeTextFile(resultPath, output);
+let label = "health";
+if (route == "/diag" || route.startsWith("/diag?")) {
+    label = "diag";
+} else if (route == "/echo") {
+    label = "echo";
+} else if (route == "/shutdown") {
+    label = "shutdown";
+} else if (route == "/missing") {
+    label = "missing";
+}
 
-    if (status == 200 && body == "OK") {
-        logger.info("client: HTTP health check succeeded");
-        return 0;
-    }
+const output = `${status}:${statusText}:${body}`;
+const resultPath = path.join(AppCommon.appDir(root), `client.${label}.txt`);
+fs.writeTextFile(resultPath, output);
+if (route == "/diag" || route.startsWith("/diag?")) {
+    fs.writeTextFile(path.join(AppCommon.appDir(root), "diag.client.body.json"), body);
+}
 
+if (route == "/health" && status == 200 && body == "OK") {
+    logger.info("client: HTTP health check succeeded");
+} else if ((route == "/diag" || route.startsWith("/diag?")) && status == 200 && body.includes("\"allPass\": true")) {
+    logger.info("client: diagnostics check succeeded");
+} else if (route == "/echo" && status == 201) {
+    logger.info("client: echo check succeeded");
+} else if (route == "/missing" && status == 404) {
+    logger.info("client: missing route check succeeded");
+} else if (route == "/shutdown" && status == 200) {
+    logger.info("client: shutdown succeeded");
+} else {
     logger.error("client: HTTP health check failed");
-    return 1;
 }

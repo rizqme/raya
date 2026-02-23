@@ -1939,6 +1939,17 @@ impl<'a> Binder<'a> {
                             }
                         }
 
+                        // Bind method parameters in method scope
+                        for param in &method.params {
+                            let param_ty = if let Some(ref ann) = param.type_annotation {
+                                self.resolve_type_annotation(ann)?
+                            } else {
+                                self.type_ctx.unknown_type()
+                            };
+                            // Method parameters are mutable (same semantics as function params)
+                            self.bind_pattern_names(&param.pattern, param_ty, false)?;
+                        }
+
                         for stmt in &body.statements {
                             self.bind_stmt(stmt)?;
                         }
@@ -1947,6 +1958,18 @@ impl<'a> Binder<'a> {
                 }
                 ClassMember::Constructor(ctor) => {
                     self.symbols.push_scope(ScopeKind::Function);
+
+                    // Bind constructor parameters in constructor scope
+                    for param in &ctor.params {
+                        let param_ty = if let Some(ref ann) = param.type_annotation {
+                            self.resolve_type_annotation(ann)?
+                        } else {
+                            self.type_ctx.unknown_type()
+                        };
+                        // Constructor parameters are mutable
+                        self.bind_pattern_names(&param.pattern, param_ty, false)?;
+                    }
+
                     for stmt in &ctor.body.statements {
                         self.bind_stmt(stmt)?;
                     }
