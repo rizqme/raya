@@ -412,8 +412,14 @@ mod tests {
     #[test]
     fn multiline_keys_are_bound_to_newline() {
         let bindings = multiline_bindings();
-        assert_eq!(bindings[0], (KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline));
-        assert_eq!(bindings[1], (KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline));
+        assert_eq!(
+            bindings[0],
+            (KeyEvent(KeyCode::Enter, Modifiers::SHIFT), Cmd::Newline)
+        );
+        assert_eq!(
+            bindings[1],
+            (KeyEvent(KeyCode::Enter, Modifiers::ALT), Cmd::Newline)
+        );
         assert_eq!(
             bindings[2],
             (KeyEvent(KeyCode::Char('J'), Modifiers::CTRL), Cmd::Newline)

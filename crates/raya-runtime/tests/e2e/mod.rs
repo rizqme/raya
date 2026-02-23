@@ -3,24 +3,32 @@
 //! These tests compile Raya source code and execute it in the VM,
 //! verifying the results are correct.
 
+mod archive;
+mod args;
 mod arrays;
 mod async_await;
 mod builtins;
 mod classes;
 mod closure_captures;
 mod closures;
+mod compress;
 mod concurrency;
 mod concurrency_edge_cases;
 mod conditionals;
 mod crypto;
 mod decorators;
+mod dns;
 mod edge_cases;
+mod encoding;
 mod env;
 mod exceptions;
+mod fetch;
 mod fs;
 mod functions;
 mod fundamentals;
+mod glob;
 mod harness;
+mod http;
 mod inheritance;
 mod io;
 mod json;
@@ -30,6 +38,7 @@ mod loops;
 mod math;
 mod module_vars;
 mod narrowing;
+mod net;
 mod operators;
 mod os;
 mod path;
@@ -38,11 +47,14 @@ mod reflect;
 mod rest_params;
 mod runtime;
 mod scope_analysis;
+mod semver;
 mod stream;
 mod strings;
 mod syntax_edge_cases;
+mod template;
 mod time;
 mod type_checker;
+mod url;
 mod variables;
 
 // TypeScript conformance test adaptations

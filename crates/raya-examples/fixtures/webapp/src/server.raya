@@ -1,0 +1,45 @@
+import { HttpServer } from "std:http";
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import logger from "std:logger";
+import { AppCommon } from "./app/common.raya";
+
+const HOST = "127.0.0.1";
+const PORT = 0;
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function markReady(root: string, addr: string): void {
+    fs.writeTextFile(path.join(root, "server.ready"), addr);
+}
+
+function main(): number {
+    const root = tmpRoot();
+    const server = new HttpServer(HOST, PORT);
+    const addr = server.localAddr();
+
+    markReady(root, addr);
+    logger.info(`server listening on ${addr}`);
+
+    const req = server.accept();
+    if (req.path() == "/health") {
+        const body = AppCommon.computeHealth(root);
+        server.respondWithHeaders(req._handle, 200, ["Content-Type", "text/plain"], body);
+        server.close();
+        if (body == "OK") {
+            return 0;
+        }
+        return 2;
+    }
+
+    server.respond(req._handle, 404, "not-found");
+    server.close();
+    return 1;
+}

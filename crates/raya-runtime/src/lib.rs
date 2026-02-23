@@ -168,7 +168,7 @@ impl Runtime {
 
     /// Compile a .raya source file to a bytecode module.
     pub fn compile_file(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
-        let source = std::fs::read_to_string(path)?;
+        let source = compile::load_source_with_local_imports(path)?;
         self.compile(&source)
     }
 
@@ -191,7 +191,7 @@ impl Runtime {
         path: &Path,
         options: &compile::CompileOptions,
     ) -> Result<CompiledModule, RuntimeError> {
-        let source = std::fs::read_to_string(path)?;
+        let source = compile::load_source_with_local_imports(path)?;
         self.compile_with_options(&source, options)
     }
 
@@ -206,7 +206,7 @@ impl Runtime {
 
     /// Type-check a .raya source file without generating bytecode.
     pub fn check_file(&self, path: &Path) -> Result<compile::CheckDiagnostics, RuntimeError> {
-        let source = std::fs::read_to_string(path)?;
+        let source = compile::load_source_with_local_imports(path)?;
         self.check(&source)
     }
 

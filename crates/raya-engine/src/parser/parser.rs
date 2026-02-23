@@ -468,6 +468,37 @@ mod tests {
     }
 
     #[test]
+    fn test_additive_binds_tighter_than_relational() {
+        use crate::parser::ast::{BinaryOperator, Expression, Statement};
+
+        let source = "0 + 1 < 3";
+        let parser = Parser::new(source).unwrap();
+        let (module, _) = parser.parse().unwrap();
+
+        match &module.statements[0] {
+            Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+                Expression::Binary(outer) => {
+                    assert!(matches!(outer.operator, BinaryOperator::LessThan));
+                    match &*outer.left {
+                        Expression::Binary(inner) => {
+                            assert!(matches!(inner.operator, BinaryOperator::Add));
+                        }
+                        other => panic!(
+                            "Expected left side to be additive binary, got {:?}",
+                            std::mem::discriminant(other)
+                        ),
+                    }
+                }
+                other => panic!("Expected Binary, got {:?}", std::mem::discriminant(other)),
+            },
+            other => panic!(
+                "Expected Expression statement, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
     fn test_type_args_multiple() {
         use crate::parser::ast::{Expression, Statement};
 

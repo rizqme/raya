@@ -26,7 +26,7 @@ enum Commands {
         /// Script name (from [scripts] in raya.toml) or file path
         target: Option<String>,
         /// Arguments to pass to the program
-        #[arg(trailing_var_arg = true, last = true)]
+        #[arg(trailing_var_arg = true)]
         args: Vec<String>,
         /// Watch for changes and re-run
         #[arg(short, long)]

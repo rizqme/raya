@@ -122,7 +122,6 @@ fn parse_expression_with_precedence(
                 | Token::LeftBracket
                 | Token::PlusPlus
                 | Token::MinusMinus
-                | Token::Less
         );
 
         if !is_postfix

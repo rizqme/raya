@@ -73,54 +73,57 @@ fn get_builtin_sources() -> &'static str {
 /// included as builtins for single-file compilation in tests.
 fn get_std_sources() -> &'static str {
     concat!(
-        // Logger (std:logger)
+        // Core stdlib
         include_str!("../../../raya-stdlib/raya/logger.raya"),
         "\n",
-        // Math (std:math)
         include_str!("../../../raya-stdlib/raya/math.raya"),
         "\n",
-        // Reflect (std:reflect)
         include_str!("../../../raya-stdlib/raya/reflect.raya"),
         "\n",
-        // Runtime (std:runtime)
         include_str!("../../../raya-stdlib/raya/runtime.raya"),
         "\n",
-        // Crypto (std:crypto)
         include_str!("../../../raya-stdlib/raya/crypto.raya"),
         "\n",
-        // Time (std:time)
         include_str!("../../../raya-stdlib/raya/time.raya"),
         "\n",
-        // Path (std:path)
         include_str!("../../../raya-stdlib/raya/path.raya"),
         "\n",
-        // Stream (std:stream)
         include_str!("../../../raya-stdlib/raya/stream.raya"),
         "\n",
+        include_str!("../../../raya-stdlib/raya/url.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib/raya/compress.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib/raya/encoding.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib/raya/semver.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib/raya/template.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib/raya/args.raya"),
+        "\n",
         // POSIX stdlib modules
-        // Fs (std:fs)
         include_str!("../../../raya-stdlib-posix/raya/fs.raya"),
         "\n",
-        // Net (std:net)
         include_str!("../../../raya-stdlib-posix/raya/net.raya"),
         "\n",
-        // Http (std:http)
         include_str!("../../../raya-stdlib-posix/raya/http.raya"),
         "\n",
-        // Fetch (std:fetch)
         include_str!("../../../raya-stdlib-posix/raya/fetch.raya"),
         "\n",
-        // Env (std:env)
         include_str!("../../../raya-stdlib-posix/raya/env.raya"),
         "\n",
-        // Process (std:process)
         include_str!("../../../raya-stdlib-posix/raya/process.raya"),
         "\n",
-        // Os (std:os)
         include_str!("../../../raya-stdlib-posix/raya/os.raya"),
         "\n",
-        // Io (std:io)
         include_str!("../../../raya-stdlib-posix/raya/io.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib-posix/raya/dns.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib-posix/raya/glob.raya"),
+        "\n",
+        include_str!("../../../raya-stdlib-posix/raya/archive.raya"),
         "\n",
     )
 }

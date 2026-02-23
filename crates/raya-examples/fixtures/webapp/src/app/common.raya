@@ -1,0 +1,47 @@
+import logger from "std:logger";
+import math from "std:math";
+import crypto from "std:crypto";
+import path from "std:path";
+import fs from "std:fs";
+import encoding from "std:encoding";
+import archive from "std:archive";
+
+class AppCommon {
+    static appDir(root: string): string {
+        return path.join(root, "raya-examples-webapp");
+    }
+
+    static ensureDir(p: string): void {
+        if (!fs.exists(p)) {
+            fs.mkdirRecursive(p);
+        }
+    }
+
+    static computeHealth(root: string): string {
+        logger.setPrefix("[raya-examples]");
+
+        const dir = AppCommon.appDir(root);
+        AppCommon.ensureDir(dir);
+
+        const reportPath = path.join(dir, "health.csv");
+        fs.writeTextFile(reportPath, "name,value\nstatus,ok\nanswer,42\n");
+
+        const report = fs.readTextFile(reportPath);
+        const csv = encoding.csv.parseWithHeaders(report);
+        const rowCount = csv.rowCount();
+        csv.release();
+
+        const total = math.round(41.6);
+
+        const archivePath = path.join(dir, "health.tar");
+        archive.tarCreate(archivePath, [reportPath]);
+        archive.tarList(archivePath);
+
+        const hash = crypto.hash("sha256", "raya-examples");
+        logger.info(`health:${rowCount}:${total}:${hash}`);
+        fs.writeTextFile(path.join(dir, "health.ok"), "ok");
+        return "OK";
+    }
+}
+
+export { AppCommon };

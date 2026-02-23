@@ -73,16 +73,23 @@ class ArgResult {
 
 class ArgParser {
     _defs: ArgDef[];
+    _aliasMap: Map<string, string>;
+    _typeMap: Map<string, string>;
+    _defaultPairs: string[];
     _programName: string;
 
     constructor() {
         this._defs = [];
+        this._aliasMap = new Map<string, string>();
+        this._typeMap = new Map<string, string>();
+        this._defaultPairs = [];
         this._programName = "program";
     }
 
     string(name: string, description: string): ArgParser {
         let def = new ArgDef(name, description, "string");
         this._defs.push(def);
+        this._typeMap.set(name, "string");
         return this;
     }
 
@@ -90,12 +97,16 @@ class ArgParser {
         let def = new ArgDef(name, description, "string");
         def.defaultValue = defaultValue;
         this._defs.push(def);
+        this._typeMap.set(name, "string");
+        this._defaultPairs[this._defaultPairs.length] = name;
+        this._defaultPairs[this._defaultPairs.length] = defaultValue;
         return this;
     }
 
     number(name: string, description: string): ArgParser {
         let def = new ArgDef(name, description, "number");
         this._defs.push(def);
+        this._typeMap.set(name, "number");
         return this;
     }
 
@@ -103,6 +114,9 @@ class ArgParser {
         let def = new ArgDef(name, description, "number");
         def.defaultValue = defaultValue;
         this._defs.push(def);
+        this._typeMap.set(name, "number");
+        this._defaultPairs[this._defaultPairs.length] = name;
+        this._defaultPairs[this._defaultPairs.length] = defaultValue;
         return this;
     }
 
@@ -110,6 +124,9 @@ class ArgParser {
         let def = new ArgDef(name, description, "boolean");
         def.defaultValue = "false";
         this._defs.push(def);
+        this._typeMap.set(name, "boolean");
+        this._defaultPairs[this._defaultPairs.length] = name;
+        this._defaultPairs[this._defaultPairs.length] = "false";
         return this;
     }
 
@@ -118,6 +135,7 @@ class ArgParser {
         while (i < this._defs.length) {
             if (this._defs[i].name == name) {
                 this._defs[i].alias = short;
+                this._aliasMap.set(short, name);
                 break;
             }
             i = i + 1;
@@ -144,86 +162,87 @@ class ArgParser {
         return this;
     }
 
-    parse(argv: string[]): ArgResult {
+    parse(inputArgs: string[]): ArgResult {
         let result = new ArgResult();
         let restMode = false;
+        // Initialize defaults from precomputed flat pairs without using Array methods.
+        this._copyDefaultPairs(result, 0);
 
-        // Initialize defaults
-        let d = 0;
-        while (d < this._defs.length) {
-            if (!this._defs[d].isPositional && this._defs[d].defaultValue.length > 0) {
-                result._strings.push(this._defs[d].name);
-                result._strings.push(this._defs[d].defaultValue);
-            }
-            d = d + 1;
-        }
-
-        let i = 0;
-        while (i < argv.length) {
-            let arg = argv[i];
+        let idx = 0;
+        while (idx < inputArgs.length) {
+            // Force concrete string type so string method calls lower to builtin string ops
+            // instead of dynamic CallMethod dispatch on generic pointer values.
+            let arg = "" + inputArgs[idx];
 
             if (restMode) {
-                result._rest.push(arg);
-                i = i + 1;
+                result._rest[result._rest.length] = arg;
+                idx = idx + 1;
                 continue;
             }
 
             if (arg == "--") {
                 restMode = true;
-                i = i + 1;
+                idx = idx + 1;
                 continue;
             }
 
-            if (arg.startsWith("--no-")) {
+            if (arg.length >= 5 && arg.substring(0, 5) == "--no-") {
                 let name = arg.substring(5, arg.length);
                 this._setResult(result, name, "false");
-                result._present.push(name);
-                i = i + 1;
+                this._markPresent(result, name);
+                idx = idx + 1;
                 continue;
             }
 
-            if (arg.startsWith("--")) {
+            if (arg.length >= 2 && arg.substring(0, 2) == "--") {
                 let eqIdx = arg.indexOf("=");
                 if (eqIdx >= 0) {
                     let name = arg.substring(2, eqIdx);
                     let value = arg.substring(eqIdx + 1, arg.length);
                     this._setResult(result, name, value);
-                    result._present.push(name);
+                    this._markPresent(result, name);
+                    idx = idx + 1;
                 } else {
                     let name = arg.substring(2, arg.length);
-                    let def = this._findDef(name);
-                    if (def != null && def.argType == "boolean") {
+                    const argType: string = this._typeMap.has(name) ? this._typeMap.get(name) : "";
+                    if (argType == "boolean") {
                         this._setResult(result, name, "true");
-                        result._present.push(name);
-                    } else if (i + 1 < argv.length) {
-                        this._setResult(result, name, argv[i + 1]);
-                        result._present.push(name);
-                        i = i + 1;
+                        this._markPresent(result, name);
+                        idx = idx + 1;
+                    } else if (idx + 1 < inputArgs.length) {
+                        const nextArg = "" + inputArgs[idx + 1];
+                        this._setResult(result, name, nextArg);
+                        this._markPresent(result, name);
+                        idx = idx + 2;
+                    } else {
+                        idx = idx + 1;
                     }
                 }
-                i = i + 1;
                 continue;
             }
 
-            if (arg.startsWith("-") && arg.length == 2) {
+            if (arg.length == 2 && arg.substring(0, 1) == "-") {
                 let short = arg.substring(1, 2);
                 let name = this._resolveAlias(short);
-                let def = this._findDef(name);
-                if (def != null && def.argType == "boolean") {
+                const argType: string = this._typeMap.has(name) ? this._typeMap.get(name) : "";
+                if (argType == "boolean") {
                     this._setResult(result, name, "true");
-                    result._present.push(name);
-                } else if (i + 1 < argv.length) {
-                    this._setResult(result, name, argv[i + 1]);
-                    result._present.push(name);
-                    i = i + 1;
+                    this._markPresent(result, name);
+                    idx = idx + 1;
+                } else if (idx + 1 < inputArgs.length) {
+                    const nextArg = "" + inputArgs[idx + 1];
+                    this._setResult(result, name, nextArg);
+                    this._markPresent(result, name);
+                    idx = idx + 2;
+                } else {
+                    idx = idx + 1;
                 }
-                i = i + 1;
                 continue;
             }
 
             // Positional argument
-            result._positionals.push(arg);
-            i = i + 1;
+            result._positionals[result._positionals.length] = arg;
+            idx = idx + 1;
         }
 
         return result;
@@ -262,23 +281,12 @@ class ArgParser {
     }
 
     _findDef(name: string): ArgDef | null {
-        let i = 0;
-        while (i < this._defs.length) {
-            if (this._defs[i].name == name) {
-                return this._defs[i];
-            }
-            i = i + 1;
-        }
-        return null;
+        return this._findDefAt(name, 0);
     }
 
     _resolveAlias(short: string): string {
-        let i = 0;
-        while (i < this._defs.length) {
-            if (this._defs[i].alias == short) {
-                return this._defs[i].name;
-            }
-            i = i + 1;
+        if (this._aliasMap.has(short)) {
+            return this._aliasMap.get(short);
         }
         return short;
     }
@@ -292,8 +300,48 @@ class ArgParser {
             }
             i = i + 2;
         }
-        result._strings.push(name);
-        result._strings.push(value);
+        result._strings[result._strings.length] = name;
+        result._strings[result._strings.length] = value;
+    }
+
+    _applyDefaults(result: ArgResult): void {
+        this._applyDefaultsAt(result, 0);
+    }
+
+    _findDefAt(name: string, index: number): ArgDef | null {
+        if (index >= this._defs.length) {
+            return null;
+        }
+        if (this._defs[index].name == name) {
+            return this._defs[index];
+        }
+        return this._findDefAt(name, index + 1);
+    }
+
+    _markPresent(result: ArgResult, name: string): void {
+        if (!result.has(name)) {
+            result._present[result._present.length] = name;
+        }
+    }
+
+    _applyDefaultsAt(result: ArgResult, index: number): void {
+        if (index >= this._defs.length) {
+            return;
+        }
+        if (!this._defs[index].isPositional && this._defs[index].defaultValue.length > 0) {
+            result._strings[result._strings.length] = this._defs[index].name;
+            result._strings[result._strings.length] = this._defs[index].defaultValue;
+        }
+        this._applyDefaultsAt(result, index + 1);
+    }
+
+    _copyDefaultPairs(result: ArgResult, index: number): void {
+        if (index >= this._defaultPairs.length) {
+            return;
+        }
+        result._strings[result._strings.length] = this._defaultPairs[index];
+        result._strings[result._strings.length] = this._defaultPairs[index + 1];
+        this._copyDefaultPairs(result, index + 2);
     }
 }
 

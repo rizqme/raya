@@ -779,22 +779,19 @@ impl<'a> Lowerer<'a> {
                         }
                     }
 
-                    // Track class type from new expression (e.g., `let x = new MyClass()`)
-                    if !self.variable_class_map.contains_key(&name) {
-                        if let ast::Expression::New(new_expr) = init {
-                            if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                                if let Some(&class_id) = self.class_map.get(&ident.name) {
-                                    self.variable_class_map.insert(name, class_id);
-                                }
+                    // Track class type from new expression (e.g., `let x = new MyClass()`).
+                    // Always override stale mappings from previous scopes/methods.
+                    if let ast::Expression::New(new_expr) = init {
+                        if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                                self.variable_class_map.insert(name, class_id);
                             }
                         }
                     }
 
                     // Infer class type from method call return types
-                    if !self.variable_class_map.contains_key(&name) {
-                        if let Some(class_id) = self.infer_class_id(init) {
-                            self.variable_class_map.insert(name, class_id);
-                        }
+                    if let Some(class_id) = self.infer_class_id(init) {
+                        self.variable_class_map.insert(name, class_id);
                     }
 
                     // Track bound method variables (e.g., `let f = obj.method`)
@@ -818,6 +815,16 @@ impl<'a> Lowerer<'a> {
                     };
 
                     let value = self.lower_expr(init);
+
+                    // Fallback class capture from lowered value type.
+                    // This is critical for imported/default-exported factories where
+                    // pre-lowering AST inference may miss the concrete class, but
+                    // the checker/lowered register type is already precise.
+                    if !self.variable_class_map.contains_key(&name) {
+                        if let Some(class_id) = self.class_id_from_type_id(value.ty) {
+                            self.variable_class_map.insert(name, class_id);
+                        }
+                    }
 
                     // Track the global's type so LoadGlobal preserves it
                     self.global_type_map.insert(global_idx, value.ty);
@@ -872,23 +879,20 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Track class type from New expression (e.g., `let x = new MyClass()`)
-            if !self.variable_class_map.contains_key(&name) {
-                if let ast::Expression::New(new_expr) = init {
-                    if let ast::Expression::Identifier(ident) = &*new_expr.callee {
-                        if let Some(&class_id) = self.class_map.get(&ident.name) {
-                            self.variable_class_map.insert(name, class_id);
-                        }
+            // Track class type from New expression (e.g., `let x = new MyClass()`).
+            // Always override stale mappings from previous scopes/methods.
+            if let ast::Expression::New(new_expr) = init {
+                if let ast::Expression::Identifier(ident) = &*new_expr.callee {
+                    if let Some(&class_id) = self.class_map.get(&ident.name) {
+                        self.variable_class_map.insert(name, class_id);
                     }
                 }
             }
 
             // Infer class type from method call return types
             // e.g., `let output = source.pipeThrough(x)` → infer ReadableStream from return type
-            if !self.variable_class_map.contains_key(&name) {
-                if let Some(class_id) = self.infer_class_id(init) {
-                    self.variable_class_map.insert(name, class_id);
-                }
+            if let Some(class_id) = self.infer_class_id(init) {
+                self.variable_class_map.insert(name, class_id);
             }
 
             // Track bound method variables (e.g., `let f = obj.method`)
@@ -912,6 +916,15 @@ impl<'a> Lowerer<'a> {
             };
 
             let value = self.lower_expr(init);
+
+            // Fallback class capture from lowered value type.
+            // Helps preserve receiver typing for chained calls on values returned
+            // from imports/factories when AST-only inference was inconclusive.
+            if !self.variable_class_map.contains_key(&name) {
+                if let Some(class_id) = self.class_id_from_type_id(value.ty) {
+                    self.variable_class_map.insert(name, class_id);
+                }
+            }
 
             // Transfer object field layout from register to variable
             // (for decode<T> results so property access resolves correctly)

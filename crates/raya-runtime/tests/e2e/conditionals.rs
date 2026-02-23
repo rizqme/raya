@@ -152,6 +152,24 @@ fn test_ternary_in_expression() {
     expect_i32("let x = 5; let y = (x > 3 ? 10 : 20) + 5; return y;", 15);
 }
 
+#[test]
+fn test_ternary_does_not_evaluate_inactive_then_branch() {
+    expect_string(
+        "let a: string[] = [];
+         return false ? a[0] : \"ok\";",
+        "ok",
+    );
+}
+
+#[test]
+fn test_ternary_does_not_evaluate_inactive_else_branch() {
+    expect_string(
+        "let a: string[] = [];
+         return true ? \"ok\" : a[0];",
+        "ok",
+    );
+}
+
 // ============================================================================
 // Conditionals with Side Effects
 // ============================================================================

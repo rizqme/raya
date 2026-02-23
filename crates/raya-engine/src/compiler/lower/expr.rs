@@ -1110,6 +1110,20 @@ impl<'a> Lowerer<'a> {
                         });
                     }
 
+                    // Preserve precise method return typing for user-defined class methods.
+                    // This is especially important when checker call typing is unresolved
+                    // (e.g. precompiled stdlib class dispatch), so downstream property/method
+                    // access can still select typed opcodes (ArrayLen/StringLen/etc).
+                    if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
+                        if let Some(&ret_ty) =
+                            self.method_return_type_map.get(&(class_id, method_name_symbol))
+                        {
+                            if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
+                                dest.ty = ret_ty;
+                            }
+                        }
+                    }
+
                     // Propagate generic return type for Map/Set methods
                     self.propagate_container_return_type(
                         &mut dest,
@@ -1131,6 +1145,17 @@ impl<'a> Lowerer<'a> {
                         method: slot,
                         args,
                     });
+
+                    // If checker type is unresolved, still try to carry declared return type.
+                    if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
+                        if let Some(&ret_ty) =
+                            self.method_return_type_map.get(&(class_id, method_name_symbol))
+                        {
+                            if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
+                                dest.ty = ret_ty;
+                            }
+                        }
+                    }
                     return dest;
                 }
             }
@@ -1513,6 +1538,32 @@ impl<'a> Lowerer<'a> {
             index: idx,
         });
         dest
+    }
+
+    fn is_append_index_pattern(&self, target: &Expression, index: &Expression) -> bool {
+        let Expression::Member(member) = index else {
+            return false;
+        };
+
+        let prop = self.interner.resolve(member.property.name);
+        if prop != "length" {
+            return false;
+        }
+
+        self.same_access_path(target, &member.object)
+    }
+
+    fn same_access_path(&self, a: &Expression, b: &Expression) -> bool {
+        match (a, b) {
+            (Expression::Identifier(ai), Expression::Identifier(bi)) => ai.name == bi.name,
+            (Expression::This(_), Expression::This(_)) => true,
+            (Expression::Parenthesized(ap), _) => self.same_access_path(&ap.expression, b),
+            (_, Expression::Parenthesized(bp)) => self.same_access_path(a, &bp.expression),
+            (Expression::Member(am), Expression::Member(bm)) => {
+                am.property.name == bm.property.name && self.same_access_path(&am.object, &bm.object)
+            }
+            _ => false,
+        }
     }
 
     fn lower_array(&mut self, array: &ast::ArrayExpression, full_expr: &Expression) -> Register {
@@ -1977,13 +2028,7 @@ impl<'a> Lowerer<'a> {
                 }
 
                 // Instance field write
-                let class_id = match &*member.object {
-                    Expression::This(_) => self.current_class,
-                    Expression::Identifier(ident) => {
-                        self.variable_class_map.get(&ident.name).copied()
-                    }
-                    _ => None,
-                };
+                let class_id = self.infer_class_id(&member.object);
 
                 let field_index = if let Some(class_id) = class_id {
                     self.get_all_fields(class_id)
@@ -2005,12 +2050,19 @@ impl<'a> Lowerer<'a> {
             }
             Expression::Index(index) => {
                 let array = self.lower_expr(&index.object);
-                let idx = self.lower_expr(&index.index);
-                self.emit(IrInstr::StoreElement {
-                    array,
-                    index: idx,
-                    value: value.clone(),
-                });
+                if self.is_append_index_pattern(&index.object, &index.index) {
+                    self.emit(IrInstr::ArrayPush {
+                        array,
+                        element: value.clone(),
+                    });
+                } else {
+                    let idx = self.lower_expr(&index.index);
+                    self.emit(IrInstr::StoreElement {
+                        array,
+                        index: idx,
+                        value: value.clone(),
+                    });
+                }
             }
             _ => {}
         }
@@ -3112,7 +3164,11 @@ impl<'a> Lowerer<'a> {
             // 'this' uses current class context
             Expression::This(_) => self.current_class,
             // Variable lookup
-            Expression::Identifier(ident) => self.variable_class_map.get(&ident.name).copied(),
+            Expression::Identifier(ident) => self
+                .variable_class_map
+                .get(&ident.name)
+                .copied()
+                .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
             // Field access: look up the field's type in the class definition
             Expression::Member(member) => {
                 // Get the class of the object
@@ -3139,7 +3195,7 @@ impl<'a> Lowerer<'a> {
                         break;
                     }
                 }
-                None
+                self.class_id_from_type_id(self.get_expr_type(expr))
             }
             // Method/function call: check if the call has a known return class type
             Expression::Call(call) => {
@@ -3181,14 +3237,57 @@ impl<'a> Lowerer<'a> {
                         return Some(ret_class_id);
                     }
                 }
-                None
+                self.class_id_from_type_id(self.get_expr_type(expr))
             }
             // New expression: return the class being instantiated
             Expression::New(new_expr) => {
                 if let Expression::Identifier(ident) = &*new_expr.callee {
                     return self.class_map.get(&ident.name).copied();
                 }
-                None
+                self.class_id_from_type_id(self.get_expr_type(expr))
+            }
+            // Index access over an array-of-class preserves the element class.
+            Expression::Index(index) => self.infer_class_id(&index.object),
+            _ => self.class_id_from_type_id(self.get_expr_type(expr)),
+        }
+    }
+
+    pub(super) fn class_id_from_type_id(&self, ty_id: TypeId) -> Option<ClassId> {
+        use crate::parser::types::ty::Type;
+
+        let ty = self.type_ctx.get(ty_id)?;
+        match ty {
+            Type::Class(class_ty) => self.class_map.iter().find_map(|(&sym, &cid)| {
+                if self.interner.resolve(sym) == class_ty.name {
+                    Some(cid)
+                } else {
+                    None
+                }
+            }),
+            Type::Reference(type_ref) => self.class_map.iter().find_map(|(&sym, &cid)| {
+                if self.interner.resolve(sym) == type_ref.name {
+                    Some(cid)
+                } else {
+                    None
+                }
+            }),
+            Type::Generic(generic) => self.class_id_from_type_id(generic.base),
+            Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.class_id_from_type_id(constraint)),
+            Type::Union(union) => {
+                // Prefer the single concrete class member if present.
+                let mut found: Option<ClassId> = None;
+                for member in &union.members {
+                    if let Some(cid) = self.class_id_from_type_id(*member) {
+                        match found {
+                            None => found = Some(cid),
+                            Some(existing) if existing == cid => {}
+                            Some(_) => return None,
+                        }
+                    }
+                }
+                found
             }
             _ => None,
         }

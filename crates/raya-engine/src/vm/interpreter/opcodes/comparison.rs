@@ -2,6 +2,7 @@ use crate::compiler::Opcode;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::object::RayaString;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 
@@ -263,6 +264,16 @@ impl<'a> Interpreter<'a> {
                         .as_f64()
                         .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa == fb
+                } else if a.is_ptr() && b.is_ptr() {
+                    let a_str = unsafe { a.as_ptr::<RayaString>() };
+                    let b_str = unsafe { b.as_ptr::<RayaString>() };
+                    if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
+                        let a_ref = unsafe { &*a_ptr.as_ptr() };
+                        let b_ref = unsafe { &*b_ptr.as_ptr() };
+                        a_ref.data == b_ref.data
+                    } else {
+                        a == b
+                    }
                 } else {
                     a == b
                 };
@@ -290,6 +301,16 @@ impl<'a> Interpreter<'a> {
                         .as_f64()
                         .unwrap_or(b.as_i32().map(|i| i as f64).unwrap_or(0.0));
                     fa != fb
+                } else if a.is_ptr() && b.is_ptr() {
+                    let a_str = unsafe { a.as_ptr::<RayaString>() };
+                    let b_str = unsafe { b.as_ptr::<RayaString>() };
+                    if let (Some(a_ptr), Some(b_ptr)) = (a_str, b_str) {
+                        let a_ref = unsafe { &*a_ptr.as_ptr() };
+                        let b_ref = unsafe { &*b_ptr.as_ptr() };
+                        a_ref.data != b_ref.data
+                    } else {
+                        a != b
+                    }
                 } else {
                     a != b
                 };

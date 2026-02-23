@@ -13,7 +13,8 @@ crates/
 ├── raya-lsp/        # Language Server Protocol (LSP) server
 ├── raya-pm/         # Package manager
 ├── raya-sdk/        # Lightweight SDK for native modules
-└── raya-native/     # Proc-macros for native module development
+├── raya-native/     # Proc-macros for native module development
+└── raya-examples/   # Example Raya apps + CLI-driven e2e tests
 ```
 
 ## Crate Dependencies
@@ -53,6 +54,7 @@ Third-party native modules ┬─> raya-sdk (FFI types only)
 | `raya-pm` | Package manager (cache, resolution, manifests, URL imports) | ✅ Complete |
 | `raya-sdk` | Minimal types for native module FFI | ✅ Complete |
 | `raya-native` | Proc-macros: `#[function]`, `#[module]` | ✅ Complete |
+| `raya-examples` | Example Raya applications and CLI HTTP e2e tests | Active |
 
 ## Key Design Decisions
 
@@ -76,5 +78,6 @@ When working on Raya:
 - **CLI commands** go in `raya-cli/src/commands/` — run/build/eval are wired through `raya-runtime::Runtime`, pkg/clean/info also functional
 - **Native module development** uses `raya-sdk` + `raya-native`
 - **Package resolution** logic is in `raya-pm`
+- **Example app fixtures + CLI e2e** live in `raya-examples`
 
 See each crate's `CLAUDE.md` for detailed guidance.

@@ -1,0 +1,13 @@
+[package]
+name = "raya-examples"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Raya example applications and CLI-driven end-to-end tests"
+
+[lib]
+name = "raya_examples"
+path = "src/lib.rs"

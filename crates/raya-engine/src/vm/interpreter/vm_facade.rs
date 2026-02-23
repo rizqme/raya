@@ -1,9 +1,9 @@
 //! Synchronous VM facade for testing and simple execution
 
 use super::SafepointCoordinator;
-use crate::compiler::Module;
 use crate::compiler::bytecode::verify::operand_size as bytecode_operand_size;
 use crate::compiler::bytecode::Opcode;
+use crate::compiler::Module;
 use crate::vm::{
     object::{Object, RayaString},
     scheduler::{Scheduler, Task, TaskState},

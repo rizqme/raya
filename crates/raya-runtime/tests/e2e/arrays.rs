@@ -539,3 +539,55 @@ fn test_array_flat_content() {
         30,
     );
 }
+
+#[test]
+fn test_array_append_with_length_index_pattern() {
+    expect_bool(
+        "let a: string[] = [];
+         a[a.length] = \"x\";
+         a[a.length] = \"y\";
+         return a.length == 2 && a[0] == \"x\" && a[1] == \"y\";",
+        true,
+    );
+}
+
+#[test]
+fn test_array_append_with_length_index_pattern_on_member_field() {
+    expect_bool(
+        "class Box {
+             items: string[];
+             constructor() { this.items = []; }
+         }
+         const b = new Box();
+         b.items[b.items.length] = \"first\";
+         b.items[b.items.length] = \"second\";
+         return b.items.length == 2 && b.items[0] == \"first\" && b.items[1] == \"second\";",
+        true,
+    );
+}
+
+#[test]
+fn test_indexed_string_element_keeps_string_dispatch() {
+    expect_bool(
+        "let parts: string[] = [\"hello\"];
+         let s = parts[0];
+         return s.length == 5 && s.substring(1, 4) == \"ell\";",
+        true,
+    );
+}
+
+#[test]
+fn test_string_array_param_index_dispatch() {
+    expect_string(
+        "function classify(args: string[]): string {
+             let idx = 0;
+             let arg = \"\" + args[idx];
+             if (arg.length >= 2 && arg.substring(0, 2) == \"--\") {
+                 return \"opt\";
+             }
+             return \"pos\";
+         }
+         return classify([\"--name\", \"raya\"]);",
+        "opt",
+    );
+}

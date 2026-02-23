@@ -1378,6 +1378,17 @@ impl<'a> Lowerer<'a> {
                     None
                 });
 
+                // For array fields like `items: Item[]`, preserve element class info
+                // so indexed member access (`this.items[i].field`) can resolve method/field types.
+                let array_elem_class_type = field.type_annotation.as_ref().and_then(|t| {
+                    if let ast::Type::Array(arr_ty) = &t.ty {
+                        if let ast::Type::Reference(elem_ref) = &arr_ty.element_type.ty {
+                            return self.class_map.get(&elem_ref.name.name).copied();
+                        }
+                    }
+                    None
+                });
+
                 if field.is_static {
                     let global_index = self.next_global_index;
                     self.next_global_index += 1;
@@ -1409,7 +1420,7 @@ impl<'a> Lowerer<'a> {
                         index: idx,
                         ty,
                         initializer: field.initializer.clone(),
-                        class_type,
+                        class_type: class_type.or(array_elem_class_type),
                         type_name,
                         value_type,
                     });

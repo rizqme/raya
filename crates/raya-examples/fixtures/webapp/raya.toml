@@ -1,0 +1,8 @@
+[package]
+name = "raya-examples-webapp"
+version = "0.1.0"
+main = "src/server.raya"
+
+[scripts]
+server = "src/server.raya"
+client = "src/client.raya"

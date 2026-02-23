@@ -4,7 +4,7 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{BoundMethod, Closure, Object, RayaString};
+use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
@@ -322,6 +322,32 @@ impl<'a> Interpreter<'a> {
                     ));
                 }
 
+                // Dynamic vtable dispatch only applies to Object receivers.
+                // Strings/arrays/closures have dedicated opcode/native paths.
+                let receiver_header = unsafe {
+                    let hp = (receiver_val.as_ptr::<u8>().unwrap().as_ptr())
+                        .sub(std::mem::size_of::<GcHeader>());
+                    &*(hp as *const GcHeader)
+                };
+                if receiver_header.type_id() != std::any::TypeId::of::<Object>() {
+                    let receiver_kind = if receiver_header.type_id() == std::any::TypeId::of::<Array>()
+                    {
+                        "Array"
+                    } else if receiver_header.type_id() == std::any::TypeId::of::<RayaString>() {
+                        "RayaString"
+                    } else if receiver_header.type_id() == std::any::TypeId::of::<Closure>() {
+                        "Closure"
+                    } else if receiver_header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                        "BoundMethod"
+                    } else {
+                        "UnknownGcType"
+                    };
+                    return OpcodeResult::Error(VmError::TypeError(format!(
+                        "Expected Object receiver for method call (method_index={}), got {}",
+                        method_index, receiver_kind
+                    )));
+                }
+
                 let obj_ptr = unsafe { receiver_val.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
 
@@ -329,9 +355,29 @@ impl<'a> Interpreter<'a> {
                 let class = match classes.get_class(obj.class_id) {
                     Some(c) => c,
                     None => {
+                        let receiver_kind = {
+                            let header = unsafe {
+                                let hp = (receiver_val.as_ptr::<u8>().unwrap().as_ptr())
+                                    .sub(std::mem::size_of::<GcHeader>());
+                                &*(hp as *const GcHeader)
+                            };
+                            if header.type_id() == std::any::TypeId::of::<Object>() {
+                                "Object"
+                            } else if header.type_id() == std::any::TypeId::of::<Array>() {
+                                "Array"
+                            } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+                                "RayaString"
+                            } else if header.type_id() == std::any::TypeId::of::<Closure>() {
+                                "Closure"
+                            } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+                                "BoundMethod"
+                            } else {
+                                "UnknownGcType"
+                            }
+                        };
                         return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Invalid class ID: {}",
-                            obj.class_id
+                            "Invalid class ID: {} (receiver_kind={})",
+                            obj.class_id, receiver_kind
                         )));
                     }
                 };

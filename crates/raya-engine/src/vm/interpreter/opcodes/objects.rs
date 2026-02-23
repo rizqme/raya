@@ -1,14 +1,50 @@
 //! Object opcode handlers: New, LoadField, StoreField, OptionalField, LoadFieldFast, StoreFieldFast, ObjectLiteral, InitObject, BindMethod
 
 use crate::compiler::Opcode;
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{BoundMethod, Object};
+use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
 use crate::vm::stack::Stack;
 use crate::vm::value::Value;
 use crate::vm::VmError;
 
 impl<'a> Interpreter<'a> {
+    fn ensure_object_receiver(value: Value, context: &'static str) -> Result<Value, VmError> {
+        if !value.is_ptr() {
+            return Err(VmError::TypeError(format!(
+                "Expected object for {}",
+                context
+            )));
+        }
+
+        let header = unsafe {
+            let hp =
+                (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        if header.type_id() == std::any::TypeId::of::<Object>() {
+            return Ok(value);
+        }
+
+        let kind = if header.type_id() == std::any::TypeId::of::<Array>() {
+            "Array"
+        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+            "RayaString"
+        } else if header.type_id() == std::any::TypeId::of::<Closure>() {
+            "Closure"
+        } else if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            "BoundMethod"
+        } else {
+            "UnknownGcType"
+        };
+
+        Err(VmError::TypeError(format!(
+            "Expected Object receiver for {}, got {}",
+            context, kind
+        )))
+    }
+
     pub(in crate::vm::interpreter) fn exec_object_ops(
         &mut self,
         stack: &mut Stack,
@@ -57,11 +93,10 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for field access".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 // Check if the object is a proxy - if so, unwrap to target
                 // TODO: Full trap support would call handler.get(target, fieldName)
@@ -98,11 +133,10 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for field access".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 // Check if the object is a proxy - if so, unwrap to target
                 // TODO: Full trap support would call handler.set(target, fieldName, value)
@@ -134,11 +168,11 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object or null for optional field access".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "optional field access")
+                {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 // Check if the object is a proxy - if so, unwrap to target
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
@@ -170,11 +204,10 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for field access".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 // Check if the object is a proxy - if so, unwrap to target
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
@@ -210,11 +243,10 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for field access".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field access") {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 // Check if the object is a proxy - if so, unwrap to target
                 let actual_obj = crate::vm::reflect::unwrap_proxy_target(obj_val);
@@ -262,11 +294,11 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for field initialization".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field initialization")
+                {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 let obj_ptr = unsafe { obj_val.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
@@ -286,11 +318,10 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                if !obj_val.is_ptr() {
-                    return OpcodeResult::Error(VmError::TypeError(
-                        "Expected object for method binding".to_string(),
-                    ));
-                }
+                let obj_val = match Self::ensure_object_receiver(obj_val, "method binding") {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
 
                 let obj = unsafe { &*obj_val.as_ptr::<Object>().unwrap().as_ptr() };
                 let classes = self.classes.read();

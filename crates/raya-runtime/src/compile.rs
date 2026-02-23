@@ -8,6 +8,8 @@ use raya_engine::parser::checker::{
     BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker,
 };
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 use crate::builtins;
 use crate::error::RuntimeError;
@@ -98,6 +100,17 @@ pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> 
     let bytecode = compiler.compile_via_ir(&ast)?;
 
     Ok((bytecode, interner))
+}
+
+/// Load a Raya file and inline all transitive local (`./`, `../`) imports.
+///
+/// This keeps runtime compilation compatible with the single-module pipeline
+/// while supporting multi-file projects that use local imports.
+pub fn load_source_with_local_imports(path: &Path) -> Result<String, RuntimeError> {
+    let mut visited = HashSet::new();
+    let mut ordered_sources = Vec::new();
+    collect_local_sources(path, &mut visited, &mut ordered_sources)?;
+    Ok(ordered_sources.join("\n"))
 }
 
 /// Compile Raya source code to a bytecode module with options.
@@ -358,6 +371,85 @@ fn precheck_user_top_level_duplicates(source: &str) -> Result<(), RuntimeError> 
     }
 
     Ok(())
+}
+
+fn collect_local_sources(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    ordered_sources: &mut Vec<String>,
+) -> Result<(), RuntimeError> {
+    let canonical = path.canonicalize()?;
+    if visited.contains(&canonical) {
+        return Ok(());
+    }
+    visited.insert(canonical.clone());
+
+    let source = std::fs::read_to_string(&canonical)?;
+    let parser =
+        Parser::new(&source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
+
+    for stmt in &ast.statements {
+        if let Statement::ImportDecl(import) = stmt {
+            let specifier = interner.resolve(import.source.value).to_string();
+            if is_local_import(&specifier) {
+                let resolved = resolve_local_import(&canonical, &specifier)?;
+                collect_local_sources(&resolved, visited, ordered_sources)?;
+            }
+        }
+    }
+
+    ordered_sources.push(source);
+    Ok(())
+}
+
+fn is_local_import(specifier: &str) -> bool {
+    specifier.starts_with("./") || specifier.starts_with("../")
+}
+
+fn resolve_local_import(from_file: &Path, specifier: &str) -> Result<PathBuf, RuntimeError> {
+    let base_dir = from_file.parent().ok_or_else(|| {
+        RuntimeError::Dependency(format!(
+            "Cannot resolve import '{}' from '{}': no parent directory",
+            specifier,
+            from_file.display()
+        ))
+    })?;
+
+    let candidate = base_dir.join(specifier);
+    let mut tried = Vec::new();
+
+    if candidate.extension().is_some() {
+        tried.push(candidate.clone());
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    } else {
+        let with_ext = candidate.with_extension("raya");
+        tried.push(with_ext.clone());
+        if with_ext.exists() {
+            return Ok(with_ext);
+        }
+    }
+
+    let index_candidate = candidate.join("index.raya");
+    tried.push(index_candidate.clone());
+    if index_candidate.exists() {
+        return Ok(index_candidate);
+    }
+
+    Err(RuntimeError::Dependency(format!(
+        "Module not found: '{}' from '{}'. Tried: {}",
+        specifier,
+        from_file.display(),
+        tried
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 #[cfg(test)]
