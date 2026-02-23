@@ -10,6 +10,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 - Implicit file execution: `raya ./file.raya` (no `run` subcommand needed)
 - Dual-mode `run`: named scripts from `[scripts]` in raya.toml OR direct file execution
 - JIT enabled by default, `--no-jit` to disable
+- Version flag is `-v` / `--version` (not `-V`)
 - `pkg` subcommand group is the canonical home for all package management
 - Common PM commands aliased at top-level: `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade`
 
@@ -39,7 +40,7 @@ Single `raya` binary combining all toolchain operations. Built with clap derive.
 
 | Command | Alias | Description | Status |
 |---------|-------|-------------|--------|
-| `raya pkg init` | `raya init` | Initialize project | **Implemented** |
+| `raya pkg init` | `raya init` | Initialize project | **Implemented** (argument-style + interactive) |
 | `raya pkg install` | `raya install`, `raya i` | Install all dependencies | **Implemented** |
 | `raya pkg add <pkg>` | `raya add`, `raya a` | Add dependency | **Implemented** |
 | `raya pkg remove <pkg>` | `raya remove`, `raya rm` | Remove dependency | **Implemented** |
@@ -133,6 +134,7 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 ## For AI Assistants
 
 - `run`, `build`, `eval`, `repl` are fully wired through `raya-runtime::Runtime`/`Session`
+- `raya -v` prints version; `-V` is intentionally rejected
 - `repl.rs` uses `raya_runtime::Session` which accumulates declarations and re-compiles each eval
 - **REPL commands** (no dot prefix): `help`, `clear`, `load`, `type`, `exit` (changed from `.help`, `.clear`, etc.)
 - REPL features: multi-line input, colored output, history (~/.raya/repl_history)
@@ -141,6 +143,9 @@ Script vs file disambiguation: if target has `.raya`/`.ryb` extension or contain
 - `bundle` compiles to native via AOT pipeline (requires `--features aot`): compile → lift → Cranelift → bundle format
 - `pkg` is the canonical PM namespace — all PM commands live in `PkgCommands` enum
 - Top-level `init`, `install`, `add`, `remove`, `update`, `publish`, `upgrade` are aliases that delegate to the same implementations
+- `init` supports both:
+  - argument style: `raya init my-app --name app --template lib --yes`
+  - interactive style: `raya init` (or `raya init --interactive`) with npm-like prompts
 - `pkg` registry subcommands (login/logout/set-url/whoami) are fully implemented
 - `clean` and `info` are functional
 - `run.rs` uses `Runtime::run_file()` which auto-detects .raya/.ryb and resolves deps from raya.toml

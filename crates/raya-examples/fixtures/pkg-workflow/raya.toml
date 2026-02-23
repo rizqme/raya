@@ -1,0 +1,7 @@
+[package]
+name = "raya-examples-pkg-workflow"
+version = "0.1.0"
+main = "src/main.raya"
+
+[scripts]
+main = "src/main.raya"

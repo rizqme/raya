@@ -1,0 +1,64 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import net from "std:net";
+import crypto from "std:crypto";
+import process from "std:process";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-tcp-chat");
+ensureDir(dir);
+
+const port = 39200 + (process.pid() % 1000);
+const listener = net.listen("127.0.0.1", port);
+const client = net.connect("127.0.0.1", port);
+const stream = listener.accept();
+
+let ok = false;
+let rounds = 0;
+if (stream != null) {
+    // framing + partial writes
+    client.writeText("HEL");
+    client.writeText("LO-1\n");
+    const req1 = stream.readLine();
+    stream.writeText("ACK-1\n");
+    const res1 = client.readLine();
+
+    // buffer path
+    client.write(crypto.fromHex("48454c4c4f2d320a")); // HELLO-2\n
+    const req2 = stream.readLine();
+    stream.writeText("ACK-2\n");
+    const res2 = client.readLine();
+
+    // backpressure-ish burst
+    client.writeText("M1\n");
+    client.writeText("M2\n");
+    const m1 = stream.readLine();
+    const m2 = stream.readLine();
+
+    const lifecycleOk = stream.remoteAddr().length > 0 && client.localAddr().length > 0;
+    ok = req1 == "HELLO-1" && res1 == "ACK-1"
+        && req2 == "HELLO-2" && res2 == "ACK-2"
+        && m1 == "M1" && m2 == "M2" && lifecycleOk;
+    rounds = 4;
+    stream.close();
+}
+
+client.close();
+listener.close();
+
+fs.writeTextFile(path.join(dir, "result.txt"), `ok=${ok},rounds=${rounds}`);

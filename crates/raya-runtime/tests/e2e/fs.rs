@@ -231,6 +231,23 @@ fn test_fs_read_file_buffer_to_string() {
 }
 
 #[test]
+fn test_fs_read_text_file_missing_throws() {
+    expect_bool_with_builtins(
+        r#"
+        import fs from "std:fs";
+        let caught: boolean = false;
+        try {
+            fs.readTextFile("/tmp/raya_missing_file_for_throw_check_12345");
+        } catch (_e) {
+            caught = true;
+        }
+        return caught;
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_fs_stat() {
     expect_bool_with_builtins(
         r#"

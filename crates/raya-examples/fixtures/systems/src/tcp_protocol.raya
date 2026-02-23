@@ -27,16 +27,25 @@ const client = net.connect("127.0.0.1", port);
 const serverStream = listener.accept();
 
 let ok = false;
+let rounds = 0;
 if (serverStream != null) {
-    client.writeText("PING\n");
-    const req = serverStream.readLine();
-    serverStream.writeText("PONG\n");
-    const res = client.readLine();
-    ok = req == "PING" && res == "PONG";
+    client.writeText("PING-1\n");
+    const req1 = serverStream.readLine();
+    serverStream.writeText("PONG-1\n");
+    const res1 = client.readLine();
+
+    client.writeText("PING-2\n");
+    const req2 = serverStream.readLine();
+    serverStream.writeText("PONG-2\n");
+    const res2 = client.readLine();
+
+    const addrOk = serverStream.remoteAddr().length > 0 && client.localAddr().length > 0;
+    ok = req1 == "PING-1" && res1 == "PONG-1" && req2 == "PING-2" && res2 == "PONG-2" && addrOk;
+    rounds = 2;
     serverStream.close();
 }
 
 client.close();
 listener.close();
 
-fs.writeTextFile(path.join(dir, "tcp.result.txt"), `ok=${ok}`);
+fs.writeTextFile(path.join(dir, "tcp.result.txt"), `ok=${ok},rounds=${rounds}`);

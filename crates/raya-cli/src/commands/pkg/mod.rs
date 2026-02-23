@@ -29,6 +29,9 @@ pub enum PkgCommands {
         /// Skip interactive prompts
         #[arg(short, long)]
         yes: bool,
+        /// Force interactive prompts (npm-style)
+        #[arg(long)]
+        interactive: bool,
     },
 
     /// Install all dependencies
@@ -146,8 +149,13 @@ pub enum PkgCommands {
 
 pub fn execute(cmd: PkgCommands) -> anyhow::Result<()> {
     match cmd {
-        PkgCommands::Init { path, name, template, yes } =>
-            super::init::execute(path, name, template, yes),
+        PkgCommands::Init {
+            path,
+            name,
+            template,
+            yes,
+            interactive,
+        } => super::init::execute(path, name, template, yes, interactive),
         PkgCommands::Install { production, frozen, force } =>
             super::install::execute(production, frozen, force),
         PkgCommands::Add { package, dev, exact, no_install } =>

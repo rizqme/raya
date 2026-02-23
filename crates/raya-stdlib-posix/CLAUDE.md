@@ -116,3 +116,6 @@ NativeCallResult::Suspend(IoRequest::BlockingWork {
 - **Triple file pattern**: Each module needs `.rs` (Rust), `.raya` (source), `.d.raya` (types)
 - **Module registration**: Also add `include_str!()` in `raya-engine/src/compiler/module/std_modules.rs`
 - **TLS**: `tls.rs` provides `TlsStream` wrapper used by both `net.rs` and `http.rs`
+- **TCP readLine correctness**: `net.tcpReadLine` must not use a temporary `BufReader` over a cloned stream.
+  It can over-read past `\n` and drop buffered bytes, causing next `readLine()` to hang.
+  Use direct stream reads (byte-by-byte or persistent buffer per handle) to preserve framing.

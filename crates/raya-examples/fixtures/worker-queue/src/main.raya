@@ -1,0 +1,83 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import time from "std:time";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+class Counter {
+    value: number = 0;
+    m: Mutex = new Mutex();
+
+    inc(): void {
+        this.m.lock();
+        this.value = this.value + 1;
+        this.m.unlock();
+    }
+}
+
+async function work(v: number): Task<number> {
+    time.sleep(5);
+    return v * 2;
+}
+
+async function runSuite(dir: string): Task<void> {
+    const queue = new Channel<number>(16);
+    queue.send(1);
+    queue.send(2);
+    queue.send(3);
+    queue.send(4);
+    queue.send(5);
+    queue.send(0); // sentinel
+
+    const counter = new Counter();
+    let processed = 0;
+    while (true) {
+        const job = queue.receive();
+        if (job == 0) {
+            break;
+        }
+        counter.inc();
+        processed = processed + job;
+    }
+
+    const t1 = work(10);
+    const t2 = work(20);
+    t2.cancel();
+
+    let cancelled2 = false;
+    try {
+        await t2;
+    } catch (_err) {
+        cancelled2 = true;
+    }
+    const v1 = await t1;
+
+    const t0 = time.monotonic();
+    time.sleep(2);
+    const timeoutOk = time.elapsed(t0) >= 0;
+
+    const ok = counter.value == 5 && processed == 15 && v1 == 20 && cancelled2 && timeoutOk;
+    fs.writeTextFile(
+        path.join(dir, "result.txt"),
+        `ok=${ok},count=${counter.value},processed=${processed},v1=${v1},cancelled=${cancelled2},timeout=${timeoutOk}`
+    );
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-worker-queue");
+ensureDir(dir);
+const _run = runSuite(dir);
+time.sleep(30);

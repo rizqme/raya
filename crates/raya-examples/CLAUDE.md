@@ -20,7 +20,7 @@ Example Raya applications plus end-to-end tests.
 - `fixtures/systems/` — second-suite system scenarios:
   - `stateful_data.raya` (stateful/persistence style flow)
   - `concurrency_cancel.raya` (channel/task-oriented flow; cancel validated via `cancel()` + `isCancelled()`)
-  - `tcp_protocol.raya` (TCP protocol handshake flow)
+  - `tcp_protocol.raya` (TCP protocol handshake flow with multi-round line framing checks)
   - `template_archive.raya` (template + archive/compress pipeline)
   - `fault_injection.raya` (resilience via invalid-input handling)
 
@@ -30,6 +30,12 @@ Example Raya applications plus end-to-end tests.
   and verifies end-to-end HTTP contracts plus generated artifacts.
 - Current scenarios include stress workflow, diagnostics contract, echo/not-found
   contract, health+artifact contract, and echo method-not-allowed contract.
-- `tests/cli_second_suite_e2e.rs` runs the second test suite covering stateful,
-  concurrency, TCP protocol, template/archive pipeline, package script workflow,
-  and fault-injection flows.
+- Fixture suites are now one test file per fixture (full suite style):
+  - `tests/fixture_todo_kv_e2e.rs`
+  - `tests/fixture_worker_queue_e2e.rs`
+  - `tests/fixture_tcp_chat_e2e.rs`
+  - `tests/fixture_template_pipeline_e2e.rs`
+  - `tests/fixture_pkg_workflow_e2e.rs`
+  - `tests/fixture_fault_injection_e2e.rs`
+  - Shared helpers in `tests/common/mod.rs` provide CLI timeout guard (20s) and
+    summary parsing.

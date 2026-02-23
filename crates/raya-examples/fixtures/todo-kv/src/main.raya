@@ -1,0 +1,79 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import encoding from "std:encoding";
+import crypto from "std:crypto";
+import process from "std:process";
+import { ReadableStream, ReadableController } from "std:stream";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-todo-kv");
+ensureDir(dir);
+
+const dbPath = path.join(dir, "kv.db");
+if (!fs.exists(dbPath)) {
+    fs.writeTextFile(dbPath, "");
+}
+
+// CRUD
+let db = fs.readTextFile(dbPath);
+if (!db.includes("alpha=")) {
+    fs.appendFile(dbPath, "alpha=1\n");
+}
+if (!db.includes("beta=")) {
+    fs.appendFile(dbPath, "beta=2\n");
+}
+db = fs.readTextFile(dbPath);
+db = db.replace("alpha=1", "alpha=3");
+db = db.replace("beta=2\n", "");
+db = db.replace("beta=2", "");
+fs.writeTextFile(dbPath, db);
+
+// restart recovery (re-read persisted state)
+const persisted = fs.readTextFile(dbPath);
+const recovered = persisted.includes("alpha=3") && !persisted.includes("beta=2");
+
+// encoding exercise
+const token = encoding.base32.encode(crypto.fromHex("746f646f2d6b76"));
+const tokenOk = crypto.toHex(encoding.base32.decode(token)) == "746f646f2d6b76";
+
+// stream exercise
+const s = new ReadableStream<number>(
+    (ctrl: ReadableController<number>): void => {
+        ctrl.push(1);
+        ctrl.push(2);
+        ctrl.push(3);
+        ctrl.close();
+    },
+    4
+);
+const rows = s.collect();
+const streamOk = rows.length == 3 && rows[0] == 1 && rows[2] == 3;
+
+// error handling
+let missingCaught = false;
+try {
+    fs.readTextFile(path.join(dir, "missing.txt"));
+} catch (_err) {
+    missingCaught = true;
+}
+
+const ok = recovered && tokenOk && streamOk && missingCaught && process.pid() > 0;
+fs.writeTextFile(
+    path.join(dir, "result.txt"),
+    `ok=${ok},recovered=${recovered},token=${tokenOk},stream=${streamOk},missing=${missingCaught}`
+);

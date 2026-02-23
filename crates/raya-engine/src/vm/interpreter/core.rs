@@ -290,19 +290,67 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        // Check if there's a pending exception (e.g., from awaited task failure)
+        // Check if there's a pending exception (e.g., from awaited task failure).
+        // Use the same frame-aware unwind logic as the main OpcodeResult::Error path.
         if task.has_exception() {
-            match self.handle_exception(task, &mut stack_guard, &mut ip) {
-                Ok(()) => {}
-                Err(()) => {
-                    let exc = task.current_exception().unwrap_or_else(Value::null);
-                    task.set_ip(ip);
-                    drop(stack_guard);
-                    return ExecutionResult::Failed(VmError::RuntimeError(format!(
-                        "Unhandled exception from awaited task: {:?}",
-                        exc
-                    )));
+            let exception = task.current_exception().unwrap_or_else(Value::null);
+            let mut handled = false;
+            'resume_exception_search: loop {
+                while let Some(handler) = task.peek_exception_handler() {
+                    if handler.frame_count != frames.len() {
+                        break;
+                    }
+
+                    while stack_guard.depth() > handler.stack_size {
+                        let _ = stack_guard.pop();
+                    }
+
+                    if handler.catch_offset != -1 {
+                        task.pop_exception_handler();
+                        task.set_caught_exception(exception);
+                        task.clear_exception();
+                        let _ = stack_guard.push(exception);
+                        ip = handler.catch_offset as usize;
+                        handled = true;
+                        break 'resume_exception_search;
+                    }
+
+                    if handler.finally_offset != -1 {
+                        task.pop_exception_handler();
+                        ip = handler.finally_offset as usize;
+                        handled = true;
+                        break 'resume_exception_search;
+                    }
+
+                    task.pop_exception_handler();
                 }
+
+                if let Some(frame) = frames.pop() {
+                    task.pop_call_frame();
+                    if frame.is_closure {
+                        task.pop_closure();
+                    }
+                    current_func_id = frame.func_id;
+                    #[cfg(feature = "jit")]
+                    {
+                        self.current_func_id_for_profiling = current_func_id;
+                    }
+                    code = &module.functions[frame.func_id].code;
+                    ip = frame.ip;
+                    locals_base = frame.locals_base;
+                    current_arg_count = frame.arg_count;
+                } else {
+                    break;
+                }
+            }
+
+            if !handled {
+                task.set_ip(ip);
+                drop(stack_guard);
+                return ExecutionResult::Failed(VmError::RuntimeError(format!(
+                    "Unhandled exception from awaited task: {:?}",
+                    exception
+                )));
             }
         }
 
@@ -747,57 +795,6 @@ impl<'a> Interpreter<'a> {
                         return ExecutionResult::Failed(e);
                     }
                 }
-            }
-        }
-    }
-
-    /// Handle an exception by unwinding to the nearest handler
-    ///
-    /// Returns Ok(()) if exception was handled, Err(()) if no handler found.
-    fn handle_exception(
-        &mut self,
-        task: &Arc<Task>,
-        stack: &mut std::sync::MutexGuard<'_, Stack>,
-        ip: &mut usize,
-    ) -> Result<(), ()> {
-        // Get exception value - if not set, create a placeholder
-        let exception = task.current_exception().unwrap_or_else(|| {
-            let raya_string = RayaString::new("Unknown error".to_string());
-            let gc_ptr = self.gc.lock().allocate(raya_string);
-            unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) }
-        });
-
-        // Try to find a handler
-        loop {
-            if let Some(handler) = task.peek_exception_handler() {
-                // Unwind stack to handler's saved state
-                while stack.depth() > handler.stack_size {
-                    let _ = stack.pop();
-                }
-
-                // Jump to catch block if present
-                if handler.catch_offset != -1 {
-                    task.pop_exception_handler();
-                    task.set_caught_exception(exception);
-                    task.clear_exception();
-                    let _ = stack.push(exception);
-                    *ip = handler.catch_offset as usize;
-                    return Ok(());
-                }
-
-                // No catch block, execute finally block if present
-                if handler.finally_offset != -1 {
-                    task.pop_exception_handler();
-                    *ip = handler.finally_offset as usize;
-                    return Ok(());
-                }
-
-                // No catch or finally, remove handler and continue unwinding
-                task.pop_exception_handler();
-            } else {
-                // No handler found - store exception
-                task.set_exception(exception);
-                return Err(());
             }
         }
     }

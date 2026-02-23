@@ -1,0 +1,59 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import encoding from "std:encoding";
+import crypto from "std:crypto";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+function explode(): void {
+    throw new Error("forced panic");
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-fault-injection");
+ensureDir(dir);
+
+let badJson = false;
+try {
+    const j = encoding.json.parse("{broken}");
+    j.release();
+} catch (_err) {
+    badJson = true;
+}
+
+let badHex = false;
+try {
+    crypto.fromHex("zz-not-hex");
+} catch (_err) {
+    badHex = true;
+}
+
+let missingFile = false;
+try {
+    fs.readTextFile(path.join(dir, "missing.txt"));
+} catch (_err) {
+    missingFile = true;
+}
+
+let panicCaught = false;
+try {
+    explode();
+} catch (_err) {
+    panicCaught = true;
+}
+
+const ok = badJson && badHex && panicCaught;
+fs.writeTextFile(path.join(dir, "result.txt"), `ok=${ok},json=${badJson},hex=${badHex},missing=${missingFile},panic=${panicCaught}`);

@@ -12,8 +12,12 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "raya")]
 #[command(about = "Raya programming language toolchain")]
-#[command(version)]
+#[command(version, disable_version_flag = true)]
 struct Cli {
+    /// Print version information
+    #[arg(short = 'v', long = "version", global = true)]
+    version: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -218,6 +222,9 @@ enum Commands {
         /// Skip interactive prompts
         #[arg(short, long)]
         yes: bool,
+        /// Force interactive prompts (npm-style)
+        #[arg(long)]
+        interactive: bool,
     },
 
     /// Add a dependency
@@ -340,6 +347,11 @@ fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.version {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     match cli.command {
         Some(cmd) => dispatch(cmd),
         None => {
@@ -455,7 +467,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             name,
             template,
             yes,
-        } => commands::init::execute(path, name, template, yes),
+            interactive,
+        } => commands::init::execute(path, name, template, yes, interactive),
 
         Commands::Add {
             package,
@@ -497,5 +510,53 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             check,
             force,
         } => commands::upgrade::execute(version, check, force),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_short_version_flag() {
+        let cli = Cli::parse_from(["raya", "-v"]);
+        assert!(cli.version);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parse_old_version_flag_rejected() {
+        let parsed = Cli::try_parse_from(["raya", "-V"]);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn parse_init_argument_style_and_interactive_flag() {
+        let cli = Cli::parse_from([
+            "raya",
+            "init",
+            "my-app",
+            "--name",
+            "app",
+            "--template",
+            "lib",
+            "--interactive",
+        ]);
+        match cli.command {
+            Some(Commands::Init {
+                path,
+                name,
+                template,
+                yes,
+                interactive,
+            }) => {
+                assert!(path.to_string_lossy().ends_with("my-app"));
+                assert_eq!(name.as_deref(), Some("app"));
+                assert_eq!(template, "lib");
+                assert!(!yes);
+                assert!(interactive);
+            }
+            _ => panic!("expected init command"),
+        }
     }
 }

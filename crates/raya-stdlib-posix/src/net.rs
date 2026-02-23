@@ -4,7 +4,7 @@ use crate::handles::HandleRegistry;
 use crate::tls;
 use dashmap::{DashMap, DashSet};
 use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net;
 use std::net::ToSocketAddrs;
 use std::os::fd::AsRawFd;
@@ -264,25 +264,32 @@ pub fn tcp_read_line(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
         work: Box::new(move || match TCP_STREAMS.get_mut(handle) {
-            Some(stream) => match stream.try_clone() {
-                Ok(clone) => {
-                    let mut reader = BufReader::new(clone);
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
+            Some(mut stream) => {
+                // Read byte-by-byte until newline.
+                //
+                // Important: do not use a temporary BufReader over a cloned stream.
+                // BufReader can read past '\n' and keep extra bytes in its internal
+                // buffer, then dropping it loses those bytes for subsequent calls,
+                // causing hangs on the next readLine().
+                let mut line = Vec::new();
+                let mut byte = [0u8; 1];
+                loop {
+                    match stream.read(&mut byte) {
+                        Ok(0) => break,
                         Ok(_) => {
-                            if line.ends_with('\n') {
-                                line.pop();
+                            if byte[0] == b'\n' {
+                                break;
                             }
-                            if line.ends_with('\r') {
-                                line.pop();
-                            }
-                            IoCompletion::String(line)
+                            line.push(byte[0]);
                         }
-                        Err(e) => IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
+                        Err(e) => return IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
                     }
                 }
-                Err(e) => IoCompletion::Error(format!("net.tcpReadLine: {}", e)),
-            },
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                IoCompletion::String(String::from_utf8_lossy(&line).into_owned())
+            }
             None => IoCompletion::Error(format!("net.tcpReadLine: invalid handle {}", handle)),
         }),
     })

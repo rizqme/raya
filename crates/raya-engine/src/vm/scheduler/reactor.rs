@@ -917,12 +917,21 @@ impl Reactor {
             }
             IoCompletion::Primitive(native_val) => native_to_value(native_val),
             IoCompletion::Error(msg) => {
-                // TODO: Set exception on the task instead of returning null
                 eprintln!(
                     "[reactor] IO error for task {:?}: {}",
                     completion.task_id, msg
                 );
-                Value::null()
+                let raya_str = RayaString::new(msg);
+                let gc_ptr = shared_state.gc.lock().allocate(raya_str);
+                let err_val =
+                    unsafe { Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap()) };
+                Self::complete_task_with_exception(
+                    shared_state,
+                    completion.task_id,
+                    err_val,
+                    ready_queue,
+                );
+                return;
             }
         };
 
@@ -939,6 +948,22 @@ impl Reactor {
         let tasks = shared_state.tasks.read();
         if let Some(task) = tasks.get(&task_id) {
             task.set_resume_value(value);
+            task.set_state(TaskState::Resumed);
+            task.clear_suspend_reason();
+            ready_queue.push_back(task.clone());
+        }
+    }
+
+    /// Resume a suspended task with a pending exception.
+    fn complete_task_with_exception(
+        shared_state: &Arc<SharedVmState>,
+        task_id: TaskId,
+        exception: Value,
+        ready_queue: &mut VecDeque<Arc<Task>>,
+    ) {
+        let tasks = shared_state.tasks.read();
+        if let Some(task) = tasks.get(&task_id) {
+            task.set_exception(exception);
             task.set_state(TaskState::Resumed);
             task.clear_suspend_reason();
             ready_queue.push_back(task.clone());

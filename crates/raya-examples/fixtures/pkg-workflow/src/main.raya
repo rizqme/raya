@@ -1,0 +1,55 @@
+import env from "std:env";
+import fs from "std:fs";
+import path from "std:path";
+import semver from "std:semver";
+import process from "std:process";
+
+function tmpRoot(): string {
+    const configured = env.get("RAYA_EXAMPLES_TMPDIR");
+    if (configured.length > 0) {
+        return configured;
+    }
+    return env.cwd();
+}
+
+function ensureDir(p: string): void {
+    if (!fs.exists(p)) {
+        fs.mkdirRecursive(p);
+    }
+}
+
+const root = tmpRoot();
+const dir = path.join(root, "raya-examples-pkg-workflow");
+ensureDir(dir);
+
+const depDir = path.join(dir, "deps/local-lib/src");
+ensureDir(depDir);
+fs.writeTextFile(
+    path.join(dir, "deps/local-lib/raya.toml"),
+    "[package]\nname = \"local-lib\"\nversion = \"0.2.0\"\nmain = \"src/lib.raya\"\n"
+);
+fs.writeTextFile(path.join(depDir, "lib.raya"), "function answer(): number { return 42; }\n");
+
+const manifestPath = path.join(dir, "raya.toml");
+fs.writeTextFile(
+    manifestPath,
+    "[package]\nname = \"app\"\nversion = \"0.1.0\"\nmain = \"src/main.raya\"\n\n[dependencies]\nlocal-lib = { path = \"./deps/local-lib\", version = \"^0.2.0\" }\n"
+);
+
+const lockPath = path.join(dir, "raya.lock");
+fs.writeTextFile(
+    lockPath,
+    "[[package]]\nname = \"local-lib\"\nversion = \"0.2.0\"\nsource = { type = \"path\", path = \"./deps/local-lib\" }\n"
+);
+
+const manifest = fs.readTextFile(manifestPath);
+const lock = fs.readTextFile(lockPath);
+
+const hasDep = manifest.includes("[dependencies]") && manifest.includes("local-lib");
+const hasLock = lock.includes("version = \"0.2.0\"") && lock.includes("type = \"path\"");
+const versionOk = semver.valid("0.2.0") && semver.satisfies("0.2.1", "^0.2.0");
+const pathOk = path.normalize(path.join(dir, "./deps/local-lib")).includes("deps/local-lib");
+const processOk = process.execPath().length > 0;
+
+const ok = hasDep && hasLock && versionOk && pathOk && processOk;
+fs.writeTextFile(path.join(dir, "result.txt"), `ok=${ok},dep=${hasDep},lock=${hasLock},semver=${versionOk},path=${pathOk},process=${processOk}`);

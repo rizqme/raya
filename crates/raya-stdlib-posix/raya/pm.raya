@@ -306,7 +306,7 @@ function resolveVersions(
 
 // -- init --
 
-function init(dir: string, name: string | null): void {
+function pmInit(dir: string, name: string | null): void {
     const manifestPath = path.join(dir, "raya.toml");
     if (fs.exists(manifestPath)) {
         throw new Error("raya.toml already exists in " + dir);
@@ -342,7 +342,7 @@ function init(dir: string, name: string | null): void {
 
 // -- install --
 
-function install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
+function pmInstall(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
     const dir = findProjectRoot(startDir);
     const manifest = Manifest.load(dir);
     const rootName = Manifest.name(manifest);
@@ -549,7 +549,7 @@ class InstallResult {
 
 // -- add --
 
-function add(
+function pmAdd(
     startDir: string,
     spec: string,
     dev: boolean,
@@ -646,13 +646,13 @@ function add(
 
     // Run install unless --no-install
     if (!noInstall) {
-        install(dir, false, false, false);
+        pmInstall(dir, false, false, false);
     }
 }
 
 // -- remove --
 
-function remove(startDir: string, pkgName: string): void {
+function pmRemove(startDir: string, pkgName: string): void {
     const dir = findProjectRoot(startDir);
     const manifest = Manifest.load(dir);
 
@@ -714,32 +714,32 @@ function remove(startDir: string, pkgName: string): void {
 
 // -- update --
 
-function update(startDir: string, production: boolean): InstallResult {
+function pmUpdate(startDir: string, production: boolean): InstallResult {
     // Update is just install with update=true (ignores lockfile)
-    return install(startDir, production, false, true);
+    return pmInstall(startDir, production, false, true);
 }
 
 // ── PM Facade ──
 
 class PackageManager {
     init(dir: string, name: string | null): void {
-        init(dir, name);
+        pmInit(dir, name);
     }
 
     install(startDir: string, production: boolean, force: boolean, update: boolean): InstallResult {
-        return install(startDir, production, force, update);
+        return pmInstall(startDir, production, force, update);
     }
 
     add(startDir: string, spec: string, dev: boolean, exact: boolean, noInstall: boolean): void {
-        add(startDir, spec, dev, exact, noInstall);
+        pmAdd(startDir, spec, dev, exact, noInstall);
     }
 
     remove(startDir: string, pkgName: string): void {
-        remove(startDir, pkgName);
+        pmRemove(startDir, pkgName);
     }
 
     update(startDir: string, production: boolean): InstallResult {
-        return update(startDir, production);
+        return pmUpdate(startDir, production);
     }
 
     findProjectRoot(startDir: string): string {
