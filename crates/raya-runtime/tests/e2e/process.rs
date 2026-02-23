@@ -72,7 +72,7 @@ fn test_process_argv() {
     compile_and_run_with_builtins(
         r#"
         import process from "std:process";
-        const args: string[] = process.argv();
+        const argvValues: string[] = process.argv();
         return 1;
     "#,
     )

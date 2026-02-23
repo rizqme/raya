@@ -94,7 +94,7 @@ impl<'a> SubtypingContext<'a> {
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
             // if m = n, Qi <: Pi for all i (contravariant), and R <: S (covariant)
             (Type::Function(f1), Type::Function(f2)) => {
-                if f1.params.len() != f2.params.len() || f1.is_async != f2.is_async {
+                if f1.params.len() != f2.params.len() {
                     return false;
                 }
 
@@ -105,8 +105,15 @@ impl<'a> SubtypingContext<'a> {
                     .zip(&f2.params)
                     .all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
 
-                // Return type is covariant
-                let return_match = self.is_subtype(f1.return_type, f2.return_type);
+                // Return type is covariant, comparing effective returns:
+                // - async fn (...): T is treated as (... ) => Task<T>
+                // - sync fn (...): R is treated as (... ) => R
+                let return_match = self.is_function_return_subtype(
+                    f1.return_type,
+                    f1.is_async,
+                    f2.return_type,
+                    f2.is_async,
+                );
 
                 params_match && return_match
             }
@@ -300,6 +307,28 @@ impl<'a> SubtypingContext<'a> {
     pub fn clear_substitutions(&mut self) {
         self.type_vars.clear();
     }
+
+    fn is_function_return_subtype(
+        &mut self,
+        sub_return: TypeId,
+        sub_async: bool,
+        sup_return: TypeId,
+        sup_async: bool,
+    ) -> bool {
+        match (sub_async, sup_async) {
+            (false, false) | (true, true) => self.is_subtype(sub_return, sup_return),
+            // async (...) => T  <:  (... ) => Task<U>  iff  T <: U
+            (true, false) => match self.type_ctx.get(sup_return) {
+                Some(Type::Task(task_sup)) => self.is_subtype(sub_return, task_sup.result),
+                _ => false,
+            },
+            // (... ) => Task<T>  <:  async (...) => U  iff  T <: U
+            (false, true) => match self.type_ctx.get(sub_return) {
+                Some(Type::Task(task_sub)) => self.is_subtype(task_sub.result, sup_return),
+                _ => false,
+            },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -436,5 +465,37 @@ mod tests {
         // because never <: unknown (covariant in return type)
         assert!(sub_ctx.is_subtype(f1, f2));
         assert!(!sub_ctx.is_subtype(f2, f1));
+    }
+
+    #[test]
+    fn test_function_subtyping_async_matches_task_return() {
+        let mut ctx = TypeContext::new();
+        let void = ctx.void_type();
+        let task_void = ctx.task_type(void);
+        let num = ctx.number_type();
+
+        // async (number) => void  (effective return: Task<void>)
+        let async_fn = ctx.function_type(vec![num], void, true);
+        // (number) => Task<void>
+        let task_callback = ctx.function_type(vec![num], task_void, false);
+
+        let mut sub_ctx = SubtypingContext::new(&ctx);
+        assert!(sub_ctx.is_subtype(async_fn, task_callback));
+        assert!(sub_ctx.is_subtype(task_callback, async_fn));
+    }
+
+    #[test]
+    fn test_function_subtyping_async_not_assignable_to_plain_void_callback() {
+        let mut ctx = TypeContext::new();
+        let void = ctx.void_type();
+        let num = ctx.number_type();
+
+        // async (number) => void  (effective return: Task<void>)
+        let async_fn = ctx.function_type(vec![num], void, true);
+        // (number) => void
+        let plain_callback = ctx.function_type(vec![num], void, false);
+
+        let mut sub_ctx = SubtypingContext::new(&ctx);
+        assert!(!sub_ctx.is_subtype(async_fn, plain_callback));
     }
 }

@@ -1375,9 +1375,19 @@ impl<'a> Binder<'a> {
             param_types.push(param_ty);
         }
 
-        let return_ty = match &func.return_type {
+        let declared_return_ty = match &func.return_type {
             Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
             None => self.type_ctx.void_type(),
+        };
+        // Async functions are represented as `is_async = true` with inner return type `T`.
+        // If user annotates `Task<T>`, unwrap it here to avoid `Task<Task<T>>` function types.
+        let return_ty = if func.is_async {
+            match self.type_ctx.get(declared_return_ty) {
+                Some(Type::Task(task_ty)) => task_ty.result,
+                _ => declared_return_ty,
+            }
+        } else {
+            declared_return_ty
         };
 
         // Validate parameter ordering: required params must come before optional/default params
@@ -1727,10 +1737,20 @@ impl<'a> Binder<'a> {
                         params.push(param_ty);
                     }
                     // Placeholder for return type - will be fixed up below
-                    let return_ty = if let Some(ref ann) = method.return_type {
+                    let declared_return_ty = if let Some(ref ann) = method.return_type {
                         self.resolve_type_annotation(ann)?
                     } else {
                         self.type_ctx.void_type()
+                    };
+                    // Async methods are represented as `is_async = true` with inner return type `T`.
+                    // If user annotates `Task<T>`, unwrap it here to avoid `Task<Task<T>>`.
+                    let return_ty = if method.is_async {
+                        match self.type_ctx.get(declared_return_ty) {
+                            Some(Type::Task(task_ty)) => task_ty.result,
+                            _ => declared_return_ty,
+                        }
+                    } else {
+                        declared_return_ty
                     };
 
                     // Pop the temporary scope for method type parameters

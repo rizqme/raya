@@ -1429,9 +1429,17 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     // Apply substitutions to return type
-                    match gen_ctx.apply_substitution(func.return_type) {
+                    let inferred_return = match gen_ctx.apply_substitution(func.return_type) {
                         Ok(substituted_return) => substituted_return,
                         Err(_) => func.return_type,
+                    };
+                    if func.is_async {
+                        match self.type_ctx.get(inferred_return) {
+                            Some(crate::parser::types::Type::Task(_)) => inferred_return,
+                            _ => self.type_ctx.task_type(inferred_return),
+                        }
+                    } else {
+                        inferred_return
                     }
                 } else {
                     // Non-generic function - use simple type checking
@@ -1443,7 +1451,14 @@ impl<'a> TypeChecker<'a> {
                             self.check_assignable(*arg_ty, elem_ty, *arg_span);
                         }
                     }
-                    func.return_type
+                    if func.is_async {
+                        match self.type_ctx.get(func.return_type) {
+                            Some(crate::parser::types::Type::Task(_)) => func.return_type,
+                            _ => self.type_ctx.task_type(func.return_type),
+                        }
+                    } else {
+                        func.return_type
+                    }
                 }
             }
             _ => {
@@ -1847,9 +1862,18 @@ impl<'a> TypeChecker<'a> {
                 .count()
         };
 
+        let function_return_ty = if arrow.is_async {
+            match self.type_ctx.get(return_ty) {
+                Some(crate::parser::types::Type::Task(task_ty)) => task_ty.result,
+                _ => return_ty,
+            }
+        } else {
+            return_ty
+        };
+
         self.type_ctx.function_type_with_rest(
             param_types,
-            return_ty,
+            function_return_ty,
             arrow.is_async,
             min_params,
             rest_param,

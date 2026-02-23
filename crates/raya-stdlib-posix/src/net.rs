@@ -2,17 +2,73 @@
 
 use crate::handles::HandleRegistry;
 use crate::tls;
+use dashmap::{DashMap, DashSet};
 use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
+use std::net::ToSocketAddrs;
+use std::os::fd::AsRawFd;
 use std::sync::LazyLock;
 
 static TCP_LISTENERS: LazyLock<HandleRegistry<net::TcpListener>> =
     LazyLock::new(HandleRegistry::new);
+static TCP_LISTENER_DISPLAY_HOST: LazyLock<DashMap<u64, String>> = LazyLock::new(DashMap::new);
+static CLOSED_TCP_LISTENERS: LazyLock<DashSet<u64>> = LazyLock::new(DashSet::new);
 static TCP_STREAMS: LazyLock<HandleRegistry<net::TcpStream>> = LazyLock::new(HandleRegistry::new);
 static UDP_SOCKETS: LazyLock<HandleRegistry<net::UdpSocket>> = LazyLock::new(HandleRegistry::new);
 static TLS_STREAMS: LazyLock<HandleRegistry<tls::ClientTlsStream>> =
     LazyLock::new(HandleRegistry::new);
+
+fn normalize_connect_host(host: &str) -> String {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return "localhost".to_string();
+    }
+    if trimmed.len() >= 2 && trimmed.starts_with('[') && trimmed.ends_with(']') {
+        return trimmed[1..trimmed.len() - 1].trim().to_string();
+    }
+    // Be forgiving with malformed bracketed hosts from string parsing ("[", "]", "[::1", etc.).
+    let debracketed = trimmed.replace(['[', ']'], "").trim().to_string();
+    if debracketed.is_empty() || debracketed == ":" {
+        "localhost".to_string()
+    } else {
+        debracketed
+    }
+}
+
+fn resolve_connect_addrs(host: &str, port: u16) -> Result<Vec<net::SocketAddr>, String> {
+    let normalized_host = normalize_connect_host(host);
+    let addrs = (normalized_host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| format!("failed to resolve {}:{}: {}", normalized_host, port, e))?
+        .collect::<Vec<_>>();
+    if addrs.is_empty() {
+        return Err(format!(
+            "failed to resolve {}:{}: no addresses returned",
+            normalized_host, port
+        ));
+    }
+    Ok(addrs)
+}
+
+fn connect_first_resolved(addrs: &[net::SocketAddr]) -> Result<net::TcpStream, std::io::Error> {
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in addrs {
+        match net::TcpStream::connect(addr) {
+            Ok(stream) => return Ok(stream),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| std::io::Error::other("no resolved addresses")))
+}
+
+fn format_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{}]:{}", host, port)
+    } else {
+        format!("{}:{}", host, port)
+    }
+}
 
 // ── TCP Listener ──
 
@@ -30,6 +86,8 @@ pub fn tcp_listen(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallRe
     match net::TcpListener::bind(&addr) {
         Ok(listener) => {
             let handle = TCP_LISTENERS.insert(listener);
+            TCP_LISTENER_DISPLAY_HOST.insert(handle, normalize_connect_host(&host));
+            CLOSED_TCP_LISTENERS.remove(&handle);
             NativeCallResult::f64(handle as f64)
         }
         Err(e) => NativeCallResult::Error(format!("net.tcpListen: {}", e)),
@@ -43,15 +101,44 @@ pub fn tcp_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || match TCP_LISTENERS.get(handle) {
-            Some(listener) => match listener.accept() {
-                Ok((stream, _addr)) => {
-                    let stream_handle = TCP_STREAMS.insert(stream);
-                    IoCompletion::Primitive(NativeValue::f64(stream_handle as f64))
+        work: Box::new(move || {
+            if CLOSED_TCP_LISTENERS.contains(&handle) {
+                return IoCompletion::Primitive(NativeValue::null());
+            }
+
+            // Clone listener so close() can proceed concurrently without blocking on map guards.
+            let listener = match TCP_LISTENERS.get(handle) {
+                Some(entry) => match entry.try_clone() {
+                    Ok(listener) => listener,
+                    Err(e) => return IoCompletion::Error(format!("net.tcpAccept: {}", e)),
+                },
+                None => {
+                    return if CLOSED_TCP_LISTENERS.contains(&handle) {
+                        IoCompletion::Primitive(NativeValue::null())
+                    } else {
+                        IoCompletion::Error(format!("net.tcpAccept: invalid handle {}", handle))
+                    };
                 }
-                Err(e) => IoCompletion::Error(format!("net.tcpAccept: {}", e)),
-            },
-            None => IoCompletion::Error(format!("net.tcpAccept: invalid handle {}", handle)),
+            };
+
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    if CLOSED_TCP_LISTENERS.contains(&handle) {
+                        // Listener was closed while accept completed; report graceful shutdown.
+                        IoCompletion::Primitive(NativeValue::null())
+                    } else {
+                        let stream_handle = TCP_STREAMS.insert(stream);
+                        IoCompletion::Primitive(NativeValue::f64(stream_handle as f64))
+                    }
+                }
+                Err(e) => {
+                    if CLOSED_TCP_LISTENERS.contains(&handle) {
+                        IoCompletion::Primitive(NativeValue::null())
+                    } else {
+                        IoCompletion::Error(format!("net.tcpAccept: {}", e))
+                    }
+                }
+            }
         }),
     })
 }
@@ -62,7 +149,12 @@ pub fn tcp_listener_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> Nat
         .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    TCP_LISTENERS.remove(handle);
+    CLOSED_TCP_LISTENERS.insert(handle);
+    TCP_LISTENER_DISPLAY_HOST.remove(&handle);
+    if let Some((_id, listener)) = TCP_LISTENERS.remove(handle) {
+        // Wake any concurrent blocking accept() calls immediately.
+        let _ = unsafe { libc::shutdown(listener.as_raw_fd(), libc::SHUT_RDWR) };
+    }
     NativeCallResult::null()
 }
 
@@ -74,7 +166,14 @@ pub fn tcp_listener_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nativ
         .unwrap_or(0.0) as u64;
     match TCP_LISTENERS.get(handle) {
         Some(listener) => match listener.local_addr() {
-            Ok(addr) => NativeCallResult::Value(ctx.create_string(&addr.to_string())),
+            Ok(addr) => {
+                let host = TCP_LISTENER_DISPLAY_HOST
+                    .get(&handle)
+                    .map(|h| h.value().clone())
+                    .unwrap_or_else(|| addr.ip().to_string());
+                let display = format_host_port(&host, addr.port());
+                NativeCallResult::Value(ctx.create_string(&display))
+            }
             Err(e) => NativeCallResult::Error(format!("net.tcpListenerAddr: {}", e)),
         },
         None => NativeCallResult::Error(format!("net.tcpListenerAddr: invalid handle {}", handle)),
@@ -93,14 +192,19 @@ pub fn tcp_connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u16;
-    let addr = format!("{}:{}", host, port);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || match net::TcpStream::connect(&addr) {
-            Ok(stream) => {
-                let handle = TCP_STREAMS.insert(stream);
-                IoCompletion::Primitive(NativeValue::f64(handle as f64))
+        work: Box::new(move || {
+            let addrs = match resolve_connect_addrs(&host, port) {
+                Ok(addrs) => addrs,
+                Err(e) => return IoCompletion::Error(format!("net.tcpConnect: {}", e)),
+            };
+            match connect_first_resolved(&addrs) {
+                Ok(stream) => {
+                    let handle = TCP_STREAMS.insert(stream);
+                    IoCompletion::Primitive(NativeValue::f64(handle as f64))
+                }
+                Err(e) => IoCompletion::Error(format!("net.tcpConnect: {}", e)),
             }
-            Err(e) => IoCompletion::Error(format!("net.tcpConnect: {}", e)),
         }),
     })
 }
@@ -402,20 +506,26 @@ pub fn tls_connect(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
         .get(1)
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(443.0) as u16;
-    let addr = format!("{}:{}", host, port);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || match net::TcpStream::connect(&addr) {
-            Ok(stream) => {
-                let config = tls::default_client_config();
-                match tls::connect_tls(stream, &host, config) {
-                    Ok(tls_stream) => {
-                        let handle = TLS_STREAMS.insert(tls_stream);
-                        IoCompletion::Primitive(NativeValue::f64(handle as f64))
+        work: Box::new(move || {
+            let addrs = match resolve_connect_addrs(&host, port) {
+                Ok(addrs) => addrs,
+                Err(e) => return IoCompletion::Error(format!("net.tlsConnect: {}", e)),
+            };
+            let sni_host = normalize_connect_host(&host);
+            match connect_first_resolved(&addrs) {
+                Ok(stream) => {
+                    let config = tls::default_client_config();
+                    match tls::connect_tls(stream, &sni_host, config) {
+                        Ok(tls_stream) => {
+                            let handle = TLS_STREAMS.insert(tls_stream);
+                            IoCompletion::Primitive(NativeValue::f64(handle as f64))
+                        }
+                        Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
                     }
-                    Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
                 }
+                Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
             }
-            Err(e) => IoCompletion::Error(format!("net.tlsConnect: {}", e)),
         }),
     })
 }
@@ -434,15 +544,19 @@ pub fn tls_connect_with_ca(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nat
         Ok(s) => s,
         Err(e) => return NativeCallResult::Error(format!("net.tlsConnectWithCa: {}", e)),
     };
-    let addr = format!("{}:{}", host, port);
     NativeCallResult::Suspend(IoRequest::BlockingWork {
         work: Box::new(move || {
             let config = match tls::client_config_with_ca(&ca_pem) {
                 Ok(c) => c,
                 Err(e) => return IoCompletion::Error(format!("net.tlsConnectWithCa: {}", e)),
             };
-            match net::TcpStream::connect(&addr) {
-                Ok(stream) => match tls::connect_tls(stream, &host, config) {
+            let addrs = match resolve_connect_addrs(&host, port) {
+                Ok(addrs) => addrs,
+                Err(e) => return IoCompletion::Error(format!("net.tlsConnectWithCa: {}", e)),
+            };
+            let sni_host = normalize_connect_host(&host);
+            match connect_first_resolved(&addrs) {
+                Ok(stream) => match tls::connect_tls(stream, &sni_host, config) {
                     Ok(tls_stream) => {
                         let handle = TLS_STREAMS.insert(tls_stream);
                         IoCompletion::Primitive(NativeValue::f64(handle as f64))

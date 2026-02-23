@@ -9,8 +9,11 @@ class TcpListener {
         this._handle = handle;
     }
 
-    accept(): TcpStream {
-        const h: number = __NATIVE_CALL<number>("net.tcpAccept", this._handle);
+    accept(): TcpStream | null {
+        const h: number | null = __NATIVE_CALL<number | null>("net.tcpAccept", this._handle);
+        if (h == null) {
+            return null;
+        }
         return new TcpStream(h);
     }
 
@@ -20,6 +23,18 @@ class TcpListener {
 
     localAddr(): string {
         return __NATIVE_CALL<string>("net.tcpListenerAddr", this._handle);
+    }
+
+    async serve(handler: (stream: TcpStream) => Task<void>): Task<void> {
+        while (true) {
+            const stream = this.accept();
+            if (stream == null) {
+                break;
+            }
+            // Spawn-style behavior: invoking async handler starts a Task immediately.
+            // We intentionally do not await to keep connection handling concurrent.
+            const _task = handler(stream);
+        }
     }
 }
 
@@ -155,6 +170,11 @@ class Net {
     bindUdp(host: string, port: number): UdpSocket {
         const h: number = __NATIVE_CALL<number>("net.udpBind", host, port);
         return new UdpSocket(h);
+    }
+
+    async serve(host: string, port: number, handler: (stream: TcpStream) => Task<void>): Task<void> {
+        const listener = this.listen(host, port);
+        await listener.serve(handler);
     }
 }
 

@@ -114,7 +114,7 @@ fn parse_expression_with_precedence(
         // Special case: allow postfix operators through even if precedence is None
         // (they will be handled in parse_infix -> parse_postfix)
         // Note: Token::Less is included for type arguments in calls (foo<T>())
-        let is_postfix = matches!(
+        let mut is_postfix = matches!(
             parser.current(),
             Token::LeftParen
                 | Token::Dot
@@ -123,6 +123,13 @@ fn parse_expression_with_precedence(
                 | Token::PlusPlus
                 | Token::MinusMinus
         );
+
+        // Treat `<...>(` as postfix generic-call suffix even in higher-precedence contexts.
+        // This avoids misparsing `a<T>() + b<U>()` as `a < T` and preserves arithmetic
+        // precedence because non-generic `<` won't pass the speculative check.
+        if !is_postfix && matches!(parser.current(), Token::Less) {
+            is_postfix = looks_like_generic_call_suffix(parser);
+        }
 
         if !is_postfix
             && (current_precedence == Precedence::None || current_precedence < min_precedence)
@@ -134,6 +141,18 @@ fn parse_expression_with_precedence(
     }
 
     Ok(left)
+}
+
+fn looks_like_generic_call_suffix(parser: &mut Parser) -> bool {
+    if !matches!(parser.current(), Token::Less) {
+        return false;
+    }
+
+    let checkpoint = parser.checkpoint();
+    parser.advance(); // consume '<'
+    let ok = super::types::parse_type_arguments(parser).is_ok() && parser.check(&Token::LeftParen);
+    parser.restore(checkpoint);
+    ok
 }
 
 /// Parse a prefix expression (unary operators and primary expressions).

@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Standard library native implementations for Raya"
 
+[lib]
+doctest = false
+
 [dependencies]
 rand = "0.8"
 raya-sdk = { workspace = true }

@@ -10,6 +10,7 @@ description = "Rust ergonomic API for writing Raya native modules"
 
 [lib]
 proc-macro = true
+doctest = false
 
 [dependencies]
 # Proc-macro dependencies

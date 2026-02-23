@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Raya language engine: parser, compiler, and VM runtime"
 
+[lib]
+doctest = false
+
 [dependencies]
 # Lexer
 logos = "0.14"

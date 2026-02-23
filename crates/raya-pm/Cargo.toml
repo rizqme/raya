@@ -11,6 +11,7 @@ description = "Package manager data types and utilities for Raya"
 [lib]
 name = "raya_pm"
 path = "src/lib.rs"
+doctest = false
 
 [dependencies]
 serde = { workspace = true }

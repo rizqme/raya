@@ -96,33 +96,46 @@ pub struct StackSample {
 /// A frame resolved to source location via `DebugInfo`.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct ResolvedFrame {
+    /// Demangled/display function name.
     pub function_name: String,
+    /// Source file path for this frame.
     pub source_file: String,
+    /// 1-based source line number.
     pub line_number: u32,
+    /// 1-based source column number.
     pub column_number: u32,
 }
 
 /// A sample with resolved source-level frames.
 #[derive(Debug, Clone)]
 pub struct ResolvedSample {
+    /// Microseconds since profiling started.
     pub timestamp_us: u64,
+    /// Task that was sampled.
     pub task_id: u64,
+    /// Resolved stack frames (bottom to top).
     pub frames: Vec<ResolvedFrame>,
 }
 
 /// Aggregated profiling data returned by [`Profiler::stop`].
 #[derive(Debug)]
 pub struct ProfileData {
+    /// Raw samples captured during profiling.
     pub samples: Vec<StackSample>,
+    /// Profiling start timestamp in microseconds.
     pub start_time_us: u64,
+    /// Profiling end timestamp in microseconds.
     pub end_time_us: u64,
 }
 
 /// Resolved profiling data ready for output.
 #[derive(Debug)]
 pub struct ResolvedProfileData {
+    /// Source-resolved samples.
     pub samples: Vec<ResolvedSample>,
+    /// Profiling start timestamp in microseconds.
     pub start_time_us: u64,
+    /// Profiling end timestamp in microseconds.
     pub end_time_us: u64,
 }
 

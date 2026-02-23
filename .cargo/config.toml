@@ -3,6 +3,8 @@
 [build]
 # Use all CPU cores for compilation
 jobs = -1
+# Suppress compiler warnings across workspace builds/tests.
+rustflags = ["-A", "warnings"]
 
 [target.x86_64-unknown-linux-gnu]
 rustflags = ["-C", "link-arg=-fuse-ld=lld"]

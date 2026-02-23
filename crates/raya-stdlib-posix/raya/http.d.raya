@@ -36,10 +36,22 @@ export class HttpServer {
     accept(): HttpRequest;
     /** Send text response */
     respond(reqHandle: number, status: number, body: string): void;
+    /** Send text response using request object */
+    respondText(req: HttpRequest, status: number, body: string): void;
     /** Send binary response */
     respondBytes(reqHandle: number, status: number, body: Buffer): void;
+    /** Send binary response using request object */
+    respondBuffer(req: HttpRequest, status: number, body: Buffer): void;
     /** Send response with custom headers */
     respondWithHeaders(reqHandle: number, status: number, headers: string[], body: string): void;
+    /** Send response with custom headers using request object */
+    respondRequestWithHeaders(req: HttpRequest, status: number, headers: string[], body: string): void;
+    /**
+     * Concurrent async callback loop for requests.
+     * Each accepted request invokes handler in a new async task.
+     * Cancel with `task.cancel()`.
+     */
+    serve(handler: (req: HttpRequest, server: HttpServer) => void): Task<void>;
     /** Close server */
     close(): void;
     /** Server address */

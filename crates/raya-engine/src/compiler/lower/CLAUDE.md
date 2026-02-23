@@ -177,6 +177,9 @@ Classes declared inside function bodies are handled via:
 - Async functions are marked, become `Spawn` at call sites
 - Loop variables captured by closures get per-iteration RefCells
 - Method calls are lowered to `CallMethod` with receiver
+- For `Expression::Index`, class inference must use the **element type** (not the container class).  
+  Returning the container class (e.g. `Array`) for `arr[i]` can misroute primitive method calls
+  like `arr[i].toString()` to object/vtable dispatch and cause runtime `Expected object for method call`.
 - **Nested classes** in function bodies: save/restore function state around `lower_class()`, use `register_class()` + `pending_classes`
 - **Default params**: null-check at function entry via `emit_default_params()`
 - **Object literals**: field layout tracked in `register_object_fields` for destructuring

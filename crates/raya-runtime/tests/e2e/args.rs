@@ -556,6 +556,48 @@ fn test_engine_indexed_member_assignment_smoke() {
 }
 
 #[test]
+fn test_engine_member_nullish_assign_smoke() {
+    expect_bool_with_builtins(
+        r#"
+        class Box {
+            value: string | null;
+            constructor() {
+                this.value = null;
+            }
+        }
+        const b = new Box();
+        b.value ??= "set";
+        return b.value == "set";
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_engine_indexed_member_nullish_assign_smoke() {
+    expect_bool_with_builtins(
+        r#"
+        class Item {
+            value: string | null;
+            constructor() {
+                this.value = null;
+            }
+        }
+        class Holder {
+            items: Item[];
+            constructor() {
+                this.items = [new Item()];
+            }
+        }
+        const h = new Holder();
+        h.items[0].value ??= "set";
+        return h.items[0].value == "set";
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_args_defaults_and_no_flag() {
     expect_bool_with_builtins(
         r#"

@@ -8,8 +8,17 @@
 
 export class TcpListener {
     constructor(handle: number);
-    /** Accept connection (blocking) */
-    accept(): TcpStream;
+    /**
+     * Accept connection (blocking).
+     * Returns null immediately after close().
+     */
+    accept(): TcpStream | null;
+    /**
+     * Concurrent async callback loop for accepted connections.
+     * Each accepted connection invokes handler in a new async task.
+     * Loop stops when close() causes accept() to return null.
+     */
+    serve(handler: (stream: TcpStream) => Task<void>): Task<void>;
     /** Close listener */
     close(): void;
     /** Local address (host:port) */
@@ -81,6 +90,11 @@ export class Net {
     connectTlsWithCa(host: string, port: number, caPem: string): TlsStream;
     /** Bind UDP socket */
     bindUdp(host: string, port: number): UdpSocket;
+    /**
+     * Create listener and run concurrent async callback loop.
+     * Loop stops when listener.close() is called.
+     */
+    serve(host: string, port: number, handler: (stream: TcpStream) => Task<void>): Task<void>;
 }
 
 declare const net: Net;

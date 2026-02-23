@@ -10,6 +10,7 @@ use super::{
 use crate::compiler::ir::{
     BinaryOp, ClassId, FunctionId, IrConstant, IrInstr, IrValue, Register, Terminator, UnaryOp,
 };
+use crate::compiler::CompileError;
 use crate::parser::ast::{self, AssignmentOperator, Expression, TemplatePart};
 use crate::parser::interner::Symbol;
 use crate::parser::{TypeContext as TC, TypeId};
@@ -1751,66 +1752,38 @@ impl<'a> Lowerer<'a> {
                 ));
             self.current_block = assign_block;
             let rhs = self.lower_expr(&assign.right);
-            // Store to LHS (identifier case)
-            if let Expression::Identifier(ident) = &*assign.left {
-                if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    if self.refcell_registers.contains_key(&local_idx) {
-                        let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::LoadLocal {
-                            dest: refcell_reg.clone(),
-                            index: local_idx,
-                        });
-                        self.emit(IrInstr::StoreRefCell {
-                            refcell: refcell_reg,
+            // Store to LHS
+            match &*assign.left {
+                Expression::Identifier(ident) => {
+                    if let Some(&local_idx) = self.local_map.get(&ident.name) {
+                        if self.refcell_registers.contains_key(&local_idx) {
+                            let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                            self.emit(IrInstr::LoadLocal {
+                                dest: refcell_reg.clone(),
+                                index: local_idx,
+                            });
+                            self.emit(IrInstr::StoreRefCell {
+                                refcell: refcell_reg,
+                                value: rhs,
+                            });
+                        } else {
+                            self.emit(IrInstr::StoreLocal {
+                                index: local_idx,
+                                value: rhs,
+                            });
+                        }
+                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        // Module-level variable — store via global slot
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
                             value: rhs,
                         });
-                    } else {
-                        self.emit(IrInstr::StoreLocal {
-                            index: local_idx,
-                            value: rhs,
-                        });
-                    }
-                } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-                    // Module-level variable — store via global slot
-                    self.emit(IrInstr::StoreGlobal {
-                        index: global_idx,
-                        value: rhs,
-                    });
-                } else if let Some(idx) = self.captures.iter().position(|c| c.symbol == ident.name)
-                {
-                    // Captured variable from outer scope
-                    let is_refcell = self.captures[idx].is_refcell;
-                    let capture_idx = self.captures[idx].capture_idx;
-                    if is_refcell {
-                        let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                        self.emit(IrInstr::LoadCaptured {
-                            dest: refcell_reg.clone(),
-                            index: capture_idx,
-                        });
-                        self.emit(IrInstr::StoreRefCell {
-                            refcell: refcell_reg,
-                            value: rhs,
-                        });
-                    } else {
-                        self.emit(IrInstr::StoreCaptured {
-                            index: capture_idx,
-                            value: rhs,
-                        });
-                    }
-                } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
-                    // Lazy ancestor capture (mirror from regular assignment)
-                    if let Some(ancestor_var) = ancestors.get(&ident.name) {
-                        let ty = ancestor_var.ty;
-                        let is_refcell = ancestor_var.is_refcell;
-                        let capture_idx = self.next_capture_slot;
-                        self.next_capture_slot += 1;
-                        self.captures.push(super::CaptureInfo {
-                            symbol: ident.name,
-                            source: ancestor_var.source,
-                            capture_idx,
-                            ty,
-                            is_refcell,
-                        });
+                    } else if let Some(idx) =
+                        self.captures.iter().position(|c| c.symbol == ident.name)
+                    {
+                        // Captured variable from outer scope
+                        let is_refcell = self.captures[idx].is_refcell;
+                        let capture_idx = self.captures[idx].capture_idx;
                         if is_refcell {
                             let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
                             self.emit(IrInstr::LoadCaptured {
@@ -1827,13 +1800,97 @@ impl<'a> Lowerer<'a> {
                                 value: rhs,
                             });
                         }
-                    } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
-                        self.emit(IrInstr::StoreGlobal {
-                            index: global_idx,
+                    } else if let Some(ref ancestors) = self.ancestor_variables.clone() {
+                        // Lazy ancestor capture (mirror from regular assignment)
+                        if let Some(ancestor_var) = ancestors.get(&ident.name) {
+                            let ty = ancestor_var.ty;
+                            let is_refcell = ancestor_var.is_refcell;
+                            let capture_idx = self.next_capture_slot;
+                            self.next_capture_slot += 1;
+                            self.captures.push(super::CaptureInfo {
+                                symbol: ident.name,
+                                source: ancestor_var.source,
+                                capture_idx,
+                                ty,
+                                is_refcell,
+                            });
+                            if is_refcell {
+                                let refcell_reg = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                                self.emit(IrInstr::LoadCaptured {
+                                    dest: refcell_reg.clone(),
+                                    index: capture_idx,
+                                });
+                                self.emit(IrInstr::StoreRefCell {
+                                    refcell: refcell_reg,
+                                    value: rhs,
+                                });
+                            } else {
+                                self.emit(IrInstr::StoreCaptured {
+                                    index: capture_idx,
+                                    value: rhs,
+                                });
+                            }
+                        } else if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                            self.emit(IrInstr::StoreGlobal {
+                                index: global_idx,
+                                value: rhs,
+                            });
+                        }
+                    }
+                }
+                Expression::Member(member) => {
+                    let prop_name = self.interner.resolve(member.property.name);
+                    let class_id = self.infer_class_id(&member.object);
+                    let field_index = if let Some(class_id) = class_id {
+                        if let Some(field) = self
+                            .get_all_fields(class_id)
+                            .iter()
+                            .rev()
+                            .find(|f| self.interner.resolve(f.name) == prop_name)
+                        {
+                            field.index
+                        } else {
+                            self.errors.push(CompileError::InternalError {
+                                message: format!(
+                                    "Unknown field '{}' in nullish assignment target",
+                                    prop_name
+                                ),
+                            });
+                            0
+                        }
+                    } else {
+                        self.errors.push(CompileError::InternalError {
+                            message: format!(
+                                "Cannot resolve class type for nullish assignment target field '{}'",
+                                prop_name
+                            ),
+                        });
+                        0
+                    };
+                    let object = self.lower_expr(&member.object);
+                    self.emit(IrInstr::StoreField {
+                        object,
+                        field: field_index,
+                        value: rhs,
+                    });
+                }
+                Expression::Index(index) => {
+                    let array = self.lower_expr(&index.object);
+                    if self.is_append_index_pattern(&index.object, &index.index) {
+                        self.emit(IrInstr::ArrayPush {
+                            array,
+                            element: rhs,
+                        });
+                    } else {
+                        let idx = self.lower_expr(&index.index);
+                        self.emit(IrInstr::StoreElement {
+                            array,
+                            index: idx,
                             value: rhs,
                         });
                     }
                 }
+                _ => {}
             }
             self.set_terminator(Terminator::Jump(merge_block));
 
@@ -2031,13 +2088,29 @@ impl<'a> Lowerer<'a> {
                 let class_id = self.infer_class_id(&member.object);
 
                 let field_index = if let Some(class_id) = class_id {
-                    self.get_all_fields(class_id)
+                    if let Some(field) = self
+                        .get_all_fields(class_id)
                         .iter()
                         .rev()
                         .find(|f| self.interner.resolve(f.name) == prop_name)
-                        .map(|f| f.index)
-                        .unwrap_or(0)
+                    {
+                        field.index
+                    } else {
+                        self.errors.push(CompileError::InternalError {
+                            message: format!(
+                                "Unknown field '{}' in assignment target",
+                                prop_name
+                            ),
+                        });
+                        0
+                    }
                 } else {
+                    self.errors.push(CompileError::InternalError {
+                        message: format!(
+                            "Cannot resolve class type for assignment target field '{}'",
+                            prop_name
+                        ),
+                    });
                     0
                 };
 
@@ -3246,8 +3319,46 @@ impl<'a> Lowerer<'a> {
                 }
                 self.class_id_from_type_id(self.get_expr_type(expr))
             }
-            // Index access over an array-of-class preserves the element class.
-            Expression::Index(index) => self.infer_class_id(&index.object),
+            // Index access over array/tuple containers can preserve the element class.
+            // Important: do NOT return container class ID directly (e.g. Array), because
+            // that misroutes primitive element calls to object/vtable dispatch.
+            Expression::Index(index) => {
+                let object_ty = self.get_expr_type(&index.object);
+                if let Some(ty) = self.type_ctx.get(object_ty) {
+                    match ty {
+                        crate::parser::types::ty::Type::Array(arr) => {
+                            return self.class_id_from_type_id(arr.element);
+                        }
+                        crate::parser::types::ty::Type::Tuple(tuple) => {
+                            // Conservative: if all tuple members that are class-typed agree
+                            // on one class, use it; otherwise keep unresolved.
+                            let mut found: Option<ClassId> = None;
+                            for member_ty in &tuple.elements {
+                                if let Some(cid) = self.class_id_from_type_id(*member_ty) {
+                                    match found {
+                                        None => found = Some(cid),
+                                        Some(existing) if existing == cid => {}
+                                        Some(_) => {
+                                            found = None;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            if found.is_some() {
+                                return found;
+                            }
+                            return None;
+                        }
+                        _ => {
+                            // Non-array indexed containers (or custom indexable classes):
+                            // fall back to the container class inference behavior.
+                            return self.infer_class_id(&index.object);
+                        }
+                    }
+                }
+                self.infer_class_id(&index.object)
+            }
             _ => self.class_id_from_type_id(self.get_expr_type(expr)),
         }
     }

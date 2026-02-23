@@ -133,6 +133,23 @@ fn test_task_multiple() {
     );
 }
 
+#[test]
+fn test_async_function_assignable_to_task_callback_type() {
+    expect_i32(
+        "function runCallback(cb: (x: number) => Task<void>): number {
+             cb(1);
+             return 42;
+         }
+
+         async function handler(_x: number): Task<void> {
+             return;
+         }
+
+         return runCallback(handler);",
+        42,
+    );
+}
+
 // ============================================================================
 // Async with Control Flow
 // ============================================================================

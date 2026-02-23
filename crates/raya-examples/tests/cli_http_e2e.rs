@@ -1,6 +1,7 @@
 use raya_examples::{webapp_client_entry, webapp_server_entry};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,14 +22,33 @@ fn unique_tmp_dir(prefix: &str) -> PathBuf {
     dir
 }
 
+fn raya_cli_bin(workspace: &Path) -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let build = Command::new("cargo")
+            .current_dir(workspace)
+            .arg("build")
+            .arg("-q")
+            .arg("-p")
+            .arg("raya-cli")
+            .env("RUSTFLAGS", "-Awarnings")
+            .output()
+            .expect("build raya-cli");
+        assert!(
+            build.status.success(),
+            "failed to build raya-cli\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&build.stdout),
+            String::from_utf8_lossy(&build.stderr)
+        );
+
+        workspace.join("target").join("debug").join("raya")
+    })
+    .clone()
+}
+
 fn spawn_cli_run(workspace: &Path, script: &Path, tmp_dir: &Path) -> Child {
-    Command::new("cargo")
+    Command::new(raya_cli_bin(workspace))
         .current_dir(workspace)
-        .arg("run")
-        .arg("-q")
-        .arg("-p")
-        .arg("raya-cli")
-        .arg("--")
         .arg("run")
         .arg(script)
         .env("RAYA_EXAMPLES_TMPDIR", tmp_dir)
@@ -39,18 +59,13 @@ fn spawn_cli_run(workspace: &Path, script: &Path, tmp_dir: &Path) -> Child {
 }
 
 fn run_cli_and_capture(workspace: &Path, script: &Path, tmp_dir: &Path) -> std::process::Output {
-    Command::new("cargo")
+    Command::new(raya_cli_bin(workspace))
         .current_dir(workspace)
-        .arg("run")
-        .arg("-q")
-        .arg("-p")
-        .arg("raya-cli")
-        .arg("--")
         .arg("run")
         .arg(script)
         .env("RAYA_EXAMPLES_TMPDIR", tmp_dir)
         .output()
-        .expect("run raya CLI")
+        .expect("run raya CLI binary")
 }
 
 fn wait_for_file(path: &Path, timeout: Duration) -> bool {

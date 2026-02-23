@@ -45,6 +45,45 @@ fn test_data_pipeline_filter_map_reduce() {
 }
 
 #[test]
+fn test_indexed_number_to_string_dispatch_regression() {
+    // Regression guard: indexed primitive method calls must use primitive dispatch,
+    // not object/vtable fallback (which would fail at runtime).
+    expect_string_with_builtins(
+        r#"
+        let data: number[] = [5, 3, 8, 1];
+        let out = "";
+        for (let i = 0; i < data.length; i = i + 1) {
+            if (i > 0) { out = out + ","; }
+            out = out + data[i].toString();
+        }
+        return out;
+        "#,
+        "5,3,8,1",
+    );
+}
+
+#[test]
+fn test_indexed_number_to_string_in_function_regression() {
+    // Same regression in a function call path.
+    expect_string_with_builtins(
+        r#"
+        function joinNums(values: number[]): string {
+            let s = "";
+            for (let i = 0; i < values.length; i = i + 1) {
+                if (i > 0) { s = s + ":"; }
+                s = s + values[i].toString();
+            }
+            return s;
+        }
+
+        let vals: number[] = [10, 20, 30];
+        return joinNums(vals);
+        "#,
+        "10:20:30",
+    );
+}
+
+#[test]
 fn test_data_pipeline_string_split_and_aggregate() {
     // Split string, map to numbers using charCodeAt math, compute average
     expect_i32_with_builtins(

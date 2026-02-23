@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Raya runtime that binds the engine with standard library"
 
+[lib]
+doctest = false
+
 [dependencies]
 raya-engine = { workspace = true }
 raya-stdlib = { path = "../raya-stdlib" }

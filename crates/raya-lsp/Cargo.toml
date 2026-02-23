@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Language Server Protocol implementation for Raya"
 
+[lib]
+doctest = false
+
 [dependencies]
 raya-engine = { workspace = true }
 tower-lsp = { workspace = true }

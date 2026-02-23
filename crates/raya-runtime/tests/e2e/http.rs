@@ -9,7 +9,12 @@ fn test_http_server_parses_and_responds() {
     expect_bool_with_builtins(
         r#"
         import net from "std:net";
-        import { HttpServer } from "std:http";
+        import { HttpServer, HttpRequest } from "std:http";
+
+        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+            server.respondText(req, 200, "ok-from-serve");
+            server.close();
+        }
 
         async function serverTask(server: HttpServer): Task<boolean> {
             const req = server.accept();
@@ -58,7 +63,12 @@ fn test_http_server_custom_headers() {
     expect_bool_with_builtins(
         r#"
         import net from "std:net";
-        import { HttpServer } from "std:http";
+        import { HttpServer, HttpRequest } from "std:http";
+
+        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+            server.respondText(req, 200, "ok-from-serve");
+            server.close();
+        }
 
         async function serverTask(server: HttpServer): Task<boolean> {
             const req = server.accept();
@@ -88,6 +98,45 @@ fn test_http_server_custom_headers() {
             const clientOk = await clientTask();
             const serverOk = await serverResult;
             return clientOk && serverOk;
+        }
+
+        return await main();
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_http_server_serve_task_cancel() {
+    expect_bool_with_builtins(
+        r#"
+        import net from "std:net";
+        import { HttpServer, HttpRequest } from "std:http";
+
+        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+            server.respondText(req, 200, "ok-from-serve");
+            server.close();
+        }
+
+        async function clientTask(): Task<boolean> {
+            const stream = net.connect("127.0.0.1", 38183);
+            const request =
+                "GET /serve HTTP/1.1\r\n" +
+                "Host: 127.0.0.1\r\n" +
+                "\r\n";
+            stream.writeText(request);
+            const response = stream.readAll().toUtf8String();
+            stream.close();
+            return response.includes("HTTP/1.1 200 OK") && response.includes("ok-from-serve");
+        }
+
+        async function main(): Task<boolean> {
+            const server = new HttpServer("127.0.0.1", 38183);
+            const serveTask = server.serve(onRequest);
+            sleep(5);
+            const ok = await clientTask();
+            serveTask.cancel();
+            return ok;
         }
 
         return await main();

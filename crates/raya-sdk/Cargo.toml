@@ -8,6 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Lightweight SDK for writing Raya native modules"
 
+[lib]
+doctest = false
+
 [dependencies]
 # Error handling
 thiserror = { workspace = true }

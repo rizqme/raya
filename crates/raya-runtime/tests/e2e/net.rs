@@ -10,23 +10,12 @@ fn test_net_tcp_echo_round_trip() {
         r#"
         import net, { TcpListener } from "std:net";
 
-        function parseDigits(text: string): number {
-            let value: number = 0;
-            let idx: number = 0;
-            while (idx < text.length) {
-                value = value * 10 + (text.charCodeAt(idx) - 48);
-                idx = idx + 1;
-            }
-            return value;
-        }
-
-        function parsePortFromAddr(addr: string): number {
-            const parts: string[] = addr.split(":");
-            return parseDigits(parts[parts.length - 1]);
-        }
-
         async function serverTask(listener: TcpListener): Task<boolean> {
             const stream = listener.accept();
+            if (stream == null) {
+                listener.close();
+                return false;
+            }
             const message = stream.readLine();
             stream.writeText("echo:" + message + "\n");
             stream.close();
@@ -34,8 +23,8 @@ fn test_net_tcp_echo_round_trip() {
             return message == "ping";
         }
 
-        async function clientTask(port: number): Task<boolean> {
-            const stream = net.connect("127.0.0.1", port);
+        async function clientTask(host: string, port: number): Task<boolean> {
+            const stream = net.connect(host, port);
             const remote = stream.remoteAddr();
             stream.writeText("ping\n");
             const response = stream.readLine();
@@ -44,10 +33,76 @@ fn test_net_tcp_echo_round_trip() {
         }
 
         async function main(): Task<boolean> {
+            const port = 38191;
+            const listener = net.listen("127.0.0.1", port);
+            const serverResult = serverTask(listener);
+            sleep(5);
+            const clientOk = await clientTask("127.0.0.1", port);
+            if (!clientOk) {
+                // Ensure accept() is unblocked on failure paths so test never hangs.
+                listener.close();
+            }
+            const serverOk = await serverResult;
+            return serverOk && clientOk;
+        }
+
+        return await main();
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_net_accept_returns_null_after_close() {
+    expect_bool_with_builtins(
+        r#"
+        import net, { TcpListener } from "std:net";
+
+        async function acceptLoop(listener: TcpListener): Task<number> {
+            let accepted: number = 0;
+            while (true) {
+                const stream = listener.accept();
+                if (stream == null) {
+                    break;
+                }
+                accepted = accepted + 1;
+                stream.close();
+            }
+            return accepted;
+        }
+
+        async function main(): Task<boolean> {
             const listener = net.listen("127.0.0.1", 0);
-            const port = parsePortFromAddr(listener.localAddr());
-            const results = await [serverTask(listener), clientTask(port)];
-            return results[0] && results[1];
+            const loopTask = acceptLoop(listener);
+            sleep(10);
+            listener.close();
+            const accepted = await loopTask;
+            return accepted == 0;
+        }
+
+        return await main();
+        "#,
+        true,
+    );
+}
+
+#[test]
+fn test_net_serve_exits_when_listener_closed() {
+    expect_bool_with_builtins(
+        r#"
+        import net, { TcpStream } from "std:net";
+
+        async function onConn(stream: TcpStream): Task<void> {
+            stream.close();
+        }
+
+        async function main(): Task<boolean> {
+            const listener = net.listen("127.0.0.1", 0);
+            const serveTask = listener.serve(onConn);
+            sleep(10);
+            listener.close();
+            await serveTask;
+            return true;
         }
 
         return await main();
@@ -62,26 +117,10 @@ fn test_net_udp_send_receive() {
         r#"
         import net from "std:net";
 
-        function parseDigits(text: string): number {
-            let value: number = 0;
-            let idx: number = 0;
-            while (idx < text.length) {
-                value = value * 10 + (text.charCodeAt(idx) - 48);
-                idx = idx + 1;
-            }
-            return value;
-        }
-
-        function parsePortFromAddr(addr: string): number {
-            const parts: string[] = addr.split(":");
-            return parseDigits(parts[parts.length - 1]);
-        }
-
         function main(): boolean {
-            const receiver = net.bindUdp("127.0.0.1", 0);
-            const sender = net.bindUdp("127.0.0.1", 0);
-            const port = parsePortFromAddr(receiver.localAddr());
-            sender.sendText("udp_ping", "127.0.0.1:" + port);
+            const receiver = net.bindUdp("localhost", 0);
+            const sender = net.bindUdp("localhost", 0);
+            sender.sendText("udp_ping", receiver.localAddr());
             const received = receiver.receive(64);
             receiver.close();
             sender.close();
