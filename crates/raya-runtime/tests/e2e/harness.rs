@@ -176,15 +176,12 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
 /// Internal compile function
 fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
     // Optionally prepend builtin and std sources
-    let full_source = if include_builtins {
-        format!(
-            "{}\n{}\n{}",
-            get_builtin_sources(),
-            get_std_sources(),
-            source
-        )
+    let (full_source, prelude_offset) = if include_builtins {
+        let prelude = format!("{}\n{}", get_builtin_sources(), get_std_sources());
+        let offset = prelude.len() + 1; // +1 for separator newline before user source
+        (format!("{}\n{}", prelude, source), Some(offset))
     } else {
-        source.to_string()
+        (source.to_string(), None)
     };
 
     // Parse
@@ -216,7 +213,11 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
         .map_err(|e| E2EError::TypeCheck(format!("Binding error: {:?}", e)))?;
 
     // Type check
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let checker = if let Some(offset) = prelude_offset {
+        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_skip_class_bodies_before(offset)
+    } else {
+        TypeChecker::new(&mut type_ctx, &symbols, &interner)
+    };
     let check_result = checker
         .check_module(&ast)
         .map_err(|e| E2EError::TypeCheck(format!("{:?}", e)))?;

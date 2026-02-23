@@ -164,6 +164,10 @@ pub struct TypeChecker<'a> {
     /// Warnings collected during type checking
     warnings: Vec<CheckWarning>,
 
+    /// Stack used to collect return expression types when inferring block return types
+    /// (e.g. arrow functions without explicit return annotations).
+    return_type_collector: Vec<Vec<TypeId>>,
+
     /// If set, class declarations whose span starts before this byte offset
     /// will skip full member body checking and only sync scopes.
     /// Used by runtime compile pipeline to trust prepended builtin/stdlib sources.
@@ -195,6 +199,7 @@ impl<'a> TypeChecker<'a> {
             arrow_depth: 0,
             warnings: Vec::new(),
             skip_class_bodies_before: None,
+            return_type_collector: Vec::new(),
         }
     }
 
@@ -460,6 +465,9 @@ impl<'a> TypeChecker<'a> {
 
     /// Check function declaration
     fn check_function(&mut self, func: &FunctionDecl) {
+        let saved_env = self.type_env.clone();
+        self.type_env = TypeEnv::new();
+
         // Get return type from symbol table
         let func_name = self.resolve(func.name.name);
         if let Some(symbol) = self
@@ -500,6 +508,8 @@ impl<'a> TypeChecker<'a> {
                 self.current_function_return_type = prev_return_ty;
             }
         }
+
+        self.type_env = saved_env;
     }
 
     /// Sync scopes for class declaration to keep scope IDs in sync with binder
@@ -692,6 +702,9 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     if let Some(ref body) = method.body {
+                        let saved_env = self.type_env.clone();
+                        self.type_env = TypeEnv::new();
+
                         // Enter method scope (binder creates one for every concrete method body)
                         self.enter_scope();
 
@@ -719,9 +732,13 @@ impl<'a> TypeChecker<'a> {
 
                         self.current_function_return_type = prev_return_ty;
                         self.exit_scope();
+                        self.type_env = saved_env;
                     }
                 }
                 crate::parser::ast::ClassMember::Constructor(ctor) => {
+                    let saved_env = self.type_env.clone();
+                    self.type_env = TypeEnv::new();
+
                     for param in &ctor.params {
                         self.check_parameter_decorators(param);
                     }
@@ -741,6 +758,7 @@ impl<'a> TypeChecker<'a> {
                     self.in_constructor = prev_in_ctor;
                     self.current_function_return_type = prev_return_ty;
                     self.exit_scope();
+                    self.type_env = saved_env;
                 }
                 crate::parser::ast::ClassMember::Field(field) => {
                     self.check_field_decorators(field);
@@ -770,6 +788,8 @@ impl<'a> TypeChecker<'a> {
 
             if let Some(expected_ty) = self.current_function_return_type {
                 self.check_assignable(expr_ty, expected_ty, *expr.span());
+            } else if let Some(collected) = self.return_type_collector.last_mut() {
+                collected.push(expr_ty);
             }
         } else {
             // Return without value - check if function returns void
@@ -782,6 +802,8 @@ impl<'a> TypeChecker<'a> {
                         span: ret.span,
                     });
                 }
+            } else if let Some(collected) = self.return_type_collector.last_mut() {
+                collected.push(self.type_ctx.void_type());
             }
         }
     }
@@ -1937,16 +1959,41 @@ impl<'a> TypeChecker<'a> {
 
                 self.current_function_return_type = effective_return_ty;
 
+                if effective_return_ty.is_none() {
+                    self.return_type_collector.push(Vec::new());
+                }
+
                 // Check block statements
                 for stmt in &block.statements {
                     self.check_stmt(stmt);
                 }
 
+                let inferred_return_ty = if effective_return_ty.is_none() {
+                    let collected = self.return_type_collector.pop().unwrap_or_default();
+                    if collected.is_empty() {
+                        self.type_ctx.void_type()
+                    } else {
+                        let mut unique = Vec::new();
+                        for ty in collected {
+                            if !unique.contains(&ty) {
+                                unique.push(ty);
+                            }
+                        }
+                        if unique.len() == 1 {
+                            unique[0]
+                        } else {
+                            self.type_ctx.union_type(unique)
+                        }
+                    }
+                } else {
+                    self.type_ctx.void_type()
+                };
+
                 // Restore previous return type
                 self.current_function_return_type = prev_return_ty;
 
                 // Use the effective return type or infer void
-                effective_return_ty.unwrap_or_else(|| self.type_ctx.void_type())
+                effective_return_ty.unwrap_or(inferred_return_ty)
             }
         };
 
@@ -2279,10 +2326,73 @@ impl<'a> TypeChecker<'a> {
 
     /// Check member access
     fn check_member(&mut self, member: &MemberExpression) -> TypeId {
+        let property_name = self.resolve(member.property.name);
+
+        // super.member access inside class methods
+        if let Expression::Super(_) = &*member.object {
+            let Some(class_ty) = self.current_class_type else {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name,
+                    ty: "super".to_string(),
+                    span: member.span,
+                });
+                return self.type_ctx.unknown_type();
+            };
+
+            let Some(crate::parser::types::Type::Class(current_class)) =
+                self.type_ctx.get(class_ty).cloned()
+            else {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name,
+                    ty: "super".to_string(),
+                    span: member.span,
+                });
+                return self.type_ctx.unknown_type();
+            };
+
+            let Some(parent_ty) = current_class.extends else {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name,
+                    ty: format!("class {}", current_class.name),
+                    span: member.span,
+                });
+                return self.type_ctx.unknown_type();
+            };
+
+            let Some(crate::parser::types::Type::Class(parent_class)) =
+                self.type_ctx.get(parent_ty).cloned()
+            else {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name,
+                    ty: format!("class {}", current_class.name),
+                    span: member.span,
+                });
+                return self.type_ctx.unknown_type();
+            };
+
+            if let Some((ty, vis)) = self.lookup_class_member(&parent_class, &property_name) {
+                if vis == crate::parser::ast::Visibility::Private {
+                    self.errors.push(CheckError::PropertyNotFound {
+                        property: format!("private member '{}'", property_name),
+                        ty: parent_class.name.clone(),
+                        span: member.span,
+                    });
+                    return self.type_ctx.unknown_type();
+                }
+                return ty;
+            }
+
+            self.errors.push(CheckError::PropertyNotFound {
+                property: property_name,
+                ty: format!("class {}", parent_class.name),
+                span: member.span,
+            });
+            return self.type_ctx.unknown_type();
+        }
+
         let object_ty = self.check_expr(&member.object);
 
         // Check for forbidden access to $type/$value on bare unions
-        let property_name = self.resolve(member.property.name);
         if property_name == "$type" || property_name == "$value" {
             if let Some(crate::parser::types::Type::Union(union)) = self.type_ctx.get(object_ty) {
                 if union.is_bare {

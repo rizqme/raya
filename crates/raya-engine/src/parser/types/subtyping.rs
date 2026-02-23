@@ -63,6 +63,12 @@ impl<'a> SubtypingContext<'a> {
             // Everything is subtype of Unknown (Unknown is top type)
             (_, Type::Unknown) => true,
 
+            // json is a dynamic duck-typed value from JSON.parse()/decode.
+            // Allow bidirectional compatibility with other types to support
+            // gradual typing and explicit target annotations.
+            (Type::Json, _) => true,
+            (_, Type::Json) => true,
+
             // Primitive subtyping (reflexive + int <-> number interop)
             (Type::Primitive(p1), Type::Primitive(p2)) => {
                 p1 == p2
