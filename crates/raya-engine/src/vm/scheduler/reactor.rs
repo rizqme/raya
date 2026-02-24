@@ -968,6 +968,8 @@ impl Reactor {
     ) {
         let tasks = shared_state.tasks.read();
         if let Some(task) = tasks.get(&task_id) {
+            // Ensure stale resume values are not materialized when resuming with exception.
+            let _ = task.take_resume_value();
             task.set_exception(exception);
             task.set_state(TaskState::Resumed);
             task.clear_suspend_reason();
@@ -997,6 +999,8 @@ impl Reactor {
         for waiter_id in waiters {
             if let Some(waiter_task) = tasks_map.get(&waiter_id) {
                 if task_failed {
+                    // Ensure failure path does not keep an older resume payload.
+                    let _ = waiter_task.take_resume_value();
                     if let Some(exc) = exception {
                         waiter_task.set_exception(exc);
                     } else {

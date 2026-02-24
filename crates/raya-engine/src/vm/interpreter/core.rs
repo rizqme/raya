@@ -522,7 +522,11 @@ impl<'a> Interpreter<'a> {
         // onto the operand stack. `WaitAll` is different: it re-executes with
         // its original array operand already on the stack and does not consume
         // the resumed value from a single completed child task.
-        if let Some(resume_value) = task.take_resume_value() {
+        if task.has_exception() {
+            // Exception resumption path must not also materialize a prior resume value.
+            // Mixing both can corrupt operand expectations at catch/unwind boundaries.
+            let _ = task.take_resume_value();
+        } else if let Some(resume_value) = task.take_resume_value() {
             let next_opcode = code.get(ip).and_then(|b| Opcode::from_u8(*b));
             if !matches!(next_opcode, Some(Opcode::WaitAll)) {
                 if let Err(e) = stack_guard.push(resume_value) {

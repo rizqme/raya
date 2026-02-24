@@ -1,0 +1,8 @@
+.git
+.worktrees
+target
+docs/.vitepress/dist
+node_modules
+**/node_modules
+**/.DS_Store
+test_output.log

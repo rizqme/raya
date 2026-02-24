@@ -309,6 +309,10 @@ cargo test -p raya-runtime     # Runtime + e2e + bundle tests (1,312)
 cargo test -p raya-cli         # CLI integration tests (19)
 cargo test -p raya-stdlib      # Stdlib tests (41)
 cargo test -p raya-pm          # Package manager tests (204)
+
+# Linux parity (custom local image)
+docker build -f Dockerfile.ci -t raya-ci .
+docker run --rm -v "$PWD":/work -w /work raya-ci cargo test -p raya-examples --test cli_http_e2e
 ```
 
 ---
