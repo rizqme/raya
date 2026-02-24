@@ -9,6 +9,20 @@ fn test_net_tcp_echo_round_trip() {
     expect_bool_with_builtins(
         r#"
         import net, { TcpListener } from "std:net";
+        import time from "std:time";
+
+        function bindListener(): TcpListener {
+            let attempts = 0;
+            while (attempts < 32) {
+                const candidate = 30000 + ((time.now() + attempts * 7919) % 20000);
+                try {
+                    return net.listen("127.0.0.1", candidate);
+                } catch (_err) {
+                    attempts = attempts + 1;
+                }
+            }
+            return net.listen("127.0.0.1", 0);
+        }
 
         async function serverTask(listener: TcpListener): Task<boolean> {
             const stream = listener.accept();
@@ -33,8 +47,10 @@ fn test_net_tcp_echo_round_trip() {
         }
 
         async function main(): Task<boolean> {
-            const port = 38191;
-            const listener = net.listen("127.0.0.1", port);
+            const listener = bindListener();
+            const addr = listener.localAddr();
+            const sep = addr.lastIndexOf(":");
+            const port: number = JSON.parse(addr.slice(sep + 1));
             const serverResult = serverTask(listener);
             sleep(5);
             const clientOk = await clientTask("127.0.0.1", port);

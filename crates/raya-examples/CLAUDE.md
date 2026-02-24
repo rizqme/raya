@@ -23,6 +23,8 @@ Example Raya applications plus end-to-end tests.
   - `tcp_protocol.raya` (TCP protocol handshake flow with multi-round line framing checks)
   - `template_archive.raya` (template + archive/compress pipeline)
   - `fault_injection.raya` (resilience via invalid-input handling)
+- `fixtures/worker-queue/src/main.raya` now awaits `runSuite(dir)` at top level
+  (instead of relying on fixed sleep) so `result.txt` is deterministic in CI.
 
 ## Tests
 

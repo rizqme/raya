@@ -80,4 +80,4 @@ const root = tmpRoot();
 const dir = path.join(root, "raya-examples-worker-queue");
 ensureDir(dir);
 const _run = runSuite(dir);
-time.sleep(30);
+await _run;
