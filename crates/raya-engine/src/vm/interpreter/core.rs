@@ -36,6 +36,163 @@ pub(in crate::vm::interpreter) fn value_to_f64(v: Value) -> Result<f64, VmError>
     }
 }
 
+#[cfg(all(test, feature = "jit"))]
+mod tests {
+    use super::Interpreter;
+    use crate::compiler::{Function, Opcode};
+    use crate::jit::runtime::trampoline::JitExitInfo;
+    use crate::vm::value::Value;
+    use crate::vm::interpreter::JitTelemetry;
+    use std::sync::Arc;
+
+    fn make_function(code: Vec<u8>) -> Function {
+        Function {
+            name: "f".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code,
+        }
+    }
+
+    #[test]
+    fn resume_guard_allows_entry_nativecall_zero_args() {
+        let mut code = Vec::new();
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(0u8);
+        code.push(Opcode::Return as u8);
+        let func = make_function(code);
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 0),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn resume_guard_rejects_non_entry_offset() {
+        let mut code = Vec::new();
+        code.push(Opcode::ConstNull as u8);
+        code.push(Opcode::Pop as u8);
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(0u8);
+        code.push(Opcode::Return as u8);
+        let func = make_function(code);
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 2),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn resume_guard_allows_nativecall_with_args_when_stack_empty() {
+        let mut code = Vec::new();
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(1u8);
+        let func = make_function(code);
+        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 0), Some(1));
+    }
+
+    #[test]
+    fn resume_guard_rejects_non_entry_with_non_empty_stack() {
+        let mut code = Vec::new();
+        code.push(Opcode::ConstNull as u8); // leaves stack depth = 1
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(0u8);
+        let func = make_function(code);
+        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 1), None);
+    }
+
+    #[test]
+    fn resume_guard_allows_non_entry_nativecall_with_args_when_stack_empty() {
+        let mut code = Vec::new();
+        code.push(Opcode::ConstNull as u8);
+        code.push(Opcode::Pop as u8); // stack depth back to 0
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(2u8);
+        let func = make_function(code);
+        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 2), Some(2));
+    }
+
+    #[test]
+    fn resume_guard_allows_preemption_on_jmp_with_empty_stack() {
+        let mut code = Vec::new();
+        code.push(Opcode::Jmp as u8);
+        code.extend_from_slice(&0i16.to_le_bytes());
+        let func = make_function(code);
+        assert!(Interpreter::can_resume_at_preemption_boundary(&func, 0));
+    }
+
+    #[test]
+    fn resume_guard_rejects_preemption_on_conditional_jump_stack_dep() {
+        let mut code = Vec::new();
+        code.push(Opcode::ConstTrue as u8);
+        code.push(Opcode::JmpIfFalse as u8);
+        code.extend_from_slice(&0i16.to_le_bytes());
+        let func = make_function(code);
+        assert!(!Interpreter::can_resume_at_preemption_boundary(&func, 1));
+    }
+
+    #[test]
+    fn resume_telemetry_counters_increment() {
+        let t = Arc::new(JitTelemetry::default());
+        let opt = Some(t.clone());
+
+        Interpreter::record_native_resume_decision(&opt, true);
+        Interpreter::record_native_resume_decision(&opt, false);
+        Interpreter::record_preemption_resume_decision(&opt, true);
+        Interpreter::record_preemption_resume_decision(&opt, false);
+
+        let snap = t.snapshot();
+        assert_eq!(snap.resume_native_ok, 1);
+        assert_eq!(snap.resume_native_reject, 1);
+        assert_eq!(snap.resume_preemption_ok, 1);
+        assert_eq!(snap.resume_preemption_reject, 1);
+    }
+
+    #[test]
+    fn native_resume_materialization_accepts_matching_count() {
+        let mut code = Vec::new();
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(2u8);
+        let func = make_function(code);
+
+        let mut exit = JitExitInfo {
+            bytecode_offset: 0,
+            native_arg_count: 2,
+            ..Default::default()
+        };
+        exit.native_args[0] = Value::i32(7).raw();
+        exit.native_args[1] = Value::i32(11).raw();
+
+        let vals = Interpreter::materialize_native_resume_operands(&func, &exit)
+            .expect("expected materialized operand values");
+        assert_eq!(vals.len(), 2);
+        assert_eq!(vals[0].as_i32(), Some(7));
+        assert_eq!(vals[1].as_i32(), Some(11));
+    }
+
+    #[test]
+    fn native_resume_materialization_rejects_mismatched_count() {
+        let mut code = Vec::new();
+        code.push(Opcode::NativeCall as u8);
+        code.extend_from_slice(&0u16.to_le_bytes());
+        code.push(1u8);
+        let func = make_function(code);
+
+        let exit = JitExitInfo {
+            bytecode_offset: 0,
+            native_arg_count: 2,
+            ..Default::default()
+        };
+        assert!(Interpreter::materialize_native_resume_operands(&func, &exit).is_none());
+    }
+}
+
 /// Task interpreter that can suspend and resume
 ///
 /// This struct holds references to shared state and executes a task.
@@ -103,6 +260,10 @@ pub struct Interpreter<'a> {
     pub(in crate::vm::interpreter) background_compiler:
         Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
 
+    /// Shared counters for JIT telemetry.
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) jit_telemetry: Option<Arc<crate::vm::interpreter::JitTelemetry>>,
+
     /// Compilation policy for deciding when a function is hot enough
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) compilation_policy:
@@ -111,6 +272,14 @@ pub struct Interpreter<'a> {
     /// Current function ID being executed (tracked for loop profiling)
     #[cfg(feature = "jit")]
     pub(in crate::vm::interpreter) current_func_id_for_profiling: usize,
+
+    /// Current module Arc used by loop-based JIT profiling requests.
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) current_module_for_profiling: Option<Arc<Module>>,
+
+    /// Current module id in code cache used by loop-based JIT profiling requests.
+    #[cfg(feature = "jit")]
+    pub(in crate::vm::interpreter) current_module_id_for_profiling: Option<u64>,
 
     /// Debug state for debugger coordination (None = no debugger attached)
     pub(in crate::vm::interpreter) debug_state: Option<Arc<super::debug_state::DebugState>>,
@@ -123,6 +292,61 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    #[cfg(feature = "jit")]
+    #[inline]
+    fn record_native_resume_decision(
+        telemetry: &Option<Arc<crate::vm::interpreter::JitTelemetry>>,
+        resumed: bool,
+    ) {
+        if let Some(t) = telemetry {
+            if resumed {
+                t.resume_native_ok
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                t.resume_native_reject
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    #[inline]
+    fn record_preemption_resume_decision(
+        telemetry: &Option<Arc<crate::vm::interpreter::JitTelemetry>>,
+        resumed: bool,
+    ) {
+        if let Some(t) = telemetry {
+            if resumed {
+                t.resume_preemption_ok
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                t.resume_preemption_reject
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    #[inline]
+    fn materialize_native_resume_operands(
+        func: &crate::compiler::Function,
+        exit_info: &crate::jit::runtime::trampoline::JitExitInfo,
+    ) -> Option<Vec<Value>> {
+        let expected_arg_count =
+            Self::native_resume_boundary_arg_count(func, exit_info.bytecode_offset)?;
+        let mat_count = exit_info.native_arg_count as usize;
+        let max_native_args = crate::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS;
+        if mat_count != expected_arg_count as usize || mat_count > max_native_args {
+            return None;
+        }
+
+        let mut vals = Vec::with_capacity(mat_count);
+        for i in 0..mat_count {
+            vals.push(unsafe { Value::from_raw(exit_info.native_args[i]) });
+        }
+        Some(vals)
+    }
+
     /// Create a new task interpreter
     #[allow(clippy::too_many_arguments)] // Interpreter borrows many VM subsystems; a config struct would just move the problem.
     pub fn new(
@@ -164,9 +388,15 @@ impl<'a> Interpreter<'a> {
             #[cfg(feature = "jit")]
             background_compiler: None,
             #[cfg(feature = "jit")]
+            jit_telemetry: None,
+            #[cfg(feature = "jit")]
             compilation_policy: crate::jit::profiling::policy::CompilationPolicy::new(),
             #[cfg(feature = "jit")]
             current_func_id_for_profiling: 0,
+            #[cfg(feature = "jit")]
+            current_module_for_profiling: None,
+            #[cfg(feature = "jit")]
+            current_module_id_for_profiling: None,
             profiler: None,
             profiler_func_id: 0,
         }
@@ -209,6 +439,15 @@ impl<'a> Interpreter<'a> {
         compiler: Option<Arc<crate::jit::profiling::BackgroundCompiler>>,
     ) {
         self.background_compiler = compiler;
+    }
+
+    /// Set shared JIT telemetry counters.
+    #[cfg(feature = "jit")]
+    pub fn set_jit_telemetry(
+        &mut self,
+        telemetry: Option<Arc<crate::vm::interpreter::JitTelemetry>>,
+    ) {
+        self.jit_telemetry = telemetry;
     }
 
     /// Set the compilation policy thresholds.
@@ -256,6 +495,8 @@ impl<'a> Interpreter<'a> {
         #[cfg(feature = "jit")]
         {
             self.current_func_id_for_profiling = current_func_id;
+            self.current_module_for_profiling = Some(module.clone());
+            self.current_module_id_for_profiling = jit_module_id;
         }
         self.profiler_func_id = current_func_id;
 
@@ -588,11 +829,23 @@ impl<'a> Interpreter<'a> {
                     closure_val,
                     return_action,
                 } => {
+                    #[cfg(feature = "jit")]
+                    let mut forced_callee_ip: Option<usize> = None;
+                    #[cfg(feature = "jit")]
+                    let mut forced_callee_extra_locals: Option<Vec<u64>> = None;
+                    #[cfg(feature = "jit")]
+                    let mut forced_callee_operand_values: Option<Vec<Value>> = None;
+
                     // JIT profiling: record call and check if function should be compiled
                     #[cfg(feature = "jit")]
                     if !is_closure {
                         if let Some(ref profile) = self.module_profile {
                             let count = profile.record_call(func_id);
+                            if let Some(ref telemetry) = self.jit_telemetry {
+                                telemetry
+                                    .call_samples
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
                             // Check compilation policy periodically to amortize overhead
                             if count & crate::vm::defaults::JIT_POLICY_CHECK_MASK == 0 {
                                 if let Some(mid) = jit_module_id {
@@ -608,6 +861,11 @@ impl<'a> Interpreter<'a> {
                     if !is_closure {
                         if let (Some(cache), Some(mid)) = (&self.code_cache, jit_module_id) {
                             if let Some(jit_fn) = cache.get(mid, func_id as u32) {
+                                if let Some(ref telemetry) = self.jit_telemetry {
+                                    telemetry
+                                        .cache_hits
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                }
                                 // Collect args from stack as NaN-boxed u64s
                                 let args: Vec<u64> = (0..arg_count)
                                     .map(|i| {
@@ -622,15 +880,34 @@ impl<'a> Interpreter<'a> {
                                 let local_count = func.local_count;
                                 let extra_locals = local_count.saturating_sub(arg_count);
                                 let mut locals_buf = vec![0u64; extra_locals];
+                                let mut exit_info =
+                                    crate::jit::runtime::trampoline::JitExitInfo::default();
+                                let bridge_ctx =
+                                    crate::jit::runtime::helpers::build_runtime_bridge_context(
+                                        self.safepoint,
+                                        task,
+                                        self.gc,
+                                        self.classes,
+                                        self.class_metadata,
+                                        self.resolved_natives,
+                                        self.io_submit_tx,
+                                    );
+                                let mut runtime_ctx =
+                                    crate::jit::runtime::helpers::build_runtime_context(
+                                        &bridge_ctx,
+                                        module.as_ref(),
+                                    );
 
-                                // Call the JIT-compiled function (no RuntimeContext for pure functions)
+                                // Call JIT-compiled function with runtime context so safepoint/preemption
+                                // branches inside machine code can hand off to interpreter thread loop.
                                 let result = unsafe {
                                     jit_fn(
                                         args.as_ptr(),
                                         arg_count as u32,
                                         locals_buf.as_mut_ptr(),
                                         extra_locals as u32,
-                                        std::ptr::null_mut(), // RuntimeContext — null for pure functions
+                                        (&mut runtime_ctx as *mut _),
+                                        (&mut exit_info as *mut _),
                                     )
                                 };
 
@@ -639,23 +916,107 @@ impl<'a> Interpreter<'a> {
                                     let _ = stack_guard.pop();
                                 }
 
-                                // Push return value (or handle based on return_action)
-                                // Safety: result is a NaN-boxed Value returned by JIT-compiled code
-                                let return_val = unsafe { Value::from_raw(result) };
-                                match return_action {
-                                    ReturnAction::PushReturnValue => {
-                                        if let Err(e) = stack_guard.push(return_val) {
+                                // Future-proof exit handling for suspension/deopt bridges.
+                                if exit_info.kind
+                                    != crate::jit::runtime::trampoline::JitExitKind::Completed
+                                        as u32
+                                {
+                                    // Fallback safely to interpreter execution path.
+                                    // Leave no JIT-only side effects behind.
+                                    if let Some(ref telemetry) = self.jit_telemetry {
+                                        telemetry
+                                            .cache_misses
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    // Re-push args so normal interpreter call-frame setup can proceed.
+                                    for raw in &args {
+                                        if let Err(e) =
+                                            stack_guard.push(unsafe { Value::from_raw(*raw) })
+                                        {
                                             return ExecutionResult::Failed(e);
                                         }
                                     }
-                                    ReturnAction::PushObject(obj) => {
-                                        if let Err(e) = stack_guard.push(obj) {
-                                            return ExecutionResult::Failed(e);
+
+                                    // Conservative continuation: if JIT suspended exactly at a
+                                    // zero-arg native boundary, resume interpreter from that
+                                    // bytecode offset instead of restarting the whole callee.
+                                    if exit_info.kind
+                                        == crate::jit::runtime::trampoline::JitExitKind::Suspended
+                                            as u32
+                                    {
+                                        match exit_info.suspend_reason {
+                                            x if x
+                                                == crate::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary
+                                                    as u32 =>
+                                            {
+                                                let resumed = if let Some(vals) =
+                                                    Self::materialize_native_resume_operands(
+                                                        func, &exit_info,
+                                                    )
+                                                {
+                                                    forced_callee_ip =
+                                                        Some(exit_info.bytecode_offset as usize);
+                                                    forced_callee_extra_locals =
+                                                        Some(locals_buf.clone());
+                                                    forced_callee_operand_values = Some(vals);
+                                                    true
+                                                } else {
+                                                    false
+                                                };
+                                                Self::record_native_resume_decision(
+                                                    &self.jit_telemetry,
+                                                    resumed,
+                                                );
+                                            }
+                                            x if x
+                                                == crate::jit::runtime::trampoline::JitSuspendReason::Preemption
+                                                    as u32 =>
+                                            {
+                                                let resumed =
+                                                    if Self::can_resume_at_preemption_boundary(
+                                                        func,
+                                                        exit_info.bytecode_offset,
+                                                    ) {
+                                                        forced_callee_ip =
+                                                            Some(exit_info.bytecode_offset as usize);
+                                                        forced_callee_extra_locals =
+                                                            Some(locals_buf.clone());
+                                                        true
+                                                    } else {
+                                                        false
+                                                    };
+                                                Self::record_preemption_resume_decision(
+                                                    &self.jit_telemetry,
+                                                    resumed,
+                                                );
+                                            }
+                                            _ => {}
                                         }
                                     }
-                                    ReturnAction::Discard => {}
+                                    // continue below into bytecode frame setup (no `continue`)
+                                } else {
+                                    // Push return value (or handle based on return_action)
+                                    // Safety: result is a NaN-boxed Value returned by JIT-compiled code
+                                    let return_val = unsafe { Value::from_raw(result) };
+                                    match return_action {
+                                        ReturnAction::PushReturnValue => {
+                                            if let Err(e) = stack_guard.push(return_val) {
+                                                return ExecutionResult::Failed(e);
+                                            }
+                                        }
+                                        ReturnAction::PushObject(obj) => {
+                                            if let Err(e) = stack_guard.push(obj) {
+                                                return ExecutionResult::Failed(e);
+                                            }
+                                        }
+                                        ReturnAction::Discard => {}
+                                    }
+                                    continue; // skip bytecode frame setup
                                 }
-                                continue; // skip bytecode frame setup
+                            } else if let Some(ref telemetry) = self.jit_telemetry {
+                                telemetry
+                                    .cache_misses
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             }
                         }
                     }
@@ -703,6 +1064,32 @@ impl<'a> Interpreter<'a> {
                         }
                     }
 
+                    // First stack materialization piece:
+                    // if we resume interpreter from a JIT native-boundary suspension,
+                    // restore JIT-mutated non-arg locals into interpreter local slots.
+                    #[cfg(feature = "jit")]
+                    if forced_callee_ip.is_some() {
+                        if let Some(extra_locals) = forced_callee_extra_locals.as_ref() {
+                        for (i, raw) in extra_locals.iter().enumerate() {
+                            let slot = locals_base + arg_count + i;
+                            if slot >= stack_guard.depth() {
+                                break;
+                            }
+                            if let Err(e) = stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
+                            {
+                                return ExecutionResult::Failed(e);
+                            }
+                        }
+                        if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
+                            for v in operand_vals {
+                                if let Err(e) = stack_guard.push(*v) {
+                                    return ExecutionResult::Failed(e);
+                                }
+                            }
+                        }
+                    }
+                    }
+
                     // Switch to callee's code
                     current_func_id = func_id;
                     #[cfg(feature = "jit")]
@@ -712,7 +1099,14 @@ impl<'a> Interpreter<'a> {
                     self.profiler_func_id = current_func_id;
                     code = &module.functions[func_id].code;
                     current_arg_count = arg_count; // Set current arg count to callee's arg count
-                    ip = 0;
+                    #[cfg(feature = "jit")]
+                    {
+                        ip = forced_callee_ip.unwrap_or(0);
+                    }
+                    #[cfg(not(feature = "jit"))]
+                    {
+                        ip = 0;
+                    }
                 }
                 OpcodeResult::Error(e) => {
                     // Set exception on task if not already set
@@ -1168,6 +1562,15 @@ impl<'a> Interpreter<'a> {
             return;
         }
 
+        if let Some(func) = module.functions.get(func_id) {
+            if !crate::jit::analysis::heuristics::function_supported_for_jit(func) {
+                func_profile.finish_compile_failed();
+                return;
+            }
+        } else {
+            return;
+        }
+
         let code_size = module
             .functions
             .get(func_id)
@@ -1193,7 +1596,158 @@ impl<'a> Interpreter<'a> {
                 module_id,
                 module_profile: profile.clone(),
             };
-            compiler.try_submit(request);
+            let accepted = compiler.try_submit(request);
+            if let Some(ref telemetry) = self.jit_telemetry {
+                if accepted {
+                    telemetry
+                        .compile_requests_submitted
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                } else {
+                    telemetry
+                        .compile_requests_dropped
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
+    /// Conservative check for direct resume into a native-call suspension point.
+    ///
+    /// Safe only for zero-arg NativeCall/ModuleNativeCall and when the
+    /// bytecode prefix guarantees an empty operand stack at resume point.
+    #[cfg(feature = "jit")]
+    fn native_resume_boundary_arg_count(
+        func: &crate::compiler::Function,
+        bytecode_offset: u32,
+    ) -> Option<u8> {
+        let offset = bytecode_offset as usize;
+        let code = &func.code;
+        if offset >= code.len() {
+            return None;
+        }
+        let op = code[offset];
+        if op != Opcode::NativeCall as u8 && op != Opcode::ModuleNativeCall as u8 {
+            return None;
+        }
+        // Encoding: opcode (1) + native_id (2) + arg_count (1)
+        if offset + 3 >= code.len() {
+            return None;
+        }
+        let arg_count = code[offset + 3];
+
+        // First materialization phase safety rule:
+        // resume only if operand stack depth at target is statically zero.
+        if Self::conservative_stack_depth_until(code, offset) != Some(0) {
+            return None;
+        }
+        Some(arg_count)
+    }
+
+    /// Conservative check for resume at a preemption boundary.
+    ///
+    /// Currently limited to unconditional `Jmp` sites with statically-empty
+    /// operand stack at the resume offset.
+    #[cfg(feature = "jit")]
+    fn can_resume_at_preemption_boundary(
+        func: &crate::compiler::Function,
+        bytecode_offset: u32,
+    ) -> bool {
+        let offset = bytecode_offset as usize;
+        let code = &func.code;
+        if offset >= code.len() {
+            return false;
+        }
+        if code[offset] != Opcode::Jmp as u8 {
+            return false;
+        }
+        if Self::conservative_stack_depth_until(code, offset) != Some(0) {
+            return false;
+        }
+        true
+    }
+
+    /// Conservative linear stack-depth evaluator for resume safety.
+    ///
+    /// Returns `None` for unsupported/control-flow opcodes or malformed bytecode.
+    #[cfg(feature = "jit")]
+    fn conservative_stack_depth_until(code: &[u8], target_offset: usize) -> Option<i32> {
+        let mut ip = 0usize;
+        let mut depth = 0i32;
+
+        while ip < target_offset {
+            let op = Opcode::from_u8(*code.get(ip)?)?;
+            ip += 1;
+
+            let (pop, push, imm): (i32, i32, usize) = match op {
+                // constants
+                Opcode::ConstNull
+                | Opcode::ConstTrue
+                | Opcode::ConstFalse
+                | Opcode::LoadLocal0
+                | Opcode::LoadLocal1
+                | Opcode::LoadGlobal
+                | Opcode::LoadConst => (0, 1, match op {
+                    Opcode::LoadGlobal | Opcode::LoadConst => 4,
+                    _ => 0,
+                }),
+                Opcode::ConstI32 => (0, 1, 4),
+                Opcode::ConstF64 => (0, 1, 8),
+                Opcode::ConstStr => (0, 1, 2),
+                Opcode::LoadLocal => (0, 1, 2),
+
+                // stores/stack ops
+                Opcode::StoreLocal0 | Opcode::StoreLocal1 | Opcode::Pop => (1, 0, 0),
+                Opcode::StoreLocal => (1, 0, 2),
+                Opcode::Dup => (1, 2, 0),
+                Opcode::Swap => (2, 2, 0),
+
+                // integer arithmetic/comparison
+                Opcode::Iadd
+                | Opcode::Isub
+                | Opcode::Imul
+                | Opcode::Idiv
+                | Opcode::Imod
+                | Opcode::Ieq
+                | Opcode::Ine
+                | Opcode::Ilt
+                | Opcode::Ile
+                | Opcode::Igt
+                | Opcode::Ige => (2, 1, 0),
+                Opcode::Ineg => (1, 1, 0),
+
+                // float arithmetic/comparison
+                Opcode::Fadd
+                | Opcode::Fsub
+                | Opcode::Fmul
+                | Opcode::Fdiv
+                | Opcode::Feq
+                | Opcode::Fne
+                | Opcode::Flt
+                | Opcode::Fle
+                | Opcode::Fgt
+                | Opcode::Fge => (2, 1, 0),
+                Opcode::Fneg => (1, 1, 0),
+
+                // conservative stop: control flow/calls/exceptions/other complex ops
+                _ => return None,
+            };
+
+            ip = ip.checked_add(imm)?;
+            if ip > target_offset {
+                return None;
+            }
+
+            depth -= pop;
+            if depth < 0 {
+                return None;
+            }
+            depth += push;
+        }
+
+        if ip == target_offset {
+            Some(depth)
+        } else {
+            None
         }
     }
 
@@ -1278,7 +1832,24 @@ impl<'a> Interpreter<'a> {
     #[inline]
     pub(in crate::vm::interpreter) fn record_loop_for_profiling(&self) {
         if let Some(ref profile) = self.module_profile {
-            profile.record_loop(self.current_func_id_for_profiling);
+            let count = profile.record_loop(self.current_func_id_for_profiling);
+            if let Some(ref telemetry) = self.jit_telemetry {
+                telemetry
+                    .loop_samples
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if count & crate::vm::defaults::JIT_POLICY_CHECK_MASK == 0 {
+                if let (Some(module), Some(module_id)) = (
+                    self.current_module_for_profiling.as_ref(),
+                    self.current_module_id_for_profiling,
+                ) {
+                    self.maybe_request_compilation(
+                        self.current_func_id_for_profiling,
+                        module,
+                        module_id,
+                    );
+                }
+            }
         }
     }
 }

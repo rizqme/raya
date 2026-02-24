@@ -330,7 +330,8 @@ impl<'a> Interpreter<'a> {
                     &*(hp as *const GcHeader)
                 };
                 if receiver_header.type_id() != std::any::TypeId::of::<Object>() {
-                    let receiver_kind = if receiver_header.type_id() == std::any::TypeId::of::<Array>()
+                    let receiver_kind = if receiver_header.type_id()
+                        == std::any::TypeId::of::<Array>()
                     {
                         "Array"
                     } else if receiver_header.type_id() == std::any::TypeId::of::<RayaString>() {

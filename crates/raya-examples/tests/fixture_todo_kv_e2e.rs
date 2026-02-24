@@ -14,14 +14,26 @@ fn todo_kv_summary_contract() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-todo-kv/result.txt"))
         .expect("todo result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("recovered").map(String::as_str),
         Some("true"),
         "{summary}"
     );
-    assert_eq!(fields.get("token").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("stream").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("token").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("stream").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("missing").map(String::as_str),
         Some("true"),

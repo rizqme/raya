@@ -139,3 +139,4 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 - The `builtins.rs` file uses `include_str!` to embed builtin + std `.raya` source at compile time
 - `compile.rs` error formatting now labels failures in prepended builtin/std sections as `prelude line N` to make upstream checker regressions debuggable
 - Run runtime tests with: `cargo test -p raya-runtime`
+- Multiworker e2e harness now applies a 30s execution timeout (`compile_and_run_multiworker*`) and returns a clear runtime timeout error instead of hanging indefinitely on scheduler deadlocks/regressions.

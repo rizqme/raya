@@ -15,14 +15,26 @@ fn template_pipeline_summary_contract() {
         std::fs::read_to_string(tmp_dir.join("raya-examples-template-pipeline/result.txt"))
             .expect("pipeline result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("glob").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("glob").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("checksum").map(String::as_str),
         Some("true"),
         "{summary}"
     );
-    assert_eq!(fields.get("zip").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("zip").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -57,8 +69,16 @@ fn template_pipeline_summary_entries_contract() {
         std::fs::read_to_string(tmp_dir.join("raya-examples-template-pipeline/result.txt"))
             .expect("pipeline result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("entries").map(String::as_str), Some("2"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("entries").map(String::as_str),
+        Some("2"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

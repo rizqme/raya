@@ -14,8 +14,16 @@ fn tcp_chat_summary_contract() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-tcp-chat/result.txt"))
         .expect("tcp result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("rounds").map(String::as_str), Some("4"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("rounds").map(String::as_str),
+        Some("4"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -34,8 +42,16 @@ fn tcp_chat_repeatable_no_hang() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-tcp-chat/result.txt"))
         .expect("tcp result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("rounds").map(String::as_str), Some("4"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("rounds").map(String::as_str),
+        Some("4"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }

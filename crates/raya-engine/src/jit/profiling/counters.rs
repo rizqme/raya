@@ -15,6 +15,8 @@ pub struct FunctionProfile {
     pub compiling: AtomicBool,
     /// Whether JIT-compiled code is available
     pub jit_available: AtomicBool,
+    /// Whether compilation already failed and should not be retried in this run.
+    pub compile_failed: AtomicBool,
 }
 
 impl FunctionProfile {
@@ -25,6 +27,7 @@ impl FunctionProfile {
             loop_count: AtomicU32::new(0),
             compiling: AtomicBool::new(false),
             jit_available: AtomicBool::new(false),
+            compile_failed: AtomicBool::new(false),
         }
     }
 
@@ -49,6 +52,13 @@ impl FunctionProfile {
     /// Mark compilation as complete and JIT code as available
     pub fn finish_compile(&self) {
         self.jit_available.store(true, Ordering::Release);
+        self.compile_failed.store(false, Ordering::Release);
+        self.compiling.store(false, Ordering::Release);
+    }
+
+    /// Mark compilation as failed (clear in-progress flag, keep JIT unavailable).
+    pub fn finish_compile_failed(&self) {
+        self.compile_failed.store(true, Ordering::Release);
         self.compiling.store(false, Ordering::Release);
     }
 

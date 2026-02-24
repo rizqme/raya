@@ -16,7 +16,57 @@ use crossbeam::channel::Sender;
 use crossbeam_deque::Injector;
 use parking_lot::{Mutex, RwLock};
 use rustc_hash::FxHashMap;
+#[cfg(feature = "jit")]
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+#[cfg(feature = "jit")]
+#[derive(Default)]
+pub struct JitTelemetry {
+    pub call_samples: AtomicU64,
+    pub loop_samples: AtomicU64,
+    pub cache_hits: AtomicU64,
+    pub cache_misses: AtomicU64,
+    pub compile_requests_submitted: AtomicU64,
+    pub compile_requests_dropped: AtomicU64,
+    pub resume_native_ok: AtomicU64,
+    pub resume_native_reject: AtomicU64,
+    pub resume_preemption_ok: AtomicU64,
+    pub resume_preemption_reject: AtomicU64,
+}
+
+#[cfg(feature = "jit")]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JitTelemetrySnapshot {
+    pub call_samples: u64,
+    pub loop_samples: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub compile_requests_submitted: u64,
+    pub compile_requests_dropped: u64,
+    pub resume_native_ok: u64,
+    pub resume_native_reject: u64,
+    pub resume_preemption_ok: u64,
+    pub resume_preemption_reject: u64,
+}
+
+#[cfg(feature = "jit")]
+impl JitTelemetry {
+    pub fn snapshot(&self) -> JitTelemetrySnapshot {
+        JitTelemetrySnapshot {
+            call_samples: self.call_samples.load(Ordering::Relaxed),
+            loop_samples: self.loop_samples.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.cache_misses.load(Ordering::Relaxed),
+            compile_requests_submitted: self.compile_requests_submitted.load(Ordering::Relaxed),
+            compile_requests_dropped: self.compile_requests_dropped.load(Ordering::Relaxed),
+            resume_native_ok: self.resume_native_ok.load(Ordering::Relaxed),
+            resume_native_reject: self.resume_native_reject.load(Ordering::Relaxed),
+            resume_preemption_ok: self.resume_preemption_ok.load(Ordering::Relaxed),
+            resume_preemption_reject: self.resume_preemption_reject.load(Ordering::Relaxed),
+        }
+    }
+}
 
 /// Shared VM state accessible by all worker threads
 ///
@@ -103,6 +153,14 @@ pub struct SharedVmState {
     /// Set by `Vm::enable_jit()`, cloned by worker threads to submit compilation requests.
     #[cfg(feature = "jit")]
     pub background_compiler: Mutex<Option<Arc<crate::jit::profiling::BackgroundCompiler>>>,
+
+    /// Compilation policy thresholds shared with interpreter workers.
+    #[cfg(feature = "jit")]
+    pub jit_compilation_policy: Mutex<crate::jit::profiling::policy::CompilationPolicy>,
+
+    /// Lightweight counters for JIT activity and dispatch behavior.
+    #[cfg(feature = "jit")]
+    pub jit_telemetry: Arc<JitTelemetry>,
 }
 
 impl SharedVmState {
@@ -149,6 +207,12 @@ impl SharedVmState {
             module_profiles: RwLock::new(FxHashMap::default()),
             #[cfg(feature = "jit")]
             background_compiler: Mutex::new(None),
+            #[cfg(feature = "jit")]
+            jit_compilation_policy: Mutex::new(
+                crate::jit::profiling::policy::CompilationPolicy::default(),
+            ),
+            #[cfg(feature = "jit")]
+            jit_telemetry: Arc::new(JitTelemetry::default()),
         }
     }
 

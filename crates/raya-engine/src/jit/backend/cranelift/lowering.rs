@@ -5,13 +5,17 @@
 //! local variable access, and control flow.
 
 use cranelift_codegen::ir::AbiParam;
-use cranelift_codegen::ir::{self, condcodes, types, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{
+    self, condcodes, types, InstBuilder, MemFlags, StackSlotData, StackSlotKind,
+};
 use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::{FunctionBuilder, Variable};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::abi;
 use crate::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminator, Reg};
+use crate::jit::runtime::helpers::JIT_NATIVE_SUSPEND_SENTINEL;
+use crate::jit::runtime::trampoline::{JitExitKind, JitSuspendReason, JIT_EXIT_MAX_NATIVE_ARGS};
 
 /// State maintained during lowering of a single function
 pub struct LoweringContext<'a> {
@@ -25,6 +29,12 @@ pub struct LoweringContext<'a> {
     params: FunctionParams,
     /// Phi resolution: for each block, a list of (phi_dest_reg, source_reg) to def_var before terminator
     phi_copies: FxHashMap<JitBlockId, Vec<(Reg, Reg)>>,
+    /// Imported signature for RuntimeHelperTable.safepoint_poll
+    sig_safepoint_poll: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.check_preemption
+    sig_check_preemption: Option<ir::SigRef>,
+    /// Imported signature for RuntimeHelperTable.native_call_dispatch
+    sig_native_call_dispatch: Option<ir::SigRef>,
 }
 
 /// The five parameters of the JIT entry function ABI
@@ -33,7 +43,8 @@ struct FunctionParams {
     _arg_count: ir::Value,
     locals_ptr: ir::Value,
     _local_count: ir::Value,
-    _ctx_ptr: ir::Value,
+    ctx_ptr: ir::Value,
+    exit_info_ptr: ir::Value,
 }
 
 /// Identify loop headers: blocks where at least one predecessor has a higher
@@ -71,6 +82,15 @@ fn build_phi_copies(func: &JitFunction) -> FxHashMap<JitBlockId, Vec<(Reg, Reg)>
 }
 
 impl<'a> LoweringContext<'a> {
+    fn clif_type_for_jit_type(ty: crate::jit::ir::types::JitType) -> ir::Type {
+        match ty {
+            crate::jit::ir::types::JitType::F64 => types::F64,
+            crate::jit::ir::types::JitType::Bool => types::I8,
+            crate::jit::ir::types::JitType::I32 => types::I32,
+            _ => types::I64,
+        }
+    }
+
     /// Lower an entire JIT function into Cranelift IR.
     /// Takes ownership of the FunctionBuilder since finalize() consumes it.
     pub fn lower(
@@ -106,7 +126,8 @@ impl<'a> LoweringContext<'a> {
             _arg_count: builder.block_params(entry_block)[1],
             locals_ptr: builder.block_params(entry_block)[2],
             _local_count: builder.block_params(entry_block)[3],
-            _ctx_ptr: builder.block_params(entry_block)[4],
+            ctx_ptr: builder.block_params(entry_block)[4],
+            exit_info_ptr: builder.block_params(entry_block)[5],
         };
 
         let mut ctx = LoweringContext {
@@ -115,6 +136,9 @@ impl<'a> LoweringContext<'a> {
             func,
             params,
             phi_copies,
+            sig_safepoint_poll: None,
+            sig_check_preemption: None,
+            sig_native_call_dispatch: None,
         };
 
         // Declare all registers as Cranelift variables
@@ -153,15 +177,7 @@ impl<'a> LoweringContext<'a> {
     fn declare_all_regs(&mut self, builder: &mut FunctionBuilder<'_>) {
         for reg_idx in 0..self.func.next_reg {
             let reg = Reg(reg_idx);
-
-            // All JIT registers are i64 (NaN-boxed Value or unboxed depending on context)
-            // We use i64 uniformly and bitcast when needed for f64
-            let ty = match self.func.reg_type(reg) {
-                crate::jit::ir::types::JitType::F64 => types::F64,
-                crate::jit::ir::types::JitType::Bool => types::I8,
-                crate::jit::ir::types::JitType::I32 => types::I32,
-                _ => types::I64,
-            };
+            let ty = Self::clif_type_for_jit_type(self.func.reg_type(reg));
             // In Cranelift 0.128, declare_var takes only a type and returns the Variable
             let var = builder.declare_var(ty);
             self.reg_vars.insert(reg, var);
@@ -193,22 +209,28 @@ impl<'a> LoweringContext<'a> {
         let instrs = block.instrs.clone();
         let terminator = block.terminator.clone();
 
+        let mut terminated_early = false;
         for instr in &instrs {
-            self.lower_instr(instr, builder)?;
+            if self.lower_instr(instr, builder)? {
+                terminated_early = true;
+                break;
+            }
         }
 
         // Emit Phi resolution copies before the terminator.
         // For each Phi in a successor block that sources from this block,
         // def_var the Phi's dest register with the source value from this block.
         // Cranelift's SSA construction will merge these into block params when sealed.
-        if let Some(copies) = self.phi_copies.get(&block_id) {
-            for &(phi_dest, src_reg) in copies {
-                let val = self.use_reg(builder, src_reg);
-                self.def_reg(builder, phi_dest, val);
+        if !terminated_early {
+            if let Some(copies) = self.phi_copies.get(&block_id) {
+                for &(phi_dest, src_reg) in copies {
+                    let val = self.use_reg(builder, src_reg);
+                    self.def_reg(builder, phi_dest, val);
+                }
             }
-        }
 
-        self.lower_terminator(&terminator, builder)?;
+            self.lower_terminator(&terminator, builder)?;
+        }
         Ok(())
     }
 
@@ -217,7 +239,7 @@ impl<'a> LoweringContext<'a> {
         &mut self,
         instr: &JitInstr,
         builder: &mut FunctionBuilder<'_>,
-    ) -> Result<(), LowerError> {
+    ) -> Result<bool, LowerError> {
         match instr {
             // ===== Constants =====
             JitInstr::ConstI32 { dest, value } => {
@@ -534,7 +556,13 @@ impl<'a> LoweringContext<'a> {
                 self.def_reg(builder, *dest, val);
             }
             JitInstr::StoreLocal { index, value } => {
-                let v = self.use_reg(builder, *value);
+                let raw = self.use_reg(builder, *value);
+                let v = match self.func.reg_type(*value) {
+                    crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+                    crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+                    crate::jit::ir::types::JitType::Bool => abi::emit_box_bool(builder, raw),
+                    _ => raw,
+                };
                 let offset = (*index as i32) * 8;
                 builder
                     .ins()
@@ -553,14 +581,282 @@ impl<'a> LoweringContext<'a> {
             }
 
             // ===== Runtime Integration =====
-            JitInstr::GcSafepoint => {
-                // Would call safepoint_poll via RuntimeHelperTable
-                // For now, emit a nop
-                builder.ins().nop();
+            JitInstr::GcSafepoint { .. } => {
+                // if (ctx != null) helpers.safepoint_poll(shared_state)
+                // RuntimeContext: shared_state@0, current_task@8, module@16, helpers@24
+                // RuntimeHelperTable: safepoint_poll @ +24
+                let ctx = self.params.ctx_ptr;
+                let is_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let skip = builder.create_block();
+                let do_poll = builder.create_block();
+                builder.ins().brif(is_null, skip, &[], do_poll, &[]);
+                builder.seal_block(do_poll);
+
+                builder.switch_to_block(do_poll);
+                let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 48); // 24 + 24
+                let sig = self.safepoint_sig(builder);
+                builder.ins().call_indirect(sig, fn_ptr, &[shared_state]);
+                builder.ins().jump(skip, &[]);
+                builder.seal_block(skip);
+
+                builder.switch_to_block(skip);
             }
-            JitInstr::CheckPreemption => {
-                // Would call check_preemption via RuntimeHelperTable
-                builder.ins().nop();
+            JitInstr::CheckPreemption { bytecode_offset } => {
+                // if (ctx != null && helpers.check_preemption(current_task)) {
+                //   exit.kind = Suspended
+                //   exit.suspend_reason = 1 (preemption)
+                //   return null
+                // }
+                let ctx = self.params.ctx_ptr;
+                let is_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                let cont = builder.create_block();
+                let do_check = builder.create_block();
+                builder.ins().brif(is_null, cont, &[], do_check, &[]);
+                builder.seal_block(do_check);
+
+                builder.switch_to_block(do_check);
+                let current_task = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 8);
+                let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 56); // 24 + 32
+                let sig = self.check_preemption_sig(builder);
+                let call = builder.ins().call_indirect(sig, fn_ptr, &[current_task]);
+                let should_preempt = builder.inst_results(call)[0];
+                let exit = builder.create_block();
+                builder.ins().brif(should_preempt, exit, &[], cont, &[]);
+                builder.seal_block(exit);
+                builder.seal_block(cont);
+
+                builder.switch_to_block(exit);
+                self.emit_exit_return(
+                    builder,
+                    JitExitKind::Suspended as i64,
+                    JitSuspendReason::Preemption as i64,
+                    *bytecode_offset as i64,
+                );
+                builder.switch_to_block(cont);
+            }
+            JitInstr::CallNative {
+                native_id,
+                bytecode_offset,
+                args,
+                dest,
+            } => {
+                if args.is_empty() {
+                    // Zero-arg fast path:
+                    // If runtime context is available, dispatch helper-native directly.
+                    // If helper reports suspend sentinel, hand off to interpreter boundary.
+                    // Otherwise continue with immediate native result.
+                    let ctx = self.params.ctx_ptr;
+                    let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                    let fallback_suspend = builder.create_block();
+                    let do_dispatch = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(is_ctx_null, fallback_suspend, &[], do_dispatch, &[]);
+                    builder.seal_block(do_dispatch);
+                    builder.switch_to_block(do_dispatch);
+
+                    let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 64); // 24 + 40
+                    let sig = self.native_call_dispatch_sig(builder);
+                    let native_id_val = builder.ins().iconst(types::I16, *native_id as i64);
+                    let null_args_ptr = builder.ins().iconst(types::I64, 0);
+                    let zero_arg_count = builder.ins().iconst(types::I8, 0);
+                    let call = builder.ins().call_indirect(
+                        sig,
+                        fn_ptr,
+                        &[native_id_val, null_args_ptr, zero_arg_count, shared_state],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    let suspend_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
+                    let is_suspend =
+                        builder
+                            .ins()
+                            .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                    let suspend_exit = builder.create_block();
+                    let fast_continue = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(is_suspend, suspend_exit, &[], fast_continue, &[]);
+                    builder.seal_block(suspend_exit);
+                    builder.seal_block(fast_continue);
+                    builder.seal_block(fallback_suspend);
+
+                    builder.switch_to_block(suspend_exit);
+                    let zero_count = builder.ins().iconst(types::I32, 0);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        zero_count,
+                        self.params.exit_info_ptr,
+                        40,
+                    );
+                    self.emit_exit_return(
+                        builder,
+                        JitExitKind::Suspended as i64,
+                        JitSuspendReason::NativeCallBoundary as i64,
+                        *bytecode_offset as i64,
+                    );
+
+                    builder.switch_to_block(fallback_suspend);
+                    let zero_count = builder.ins().iconst(types::I32, 0);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        zero_count,
+                        self.params.exit_info_ptr,
+                        40,
+                    );
+                    self.emit_exit_return(
+                        builder,
+                        JitExitKind::Suspended as i64,
+                        JitSuspendReason::NativeCallBoundary as i64,
+                        *bytecode_offset as i64,
+                    );
+
+                    builder.switch_to_block(fast_continue);
+                    if let Some(d) = dest {
+                        self.def_reg(builder, *d, result);
+                    }
+                    return Ok(false);
+                } else {
+                    // Arg-carrying fast path:
+                    // If runtime context is available, marshal args and dispatch helper-native directly.
+                    // On sentinel suspend token (or missing ctx), fall back to boundary suspend and
+                    // materialize operands into exit_info for interpreter resume.
+                    let ctx = self.params.ctx_ptr;
+                    let is_ctx_null = builder.ins().icmp_imm(condcodes::IntCC::Equal, ctx, 0);
+                    let fallback_suspend = builder.create_block();
+                    let do_dispatch = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(is_ctx_null, fallback_suspend, &[], do_dispatch, &[]);
+                    builder.seal_block(do_dispatch);
+                    builder.switch_to_block(do_dispatch);
+
+                    let arg_count = args.len().min(u8::MAX as usize);
+                    let args_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (arg_count * 8) as u32,
+                        3,
+                    ));
+                    let args_ptr = builder.ins().stack_addr(types::I64, args_slot, 0);
+                    for (i, reg) in args.iter().take(arg_count).enumerate() {
+                        let raw = self.use_reg(builder, *reg);
+                        let boxed = match self.func.reg_type(*reg) {
+                            crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+                            crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+                            crate::jit::ir::types::JitType::Bool => {
+                                abi::emit_box_bool(builder, raw)
+                            }
+                            _ => raw,
+                        };
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), boxed, args_ptr, (i as i32) * 8);
+                    }
+
+                    let shared_state = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 0);
+                    let fn_ptr = builder.ins().load(types::I64, MemFlags::trusted(), ctx, 64); // 24 + 40
+                    let sig = self.native_call_dispatch_sig(builder);
+                    let native_id_val = builder.ins().iconst(types::I16, *native_id as i64);
+                    let arg_count_i8 = builder.ins().iconst(types::I8, arg_count as i64);
+                    let call = builder.ins().call_indirect(
+                        sig,
+                        fn_ptr,
+                        &[native_id_val, args_ptr, arg_count_i8, shared_state],
+                    );
+                    let result = builder.inst_results(call)[0];
+                    let suspend_sentinel = builder
+                        .ins()
+                        .iconst(types::I64, JIT_NATIVE_SUSPEND_SENTINEL as i64);
+                    let is_suspend =
+                        builder
+                            .ins()
+                            .icmp(condcodes::IntCC::Equal, result, suspend_sentinel);
+                    let suspend_exit = builder.create_block();
+                    let fast_continue = builder.create_block();
+                    builder
+                        .ins()
+                        .brif(is_suspend, suspend_exit, &[], fast_continue, &[]);
+                    builder.seal_block(suspend_exit);
+                    builder.seal_block(fast_continue);
+                    builder.seal_block(fallback_suspend);
+
+                    builder.switch_to_block(suspend_exit);
+                    let count = args.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
+                    let count_val = builder.ins().iconst(types::I32, count);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        count_val,
+                        self.params.exit_info_ptr,
+                        40,
+                    );
+                    for (i, reg) in args.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
+                        let raw = self.use_reg(builder, *reg);
+                        let boxed = match self.func.reg_type(*reg) {
+                            crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+                            crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+                            crate::jit::ir::types::JitType::Bool => {
+                                abi::emit_box_bool(builder, raw)
+                            }
+                            _ => raw,
+                        };
+                        let off = 48 + (i as i32) * 8;
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            boxed,
+                            self.params.exit_info_ptr,
+                            off,
+                        );
+                    }
+                    self.emit_exit_return(
+                        builder,
+                        JitExitKind::Suspended as i64,
+                        JitSuspendReason::NativeCallBoundary as i64,
+                        *bytecode_offset as i64,
+                    );
+
+                    builder.switch_to_block(fallback_suspend);
+                    let count = args.len().min(JIT_EXIT_MAX_NATIVE_ARGS) as i64;
+                    let count_val = builder.ins().iconst(types::I32, count);
+                    builder.ins().store(
+                        MemFlags::trusted(),
+                        count_val,
+                        self.params.exit_info_ptr,
+                        40,
+                    );
+                    for (i, reg) in args.iter().take(JIT_EXIT_MAX_NATIVE_ARGS).enumerate() {
+                        let raw = self.use_reg(builder, *reg);
+                        let boxed = match self.func.reg_type(*reg) {
+                            crate::jit::ir::types::JitType::I32 => abi::emit_box_i32(builder, raw),
+                            crate::jit::ir::types::JitType::F64 => abi::emit_box_f64(builder, raw),
+                            crate::jit::ir::types::JitType::Bool => {
+                                abi::emit_box_bool(builder, raw)
+                            }
+                            _ => raw,
+                        };
+                        let off = 48 + (i as i32) * 8;
+                        builder.ins().store(
+                            MemFlags::trusted(),
+                            boxed,
+                            self.params.exit_info_ptr,
+                            off,
+                        );
+                    }
+                    self.emit_exit_return(
+                        builder,
+                        JitExitKind::Suspended as i64,
+                        JitSuspendReason::NativeCallBoundary as i64,
+                        *bytecode_offset as i64,
+                    );
+
+                    builder.switch_to_block(fast_continue);
+                    if let Some(d) = dest {
+                        self.def_reg(builder, *d, result);
+                    }
+                    return Ok(false);
+                }
             }
 
             // ===== Everything else: unsupported for now =====
@@ -570,7 +866,72 @@ impl<'a> LoweringContext<'a> {
                 return Err(LowerError::UnsupportedInstruction(format!("{:?}", instr)));
             }
         }
-        Ok(())
+        Ok(false)
+    }
+
+    #[inline]
+    fn emit_exit_return(
+        &self,
+        builder: &mut FunctionBuilder<'_>,
+        kind: i64,
+        suspend_reason: i64,
+        bytecode_offset: i64,
+    ) {
+        let kind_val = builder.ins().iconst(types::I32, kind);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), kind_val, self.params.exit_info_ptr, 0);
+        let reason_val = builder.ins().iconst(types::I32, suspend_reason);
+        builder.ins().store(
+            MemFlags::trusted(),
+            reason_val,
+            self.params.exit_info_ptr,
+            4,
+        );
+        let bc_val = builder.ins().iconst(types::I32, bytecode_offset);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), bc_val, self.params.exit_info_ptr, 8);
+        let null = abi::emit_null(builder);
+        builder.ins().return_(&[null]);
+    }
+
+    fn safepoint_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_safepoint_poll {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_safepoint_poll = Some(sig_ref);
+        sig_ref
+    }
+
+    fn check_preemption_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_check_preemption {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I8));
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_check_preemption = Some(sig_ref);
+        sig_ref
+    }
+
+    fn native_call_dispatch_sig(&mut self, builder: &mut FunctionBuilder<'_>) -> ir::SigRef {
+        if let Some(sig) = self.sig_native_call_dispatch {
+            return sig;
+        }
+        let mut sig = ir::Signature::new(builder.func.signature.call_conv);
+        sig.params.push(AbiParam::new(types::I16)); // native_id
+        sig.params.push(AbiParam::new(types::I64)); // args_ptr
+        sig.params.push(AbiParam::new(types::I8)); // arg_count
+        sig.params.push(AbiParam::new(types::I64)); // shared_state
+        sig.returns.push(AbiParam::new(types::I64)); // NaN-boxed value or suspend sentinel
+        let sig_ref = builder.func.import_signature(sig);
+        self.sig_native_call_dispatch = Some(sig_ref);
+        sig_ref
     }
 
     /// Lower an integer comparison
@@ -609,6 +970,17 @@ impl<'a> LoweringContext<'a> {
         term: &JitTerminator,
         builder: &mut FunctionBuilder<'_>,
     ) -> Result<(), LowerError> {
+        // Write default exit status (Completed) when exit_info is provided.
+        let completed = builder
+            .ins()
+            .iconst(types::I32, JitExitKind::Completed as i64);
+        builder.ins().store(
+            MemFlags::trusted(),
+            completed,
+            self.params.exit_info_ptr,
+            0, // JitExitInfo.kind
+        );
+
         match term {
             JitTerminator::Return(Some(reg)) => {
                 let val = self.use_reg(builder, *reg);
@@ -659,7 +1031,7 @@ impl<'a> LoweringContext<'a> {
 
 /// Build the Cranelift function signature for JIT entry functions.
 ///
-/// ABI: `extern "C" fn(args: *const u64, arg_count: u32, locals: *mut u64, local_count: u32, ctx: *mut RuntimeContext) -> u64`
+/// ABI: `extern "C" fn(args: *const u64, arg_count: u32, locals: *mut u64, local_count: u32, ctx: *mut RuntimeContext, exit_info: *mut JitExitInfo) -> u64`
 pub fn jit_entry_signature(call_conv: CallConv) -> ir::Signature {
     let mut sig = ir::Signature::new(call_conv);
     sig.params.push(AbiParam::new(types::I64)); // args_ptr
@@ -667,6 +1039,7 @@ pub fn jit_entry_signature(call_conv: CallConv) -> ir::Signature {
     sig.params.push(AbiParam::new(types::I64)); // locals_ptr
     sig.params.push(AbiParam::new(types::I32)); // local_count
     sig.params.push(AbiParam::new(types::I64)); // ctx_ptr
+    sig.params.push(AbiParam::new(types::I64)); // exit_info_ptr
     sig.returns.push(AbiParam::new(types::I64)); // return value (NaN-boxed)
     sig
 }

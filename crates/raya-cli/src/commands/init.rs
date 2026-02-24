@@ -36,7 +36,10 @@ pub fn execute(
         .replace('"', "\\\"");
     let name_arg = format!("\"{}\"", resolved_name.replace('"', "\\\""));
     let script = format!(r#"pm.init("{}", {})"#, dir_str, name_arg);
-    match rt.eval(&script).with_context(|| "failed to initialize project via pm.init") {
+    match rt
+        .eval(&script)
+        .with_context(|| "failed to initialize project via pm.init")
+    {
         Ok(_) => {
             apply_template(&path, &resolved_template)?;
             println!(
@@ -74,7 +77,10 @@ fn prompt_line(prompt: &str, default: &str) -> anyhow::Result<String> {
     }
 }
 
-fn prompt_init_config(default_name: &str, current_template: &str) -> anyhow::Result<(String, String)> {
+fn prompt_init_config(
+    default_name: &str,
+    current_template: &str,
+) -> anyhow::Result<(String, String)> {
     println!("This utility will walk you through creating a raya.toml file.");
     let name = prompt_line("package name", default_name)?;
     let default_template = normalize_template(current_template);

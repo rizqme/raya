@@ -9,7 +9,9 @@
 
 use std::collections::HashMap;
 
-use cranelift_codegen::ir::{self, condcodes, types, AbiParam, InstBuilder, MemFlags, Value};
+use cranelift_codegen::ir::{
+    self, condcodes, types, AbiParam, InstBuilder, MemFlags, StackSlotData, StackSlotKind, Value,
+};
 use cranelift_codegen::isa::CallConv;
 #[cfg(test)]
 use cranelift_frontend::FunctionBuilderContext;
@@ -102,6 +104,14 @@ pub fn lower_function(
 
     // 4. Set up entry block (first SmBlock gets function parameters)
     if sm_func.blocks.is_empty() {
+        // Emit a minimal valid entry block so Cranelift always has a known
+        // entry point even for degenerate/empty lowered functions.
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        let null_value = builder.ins().iconst(types::I64, abi::NULL_VALUE as i64);
+        builder.ins().return_(&[null_value]);
+        builder.seal_block(entry);
         builder.seal_all_blocks();
         builder.finalize();
         return Ok(());
@@ -1104,10 +1114,49 @@ impl LoweringCtx {
 
             // (ctx, native_id: u16, args_ptr: i64, argc: u8) -> u64
             HelperCall::NativeCall => {
+                // Adapter convention: args = [native_id_reg, arg0, arg1, ...]
+                // Marshal arg values into a contiguous stack buffer and pass pointer+argc.
                 let mut v = vec![ctx];
-                for a in args {
-                    v.push(self.use_reg(builder, *a));
+                if args.is_empty() {
+                    let native_id = builder.ins().iconst(types::I16, 0);
+                    let args_ptr = builder.ins().iconst(types::I64, 0);
+                    let argc = builder.ins().iconst(types::I8, 0);
+                    v.push(native_id);
+                    v.push(args_ptr);
+                    v.push(argc);
+                    return v;
                 }
+
+                let native_id_raw = self.use_reg(builder, args[0]);
+                let native_id = builder.ins().ireduce(types::I16, native_id_raw);
+                let arg_count = args.len().saturating_sub(1).min(u8::MAX as usize);
+                let argc = builder.ins().iconst(types::I8, arg_count as i64);
+                let args_ptr = if arg_count == 0 {
+                    builder.ins().iconst(types::I64, 0)
+                } else {
+                    let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        (arg_count * 8) as u32,
+                        3,
+                    ));
+                    let base = builder.ins().stack_addr(types::I64, slot, 0);
+                    for (i, a) in args.iter().skip(1).take(arg_count).enumerate() {
+                        let raw = self.use_reg(builder, *a);
+                        let boxed = match builder.func.dfg.value_type(raw) {
+                            types::I32 => abi::emit_box_i32(builder, raw),
+                            types::F64 => abi::emit_box_f64(builder, raw),
+                            types::I8 => abi::emit_box_bool(builder, raw),
+                            _ => raw,
+                        };
+                        builder
+                            .ins()
+                            .store(MemFlags::trusted(), boxed, base, (i as i32) * 8);
+                    }
+                    base
+                };
+                v.push(native_id);
+                v.push(args_ptr);
+                v.push(argc);
                 v
             }
 
@@ -1792,6 +1841,63 @@ mod tests {
             verify_result.is_ok(),
             "Cranelift verify failed: {:?}",
             verify_result.err()
+        );
+    }
+
+    #[test]
+    fn test_lower_native_call_helper_marshals_args_via_stack_buffer() {
+        use super::super::analysis::SuspensionAnalysis;
+        use super::super::statemachine::{SmBlock, SmBlockId, SmBlockKind, SmTerminator};
+
+        // Build a minimal body that invokes HelperCall::NativeCall with:
+        // args = [native_id_reg, arg0_i32, arg1_i32]
+        // Lowering should marshal arg0/arg1 into a contiguous temporary buffer.
+        let sm_func = StateMachineFunction {
+            function_id: 99,
+            local_count: 0,
+            param_count: 0,
+            name: Some("native_args".to_string()),
+            analysis: SuspensionAnalysis::none(),
+            blocks: vec![SmBlock {
+                id: SmBlockId(0),
+                kind: SmBlockKind::Body,
+                instructions: vec![
+                    SmInstr::ConstI32 { dest: 0, value: 7 },  // native_id
+                    SmInstr::ConstI32 { dest: 1, value: 11 }, // arg0
+                    SmInstr::ConstI32 { dest: 2, value: 13 }, // arg1
+                    SmInstr::CallHelper {
+                        dest: Some(3),
+                        helper: HelperCall::NativeCall,
+                        args: vec![0, 1, 2],
+                    },
+                ],
+                terminator: SmTerminator::Return { value: 3 },
+            }],
+        };
+
+        let flags = settings::Flags::new(settings::builder());
+        let mut codegen_ctx = cranelift_codegen::Context::new();
+        codegen_ctx.func.signature = aot_entry_signature(CallConv::SystemV);
+
+        let mut func_builder_ctx = FunctionBuilderContext::new();
+        let builder = FunctionBuilder::new(&mut codegen_ctx.func, &mut func_builder_ctx);
+
+        let result = lower_function(&sm_func, builder);
+        assert!(result.is_ok(), "lower_function failed: {:?}", result.err());
+
+        let verify_result = cranelift_codegen::verify_function(&codegen_ctx.func, &flags);
+        assert!(
+            verify_result.is_ok(),
+            "Cranelift verify failed: {:?}",
+            verify_result.err()
+        );
+
+        // Regression guard: lowering must materialize a stack buffer for args.
+        let ir_text = format!("{}", codegen_ctx.func);
+        assert!(
+            ir_text.contains("stack_addr"),
+            "expected stack-address based arg marshalling in IR:\n{}",
+            ir_text
         );
     }
 }

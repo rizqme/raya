@@ -15,9 +15,21 @@
 
 use std::alloc::{self, Layout};
 use std::ptr;
+use std::sync::atomic::Ordering;
 
 use super::abi;
-use super::frame::{AotEntryFn, AotFrame, AotHelperTable, AotTaskContext};
+use super::frame::{
+    AotEntryFn, AotFrame, AotHelperTable, AotTaskContext, SuspendReason, AOT_SUSPEND,
+};
+use crate::vm::abi::{native_to_value, value_to_native, EngineContext};
+use crate::vm::interpreter::SharedVmState;
+use crate::vm::scheduler::{IoSubmission, Task};
+use crate::vm::value::Value;
+use raya_sdk::NativeCallResult;
+
+/// Temporary marker native ID for exercising suspend handoff in default AOT helpers.
+/// Real runtime dispatch will replace this stub behavior.
+const STUB_NATIVE_SUSPEND_ID: u16 = u16::MAX;
 
 // =============================================================================
 // Frame management
@@ -196,18 +208,80 @@ unsafe extern "C" fn helper_object_set_field(_obj: u64, _field_index: u32, _valu
 // =============================================================================
 
 unsafe extern "C" fn helper_native_call(
-    _ctx: *mut AotTaskContext,
-    _native_id: u16,
-    _args_ptr: *const u64,
-    _argc: u8,
+    ctx: *mut AotTaskContext,
+    native_id: u16,
+    args_ptr: *const u64,
+    argc: u8,
 ) -> u64 {
-    // TODO: Dispatch to native function implementation
-    abi::NULL_VALUE
+    if !ctx.is_null() && !(*ctx).shared_state.is_null() {
+        let shared = &*((*ctx).shared_state as *const SharedVmState);
+
+        // Build engine context for native handler dispatch
+        let task_id = if !(*ctx).current_task.is_null() {
+            (*((*ctx).current_task as *const Task)).id()
+        } else {
+            // Fallback for tests/partial contexts without a task pointer.
+            crate::vm::scheduler::TaskId::from_u64(0)
+        };
+        let engine_ctx =
+            EngineContext::new(&shared.gc, &shared.classes, task_id, &shared.class_metadata);
+
+        // Convert NaN-boxed args into NativeValue slice.
+        let value_args: Vec<Value> = if argc == 0 {
+            Vec::new()
+        } else if args_ptr.is_null() {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(args_ptr, argc as usize)
+                .iter()
+                .copied()
+                .map(|raw| Value::from_raw(raw))
+                .collect()
+        };
+        let native_args: Vec<raya_sdk::NativeValue> =
+            value_args.iter().map(|v| value_to_native(*v)).collect();
+
+        // Dispatch through resolved native table (ModuleNativeCall-style).
+        let resolved = shared.resolved_natives.read();
+        match resolved.call(native_id, &engine_ctx, &native_args) {
+            NativeCallResult::Value(val) => return native_to_value(val).raw(),
+            NativeCallResult::Suspend(io_request) => {
+                if let Some(tx) = shared.io_submit_tx.lock().as_ref() {
+                    let _ = tx.send(IoSubmission {
+                        task_id,
+                        request: io_request,
+                    });
+                }
+                (*ctx).suspend_reason = SuspendReason::IoWait;
+                (*ctx).suspend_payload = 0;
+                return AOT_SUSPEND;
+            }
+            NativeCallResult::Unhandled | NativeCallResult::Error(_) => {
+                // Fall through to stub behavior below for now.
+            }
+        }
+    }
+
+    // Stub split behavior:
+    // - Most IDs take an immediate "completed" fast path (null result placeholder).
+    // - STUB_NATIVE_SUSPEND_ID exercises boundary suspend handoff behavior.
+    if native_id == STUB_NATIVE_SUSPEND_ID {
+        if !ctx.is_null() {
+            (*ctx).suspend_reason = SuspendReason::NativeCallBoundary;
+            (*ctx).suspend_payload = 0;
+        }
+        AOT_SUSPEND
+    } else {
+        abi::NULL_VALUE
+    }
 }
 
-unsafe extern "C" fn helper_is_native_suspend(_result: u64) -> u8 {
-    // TODO: Check if a native call result is a suspend token
-    0
+unsafe extern "C" fn helper_is_native_suspend(result: u64) -> u8 {
+    if result == AOT_SUSPEND {
+        1
+    } else {
+        0
+    }
 }
 
 // =============================================================================
@@ -224,9 +298,19 @@ unsafe extern "C" fn helper_spawn(
     abi::NULL_VALUE
 }
 
-unsafe extern "C" fn helper_check_preemption(_ctx: *mut AotTaskContext) -> u8 {
-    // TODO: Check the preempt_requested atomic flag
-    0
+unsafe extern "C" fn helper_check_preemption(ctx: *mut AotTaskContext) -> u8 {
+    if ctx.is_null() {
+        return 0;
+    }
+    let flag_ptr = (*ctx).preempt_requested;
+    if flag_ptr.is_null() {
+        return 0;
+    }
+    if (*flag_ptr).load(Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
 }
 
 // =============================================================================
@@ -328,6 +412,16 @@ pub fn create_default_helper_table() -> AotHelperTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::interpreter::SafepointCoordinator;
+    use crate::vm::interpreter::SharedVmState;
+    use crate::vm::native_registry::ResolvedNatives;
+    use crossbeam::channel::unbounded;
+    use crossbeam_deque::Injector;
+    use parking_lot::RwLock;
+    use raya_sdk::IoRequest;
+    use rustc_hash::FxHashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     #[test]
     fn test_alloc_and_free_frame() {
@@ -417,5 +511,175 @@ mod tests {
             let eq = (table.generic_equals)(100, 100);
             assert_eq!(eq, 1);
         }
+    }
+
+    #[test]
+    fn test_native_call_marks_boundary_suspend() {
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 99,
+            helpers: create_default_helper_table(),
+            shared_state: ptr::null_mut(),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+        let result =
+            unsafe { helper_native_call(&mut ctx, STUB_NATIVE_SUSPEND_ID, ptr::null(), 0) };
+        assert_eq!(result, AOT_SUSPEND);
+        assert_eq!(ctx.suspend_reason, SuspendReason::NativeCallBoundary);
+        assert_eq!(ctx.suspend_payload, 0);
+        assert_eq!(unsafe { helper_is_native_suspend(result) }, 1);
+    }
+
+    #[test]
+    fn test_native_call_fast_path_returns_immediate_value() {
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 123,
+            helpers: create_default_helper_table(),
+            shared_state: ptr::null_mut(),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+        let result = unsafe { helper_native_call(&mut ctx, 42, ptr::null(), 0) };
+        assert_eq!(result, abi::NULL_VALUE);
+        assert_eq!(unsafe { helper_is_native_suspend(result) }, 0);
+        assert_eq!(ctx.suspend_reason, SuspendReason::None);
+        assert_eq!(ctx.suspend_payload, 123);
+    }
+
+    #[test]
+    fn test_check_preemption_reads_flag() {
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 0,
+            helpers: create_default_helper_table(),
+            shared_state: ptr::null_mut(),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+        assert_eq!(unsafe { helper_check_preemption(&mut ctx) }, 0);
+        preempt.store(true, Ordering::Relaxed);
+        assert_eq!(unsafe { helper_check_preemption(&mut ctx) }, 1);
+    }
+
+    #[test]
+    fn test_native_call_uses_resolved_natives_when_shared_state_available() {
+        let safepoint = Arc::new(SafepointCoordinator::new(1));
+        let tasks = Arc::new(RwLock::new(FxHashMap::default()));
+        let injector = Arc::new(Injector::new());
+        let shared = Arc::new(SharedVmState::new(safepoint, tasks, injector));
+
+        {
+            let mut reg = shared.native_registry.write();
+            reg.register("test.native.value", |_ctx, _args| NativeCallResult::i32(77));
+            let resolved = ResolvedNatives::link(&["test.native.value".to_string()], &reg)
+                .expect("link resolved natives");
+            *shared.resolved_natives.write() = resolved;
+        }
+
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 0,
+            helpers: create_default_helper_table(),
+            shared_state: Arc::as_ptr(&shared) as *mut (),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+
+        let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
+        assert_eq!(raw, Value::i32(77).raw());
+        assert_eq!(ctx.suspend_reason, SuspendReason::None);
+    }
+
+    #[test]
+    fn test_native_call_with_args_uses_resolved_natives_when_shared_state_available() {
+        let safepoint = Arc::new(SafepointCoordinator::new(1));
+        let tasks = Arc::new(RwLock::new(FxHashMap::default()));
+        let injector = Arc::new(Injector::new());
+        let shared = Arc::new(SharedVmState::new(safepoint, tasks, injector));
+
+        {
+            let mut reg = shared.native_registry.write();
+            reg.register("test.native.sum", |_ctx, args| {
+                let a = native_to_value(args[0]).as_i32().unwrap_or(0);
+                let b = native_to_value(args[1]).as_i32().unwrap_or(0);
+                NativeCallResult::i32(a + b)
+            });
+            let resolved = ResolvedNatives::link(&["test.native.sum".to_string()], &reg)
+                .expect("link resolved natives");
+            *shared.resolved_natives.write() = resolved;
+        }
+
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 0,
+            helpers: create_default_helper_table(),
+            shared_state: Arc::as_ptr(&shared) as *mut (),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+
+        let args = [Value::i32(7).raw(), Value::i32(11).raw()];
+        let raw = unsafe { helper_native_call(&mut ctx, 0, args.as_ptr(), args.len() as u8) };
+        assert_eq!(raw, Value::i32(18).raw());
+        assert_eq!(ctx.suspend_reason, SuspendReason::None);
+    }
+
+    #[test]
+    fn test_native_call_suspend_submits_io_when_shared_state_available() {
+        let safepoint = Arc::new(SafepointCoordinator::new(1));
+        let tasks = Arc::new(RwLock::new(FxHashMap::default()));
+        let injector = Arc::new(Injector::new());
+        let shared = Arc::new(SharedVmState::new(safepoint, tasks, injector));
+        let (tx, rx) = unbounded();
+        *shared.io_submit_tx.lock() = Some(tx);
+
+        {
+            let mut reg = shared.native_registry.write();
+            reg.register("test.native.suspend", |_ctx, _args| {
+                NativeCallResult::Suspend(IoRequest::Sleep { duration_nanos: 1 })
+            });
+            let resolved = ResolvedNatives::link(&["test.native.suspend".to_string()], &reg)
+                .expect("link resolved natives");
+            *shared.resolved_natives.write() = resolved;
+        }
+
+        let preempt = AtomicBool::new(false);
+        let mut ctx = AotTaskContext {
+            preempt_requested: &preempt,
+            resume_value: abi::NULL_VALUE,
+            suspend_reason: SuspendReason::None,
+            suspend_payload: 0,
+            helpers: create_default_helper_table(),
+            shared_state: Arc::as_ptr(&shared) as *mut (),
+            current_task: ptr::null_mut(),
+            module: ptr::null(),
+        };
+
+        let raw = unsafe { helper_native_call(&mut ctx, 0, ptr::null(), 0) };
+        assert_eq!(raw, AOT_SUSPEND);
+        assert_eq!(ctx.suspend_reason, SuspendReason::IoWait);
+        let submission = rx.try_recv().expect("io submission should be sent");
+        assert_eq!(submission.task_id.as_u64(), 0);
+        assert!(matches!(
+            submission.request,
+            IoRequest::Sleep { duration_nanos: 1 }
+        ));
     }
 }

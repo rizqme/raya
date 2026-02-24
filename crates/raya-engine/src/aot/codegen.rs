@@ -15,6 +15,7 @@
 //! 6. Append to contiguous code blob with alignment
 
 use std::sync::Arc;
+use std::{panic, panic::AssertUnwindSafe};
 
 use cranelift_codegen::ir::UserFuncName;
 use cranelift_codegen::isa::TargetIsa;
@@ -219,10 +220,29 @@ pub fn compile_functions(
         }
 
         // 3. Compile to machine code
-        let mut ctrl_plane = cranelift_codegen::control::ControlPlane::default();
-        codegen_ctx.compile(&*isa, &mut ctrl_plane).map_err(|e| {
-            AotError::CodegenFailed(format!("Failed to compile '{}': {:?}", func_name, e))
-        })?;
+        let compile_result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut ctrl_plane = cranelift_codegen::control::ControlPlane::default();
+            match codegen_ctx.compile(&*isa, &mut ctrl_plane) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("{:?}", e)),
+            }
+        }));
+
+        match compile_result {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                return Err(AotError::CodegenFailed(format!(
+                    "Failed to compile '{}': {}",
+                    func_name, e
+                )));
+            }
+            Err(_) => {
+                return Err(AotError::CodegenFailed(format!(
+                    "Cranelift panicked while compiling '{}'. Lowered IR may be invalid.",
+                    func_name
+                )));
+            }
+        }
 
         let compiled = codegen_ctx.compiled_code().ok_or_else(|| {
             AotError::CodegenFailed(format!("No compiled code for '{}'", func_name))

@@ -14,11 +14,31 @@ fn pkg_workflow_summary_contract() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-pkg-workflow/result.txt"))
         .expect("pkg result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("dep").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("lock").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("semver").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("path").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("dep").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("lock").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("semver").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("path").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("process").map(String::as_str),
         Some("true"),

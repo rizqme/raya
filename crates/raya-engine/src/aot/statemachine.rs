@@ -708,51 +708,75 @@ impl<'a> StateMachineTransformer<'a> {
             } else {
                 None
             };
+            let consumed_suspend_instr = suspend_instr.is_some();
 
             let mut all_pre_instrs = pre_instrs;
             if let Some(si) = suspend_instr {
                 all_pre_instrs.push(si);
             }
 
-            // For CallAot suspensions, add IsSuspend check
+            // For may-suspend points, emit runtime condition checks.
             let point = &self.analysis.points[suspend_idx];
-            if matches!(point.kind, super::analysis::SuspensionKind::AotCall) {
-                let check_reg = self.alloc_temp();
-                // The last instruction's dest should be the call result
-                let call_result = all_pre_instrs
-                    .last()
-                    .and_then(|i| match i {
+            let terminator = match point.kind {
+                super::analysis::SuspensionKind::AotCall
+                | super::analysis::SuspensionKind::NativeCall => {
+                    let check_reg = self.alloc_temp();
+                    // The last instruction's dest should be the call result.
+                    let call_result = all_pre_instrs.last().and_then(|i| match i {
                         SmInstr::CallHelper { dest: Some(d), .. } => Some(*d),
                         SmInstr::CallAot { dest, .. } => Some(*dest),
                         _ => None,
-                    })
-                    .unwrap_or(0);
-
-                all_pre_instrs.push(SmInstr::IsSuspend {
-                    dest: check_reg,
-                    value: call_result,
-                });
-
-                // Branch: if suspended → save, else → continuation
-                self.output_blocks.push(SmBlock {
-                    id: current_block_id,
-                    kind: SmBlockKind::Body,
-                    instructions: all_pre_instrs,
-                    terminator: SmTerminator::Branch {
-                        cond: check_reg,
+                    });
+                    if let Some(call_result) = call_result {
+                        match point.kind {
+                            super::analysis::SuspensionKind::AotCall => {
+                                all_pre_instrs.push(SmInstr::IsSuspend {
+                                    dest: check_reg,
+                                    value: call_result,
+                                });
+                            }
+                            super::analysis::SuspensionKind::NativeCall => {
+                                // Native suspension token can be helper-specific; query helper table.
+                                all_pre_instrs.push(SmInstr::CallHelper {
+                                    dest: Some(check_reg),
+                                    helper: HelperCall::IsNativeSuspend,
+                                    args: vec![call_result],
+                                });
+                            }
+                            _ => unreachable!("handled by match arm"),
+                        }
+                        SmTerminator::Branch {
+                            cond: check_reg,
+                            then_block: save_block_id,
+                            else_block: continuation_id,
+                        }
+                    } else {
+                        // Conservative fallback if analysis/instruction stream diverges.
+                        SmTerminator::Jump(save_block_id)
+                    }
+                }
+                super::analysis::SuspensionKind::PreemptionCheck => {
+                    let should_suspend = self.alloc_temp();
+                    all_pre_instrs.push(SmInstr::CallHelper {
+                        dest: Some(should_suspend),
+                        helper: HelperCall::CheckPreemption,
+                        args: vec![],
+                    });
+                    SmTerminator::Branch {
+                        cond: should_suspend,
                         then_block: save_block_id,
                         else_block: continuation_id,
-                    },
-                });
-            } else {
-                // Non-call suspension (Await, Yield, Sleep): always suspends
-                self.output_blocks.push(SmBlock {
-                    id: current_block_id,
-                    kind: SmBlockKind::Body,
-                    instructions: all_pre_instrs,
-                    terminator: SmTerminator::Jump(save_block_id),
-                });
-            }
+                    }
+                }
+                _ => SmTerminator::Jump(save_block_id),
+            };
+
+            self.output_blocks.push(SmBlock {
+                id: current_block_id,
+                kind: SmBlockKind::Body,
+                instructions: all_pre_instrs,
+                terminator,
+            });
 
             // Create save block
             let mut save_instrs = Vec::new();
@@ -778,15 +802,34 @@ impl<'a> StateMachineTransformer<'a> {
             // Set suspend reason
             let reason_const = self.alloc_temp();
             let reason_value = match point.kind {
-                super::analysis::SuspensionKind::Await => 1, // AwaitTask
-                super::analysis::SuspensionKind::Yield => 4, // Yielded
-                super::analysis::SuspensionKind::Sleep => 5, // Sleep
-                super::analysis::SuspensionKind::NativeCall => 2, // IoWait
-                super::analysis::SuspensionKind::AotCall => 1, // AwaitTask
-                super::analysis::SuspensionKind::PreemptionCheck => 3, // Preempted
-                super::analysis::SuspensionKind::MutexLock => 8, // MutexLock
-                super::analysis::SuspensionKind::ChannelRecv => 6,
-                super::analysis::SuspensionKind::ChannelSend => 7,
+                super::analysis::SuspensionKind::Await => {
+                    super::frame::SuspendReason::AwaitTask as i32
+                }
+                super::analysis::SuspensionKind::Yield => {
+                    super::frame::SuspendReason::Yielded as i32
+                }
+                super::analysis::SuspensionKind::Sleep => {
+                    super::frame::SuspendReason::Sleep as i32
+                }
+                // Native calls should round-trip through the VM thread loop before resuming AOT code.
+                super::analysis::SuspensionKind::NativeCall => {
+                    super::frame::SuspendReason::NativeCallBoundary as i32
+                }
+                super::analysis::SuspensionKind::AotCall => {
+                    super::frame::SuspendReason::AwaitTask as i32
+                }
+                super::analysis::SuspensionKind::PreemptionCheck => {
+                    super::frame::SuspendReason::Preempted as i32
+                }
+                super::analysis::SuspensionKind::MutexLock => {
+                    super::frame::SuspendReason::MutexLock as i32
+                }
+                super::analysis::SuspensionKind::ChannelRecv => {
+                    super::frame::SuspendReason::ChannelRecv as i32
+                }
+                super::analysis::SuspensionKind::ChannelSend => {
+                    super::frame::SuspendReason::ChannelSend as i32
+                }
             };
             save_instrs.push(SmInstr::ConstI32 {
                 dest: reason_const,
@@ -813,7 +856,7 @@ impl<'a> StateMachineTransformer<'a> {
             });
 
             // Update for next segment
-            current_start = instr_idx + 1;
+            current_start = instr_idx + u32::from(consumed_suspend_instr);
             current_block_id = continuation_id;
         }
 
@@ -950,5 +993,150 @@ mod tests {
         // Save block should return AOT_SUSPEND
         let save_block = save.unwrap();
         assert!(matches!(save_block.terminator, SmTerminator::Return { .. }));
+    }
+
+    #[test]
+    fn test_transform_with_preemption_check_is_conditional() {
+        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use std::collections::HashSet;
+
+        // Simulate a block end/back-edge preemption checkpoint.
+        let blocks = vec![SmBlock {
+            id: SmBlockId(0),
+            kind: SmBlockKind::Body,
+            instructions: vec![SmInstr::ConstI32 { dest: 0, value: 1 }],
+            terminator: SmTerminator::Jump(SmBlockId(0)),
+        }];
+
+        let analysis = SuspensionAnalysis {
+            points: vec![SuspensionPoint {
+                index: 0,
+                block_id: 0,
+                instr_index: 1, // synthetic point at end-of-block
+                kind: SuspensionKind::PreemptionCheck,
+                live_locals: HashSet::new(),
+            }],
+            has_suspensions: true,
+            loop_headers: HashSet::new(),
+        };
+
+        let sm = transform_to_state_machine(0, blocks, analysis, 0, 1, None);
+        let body = sm
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, SmBlockKind::Body))
+            .expect("expected a body block");
+
+        assert!(
+            body.instructions.iter().any(
+                |i| matches!(
+                    i,
+                    SmInstr::CallHelper {
+                        helper: HelperCall::CheckPreemption,
+                        ..
+                    }
+                )
+            ),
+            "preemption checkpoint should emit HelperCall::CheckPreemption"
+        );
+        assert!(
+            matches!(body.terminator, SmTerminator::Branch { .. }),
+            "preemption checkpoint should branch to save/continue, not always suspend"
+        );
+    }
+
+    #[test]
+    fn test_transform_with_native_call_is_conditional() {
+        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use std::collections::HashSet;
+
+        let blocks = vec![SmBlock {
+            id: SmBlockId(0),
+            kind: SmBlockKind::Body,
+            instructions: vec![
+                SmInstr::CallHelper {
+                    dest: Some(0),
+                    helper: HelperCall::NativeCall,
+                    args: vec![],
+                },
+                SmInstr::ConstI32 { dest: 1, value: 7 },
+            ],
+            terminator: SmTerminator::Return { value: 1 },
+        }];
+
+        let analysis = SuspensionAnalysis {
+            points: vec![SuspensionPoint {
+                index: 0,
+                block_id: 0,
+                instr_index: 0,
+                kind: SuspensionKind::NativeCall,
+                live_locals: HashSet::new(),
+            }],
+            has_suspensions: true,
+            loop_headers: HashSet::new(),
+        };
+
+        let sm = transform_to_state_machine(0, blocks, analysis, 0, 1, None);
+        let body = sm
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, SmBlockKind::Body))
+            .expect("expected a body block");
+
+        assert!(
+            body.instructions
+                .iter()
+                .any(|i| matches!(
+                    i,
+                    SmInstr::CallHelper {
+                        helper: HelperCall::IsNativeSuspend,
+                        ..
+                    }
+                )),
+            "native call suspension point should emit helper-based IsNativeSuspend check"
+        );
+        assert!(
+            matches!(body.terminator, SmTerminator::Branch { .. }),
+            "native call suspension should branch to save/continue, not always suspend"
+        );
+    }
+
+    #[test]
+    fn test_transform_malformed_native_suspend_point_falls_back_conservative_jump() {
+        use super::super::analysis::{SuspensionKind, SuspensionPoint};
+        use std::collections::HashSet;
+
+        // Suspension analysis says "NativeCall", but instruction stream has no call-result dest.
+        // Transform should not panic and should conservatively jump to save.
+        let blocks = vec![SmBlock {
+            id: SmBlockId(0),
+            kind: SmBlockKind::Body,
+            instructions: vec![SmInstr::ConstI32 { dest: 0, value: 1 }],
+            terminator: SmTerminator::Return { value: 0 },
+        }];
+
+        let analysis = SuspensionAnalysis {
+            points: vec![SuspensionPoint {
+                index: 0,
+                block_id: 0,
+                instr_index: 0,
+                kind: SuspensionKind::NativeCall,
+                live_locals: HashSet::new(),
+            }],
+            has_suspensions: true,
+            loop_headers: HashSet::new(),
+        };
+
+        let sm = transform_to_state_machine(0, blocks, analysis, 0, 1, None);
+        let body = sm
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, SmBlockKind::Body))
+            .expect("expected a body block");
+
+        assert!(
+            matches!(body.terminator, SmTerminator::Jump(_)),
+            "malformed may-suspend site should conservatively jump to save block"
+        );
     }
 }

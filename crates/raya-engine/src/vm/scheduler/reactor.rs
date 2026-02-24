@@ -363,6 +363,11 @@ impl Reactor {
                 if let Some(ref c) = compiler {
                     interpreter.set_background_compiler(Some(c.clone()));
                 }
+
+                let policy = state.jit_compilation_policy.lock().clone();
+                interpreter.set_compilation_policy(policy);
+
+                interpreter.set_jit_telemetry(Some(state.jit_telemetry.clone()));
             }
 
             // Wire profiler for CPU/wall-clock sampling

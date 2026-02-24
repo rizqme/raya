@@ -53,6 +53,33 @@ fn emit_f64(code: &mut Vec<u8>, val: f64) {
     code.extend_from_slice(&val.to_le_bytes());
 }
 
+fn emit_load_local(code: &mut Vec<u8>, idx: u16) {
+    code.push(Opcode::LoadLocal as u8);
+    code.extend_from_slice(&idx.to_le_bytes());
+}
+
+fn emit_store_local(code: &mut Vec<u8>, idx: u16) {
+    code.push(Opcode::StoreLocal as u8);
+    code.extend_from_slice(&idx.to_le_bytes());
+}
+
+fn emit_jmp_placeholder(code: &mut Vec<u8>, op: Opcode) -> usize {
+    code.push(op as u8);
+    let pos = code.len(); // i16 immediate position
+                          // VM interpreter reads jump operands with read_i16(), and production
+                          // compiler codegen also patches i16 relative offsets.
+    code.extend_from_slice(&0i16.to_le_bytes());
+    pos
+}
+
+fn patch_jump(code: &mut [u8], jump_pos: usize, target_pos: usize) {
+    // Match compiler codegen semantics:
+    // offset is relative to IP after reading i16 immediate.
+    let rel = target_pos as isize - (jump_pos as isize + 2);
+    let rel_i16 = i16::try_from(rel).expect("benchmark jump offset must fit i16");
+    code[jump_pos..jump_pos + 2].copy_from_slice(&rel_i16.to_le_bytes());
+}
+
 fn make_module(name: &str, functions: Vec<Function>) -> Module {
     Module {
         magic: *b"RAYA",
@@ -117,6 +144,265 @@ fn build_float_workload(repeat: usize) -> Vec<u8> {
     code
 }
 
+/// True branch loop workload with compiler-accurate i16 jump patching.
+fn build_branch_loop_workload(iterations: i32) -> Vec<u8> {
+    let mut code = Vec::new();
+
+    // i = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 0);
+
+    let loop_head = code.len();
+    // if (i < iterations) continue else exit
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, iterations);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_exit = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // i = i + 1
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 0);
+
+    let jmp_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let exit = code.len();
+    patch_jump(&mut code, jmp_exit, exit);
+    patch_jump(&mut code, jmp_back, loop_head);
+
+    emit_load_local(&mut code, 0);
+    emit(&mut code, Opcode::Return);
+    code
+}
+
+/// More complex mixed workload with nested loops, arithmetic, modulo, and branching.
+///
+/// Locals:
+///   0 = sum
+///   1 = outer index (i)
+///   2 = inner index (j)
+fn build_complex_mixed_workload(outer_iters: i32, inner_iters: i32) -> Vec<u8> {
+    let mut code = Vec::new();
+
+    // sum = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 0);
+
+    // i = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 1);
+
+    let outer_head = code.len();
+    // if (i < outer_iters) continue else exit
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, outer_iters);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_outer_exit = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // j = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 2);
+
+    let inner_head = code.len();
+    // if (j < inner_iters) continue else after_inner
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, inner_iters);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_after_inner = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // t = (i * 3 + j * 2) % 97
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, 3);
+    emit(&mut code, Opcode::Imul);
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, 2);
+    emit(&mut code, Opcode::Imul);
+    emit(&mut code, Opcode::Iadd);
+    emit_i32(&mut code, 97);
+    emit(&mut code, Opcode::Imod);
+
+    // sum = sum + t
+    emit_load_local(&mut code, 0);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 0);
+
+    // if ((j % 2) == 0) sum = sum - 5;
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, 2);
+    emit(&mut code, Opcode::Imod);
+    emit_i32(&mut code, 0);
+    emit(&mut code, Opcode::Ieq);
+    let jmp_skip_adjust = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, 5);
+    emit(&mut code, Opcode::Isub);
+    emit_store_local(&mut code, 0);
+    let adjust_end = code.len();
+    patch_jump(&mut code, jmp_skip_adjust, adjust_end);
+
+    // j = j + 1
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 2);
+
+    // jump inner_head
+    let jmp_inner_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let after_inner = code.len();
+    patch_jump(&mut code, jmp_after_inner, after_inner);
+    patch_jump(&mut code, jmp_inner_back, inner_head);
+
+    // i = i + 1
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 1);
+
+    // jump outer_head
+    let jmp_outer_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let outer_exit = code.len();
+    patch_jump(&mut code, jmp_outer_exit, outer_exit);
+    patch_jump(&mut code, jmp_outer_back, outer_head);
+
+    // return sum
+    emit_load_local(&mut code, 0);
+    emit(&mut code, Opcode::Return);
+    code
+}
+
+/// Matrix multiplication kernel-like workload (integer arithmetic, triple nested loops).
+///
+/// Computes a deterministic accumulation equivalent to summing all cells of C = A * B
+/// for synthetic matrices:
+///   A[i,k] = (i+1)*(k+1)
+///   B[k,j] = (k+1)*(j+1)
+///
+/// This avoids array/object overhead and isolates loop+arithmetic behavior.
+///
+/// Locals:
+///   0 = total
+///   1 = i
+///   2 = j
+///   3 = k
+///   4 = cell_acc
+fn build_matrix_multiply_kernel_workload(n: i32) -> Vec<u8> {
+    let mut code = Vec::new();
+
+    // total = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 0);
+
+    // i = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 1);
+
+    let i_head = code.len();
+    // if (i < n) else exit
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, n);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_i_exit = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // j = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 2);
+
+    let j_head = code.len();
+    // if (j < n) else after_j
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, n);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_after_j = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // k = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 3);
+    // cell_acc = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 4);
+
+    let k_head = code.len();
+    // if (k < n) else after_k
+    emit_load_local(&mut code, 3);
+    emit_i32(&mut code, n);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_after_k = emit_jmp_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    // prod = ((i+1)*(k+1))*((k+1)*(j+1))
+    // left: (i+1)*(k+1)
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_load_local(&mut code, 3);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit(&mut code, Opcode::Imul);
+
+    // right: (k+1)*(j+1)
+    emit_load_local(&mut code, 3);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit(&mut code, Opcode::Imul);
+
+    // prod
+    emit(&mut code, Opcode::Imul);
+
+    // cell_acc += prod
+    emit_load_local(&mut code, 4);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 4);
+
+    // k = k + 1
+    emit_load_local(&mut code, 3);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 3);
+
+    // jump k_head
+    let jmp_k_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let after_k = code.len();
+    patch_jump(&mut code, jmp_after_k, after_k);
+    patch_jump(&mut code, jmp_k_back, k_head);
+
+    // total += cell_acc
+    emit_load_local(&mut code, 0);
+    emit_load_local(&mut code, 4);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 0);
+
+    // j = j + 1
+    emit_load_local(&mut code, 2);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 2);
+
+    // jump j_head
+    let jmp_j_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let after_j = code.len();
+    patch_jump(&mut code, jmp_after_j, after_j);
+    patch_jump(&mut code, jmp_j_back, j_head);
+
+    // i = i + 1
+    emit_load_local(&mut code, 1);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 1);
+
+    // jump i_head
+    let jmp_i_back = emit_jmp_placeholder(&mut code, Opcode::Jmp);
+    let i_exit = code.len();
+    patch_jump(&mut code, jmp_i_exit, i_exit);
+    patch_jump(&mut code, jmp_i_back, i_head);
+
+    // return total
+    emit_load_local(&mut code, 0);
+    emit(&mut code, Opcode::Return);
+    code
+}
+
 // ============================================================================
 // JIT compilation + execution helpers
 // ============================================================================
@@ -124,6 +410,7 @@ fn build_float_workload(repeat: usize) -> Vec<u8> {
 struct CompiledFunction {
     _jit_module: JITModule,
     entry_fn: JitEntryFn,
+    local_count: usize,
 }
 
 fn jit_compile(module: &Module, func_idx: usize) -> Result<CompiledFunction, String> {
@@ -178,6 +465,7 @@ fn jit_compile(module: &Module, func_idx: usize) -> Result<CompiledFunction, Str
     Ok(CompiledFunction {
         _jit_module: jit_module,
         entry_fn,
+        local_count: func.local_count,
     })
 }
 
@@ -199,7 +487,22 @@ fn jit_compile_safe(module: &Module, func_idx: usize) -> Result<CompiledFunction
 
 #[inline(never)]
 fn call_jit(compiled: &CompiledFunction) -> u64 {
-    unsafe { (compiled.entry_fn)(ptr::null(), 0, ptr::null_mut(), 0, ptr::null_mut()) }
+    let mut exit = raya_engine::jit::runtime::trampoline::JitExitInfo::default();
+    let mut local_buf = [0u64; 8];
+    assert!(
+        compiled.local_count <= local_buf.len(),
+        "benchmark workload local_count too large for fixed local buffer"
+    );
+    unsafe {
+        (compiled.entry_fn)(
+            ptr::null(),
+            0,
+            local_buf.as_mut_ptr(),
+            compiled.local_count as u32,
+            ptr::null_mut(),
+            (&mut exit as *mut _),
+        )
+    }
 }
 
 // ============================================================================
@@ -349,14 +652,14 @@ fn main() {
     // -------------------------------------------------------------------
     println!("--- JIT Native Execution ---\n");
 
-    for &size in &[10, 50, 100, 500] {
-        let code = build_arithmetic_workload(size);
+    for &iters in &[64, 256, 1024, 4096] {
+        let code = build_branch_loop_workload(iters);
         let module = make_module(
             "bench",
             vec![Function {
                 name: "bench_fn".to_string(),
                 param_count: 0,
-                local_count: 0,
+                local_count: 1,
                 code,
             }],
         );
@@ -364,15 +667,15 @@ fn main() {
         match jit_compile_safe(&module, 0) {
             Ok(compiled) => {
                 let result = bench(
-                    &format!("exec jit arith({}ops)", size * 4),
+                    &format!("exec jit branch-loop(iters={})", iters),
                     1_000,
-                    1_000_000,
+                    200_000,
                     || call_jit(&compiled),
                 );
                 result.print();
             }
             Err(e) => {
-                println!("  [skip] arith({}ops): {}", size * 4, e);
+                println!("  [skip] branch-loop(iters={}): {}", iters, e);
             }
         }
     }
@@ -384,25 +687,25 @@ fn main() {
     // -------------------------------------------------------------------
     println!("--- Interpreter Execution ---\n");
 
-    for &size in &[10, 50, 100, 500] {
-        let code = build_arithmetic_workload(size);
+    for &iters in &[64, 256, 1024, 4096] {
+        let code = build_branch_loop_workload(iters);
         let module = make_module(
             "bench",
             vec![Function {
                 name: "main".to_string(),
                 param_count: 0,
-                local_count: 0,
+                local_count: 1,
                 code,
             }],
         );
 
-        let iters = if size <= 100 { 1_000 } else { 500 };
+        let mut vm = Vm::with_worker_count(1);
+        let bench_iters = if iters <= 1024 { 1_000 } else { 300 };
         let result = bench(
-            &format!("exec interp arith({}ops)", size * 4),
+            &format!("exec interp branch-loop(iters={})", iters),
             10,
-            iters,
+            bench_iters,
             || {
-                let mut vm = Vm::with_worker_count(1);
                 let r = vm.execute(&module).unwrap();
                 r.as_i32().unwrap_or(0) as u64
             },
@@ -459,8 +762,8 @@ fn main() {
     );
     println!("  {:-<30} {:-<12} {:-<12} {:-<10}", "", "", "", "");
 
-    for &size in &[10, 50, 100, 500] {
-        let code = build_arithmetic_workload(size);
+    for &iters in &[64, 256, 1024, 4096] {
+        let code = build_branch_loop_workload(iters);
 
         // JIT
         let jit_module = make_module(
@@ -468,14 +771,14 @@ fn main() {
             vec![Function {
                 name: "bench_fn".to_string(),
                 param_count: 0,
-                local_count: 0,
+                local_count: 1,
                 code: code.clone(),
             }],
         );
 
         let jit_per_iter = match jit_compile_safe(&jit_module, 0) {
             Ok(compiled) => {
-                let r = bench("", 1_000, 1_000_000, || call_jit(&compiled));
+                let r = bench("", 1_000, 200_000, || call_jit(&compiled));
                 Some(r.per_iter)
             }
             Err(_) => None,
@@ -487,19 +790,19 @@ fn main() {
             vec![Function {
                 name: "main".to_string(),
                 param_count: 0,
-                local_count: 0,
+                local_count: 1,
                 code,
             }],
         );
 
-        let interp_iters = if size <= 100 { 200 } else { 100 };
+        let mut vm = Vm::with_worker_count(1);
+        let interp_iters = if iters <= 1024 { 200 } else { 100 };
         let interp_result = bench("", 5, interp_iters, || {
-            let mut vm = Vm::with_worker_count(1);
             let r = vm.execute(&interp_module).unwrap();
             r.as_i32().unwrap_or(0) as u64
         });
 
-        let label = format!("arith({}ops)", size * 4);
+        let label = format!("branch-loop(iters={})", iters);
 
         match jit_per_iter {
             Some(jit_dur) if jit_dur.as_nanos() > 0 => {
@@ -645,6 +948,152 @@ fn main() {
                     size * 4,
                     interp_val,
                     e
+                );
+            }
+        }
+    }
+
+    println!();
+
+    // -------------------------------------------------------------------
+    // 8. Complex Mixed Workload (nested loops + branches + arithmetic)
+    // -------------------------------------------------------------------
+    println!("--- Complex Mixed Workload ---\n");
+    println!(
+        "  {:<30} {:>12} {:>12} {:>10}",
+        "Workload", "Interpreter", "JIT Native", "Speedup"
+    );
+    println!("  {:-<30} {:-<12} {:-<12} {:-<10}", "", "", "", "");
+
+    for &(outer, inner) in &[(32, 32), (64, 32), (64, 64)] {
+        let code = build_complex_mixed_workload(outer, inner);
+        let label = format!("mixed(o={},i={})", outer, inner);
+
+        let jit_module = make_module(
+            "bench",
+            vec![Function {
+                name: "bench_fn".to_string(),
+                param_count: 0,
+                local_count: 3,
+                code: code.clone(),
+            }],
+        );
+
+        let interp_module = make_module(
+            "bench",
+            vec![Function {
+                name: "main".to_string(),
+                param_count: 0,
+                local_count: 3,
+                code,
+            }],
+        );
+
+        let jit_per_iter = match jit_compile_safe(&jit_module, 0) {
+            Ok(compiled) => {
+                let r = bench("", 1_000, 100_000, || call_jit(&compiled));
+                Some(r.per_iter)
+            }
+            Err(_) => None,
+        };
+
+        let mut vm = Vm::with_worker_count(1);
+        let interp_result = bench("", 5, 200, || {
+            let r = vm.execute(&interp_module).unwrap();
+            r.as_i32().unwrap_or(0) as u64
+        });
+
+        match jit_per_iter {
+            Some(jit_dur) if jit_dur.as_nanos() > 0 => {
+                let speedup = interp_result.per_iter.as_nanos() as f64 / jit_dur.as_nanos() as f64;
+                println!(
+                    "  {:<30} {:>10.2} us {:>10.2} ns {:>8.1}x",
+                    label,
+                    interp_result.per_iter.as_nanos() as f64 / 1_000.0,
+                    jit_dur.as_nanos() as f64,
+                    speedup
+                );
+            }
+            _ => {
+                println!(
+                    "  {:<30} {:>10.2} us {:>12} {:>10}",
+                    label,
+                    interp_result.per_iter.as_nanos() as f64 / 1_000.0,
+                    "[failed]",
+                    "N/A"
+                );
+            }
+        }
+    }
+
+    println!();
+
+    // -------------------------------------------------------------------
+    // 9. Matrix Multiplication Kernel Workload
+    // -------------------------------------------------------------------
+    println!("--- Matrix Multiplication Kernel (triple loop) ---\n");
+    println!(
+        "  {:<30} {:>12} {:>12} {:>10}",
+        "Workload", "Interpreter", "JIT Native", "Speedup"
+    );
+    println!("  {:-<30} {:-<12} {:-<12} {:-<10}", "", "", "", "");
+
+    for &n in &[8, 16, 24] {
+        let code = build_matrix_multiply_kernel_workload(n);
+        let label = format!("matmul-kernel(n={})", n);
+
+        let jit_module = make_module(
+            "bench",
+            vec![Function {
+                name: "bench_fn".to_string(),
+                param_count: 0,
+                local_count: 5,
+                code: code.clone(),
+            }],
+        );
+
+        let interp_module = make_module(
+            "bench",
+            vec![Function {
+                name: "main".to_string(),
+                param_count: 0,
+                local_count: 5,
+                code,
+            }],
+        );
+
+        let jit_per_iter = match jit_compile_safe(&jit_module, 0) {
+            Ok(compiled) => {
+                let r = bench("", 1_000, 50_000, || call_jit(&compiled));
+                Some(r.per_iter)
+            }
+            Err(_) => None,
+        };
+
+        let mut vm = Vm::with_worker_count(1);
+        let interp_result = bench("", 5, 100, || {
+            let r = vm.execute(&interp_module).unwrap();
+            r.as_i32().unwrap_or(0) as u64
+        });
+
+        match jit_per_iter {
+            Some(jit_dur) if jit_dur.as_nanos() > 0 => {
+                let speedup = interp_result.per_iter.as_nanos() as f64 / jit_dur.as_nanos() as f64;
+                println!(
+                    "  {:<30} {:>10.2} us {:>10.2} ns {:>8.1}x",
+                    label,
+                    interp_result.per_iter.as_nanos() as f64 / 1_000.0,
+                    jit_dur.as_nanos() as f64,
+                    speedup
+                );
+            }
+            _ => {
+                println!(
+                    "  {:<30} {:>10.2} us {:>12} {:>10}",
+                    label,
+                    interp_result.per_iter.as_nanos() as f64 / 1_000.0,
+                    "[failed]",
+                    "N/A"
                 );
             }
         }

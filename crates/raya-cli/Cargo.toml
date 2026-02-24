@@ -14,8 +14,8 @@ path = "src/main.rs"
 
 [features]
 default = ["jit", "aot"]
-jit = ["raya-engine/jit"]
-aot = ["raya-engine/aot"]
+jit = ["raya-engine/jit", "raya-runtime/jit"]
+aot = ["raya-engine/aot", "raya-runtime/aot"]
 
 [dependencies]
 raya-engine = { workspace = true }
@@ -29,3 +29,4 @@ rustyline = "15"
 termcolor = "1.4"
 glob = "0.3"
 num_cpus = "1"
+crc32fast = "1.3"

@@ -31,6 +31,10 @@ pub struct VmStats {
 
     /// Total CPU steps executed
     pub steps_executed: u64,
+
+    /// Snapshot of JIT telemetry counters.
+    #[cfg(feature = "jit")]
+    pub jit_telemetry: crate::vm::interpreter::JitTelemetrySnapshot,
 }
 
 /// Raya virtual machine
@@ -177,7 +181,15 @@ impl Vm {
             tasks: task_count,
             max_tasks: 0,
             steps_executed: 0,
+            #[cfg(feature = "jit")]
+            jit_telemetry: self.scheduler.shared_state().jit_telemetry.snapshot(),
         }
+    }
+
+    /// Return a snapshot of JIT telemetry counters.
+    #[cfg(feature = "jit")]
+    pub fn get_jit_telemetry(&self) -> crate::vm::interpreter::JitTelemetrySnapshot {
+        self.scheduler.shared_state().jit_telemetry.snapshot()
     }
 
     /// Terminate this VM and shut down the scheduler
@@ -235,6 +247,12 @@ impl Vm {
         let engine = crate::jit::JitEngine::with_config(config.clone())
             .map_err(|e| format!("Failed to initialize JIT: {}", e))?;
         *self.scheduler.shared_state().code_cache.lock() = Some(engine.code_cache().clone());
+        *self.scheduler.shared_state().jit_compilation_policy.lock() =
+            crate::jit::profiling::policy::CompilationPolicy {
+                call_threshold: config.call_threshold,
+                loop_threshold: config.loop_threshold,
+                max_function_size: config.max_adaptive_function_size,
+            };
         self.jit_config = Some(config);
         self.jit_engine = Some(engine);
         Ok(())
@@ -285,14 +303,13 @@ impl Vm {
                     .insert(module.checksum, profile);
             }
 
-            // Start background thread FIRST (consumes engine), then submit prewarm candidates
+            // Start background compiler thread and submit prewarm candidates.
             if let Some(engine) = self.jit_engine.take() {
                 let module_id = engine.register_module(module.checksum);
                 let bg_compiler = Arc::new(engine.start_background());
                 *self.scheduler.shared_state().background_compiler.lock() =
                     Some(bg_compiler.clone());
 
-                // Submit prewarm candidates to background thread (non-blocking)
                 let candidates = Self::collect_prewarm_candidates(module, config);
                 if !candidates.is_empty() {
                     let module_arc = Arc::new(module.clone());
@@ -310,18 +327,23 @@ impl Vm {
                         });
 
                     for &func_index in candidates.iter().take(config.max_prewarm_functions) {
-                        // Mark as compiling to prevent adaptive re-submission
                         if let Some(fp) = profile.get(func_index) {
                             if !fp.try_start_compile() {
                                 continue;
                             }
                         }
-                        let _ = bg_compiler.try_submit(crate::jit::profiling::CompilationRequest {
-                            module: module_arc.clone(),
-                            func_index,
-                            module_id,
-                            module_profile: profile.clone(),
-                        });
+                        let accepted =
+                            bg_compiler.try_submit(crate::jit::profiling::CompilationRequest {
+                                module: module_arc.clone(),
+                                func_index,
+                                module_id,
+                                module_profile: profile.clone(),
+                            });
+                        if !accepted {
+                            if let Some(fp) = profile.get(func_index) {
+                                fp.finish_compile_failed();
+                            }
+                        }
                     }
                 }
             }
@@ -420,30 +442,6 @@ impl Vm {
         }
     }
 
-    /// Collect prewarm candidates from embedded JIT hints or runtime heuristics.
-    ///
-    /// Prefers compile-time hints (zero cost). Falls back to runtime analysis
-    /// for modules compiled without the JIT feature.
-    #[cfg(feature = "jit")]
-    fn collect_prewarm_candidates(module: &Module, config: &crate::jit::JitConfig) -> Vec<usize> {
-        if !module.jit_hints.is_empty() {
-            // Use pre-computed hints from compile time
-            return module
-                .jit_hints
-                .iter()
-                .filter(|h| h.score >= config.min_score && h.is_cpu_bound)
-                .map(|h| h.func_index as usize)
-                .collect();
-        }
-        // Fallback: run heuristics at runtime (for modules compiled without JIT)
-        let analyzer = crate::jit::analysis::heuristics::HeuristicsAnalyzer::new();
-        analyzer
-            .select_candidates(module)
-            .iter()
-            .map(|c| c.func_index)
-            .collect()
-    }
-
     /// Extract a human-readable error message from a failed task's exception
     fn extract_exception_message(task: &Task) -> String {
         let Some(exc) = task.current_exception() else {
@@ -475,6 +473,30 @@ impl Vm {
         }
 
         "Main task failed".to_string()
+    }
+
+    /// Collect prewarm candidates from embedded JIT hints or runtime heuristics.
+    ///
+    /// Prefers compile-time hints (zero cost). Falls back to runtime analysis
+    /// for modules compiled without the JIT feature.
+    #[cfg(feature = "jit")]
+    fn collect_prewarm_candidates(module: &Module, config: &crate::jit::JitConfig) -> Vec<usize> {
+        if !module.jit_hints.is_empty() {
+            // Use pre-computed hints from compile time
+            return module
+                .jit_hints
+                .iter()
+                .filter(|h| h.score >= config.min_score && h.is_cpu_bound)
+                .map(|h| h.func_index as usize)
+                .collect();
+        }
+        // Fallback: run heuristics at runtime (for modules compiled without JIT)
+        let analyzer = crate::jit::analysis::heuristics::HeuristicsAnalyzer::new();
+        analyzer
+            .select_candidates(module)
+            .iter()
+            .map(|c| c.func_index)
+            .collect()
     }
 
     // =========================================================================
@@ -581,10 +603,35 @@ mod tests {
     use super::*;
     use crate::compiler::bytecode::opcode::Opcode;
     use crate::compiler::Function;
+    #[cfg(feature = "jit")]
+    use std::sync::atomic::Ordering;
 
     #[test]
     fn test_vm_creation() {
         let _vm = Vm::new();
+    }
+
+    #[cfg(feature = "jit")]
+    #[test]
+    fn test_jit_telemetry_snapshot_includes_resume_counters() {
+        let vm = Vm::new();
+        let t = &vm.shared_state().jit_telemetry;
+        t.resume_native_ok.fetch_add(2, Ordering::Relaxed);
+        t.resume_native_reject.fetch_add(3, Ordering::Relaxed);
+        t.resume_preemption_ok.fetch_add(5, Ordering::Relaxed);
+        t.resume_preemption_reject.fetch_add(7, Ordering::Relaxed);
+
+        let snap = vm.get_jit_telemetry();
+        assert_eq!(snap.resume_native_ok, 2);
+        assert_eq!(snap.resume_native_reject, 3);
+        assert_eq!(snap.resume_preemption_ok, 5);
+        assert_eq!(snap.resume_preemption_reject, 7);
+
+        let stats = vm.get_stats();
+        assert_eq!(stats.jit_telemetry.resume_native_ok, 2);
+        assert_eq!(stats.jit_telemetry.resume_native_reject, 3);
+        assert_eq!(stats.jit_telemetry.resume_preemption_ok, 5);
+        assert_eq!(stats.jit_telemetry.resume_preemption_reject, 7);
     }
 
     #[test]

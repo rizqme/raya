@@ -35,7 +35,7 @@ pub enum Operands {
     U16(u16),
     /// Single u32 (LoadConst, New, LoadGlobal, etc.)
     U32(u32),
-    /// Single i32 (ConstI32, Jmp, JmpIfFalse, etc.)
+    /// Single i32 (ConstI32, etc.)
     I32(i32),
     /// Single f64 (ConstF64)
     F64(f64),
@@ -56,8 +56,24 @@ pub enum Operands {
     ArrayLiteral { type_index: u32, length: u32 },
 }
 
+#[derive(Clone, Copy)]
+enum JumpWidth {
+    I16,
+    I32,
+}
+
 /// Decode all instructions in a function's bytecode
 pub fn decode_function(code: &[u8]) -> Result<Vec<DecodedInstr>, DecodeError> {
+    // Support both historical encodings used across the codebase/tests.
+    // Prefer i16 (current VM execution path), then fall back to i32.
+    decode_function_with_jump_width(code, JumpWidth::I16)
+        .or_else(|_| decode_function_with_jump_width(code, JumpWidth::I32))
+}
+
+fn decode_function_with_jump_width(
+    code: &[u8],
+    jump_width: JumpWidth,
+) -> Result<Vec<DecodedInstr>, DecodeError> {
     let mut instrs = Vec::new();
     let mut pos = 0;
 
@@ -67,7 +83,7 @@ pub fn decode_function(code: &[u8]) -> Result<Vec<DecodedInstr>, DecodeError> {
         let opcode = Opcode::from_u8(byte).ok_or(DecodeError::InvalidOpcode { byte, offset })?;
         pos += 1;
 
-        let operands = decode_operands(opcode, code, &mut pos, offset)?;
+        let operands = decode_operands(opcode, code, &mut pos, offset, jump_width)?;
         let size = pos - offset;
 
         instrs.push(DecodedInstr {
@@ -86,6 +102,7 @@ fn decode_operands(
     code: &[u8],
     pos: &mut usize,
     offset: usize,
+    jump_width: JumpWidth,
 ) -> Result<Operands, DecodeError> {
     match opcode {
         // No operands (1 byte total)
@@ -218,13 +235,20 @@ fn decode_operands(
             Ok(Operands::U16(arg_count))
         }
 
-        // i32 operand — jumps (5 bytes total)
+        // Jump offsets are historically encoded as either i16 or i32 depending on producer.
         Opcode::Jmp
         | Opcode::JmpIfFalse
         | Opcode::JmpIfTrue
         | Opcode::JmpIfNull
         | Opcode::JmpIfNotNull => {
-            let v = read_i32(code, pos, offset)?;
+            let v = match jump_width {
+                // Compiler/VM i16 jump offsets are relative to the instruction
+                // pointer *after* reading the i16 immediate.
+                // CFG currently resolves relative offsets from opcode start,
+                // so normalize i16 by adding instruction size (opcode+i16 = 3).
+                JumpWidth::I16 => read_i16(code, pos, offset)? as i32 + 3,
+                JumpWidth::I32 => read_i32(code, pos, offset)?,
+            };
             Ok(Operands::I32(v))
         }
 
@@ -364,6 +388,15 @@ fn read_i32(code: &[u8], pos: &mut usize, offset: usize) -> Result<i32, DecodeEr
     }
     let v = i32::from_le_bytes([code[*pos], code[*pos + 1], code[*pos + 2], code[*pos + 3]]);
     *pos += 4;
+    Ok(v)
+}
+
+fn read_i16(code: &[u8], pos: &mut usize, offset: usize) -> Result<i16, DecodeError> {
+    if *pos + 2 > code.len() {
+        return Err(DecodeError::UnexpectedEnd(offset));
+    }
+    let v = i16::from_le_bytes([code[*pos], code[*pos + 1]]);
+    *pos += 2;
     Ok(v)
 }
 

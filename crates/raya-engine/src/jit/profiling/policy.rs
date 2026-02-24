@@ -31,6 +31,9 @@ impl CompilationPolicy {
         // Don't compile if already available or in progress
         if profile.is_jit_available()
             || profile.compiling.load(std::sync::atomic::Ordering::Relaxed)
+            || profile
+                .compile_failed
+                .load(std::sync::atomic::Ordering::Relaxed)
         {
             return false;
         }
@@ -138,6 +141,19 @@ mod tests {
             profile.record_call();
         }
         profile.try_start_compile();
+
+        assert!(!policy.should_compile(&profile, 100));
+    }
+
+    #[test]
+    fn test_compile_failed_blocks_retries() {
+        let policy = CompilationPolicy::new();
+        let profile = FunctionProfile::new();
+
+        for _ in 0..2000 {
+            profile.record_call();
+        }
+        profile.finish_compile_failed();
 
         assert!(!policy.should_compile(&profile, 100));
     }

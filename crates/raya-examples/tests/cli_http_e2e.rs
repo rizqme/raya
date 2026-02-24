@@ -195,9 +195,15 @@ fn e2e_cli_http_stress_workflow() {
     assert!(app_dir.join("health.csv").exists(), "health.csv missing");
     assert!(app_dir.join("health.tar").exists(), "health.tar missing");
     assert!(app_dir.join("health.ok").exists(), "health.ok missing");
-    assert!(app_dir.join("diag.result.json").exists(), "diag.result.json missing");
+    assert!(
+        app_dir.join("diag.result.json").exists(),
+        "diag.result.json missing"
+    );
     assert!(app_dir.join("request.log").exists(), "request.log missing");
-    assert!(app_dir.join("stress.result.txt").exists(), "stress.result.txt missing");
+    assert!(
+        app_dir.join("stress.result.txt").exists(),
+        "stress.result.txt missing"
+    );
 
     let stress_result =
         std::fs::read_to_string(app_dir.join("stress.result.txt")).expect("read stress.result.txt");
@@ -216,14 +222,21 @@ fn e2e_cli_http_stress_workflow() {
     assert_eq!(diag["ok"], Value::Bool(true));
     assert_eq!(diag["allPass"], Value::Bool(true));
     assert_eq!(diag["rowCount"].as_f64(), Some(2.0));
-    assert!(diag["hash"].as_str().map(|s| s.len() == 64).unwrap_or(false));
+    assert!(diag["hash"]
+        .as_str()
+        .map(|s| s.len() == 64)
+        .unwrap_or(false));
 
     let checks = diag["checks"].as_object().expect("checks object");
     for key in [
         "csv", "math", "crypto", "time", "archive", "glob", "base32", "semver", "url", "template",
         "compress", "env", "process", "os", "stream",
     ] {
-        assert_eq!(checks.get(key), Some(&Value::Bool(true)), "check {key} failed");
+        assert_eq!(
+            checks.get(key),
+            Some(&Value::Bool(true)),
+            "check {key} failed"
+        );
     }
 
     let request_log = std::fs::read_to_string(app_dir.join("request.log")).expect("request log");
@@ -258,7 +271,8 @@ fn e2e_cli_http_diag_contract() {
     shutdown_server(&workspace, &tmp_dir, server);
 
     let app_dir = app_dir(&tmp_dir);
-    let diag_result = std::fs::read_to_string(app_dir.join("client.diag.txt")).expect("client.diag.txt");
+    let diag_result =
+        std::fs::read_to_string(app_dir.join("client.diag.txt")).expect("client.diag.txt");
     assert!(diag_result.starts_with("200:OK:"));
     assert!(diag_result.contains("\"allPass\": true"));
     assert!(diag_result.contains("\"query\": \"mode=contract\""));
@@ -309,18 +323,19 @@ fn e2e_cli_http_echo_and_not_found_contracts() {
     shutdown_server(&workspace, &tmp_dir, server);
 
     let app_dir = app_dir(&tmp_dir);
-    let echo_out = std::fs::read_to_string(app_dir.join("client.echo.txt")).expect("client.echo.txt");
+    let echo_out =
+        std::fs::read_to_string(app_dir.join("client.echo.txt")).expect("client.echo.txt");
     assert!(echo_out.starts_with("201:Created:"));
-    let echo_json = echo_out
-        .splitn(3, ':')
-        .nth(2)
-        .expect("echo body json");
+    let echo_json = echo_out.splitn(3, ':').nth(2).expect("echo body json");
     let echo: Value = serde_json::from_str(echo_json).expect("parse echo json");
     assert_eq!(echo["method"], Value::from("POST"));
     assert_eq!(echo["path"], Value::from("/echo"));
     assert_eq!(echo["body"], Value::from("payload-e2e"));
     assert_eq!(echo["trace"], Value::from("e2e-123"));
-    assert!(echo["bodyHash"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
+    assert!(echo["bodyHash"]
+        .as_str()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false));
 
     let missing_out =
         std::fs::read_to_string(app_dir.join("client.missing.txt")).expect("client.missing.txt");
@@ -378,7 +393,8 @@ fn e2e_cli_http_echo_method_not_allowed_contract() {
     shutdown_server(&workspace, &tmp_dir, server);
 
     let app_dir = app_dir(&tmp_dir);
-    let echo_out = std::fs::read_to_string(app_dir.join("client.echo.txt")).expect("client.echo.txt");
+    let echo_out =
+        std::fs::read_to_string(app_dir.join("client.echo.txt")).expect("client.echo.txt");
     assert!(echo_out.starts_with("405:"));
     assert!(echo_out.ends_with(":method-not-allowed"));
 

@@ -11,6 +11,11 @@ description = "Raya runtime that binds the engine with standard library"
 [lib]
 doctest = false
 
+[features]
+default = ["jit", "aot"]
+jit = ["raya-engine/jit"]
+aot = ["raya-engine/aot"]
+
 [dependencies]
 raya-engine = { workspace = true }
 raya-stdlib = { path = "../raya-stdlib" }

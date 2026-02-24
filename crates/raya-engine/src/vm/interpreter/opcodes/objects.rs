@@ -19,8 +19,7 @@ impl<'a> Interpreter<'a> {
         }
 
         let header = unsafe {
-            let hp =
-                (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
             &*(hp as *const GcHeader)
         };
         if header.type_id() == std::any::TypeId::of::<Object>() {
@@ -168,8 +167,7 @@ impl<'a> Interpreter<'a> {
                     return OpcodeResult::Continue;
                 }
 
-                let obj_val = match Self::ensure_object_receiver(obj_val, "optional field access")
-                {
+                let obj_val = match Self::ensure_object_receiver(obj_val, "optional field access") {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
@@ -294,8 +292,7 @@ impl<'a> Interpreter<'a> {
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let obj_val = match Self::ensure_object_receiver(obj_val, "field initialization")
-                {
+                let obj_val = match Self::ensure_object_receiver(obj_val, "field initialization") {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };

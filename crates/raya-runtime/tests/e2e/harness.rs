@@ -11,7 +11,9 @@ use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
 use raya_runtime::StdNativeHandler;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::mpsc;
 use std::sync::Arc;
+use std::time::Duration;
 
 thread_local! {
     /// Keeps a small ring of recently used VMs alive on each test thread so
@@ -679,12 +681,7 @@ pub fn expect_runtime_error_with_builtins(source: &str, error_pattern: &str) {
 /// Use this for tests that need to stress-test true parallel execution.
 /// Note: This should be used sparingly as it creates more threads.
 pub fn compile_and_run_multiworker(source: &str, worker_count: usize) -> E2EResult<Value> {
-    let (module, _interner) = compile(source)?;
-
-    let mut vm = Vm::with_worker_count(worker_count);
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    keep_vm_alive(vm);
-    Ok(value)
+    compile_and_run_multiworker_with_timeout(source, worker_count, Duration::from_secs(30))
 }
 
 /// Compile and execute with multiple workers, expecting a specific i32 result
@@ -725,20 +722,78 @@ pub fn compile_and_run_multiworker_with_builtins(
     source: &str,
     worker_count: usize,
 ) -> E2EResult<Value> {
-    let (module, _interner) = compile_with_builtins(source)?;
+    compile_and_run_multiworker_with_builtins_timeout(source, worker_count, Duration::from_secs(30))
+}
 
-    let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+fn compile_and_run_multiworker_with_timeout(
+    source: &str,
+    worker_count: usize,
+    timeout: Duration,
+) -> E2EResult<Value> {
+    let (tx, rx) = mpsc::channel();
+    let src = source.to_string();
 
-    // Register symbolic native functions for ModuleNativeCall dispatch
-    {
-        let mut registry = vm.native_registry().write();
-        raya_stdlib::register_stdlib(&mut registry);
-        raya_stdlib_posix::register_posix(&mut registry);
+    std::thread::spawn(move || {
+        let result: E2EResult<Value> = (|| {
+            let (module, _interner) = compile(&src)?;
+            let mut vm = Vm::with_worker_count(worker_count);
+            let value = vm.execute(&module).map_err(E2EError::Vm)?;
+            keep_vm_alive(vm);
+            Ok(value)
+        })();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(E2EError::Vm(VmError::RuntimeError(format!(
+            "Multiworker execution timed out after {:?} (workers={})",
+            timeout, worker_count
+        )))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(E2EError::Vm(VmError::RuntimeError(
+            "Multiworker execution thread disconnected unexpectedly".to_string(),
+        ))),
     }
+}
 
-    let value = vm.execute(&module).map_err(E2EError::Vm)?;
-    keep_vm_alive(vm);
-    Ok(value)
+fn compile_and_run_multiworker_with_builtins_timeout(
+    source: &str,
+    worker_count: usize,
+    timeout: Duration,
+) -> E2EResult<Value> {
+    let (tx, rx) = mpsc::channel();
+    let src = source.to_string();
+
+    std::thread::spawn(move || {
+        let result: E2EResult<Value> = (|| {
+            let (module, _interner) = compile_with_builtins(&src)?;
+
+            let mut vm = Vm::with_native_handler(worker_count, Arc::new(StdNativeHandler));
+
+            // Register symbolic native functions for ModuleNativeCall dispatch
+            {
+                let mut registry = vm.native_registry().write();
+                raya_stdlib::register_stdlib(&mut registry);
+                raya_stdlib_posix::register_posix(&mut registry);
+            }
+
+            let value = vm.execute(&module).map_err(E2EError::Vm)?;
+            keep_vm_alive(vm);
+            Ok(value)
+        })();
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(E2EError::Vm(VmError::RuntimeError(format!(
+            "Multiworker+builtins execution timed out after {:?} (workers={})",
+            timeout, worker_count
+        )))),
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(E2EError::Vm(VmError::RuntimeError(
+            "Multiworker+builtins execution thread disconnected unexpectedly".to_string(),
+        ))),
+    }
 }
 
 /// Compile and execute with multiple workers and builtins, expecting a specific i32 result

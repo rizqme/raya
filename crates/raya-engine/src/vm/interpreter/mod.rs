@@ -29,4 +29,6 @@ pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
 pub use shared_state::SharedVmState;
+#[cfg(feature = "jit")]
+pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
 pub use vm_facade::{Vm, VmStats};

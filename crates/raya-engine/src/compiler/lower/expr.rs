@@ -1116,8 +1116,9 @@ impl<'a> Lowerer<'a> {
                     // (e.g. precompiled stdlib class dispatch), so downstream property/method
                     // access can still select typed opcodes (ArrayLen/StringLen/etc).
                     if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
-                        if let Some(&ret_ty) =
-                            self.method_return_type_map.get(&(class_id, method_name_symbol))
+                        if let Some(&ret_ty) = self
+                            .method_return_type_map
+                            .get(&(class_id, method_name_symbol))
                         {
                             if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                                 dest.ty = ret_ty;
@@ -1149,8 +1150,9 @@ impl<'a> Lowerer<'a> {
 
                     // If checker type is unresolved, still try to carry declared return type.
                     if dest.ty.as_u32() == super::UNRESOLVED_TYPE_ID {
-                        if let Some(&ret_ty) =
-                            self.method_return_type_map.get(&(class_id, method_name_symbol))
+                        if let Some(&ret_ty) = self
+                            .method_return_type_map
+                            .get(&(class_id, method_name_symbol))
                         {
                             if ret_ty.as_u32() != super::UNRESOLVED_TYPE_ID {
                                 dest.ty = ret_ty;
@@ -1561,7 +1563,8 @@ impl<'a> Lowerer<'a> {
             (Expression::Parenthesized(ap), _) => self.same_access_path(&ap.expression, b),
             (_, Expression::Parenthesized(bp)) => self.same_access_path(a, &bp.expression),
             (Expression::Member(am), Expression::Member(bm)) => {
-                am.property.name == bm.property.name && self.same_access_path(&am.object, &bm.object)
+                am.property.name == bm.property.name
+                    && self.same_access_path(&am.object, &bm.object)
             }
             _ => false,
         }
@@ -2097,10 +2100,7 @@ impl<'a> Lowerer<'a> {
                         field.index
                     } else {
                         self.errors.push(CompileError::InternalError {
-                            message: format!(
-                                "Unknown field '{}' in assignment target",
-                                prop_name
-                            ),
+                            message: format!("Unknown field '{}' in assignment target", prop_name),
                         });
                         0
                     }

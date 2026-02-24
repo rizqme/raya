@@ -8,7 +8,6 @@ use std::sync::Arc;
 use cranelift_codegen::ir;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
-use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::Module as CraneliftModule;
 
@@ -28,7 +27,7 @@ const DEFAULT_CODE_CACHE_SIZE: usize = 64 * 1024 * 1024;
 /// Configuration for the JIT engine
 #[derive(Clone)]
 pub struct JitConfig {
-    /// Maximum functions to pre-compile per module (default: 16)
+    /// Maximum functions to pre-compile per module (default: 4)
     pub max_prewarm_functions: usize,
     /// Maximum compilation time per function in ms (default: 100)
     pub max_compile_time_ms: u64,
@@ -38,7 +37,10 @@ pub struct JitConfig {
     pub min_instruction_count: usize,
     /// Maximum code cache size in bytes (default: 64 MB)
     pub max_code_cache_size: usize,
-    /// Enable on-the-fly compilation based on runtime profiling (default: true)
+    /// Enable on-the-fly compilation based on runtime profiling (default: false).
+    ///
+    /// Disabled by default for stability until typed-lowering invariants are
+    /// fully hardened for all real-world bytecode patterns.
     pub adaptive_compilation: bool,
     /// Call count threshold before compiling a function on-the-fly (default: 1000)
     pub call_threshold: u32,
@@ -51,12 +53,13 @@ pub struct JitConfig {
 impl Default for JitConfig {
     fn default() -> Self {
         JitConfig {
-            max_prewarm_functions: 16,
+            // Enable static-analysis prewarm by default for better first-run performance.
+            max_prewarm_functions: 4,
             max_compile_time_ms: 100,
             min_score: 10.0,
             min_instruction_count: 8,
             max_code_cache_size: DEFAULT_CODE_CACHE_SIZE,
-            adaptive_compilation: true,
+            adaptive_compilation: false,
             call_threshold: 1000,
             loop_threshold: 10_000,
             max_adaptive_function_size: 4096,
@@ -72,8 +75,6 @@ pub struct JitEngine {
     prewarm_config: PrewarmConfig,
     /// Cranelift JIT module — owns executable memory for compiled functions
     jit_module: JITModule,
-    /// Reusable context for building Cranelift IR
-    func_builder_ctx: FunctionBuilderContext,
     /// Shared code cache — read by interpreter threads for dispatch
     code_cache: Arc<CodeCache>,
 }
@@ -108,7 +109,6 @@ impl JitEngine {
             pipeline,
             prewarm_config,
             jit_module,
-            func_builder_ctx: FunctionBuilderContext::new(),
             code_cache,
         })
     }
@@ -152,9 +152,23 @@ impl JitEngine {
                 continue;
             }
 
-            match self.compile_to_cache(module, func_idx, module_id) {
+            let compile_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                self.compile_to_cache(module, func_idx, module_id)
+            }))
+            .map_err(|_| "panic during JIT compile".to_string())
+            .and_then(|r| r);
+
+            match compile_result {
                 Ok(()) => compiled_count += 1,
-                Err(_) => failed_count += 1,
+                Err(err) => {
+                    failed_count += 1;
+                    if std::env::var("RAYA_JIT_DEBUG").is_ok() {
+                        eprintln!(
+                            "JIT prewarm compile failed: func={} name={} err={}",
+                            func_idx, module.functions[func_idx].name, err
+                        );
+                    }
+                }
             }
         }
 
@@ -205,8 +219,9 @@ impl JitEngine {
         ctx.func.name = ir::UserFuncName::user(0, jit_func.func_index);
 
         {
+            let mut func_builder_ctx = cranelift_frontend::FunctionBuilderContext::new();
             let builder =
-                cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut self.func_builder_ctx);
+                cranelift_frontend::FunctionBuilder::new(&mut ctx.func, &mut func_builder_ctx);
             LoweringContext::lower(jit_func, builder)
                 .map_err(|e| format!("Lowering failed: {}", e))?;
         }
@@ -288,20 +303,37 @@ impl JitEngine {
                         continue;
                     }
 
-                    match engine.compile_to_cache(&req.module, req.func_index, req.module_id) {
+                    let compile_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            engine.compile_to_cache(&req.module, req.func_index, req.module_id)
+                        }))
+                        .map_err(|_| "panic during JIT compile".to_string())
+                        .and_then(|r| r);
+
+                    match compile_result {
                         Ok(()) => {
                             // Mark profile so workers see jit_available and stop requesting
                             if let Some(fp) = req.module_profile.get(req.func_index) {
                                 fp.finish_compile();
                             }
                         }
-                        Err(_) => {
+                        Err(err) => {
                             // Compilation failed (e.g., loops in SSA lifter).
                             // Clear the compiling flag so it's not stuck, but don't mark available.
                             if let Some(fp) = req.module_profile.get(req.func_index) {
-                                // Mark as "done compiling" but NOT available — prevents re-requests
-                                // for functions that will never compile (e.g., loop limitation).
-                                fp.finish_compile();
+                                fp.finish_compile_failed();
+                            }
+                            if std::env::var("RAYA_JIT_DEBUG").is_ok() {
+                                let name = req
+                                    .module
+                                    .functions
+                                    .get(req.func_index)
+                                    .map(|f| f.name.as_str())
+                                    .unwrap_or("<unknown>");
+                                eprintln!(
+                                    "JIT adaptive compile failed: func={} name={} err={}",
+                                    req.func_index, name, err
+                                );
                             }
                         }
                     }
@@ -385,6 +417,13 @@ mod tests {
     }
 
     #[test]
+    fn test_engine_default_stability_bias() {
+        let config = JitConfig::default();
+        assert_eq!(config.max_prewarm_functions, 4);
+        assert!(!config.adaptive_compilation);
+    }
+
+    #[test]
     fn test_engine_prewarm_empty_module() {
         let mut engine = JitEngine::new().unwrap();
         let module = crate::compiler::bytecode::Module::new("test".to_string());
@@ -398,6 +437,7 @@ mod tests {
         let config = JitConfig {
             min_score: 1.0,
             min_instruction_count: 2,
+            max_prewarm_functions: 1,
             ..Default::default()
         };
         let mut engine = JitEngine::with_config(config).unwrap();

@@ -79,8 +79,8 @@ pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> 
     })?;
 
     // Type check
-    let checker =
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_skip_class_bodies_before(user_offset);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+        .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
             errors
@@ -158,8 +158,8 @@ pub fn compile_source_with_options(
     })?;
 
     // Type check
-    let checker =
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_skip_class_bodies_before(user_offset);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+        .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
             errors

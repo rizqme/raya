@@ -227,9 +227,11 @@ impl Runtime {
     /// Execute a compiled module and return the VM result value.
     pub fn execute(&self, module: &CompiledModule) -> Result<Value, RuntimeError> {
         let mut vm = vm_setup::create_vm(&self.options);
+        self.maybe_enable_jit(&mut vm);
         self.maybe_enable_profiling(&vm);
         let result = vm.execute(&module.module)?;
         self.maybe_write_profile(&vm, &module.module);
+        self.maybe_emit_jit_telemetry(&vm);
         Ok(result)
     }
 
@@ -252,9 +254,11 @@ impl Runtime {
                 .map_err(RuntimeError::Dependency)?;
         }
 
+        self.maybe_enable_jit(&mut vm);
         self.maybe_enable_profiling(&vm);
         let result = vm.execute(&module.module)?;
         self.maybe_write_profile(&vm, &module.module);
+        self.maybe_emit_jit_telemetry(&vm);
         Ok(result)
     }
 
@@ -290,6 +294,7 @@ impl Runtime {
         let module = match path.extension().and_then(|e| e.to_str()) {
             Some("ryb") => self.load_bytecode(&path)?,
             Some("raya") => self.compile_file(&path)?,
+            Some("bundle") => self.load_bundle_entry_module(&path)?,
             _ => {
                 return Err(RuntimeError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
@@ -347,6 +352,29 @@ impl Runtime {
 
     // ── Profiling helpers ────────────────────────────────────────────────
 
+    fn maybe_enable_jit(&self, vm: &mut raya_engine::vm::Vm) {
+        #[cfg(feature = "jit")]
+        {
+            if self.options.no_jit {
+                return;
+            }
+
+            let config = raya_engine::jit::JitConfig {
+                call_threshold: self.options.jit_threshold,
+                ..Default::default()
+            };
+
+            if let Err(e) = vm.enable_jit_with_config(config) {
+                eprintln!("Warning: failed to enable JIT; falling back to interpreter: {e}");
+            }
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = vm;
+        }
+    }
+
     fn maybe_enable_profiling(&self, vm: &raya_engine::vm::Vm) {
         if self.options.cpu_prof.is_some() {
             let config = raya_engine::profiler::ProfileConfig {
@@ -388,6 +416,29 @@ impl Runtime {
         }
     }
 
+    fn maybe_emit_jit_telemetry(&self, vm: &raya_engine::vm::Vm) {
+        #[cfg(feature = "jit")]
+        {
+            if std::env::var("RAYA_JIT_TELEMETRY").is_ok() {
+                let t = vm.get_jit_telemetry();
+                eprintln!(
+                    "JIT telemetry: calls={} loops={} hits={} misses={} submit_ok={} submit_drop={}",
+                    t.call_samples,
+                    t.loop_samples,
+                    t.cache_hits,
+                    t.cache_misses,
+                    t.compile_requests_submitted,
+                    t.compile_requests_dropped
+                );
+            }
+        }
+
+        #[cfg(not(feature = "jit"))]
+        {
+            let _ = vm;
+        }
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────
 
     /// Resolve dependencies for a file, checking both raya.toml and adjacent .ryb files.
@@ -415,5 +466,27 @@ impl Runtime {
         }
 
         Ok(Vec::new())
+    }
+
+    fn load_bundle_entry_module(&self, path: &Path) -> Result<CompiledModule, RuntimeError> {
+        let payload = bundle::loader::detect_bundle_at(path).ok_or_else(|| {
+            RuntimeError::Bytecode(format!("Invalid or unsupported bundle: {}", path.display()))
+        })?;
+
+        // For now, execute embedded bytecode entry from VFS as a fallback path.
+        // This allows bundled artifacts to run by default even when native AOT
+        // execution is not available on this host/runtime build.
+        let entry_path = payload
+            .vfs
+            .paths()
+            .find(|p| p.ends_with(".ryb"))
+            .ok_or_else(|| RuntimeError::Bytecode("Bundle contains no embedded .ryb".to_string()))?
+            .to_string();
+
+        let bytes = payload.vfs.read(&entry_path).ok_or_else(|| {
+            RuntimeError::Bytecode(format!("Failed to read embedded bytecode: {entry_path}"))
+        })?;
+
+        self.load_bytecode_bytes(&bytes)
     }
 }

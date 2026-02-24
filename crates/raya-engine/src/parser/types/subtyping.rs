@@ -51,7 +51,8 @@ impl<'a> SubtypingContext<'a> {
         // - Type::Map/Set/Channel/Task/Array (specialized builtin types), or
         // - Type::Class { name: "Map" | "Set" | ... } (from class declarations).
         // They denote the same runtime entities and should be mutually compatible.
-        if self.is_builtin_class_bridge(sub_ty, sup_ty) || self.is_builtin_class_bridge(sup_ty, sub_ty)
+        if self.is_builtin_class_bridge(sub_ty, sup_ty)
+            || self.is_builtin_class_bridge(sup_ty, sub_ty)
         {
             return true;
         }

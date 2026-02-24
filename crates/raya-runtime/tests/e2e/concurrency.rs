@@ -5,10 +5,6 @@
 //! Use `await [task1, task2, ...]` to wait for multiple tasks.
 
 use super::harness::*;
-use std::sync::Mutex;
-
-// Mutex to serialize multi-worker tests to avoid resource contention
-static MULTIWORKER_LOCK: Mutex<()> = Mutex::new(());
 
 // ============================================================================
 // Task Cancellation
@@ -591,7 +587,6 @@ fn test_rapid_spawn_and_complete() {
 
 #[test]
 fn test_multiworker_many_parallel_tasks() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Same as test_many_parallel_tasks but with 4 workers
     // Tests true parallel execution with work stealing
     expect_i32_multiworker(
@@ -628,7 +623,6 @@ fn test_multiworker_many_parallel_tasks() {
 
 #[test]
 fn test_multiworker_diamond_dependency() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Diamond pattern with 4 workers - tests shared dependency handling
     // under true parallel execution
     expect_i32_multiworker(
@@ -661,7 +655,6 @@ fn test_multiworker_diamond_dependency() {
 
 #[test]
 fn test_multiworker_nested_parallel() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Nested parallel awaits with 4 workers
     // Tests scheduler depth handling under parallel execution
     expect_i32_multiworker(
@@ -691,7 +684,6 @@ fn test_multiworker_nested_parallel() {
 
 #[test]
 fn test_multiworker_task_chain() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Chain of tasks with 4 workers
     // Tests that sequential dependencies work under parallel scheduler
     expect_i32_multiworker(
@@ -708,7 +700,6 @@ fn test_multiworker_task_chain() {
 
 #[test]
 fn test_multiworker_waves() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Multiple waves with 4 workers
     // Tests repeated parallel batches under true concurrency
     expect_i32_multiworker(
@@ -736,7 +727,6 @@ fn test_multiworker_waves() {
 
 #[test]
 fn test_multiworker_work_stealing_stress() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Stress test for work stealing - many tasks with varying work
     // With 4 workers, work should be distributed
     expect_i32_multiworker(
@@ -778,7 +768,6 @@ fn test_multiworker_work_stealing_stress() {
 
 #[test]
 fn test_multiworker_rapid_spawn() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Rapid spawn/complete with 4 workers
     // Tests scheduler overhead under parallel execution
     expect_i32_multiworker(
@@ -804,7 +793,6 @@ fn test_multiworker_rapid_spawn() {
 
 #[test]
 fn test_multiworker_recursive_spawn() {
-    let _guard = MULTIWORKER_LOCK.lock().unwrap();
     // Recursive task spawning with 4 workers
     // Tests dynamic task creation under parallel execution
     expect_i32_multiworker(

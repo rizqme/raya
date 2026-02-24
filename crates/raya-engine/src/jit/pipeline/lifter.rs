@@ -273,10 +273,16 @@ pub fn lift_function(
                 // Detect back-edge: target has lower or equal block ID (loop back-jump)
                 if target.0 <= cfg_block_id.0 {
                     // Insert preemption check before backward jump
+                    let bytecode_offset = cfg_block
+                        .instrs
+                        .last()
+                        .and_then(|idx| instrs.get(*idx))
+                        .map(|i| i.offset as u32)
+                        .unwrap_or(0);
                     jit_func
                         .block_mut(jit_block_id)
                         .instrs
-                        .push(JitInstr::CheckPreemption);
+                        .push(JitInstr::CheckPreemption { bytecode_offset });
                 }
                 JitTerminator::Jump(cfg_to_jit[target])
             }
@@ -288,16 +294,28 @@ pub fn lift_function(
                 let cond = stack.peek().unwrap_or(Reg(0));
                 // Check for back-edge branches too (e.g. JmpIfTrue looping back)
                 if then_block.0 <= cfg_block_id.0 || else_block.0 <= cfg_block_id.0 {
+                    let bytecode_offset = cfg_block
+                        .instrs
+                        .last()
+                        .and_then(|idx| instrs.get(*idx))
+                        .map(|i| i.offset as u32)
+                        .unwrap_or(0);
                     jit_func
                         .block_mut(jit_block_id)
                         .instrs
-                        .push(JitInstr::CheckPreemption);
+                        .push(JitInstr::CheckPreemption { bytecode_offset });
                 }
                 match kind {
-                    BranchKind::IfFalse | BranchKind::IfTrue => JitTerminator::Branch {
+                    BranchKind::IfTrue => JitTerminator::Branch {
                         cond,
                         then_block: cfg_to_jit[then_block],
                         else_block: cfg_to_jit[else_block],
+                    },
+                    // Cranelift brif branches on non-zero. For IfFalse, invert edges.
+                    BranchKind::IfFalse => JitTerminator::Branch {
+                        cond,
+                        then_block: cfg_to_jit[else_block],
+                        else_block: cfg_to_jit[then_block],
                     },
                     BranchKind::IfNull | BranchKind::IfNotNull => JitTerminator::BranchNull {
                         value: cond,
@@ -678,42 +696,42 @@ fn lift_instruction(
         }
 
         // ===== Integer Comparison =====
-        Opcode::Ieq => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Ieq => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpEq {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Ine => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Ine => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpNe {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Ilt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Ilt => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpLt {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Ile => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Ile => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpLe {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Igt => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Igt => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpGt {
                 dest: d,
                 left: l,
                 right: r,
             }
         })?,
-        Opcode::Ige => lift_binary_bool(func, block, stack, instr.offset, |d, l, r| {
+        Opcode::Ige => lift_binary_i32_bool(func, block, stack, instr.offset, |d, l, r| {
             JitInstr::ICmpGe {
                 dest: d,
                 left: l,
@@ -1226,6 +1244,7 @@ fn lift_instruction(
                     dest: Some(dest),
                     native_id,
                     args,
+                    bytecode_offset: instr.offset as u32,
                 });
                 stack.push(dest);
             }
@@ -1709,6 +1728,8 @@ fn lift_binary_i32(
 ) -> Result<(), LiftError> {
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
+    let left = coerce_to_i32(func, block, left);
+    let right = coerce_to_i32(func, block, right);
     let dest = func.alloc_reg(JitType::I32);
     func.block_mut(block)
         .instrs
@@ -1725,10 +1746,25 @@ fn lift_unary_i32(
     make_instr: impl FnOnce(Reg, Reg) -> JitInstr,
 ) -> Result<(), LiftError> {
     let operand = stack.pop(offset)?;
+    let operand = coerce_to_i32(func, block, operand);
     let dest = func.alloc_reg(JitType::I32);
     func.block_mut(block).instrs.push(make_instr(dest, operand));
     stack.push(dest);
     Ok(())
+}
+
+fn coerce_to_i32(func: &mut JitFunction, block: JitBlockId, src: Reg) -> Reg {
+    match func.reg_type(src) {
+        JitType::I32 => src,
+        JitType::Value => {
+            let dest = func.alloc_reg(JitType::I32);
+            func.block_mut(block)
+                .instrs
+                .push(JitInstr::UnboxI32 { dest, src });
+            dest
+        }
+        _ => src,
+    }
 }
 
 fn lift_binary_f64(
@@ -1771,6 +1807,25 @@ fn lift_binary_bool(
 ) -> Result<(), LiftError> {
     let right = stack.pop(offset)?;
     let left = stack.pop(offset)?;
+    let dest = func.alloc_reg(JitType::Bool);
+    func.block_mut(block)
+        .instrs
+        .push(make_instr(dest, left, right));
+    stack.push(dest);
+    Ok(())
+}
+
+fn lift_binary_i32_bool(
+    func: &mut JitFunction,
+    block: JitBlockId,
+    stack: &mut StackState,
+    offset: usize,
+    make_instr: impl FnOnce(Reg, Reg, Reg) -> JitInstr,
+) -> Result<(), LiftError> {
+    let right = stack.pop(offset)?;
+    let left = stack.pop(offset)?;
+    let left = coerce_to_i32(func, block, left);
+    let right = coerce_to_i32(func, block, right);
     let dest = func.alloc_reg(JitType::Bool);
     func.block_mut(block)
         .instrs
@@ -1976,7 +2031,7 @@ mod tests {
         let has_preemption = jit_func.blocks.iter().any(|b| {
             b.instrs
                 .iter()
-                .any(|i| matches!(i, JitInstr::CheckPreemption))
+                .any(|i| matches!(i, JitInstr::CheckPreemption { .. }))
         });
         assert!(has_preemption, "expected CheckPreemption at back-edge");
 
@@ -2051,7 +2106,7 @@ mod tests {
         let has_preemption = jit_func.blocks.iter().any(|b| {
             b.instrs
                 .iter()
-                .any(|i| matches!(i, JitInstr::CheckPreemption))
+                .any(|i| matches!(i, JitInstr::CheckPreemption { .. }))
         });
         assert!(has_preemption, "expected CheckPreemption at back-edge");
 
@@ -2097,7 +2152,7 @@ mod tests {
             .blocks
             .iter()
             .flat_map(|b| &b.instrs)
-            .filter(|i| matches!(i, JitInstr::CheckPreemption))
+            .filter(|i| matches!(i, JitInstr::CheckPreemption { .. }))
             .count();
         assert!(
             preemption_count >= 2,

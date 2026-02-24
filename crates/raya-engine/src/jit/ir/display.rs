@@ -364,6 +364,7 @@ impl fmt::Display for JitInstr {
                 dest,
                 native_id,
                 args,
+                ..
             } => {
                 if let Some(d) = dest {
                     write!(f, "{} = ", d)?;
@@ -530,8 +531,8 @@ impl fmt::Display for JitInstr {
             JitInstr::JsonLength { dest, object } => write!(f, "{} = json.length {}", dest, object),
 
             // Runtime
-            JitInstr::GcSafepoint => write!(f, "gc.safepoint"),
-            JitInstr::CheckPreemption => write!(f, "check.preemption"),
+            JitInstr::GcSafepoint { .. } => write!(f, "gc.safepoint"),
+            JitInstr::CheckPreemption { .. } => write!(f, "check.preemption"),
 
             // SSA
             JitInstr::Phi { dest, sources } => {

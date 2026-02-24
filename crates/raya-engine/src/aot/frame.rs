@@ -48,6 +48,8 @@ pub enum SuspendReason {
     ChannelSend = 7,
     /// Waiting on a mutex lock.
     MutexLock = 8,
+    /// Suspended at a native-call boundary so the VM thread loop can run native code.
+    NativeCallBoundary = 9,
 }
 
 /// Heap-allocated frame for each active function call.
@@ -260,5 +262,6 @@ mod tests {
         assert_eq!(SuspendReason::None as u32, 0);
         assert_eq!(SuspendReason::AwaitTask as u32, 1);
         assert_eq!(SuspendReason::Preempted as u32, 3);
+        assert_eq!(SuspendReason::NativeCallBoundary as u32, 9);
     }
 }

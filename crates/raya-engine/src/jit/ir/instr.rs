@@ -505,6 +505,7 @@ pub enum JitInstr {
         dest: Option<Reg>,
         native_id: u16,
         args: Vec<Reg>,
+        bytecode_offset: u32,
     },
     CallClosure {
         dest: Option<Reg>,
@@ -686,8 +687,12 @@ pub enum JitInstr {
     },
 
     // ===== Runtime Integration =====
-    GcSafepoint,
-    CheckPreemption,
+    GcSafepoint {
+        bytecode_offset: u32,
+    },
+    CheckPreemption {
+        bytecode_offset: u32,
+    },
 
     // ===== SSA =====
     Phi {
@@ -888,8 +893,8 @@ impl JitInstr {
             | JitInstr::SemRelease { .. }
             | JitInstr::TaskCancel { .. }
             | JitInstr::TaskThen { .. }
-            | JitInstr::GcSafepoint
-            | JitInstr::CheckPreemption
+            | JitInstr::GcSafepoint { .. }
+            | JitInstr::CheckPreemption { .. }
             | JitInstr::SetupTry { .. }
             | JitInstr::EndTry
             | JitInstr::Throw { .. }

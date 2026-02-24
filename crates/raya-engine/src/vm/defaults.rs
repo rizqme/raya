@@ -14,6 +14,6 @@ pub const DEFAULT_GC_THRESHOLD: usize = 1024 * 1024;
 
 /// JIT adaptive compilation policy check mask.
 /// The interpreter checks compilation policy every `(count & MASK) == 0` calls,
-/// i.e. every 256 calls with the default mask of 0xFF.
+/// i.e. every 64 calls with the default mask of 0x3F.
 #[cfg(feature = "jit")]
-pub const JIT_POLICY_CHECK_MASK: u32 = 0xFF;
+pub const JIT_POLICY_CHECK_MASK: u32 = 0x3F;

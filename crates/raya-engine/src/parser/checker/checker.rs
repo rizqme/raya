@@ -1479,7 +1479,8 @@ impl<'a> TypeChecker<'a> {
 
             if self.in_constructor {
                 if let Some(class_ty) = self.current_class_type {
-                    if let Some(crate::parser::types::Type::Class(class)) = self.type_ctx.get(class_ty)
+                    if let Some(crate::parser::types::Type::Class(class)) =
+                        self.type_ctx.get(class_ty)
                     {
                         if class.extends.is_some() {
                             return self.type_ctx.void_type();
@@ -4327,7 +4328,11 @@ mod tests {
             }
         "#,
         );
-        assert!(result.is_err(), "Expected unresolved symbol error, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "Expected unresolved symbol error, got {:?}",
+            result
+        );
         let errors = result.unwrap_err();
         assert!(errors
             .iter()
@@ -4343,7 +4348,11 @@ mod tests {
             }
         "#,
         );
-        assert!(result.is_err(), "Expected field type mismatch, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "Expected field type mismatch, got {:?}",
+            result
+        );
         let errors = result.unwrap_err();
         assert!(errors
             .iter()
@@ -4365,7 +4374,11 @@ mod tests {
             }
         "#,
         );
-        assert!(result.is_ok(), "Expected super(...) call to type-check, got {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Expected super(...) call to type-check, got {:?}",
+            result
+        );
     }
 
     #[test]

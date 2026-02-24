@@ -291,6 +291,11 @@ impl HeuristicsAnalyzer {
             s.score >= self.min_score
                 && s.is_cpu_bound
                 && s.instruction_count >= self.min_instruction_count
+                && module
+                    .functions
+                    .get(s.func_index)
+                    .map(function_supported_for_jit)
+                    .unwrap_or(false)
         });
 
         // Sort by score descending (best candidates first)
@@ -302,6 +307,82 @@ impl HeuristicsAnalyzer {
 
         scores
     }
+}
+
+/// Conservative opcode-level gate for JIT compilation.
+///
+/// This intentionally allows only a stable subset that is known to lower
+/// reliably through the current backend.
+pub fn function_supported_for_jit(func: &Function) -> bool {
+    let Ok(instrs) = decode_function(&func.code) else {
+        return false;
+    };
+
+    instrs.iter().all(|instr| {
+        matches!(
+            instr.opcode,
+            Opcode::Nop
+                | Opcode::Pop
+                | Opcode::Dup
+                | Opcode::Swap
+                | Opcode::ConstI32
+                | Opcode::ConstF64
+                | Opcode::ConstTrue
+                | Opcode::ConstFalse
+                | Opcode::ConstNull
+                | Opcode::LoadLocal
+                | Opcode::StoreLocal
+                | Opcode::LoadLocal0
+                | Opcode::LoadLocal1
+                | Opcode::StoreLocal0
+                | Opcode::StoreLocal1
+                | Opcode::Iadd
+                | Opcode::Isub
+                | Opcode::Imul
+                | Opcode::Idiv
+                | Opcode::Imod
+                | Opcode::Ineg
+                | Opcode::Ishl
+                | Opcode::Ishr
+                | Opcode::Iushr
+                | Opcode::Iand
+                | Opcode::Ior
+                | Opcode::Ixor
+                | Opcode::Inot
+                | Opcode::Fadd
+                | Opcode::Fsub
+                | Opcode::Fmul
+                | Opcode::Fdiv
+                | Opcode::Fmod
+                | Opcode::Fneg
+                | Opcode::Ieq
+                | Opcode::Ine
+                | Opcode::Ilt
+                | Opcode::Ile
+                | Opcode::Igt
+                | Opcode::Ige
+                | Opcode::Feq
+                | Opcode::Fne
+                | Opcode::Flt
+                | Opcode::Fle
+                | Opcode::Fgt
+                | Opcode::Fge
+                | Opcode::Eq
+                | Opcode::Ne
+                | Opcode::Not
+                | Opcode::And
+                | Opcode::Or
+                | Opcode::Jmp
+                | Opcode::JmpIfTrue
+                | Opcode::JmpIfFalse
+                | Opcode::JmpIfNull
+                | Opcode::JmpIfNotNull
+                | Opcode::NativeCall
+                | Opcode::ModuleNativeCall
+                | Opcode::Return
+                | Opcode::ReturnVoid
+        )
+    })
 }
 
 #[cfg(test)]
@@ -345,6 +426,11 @@ mod tests {
     fn emit_local(code: &mut Vec<u8>, op: Opcode, idx: u16) {
         code.push(op as u8);
         code.extend_from_slice(&idx.to_le_bytes());
+    }
+    fn emit_call(code: &mut Vec<u8>, func_index: u32, arg_count: u16) {
+        code.push(Opcode::Call as u8);
+        code.extend_from_slice(&func_index.to_le_bytes());
+        code.extend_from_slice(&arg_count.to_le_bytes());
     }
 
     #[test]
@@ -638,5 +724,48 @@ mod tests {
             candidates[0].score >= candidates[1].score,
             "Should be sorted by score descending"
         );
+    }
+
+    #[test]
+    fn test_function_supported_for_jit_allows_simple_math_loop() {
+        let mut code = Vec::new();
+        emit_i32(&mut code, 0);
+        emit_local(&mut code, Opcode::StoreLocal, 0);
+        let loop_start = code.len();
+        emit_local(&mut code, Opcode::LoadLocal, 0);
+        emit_i32(&mut code, 1);
+        emit(&mut code, Opcode::Iadd);
+        emit_local(&mut code, Opcode::StoreLocal, 0);
+        emit_local(&mut code, Opcode::LoadLocal, 0);
+        emit_i32(&mut code, 100);
+        emit(&mut code, Opcode::Ilt);
+        let back_offset = (loop_start as i32) - (code.len() as i32) - 5;
+        emit_jmp(&mut code, Opcode::JmpIfTrue, back_offset);
+        emit_local(&mut code, Opcode::LoadLocal, 0);
+        emit(&mut code, Opcode::Return);
+
+        let func = Function {
+            name: "loop".to_string(),
+            param_count: 0,
+            local_count: 1,
+            code,
+        };
+        assert!(function_supported_for_jit(&func));
+    }
+
+    #[test]
+    fn test_function_supported_for_jit_rejects_call_opcode() {
+        let mut code = Vec::new();
+        emit_call(&mut code, 1, 0);
+        emit(&mut code, Opcode::Return);
+
+        let func = Function {
+            name: "caller".to_string(),
+            param_count: 0,
+            local_count: 0,
+            code,
+        };
+
+        assert!(!function_supported_for_jit(&func));
     }
 }

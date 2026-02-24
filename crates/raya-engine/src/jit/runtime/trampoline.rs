@@ -14,7 +14,79 @@ pub type JitEntryFn = unsafe extern "C" fn(
     locals: *mut u64, // pre-allocated locals
     local_count: u32,
     ctx: *mut RuntimeContext,
+    exit_info: *mut JitExitInfo,
 ) -> u64; // returns NaN-boxed Value
+
+/// Exit state for a JIT function invocation.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitExitKind {
+    Completed = 0,
+    Suspended = 1,
+    Deoptimized = 2,
+    Failed = 3,
+}
+
+/// Suspension reasons written into `JitExitInfo.suspend_reason`.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JitSuspendReason {
+    None = 0,
+    Preemption = 1,
+    NativeCallBoundary = 2,
+}
+
+/// Minimal native-frame snapshot to support resume/deopt plumbing.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JitMachineFrameSnapshot {
+    /// Native instruction pointer / continuation marker.
+    pub resume_ip: u64,
+    /// Native stack pointer captured at exit (if available).
+    pub stack_ptr: u64,
+    /// Native frame/base pointer captured at exit (if available).
+    pub frame_ptr: u64,
+}
+
+/// Out-parameter written by JIT entry to describe exit behavior.
+pub const JIT_EXIT_MAX_NATIVE_ARGS: usize = 8;
+
+/// Out-parameter written by JIT entry to describe exit behavior.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct JitExitInfo {
+    /// How execution exited.
+    pub kind: u32,
+    /// Suspension reason discriminator (VM-specific; 0 = none).
+    pub suspend_reason: u32,
+    /// Bytecode offset for deopt/resume (if relevant).
+    pub bytecode_offset: u32,
+    /// Reserved for alignment/extension.
+    pub _reserved: u32,
+    /// Captured native frame metadata.
+    pub frame: JitMachineFrameSnapshot,
+    /// Materialized operand count for NativeCallBoundary resume handoff.
+    pub native_arg_count: u32,
+    /// Reserved for alignment/extension.
+    pub _native_reserved: u32,
+    /// Materialized NativeCall operands (NaN-boxed values).
+    pub native_args: [u64; JIT_EXIT_MAX_NATIVE_ARGS],
+}
+
+impl Default for JitExitInfo {
+    fn default() -> Self {
+        Self {
+            kind: JitExitKind::Completed as u32,
+            suspend_reason: JitSuspendReason::None as u32,
+            bytecode_offset: 0,
+            _reserved: 0,
+            frame: JitMachineFrameSnapshot::default(),
+            native_arg_count: 0,
+            _native_reserved: 0,
+            native_args: [0; JIT_EXIT_MAX_NATIVE_ARGS],
+        }
+    }
+}
 
 /// Runtime context passed to JIT-compiled code
 ///

@@ -251,6 +251,14 @@ fn convert_suspend_reason(
             })
         }
 
+        AotSuspendReason::NativeCallBoundary => {
+            // Mirror JIT behavior: hand control back to the VM thread loop so native
+            // dispatch can run there, then resume compiled code on the next turn.
+            Some(SchedulerSuspendReason::Sleep {
+                wake_at: Instant::now(),
+            })
+        }
+
         AotSuspendReason::Sleep => {
             let millis = payload;
             Some(SchedulerSuspendReason::Sleep {
@@ -323,6 +331,15 @@ mod tests {
         AOT_SUSPEND
     }
 
+    /// A test AOT function that suspends with NativeCallBoundary reason.
+    unsafe extern "C" fn test_suspend_native_boundary(
+        _frame: *mut AotFrame,
+        ctx: *mut AotTaskContext,
+    ) -> u64 {
+        (*ctx).suspend_reason = AotSuspendReason::NativeCallBoundary;
+        AOT_SUSPEND
+    }
+
     /// A test AOT function that reads resume_value and returns it.
     unsafe extern "C" fn test_resume_returns_value(
         frame: *mut AotFrame,
@@ -338,6 +355,22 @@ mod tests {
             // Resume — return the resume value
             (*ctx).resume_value
         }
+    }
+
+    /// Simulates compiled native-call path that completes immediately.
+    unsafe extern "C" fn test_native_helper_fast(
+        _frame: *mut AotFrame,
+        ctx: *mut AotTaskContext,
+    ) -> u64 {
+        ((*ctx).helpers.native_call)(ctx, 1, std::ptr::null(), 0)
+    }
+
+    /// Simulates compiled native-call path that returns suspend token.
+    unsafe extern "C" fn test_native_helper_suspend(
+        _frame: *mut AotFrame,
+        ctx: *mut AotTaskContext,
+    ) -> u64 {
+        ((*ctx).helpers.native_call)(ctx, u16::MAX, std::ptr::null(), 0)
     }
 
     #[test]
@@ -436,6 +469,27 @@ mod tests {
     }
 
     #[test]
+    fn test_run_suspend_native_call_boundary() {
+        let helpers = create_default_helper_table();
+        let preempt = AtomicBool::new(false);
+
+        unsafe {
+            let frame = allocate_initial_frame(0, 1, test_suspend_native_boundary, &[], &helpers);
+            let mut ctx = build_task_context(&preempt, helpers, None);
+            let result = run_aot_function(frame, &mut ctx, 100);
+
+            match &result.result {
+                ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {
+                    // NativeCallBoundary -> immediate thread-loop handoff/re-entry
+                }
+                other => panic!("Expected Suspended(Sleep), got {:?}", other),
+            }
+
+            free_frame_chain(result.frame, &helpers);
+        }
+    }
+
+    #[test]
     fn test_resume_with_value() {
         let helpers = create_default_helper_table();
         let preempt = AtomicBool::new(false);
@@ -464,6 +518,51 @@ mod tests {
                 other => panic!("Expected Completed(99), got {:?}", other),
             }
             assert!(result2.frame.is_null());
+        }
+    }
+
+    #[test]
+    fn test_run_native_helper_fast_path_completes() {
+        let helpers = create_default_helper_table();
+        let preempt = AtomicBool::new(false);
+
+        unsafe {
+            let frame = allocate_initial_frame(0, 1, test_native_helper_fast, &[], &helpers);
+            let mut ctx = build_task_context(&preempt, helpers, None);
+            let result = run_aot_function(frame, &mut ctx, 100);
+
+            match result.result {
+                ExecutionResult::Completed(val) => {
+                    assert_eq!(val, Value::null(), "stub fast path should return null sentinel");
+                }
+                other => panic!("Expected Completed(null), got {:?}", other),
+            }
+            assert!(result.frame.is_null(), "Frame should be freed on completion");
+        }
+    }
+
+    #[test]
+    fn test_run_native_helper_suspend_path_handoffs_to_thread_loop() {
+        let helpers = create_default_helper_table();
+        let preempt = AtomicBool::new(false);
+
+        unsafe {
+            let frame = allocate_initial_frame(0, 1, test_native_helper_suspend, &[], &helpers);
+            let mut ctx = build_task_context(&preempt, helpers, None);
+            let result = run_aot_function(frame, &mut ctx, 100);
+
+            match &result.result {
+                ExecutionResult::Suspended(SchedulerSuspendReason::Sleep { .. }) => {
+                    // NativeCallBoundary -> immediate scheduler handoff/re-entry.
+                }
+                other => panic!("Expected Suspended(Sleep), got {:?}", other),
+            }
+            assert!(
+                !result.frame.is_null(),
+                "Frame should be preserved on native-boundary suspension"
+            );
+
+            free_frame_chain(result.frame, &helpers);
         }
     }
 
@@ -538,6 +637,10 @@ mod tests {
         // MutexLock
         let r = convert_suspend_reason(AotSuspendReason::MutexLock, 5);
         assert!(matches!(r, Some(SchedulerSuspendReason::MutexLock { .. })));
+
+        // NativeCallBoundary
+        let r = convert_suspend_reason(AotSuspendReason::NativeCallBoundary, 0);
+        assert!(matches!(r, Some(SchedulerSuspendReason::Sleep { .. })));
 
         // None
         let r = convert_suspend_reason(AotSuspendReason::None, 0);

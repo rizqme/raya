@@ -11,19 +11,34 @@ fn fault_injection_summary_contract() {
     let out = run_cli_script(&workspace, &fault_injection_entry(), &tmp_dir);
     assert_ok_run(&out);
 
-    let summary =
-        std::fs::read_to_string(tmp_dir.join("raya-examples-fault-injection/result.txt"))
-            .expect("fault result");
+    let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-fault-injection/result.txt"))
+        .expect("fault result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("json").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("hex").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("json").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("hex").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("missing").map(String::as_str),
         Some("true"),
         "{summary}"
     );
-    assert_eq!(fields.get("panic").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("panic").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -41,9 +56,21 @@ fn fault_injection_repeatable() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-fault-injection/result.txt"))
         .expect("fault result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("json").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("hex").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("json").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("hex").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("panic").map(String::as_str),
         Some("true"),

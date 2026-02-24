@@ -139,7 +139,7 @@ fn classify_suspension(instr: &JitInstr) -> Option<SuspensionKind> {
         JitInstr::MutexLock { .. } => Some(SuspensionKind::MutexLock),
 
         // Preemption check
-        JitInstr::CheckPreemption => Some(SuspensionKind::PreemptionCheck),
+        JitInstr::CheckPreemption { .. } => Some(SuspensionKind::PreemptionCheck),
 
         // Channel operations (if implemented)
         // JitInstr::ChannelRecv { .. } => Some(SuspensionKind::ChannelRecv),

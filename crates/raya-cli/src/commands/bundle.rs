@@ -43,12 +43,14 @@ pub fn execute(
 
 #[cfg(feature = "aot")]
 mod aot_impl {
+    use std::collections::{BTreeSet, VecDeque};
     use std::io::Write;
     use std::path::{Path, PathBuf};
 
     use raya_engine::aot::bytecode_adapter::LiftedFunction;
     use raya_engine::aot::codegen::{compile_functions, create_native_isa, CompilableFunction};
     use raya_engine::aot::traits::AotCompilable;
+    use raya_engine::compiler::bytecode::Opcode;
     use raya_runtime::bundle::format::{
         write_vfs_section, AotTrailer, BundledFuncEntry, TRAILER_MAGIC, TRAILER_SIZE,
     };
@@ -106,23 +108,28 @@ mod aot_impl {
             anyhow::bail!("No functions found in module. Nothing to bundle.");
         }
 
+        let reachable = collect_reachable_functions(module)?;
+        println!(
+            "  Selected {} reachable function(s) for AOT",
+            reachable.len()
+        );
+
         // Step 2: Lift bytecode functions to AOT-compilable form
-        let lifted: Vec<LiftedFunction> = module
-            .functions
+        let lifted: Vec<LiftedFunction> = reachable
             .iter()
-            .enumerate()
-            .map(|(i, f)| {
+            .map(|&func_index| {
+                let f = &module.functions[func_index as usize];
                 let name = f.name.clone();
                 let param_count = f.param_count as u32;
                 let local_count = f.local_count as u32;
                 LiftedFunction {
-                    func_index: i as u32,
+                    func_index,
                     param_count,
                     local_count,
                     name: Some(name.clone()),
                     #[cfg(all(feature = "aot", feature = "jit"))]
                     jit_func: raya_engine::jit::ir::JitFunction::new(
-                        i as u32,
+                        func_index,
                         name,
                         param_count as usize,
                         local_count as usize,
@@ -133,11 +140,10 @@ mod aot_impl {
 
         let compilables: Vec<CompilableFunction<'_>> = lifted
             .iter()
-            .enumerate()
-            .map(|(i, lf)| CompilableFunction {
+            .map(|lf| CompilableFunction {
                 func: lf as &dyn AotCompilable,
                 module_index: 0,
-                func_index: i as u16,
+                func_index: lf.func_index as u16,
             })
             .collect();
 
@@ -182,6 +188,206 @@ mod aot_impl {
         );
 
         Ok(())
+    }
+
+    fn collect_reachable_functions(
+        module: &raya_engine::compiler::bytecode::Module,
+    ) -> anyhow::Result<Vec<u32>> {
+        let entry_main_fn_id = module
+            .functions
+            .iter()
+            .rposition(|f| f.name == "main")
+            .ok_or_else(|| anyhow::anyhow!("No main function"))?;
+
+        let mut seen = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        seen.insert(entry_main_fn_id as u32);
+        queue.push_back(entry_main_fn_id as u32);
+
+        while let Some(func_id) = queue.pop_front() {
+            let function = &module.functions[func_id as usize];
+            let code = &function.code;
+            let mut ip = 0usize;
+            while ip < code.len() {
+                let Some(opcode) = Opcode::from_u8(code[ip]) else {
+                    break;
+                };
+                ip += 1;
+
+                if opcode == Opcode::Call {
+                    if ip + 6 > code.len() {
+                        break;
+                    }
+                    let callee_fn_id =
+                        u32::from_le_bytes([code[ip], code[ip + 1], code[ip + 2], code[ip + 3]]);
+                    if (callee_fn_id as usize) < module.functions.len() && seen.insert(callee_fn_id)
+                    {
+                        queue.push_back(callee_fn_id);
+                    }
+                }
+
+                let operand_len = operand_size(opcode);
+                if ip + operand_len > code.len() {
+                    break;
+                }
+                ip += operand_len;
+            }
+        }
+
+        Ok(seen.into_iter().collect())
+    }
+
+    fn operand_size(opcode: Opcode) -> usize {
+        match opcode {
+            // No operands
+            Opcode::Nop
+            | Opcode::Pop
+            | Opcode::Dup
+            | Opcode::Swap
+            | Opcode::ConstNull
+            | Opcode::ConstTrue
+            | Opcode::ConstFalse
+            | Opcode::LoadLocal0
+            | Opcode::LoadLocal1
+            | Opcode::StoreLocal0
+            | Opcode::StoreLocal1
+            | Opcode::GetArgCount
+            | Opcode::LoadArgLocal
+            | Opcode::Iadd
+            | Opcode::Isub
+            | Opcode::Imul
+            | Opcode::Idiv
+            | Opcode::Imod
+            | Opcode::Ineg
+            | Opcode::Ipow
+            | Opcode::Ishl
+            | Opcode::Ishr
+            | Opcode::Iushr
+            | Opcode::Iand
+            | Opcode::Ior
+            | Opcode::Ixor
+            | Opcode::Inot
+            | Opcode::Fadd
+            | Opcode::Fsub
+            | Opcode::Fmul
+            | Opcode::Fdiv
+            | Opcode::Fneg
+            | Opcode::Fpow
+            | Opcode::Fmod
+            | Opcode::Ieq
+            | Opcode::Ine
+            | Opcode::Ilt
+            | Opcode::Ile
+            | Opcode::Igt
+            | Opcode::Ige
+            | Opcode::Feq
+            | Opcode::Fne
+            | Opcode::Flt
+            | Opcode::Fle
+            | Opcode::Fgt
+            | Opcode::Fge
+            | Opcode::Eq
+            | Opcode::Ne
+            | Opcode::StrictEq
+            | Opcode::StrictNe
+            | Opcode::Not
+            | Opcode::And
+            | Opcode::Or
+            | Opcode::Typeof
+            | Opcode::Sconcat
+            | Opcode::Slen
+            | Opcode::Seq
+            | Opcode::Sne
+            | Opcode::Slt
+            | Opcode::Sle
+            | Opcode::Sgt
+            | Opcode::Sge
+            | Opcode::ToString
+            | Opcode::Return
+            | Opcode::ReturnVoid
+            | Opcode::LoadElem
+            | Opcode::StoreElem
+            | Opcode::ArrayLen
+            | Opcode::Await
+            | Opcode::Yield
+            | Opcode::Sleep
+            | Opcode::NewMutex
+            | Opcode::NewChannel
+            | Opcode::MutexLock
+            | Opcode::MutexUnlock
+            | Opcode::Throw
+            | Opcode::JsonIndex
+            | Opcode::JsonIndexSet
+            | Opcode::JsonPush
+            | Opcode::JsonPop
+            | Opcode::JsonNewObject
+            | Opcode::JsonNewArray
+            | Opcode::JsonKeys
+            | Opcode::JsonLength
+            | Opcode::NewSemaphore
+            | Opcode::SemAcquire
+            | Opcode::SemRelease
+            | Opcode::WaitAll
+            | Opcode::TaskCancel
+            | Opcode::NewRefCell
+            | Opcode::LoadRefCell
+            | Opcode::StoreRefCell
+            | Opcode::ArrayPush
+            | Opcode::ArrayPop
+            | Opcode::InstanceOf
+            | Opcode::Cast
+            | Opcode::TupleGet
+            | Opcode::EndTry
+            | Opcode::Rethrow
+            | Opcode::Debugger => 0,
+            Opcode::BindMethod
+            | Opcode::LoadLocal
+            | Opcode::StoreLocal
+            | Opcode::LoadField
+            | Opcode::StoreField
+            | Opcode::LoadFieldFast
+            | Opcode::StoreFieldFast
+            | Opcode::OptionalField
+            | Opcode::InitObject
+            | Opcode::InitArray
+            | Opcode::InitTuple
+            | Opcode::CloseVar
+            | Opcode::LoadCaptured
+            | Opcode::StoreCaptured
+            | Opcode::SetClosureCapture
+            | Opcode::Trap
+            | Opcode::SpawnClosure => 2,
+            Opcode::ConstI32
+            | Opcode::Jmp
+            | Opcode::JmpIfFalse
+            | Opcode::JmpIfTrue
+            | Opcode::JmpIfNull
+            | Opcode::JmpIfNotNull
+            | Opcode::ConstStr
+            | Opcode::LoadConst
+            | Opcode::LoadGlobal
+            | Opcode::StoreGlobal
+            | Opcode::New
+            | Opcode::NewArray
+            | Opcode::LoadModule
+            | Opcode::TaskThen
+            | Opcode::JsonGet
+            | Opcode::JsonSet
+            | Opcode::JsonDelete
+            | Opcode::LoadStatic
+            | Opcode::StoreStatic => 4,
+            Opcode::ConstF64 | Opcode::ArrayLiteral | Opcode::Try => 8,
+            Opcode::Call
+            | Opcode::CallMethod
+            | Opcode::CallConstructor
+            | Opcode::CallSuper
+            | Opcode::CallStatic
+            | Opcode::ObjectLiteral
+            | Opcode::Spawn
+            | Opcode::MakeClosure
+            | Opcode::TupleLiteral => 6,
+            Opcode::NativeCall | Opcode::ModuleNativeCall => 3,
+        }
     }
 
     /// Write the AOT bundle to a file.
@@ -233,8 +439,12 @@ mod aot_impl {
             + (func_table_count as u64) * std::mem::size_of::<BundledFuncEntry>() as u64;
         let vfs_size = write_vfs_section(&mut file, vfs_files)?;
 
-        // 4. Compute checksum (FNV-1a hash of code section)
-        let checksum = compute_checksum(&bundle.code);
+        // 4. Compute checksum over full payload ([code][func_table][vfs]).
+        // Loader validates crc32(payload_start..payload_end), i.e. all bytes
+        // before trailer for standalone bundles.
+        file.flush()?;
+        let payload_bytes = std::fs::read(path)?;
+        let checksum = crc32fast::hash(&payload_bytes);
 
         // 5. Write trailer
         let trailer = AotTrailer {
@@ -254,15 +464,5 @@ mod aot_impl {
 
         file.flush()?;
         Ok(())
-    }
-
-    /// Simple checksum: FNV-1a hash of the data, truncated to u32.
-    fn compute_checksum(data: &[u8]) -> u32 {
-        let mut hash: u32 = 0x811c_9dc5;
-        for &byte in data {
-            hash ^= byte as u32;
-            hash = hash.wrapping_mul(0x0100_0193);
-        }
-        hash
     }
 }

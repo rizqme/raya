@@ -18,8 +18,11 @@ use raya_engine::jit::ir::instr::{JitBlockId, JitFunction, JitInstr, JitTerminat
 use raya_engine::jit::ir::types::JitType;
 use raya_engine::jit::pipeline::lifter::lift_function;
 use raya_engine::jit::pipeline::JitPipeline;
-use raya_engine::jit::runtime::trampoline::JitEntryFn;
+use raya_engine::jit::runtime::helpers::JIT_NATIVE_SUSPEND_SENTINEL;
+use raya_engine::jit::runtime::trampoline::{JitEntryFn, RuntimeContext, RuntimeHelperTable};
 use raya_engine::jit::{JitConfig, JitEngine};
+use raya_engine::Vm;
+use rustc_hash::FxHashMap;
 
 use cranelift_codegen::ir::{self, AbiParam};
 use cranelift_codegen::settings::{self, Configurable};
@@ -173,6 +176,20 @@ fn emit_jmp(code: &mut Vec<u8>, op: Opcode, offset: i32) {
     code.extend_from_slice(&offset.to_le_bytes());
 }
 
+fn emit_jmp_i16_placeholder(code: &mut Vec<u8>, op: Opcode) -> usize {
+    code.push(op as u8);
+    let imm_pos = code.len();
+    code.extend_from_slice(&0i16.to_le_bytes());
+    imm_pos
+}
+
+fn patch_jmp_i16_compiler(code: &mut [u8], imm_pos: usize, target_pos: usize) {
+    // Match compiler/VM semantics: jump offset is relative to IP after reading i16.
+    let rel = target_pos as isize - (imm_pos as isize + 2);
+    let rel_i16 = i16::try_from(rel).expect("test jump offset must fit i16");
+    code[imm_pos..imm_pos + 2].copy_from_slice(&rel_i16.to_le_bytes());
+}
+
 // ============================================================================
 // JIT execution helper
 // ============================================================================
@@ -185,6 +202,22 @@ fn jit_compile_and_call(func: &JitFunction) -> u64 {
 
 /// Same as jit_compile_and_call but with a pre-allocated locals buffer.
 fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64]) -> u64 {
+    jit_compile_and_call_with_locals_and_exit(func, locals).0
+}
+
+/// Same as jit_compile_and_call_with_locals but also returns JIT exit metadata.
+fn jit_compile_and_call_with_locals_and_exit(
+    func: &JitFunction,
+    locals: &mut [u64],
+) -> (u64, raya_engine::jit::runtime::trampoline::JitExitInfo) {
+    jit_compile_and_call_with_locals_exit_and_ctx(func, locals, std::ptr::null_mut())
+}
+
+fn jit_compile_and_call_with_locals_exit_and_ctx(
+    func: &JitFunction,
+    locals: &mut [u64],
+    ctx_ptr: *mut RuntimeContext,
+) -> (u64, raya_engine::jit::runtime::trampoline::JitExitInfo) {
     let mut flag_builder = settings::builder();
     flag_builder.set("opt_level", "speed").unwrap();
     flag_builder.set("is_pic", "false").unwrap();
@@ -232,7 +265,18 @@ fn jit_compile_and_call_with_locals(func: &JitFunction, locals: &mut [u64]) -> u
     };
     let local_count = locals.len() as u32;
 
-    unsafe { jit_fn(ptr::null(), 0, locals_ptr, local_count, ptr::null_mut()) }
+    let mut exit = raya_engine::jit::runtime::trampoline::JitExitInfo::default();
+    let result = unsafe {
+        jit_fn(
+            ptr::null(),
+            0,
+            locals_ptr,
+            local_count,
+            ctx_ptr,
+            (&mut exit as *mut _),
+        )
+    };
+    (result, exit)
 }
 
 /// Run bytecode through the full pipeline (lift → optimize → compile) then execute.
@@ -246,6 +290,653 @@ fn jit_pipeline_and_call(code: Vec<u8>, local_count: usize) -> u64 {
     // Allocate locals buffer
     let mut locals = vec![0u64; local_count];
     jit_compile_and_call_with_locals(&jit_func, &mut locals)
+}
+
+#[test]
+fn jit_native_call_exits_with_suspend_kind() {
+    let mut code = Vec::new();
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes()); // native_id
+    code.push(0u8); // arg_count
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let (raw, exit) = jit_compile_and_call_with_locals_and_exit(&jit_func, &mut []);
+    assert_eq!(raw, NULL_VALUE, "native-call bridge returns null sentinel");
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(exit.bytecode_offset, 0);
+}
+
+#[test]
+fn jit_native_call_reports_bytecode_offset() {
+    let mut code = Vec::new();
+    emit(&mut code, Opcode::ConstNull); // offset 0
+    code.push(Opcode::NativeCall as u8); // offset 1
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(0u8);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 1);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let (raw, exit) = jit_compile_and_call_with_locals_and_exit(&jit_func, &mut []);
+    assert_eq!(raw, NULL_VALUE);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(exit.bytecode_offset, 1);
+}
+
+#[test]
+fn jit_native_call_materializes_operands_in_exit_info() {
+    let mut code = Vec::new();
+    emit_i32(&mut code, 7);
+    emit_i32(&mut code, 11);
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(2u8); // arg_count
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let (_raw, exit) = jit_compile_and_call_with_locals_and_exit(&jit_func, &mut []);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(exit.native_arg_count, 2);
+    assert_eq!(decode_i32(exit.native_args[0]), 7);
+    assert_eq!(decode_i32(exit.native_args[1]), 11);
+}
+
+#[test]
+fn jit_native_call_materializes_operands_truncated_to_exit_cap() {
+    let mut code = Vec::new();
+    for v in 0..10 {
+        emit_i32(&mut code, v);
+    }
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(10u8); // exceeds JIT_EXIT_MAX_NATIVE_ARGS (8)
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let (_raw, exit) = jit_compile_and_call_with_locals_and_exit(&jit_func, &mut []);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(
+        exit.native_arg_count as usize,
+        raya_engine::jit::runtime::trampoline::JIT_EXIT_MAX_NATIVE_ARGS
+    );
+    assert_eq!(decode_i32(exit.native_args[0]), 0);
+    assert_eq!(decode_i32(exit.native_args[7]), 7);
+}
+
+#[test]
+fn jit_native_call_zero_arg_ctx_fastpath_returns_value() {
+    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_array(
+        _type_id: u32,
+        _capacity: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_string(
+        _data_ptr: *const u8,
+        _len: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_safepoint_poll(_shared_state: *const ()) {}
+    unsafe extern "C" fn stub_check_preemption(_current_task: *const ()) -> bool {
+        false
+    }
+    unsafe extern "C" fn stub_native_call_dispatch(
+        _native_id: u16,
+        _args_ptr: *const u64,
+        _arg_count: u8,
+        _shared_state: *mut (),
+    ) -> u64 {
+        I32_TAG_BASE | (42u64 & PAYLOAD_MASK_32)
+    }
+    unsafe extern "C" fn stub_interpreter_call(
+        _func_index: u32,
+        _args_ptr: *const u64,
+        _arg_count: u16,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_string_concat(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_generic_equals(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> bool {
+        false
+    }
+
+    let mut code = Vec::new();
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(0u8);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let mut ctx = RuntimeContext {
+        shared_state: std::ptr::null(),
+        current_task: std::ptr::null(),
+        module: std::ptr::null(),
+        helpers: RuntimeHelperTable {
+            alloc_object: stub_alloc_object,
+            alloc_array: stub_alloc_array,
+            alloc_string: stub_alloc_string,
+            safepoint_poll: stub_safepoint_poll,
+            check_preemption: stub_check_preemption,
+            native_call_dispatch: stub_native_call_dispatch,
+            interpreter_call: stub_interpreter_call,
+            throw_exception: stub_throw_exception,
+            deoptimize: stub_deoptimize,
+            string_concat: stub_string_concat,
+            generic_equals: stub_generic_equals,
+        },
+    };
+
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert!(is_i32(raw));
+    assert_eq!(decode_i32(raw), 42);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::None as u32
+    );
+}
+
+#[test]
+fn jit_native_call_zero_arg_ctx_fastpath_sentinel_suspends() {
+    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_array(
+        _type_id: u32,
+        _capacity: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_string(
+        _data_ptr: *const u8,
+        _len: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_safepoint_poll(_shared_state: *const ()) {}
+    unsafe extern "C" fn stub_check_preemption(_current_task: *const ()) -> bool {
+        false
+    }
+    unsafe extern "C" fn stub_native_call_dispatch(
+        _native_id: u16,
+        _args_ptr: *const u64,
+        _arg_count: u8,
+        _shared_state: *mut (),
+    ) -> u64 {
+        JIT_NATIVE_SUSPEND_SENTINEL
+    }
+    unsafe extern "C" fn stub_interpreter_call(
+        _func_index: u32,
+        _args_ptr: *const u64,
+        _arg_count: u16,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_string_concat(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_generic_equals(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> bool {
+        false
+    }
+
+    let mut code = Vec::new();
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(0u8);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let mut ctx = RuntimeContext {
+        shared_state: std::ptr::null(),
+        current_task: std::ptr::null(),
+        module: std::ptr::null(),
+        helpers: RuntimeHelperTable {
+            alloc_object: stub_alloc_object,
+            alloc_array: stub_alloc_array,
+            alloc_string: stub_alloc_string,
+            safepoint_poll: stub_safepoint_poll,
+            check_preemption: stub_check_preemption,
+            native_call_dispatch: stub_native_call_dispatch,
+            interpreter_call: stub_interpreter_call,
+            throw_exception: stub_throw_exception,
+            deoptimize: stub_deoptimize,
+            string_concat: stub_string_concat,
+            generic_equals: stub_generic_equals,
+        },
+    };
+
+    let (_raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(exit.bytecode_offset, 0);
+}
+
+#[test]
+fn jit_native_call_args_ctx_fastpath_returns_value() {
+    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_array(
+        _type_id: u32,
+        _capacity: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_string(
+        _data_ptr: *const u8,
+        _len: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_safepoint_poll(_shared_state: *const ()) {}
+    unsafe extern "C" fn stub_check_preemption(_current_task: *const ()) -> bool {
+        false
+    }
+    unsafe extern "C" fn stub_native_call_dispatch(
+        _native_id: u16,
+        args_ptr: *const u64,
+        arg_count: u8,
+        _shared_state: *mut (),
+    ) -> u64 {
+        assert_eq!(arg_count, 2);
+        let a = unsafe { *args_ptr.add(0) };
+        let b = unsafe { *args_ptr.add(1) };
+        assert_eq!(decode_i32(a), 7);
+        assert_eq!(decode_i32(b), 11);
+        I32_TAG_BASE | (99u64 & PAYLOAD_MASK_32)
+    }
+    unsafe extern "C" fn stub_interpreter_call(
+        _func_index: u32,
+        _args_ptr: *const u64,
+        _arg_count: u16,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_string_concat(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_generic_equals(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> bool {
+        false
+    }
+
+    let mut code = Vec::new();
+    emit_i32(&mut code, 7);
+    emit_i32(&mut code, 11);
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(2u8);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let mut ctx = RuntimeContext {
+        shared_state: std::ptr::null(),
+        current_task: std::ptr::null(),
+        module: std::ptr::null(),
+        helpers: RuntimeHelperTable {
+            alloc_object: stub_alloc_object,
+            alloc_array: stub_alloc_array,
+            alloc_string: stub_alloc_string,
+            safepoint_poll: stub_safepoint_poll,
+            check_preemption: stub_check_preemption,
+            native_call_dispatch: stub_native_call_dispatch,
+            interpreter_call: stub_interpreter_call,
+            throw_exception: stub_throw_exception,
+            deoptimize: stub_deoptimize,
+            string_concat: stub_string_concat,
+            generic_equals: stub_generic_equals,
+        },
+    };
+
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert!(is_i32(raw));
+    assert_eq!(decode_i32(raw), 99);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Completed as u32
+    );
+}
+
+#[test]
+fn jit_native_call_args_ctx_fastpath_sentinel_suspends() {
+    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_array(
+        _type_id: u32,
+        _capacity: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_string(
+        _data_ptr: *const u8,
+        _len: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_safepoint_poll(_shared_state: *const ()) {}
+    unsafe extern "C" fn stub_check_preemption(_current_task: *const ()) -> bool {
+        false
+    }
+    unsafe extern "C" fn stub_native_call_dispatch(
+        _native_id: u16,
+        args_ptr: *const u64,
+        arg_count: u8,
+        _shared_state: *mut (),
+    ) -> u64 {
+        assert_eq!(arg_count, 2);
+        let a = unsafe { *args_ptr.add(0) };
+        let b = unsafe { *args_ptr.add(1) };
+        assert_eq!(decode_i32(a), 7);
+        assert_eq!(decode_i32(b), 11);
+        JIT_NATIVE_SUSPEND_SENTINEL
+    }
+    unsafe extern "C" fn stub_interpreter_call(
+        _func_index: u32,
+        _args_ptr: *const u64,
+        _arg_count: u16,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_string_concat(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_generic_equals(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> bool {
+        false
+    }
+
+    let mut code = Vec::new();
+    emit_i32(&mut code, 7);
+    emit_i32(&mut code, 11);
+    code.push(Opcode::NativeCall as u8);
+    code.extend_from_slice(&0u16.to_le_bytes());
+    code.push(2u8);
+    emit(&mut code, Opcode::Return);
+
+    let module = make_module(code, 0, 0);
+    let func = &module.functions[0];
+    let jit_func = lift_function(func, &module, 0).expect("Lift failed");
+
+    let mut ctx = RuntimeContext {
+        shared_state: std::ptr::null(),
+        current_task: std::ptr::null(),
+        module: std::ptr::null(),
+        helpers: RuntimeHelperTable {
+            alloc_object: stub_alloc_object,
+            alloc_array: stub_alloc_array,
+            alloc_string: stub_alloc_string,
+            safepoint_poll: stub_safepoint_poll,
+            check_preemption: stub_check_preemption,
+            native_call_dispatch: stub_native_call_dispatch,
+            interpreter_call: stub_interpreter_call,
+            throw_exception: stub_throw_exception,
+            deoptimize: stub_deoptimize,
+            string_concat: stub_string_concat,
+            generic_equals: stub_generic_equals,
+        },
+    };
+
+    let (_raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::NativeCallBoundary as u32
+    );
+    assert_eq!(exit.native_arg_count, 2);
+    assert_eq!(decode_i32(exit.native_args[0]), 7);
+    assert_eq!(decode_i32(exit.native_args[1]), 11);
+}
+
+#[test]
+fn jit_check_preemption_exits_with_suspend_kind_when_helper_requests_preempt() {
+    unsafe extern "C" fn stub_alloc_object(_class_id: u32, _shared_state: *mut ()) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_array(
+        _type_id: u32,
+        _capacity: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_alloc_string(
+        _data_ptr: *const u8,
+        _len: usize,
+        _shared_state: *mut (),
+    ) -> *mut () {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn stub_safepoint_poll(_shared_state: *const ()) {}
+    unsafe extern "C" fn stub_check_preemption(_current_task: *const ()) -> bool {
+        true
+    }
+    unsafe extern "C" fn stub_native_call_dispatch(
+        _native_id: u16,
+        _args_ptr: *const u64,
+        _arg_count: u8,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_interpreter_call(
+        _func_index: u32,
+        _args_ptr: *const u64,
+        _arg_count: u16,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_throw_exception(_exception_value: u64, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_deoptimize(_bytecode_offset: u32, _shared_state: *mut ()) {
+        panic!("not used")
+    }
+    unsafe extern "C" fn stub_string_concat(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> u64 {
+        NULL_VALUE
+    }
+    unsafe extern "C" fn stub_generic_equals(
+        _left: u64,
+        _right: u64,
+        _shared_state: *mut (),
+    ) -> bool {
+        false
+    }
+
+    let jit_func = JitFunction {
+        name: "check_preemption".to_string(),
+        func_index: 0,
+        param_count: 0,
+        local_count: 0,
+        blocks: vec![raya_engine::jit::ir::instr::JitBlock {
+            id: JitBlockId(0),
+            instrs: vec![
+                JitInstr::CheckPreemption {
+                    bytecode_offset: 77,
+                },
+                JitInstr::ConstNull { dest: Reg(0) },
+            ],
+            terminator: JitTerminator::Return(Some(Reg(0))),
+            predecessors: vec![],
+        }],
+        entry: JitBlockId(0),
+        next_reg: 1,
+        reg_types: FxHashMap::from_iter([(Reg(0), JitType::Value)]),
+    };
+
+    let mut ctx = RuntimeContext {
+        shared_state: std::ptr::null(),
+        current_task: std::ptr::null(),
+        module: std::ptr::null(),
+        helpers: RuntimeHelperTable {
+            alloc_object: stub_alloc_object,
+            alloc_array: stub_alloc_array,
+            alloc_string: stub_alloc_string,
+            safepoint_poll: stub_safepoint_poll,
+            check_preemption: stub_check_preemption,
+            native_call_dispatch: stub_native_call_dispatch,
+            interpreter_call: stub_interpreter_call,
+            throw_exception: stub_throw_exception,
+            deoptimize: stub_deoptimize,
+            string_concat: stub_string_concat,
+            generic_equals: stub_generic_equals,
+        },
+    };
+
+    let (raw, exit) =
+        jit_compile_and_call_with_locals_exit_and_ctx(&jit_func, &mut [], (&mut ctx as *mut _));
+    assert_eq!(raw, NULL_VALUE);
+    assert_eq!(
+        exit.kind,
+        raya_engine::jit::runtime::trampoline::JitExitKind::Suspended as u32
+    );
+    assert_eq!(
+        exit.suspend_reason,
+        raya_engine::jit::runtime::trampoline::JitSuspendReason::Preemption as u32
+    );
+    assert_eq!(exit.bytecode_offset, 77);
 }
 
 // ============================================================================
@@ -1268,8 +1959,52 @@ fn pipeline_bytecode_to_native_multi_op() {
 }
 
 #[test]
+fn pipeline_bytecode_to_native_branch_loop_i16_compiler_semantics() {
+    let mut code = Vec::new();
+    // i = 0
+    emit_i32(&mut code, 0);
+    emit_store_local(&mut code, 0);
+
+    let loop_head = code.len();
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, 64);
+    emit(&mut code, Opcode::Ilt);
+    let jmp_exit = emit_jmp_i16_placeholder(&mut code, Opcode::JmpIfFalse);
+
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, 1);
+    emit(&mut code, Opcode::Iadd);
+    emit_store_local(&mut code, 0);
+
+    let jmp_back = emit_jmp_i16_placeholder(&mut code, Opcode::Jmp);
+    let exit = code.len();
+    patch_jmp_i16_compiler(&mut code, jmp_exit, exit);
+    patch_jmp_i16_compiler(&mut code, jmp_back, loop_head);
+
+    // force unbox + typed return
+    emit_load_local(&mut code, 0);
+    emit_i32(&mut code, 0);
+    emit(&mut code, Opcode::Iadd);
+    emit(&mut code, Opcode::Return);
+
+    let jit_raw = jit_pipeline_and_call(code.clone(), 1);
+    let jit_val = decode_i32(jit_raw);
+
+    let module = make_vm_module(code, 0, 1);
+    let mut vm = Vm::with_worker_count(1);
+    let interp_val = vm.execute(&module).unwrap().as_i32().unwrap();
+
+    assert_eq!(jit_val, 64);
+    assert_eq!(jit_val, interp_val);
+}
+
+#[test]
 fn engine_prewarm_selects_hot() {
-    let mut engine = JitEngine::new().unwrap();
+    let mut engine = JitEngine::with_config(JitConfig {
+        max_prewarm_functions: 2,
+        ..Default::default()
+    })
+    .unwrap();
 
     // Create a module with two functions:
     // func 0: trivial (ConstNull, Return) — should NOT be selected

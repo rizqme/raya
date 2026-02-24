@@ -11,11 +11,14 @@ fn worker_queue_summary_contract() {
     let out = run_cli_script(&workspace, &worker_queue_entry(), &tmp_dir);
     assert_ok_run(&out);
 
-    let summary =
-        std::fs::read_to_string(tmp_dir.join("raya-examples-worker-queue/result.txt"))
-            .expect("worker result");
+    let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-worker-queue/result.txt"))
+        .expect("worker result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("cancelled").map(String::as_str),
         Some("true"),
@@ -26,13 +29,21 @@ fn worker_queue_summary_contract() {
         Some("true"),
         "{summary}"
     );
-    assert_eq!(fields.get("count").map(String::as_str), Some("5"), "{summary}");
+    assert_eq!(
+        fields.get("count").map(String::as_str),
+        Some("5"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("processed").map(String::as_str),
         Some("15"),
         "{summary}"
     );
-    assert_eq!(fields.get("v1").map(String::as_str), Some("20"), "{summary}");
+    assert_eq!(
+        fields.get("v1").map(String::as_str),
+        Some("20"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
@@ -50,14 +61,26 @@ fn worker_queue_repeatable() {
     let summary = std::fs::read_to_string(tmp_dir.join("raya-examples-worker-queue/result.txt"))
         .expect("worker result");
     let fields = parse_summary(&summary);
-    assert_eq!(fields.get("ok").map(String::as_str), Some("true"), "{summary}");
-    assert_eq!(fields.get("count").map(String::as_str), Some("5"), "{summary}");
+    assert_eq!(
+        fields.get("ok").map(String::as_str),
+        Some("true"),
+        "{summary}"
+    );
+    assert_eq!(
+        fields.get("count").map(String::as_str),
+        Some("5"),
+        "{summary}"
+    );
     assert_eq!(
         fields.get("processed").map(String::as_str),
         Some("15"),
         "{summary}"
     );
-    assert_eq!(fields.get("v1").map(String::as_str), Some("20"), "{summary}");
+    assert_eq!(
+        fields.get("v1").map(String::as_str),
+        Some("20"),
+        "{summary}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
