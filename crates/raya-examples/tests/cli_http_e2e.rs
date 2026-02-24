@@ -1,6 +1,7 @@
 use raya_examples::{webapp_client_entry, webapp_server_entry, webapp_stress_client_entry};
 use serde_json::Value;
-use std::net::SocketAddr;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
@@ -113,6 +114,32 @@ fn wait_for_ready_addr(path: &Path, timeout: Duration) -> Option<String> {
     None
 }
 
+fn wait_for_http_health(addr: &str, timeout: Duration) -> bool {
+    let Ok(socket_addr) = addr.parse::<SocketAddr>() else {
+        return false;
+    };
+
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(250))
+        {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
+            let req = format!(
+                "GET /health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+            );
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut buf = String::new();
+                if stream.read_to_string(&mut buf).is_ok() && buf.starts_with("HTTP/1.1 200") {
+                    return true;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    false
+}
+
 fn wait_for_status(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     let start = Instant::now();
     loop {
@@ -143,13 +170,29 @@ fn boot_server(workspace: &Path, tmp_dir: &Path) -> Child {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    if wait_for_ready_addr(&ready_file, Duration::from_secs(120)).is_none() {
+    let ready_addr = match wait_for_ready_addr(&ready_file, Duration::from_secs(120)) {
+        Some(addr) => addr,
+        None => {
+            let _ = server.kill();
+            let output = server.wait_with_output().expect("server output");
+            let ready_contents = std::fs::read_to_string(&ready_file).unwrap_or_default();
+            panic!(
+                "server readiness address not valid in file: {}\ncontents: {:?}\nstdout:\n{}\nstderr:\n{}",
+                ready_file.display(),
+                ready_contents,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    };
+    if !wait_for_http_health(&ready_addr, Duration::from_secs(120)) {
         let _ = server.kill();
         let output = server.wait_with_output().expect("server output");
         let ready_contents = std::fs::read_to_string(&ready_file).unwrap_or_default();
         panic!(
-            "server readiness address not valid in file: {}\ncontents: {:?}\nstdout:\n{}\nstderr:\n{}",
+            "server did not become healthy after readiness signal: {}\naddr: {}\ncontents: {:?}\nstdout:\n{}\nstderr:\n{}",
             ready_file.display(),
+            ready_addr,
             ready_contents,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
