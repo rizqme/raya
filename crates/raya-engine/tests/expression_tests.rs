@@ -279,6 +279,24 @@ fn test_parse_object_literal() {
 }
 
 #[test]
+fn test_parse_object_literal_with_spread() {
+    let source = "{ a: 1, ...obj, b: 2 }";
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    match &module.statements[0] {
+        Statement::Expression(expr_stmt) => match &expr_stmt.expression {
+            Expression::Object(obj) => {
+                assert_eq!(obj.properties.len(), 3);
+                assert!(matches!(obj.properties[1], ObjectProperty::Spread(_)));
+            }
+            _ => panic!("Expected object expression"),
+        },
+        _ => panic!("Expected expression statement"),
+    }
+}
+
+#[test]
 fn test_parse_empty_object() {
     let source = "{}";
     let parser = Parser::new(source).unwrap();

@@ -3502,6 +3502,55 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.array_type(unified_ty)
     }
 
+    fn insert_or_override_property(
+        properties: &mut Vec<crate::parser::types::ty::PropertySignature>,
+        prop: crate::parser::types::ty::PropertySignature,
+    ) {
+        if let Some(existing) = properties
+            .iter_mut()
+            .find(|existing| existing.name == prop.name)
+        {
+            *existing = prop;
+        } else {
+            properties.push(prop);
+        }
+    }
+
+    fn spread_properties_from_type(
+        &mut self,
+        ty: TypeId,
+    ) -> Option<Vec<crate::parser::types::ty::PropertySignature>> {
+        use crate::parser::types::Type;
+
+        match self.type_ctx.get(ty).cloned()? {
+            Type::Object(obj) => Some(obj.properties),
+            Type::Class(class) => Some(class.properties),
+            Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.spread_properties_from_type(constraint)),
+            Type::Union(union) => {
+                let mut merged: Vec<crate::parser::types::ty::PropertySignature> = Vec::new();
+                for member in union.members {
+                    let member_props = self.spread_properties_from_type(member)?;
+                    for prop in member_props {
+                        if let Some(existing) = merged
+                            .iter_mut()
+                            .find(|existing| existing.name == prop.name)
+                        {
+                            if existing.ty != prop.ty {
+                                existing.ty = self.type_ctx.union_type(vec![existing.ty, prop.ty]);
+                            }
+                        } else {
+                            merged.push(prop);
+                        }
+                    }
+                }
+                Some(merged)
+            }
+            _ => None,
+        }
+    }
+
     /// Check object literal
     fn check_object(&mut self, obj: &ObjectExpression) -> TypeId {
         use crate::parser::types::ty::{ClassType, PropertySignature};
@@ -3517,16 +3566,34 @@ impl<'a> TypeChecker<'a> {
                         PropertyKey::Computed(_) => continue, // Skip computed keys
                     };
                     let value_ty = self.check_expr(&p.value);
-                    properties.push(PropertySignature {
-                        name,
-                        ty: value_ty,
-                        optional: false,
-                        readonly: false,
-                        visibility: Default::default(),
-                    });
+                    Self::insert_or_override_property(
+                        &mut properties,
+                        PropertySignature {
+                            name,
+                            ty: value_ty,
+                            optional: false,
+                            readonly: false,
+                            visibility: Default::default(),
+                        },
+                    );
                 }
-                ObjectProperty::Spread(_) => {
-                    // Spread properties are complex — skip for now
+                ObjectProperty::Spread(spread) => {
+                    let spread_ty = self.check_expr(&spread.argument);
+                    if let Some(spread_props) = self.spread_properties_from_type(spread_ty) {
+                        for spread_prop in spread_props {
+                            Self::insert_or_override_property(&mut properties, spread_prop);
+                        }
+                    } else {
+                        self.errors.push(CheckError::TypeMismatch {
+                            expected: "object-like type".to_string(),
+                            actual: self.format_type(spread_ty),
+                            span: spread.span,
+                            note: Some(
+                                "Object spread requires an object, class instance, or compatible union"
+                                    .to_string(),
+                            ),
+                        });
+                    }
                 }
             }
         }

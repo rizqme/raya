@@ -444,6 +444,9 @@ pub struct Lowerer<'a> {
     /// Object field layout for local variables holding decoded objects
     /// Maps variable name → Vec<(field_name, field_index)>
     variable_object_fields: FxHashMap<Symbol, Vec<(String, usize)>>,
+    /// Optional filter for object spread field names in the current lowering context.
+    /// When set (e.g., typed object literal initializer), spread only copies fields in this set.
+    object_spread_target_filter: Option<FxHashSet<String>>,
     /// Native function name table for ModuleNativeCall.
     /// Accumulates symbolic names during lowering; each name gets a module-local index.
     native_function_table: Vec<String>,
@@ -812,6 +815,7 @@ impl<'a> Lowerer<'a> {
             constant_map: FxHashMap::default(),
             register_object_fields: FxHashMap::default(),
             variable_object_fields: FxHashMap::default(),
+            object_spread_target_filter: None,
             native_function_table: Vec::new(),
             native_function_map: FxHashMap::default(),
             jsx_options: None,

@@ -9,6 +9,7 @@ use crate::compiler::ir::{
 };
 use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
+use rustc_hash::FxHashSet;
 
 impl<'a> Lowerer<'a> {
     /// Lower a statement
@@ -731,6 +732,70 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn collect_spread_target_fields_from_type(&self, ty: TypeId) -> Option<FxHashSet<String>> {
+        let resolved_ty = self.type_ctx.get(ty)?;
+        match resolved_ty {
+            crate::parser::types::Type::Object(obj) => {
+                Some(obj.properties.iter().map(|p| p.name.clone()).collect())
+            }
+            crate::parser::types::Type::Class(_) => {
+                if let Some(class_id) = self.class_id_from_type_id(ty) {
+                    let names = self
+                        .get_all_fields(class_id)
+                        .into_iter()
+                        .map(|f| self.interner.resolve(f.name).to_string())
+                        .collect();
+                    Some(names)
+                } else {
+                    None
+                }
+            }
+            crate::parser::types::Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.collect_spread_target_fields_from_type(constraint)),
+            crate::parser::types::Type::Union(union) => {
+                let mut iter = union.members.iter();
+                let first = iter
+                    .next()
+                    .and_then(|member| self.collect_spread_target_fields_from_type(*member))?;
+                let common = iter.fold(first, |acc, member| {
+                    if let Some(fields) = self.collect_spread_target_fields_from_type(*member) {
+                        acc.intersection(&fields).cloned().collect()
+                    } else {
+                        FxHashSet::default()
+                    }
+                });
+                Some(common)
+            }
+            _ => None,
+        }
+    }
+
+    fn object_spread_filter_from_annotation(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<FxHashSet<String>> {
+        let ty = self.resolve_type_annotation(type_ann);
+        self.collect_spread_target_fields_from_type(ty)
+    }
+
+    fn lower_expr_with_object_spread_filter(
+        &mut self,
+        expr: &ast::Expression,
+        type_ann: Option<&ast::TypeAnnotation>,
+    ) -> Register {
+        let prev_filter = self.object_spread_target_filter.clone();
+        if matches!(expr, ast::Expression::Object(_)) {
+            self.object_spread_target_filter =
+                type_ann.and_then(|ann| self.object_spread_filter_from_annotation(ann));
+        } else {
+            self.object_spread_target_filter = None;
+        }
+        let value = self.lower_expr(expr);
+        self.object_spread_target_filter = prev_filter;
+        value
+    }
+
     fn lower_var_decl(&mut self, decl: &ast::VariableDecl) {
         // Handle destructuring patterns
         let name = match &decl.pattern {
@@ -738,7 +803,8 @@ impl<'a> Lowerer<'a> {
             ast::Pattern::Array(_) | ast::Pattern::Object(_) => {
                 // Destructuring: evaluate initializer, then bind pattern
                 if let Some(init) = &decl.initializer {
-                    let value = self.lower_expr(init);
+                    let value = self
+                        .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
                     self.bind_pattern(&decl.pattern, value);
                 }
                 return;
@@ -814,7 +880,8 @@ impl<'a> Lowerer<'a> {
                         false
                     };
 
-                    let value = self.lower_expr(init);
+                    let value = self
+                        .lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
 
                     // Fallback class capture from lowered value type.
                     // This is critical for imported/default-exported factories where
@@ -915,7 +982,8 @@ impl<'a> Lowerer<'a> {
                 false
             };
 
-            let value = self.lower_expr(init);
+            let value =
+                self.lower_expr_with_object_spread_filter(init, decl.type_annotation.as_ref());
 
             // Fallback class capture from lowered value type.
             // Helps preserve receiver typing for chained calls on values returned

@@ -169,6 +169,11 @@ Classes declared inside function bodies are handled via:
 
 `lower_object()` registers field layout in `register_object_fields` so object destructuring can resolve field names to indices. `lower_identifier()` propagates `variable_object_fields` to the loaded register.
 
+Object spread (`{ ...obj }`) is lowered via static field-copy expansion:
+- Source fields are resolved at compile time (variable/register metadata, class layout, or type info).
+- Lowering emits `LoadField` + `StoreField` copies in source order (no JSON merge path).
+- Typed initializer contexts (`let x: T = { ...obj }`) set an object-spread filter so only fields in `T` are copied from spread operands.
+
 ## For AI Assistants
 
 - Lowering produces IR with explicit control flow (basic blocks)
@@ -183,6 +188,7 @@ Classes declared inside function bodies are handled via:
 - **Nested classes** in function bodies: save/restore function state around `lower_class()`, use `register_class()` + `pending_classes`
 - **Default params**: null-check at function entry via `emit_default_params()`
 - **Object literals**: field layout tracked in `register_object_fields` for destructuring
+- **Object spread**: uses static `LoadField`/`StoreField` expansion; unsupported dynamic spread shapes raise compile-time lowering errors.
 - **Array callback methods** (map/filter/reduce/forEach/find/findIndex/some/every/sort) are compiler intrinsics — NOT runtime CallMethod
 - **replaceWith** is also a compiler intrinsic — uses REGEXP_REPLACE_MATCHES + inline loop
 - When adding new callback-taking methods, follow the intrinsic pattern in `lower_array_intrinsic()`

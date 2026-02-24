@@ -1693,42 +1693,190 @@ impl<'a> Lowerer<'a> {
         }
     }
 
+    fn object_property_name(&self, key: &ast::PropertyKey, fallback_idx: usize) -> String {
+        match key {
+            ast::PropertyKey::Identifier(ident) => self.interner.resolve(ident.name).to_string(),
+            ast::PropertyKey::StringLiteral(lit) => self.interner.resolve(lit.value).to_string(),
+            ast::PropertyKey::IntLiteral(lit) => lit.value.to_string(),
+            ast::PropertyKey::Computed(_) => fallback_idx.to_string(),
+        }
+    }
+
+    fn include_spread_field(&self, name: &str) -> bool {
+        match &self.object_spread_target_filter {
+            Some(filter) => filter.contains(name),
+            None => true,
+        }
+    }
+
+    fn spread_source_fields_from_type(&self, ty: TypeId) -> Option<Vec<(String, u16)>> {
+        match self.type_ctx.get(ty)? {
+            crate::parser::types::Type::Object(obj) => Some(
+                obj.properties
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| (p.name.clone(), i as u16))
+                    .collect(),
+            ),
+            crate::parser::types::Type::Class(_) => {
+                let class_id = self.class_id_from_type_id(ty)?;
+                Some(
+                    self.get_all_fields(class_id)
+                        .into_iter()
+                        .map(|f| (self.interner.resolve(f.name).to_string(), f.index))
+                        .collect(),
+                )
+            }
+            crate::parser::types::Type::TypeVar(tv) => tv
+                .constraint
+                .and_then(|constraint| self.spread_source_fields_from_type(constraint)),
+            _ => None,
+        }
+    }
+
+    fn resolve_spread_source_fields(
+        &self,
+        spread_expr: &ast::Expression,
+        spread_reg: Option<&Register>,
+    ) -> Option<Vec<(String, u16)>> {
+        if let Some(reg) = spread_reg {
+            if let Some(fields) = self.register_object_fields.get(&reg.id) {
+                let mut ordered: Vec<(String, u16)> = fields
+                    .iter()
+                    .map(|(name, idx)| (name.clone(), *idx as u16))
+                    .collect();
+                ordered.sort_by_key(|(_, idx)| *idx);
+                return Some(ordered);
+            }
+        }
+
+        if let ast::Expression::Identifier(ident) = spread_expr {
+            if let Some(fields) = self.variable_object_fields.get(&ident.name) {
+                let mut ordered: Vec<(String, u16)> = fields
+                    .iter()
+                    .map(|(name, idx)| (name.clone(), *idx as u16))
+                    .collect();
+                ordered.sort_by_key(|(_, idx)| *idx);
+                return Some(ordered);
+            }
+        }
+
+        if let Some(class_id) = self.infer_class_id(spread_expr) {
+            return Some(
+                self.get_all_fields(class_id)
+                    .into_iter()
+                    .map(|f| (self.interner.resolve(f.name).to_string(), f.index))
+                    .collect(),
+            );
+        }
+
+        let spread_ty = self.get_expr_type(spread_expr);
+        self.spread_source_fields_from_type(spread_ty)
+    }
+
     fn lower_object(&mut self, object: &ast::ObjectExpression) -> Register {
         let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-        let mut fields = Vec::new();
-        let mut field_layout = Vec::new();
+        let mut field_names = Vec::<String>::new();
+        let mut field_index_map = FxHashMap::<String, usize>::default();
 
         for (idx, prop) in object.properties.iter().enumerate() {
             match prop {
                 ast::ObjectProperty::Property(p) => {
-                    let value = self.lower_expr(&p.value);
-                    fields.push((idx as u16, value));
-                    // Track field layout for destructuring
-                    let name = match &p.key {
-                        ast::PropertyKey::Identifier(ident) => {
-                            self.interner.resolve(ident.name).to_string()
-                        }
-                        ast::PropertyKey::StringLiteral(lit) => {
-                            self.interner.resolve(lit.value).to_string()
-                        }
-                        _ => idx.to_string(),
-                    };
-                    field_layout.push((name, idx));
+                    let name = self.object_property_name(&p.key, idx);
+                    if !field_index_map.contains_key(&name) {
+                        let next_idx = field_names.len();
+                        field_names.push(name.clone());
+                        field_index_map.insert(name, next_idx);
+                    }
                 }
-                ast::ObjectProperty::Spread(_spread) => {
-                    // Spread properties would need runtime handling
-                    // For now, skip them
+                ast::ObjectProperty::Spread(spread) => {
+                    if let Some(source_fields) =
+                        self.resolve_spread_source_fields(&spread.argument, None)
+                    {
+                        for (field_name, _) in source_fields {
+                            if !self.include_spread_field(&field_name) {
+                                continue;
+                            }
+                            if !field_index_map.contains_key(&field_name) {
+                                let next_idx = field_names.len();
+                                field_names.push(field_name.clone());
+                                field_index_map.insert(field_name, next_idx);
+                            }
+                        }
+                    } else {
+                        self.errors.push(CompileError::UnsupportedFeature {
+                            feature: "object spread requires statically known source fields"
+                                .to_string(),
+                        });
+                    }
                 }
             }
         }
 
+        let null_value = self.lower_null_literal();
+        let initial_fields: Vec<(u16, Register)> = (0..field_names.len())
+            .map(|i| (i as u16, null_value.clone()))
+            .collect();
+
         self.emit(IrInstr::ObjectLiteral {
             dest: dest.clone(),
-            class: crate::ir::ClassId::new(0),
-            fields,
+            class: ClassId::new(0),
+            fields: initial_fields,
         });
 
-        // Register field layout so object destructuring can resolve field names to indices
+        for (idx, prop) in object.properties.iter().enumerate() {
+            match prop {
+                ast::ObjectProperty::Property(p) => {
+                    let field_name = self.object_property_name(&p.key, idx);
+                    let Some(&field_index) = field_index_map.get(&field_name) else {
+                        continue;
+                    };
+                    let value = self.lower_expr(&p.value);
+                    self.emit(IrInstr::StoreField {
+                        object: dest.clone(),
+                        field: field_index as u16,
+                        value,
+                    });
+                }
+                ast::ObjectProperty::Spread(spread) => {
+                    let spread_reg = self.lower_expr(&spread.argument);
+                    let Some(source_fields) =
+                        self.resolve_spread_source_fields(&spread.argument, Some(&spread_reg))
+                    else {
+                        self.errors.push(CompileError::UnsupportedFeature {
+                            feature: "object spread requires statically known source fields"
+                                .to_string(),
+                        });
+                        continue;
+                    };
+                    for (field_name, src_field_idx) in source_fields {
+                        if !self.include_spread_field(&field_name) {
+                            continue;
+                        }
+                        let Some(&dest_idx) = field_index_map.get(&field_name) else {
+                            continue;
+                        };
+                        let field_val = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::LoadField {
+                            dest: field_val.clone(),
+                            object: spread_reg.clone(),
+                            field: src_field_idx,
+                        });
+                        self.emit(IrInstr::StoreField {
+                            object: dest.clone(),
+                            field: dest_idx as u16,
+                            value: field_val,
+                        });
+                    }
+                }
+            }
+        }
+
+        let field_layout: Vec<(String, usize)> = field_names
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name.clone(), idx))
+            .collect();
         self.register_object_fields.insert(dest.id, field_layout);
 
         dest

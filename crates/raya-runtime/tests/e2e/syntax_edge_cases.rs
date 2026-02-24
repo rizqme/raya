@@ -510,6 +510,55 @@ fn test_object_destructure_with_default() {
 }
 
 #[test]
+fn test_object_spread_basic_merge() {
+    expect_i32(
+        "
+        let base = { x: 10, y: 20 };
+        let merged = { a: 1, ...base };
+        return merged.a + merged.x + merged.y;
+    ",
+        31,
+    );
+}
+
+#[test]
+fn test_object_spread_override_order() {
+    expect_i32(
+        "
+        let base = { x: 10, y: 20 };
+        let merged = { x: 1, ...base, y: 99 };
+        return merged.x + merged.y;
+    ",
+        109,
+    );
+}
+
+#[test]
+fn test_typed_object_spread_filters_extra_fields() {
+    expect_i32(
+        "
+        type Pair = { x: number; y: number };
+        let source = { x: 10, y: 20, z: 999 };
+        let pair: Pair = { ...source };
+        return pair.x + pair.y;
+    ",
+        30,
+    );
+}
+
+#[test]
+fn test_typed_object_spread_still_type_checks() {
+    expect_compile_error(
+        "
+        type Pair = { x: number; y: number };
+        let source = { x: 10 };
+        let pair: Pair = { ...source };
+    ",
+        "TypeMismatch",
+    );
+}
+
+#[test]
 fn test_destructure_in_for_of_array() {
     // Array destructuring in for-of
     expect_i32(

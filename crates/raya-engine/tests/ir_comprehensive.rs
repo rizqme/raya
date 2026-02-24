@@ -915,6 +915,35 @@ mod objects {
         let output = ir.pretty_print();
         assert!(output.contains("object_literal"));
     }
+
+    #[test]
+    fn test_object_spread_lowers_to_field_copy() {
+        let ir = lower(
+            r#"
+            let base = { x: 1, y: 2 };
+            let merged = { a: 0, ...base, y: 3 };
+        "#,
+        );
+        let output = ir.pretty_print();
+        assert!(output.contains("object_literal"));
+        assert!(output.contains("load_field"));
+        assert!(output.contains("store_field"));
+    }
+
+    #[test]
+    fn test_typed_object_spread_filters_fields() {
+        let ir = lower(
+            r#"
+            type Pair = { x: number; y: number };
+            let source = { x: 1, y: 2, z: 3 };
+            let value: Pair = { ...source };
+        "#,
+        );
+        let output = ir.pretty_print();
+        // Filtered spread should only materialize x/y destination fields.
+        assert!(output.contains("object_literal"));
+        assert!(!output.contains("field 2"));
+    }
 }
 
 // =============================================================================

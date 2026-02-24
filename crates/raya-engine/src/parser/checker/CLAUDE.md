@@ -140,6 +140,7 @@ Pre-defined signatures for:
 
 - `check_new()`, `check_member()` use `self.symbols.resolve_from_scope(&name, self.current_scope)` (NOT `self.symbols.resolve()`) to find classes/functions in nested scopes (e.g., classes inside functions)
 - `check_object()` builds a `Type::Class` from object literal properties (not `unknown_type()`)
+- Object spread in `check_object()` merges spread-property shapes (object/class/typevar-constraint) with override semantics; non-object spread operands emit a `TypeMismatch`
 - Object destructuring defaults: when property not found, uses default expression type
 - `super(...)` constructor calls are explicitly type-checked in `check_call()` (do not treat `Expression::Super` as a normal identifier/function lookup)
 - `if (x == null) { break/continue/return/throw }` now narrows `x` in continuation paths because `stmt_definitely_returns()` treats `break/continue` as flow exits
