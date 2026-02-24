@@ -1,5 +1,6 @@
 use raya_examples::{webapp_client_entry, webapp_server_entry, webapp_stress_client_entry};
 use serde_json::Value;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::OnceLock;
@@ -98,6 +99,20 @@ fn wait_for_file(path: &Path, timeout: Duration) -> bool {
     false
 }
 
+fn wait_for_ready_addr(path: &Path, timeout: Duration) -> Option<String> {
+    let start = Instant::now();
+    while start.elapsed() < timeout {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let addr = raw.trim();
+            if !addr.is_empty() && addr.parse::<SocketAddr>().is_ok() {
+                return Some(addr.to_string());
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    None
+}
+
 fn wait_for_status(child: &mut Child, timeout: Duration) -> Option<ExitStatus> {
     let start = Instant::now();
     loop {
@@ -124,6 +139,18 @@ fn boot_server(workspace: &Path, tmp_dir: &Path) -> Child {
         panic!(
             "server readiness file not created: {}\nstdout:\n{}\nstderr:\n{}",
             ready_file.display(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    if wait_for_ready_addr(&ready_file, Duration::from_secs(120)).is_none() {
+        let _ = server.kill();
+        let output = server.wait_with_output().expect("server output");
+        let ready_contents = std::fs::read_to_string(&ready_file).unwrap_or_default();
+        panic!(
+            "server readiness address not valid in file: {}\ncontents: {:?}\nstdout:\n{}\nstderr:\n{}",
+            ready_file.display(),
+            ready_contents,
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );

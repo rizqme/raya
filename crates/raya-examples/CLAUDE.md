@@ -28,6 +28,8 @@ Example Raya applications plus end-to-end tests.
 
 - `tests/cli_http_e2e.rs` spawns `raya` through `cargo run -p raya-cli -- run ...`
   and verifies end-to-end HTTP contracts plus generated artifacts.
+  It now waits for a valid socket address in `server.ready` (not just file
+  existence) before running client requests to avoid startup races in CI.
 - Current scenarios include stress workflow, diagnostics contract, echo/not-found
   contract, health+artifact contract, and echo method-not-allowed contract.
 - Fixture suites are now one test file per fixture (full suite style):
