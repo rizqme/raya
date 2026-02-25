@@ -56,6 +56,10 @@ impl<'a> AssignabilityContext<'a> {
             // assignments involving unresolved type parameters.
             (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
 
+            // unknown is assignable to any type (like TypeScript's any)
+            // This is primarily used for catch clause parameters which can be any value
+            (Type::Unknown, _) | (_, Type::Unknown) => true,
+
             // number ~> string
             (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => {
                 true

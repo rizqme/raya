@@ -432,9 +432,25 @@ impl<'a> Lowerer<'a> {
 
     /// Bind a destructuring pattern to a value register.
     /// Recursively handles nested array/object patterns.
-    fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
+    pub fn bind_pattern(&mut self, pattern: &ast::Pattern, value_reg: Register) {
         match pattern {
             ast::Pattern::Identifier(ident) => {
+                // Module-top-level bindings must use globals so module functions can see them.
+                if self.function_depth == 0 && self.block_depth == 0 {
+                    if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
+                        self.global_type_map.insert(global_idx, value_reg.ty);
+                        if let Some(fields) = self.register_object_fields.get(&value_reg.id).cloned()
+                        {
+                            self.variable_object_fields.insert(ident.name, fields);
+                        }
+                        self.emit(IrInstr::StoreGlobal {
+                            index: global_idx,
+                            value: value_reg,
+                        });
+                        return;
+                    }
+                }
+
                 let local_idx = self.allocate_local(ident.name);
                 if self.refcell_vars.contains(&ident.name) {
                     // Wrap in RefCell for capture-by-reference semantics
@@ -654,8 +670,7 @@ impl<'a> Lowerer<'a> {
                         )
                     };
 
-                    // If the field doesn't exist in the layout and there's a default,
-                    // use the default directly without trying to load the field
+                    // If the field doesn't exist in the layout, use default or null
                     if field_index.is_none() {
                         if let Some(default_expr) = &property.default {
                             let default_val = self.lower_expr(default_expr);
@@ -664,6 +679,14 @@ impl<'a> Lowerer<'a> {
                             let null_reg = self.lower_null_literal();
                             self.bind_pattern(&property.value, null_reg);
                         }
+                        continue;
+                    }
+
+                    // Special handling for object literals without explicit field layout
+                    // If there's a default value, use it directly to avoid LoadField on missing properties
+                    if field_layout.is_none() && property.default.is_some() {
+                        let default_val = self.lower_expr(property.default.as_ref().unwrap());
+                        self.bind_pattern(&property.value, default_val);
                         continue;
                     }
 
@@ -1587,24 +1610,44 @@ impl<'a> Lowerer<'a> {
         if let Some(catch_clause) = &try_stmt.catch_clause {
             // Bind the exception parameter if present
             // The VM pushes the exception value onto the stack when jumping to catch
-            if let Some(ast::Pattern::Identifier(ident)) = &catch_clause.param {
-                // Allocate local for exception parameter
-                let local_idx = self.allocate_local(ident.name);
-                // Pop exception from stack directly into local
-                // The VM pushes the exception before jumping to catch block
-                self.emit(IrInstr::PopToLocal { index: local_idx });
-                // Create a register for subsequent uses of the catch parameter
-                let exc_ty = TypeId::new(0); // Exception type (unknown)
-                let exc_reg = self.alloc_register(exc_ty);
-                self.local_registers.insert(local_idx, exc_reg);
+            if let Some(ref param) = catch_clause.param {
+                match param {
+                    ast::Pattern::Identifier(ident) => {
+                        // Simple identifier: pop exception directly into local
+                        let local_idx = self.allocate_local(ident.name);
+                        self.emit(IrInstr::PopToLocal { index: local_idx });
+                        let exc_ty = TypeId::new(0); // Exception type (unknown)
+                        let exc_reg = self.alloc_register(exc_ty);
+                        self.local_registers.insert(local_idx, exc_reg);
 
-                // Add catch parameter to variable_class_map for method resolution
-                // Look up Error class so e.toString() etc. can be resolved
-                // Find the Error class by iterating through class_map
-                for (&symbol, &class_id) in &self.class_map {
-                    if self.interner.resolve(symbol) == "Error" {
-                        self.variable_class_map.insert(ident.name, class_id);
-                        break;
+                        // Add catch parameter to variable_class_map for method resolution
+                        for (&symbol, &class_id) in &self.class_map {
+                            if self.interner.resolve(symbol) == "Error" {
+                                self.variable_class_map.insert(ident.name, class_id);
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        // Destructuring pattern: pop exception into temp local, load into register, then bind pattern
+                        let exc_ty = TypeId::new(0); // Exception type (unknown)
+
+                        // Use next local slot as temporary (don't add to local_map since it's a temp)
+                        let temp_local = self.next_local;
+                        self.next_local += 1;
+
+                        // Pop exception into temporary local
+                        self.emit(IrInstr::PopToLocal { index: temp_local });
+
+                        // Load exception from local into register
+                        let exc_reg = self.alloc_register(exc_ty);
+                        self.emit(IrInstr::LoadLocal {
+                            index: temp_local,
+                            dest: exc_reg.clone(),
+                        });
+
+                        // Bind the pattern to the exception value
+                        self.bind_pattern(param, exc_reg);
                     }
                 }
             }

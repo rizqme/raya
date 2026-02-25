@@ -1458,22 +1458,32 @@ fn parse_arrow_function_body_with_type(
 /// Uses lookahead without consuming tokens.
 /// Arrow params pattern: identifier followed by `:`, `,`, or `)`
 /// Rest parameter pattern: ...identifier followed by `:`, `,`, or `)`
+/// Destructuring patterns: { ... } or [ ... ] as parameters
 /// Expression pattern: identifier followed by operators (+, -, *, /, etc.)
 fn looks_like_arrow_params(parser: &Parser) -> bool {
-    // Check for rest parameter first: ...identifier
+    // Object destructuring: { x, y }: Type or { x, y },
+    if parser.check(&Token::LeftBrace) {
+        return true;
+    }
+
+    // Array destructuring: [a, b]: Type or [a, b],
+    if parser.check(&Token::LeftBracket) {
+        return true;
+    }
+
+    // Check for rest parameter first: ...identifier / ...{...} / ...[...]
     if parser.check(&Token::DotDotDot) {
-        // After ... there must be an identifier
-        // We need to look 2 tokens ahead
-        if let Some(Token::Identifier(_)) = parser.peek() {
-            // Check what follows the identifier
-            match parser.peek2() {
-                Some(Token::Colon) => true,
-                Some(Token::Comma) => true,
-                Some(Token::RightParen) => true,
-                _ => false,
+        match parser.peek() {
+            // ...ident(:|,|))
+            Some(Token::Identifier(_)) => {
+                matches!(
+                    parser.peek2(),
+                    Some(Token::Colon) | Some(Token::Comma) | Some(Token::RightParen)
+                )
             }
-        } else {
-            false
+            // ...{...} or ...[...]
+            Some(Token::LeftBrace) | Some(Token::LeftBracket) => true,
+            _ => false,
         }
     } else if matches!(parser.current(), Token::Identifier(_)) {
         // Check what follows the identifier
@@ -1508,94 +1518,88 @@ fn try_parse_arrow_params(parser: &mut Parser) -> Result<Vec<Parameter>, ParseEr
         guard.check()?;
         let start_span = parser.current_span();
 
-        // Check for rest parameter: ...identifier
-        let is_rest = if parser.check(&Token::DotDotDot) {
+        // Check for rest parameter syntax
+        let rest_syntax = if parser.check(&Token::DotDotDot) {
             parser.advance();
             true
         } else {
             false
         };
 
-        // Parameter must start with an identifier
-        if let Token::Identifier(name) = parser.current().clone() {
-            parser.advance();
-
-            // Parse optional marker (param?: Type)
-            // Rest parameters cannot be optional
-            let optional = if parser.check(&Token::Question) {
-                if is_rest {
-                    return Err(ParseError::invalid_syntax(
-                        "Rest parameter cannot be optional",
-                        parser.current_span(),
-                    ));
-                }
-                parser.advance();
-                true
-            } else {
-                false
-            };
-
-            // Optional type annotation
-            let type_annotation = if parser.check(&Token::Colon) {
-                parser.advance();
-                Some(super::types::parse_type_annotation(parser)?)
-            } else {
-                None
-            };
-
-            // Optional default value
-            // Rest parameters cannot have default values
-            let default_value = if parser.check(&Token::Equal) {
-                if is_rest {
-                    return Err(ParseError::invalid_syntax(
-                        "Rest parameter cannot have a default value",
-                        parser.current_span(),
-                    ));
-                }
-                parser.advance();
-                Some(parse_expression(parser)?)
-            } else {
-                None
-            };
-
-            params.push(Parameter {
-                decorators: vec![],
-                visibility: None,
-                pattern: Pattern::Identifier(Identifier {
-                    name,
-                    span: start_span,
-                }),
-                type_annotation,
-                optional,
-                default_value,
-                is_rest,
-                span: start_span,
-            });
-
-            // Comma or end
-            if parser.check(&Token::Comma) {
-                parser.advance();
-            } else if !parser.check(&Token::RightParen) {
-                // Not a comma and not closing paren - not valid params
-                return Err(ParseError {
-                    kind: ParseErrorKind::UnexpectedToken {
-                        expected: vec![Token::Comma, Token::RightParen],
-                        found: parser.current().clone(),
-                    },
-                    span: parser.current_span(),
-                    message: "Expected ',' or ')' in parameter list".to_string(),
-                    suggestion: None,
-                });
-            }
+        // Parse pattern (identifier, object destructuring, array destructuring)
+        let pattern = super::pattern::parse_pattern(parser)?;
+        let is_rest_pattern = matches!(pattern, Pattern::Rest(_));
+        let pattern = if rest_syntax && !is_rest_pattern {
+            Pattern::Rest(RestPattern {
+                argument: Box::new(pattern),
+                span: parser.combine_spans(&start_span, &parser.current_span()),
+            })
         } else {
-            // Doesn't start with identifier - not valid params
+            pattern
+        };
+        let is_rest = rest_syntax || is_rest_pattern;
+
+        // Parse optional marker (param?: Type)
+        // Rest parameters cannot be optional
+        let optional = if parser.check(&Token::Question) {
+            if is_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter cannot be optional",
+                    parser.current_span(),
+                ));
+            }
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
+        // Optional type annotation
+        let type_annotation = if parser.check(&Token::Colon) {
+            parser.advance();
+            Some(super::types::parse_type_annotation(parser)?)
+        } else {
+            None
+        };
+
+        // Optional default value
+        // Rest parameters cannot have default values
+        let default_value = if parser.check(&Token::Equal) {
+            if is_rest {
+                return Err(ParseError::invalid_syntax(
+                    "Rest parameter cannot have a default value",
+                    parser.current_span(),
+                ));
+            }
+            parser.advance();
+            Some(parse_expression(parser)?)
+        } else {
+            None
+        };
+
+        params.push(Parameter {
+            decorators: vec![],
+            visibility: None,
+            pattern,
+            type_annotation,
+            optional,
+            default_value,
+            is_rest,
+            span: start_span,
+        });
+
+        // Comma or end
+        if parser.check(&Token::Comma) {
+            parser.advance();
+        } else if !parser.check(&Token::RightParen) {
+            // Not a comma and not closing paren - not valid params
             return Err(ParseError {
                 kind: ParseErrorKind::UnexpectedToken {
-                    expected: vec![Token::Identifier(Symbol::dummy())],
+                    expected: vec![Token::Comma, Token::RightParen],
                     found: parser.current().clone(),
                 },
                 span: parser.current_span(),
-                message: "Expected parameter name".to_string(),
+                message: "Expected ',' or ')' in parameter list".to_string(),
                 suggestion: None,
             });
         }

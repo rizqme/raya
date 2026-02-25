@@ -2439,24 +2439,46 @@ impl<'a> Lowerer<'a> {
         self.local_map.clear();
         self.local_registers.clear();
         self.refcell_registers.clear();
-        self.next_local = 0;
+
+        // Check if any parameters use destructuring
+        let has_destructuring_params = arrow.params.iter().any(|p| {
+            !matches!(p.pattern, ast::Pattern::Identifier(_) | ast::Pattern::Rest(_))
+        });
+
+        // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
+        if has_destructuring_params {
+            let fixed_param_count = arrow.params.iter().filter(|p| !p.is_rest).count();
+            self.next_local = fixed_param_count as u16;
+        } else {
+            self.next_local = 0;
+        }
 
         // Create parameter registers (excluding rest parameters)
         let mut params = Vec::new();
         let mut rest_param_info = None;
         let mut fixed_param_count = 0;
+        // Track parameters with destructuring patterns for later binding
+        let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
         for param in &arrow.params {
             // Skip rest parameters - they're handled separately
             if param.is_rest {
                 // Extract rest parameter info for later processing
-                if let ast::Pattern::Identifier(ident) = &param.pattern {
+                let rest_ident = match &param.pattern {
+                    ast::Pattern::Identifier(ident) => Some(ident.name),
+                    ast::Pattern::Rest(rest) => match rest.argument.as_ref() {
+                        ast::Pattern::Identifier(ident) => Some(ident.name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                if let Some(rest_name) = rest_ident {
                     let ty = param
                         .type_annotation
                         .as_ref()
                         .map(|t| self.resolve_type_annotation(t))
                         .unwrap_or(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
-                    rest_param_info = Some((ident.name.clone(), ty));
+                    rest_param_info = Some((rest_name, ty));
                 }
                 continue;
             }
@@ -2481,6 +2503,9 @@ impl<'a> Lowerer<'a> {
                         self.variable_class_map.insert(ident.name, class_id);
                     }
                 }
+            } else {
+                // Destructuring pattern: track for later binding after entry block
+                destructure_params.push((params.len(), &param.pattern, reg.clone()));
             }
             params.push(reg);
         }
@@ -2504,6 +2529,20 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(entry_block, "entry"));
+
+        // Bind destructuring patterns in arrow parameters
+        // This must happen after entry block is created so we can emit instructions
+        for (param_idx, pattern, value_reg) in destructure_params {
+            // Register object field layout for destructuring
+            if let ast::Pattern::Object(_) = pattern {
+                if let Some(type_ann) = arrow.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                        self.register_object_fields.insert(value_reg.id, field_layout);
+                    }
+                }
+            }
+            self.bind_pattern(pattern, value_reg);
+        }
 
         // Emit rest array collection code if present
         if let Some((rest_name, rest_ty)) = rest_param_info {

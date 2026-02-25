@@ -424,21 +424,25 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             Pattern::Object(obj_pat) => {
-                // Look up class fields from value type
-                let class_props: Option<Vec<crate::parser::types::ty::PropertySignature>> =
+                // Look up properties from value type (Class or Object)
+                let props: Option<Vec<crate::parser::types::ty::PropertySignature>> =
                     if let Some(crate::parser::types::Type::Class(class)) =
                         self.type_ctx.get(value_ty).cloned()
                     {
                         Some(class.properties.clone())
+                    } else if let Some(crate::parser::types::Type::Object(obj)) =
+                        self.type_ctx.get(value_ty).cloned()
+                    {
+                        Some(obj.properties.clone())
                     } else {
                         None
                     };
 
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = class_props
+                    let prop_ty = props
                         .as_ref()
-                        .and_then(|props| props.iter().find(|p| p.name == prop_name))
+                        .and_then(|ps| ps.iter().find(|p| p.name == prop_name))
                         .map(|p| p.ty);
                     // If there's a default expression, use its type when property is missing
                     let final_ty = if let Some(ref default_expr) = prop.default {
@@ -493,8 +497,18 @@ impl<'a> TypeChecker<'a> {
                 let prev_return_ty = self.current_function_return_type;
                 self.current_function_return_type = Some(return_ty);
 
+                // Collect parameter types before entering scope (to avoid borrow issues)
+                let param_types: Vec<_> = func_ty.params.iter().cloned().collect();
+
                 // Enter function scope (mirrors binder's push_scope for function)
                 self.enter_scope();
+
+                // Register parameter types in type_env for destructuring patterns
+                for (i, param) in func.params.iter().enumerate() {
+                    if let Some(&param_ty) = param_types.get(i) {
+                        self.check_destructure_pattern(&param.pattern, param_ty);
+                    }
+                }
 
                 // Check body
                 for stmt in &func.body.statements {
@@ -705,8 +719,26 @@ impl<'a> TypeChecker<'a> {
                         let saved_env = self.type_env.clone();
                         self.type_env = TypeEnv::new();
 
+                        // Collect parameter types before entering scope (to avoid borrow issues)
+                        let param_types: Option<Vec<TypeId>> = if let Some(crate::parser::types::Type::Function(method_fn_ty)) =
+                            self.type_ctx.get(method_ty)
+                        {
+                            Some(method_fn_ty.params.iter().cloned().collect())
+                        } else {
+                            None
+                        };
+
                         // Enter method scope (binder creates one for every concrete method body)
                         self.enter_scope();
+
+                        // Register parameter types in type_env for destructuring patterns
+                        if let Some(ref pts) = param_types {
+                            for (i, param) in method.params.iter().enumerate() {
+                                if let Some(&param_ty) = pts.get(i) {
+                                    self.check_destructure_pattern(&param.pattern, param_ty);
+                                }
+                            }
+                        }
 
                         // Set return type for return statement checking
                         let prev_return_ty = self.current_function_return_type;
@@ -745,6 +777,16 @@ impl<'a> TypeChecker<'a> {
 
                     // Enter constructor scope (binder always creates one)
                     self.enter_scope();
+
+                    // Register parameter types in type_env for destructuring patterns
+                    for param in &ctor.params {
+                        let param_ty = if let Some(ref ann) = param.type_annotation {
+                            self.resolve_type_annotation(ann)
+                        } else {
+                            self.type_ctx.unknown_type()
+                        };
+                        self.check_destructure_pattern(&param.pattern, param_ty);
+                    }
 
                     let prev_return_ty = self.current_function_return_type;
                     let prev_in_ctor = self.in_constructor;
@@ -1175,6 +1217,19 @@ impl<'a> TypeChecker<'a> {
         if let Some(ref catch) = try_stmt.catch_clause {
             // Enter catch scope (mirrors binder's push_scope for catch block)
             self.enter_scope();
+
+            // Check catch parameter pattern (handles destructuring)
+            if let Some(ref param) = catch.param {
+                // Get Error type for the catch parameter
+                let error_ty = self
+                    .symbols
+                    .resolve("Error")
+                    .map(|s| s.ty)
+                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+
+                // Register types for all variables bound in the pattern
+                self.check_destructure_pattern(param, error_ty);
+            }
 
             // Check catch body statements
             for stmt in &catch.body.statements {
@@ -1748,10 +1803,8 @@ impl<'a> TypeChecker<'a> {
                 if let Some(ref init) = decl.initializer {
                     self.collect_free_vars_expr(init, collector);
                 }
-                // Then bind the variable
-                if let Pattern::Identifier(ident) = &decl.pattern {
-                    collector.bind(self.resolve(ident.name));
-                }
+                // Then bind the variable(s) - supports destructuring patterns
+                self.bind_pattern_in_collector(&decl.pattern, collector);
             }
             Statement::Return(ret) => {
                 if let Some(ref val) = ret.value {
@@ -1776,9 +1829,7 @@ impl<'a> TypeChecker<'a> {
                             if let Some(ref init_expr) = decl.initializer {
                                 self.collect_free_vars_expr(init_expr, collector);
                             }
-                            if let Pattern::Identifier(ident) = &decl.pattern {
-                                collector.bind(self.resolve(ident.name));
-                            }
+                            self.bind_pattern_in_collector(&decl.pattern, collector);
                         }
                         ForInit::Expression(e) => self.collect_free_vars_expr(e, collector),
                     }
@@ -1795,14 +1846,10 @@ impl<'a> TypeChecker<'a> {
                 self.collect_free_vars_expr(&for_of.right, collector);
                 match &for_of.left {
                     ForOfLeft::VariableDecl(decl) => {
-                        if let Pattern::Identifier(ident) = &decl.pattern {
-                            collector.bind(self.resolve(ident.name));
-                        }
+                        self.bind_pattern_in_collector(&decl.pattern, collector);
                     }
                     ForOfLeft::Pattern(p) => {
-                        if let Pattern::Identifier(ident) = p {
-                            collector.assign(&self.resolve(ident.name));
-                        }
+                        self.bind_pattern_in_collector(p, collector);
                     }
                 }
                 self.collect_free_vars_stmt(&for_of.body, collector);
@@ -1824,9 +1871,32 @@ impl<'a> TypeChecker<'a> {
             Statement::Try(try_stmt) => {
                 self.collect_free_vars_block(&try_stmt.body, collector);
                 if let Some(ref catch) = try_stmt.catch_clause {
-                    // Catch variable is bound in catch block
-                    if let Some(Pattern::Identifier(ident)) = catch.param.as_ref() {
-                        collector.bind(self.resolve(ident.name));
+                    // Catch parameter variables are bound in catch block (supports destructuring)
+                    if let Some(ref param) = catch.param {
+                        match param {
+                            Pattern::Identifier(ident) => {
+                                collector.bind(self.resolve(ident.name));
+                            }
+                            Pattern::Array(arr) => {
+                                for elem in arr.elements.iter().flatten() {
+                                    self.bind_pattern_in_collector(&elem.pattern, collector);
+                                }
+                                if let Some(rest) = &arr.rest {
+                                    self.bind_pattern_in_collector(rest, collector);
+                                }
+                            }
+                            Pattern::Object(obj) => {
+                                for prop in &obj.properties {
+                                    self.bind_pattern_in_collector(&prop.value, collector);
+                                }
+                                if let Some(rest) = &obj.rest {
+                                    collector.bind(self.resolve(rest.name));
+                                }
+                            }
+                            Pattern::Rest(rest) => {
+                                self.bind_pattern_in_collector(&rest.argument, collector);
+                            }
+                        }
                     }
                     self.collect_free_vars_block(&catch.body, collector);
                 }
@@ -1835,6 +1905,62 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Collect parameter names from a destructuring pattern for binding
+    fn collect_pattern_param_names(&self, pattern: &Pattern, names: &mut Vec<String>) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                names.push(self.resolve(ident.name));
+            }
+            Pattern::Array(arr) => {
+                for elem in arr.elements.iter().flatten() {
+                    self.collect_pattern_param_names(&elem.pattern, names);
+                }
+                if let Some(rest) = &arr.rest {
+                    self.collect_pattern_param_names(rest, names);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    self.collect_pattern_param_names(&prop.value, names);
+                }
+                if let Some(rest) = &obj.rest {
+                    names.push(self.resolve(rest.name));
+                }
+            }
+            Pattern::Rest(rest) => {
+                self.collect_pattern_param_names(&rest.argument, names);
+            }
+        }
+    }
+
+    /// Bind all variables in a pattern to the free variable collector
+    fn bind_pattern_in_collector(&self, pattern: &Pattern, collector: &mut FreeVariableCollector) {
+        match pattern {
+            Pattern::Identifier(ident) => {
+                collector.bind(self.resolve(ident.name));
+            }
+            Pattern::Array(arr) => {
+                for elem in arr.elements.iter().flatten() {
+                    self.bind_pattern_in_collector(&elem.pattern, collector);
+                }
+                if let Some(rest) = &arr.rest {
+                    self.bind_pattern_in_collector(rest, collector);
+                }
+            }
+            Pattern::Object(obj) => {
+                for prop in &obj.properties {
+                    self.bind_pattern_in_collector(&prop.value, collector);
+                }
+                if let Some(rest) = &obj.rest {
+                    collector.bind(self.resolve(rest.name));
+                }
+            }
+            Pattern::Rest(rest) => {
+                self.bind_pattern_in_collector(&rest.argument, collector);
+            }
         }
     }
 
@@ -1860,6 +1986,11 @@ impl<'a> TypeChecker<'a> {
                 let name = self.resolve(ident.name);
                 param_names.push(name.clone());
                 self.type_env.set(name, param_ty);
+            } else {
+                // For destructuring patterns, register all bound variables
+                self.check_destructure_pattern(&param.pattern, param_ty);
+                // Collect names from the pattern by traversing it
+                self.collect_pattern_param_names(&param.pattern, &mut param_names);
             }
 
             // Add to param_types only if it's NOT a rest parameter
@@ -3933,9 +4064,28 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx.function_type(param_tys, return_ty, false)
             }
 
-            AstType::Object(_obj) => {
-                // TODO: Implement object type resolution
-                self.type_ctx.unknown_type()
+            AstType::Object(obj) => {
+                // Build an object type from the type annotation
+                let mut properties = Vec::new();
+                for member in &obj.members {
+                    match member {
+                        crate::parser::ast::ObjectTypeMember::Property(prop) => {
+                            let prop_name = self.interner.resolve(prop.name.name).to_string();
+                            let prop_ty = self.resolve_type_annotation(&prop.ty);
+                            properties.push(crate::parser::types::ty::PropertySignature {
+                                name: prop_name,
+                                ty: prop_ty,
+                                optional: prop.optional,
+                                readonly: prop.readonly,
+                                visibility: crate::parser::ast::Visibility::Public,
+                            });
+                        }
+                        crate::parser::ast::ObjectTypeMember::Method(_) => {
+                            // Methods are not part of the object type properties
+                        }
+                    }
+                }
+                self.type_ctx.object_type(properties)
             }
 
             AstType::Typeof(_) => {

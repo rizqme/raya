@@ -1220,7 +1220,12 @@ impl<'a> Binder<'a> {
                     })?;
             }
             Pattern::Array(array_pat) => {
-                let elem_ty = self.type_ctx.unknown_type();
+                // Extract element type from array type annotation
+                let elem_ty = if let Some(Type::Array(arr)) = self.type_ctx.get(ty).cloned() {
+                    arr.element
+                } else {
+                    self.type_ctx.unknown_type()
+                };
                 for elem in array_pat.elements.iter().flatten() {
                     self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
                 }
@@ -1229,8 +1234,24 @@ impl<'a> Binder<'a> {
                 }
             }
             Pattern::Object(obj_pat) => {
-                let prop_ty = self.type_ctx.unknown_type();
+                // Extract property types from object type annotation
                 for prop in &obj_pat.properties {
+                    let prop_name = self.resolve(prop.key.name);
+                    let prop_ty = if let Some(Type::Object(obj)) = self.type_ctx.get(ty).cloned() {
+                        obj.properties
+                            .iter()
+                            .find(|p| p.name == prop_name)
+                            .map(|p| p.ty)
+                            .unwrap_or_else(|| self.type_ctx.unknown_type())
+                    } else if let Some(Type::Class(cls)) = self.type_ctx.get(ty).cloned() {
+                        cls.properties
+                            .iter()
+                            .find(|p| p.name == prop_name)
+                            .map(|p| p.ty)
+                            .unwrap_or_else(|| self.type_ctx.unknown_type())
+                    } else {
+                        self.type_ctx.unknown_type()
+                    };
                     self.bind_pattern_names(&prop.value, prop_ty, is_const)?;
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
@@ -2136,14 +2157,6 @@ impl<'a> Binder<'a> {
 
             // Bind catch parameter
             if let Some(ref param) = catch.param {
-                let (param_name, param_span) = match param {
-                    Pattern::Identifier(ident) => (self.resolve(ident.name), ident.span),
-                    _ => {
-                        // TODO: Handle destructuring
-                        ("error".to_string(), catch.body.span)
-                    }
-                };
-
                 // Look up Error class type for catch parameter
                 // If Error class isn't registered, fall back to unknown
                 let error_ty = self
@@ -2152,29 +2165,8 @@ impl<'a> Binder<'a> {
                     .map(|s| s.ty)
                     .unwrap_or_else(|| self.type_ctx.unknown_type());
 
-                let param_symbol = Symbol {
-                    name: param_name,
-                    kind: SymbolKind::Variable,
-                    ty: error_ty,
-                    flags: SymbolFlags {
-                        is_exported: false,
-                        is_const: true,
-                        is_async: false,
-                        is_readonly: false,
-                        is_imported: false,
-                    },
-                    scope_id: self.symbols.current_scope_id(),
-                    span: param_span,
-                    referenced: false,
-                };
-
-                self.symbols
-                    .define(param_symbol)
-                    .map_err(|err| BindError::DuplicateSymbol {
-                        name: err.name,
-                        original: err.original,
-                        duplicate: err.duplicate,
-                    })?;
+                // Bind all names in the pattern (handles destructuring)
+                self.bind_pattern_names(param, error_ty, true)?;
             }
 
             // Bind catch body

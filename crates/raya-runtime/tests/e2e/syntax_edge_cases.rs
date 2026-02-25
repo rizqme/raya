@@ -605,6 +605,339 @@ fn test_destructure_with_rest_sum() {
 }
 
 // ============================================================================
+// Const Destructuring
+// ============================================================================
+
+#[test]
+fn test_const_object_destructuring_basic() {
+    // Basic const object destructuring
+    expect_i32(
+        "
+        const obj = { x: 10, y: 20 };
+        const { x, y } = obj;
+        return x + y;
+    ",
+        30,
+    );
+}
+
+#[test]
+fn test_const_object_destructuring_with_rename() {
+    // Const object destructuring with renaming
+    expect_i32(
+        "
+        const obj = { x: 10, y: 32 };
+        const { x: a, y: b } = obj;
+        return a + b;
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_const_object_destructuring_with_default() {
+    // Const object destructuring with default values
+    expect_i32(
+        "
+        const obj = { x: 42 };
+        const { x = 0, y = 10 } = obj;
+        return x + y;
+    ",
+        52,
+    );
+}
+
+#[test]
+fn test_const_array_destructuring_basic() {
+    // Basic const array destructuring
+    expect_i32(
+        "
+        const arr: number[] = [10, 20, 30];
+        const [a, b, c] = arr;
+        return a + b + c;
+    ",
+        60,
+    );
+}
+
+#[test]
+fn test_const_array_destructuring_with_rest() {
+    // Const array destructuring with rest element
+    expect_i32(
+        "
+        const arr: number[] = [1, 2, 3, 4, 5];
+        const [first, ...rest] = arr;
+        return first + rest.length;
+    ",
+        5,
+    );
+}
+
+#[test]
+fn test_const_nested_destructuring() {
+    // Const nested destructuring
+    expect_i32(
+        "
+        const data = { points: [{ x: 1, y: 2 }, { x: 3, y: 4 }] };
+        const { points: [{ x: x1, y: y1 }, { x: x2, y: y2 }] } = data;
+        return x1 + y1 + x2 + y2;
+    ",
+        10,
+    );
+}
+
+#[test]
+fn test_const_destructuring_at_module_scope() {
+    // Const destructuring at module scope
+    expect_i32(
+        "
+        const { a, b } = { a: 15, b: 27 };
+        function sum(): number { return a + b; }
+        return sum();
+    ",
+        42,
+    );
+}
+
+// ============================================================================
+// Function Parameter Destructuring
+// ============================================================================
+
+#[test]
+fn test_function_param_object_destructuring() {
+    // Function parameter with object destructuring
+    expect_i32(
+        "
+        function add({ x, y }: { x: number; y: number }): number {
+            return x + y;
+        }
+        const point = { x: 10, y: 32 };
+        return add(point);
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_function_param_array_destructuring() {
+    // Function parameter with array destructuring
+    expect_i32(
+        "
+        function sum([a, b, c]: number[]): number {
+            return a + b + c;
+        }
+        const arr: number[] = [10, 20, 12];
+        return sum(arr);
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_function_param_destructuring_with_rename() {
+    // Function parameter destructuring with renaming
+    expect_i32(
+        "
+        function multiply({ x: a, y: b }: { x: number; y: number }): number {
+            return a * b;
+        }
+        const point = { x: 6, y: 7 };
+        return multiply(point);
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_function_param_destructuring_nested() {
+    // Function parameter with nested destructuring
+    expect_i32(
+        "
+        function getFirstY({ points: [{ y }] }: { points: { y: number }[] }): number {
+            return y;
+        }
+        const data = { points: [{ y: 42 }, { y: 10 }] };
+        return getFirstY(data);
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_arrow_function_param_destructuring() {
+    // Arrow function with destructured parameter
+    expect_i32(
+        "
+        const add = ({ x, y }: { x: number; y: number }): number => x + y;
+        return add({ x: 10, y: 32 });
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_method_param_destructuring() {
+    // Class method with destructured parameter
+    expect_i32(
+        "
+        class Calculator {
+            add({ x, y }: { x: number; y: number }): number {
+                return x + y;
+            }
+        }
+        const calc = new Calculator();
+        return calc.add({ x: 15, y: 27 });
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_destructured_param_with_optional() {
+    // Destructured parameter with optional property
+    expect_i32(
+        "
+        function getValue({ x, y = 10 }: { x: number; y?: number }): number {
+            return x + y;
+        }
+        return getValue({ x: 32 });
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_destructured_param_with_provided_optional() {
+    // Destructured parameter with provided optional value
+    expect_i32(
+        "
+        function getValue({ x, y = 10 }: { x: number; y?: number }): number {
+            return x + y;
+        }
+        return getValue({ x: 30, y: 12 });
+    ",
+        42,
+    );
+}
+
+// ============================================================================
+// Destructuring Edge Cases
+// ============================================================================
+
+#[test]
+fn test_catch_clause_destructuring() {
+    // Destructuring in catch clause parameter
+    expect_i32(
+        "
+        class CustomError {
+            code: number;
+            message: string;
+            constructor(code: number, message: string) {
+                this.code = code;
+                this.message = message;
+            }
+        }
+        function test(): number {
+            try {
+                throw new CustomError(42, \"error\");
+            } catch ({ code, message }) {
+                return code;
+            }
+            return 0;
+        }
+        return test();
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_destructuring_mixed_object_array() {
+    // Mixed object and array destructuring
+    expect_i32(
+        "
+        const data = { items: [[1, 2], [3, 4]] };
+        const { items: [[a, b], [c, d]] } = data;
+        return a + b + c + d;
+    ",
+        10,
+    );
+}
+
+#[test]
+fn test_const_destructuring_in_closure() {
+    // Const destructuring captured by closure
+    expect_i32(
+        "
+        function makeAdder(): () => number {
+            const { x, y } = { x: 10, y: 32 };
+            return (): number => x + y;
+        }
+        const adder = makeAdder();
+        return adder();
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_destructuring_with_rest_property() {
+    // Object destructuring with rest property
+    expect_i32(
+        "
+        const obj = { a: 1, b: 2, c: 3, d: 4 };
+        const { a, b, ...rest } = obj;
+        return a + b;  // rest is ignored but rest properties exist
+    ",
+        3,
+    );
+}
+
+#[test]
+fn test_destructuring_in_arrow_body() {
+    // Destructuring inside arrow function body
+    expect_i32(
+        "
+        const process = (obj: { x: number; y: number }): number => {
+            const { x, y } = obj;
+            return x + y;
+        };
+        return process({ x: 15, y: 27 });
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_multiple_destructuring_same_scope() {
+    // Multiple destructuring declarations in same scope
+    expect_i32(
+        "
+        const { a } = { a: 10 };
+        const { b } = { b: 20 };
+        const { c } = { c: 12 };
+        return a + b + c;
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_destructuring_shadowing() {
+    // Destructuring can shadow outer variables
+    expect_i32(
+        "
+        let x = 100;
+        {
+            const { x } = { x: 42 };
+            return x;
+        }
+    ",
+        42,
+    );
+}
+
+// ============================================================================
 // 6. Async/Await in Complex Positions
 // ============================================================================
 

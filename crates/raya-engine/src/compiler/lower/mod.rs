@@ -970,16 +970,18 @@ impl<'a> Lowerer<'a> {
             let candidates: FxHashSet<Symbol> = module
                 .statements
                 .iter()
-                .filter_map(|s| {
+                .flat_map(|s| {
                     let s = Self::unwrap_export(s);
                     if let Statement::VariableDecl(decl) = s {
-                        if let Pattern::Identifier(ident) = &decl.pattern {
-                            if !self.constant_map.contains_key(&ident.name) {
-                                return Some(ident.name);
-                            }
-                        }
+                        let mut names = FxHashSet::default();
+                        collect_pattern_names(&decl.pattern, &mut names);
+                        names
+                            .into_iter()
+                            .filter(|name| !self.constant_map.contains_key(name))
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
                     }
-                    None
                 })
                 .collect();
 
@@ -1032,11 +1034,13 @@ impl<'a> Lowerer<'a> {
             for raw_stmt in &module.statements {
                 let stmt = Self::unwrap_export(raw_stmt);
                 if let Statement::VariableDecl(decl) = stmt {
-                    if let Pattern::Identifier(ident) = &decl.pattern {
-                        let _was_referenced = referenced.contains(&ident.name);
+                    let mut names = FxHashSet::default();
+                    collect_pattern_names(&decl.pattern, &mut names);
+                    for name in names {
+                        let _was_referenced = referenced.contains(&name);
                         let global_index = self.next_global_index;
                         self.next_global_index += 1;
-                        self.module_var_globals.insert(ident.name, global_index);
+                        self.module_var_globals.insert(name, global_index);
                     }
                 }
             }
@@ -1672,12 +1676,24 @@ impl<'a> Lowerer<'a> {
         // Track that we're inside a function (prevents var decls from hijacking module globals)
         self.function_depth += 1;
 
+        // Check if any parameters use destructuring
+        let has_destructuring_params = func.params.iter().any(|p| {
+            !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+        });
+
         // Reset per-function state
         self.next_register = 0;
         self.next_block = 0;
         self.local_map.clear();
         self.local_registers.clear();
-        self.next_local = 0;
+        // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
+        // to avoid destructured variables overwriting parameter values
+        if has_destructuring_params {
+            let fixed_param_count = func.params.iter().filter(|p| !p.is_rest).count();
+            self.next_local = fixed_param_count as u16;
+        } else {
+            self.next_local = 0;
+        }
         self.refcell_vars.clear();
         self.refcell_registers.clear();
         self.refcell_inner_types.clear();
@@ -1706,6 +1722,8 @@ impl<'a> Lowerer<'a> {
         let mut params = Vec::new();
         let mut rest_param_info = None;
         let mut fixed_param_count = 0;
+        // Track parameters with destructuring patterns for later binding
+        let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
 
         for param in &func.params {
             // Skip rest parameters - they're handled separately
@@ -1744,6 +1762,9 @@ impl<'a> Lowerer<'a> {
                         self.variable_class_map.insert(ident.name, class_id);
                     }
                 }
+            } else {
+                // Destructuring pattern: track for later binding after entry block
+                destructure_params.push((params.len(), &param.pattern, reg.clone()));
             }
             params.push(reg);
         }
@@ -1767,6 +1788,20 @@ impl<'a> Lowerer<'a> {
         self.current_block = entry_block;
         self.current_function_mut()
             .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+        // Bind destructuring patterns in function parameters
+        // This must happen after entry block is created so we can emit instructions
+        for (param_idx, pattern, value_reg) in destructure_params {
+            // Register object field layout for destructuring
+            if let ast::Pattern::Object(_) = pattern {
+                if let Some(type_ann) = func.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                    if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                        self.register_object_fields.insert(value_reg.id, field_layout);
+                    }
+                }
+            }
+            self.bind_pattern(pattern, value_reg);
+        }
 
         // Emit rest array collection code if present
         if let Some((rest_name, rest_ty)) = rest_param_info {
@@ -2003,6 +2038,14 @@ impl<'a> Lowerer<'a> {
                         // Static method - no 'this' parameter
                         self.current_class = None;
                         self.this_register = None;
+                        // Check if there are destructuring parameters
+                        let has_destructuring = method.params.iter().any(|p| {
+                            !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+                        });
+                        if has_destructuring {
+                            let param_count = method.params.iter().filter(|p| !p.is_rest).count();
+                            self.next_local = param_count as u16;
+                        }
                     } else {
                         // Instance method - 'this' is the first parameter
                         // Use the class's actual TypeId for correct dispatch
@@ -2015,11 +2058,23 @@ impl<'a> Lowerer<'a> {
                         let this_reg = self.alloc_register(this_ty);
                         params.push(this_reg.clone());
                         self.this_register = Some(this_reg);
-                        self.next_local = 1; // Explicit parameters start at slot 1
+                        // Check if there are destructuring parameters
+                        let has_destructuring = method.params.iter().any(|p| {
+                            !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
+                        });
+                        if has_destructuring {
+                            // Start locals after 'this' and all explicit parameters
+                            let param_count = 1 + method.params.iter().filter(|p| !p.is_rest).count();
+                            self.next_local = param_count as u16;
+                        } else {
+                            self.next_local = 1; // Explicit parameters start at slot 1
+                        }
                         fixed_param_count = 1; // 'this' counts as a fixed parameter
                     }
 
                     // Add explicit parameters (excluding rest parameters)
+                    let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+
                     for param in &method.params {
                         // Skip rest parameters - they're handled separately
                         if param.is_rest {
@@ -2056,6 +2111,9 @@ impl<'a> Lowerer<'a> {
                                     self.variable_class_map.insert(ident.name, param_class_id);
                                 }
                             }
+                        } else {
+                            // Destructuring pattern: track for later binding after entry block
+                            destructure_params.push((params.len(), &param.pattern, reg.clone()));
                         }
                         params.push(reg);
                     }
@@ -2079,6 +2137,20 @@ impl<'a> Lowerer<'a> {
                     self.current_block = entry_block;
                     self.current_function_mut()
                         .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+                    // Bind destructuring patterns in method parameters
+                    // This must happen after entry block is created so we can emit instructions
+                    for (param_idx, pattern, value_reg) in destructure_params {
+                        // Register object field layout for destructuring
+                        if let ast::Pattern::Object(_) = pattern {
+                            if let Some(type_ann) = method.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                                if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                                    self.register_object_fields.insert(value_reg.id, field_layout);
+                                }
+                            }
+                        }
+                        self.bind_pattern(pattern, value_reg);
+                    }
 
                     // Emit rest array collection code if present
                     if let Some((rest_name, rest_ty)) = rest_param_info {
@@ -2189,6 +2261,8 @@ impl<'a> Lowerer<'a> {
                 self.next_local = 1; // Explicit parameters start at slot 1
 
                 // Add explicit parameters from constructor
+                let mut destructure_params: Vec<(usize, &ast::Pattern, Register)> = Vec::new();
+
                 for param in &ctor.params {
                     let ty = param
                         .type_annotation
@@ -2200,6 +2274,9 @@ impl<'a> Lowerer<'a> {
                     if let Pattern::Identifier(ident) = &param.pattern {
                         let local_idx = self.allocate_local(ident.name);
                         self.local_registers.insert(local_idx, reg.clone());
+                    } else {
+                        // Destructuring pattern: track for later binding after entry block
+                        destructure_params.push((params.len(), &param.pattern, reg.clone()));
                     }
                     params.push(reg);
                 }
@@ -2229,6 +2306,20 @@ impl<'a> Lowerer<'a> {
                 self.current_block = entry_block;
                 self.current_function_mut()
                     .add_block(BasicBlock::with_label(entry_block, "entry"));
+
+                // Bind destructuring patterns in constructor parameters
+                // This must happen after entry block is created so we can emit instructions
+                for (param_idx, pattern, value_reg) in destructure_params {
+                    // Register object field layout for destructuring
+                    if let ast::Pattern::Object(_) = pattern {
+                        if let Some(type_ann) = ctor.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                            if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
+                                self.register_object_fields.insert(value_reg.id, field_layout);
+                            }
+                        }
+                    }
+                    self.bind_pattern(pattern, value_reg);
+                }
 
                 // Pre-scan constructor body for captured variables
                 {
@@ -3054,6 +3145,31 @@ impl<'a> Lowerer<'a> {
                 class_id
             }
             _ => None,
+        }
+    }
+
+    /// Extract field names from an object type annotation for destructuring
+    /// Returns a Vec of (field_name, field_index) tuples
+    fn extract_field_names_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<Vec<(String, usize)>> {
+        let mut fields = Vec::new();
+        match &type_ann.ty {
+            ast::Type::Object(obj_type) => {
+                for (idx, member) in obj_type.members.iter().enumerate() {
+                    match member {
+                        ast::ObjectTypeMember::Property(prop) => {
+                            let name = self.interner.resolve(prop.name.name).to_string();
+                            fields.push((name, idx));
+                        }
+                        ast::ObjectTypeMember::Method(_) => {
+                            // Methods don't contribute to destructuring field layout
+                        }
+                    }
+                }
+                if fields.is_empty() { None } else { Some(fields) }
+            }
+            _ => {
+                None
+            }
         }
     }
 

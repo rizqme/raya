@@ -103,15 +103,9 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let value = match obj.get_field(field_offset) {
-                    Some(v) => v,
-                    None => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Field offset {} out of bounds (class_id={})",
-                            field_offset, obj.class_id
-                        )));
-                    }
-                };
+                // Missing fields resolve to null. This matches object destructuring defaults
+                // and allows optional object properties to be absent at runtime.
+                let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -177,15 +171,7 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let value = match obj.get_field(field_offset) {
-                    Some(v) => v,
-                    None => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Field offset {} out of bounds",
-                            field_offset
-                        )));
-                    }
-                };
+                let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }
@@ -212,15 +198,7 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
-                let value = match obj.get_field(field_offset) {
-                    Some(v) => v,
-                    None => {
-                        return OpcodeResult::Error(VmError::RuntimeError(format!(
-                            "Field offset {} out of bounds",
-                            field_offset
-                        )));
-                    }
-                };
+                let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
                 }

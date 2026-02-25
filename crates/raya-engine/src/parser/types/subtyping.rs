@@ -170,12 +170,17 @@ impl<'a> SubtypingContext<'a> {
             }
 
             // Class <: Object (structural): class instance <: object type
+            // Optional properties in the target object type don't need to exist in the class
             (Type::Class(c), Type::Object(o)) => {
                 o.properties.iter().all(|op| {
-                    // Check class properties
+                    // If the target property is optional, the class doesn't need to have it
+                    if op.optional {
+                        return true;
+                    }
+                    // For required properties, check class properties
                     c.properties.iter().any(|cp| {
                         cp.name == op.name
-                            && cp.optional == op.optional
+                            && !cp.optional // Class property must not be optional for required target
                             && (!op.readonly || cp.readonly)
                             && self.is_subtype(cp.ty, op.ty)
                     })
@@ -187,10 +192,16 @@ impl<'a> SubtypingContext<'a> {
             }
 
             // Object <: Object-like Class (structural)
+            // Optional properties in the class don't need to exist in the object
             (Type::Object(o), Type::Class(c)) => c.properties.iter().all(|cp| {
+                // If the class property is optional, the object doesn't need to have it
+                if cp.optional {
+                    return true;
+                }
+                // For required class properties, the object must have them
                 o.properties.iter().any(|op| {
                     op.name == cp.name
-                        && op.optional == cp.optional
+                        && !op.optional // Object property must not be optional for required class
                         && self.is_subtype(op.ty, cp.ty)
                 })
             }),
@@ -218,9 +229,14 @@ impl<'a> SubtypingContext<'a> {
             (Type::Class(c), Type::Interface(i)) => {
                 // Check if class implements all interface members
                 i.properties.iter().all(|ip| {
+                    // If the interface property is optional, the class doesn't need to have it
+                    if ip.optional {
+                        return true;
+                    }
+                    // For required properties, check class properties
                     c.properties.iter().any(|cp| {
                         cp.name == ip.name
-                            && cp.optional == ip.optional
+                            && !cp.optional // Class property must not be optional for required interface
                             && (!ip.readonly || cp.readonly)
                             && self.is_subtype(cp.ty, ip.ty)
                     })
