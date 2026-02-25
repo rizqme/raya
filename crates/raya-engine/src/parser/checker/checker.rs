@@ -314,6 +314,7 @@ impl<'a> TypeChecker<'a> {
                 self.check_expr(&expr_stmt.expression);
             }
             Statement::Return(ret) => self.check_return(ret),
+            Statement::Yield(yld) => self.check_yield(yld),
             Statement::If(if_stmt) => self.check_if(if_stmt),
             Statement::While(while_stmt) => self.check_while(while_stmt),
             Statement::For(for_stmt) => self.check_for(for_stmt),
@@ -720,13 +721,14 @@ impl<'a> TypeChecker<'a> {
                         self.type_env = TypeEnv::new();
 
                         // Collect parameter types before entering scope (to avoid borrow issues)
-                        let param_types: Option<Vec<TypeId>> = if let Some(crate::parser::types::Type::Function(method_fn_ty)) =
-                            self.type_ctx.get(method_ty)
-                        {
-                            Some(method_fn_ty.params.iter().cloned().collect())
-                        } else {
-                            None
-                        };
+                        let param_types: Option<Vec<TypeId>> =
+                            if let Some(crate::parser::types::Type::Function(method_fn_ty)) =
+                                self.type_ctx.get(method_ty)
+                            {
+                                Some(method_fn_ty.params.iter().cloned().collect())
+                            } else {
+                                None
+                            };
 
                         // Enter method scope (binder creates one for every concrete method body)
                         self.enter_scope();
@@ -847,6 +849,13 @@ impl<'a> TypeChecker<'a> {
             } else if let Some(collected) = self.return_type_collector.last_mut() {
                 collected.push(self.type_ctx.void_type());
             }
+        }
+    }
+
+    /// Check yield statement
+    fn check_yield(&mut self, yld: &YieldStatement) {
+        if let Some(ref expr) = yld.value {
+            self.check_expr(expr);
         }
     }
 
@@ -1808,6 +1817,11 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::Return(ret) => {
                 if let Some(ref val) = ret.value {
+                    self.collect_free_vars_expr(val, collector);
+                }
+            }
+            Statement::Yield(yld) => {
+                if let Some(ref val) = yld.value {
                     self.collect_free_vars_expr(val, collector);
                 }
             }

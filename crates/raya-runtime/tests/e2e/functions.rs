@@ -44,6 +44,60 @@ fn test_function_three_parameters() {
     );
 }
 
+#[test]
+fn test_function_yield_statement() {
+    expect_i32(
+        "function run(): number {
+             yield;
+             yield 1;
+             return 42;
+         }
+         return run();",
+        42,
+    );
+}
+
+#[test]
+fn test_generator_function_syntax_with_yield() {
+    expect_i32(
+        "function* gen(): number {
+             yield;
+             return 42;
+         }
+         return gen();",
+        42,
+    );
+}
+
+#[test]
+fn test_yield_expression_evaluates_side_effects() {
+    expect_i32(
+        "function run(): number {
+             let x = 0;
+             yield (x = 41);
+             return x + 1;
+         }
+         return run();",
+        42,
+    );
+}
+
+#[test]
+fn test_generator_with_loop_and_multiple_yields() {
+    expect_i32(
+        "function* spin(): number {
+             let i = 0;
+             while (i < 3) {
+                 yield i;
+                 i = i + 1;
+             }
+             return 42;
+         }
+         return spin();",
+        42,
+    );
+}
+
 // ============================================================================
 // Function Calls in Expressions
 // ============================================================================

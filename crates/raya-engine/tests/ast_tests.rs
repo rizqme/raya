@@ -131,6 +131,7 @@ fn test_function_decl_simple() {
             span: Span::new(43, 45, 1, 44),
         },
         is_async: false,
+        is_generator: false,
         span: Span::new(0, 45, 1, 1),
     };
 
@@ -154,6 +155,7 @@ fn test_function_decl_async() {
             span: Span::new(23, 25, 1, 24),
         },
         is_async: true,
+        is_generator: false,
         span: Span::new(0, 25, 1, 1),
     };
 

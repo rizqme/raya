@@ -59,6 +59,8 @@ pub enum Statement {
 
     /// Return statement
     Return(ReturnStatement),
+    /// Yield statement
+    Yield(YieldStatement),
 
     /// Throw statement
     Throw(ThrowStatement),
@@ -99,6 +101,7 @@ impl Statement {
             Statement::Break(s) => &s.span,
             Statement::Continue(s) => &s.span,
             Statement::Return(s) => &s.span,
+            Statement::Yield(s) => &s.span,
             Statement::Throw(s) => &s.span,
             Statement::Try(s) => &s.span,
             Statement::Block(s) => &s.span,
@@ -178,6 +181,8 @@ pub struct FunctionDecl {
 
     /// Is async function?
     pub is_async: bool,
+    /// Is generator function (`function*`)
+    pub is_generator: bool,
 
     pub span: Span,
 }
@@ -577,6 +582,13 @@ pub struct ContinueStatement {
 /// Return statement
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReturnStatement {
+    pub value: Option<Expression>,
+    pub span: Span,
+}
+
+/// Yield statement
+#[derive(Debug, Clone, PartialEq)]
+pub struct YieldStatement {
     pub value: Option<Expression>,
     pub span: Span,
 }

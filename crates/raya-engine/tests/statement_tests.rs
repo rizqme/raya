@@ -127,6 +127,69 @@ fn test_parse_async_function() {
 }
 
 #[test]
+fn test_parse_generator_function() {
+    let source = "function* seq() { yield 1; }";
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::FunctionDecl(func) => {
+            assert_eq!(interner.resolve(func.name.name), "seq");
+            assert!(func.is_generator);
+            assert!(!func.is_async);
+            assert_eq!(func.body.statements.len(), 1);
+            match &func.body.statements[0] {
+                Statement::Yield(yld) => {
+                    assert!(yld.value.is_some());
+                }
+                _ => panic!("Expected yield statement"),
+            }
+        }
+        _ => panic!("Expected function declaration"),
+    }
+}
+
+#[test]
+fn test_parse_async_generator_function() {
+    let source = "async function* stream() { yield; return 1; }";
+    let parser = Parser::new(source).unwrap();
+    let (module, interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::FunctionDecl(func) => {
+            assert_eq!(interner.resolve(func.name.name), "stream");
+            assert!(func.is_async);
+            assert!(func.is_generator);
+            assert_eq!(func.body.statements.len(), 2);
+            assert!(matches!(func.body.statements[0], Statement::Yield(_)));
+            assert!(matches!(func.body.statements[1], Statement::Return(_)));
+        }
+        _ => panic!("Expected function declaration"),
+    }
+}
+
+#[test]
+fn test_parse_yield_without_value() {
+    let source = "function* seq() { yield; }";
+    let parser = Parser::new(source).unwrap();
+    let (module, _interner) = parser.parse().unwrap();
+
+    assert_eq!(module.statements.len(), 1);
+    match &module.statements[0] {
+        Statement::FunctionDecl(func) => {
+            assert_eq!(func.body.statements.len(), 1);
+            match &func.body.statements[0] {
+                Statement::Yield(yld) => assert!(yld.value.is_none()),
+                _ => panic!("Expected yield statement"),
+            }
+        }
+        _ => panic!("Expected function declaration"),
+    }
+}
+
+#[test]
 fn test_parse_function_with_return_type() {
     let source = "function getValue(): number { return 42; }";
     let parser = Parser::new(source).unwrap();

@@ -26,6 +26,7 @@ impl<'a> Lowerer<'a> {
             Statement::VariableDecl(decl) => self.lower_var_decl(decl),
             Statement::Expression(expr) => self.lower_expr_stmt(expr),
             Statement::Return(ret) => self.lower_return(ret),
+            Statement::Yield(yld) => self.lower_yield(yld),
             Statement::If(if_stmt) => self.lower_if(if_stmt),
             Statement::While(while_stmt) => self.lower_while(while_stmt),
             Statement::For(for_stmt) => self.lower_for(for_stmt),
@@ -439,7 +440,8 @@ impl<'a> Lowerer<'a> {
                 if self.function_depth == 0 && self.block_depth == 0 {
                     if let Some(&global_idx) = self.module_var_globals.get(&ident.name) {
                         self.global_type_map.insert(global_idx, value_reg.ty);
-                        if let Some(fields) = self.register_object_fields.get(&value_reg.id).cloned()
+                        if let Some(fields) =
+                            self.register_object_fields.get(&value_reg.id).cloned()
                         {
                             self.variable_object_fields.insert(ident.name, fields);
                         }
@@ -1172,6 +1174,13 @@ impl<'a> Lowerer<'a> {
         }
 
         self.set_terminator(Terminator::Return(value));
+    }
+
+    fn lower_yield(&mut self, yld: &ast::YieldStatement) {
+        if let Some(value) = &yld.value {
+            self.lower_expr(value);
+        }
+        self.emit(IrInstr::Yield);
     }
 
     fn lower_if(&mut self, if_stmt: &ast::IfStatement) {

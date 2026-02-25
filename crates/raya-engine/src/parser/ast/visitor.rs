@@ -192,6 +192,11 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
                 visitor.visit_expression(value);
             }
         }
+        Statement::Yield(stmt) => {
+            if let Some(value) = &stmt.value {
+                visitor.visit_expression(value);
+            }
+        }
         Statement::Throw(stmt) => visitor.visit_expression(&stmt.value),
         Statement::Try(stmt) => {
             visitor.visit_block_statement(&stmt.body);

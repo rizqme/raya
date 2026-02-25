@@ -81,6 +81,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
         Token::Switch => parse_switch_statement(parser),
         Token::Try => parse_try_statement(parser),
         Token::Return => parse_return_statement(parser),
+        Token::Yield => parse_yield_statement(parser),
         Token::Break => parse_break_statement(parser),
         Token::Continue => parse_continue_statement(parser),
         Token::Throw => parse_throw_statement(parser),
@@ -214,6 +215,12 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
 
     // Parse 'function' keyword
     parser.expect(Token::Function)?;
+    let is_generator = if parser.check(&Token::Star) {
+        parser.advance();
+        true
+    } else {
+        false
+    };
 
     // Parse function name
     let name = if let Token::Identifier(name) = parser.current() {
@@ -262,6 +269,7 @@ fn parse_function_declaration(parser: &mut Parser) -> Result<Statement, ParseErr
         return_type,
         body,
         is_async,
+        is_generator,
         span,
     }))
 }
@@ -490,7 +498,7 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
             | Token::Type           // Block starts with type
             | Token::Export         // Block starts with export
             | Token::Import         // Block starts with import
-            | Token::At             // Block starts with annotation
+            | Token::At // Block starts with annotation
         )
     } else {
         false
@@ -859,6 +867,32 @@ fn parse_return_statement(parser: &mut Parser) -> Result<Statement, ParseError> 
     };
 
     Ok(Statement::Return(ReturnStatement { value, span }))
+}
+
+/// Parse yield statement
+fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::Yield)?;
+
+    // Optional yield value
+    let value = if parser.check(&Token::Semicolon) || parser.at_eof() {
+        None
+    } else {
+        Some(super::expr::parse_expression(parser)?)
+    };
+
+    // Optional semicolon
+    if parser.check(&Token::Semicolon) {
+        parser.advance();
+    }
+
+    let span = if let Some(ref val) = value {
+        parser.combine_spans(&start_span, val.span())
+    } else {
+        start_span
+    };
+
+    Ok(Statement::Yield(YieldStatement { value, span }))
 }
 
 /// Parse break statement
