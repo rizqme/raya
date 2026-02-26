@@ -13,4 +13,12 @@ export class Object {
     /** Check equality with another object (identity comparison) */
     equals(other: Object): boolean;
 
+    /** Define a property descriptor on an object */
+    static defineProperty(obj: Object, key: string, descriptor: Object): Object;
+
+    /** Get own property descriptor for a key */
+    static getOwnPropertyDescriptor(obj: Object, key: string): Object | null;
+
+    /** Define many properties on an object */
+    static defineProperties(obj: Object, descriptors: Object): Object;
 }

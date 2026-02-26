@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context};
 use raya_pm::PackageManifest;
-use raya_runtime::{Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::Path;
 use std::process::Command;
 
@@ -22,6 +22,7 @@ pub struct RunArgs {
     pub list: bool,
     pub cpu_prof: Option<std::path::PathBuf>,
     pub prof_interval: u64,
+    pub node_compat: bool,
 }
 
 impl RunArgs {
@@ -34,6 +35,11 @@ impl RunArgs {
             jit_threshold: self.jit_threshold,
             cpu_prof: self.cpu_prof.clone(),
             prof_interval_us: self.prof_interval,
+            builtin_mode: if self.node_compat {
+                BuiltinMode::NodeCompat
+            } else {
+                BuiltinMode::RayaStrict
+            },
         }
     }
 }

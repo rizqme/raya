@@ -69,6 +69,9 @@ enum Commands {
         /// Profiling sample interval in microseconds (default: 10000 = 100Hz)
         #[arg(long, default_value = "10000")]
         prof_interval: u64,
+        /// Enable Node-compatible builtin API surface.
+        #[arg(long)]
+        node_compat: bool,
     },
 
     /// Debug a Raya script interactively
@@ -149,6 +152,9 @@ enum Commands {
         /// Disable JIT for the evaluated code
         #[arg(long)]
         no_jit: bool,
+        /// Enable Node-compatible builtin API surface.
+        #[arg(long)]
+        node_compat: bool,
     },
 
     /// Run tests
@@ -206,6 +212,9 @@ enum Commands {
         /// Disable JIT in REPL
         #[arg(long)]
         no_jit: bool,
+        /// Enable Node-compatible builtin API surface.
+        #[arg(long)]
+        node_compat: bool,
     },
 
     /// Initialize a new Raya project
@@ -379,6 +388,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             list,
             cpu_prof,
             prof_interval,
+            node_compat,
         } => commands::run::execute(commands::run::RunArgs {
             target,
             args,
@@ -394,6 +404,7 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             list,
             cpu_prof,
             prof_interval,
+            node_compat,
         }),
 
         Commands::Debug {
@@ -427,7 +438,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             print,
             no_print,
             no_jit,
-        } => commands::eval::execute(code, print, no_print, no_jit),
+            node_compat,
+        } => commands::eval::execute(code, print, no_print, no_jit, node_compat),
 
         Commands::Test {
             filter,
@@ -460,7 +472,10 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             watch,
         } => commands::lint::execute(files, fix, format, watch),
 
-        Commands::Repl { no_jit } => commands::repl::execute(no_jit),
+        Commands::Repl {
+            no_jit,
+            node_compat,
+        } => commands::repl::execute(no_jit, node_compat),
 
         Commands::Init {
             path,

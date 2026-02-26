@@ -2,7 +2,7 @@
 //!
 //! Tests the Runtime API that powers `raya run`, `raya eval`, and `raya build`.
 
-use raya_runtime::{Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -584,6 +584,7 @@ fn test_runtime_with_options() {
         jit_threshold: 500,
         cpu_prof: None,
         prof_interval_us: 10_000,
+        builtin_mode: BuiltinMode::RayaStrict,
     });
 
     let value = rt.eval("return 99;").expect("eval with options failed");

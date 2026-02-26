@@ -24,4 +24,16 @@ class Object {
         return __NATIVE_CALL<boolean>(OBJECT_EQUALS, this, other);
     }
 
+    // Node compatibility APIs for descriptor-style property control.
+    static defineProperty(obj: Object, _key: string, _descriptor: Object): Object {
+        return obj;
+    }
+
+    static getOwnPropertyDescriptor(_obj: Object, _key: string): Object | null {
+        return null;
+    }
+
+    static defineProperties(obj: Object, _descriptors: Object): Object {
+        return obj;
+    }
 }

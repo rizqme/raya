@@ -3,10 +3,49 @@
 //! Embeds the Raya builtin class sources and standard library module sources
 //! at compile time, so the runtime can prepend them to user code.
 
+use crate::BuiltinMode;
+
 /// Returns the source code for all builtin classes (Object, Error, Map, Set, etc.)
 pub fn builtin_sources() -> &'static str {
+    builtin_sources_for_mode(BuiltinMode::RayaStrict)
+}
+
+/// Returns builtin sources for a specific compatibility mode.
+pub fn builtin_sources_for_mode(mode: BuiltinMode) -> &'static str {
+    match mode {
+        BuiltinMode::RayaStrict => strict_builtin_sources(),
+        BuiltinMode::NodeCompat => node_compat_builtin_sources(),
+    }
+}
+
+fn strict_builtin_sources() -> &'static str {
     concat!(
         include_str!("../../raya-engine/builtins/object.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/error.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/symbol.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/map.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/set.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/buffer.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/date.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/channel.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/mutex.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/promise.raya"),
+        "\n",
+    )
+}
+
+fn node_compat_builtin_sources() -> &'static str {
+    concat!(
+        include_str!("../../raya-engine/builtins/object.node_compat.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/error.raya"),
         "\n",

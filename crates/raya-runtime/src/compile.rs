@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::builtins;
 use crate::error::RuntimeError;
+use crate::BuiltinMode;
 
 /// Options controlling compilation output.
 #[derive(Debug, Clone, Default)]
@@ -40,9 +41,17 @@ pub struct CheckDiagnostics {
 /// Prepends builtin class sources and standard library sources so that
 /// user code can reference Map, Set, Channel, Logger, Math, etc.
 pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_mode(source, BuiltinMode::RayaStrict)
+}
+
+/// Compile Raya source code to a bytecode module with builtin API mode.
+pub fn compile_source_with_mode(
+    source: &str,
+    builtin_mode: BuiltinMode,
+) -> Result<(Module, Interner), RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
 
-    let builtin_src = builtins::builtin_sources();
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
     let std_src = builtins::std_sources();
     let user_offset = builtin_src.len() + 1 + std_src.len() + 1;
     let full_source = format!("{}\n{}\n{}", builtin_src, std_src, source);
@@ -122,9 +131,18 @@ pub fn compile_source_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_options_and_mode(source, options, BuiltinMode::RayaStrict)
+}
+
+/// Compile source with explicit compile options and builtin compatibility mode.
+pub fn compile_source_with_options_and_mode(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+) -> Result<(Module, Interner), RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
 
-    let builtin_src = builtins::builtin_sources();
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
     let std_src = builtins::std_sources();
     let user_offset = builtin_src.len() + 1 + std_src.len() + 1;
     let full_source = format!("{}\n{}\n{}", builtin_src, std_src, source);
@@ -189,9 +207,17 @@ pub fn compile_source_with_options(
 /// Runs Parse → Bind → TypeCheck and returns all errors and warnings.
 /// Does not perform IR lowering, optimization, or code generation.
 pub fn check_source(source: &str) -> Result<CheckDiagnostics, RuntimeError> {
+    check_source_with_mode(source, BuiltinMode::RayaStrict)
+}
+
+/// Type-check source using a specific builtin compatibility mode.
+pub fn check_source_with_mode(
+    source: &str,
+    builtin_mode: BuiltinMode,
+) -> Result<CheckDiagnostics, RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
 
-    let builtin_src = builtins::builtin_sources();
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
     let std_src = builtins::std_sources();
     let user_offset = builtin_src.len() + 1 + std_src.len() + 1; // +1 for \n separators
 
@@ -536,5 +562,38 @@ mod tests {
         // Ensure compile_source is unaffected
         let result = compile_source("return 42;");
         assert!(result.is_ok(), "compile_source should still work");
+    }
+
+    #[test]
+    fn test_object_define_property_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            let desc = new Object();
+            Object.defineProperty(obj, "x", desc);
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.defineProperty should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_property_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            let desc = new Object();
+            Object.defineProperty(obj, "x", desc);
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.defineProperty should be available in node-compat mode"
+        );
     }
 }

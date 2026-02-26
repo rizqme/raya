@@ -62,7 +62,8 @@ impl Session {
             format!("{}\n{}", self.declarations.join("\n"), code)
         };
 
-        let (module, _interner) = compile::compile_source(&full_source)?;
+        let (module, _interner) =
+            compile::compile_source_with_mode(&full_source, self.options.builtin_mode)?;
 
         let mut vm = vm_setup::create_vm(&self.options);
         // REPL/session should execute only the compiler entry main and avoid

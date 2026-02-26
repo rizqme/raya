@@ -52,6 +52,16 @@ use std::sync::Arc;
 // ────────────────────────────────────────────────────────────────────────────
 
 /// Configuration for the Raya runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BuiltinMode {
+    /// Raya-first builtin surface. Avoids Node-only object meta-programming APIs.
+    #[default]
+    RayaStrict,
+    /// Node compatibility surface for builtins.
+    NodeCompat,
+}
+
+/// Configuration for the Raya runtime.
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
     /// Worker thread count (0 = auto-detect from CPU count).
@@ -70,6 +80,8 @@ pub struct RuntimeOptions {
     pub cpu_prof: Option<std::path::PathBuf>,
     /// Profiling sample interval in microseconds (default: 10_000 = 10ms / 100Hz).
     pub prof_interval_us: u64,
+    /// Builtin API mode (strict Raya vs node-compat surface).
+    pub builtin_mode: BuiltinMode,
 }
 
 impl Default for RuntimeOptions {
@@ -82,6 +94,7 @@ impl Default for RuntimeOptions {
             jit_threshold: 1000,
             cpu_prof: None,
             prof_interval_us: 10_000,
+            builtin_mode: BuiltinMode::RayaStrict,
         }
     }
 }
@@ -159,7 +172,8 @@ impl Runtime {
     /// Automatically includes builtin classes (Map, Set, Date, etc.) and
     /// standard library modules (logger, math, crypto, etc.).
     pub fn compile(&self, source: &str) -> Result<CompiledModule, RuntimeError> {
-        let (module, interner) = compile::compile_source(source)?;
+        let (module, interner) =
+            compile::compile_source_with_mode(source, self.options.builtin_mode)?;
         Ok(CompiledModule {
             module,
             interner: Some(interner),
@@ -178,7 +192,11 @@ impl Runtime {
         source: &str,
         options: &compile::CompileOptions,
     ) -> Result<CompiledModule, RuntimeError> {
-        let (module, interner) = compile::compile_source_with_options(source, options)?;
+        let (module, interner) = compile::compile_source_with_options_and_mode(
+            source,
+            options,
+            self.options.builtin_mode,
+        )?;
         Ok(CompiledModule {
             module,
             interner: Some(interner),
@@ -201,7 +219,7 @@ impl Runtime {
     ///
     /// Returns diagnostics (errors + warnings) without compiling.
     pub fn check(&self, source: &str) -> Result<compile::CheckDiagnostics, RuntimeError> {
-        compile::check_source(source)
+        compile::check_source_with_mode(source, self.options.builtin_mode)
     }
 
     /// Type-check a .raya source file without generating bytecode.
