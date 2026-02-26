@@ -136,10 +136,10 @@ class Uint8Array {
     byteLength: int;
     length: int;
 
-    constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
+    constructor(source: number, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = source;
+            let ab = source as ArrayBuffer;
             if (byteOffset < 0 || byteOffset > ab.byteLength) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }
@@ -224,8 +224,7 @@ class Int32Array {
     length: int;
 
     constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
-        let sourceType = typeof source;
-        if (sourceType != "int" && sourceType != "number") {
+        if (source instanceof ArrayBuffer) {
             let ab = source;
             if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 4) != 0) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
@@ -295,7 +294,7 @@ class Float64Array {
     constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
         let sourceType = typeof source;
         if (sourceType != "int" && sourceType != "number") {
-            let ab = source;
+            let ab = source as ArrayBuffer;
             if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 8) != 0) {
                 throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
             }

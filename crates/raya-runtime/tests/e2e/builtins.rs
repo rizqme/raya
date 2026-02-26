@@ -522,7 +522,6 @@ fn test_int8array_signed_roundtrip() {
 }
 
 #[test]
-#[ignore = "Int32Array numeric interop still uses number-only VM path"]
 fn test_int32array_get_set() {
     expect_i32_runtime(
         r#"
@@ -536,7 +535,6 @@ fn test_int32array_get_set() {
 }
 
 #[test]
-#[ignore = "DataView Int32 path still uses number-only VM arithmetic"]
 fn test_dataview_get_set_int32() {
     expect_i32_runtime(
         r#"
@@ -550,7 +548,6 @@ fn test_dataview_get_set_int32() {
 }
 
 #[test]
-#[ignore = "DataView Int32 path still uses number-only VM arithmetic"]
 fn test_dataview_out_of_range_error_code() {
     expect_string_runtime(
         r#"
