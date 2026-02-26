@@ -72,3 +72,55 @@ fn test_node_compat_define_property_blocks_redefine_non_configurable() {
 
     expect_bool(value, true);
 }
+
+#[test]
+fn test_node_compat_define_property_getter_invoked_on_read() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let o = new Error("x");
+            let d = new Object();
+            d.get = (): Object => { return new Object(); };
+            d.configurable = true;
+            Object.defineProperty(o, "cause", d);
+            return o.cause != null;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}
+
+#[test]
+fn test_node_compat_define_property_setter_invoked_on_write() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let o = new Error("x");
+            let hit = false;
+            let seen: Object | null = null;
+            let d = new Object();
+            d.set = (v: Object): void => {
+                hit = true;
+                seen = v;
+            };
+            d.configurable = true;
+            Object.defineProperty(o, "cause", d);
+            o.cause = new Object();
+            return hit && seen != null;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}

@@ -11,9 +11,10 @@ use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
+use crate::vm::gc::GcHeader;
 use crate::vm::object::{
-    Array, Buffer, ChannelObject, DateObject, MapObject, Object, RayaString, RegExpObject,
-    SetObject,
+    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object,
+    RayaString, RegExpObject, SetObject,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -25,6 +26,18 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn is_callable_value(value: Value) -> bool {
+        if !value.is_ptr() {
+            return false;
+        }
+        let header = unsafe {
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        header.type_id() == std::any::TypeId::of::<Closure>()
+            || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+    }
+
     fn builtin_field_index_for_class_name_native(
         class_name: &str,
         field_name: &str,
@@ -144,8 +157,37 @@ impl<'a> Interpreter<'a> {
             }
         }
 
-        // Apply data descriptor value directly to the target field if present.
-        if let Some(value) = self.get_field_value_by_name(descriptor, "value") {
+        let getter = self.get_field_value_by_name(descriptor, "get");
+        let setter = self.get_field_value_by_name(descriptor, "set");
+        let has_accessor = getter.is_some_and(|v| !v.is_null()) || setter.is_some_and(|v| !v.is_null());
+        let value_field = self.get_field_value_by_name(descriptor, "value");
+        let has_value = value_field.is_some_and(|v| !v.is_null());
+
+        if let Some(getter_val) = getter.filter(|v| !v.is_null()) {
+            if !Self::is_callable_value(getter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Getter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if let Some(setter_val) = setter.filter(|v| !v.is_null()) {
+            if !Self::is_callable_value(setter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Setter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if has_accessor && has_value {
+            return Err(VmError::TypeError(format!(
+                "Invalid property descriptor for '{}': cannot mix accessors and value",
+                key
+            )));
+        }
+
+        // Apply data descriptor value directly to the target field if provided.
+        if let Some(value) = value_field.filter(|v| !v.is_null()) {
             let field_index = self.get_field_index_for_value(target, key).ok_or_else(|| {
                 VmError::TypeError(format!("Unknown property '{}' on target object", key))
             })?;

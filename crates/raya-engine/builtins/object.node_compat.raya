@@ -15,8 +15,8 @@ class Object {
     writable: boolean;
     configurable: boolean;
     enumerable: boolean;
-    get: Object | null;
-    set: Object | null;
+    get: (() => Object) | null;
+    set: ((value: Object) => void) | null;
 
     constructor() {
         this.value = null;

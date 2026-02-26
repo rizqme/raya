@@ -2,7 +2,7 @@
 
 use crate::compiler::Opcode;
 use crate::vm::gc::GcHeader;
-use crate::vm::interpreter::execution::OpcodeResult;
+use crate::vm::interpreter::execution::{OpcodeResult, ReturnAction};
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{Array, BoundMethod, Closure, Object, RayaString};
 use crate::vm::stack::Stack;
@@ -12,6 +12,49 @@ use crate::vm::VmError;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn callable_frame_for_value(
+        &self,
+        callable: Value,
+        stack: &mut Stack,
+        args: &[Value],
+        return_action: ReturnAction,
+    ) -> Result<Option<OpcodeResult>, VmError> {
+        if !callable.is_ptr() {
+            return Ok(None);
+        }
+        let header = unsafe {
+            let hp = (callable.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
+            let bm = unsafe { &*callable.as_ptr::<BoundMethod>().unwrap().as_ptr() };
+            stack.push(bm.receiver)?;
+            for arg in args {
+                stack.push(*arg)?;
+            }
+            return Ok(Some(OpcodeResult::PushFrame {
+                func_id: bm.func_id,
+                arg_count: args.len() + 1,
+                is_closure: false,
+                closure_val: None,
+                return_action,
+            }));
+        }
+        if header.type_id() == std::any::TypeId::of::<Closure>() {
+            for arg in args {
+                stack.push(*arg)?;
+            }
+            return Ok(Some(OpcodeResult::PushFrame {
+                func_id: unsafe { &*callable.as_ptr::<Closure>().unwrap().as_ptr() }.func_id(),
+                arg_count: args.len(),
+                is_closure: true,
+                closure_val: Some(callable),
+                return_action,
+            }));
+        }
+        Ok(None)
+    }
+
     fn builtin_field_name_for_class_name(class_name: &str, field_offset: usize) -> Option<String> {
         let name = match class_name {
             "Object" => match field_offset {
@@ -172,6 +215,18 @@ impl<'a> Interpreter<'a> {
         }
     }
 
+    fn descriptor_accessor(&self, obj_val: Value, field_name: &str, accessor_name: &str) -> Option<Value> {
+        let descriptor = {
+            let metadata = self.metadata.lock();
+            metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
+        }?;
+        let accessor = self.get_value_field_by_name(descriptor, accessor_name)?;
+        if accessor.is_null() {
+            return None;
+        }
+        Some(accessor)
+    }
+
     fn ensure_object_receiver(value: Value, context: &'static str) -> Result<Value, VmError> {
         if !value.is_ptr() {
             return Err(VmError::TypeError(format!(
@@ -265,6 +320,25 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
+                        match self.callable_frame_for_value(
+                            getter,
+                            stack,
+                            &[],
+                            ReturnAction::PushReturnValue,
+                        ) {
+                            Ok(Some(frame)) => return frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Property '{}' getter is not callable",
+                                    field_name
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                }
                 // Missing fields resolve to null. This matches object destructuring defaults
                 // and allows optional object properties to be absent at runtime.
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
@@ -300,6 +374,31 @@ impl<'a> Interpreter<'a> {
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
+                        match self.callable_frame_for_value(
+                            setter,
+                            stack,
+                            &[value],
+                            ReturnAction::Discard,
+                        ) {
+                            Ok(Some(frame)) => return frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Property '{}' setter is not callable",
+                                    field_name
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    if self.descriptor_accessor(actual_obj, &field_name, "get").is_some()
+                        && !self.is_field_writable(actual_obj, &field_name)
+                    {
+                        return OpcodeResult::Error(VmError::TypeError(format!(
+                            "Cannot set property '{}' which has only a getter",
+                            field_name
+                        )));
+                    }
                     if !self.is_field_writable(actual_obj, &field_name) {
                         return OpcodeResult::Error(VmError::TypeError(format!(
                             "Cannot assign to non-writable property '{}'",
@@ -371,6 +470,25 @@ impl<'a> Interpreter<'a> {
 
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &*obj_ptr.unwrap().as_ptr() };
+                if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    if let Some(getter) = self.descriptor_accessor(actual_obj, &field_name, "get") {
+                        match self.callable_frame_for_value(
+                            getter,
+                            stack,
+                            &[],
+                            ReturnAction::PushReturnValue,
+                        ) {
+                            Ok(Some(frame)) => return frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Property '{}' getter is not callable",
+                                    field_name
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                }
                 let value = obj.get_field(field_offset).unwrap_or(Value::null());
                 if let Err(e) = stack.push(value) {
                     return OpcodeResult::Error(e);
@@ -403,6 +521,31 @@ impl<'a> Interpreter<'a> {
                 let obj_ptr = unsafe { actual_obj.as_ptr::<Object>() };
                 let obj = unsafe { &mut *obj_ptr.unwrap().as_ptr() };
                 if let Some(field_name) = self.field_name_for_offset(obj, field_offset) {
+                    if let Some(setter) = self.descriptor_accessor(actual_obj, &field_name, "set") {
+                        match self.callable_frame_for_value(
+                            setter,
+                            stack,
+                            &[value],
+                            ReturnAction::Discard,
+                        ) {
+                            Ok(Some(frame)) => return frame,
+                            Ok(None) => {
+                                return OpcodeResult::Error(VmError::TypeError(format!(
+                                    "Property '{}' setter is not callable",
+                                    field_name
+                                )));
+                            }
+                            Err(e) => return OpcodeResult::Error(e),
+                        }
+                    }
+                    if self.descriptor_accessor(actual_obj, &field_name, "get").is_some()
+                        && !self.is_field_writable(actual_obj, &field_name)
+                    {
+                        return OpcodeResult::Error(VmError::TypeError(format!(
+                            "Cannot set property '{}' which has only a getter",
+                            field_name
+                        )));
+                    }
                     if !self.is_field_writable(actual_obj, &field_name) {
                         return OpcodeResult::Error(VmError::TypeError(format!(
                             "Cannot assign to non-writable property '{}'",
