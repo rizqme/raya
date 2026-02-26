@@ -276,6 +276,26 @@ pub fn compile_and_run_with_builtins(source: &str) -> E2EResult<Value> {
     Ok(value)
 }
 
+/// Compile and execute using the production runtime compile pipeline.
+///
+/// This path mirrors `raya run/eval` behavior (builtin + std prelude injection)
+/// and is useful for validating builtins that depend on runtime compile semantics.
+pub fn compile_and_run_runtime(source: &str) -> E2EResult<Value> {
+    let (module, _interner) = raya_runtime::compile::compile_source(source)
+        .map_err(|e| E2EError::TypeCheck(e.to_string()))?;
+
+    let mut vm = Vm::with_native_handler(1, Arc::new(StdNativeHandler));
+    {
+        let mut registry = vm.native_registry().write();
+        raya_stdlib::register_stdlib(&mut registry);
+        raya_stdlib_posix::register_posix(&mut registry);
+    }
+
+    let value = vm.execute(&module).map_err(E2EError::Vm)?;
+    keep_vm_alive(vm);
+    Ok(value)
+}
+
 /// Compile and execute with builtins, expecting a specific i32 result
 /// Also accepts f64 values that represent whole numbers (since Number type is f64)
 pub fn expect_i32_with_builtins(source: &str, expected: i32) {
@@ -287,6 +307,35 @@ pub fn expect_i32_with_builtins(source: &str, expected: i32) {
                 return;
             }
             // Also accept f64 that represents a whole number
+            if let Some(actual) = value.as_f64() {
+                let expected_f64 = expected as f64;
+                assert!(
+                    (actual - expected_f64).abs() < 1e-10 && actual.fract() == 0.0,
+                    "Expected {} (i32), got {} (f64) for:\n{}",
+                    expected,
+                    actual,
+                    source
+                );
+                return;
+            }
+            panic!(
+                "Expected i32 or f64 result, got {:?}\nSource:\n{}",
+                value, source
+            );
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+pub fn expect_i32_runtime(source: &str, expected: i32) {
+    match compile_and_run_runtime(source) {
+        Ok(value) => {
+            if let Some(actual) = value.as_i32() {
+                assert_eq!(actual, expected, "Wrong result for:\n{}", source);
+                return;
+            }
             if let Some(actual) = value.as_f64() {
                 let expected_f64 = expected as f64;
                 assert!(
@@ -492,6 +541,56 @@ pub fn expect_string(source: &str, expected: &str) {
 /// Compile and execute with builtins, expecting a specific string result
 pub fn expect_string_with_builtins(source: &str, expected: &str) {
     match compile_and_run_with_builtins(source) {
+        Ok(value) => {
+            if value.is_ptr() {
+                let raw_ptr = unsafe { value.as_ptr::<u8>() };
+                if let Some(ptr) = raw_ptr {
+                    let header = unsafe {
+                        let hp = ptr.as_ptr().sub(std::mem::size_of::<GcHeader>());
+                        &*(hp as *const GcHeader)
+                    };
+                    if header.type_id() != std::any::TypeId::of::<RayaString>() {
+                        let detected = if header.type_id() == std::any::TypeId::of::<Object>() {
+                            "Object"
+                        } else if header.type_id() == std::any::TypeId::of::<Array>() {
+                            "Array"
+                        } else if header.type_id() == std::any::TypeId::of::<RayaString>() {
+                            "RayaString"
+                        } else {
+                            "Unknown"
+                        };
+                        panic!(
+                            "Expected RayaString pointer, got GC object type={} (value={:?})\nSource:\n{}",
+                            detected, value, source
+                        );
+                    }
+                    let raya_str = unsafe { &*value.as_ptr::<RayaString>().unwrap().as_ptr() };
+                    assert_eq!(
+                        raya_str.data, expected,
+                        "String mismatch.\nExpected: '{}'\nGot: '{}'\nSource:\n{}",
+                        expected, raya_str.data, source
+                    );
+                } else {
+                    panic!(
+                        "Failed to extract string pointer from value {:?}\nSource:\n{}",
+                        value, source
+                    );
+                }
+            } else {
+                panic!(
+                    "Expected string (pointer), got {:?}\nSource:\n{}",
+                    value, source
+                );
+            }
+        }
+        Err(e) => {
+            panic!("Compilation/execution failed: {}\nSource:\n{}", e, source);
+        }
+    }
+}
+
+pub fn expect_string_runtime(source: &str, expected: &str) {
+    match compile_and_run_runtime(source) {
         Ok(value) => {
             if value.is_ptr() {
                 let raw_ptr = unsafe { value.as_ptr::<u8>() };

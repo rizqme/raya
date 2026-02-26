@@ -1,0 +1,347 @@
+// TypedArray and ArrayBuffer builtins
+// Node-like surface for Raya strict numeric model (int indices/lengths).
+
+class ArrayBuffer {
+    private _bytes: int[];
+    byteLength: int;
+
+    constructor(byteLength: int = 0) {
+        if (byteLength < 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "ArrayBuffer length must be >= 0");
+        }
+        this.byteLength = byteLength;
+        this._bytes = [];
+        let i = 0;
+        while (i < byteLength) {
+            this._bytes.push(0);
+            i = i + 1;
+        }
+    }
+
+    private _checkByteOffset(offset: int): void {
+        if (offset < 0 || offset >= this.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Offset out of range");
+        }
+    }
+
+    getByte(offset: int): int {
+        this._checkByteOffset(offset);
+        return this._bytes[offset];
+    }
+
+    setByte(offset: int, value: int): void {
+        this._checkByteOffset(offset);
+        let out = value % 256;
+        if (out < 0) {
+            out = out + 256;
+        }
+        this._bytes[offset] = out;
+    }
+
+    getInt32(offset: int): int {
+        if (offset < 0 || (offset + 4) > this.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Offset out of range");
+        }
+        let b0 = this._bytes[offset];
+        let b1 = this._bytes[offset + 1];
+        let b2 = this._bytes[offset + 2];
+        let b3 = this._bytes[offset + 3];
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+
+    setInt32(offset: int, value: int): void {
+        if (offset < 0 || (offset + 4) > this.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Offset out of range");
+        }
+        this._bytes[offset] = value & 255;
+        this._bytes[offset + 1] = (value >> 8) & 255;
+        this._bytes[offset + 2] = (value >> 16) & 255;
+        this._bytes[offset + 3] = (value >> 24) & 255;
+    }
+
+    getFloat64(offset: int): number {
+        if (offset < 0 || (offset + 8) > this.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Offset out of range");
+        }
+        let tmp = new Buffer(8);
+        let i = 0;
+        while (i < 8) {
+            tmp.setByte(i, this._bytes[offset + i]);
+            i = i + 1;
+        }
+        return tmp.getFloat64(0);
+    }
+
+    setFloat64(offset: int, value: number): void {
+        if (offset < 0 || (offset + 8) > this.byteLength) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Offset out of range");
+        }
+        let tmp = new Buffer(8);
+        tmp.setFloat64(0, value);
+        let i = 0;
+        while (i < 8) {
+            this._bytes[offset + i] = tmp.getByte(i);
+            i = i + 1;
+        }
+    }
+
+    // Compatibility helper for code expecting Buffer.
+    rawBuffer(): Buffer {
+        let out = new Buffer(this.byteLength);
+        let i = 0;
+        while (i < this.byteLength) {
+            out.setByte(i, this._bytes[i]);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    slice(begin: int = 0, end: int = -1): ArrayBuffer {
+        let start = begin;
+        if (start < 0) {
+            start = this.byteLength + start;
+        }
+        if (start < 0) {
+            start = 0;
+        }
+
+        let finish = end;
+        if (finish < 0) {
+            finish = this.byteLength + finish;
+        }
+        if (finish < 0 || end == -1) {
+            finish = this.byteLength;
+        }
+        if (finish > this.byteLength) {
+            finish = this.byteLength;
+        }
+        if (finish < start) {
+            finish = start;
+        }
+
+        let outLen = finish - start;
+        let out = new ArrayBuffer(outLen);
+        let i = 0;
+        while (i < outLen) {
+            out.setByte(i, this._bytes[start + i]);
+            i = i + 1;
+        }
+        return out;
+    }
+}
+
+class Uint8Array {
+    private _ab: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
+        let sourceType = typeof source;
+        if (sourceType != "int" && sourceType != "number") {
+            let ab = source;
+            if (byteOffset < 0 || byteOffset > ab.byteLength) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
+            }
+
+            let available = ab.byteLength - byteOffset;
+            let outLen = length;
+            if (outLen < 0) {
+                outLen = available;
+            }
+            if (outLen < 0 || outLen > available) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
+            }
+
+            this._ab = ab;
+            this.byteOffset = byteOffset;
+            this.length = outLen;
+            this.byteLength = outLen;
+            return;
+        }
+
+        let numericSize = source as int;
+        if (numericSize < 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
+        }
+        this._ab = new ArrayBuffer(numericSize);
+        this.byteOffset = 0;
+        this.length = numericSize;
+        this.byteLength = numericSize;
+    }
+
+    private checkIndex(index: int): void {
+        if (index < 0 || index >= this.length) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
+        }
+    }
+
+    get(index: int): int {
+        this.checkIndex(index);
+        return this._ab.getByte(this.byteOffset + index);
+    }
+
+    set(index: int, value: int): void {
+        this.checkIndex(index);
+        this._ab.setByte(this.byteOffset + index, value);
+    }
+}
+
+class Int8Array {
+    private _u8: Uint8Array;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
+        this._u8 = new Uint8Array(source, byteOffset, length);
+        this.byteOffset = this._u8.byteOffset;
+        this.byteLength = this._u8.byteLength;
+        this.length = this._u8.length;
+    }
+
+    get(index: int): int {
+        let v = this._u8.get(index);
+        if (v > 127) {
+            return v - 256;
+        }
+        return v;
+    }
+
+    set(index: int, value: int): void {
+        let out = value;
+        if (out < 0) {
+            out = 256 + out;
+        }
+        this._u8.set(index, out);
+    }
+}
+
+class Int32Array {
+    private _ab: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
+        let sourceType = typeof source;
+        if (sourceType != "int" && sourceType != "number") {
+            let ab = source;
+            if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 4) != 0) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
+            }
+            let availableBytes = ab.byteLength - byteOffset;
+            if ((availableBytes % 4) != 0 && length < 0) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for Int32Array");
+            }
+
+            let outLen = length;
+            if (outLen < 0) {
+                outLen = availableBytes / 4;
+            }
+            if (outLen < 0 || (byteOffset + outLen * 4) > ab.byteLength) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
+            }
+
+            this._ab = ab;
+            this.byteOffset = byteOffset;
+            this.length = outLen;
+            this.byteLength = outLen * 4;
+            return;
+        }
+
+        let numericSize = source as int;
+        if (numericSize < 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
+        }
+        this._ab = new ArrayBuffer(numericSize * 4);
+        this.byteOffset = 0;
+        this.length = numericSize;
+        this.byteLength = numericSize * 4;
+    }
+
+    private checkIndex(index: int): void {
+        if (index < 0 || index >= this.length) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
+        }
+    }
+
+    get(index: int): int {
+        this.checkIndex(index);
+        let offset = this.byteOffset + (index << 2);
+        let b0 = this._ab.getByte(offset);
+        let b1 = this._ab.getByte(offset + 1);
+        let b2 = this._ab.getByte(offset + 2);
+        let b3 = this._ab.getByte(offset + 3);
+        return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+    }
+
+    set(index: int, value: int): void {
+        this.checkIndex(index);
+        let offset = this.byteOffset + (index << 2);
+        this._ab.setByte(offset, value & 255);
+        this._ab.setByte(offset + 1, (value >> 8) & 255);
+        this._ab.setByte(offset + 2, (value >> 16) & 255);
+        this._ab.setByte(offset + 3, (value >> 24) & 255);
+    }
+}
+
+class Float64Array {
+    private _ab: ArrayBuffer;
+    byteOffset: int;
+    byteLength: int;
+    length: int;
+
+    constructor(source: int | ArrayBuffer, byteOffset: int = 0, length: int = -1) {
+        let sourceType = typeof source;
+        if (sourceType != "int" && sourceType != "number") {
+            let ab = source;
+            if (byteOffset < 0 || byteOffset > ab.byteLength || (byteOffset % 8) != 0) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
+            }
+            let availableBytes = ab.byteLength - byteOffset;
+            if ((availableBytes % 8) != 0 && length < 0) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "buffer size not aligned for Float64Array");
+            }
+
+            let outLen = length;
+            if (outLen < 0) {
+                outLen = availableBytes / 8;
+            }
+            if (outLen < 0 || (byteOffset + outLen * 8) > ab.byteLength) {
+                throw createRangeError(ERR_OUT_OF_RANGE, "length out of range");
+            }
+
+            this._ab = ab;
+            this.byteOffset = byteOffset;
+            this.length = outLen;
+            this.byteLength = outLen * 8;
+            return;
+        }
+
+        let numericSize = source as int;
+        if (numericSize < 0) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "TypedArray length must be >= 0");
+        }
+        this._ab = new ArrayBuffer(numericSize * 8);
+        this.byteOffset = 0;
+        this.length = numericSize;
+        this.byteLength = numericSize * 8;
+    }
+
+    private checkIndex(index: int): void {
+        if (index < 0 || index >= this.length) {
+            throw createRangeError(ERR_OUT_OF_RANGE, "Index out of range");
+        }
+    }
+
+    get(index: int): number {
+        this.checkIndex(index);
+        return this._ab.getFloat64(this.byteOffset + index * 8);
+    }
+
+    set(index: int, value: number): void {
+        this.checkIndex(index);
+        this._ab.setFloat64(this.byteOffset + index * 8, value);
+    }
+}

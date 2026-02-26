@@ -1,3 +1,15 @@
+export const ERR_INVALID_ARG_TYPE: string;
+export const ERR_INVALID_ARG_VALUE: string;
+export const ERR_OUT_OF_RANGE: string;
+export const ERR_BUFFER_OUT_OF_BOUNDS: string;
+export const ERR_MISSING_ARGS: string;
+export const ERR_INVALID_THIS: string;
+export const ERR_NOT_IMPLEMENTED: string;
+
+export function createError(code: string, message: string, options?: Object | null): Error;
+export function createTypeError(code: string, message: string, options?: Object | null): TypeError;
+export function createRangeError(code: string, message: string, options?: Object | null): RangeError;
+
 /**
  * Error - Base error class and standard error types
  *

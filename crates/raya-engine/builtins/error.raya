@@ -1,6 +1,35 @@
 // Error - Base error class and standard error types
 // These are built-in types for exception handling
 
+// Node-style error codes (subset)
+const ERR_INVALID_ARG_TYPE: string = "ERR_INVALID_ARG_TYPE";
+const ERR_INVALID_ARG_VALUE: string = "ERR_INVALID_ARG_VALUE";
+const ERR_OUT_OF_RANGE: string = "ERR_OUT_OF_RANGE";
+const ERR_BUFFER_OUT_OF_BOUNDS: string = "ERR_BUFFER_OUT_OF_BOUNDS";
+const ERR_MISSING_ARGS: string = "ERR_MISSING_ARGS";
+const ERR_INVALID_THIS: string = "ERR_INVALID_THIS";
+const ERR_NOT_IMPLEMENTED: string = "ERR_NOT_IMPLEMENTED";
+
+function createError(code: string, message: string, options: Object | null = null): Error {
+    let err = new Error(message, options);
+    err.code = code;
+    return err;
+}
+
+function createTypeError(code: string, message: string, options: Object | null = null): TypeError {
+    let err = new TypeError(message);
+    err.code = code;
+    err.cause = options == null ? null : options.cause;
+    return err;
+}
+
+function createRangeError(code: string, message: string, options: Object | null = null): RangeError {
+    let err = new RangeError(message);
+    err.code = code;
+    err.cause = options == null ? null : options.cause;
+    return err;
+}
+
 class Error {
     public message: string;
     public name: string;

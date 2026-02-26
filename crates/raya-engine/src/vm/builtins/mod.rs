@@ -259,7 +259,16 @@ fn builtin_property_descriptor(
             has_getter: true,
             has_setter: false,
         },
-        ("Map", "size") | ("Set", "size") | ("Buffer", "length") => BuiltinPropertyDescriptor {
+        ("Map", "size")
+        | ("Set", "size")
+        | ("Buffer", "length")
+        | ("ArrayBuffer", "byteLength")
+        | ("Uint8Array", "length")
+        | ("Int8Array", "length")
+        | ("Int32Array", "length")
+        | ("Float64Array", "length")
+        | ("DataView", "byteLength")
+        | ("DataView", "byteOffset") => BuiltinPropertyDescriptor {
             writable: Some(false),
             enumerable: Some(false),
             configurable: Some(true),
@@ -824,6 +833,283 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 return_type: "Buffer",
             },
         ],
+    },
+    // Typed arrays + DataView
+    BuiltinSignatures {
+        name: "TypedArray",
+        classes: &[
+            ClassSig {
+                name: "ArrayBuffer",
+                type_params: &[],
+                properties: &[PropertySig {
+                    name: "byteLength",
+                    ty: "int",
+                    is_static: false,
+                }],
+                methods: &[MethodSig {
+                    name: "slice",
+                    params: &[("begin", "int"), ("end", "int")],
+                    min_params: 0,
+                    return_type: "ArrayBuffer",
+                    is_static: false,
+                }],
+                constructor: Some(&[("byteLength", "int")]),
+            },
+            ClassSig {
+                name: "Uint8Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Int8Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Int32Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Float64Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "number",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "number")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "DataView",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "getUint8",
+                        params: &[("offset", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setUint8",
+                        params: &[("offset", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getInt8",
+                        params: &[("offset", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setInt8",
+                        params: &[("offset", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getInt32",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setInt32",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "int"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getUint32",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setUint32",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "int"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getFloat64",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "number",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setFloat64",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "number"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("buffer", "ArrayBuffer")]),
+            },
+        ],
+        functions: &[],
     },
     // Date
     BuiltinSignatures {

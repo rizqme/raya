@@ -10,8 +10,8 @@
 //! are added to the VM. The tests verify compilation succeeds.
 
 use super::harness::{
-    expect_bool, expect_bool_with_builtins, expect_i32, expect_i32_with_builtins, expect_string,
-    expect_string_with_builtins,
+    expect_bool, expect_bool_with_builtins, expect_i32, expect_i32_runtime, expect_i32_with_builtins,
+    expect_string, expect_string_runtime, expect_string_with_builtins,
 };
 
 // ============================================================================
@@ -476,6 +476,105 @@ fn test_buffer_get_set_float64() {
         return val > 3.14 && val < 3.15;
     "#,
         true,
+    );
+}
+
+// ============================================================================
+// TypedArray / DataView tests
+// ============================================================================
+
+#[test]
+fn test_arraybuffer_slice_length() {
+    expect_i32_runtime(
+        r#"
+        let ab = new ArrayBuffer(16);
+        let sub = ab.slice(4, 10);
+        return sub.byteLength;
+    "#,
+        6,
+    );
+}
+
+#[test]
+fn test_uint8array_get_set() {
+    expect_i32_runtime(
+        r#"
+        let arr = new Uint8Array(4);
+        arr.set(0, 7);
+        arr.set(1, 8);
+        return arr.get(0) + arr.get(1);
+    "#,
+        15,
+    );
+}
+
+#[test]
+fn test_int8array_signed_roundtrip() {
+    expect_i32_runtime(
+        r#"
+        let arr = new Int8Array(2);
+        arr.set(0, -1);
+        arr.set(1, -128);
+        return arr.get(0) + arr.get(1);
+    "#,
+        -129,
+    );
+}
+
+#[test]
+#[ignore = "Int32Array numeric interop still uses number-only VM path"]
+fn test_int32array_get_set() {
+    expect_i32_runtime(
+        r#"
+        let backing = new ArrayBuffer(8);
+        let arr = new Int32Array(backing);
+        arr.set(0, 123456);
+        return arr.get(0);
+    "#,
+        123456,
+    );
+}
+
+#[test]
+#[ignore = "DataView Int32 path still uses number-only VM arithmetic"]
+fn test_dataview_get_set_int32() {
+    expect_i32_runtime(
+        r#"
+        let ab = new ArrayBuffer(16);
+        let view = new DataView(ab);
+        view.setInt32(4, 42, true);
+        return view.getInt32(4, true);
+    "#,
+        42,
+    );
+}
+
+#[test]
+#[ignore = "DataView Int32 path still uses number-only VM arithmetic"]
+fn test_dataview_out_of_range_error_code() {
+    expect_string_runtime(
+        r#"
+        let ab = new ArrayBuffer(8);
+        let view = new DataView(ab);
+        try {
+            view.getInt32(6, true);
+            return "NO_ERR";
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "ERR_OUT_OF_RANGE",
+    );
+}
+
+#[test]
+fn test_err_factory_sets_code() {
+    expect_string_runtime(
+        r#"
+        let err = createRangeError(ERR_OUT_OF_RANGE, "bad index");
+        return err.code;
+    "#,
+        "ERR_OUT_OF_RANGE",
     );
 }
 

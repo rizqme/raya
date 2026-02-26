@@ -20,6 +20,8 @@ const BUILTINS: &[&str] = &[
     "error",
     "mutex",
     "promise",
+    "typedarray",
+    "dataview",
     "channel",
     "map",
     "set",

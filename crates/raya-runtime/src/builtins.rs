@@ -40,6 +40,10 @@ fn strict_builtin_sources() -> &'static str {
         "\n",
         include_str!("../../raya-engine/builtins/promise.raya"),
         "\n",
+        include_str!("../../raya-engine/builtins/typedarray.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/dataview.raya"),
+        "\n",
     )
 }
 
@@ -64,6 +68,10 @@ fn node_compat_builtin_sources() -> &'static str {
         include_str!("../../raya-engine/builtins/mutex.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/promise.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/typedarray.raya"),
+        "\n",
+        include_str!("../../raya-engine/builtins/dataview.raya"),
         "\n",
     )
 }
