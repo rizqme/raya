@@ -3533,9 +3533,15 @@ impl<'a> TypeChecker<'a> {
             ),
             // clear() -> void
             "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            // values() -> Array<T>
-            "values" => {
+            // keys()/values() -> Array<T>
+            "keys" | "values" => {
                 let array_ty = self.type_ctx.array_type(element_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // entries() -> Array<[T, T]>
+            "entries" => {
+                let tuple_ty = self.type_ctx.tuple_type(vec![element_ty, element_ty]);
+                let array_ty = self.type_ctx.array_type(tuple_ty);
                 Some(self.type_ctx.function_type(vec![], array_ty, false))
             }
             // forEach(fn: (value: T) => void) -> void

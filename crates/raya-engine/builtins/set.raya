@@ -52,6 +52,23 @@ class Set<T> {
         return __NATIVE_CALL<T[]>(SET_VALUES, this.setPtr);
     }
 
+    // Node-compatible alias: Set.prototype.keys is the same as values
+    keys(): T[] {
+        return this.values();
+    }
+
+    // Node-compatible shape: entries are [value, value] pairs
+    entries(): [T, T][] {
+        let vals = this.values();
+        let result: [T, T][] = [];
+        let i = 0;
+        while (i < vals.length) {
+            result.push([vals[i], vals[i]]);
+            i = i + 1;
+        }
+        return result;
+    }
+
     // Iterator protocol hook (Node-compatible shape)
     iterator(): T[] {
         return this.values();

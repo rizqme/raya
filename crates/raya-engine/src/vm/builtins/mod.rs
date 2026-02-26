@@ -681,6 +681,20 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: false,
                 },
                 MethodSig {
+                    name: "keys",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "entries",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<[T, T]>",
+                    is_static: false,
+                },
+                MethodSig {
                     name: "iterator",
                     params: &[],
                     min_params: 0,

@@ -29,6 +29,12 @@ export class Set<T> {
     /** Get all values as an array */
     values(): T[];
 
+    /** Alias of values() for JS/Node compatibility */
+    keys(): T[];
+
+    /** Entries as [value, value] pairs for JS/Node compatibility */
+    entries(): [T, T][];
+
     /** Iterator protocol hook (same as values) */
     iterator(): T[];
 

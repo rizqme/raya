@@ -3335,7 +3335,7 @@ impl<'a> Lowerer<'a> {
                 _ => {}
             },
             "Set" => match method_name {
-                "values" => {
+                "keys" | "values" | "entries" => {
                     dest.ty = TypeId::new(super::ARRAY_TYPE_ID);
                 }
                 "has" => {

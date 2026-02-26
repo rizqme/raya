@@ -194,6 +194,43 @@ fn test_set_clear() {
     );
 }
 
+#[test]
+fn test_set_keys_alias_values() {
+    expect_bool_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(7);
+        set.add(9);
+        let keys = set.keys();
+        let values = set.values();
+        return keys.length == values.length && keys.includes(7) && keys.includes(9);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_set_entries_value_value_pairs() {
+    expect_bool_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(5);
+        set.add(8);
+        let entries = set.entries();
+        let ok = true;
+        let i = 0;
+        while (i < entries.length) {
+            if (entries[i][0] != entries[i][1]) {
+                ok = false;
+            }
+            i = i + 1;
+        }
+        return ok && entries.length == 2;
+    "#,
+        true,
+    );
+}
+
 // ============================================================================
 // Buffer tests
 // ============================================================================
