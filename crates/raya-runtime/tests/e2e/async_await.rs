@@ -285,6 +285,15 @@ fn test_async_call_wrapper() {
     );
 }
 
+#[test]
+fn test_await_non_promise_value_resolves_immediately() {
+    expect_i32(
+        "let value = await 42;
+         return value;",
+        42,
+    );
+}
+
 // ============================================================================
 // Parallel Await (await [...])
 // ============================================================================

@@ -84,7 +84,17 @@ class Promise<T> {
             if (values.length === 0) {
                 throw new Error("Promise.race requires at least one promise");
             }
-            return await values[0];
+            while (true) {
+                let i = 0;
+                while (i < values.length) {
+                    const candidate = values[i];
+                    if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
+                        return __OPCODE_AWAIT(candidate);
+                    }
+                    i = i + 1;
+                }
+                sleep(0);
+            }
         };
         return first();
     }

@@ -109,18 +109,17 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Await => {
-                let task_id_val = match stack.pop() {
+                let awaited_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let task_id_u64 = match task_id_val.as_u64() {
-                    Some(id) => id,
-                    None => {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "Expected TaskId".to_string(),
-                        ));
+                // JS-like await normalization: awaiting a non-promise value resolves immediately.
+                let Some(task_id_u64) = awaited_val.as_u64() else {
+                    if let Err(e) = stack.push(awaited_val) {
+                        return OpcodeResult::Error(e);
                     }
+                    return OpcodeResult::Continue;
                 };
 
                 let awaited_id = TaskId::from_u64(task_id_u64);
@@ -157,10 +156,11 @@ impl<'a> Interpreter<'a> {
                     }
                 } else {
                     drop(tasks_guard);
-                    OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Task {:?} not found",
-                        awaited_id
-                    )))
+                    // Unknown task id value: treat as already-resolved literal.
+                    if let Err(e) = stack.push(awaited_val) {
+                        return OpcodeResult::Error(e);
+                    }
+                    OpcodeResult::Continue
                 }
             }
 
@@ -191,7 +191,6 @@ impl<'a> Interpreter<'a> {
                 let task_count = arr.len();
 
                 // Collect task IDs and check their states
-                let mut task_ids = Vec::with_capacity(task_count);
                 let mut results = Vec::with_capacity(task_count);
                 let mut all_completed = true;
                 let mut first_incomplete: Option<TaskId> = None;
@@ -211,7 +210,6 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let awaited_id = TaskId::from_u64(task_id_u64);
-                        task_ids.push(awaited_id);
 
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
                             match awaited_task.state() {
