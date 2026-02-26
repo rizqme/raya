@@ -41,8 +41,8 @@ mod tests {
     use super::Interpreter;
     use crate::compiler::{Function, Opcode};
     use crate::jit::runtime::trampoline::JitExitInfo;
-    use crate::vm::value::Value;
     use crate::vm::interpreter::JitTelemetry;
+    use crate::vm::value::Value;
     use std::sync::Arc;
 
     fn make_function(code: Vec<u8>) -> Function {
@@ -91,7 +91,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(1u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 0), Some(1));
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 0),
+            Some(1)
+        );
     }
 
     #[test]
@@ -102,7 +105,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(0u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 1), None);
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 1),
+            None
+        );
     }
 
     #[test]
@@ -114,7 +120,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(2u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 2), Some(2));
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 2),
+            Some(2)
+        );
     }
 
     #[test]
@@ -1097,24 +1106,25 @@ impl<'a> Interpreter<'a> {
                     #[cfg(feature = "jit")]
                     if forced_callee_ip.is_some() {
                         if let Some(extra_locals) = forced_callee_extra_locals.as_ref() {
-                        for (i, raw) in extra_locals.iter().enumerate() {
-                            let slot = locals_base + arg_count + i;
-                            if slot >= stack_guard.depth() {
-                                break;
-                            }
-                            if let Err(e) = stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
-                            {
-                                return ExecutionResult::Failed(e);
-                            }
-                        }
-                        if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
-                            for v in operand_vals {
-                                if let Err(e) = stack_guard.push(*v) {
+                            for (i, raw) in extra_locals.iter().enumerate() {
+                                let slot = locals_base + arg_count + i;
+                                if slot >= stack_guard.depth() {
+                                    break;
+                                }
+                                if let Err(e) =
+                                    stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
+                                {
                                     return ExecutionResult::Failed(e);
                                 }
                             }
+                            if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
+                                for v in operand_vals {
+                                    if let Err(e) = stack_guard.push(*v) {
+                                        return ExecutionResult::Failed(e);
+                                    }
+                                }
+                            }
                         }
-                    }
                     }
 
                     // Switch to callee's code
@@ -1405,9 +1415,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::CallMethod
             | Opcode::OptionalCallMethod
             | Opcode::CallConstructor
-            | Opcode::CallSuper => {
-                self.exec_call_ops(stack, ip, code, module, task, opcode)
-            }
+            | Opcode::CallSuper => self.exec_call_ops(stack, ip, code, module, task, opcode),
 
             // =========================================================
             // Native Calls (needs MutexGuard for suspend/resume)
@@ -1717,10 +1725,14 @@ impl<'a> Interpreter<'a> {
                 | Opcode::LoadLocal0
                 | Opcode::LoadLocal1
                 | Opcode::LoadGlobal
-                | Opcode::LoadConst => (0, 1, match op {
-                    Opcode::LoadGlobal | Opcode::LoadConst => 4,
-                    _ => 0,
-                }),
+                | Opcode::LoadConst => (
+                    0,
+                    1,
+                    match op {
+                        Opcode::LoadGlobal | Opcode::LoadConst => 4,
+                        _ => 0,
+                    },
+                ),
                 Opcode::ConstI32 => (0, 1, 4),
                 Opcode::ConstF64 => (0, 1, 8),
                 Opcode::ConstStr => (0, 1, 2),

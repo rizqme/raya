@@ -994,7 +994,12 @@ impl Reactor {
                 if task_cancelled {
                     // Ignore late IO errors for cancelled tasks and resume them
                     // as cancelled completion instead.
-                    Self::complete_task(shared_state, completion.task_id, Value::null(), ready_queue);
+                    Self::complete_task(
+                        shared_state,
+                        completion.task_id,
+                        Value::null(),
+                        ready_queue,
+                    );
                     return;
                 }
                 eprintln!(

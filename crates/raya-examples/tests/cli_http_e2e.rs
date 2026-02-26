@@ -118,12 +118,9 @@ fn run_cli_and_capture_env(
         }
         let output = cmd.output().expect("run raya CLI binary");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let transient_startup_failure =
-            stderr.contains("fetch.request: Connection refused") || stderr.contains("Stack underflow");
-        if output.status.success()
-            || !transient_startup_failure
-            || attempt == 7
-        {
+        let transient_startup_failure = stderr.contains("fetch.request: Connection refused")
+            || stderr.contains("Stack underflow");
+        if output.status.success() || !transient_startup_failure || attempt == 7 {
             return output;
         }
         thread::sleep(Duration::from_millis(75));

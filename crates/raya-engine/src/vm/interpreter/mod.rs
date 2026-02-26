@@ -28,7 +28,7 @@ pub use marshal::{marshal, unmarshal, ForeignHandleManager, MarshalError, Marsha
 pub use module_registry::ModuleRegistry;
 pub use native_module_registry::{NativeFn, NativeModule, NativeModuleRegistry};
 pub use safepoint::{SafepointCoordinator, StopReason};
-pub use shared_state::{PromiseMicrotask, SharedVmState};
 #[cfg(feature = "jit")]
 pub use shared_state::{JitTelemetry, JitTelemetrySnapshot};
+pub use shared_state::{PromiseMicrotask, SharedVmState};
 pub use vm_facade::{Vm, VmStats};

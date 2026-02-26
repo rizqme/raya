@@ -9,12 +9,12 @@ use crate::compiler::native_id::{
 };
 use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::gc::GcHeader;
 use crate::vm::object::{
-    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object,
-    RayaString, RegExpObject, SetObject,
+    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString,
+    RegExpObject, SetObject,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -159,7 +159,8 @@ impl<'a> Interpreter<'a> {
 
         let getter = self.get_field_value_by_name(descriptor, "get");
         let setter = self.get_field_value_by_name(descriptor, "set");
-        let has_accessor = getter.is_some_and(|v| !v.is_null()) || setter.is_some_and(|v| !v.is_null());
+        let has_accessor =
+            getter.is_some_and(|v| !v.is_null()) || setter.is_some_and(|v| !v.is_null());
         let value_field = self.get_field_value_by_name(descriptor, "value");
         let has_value = value_field.is_some_and(|v| !v.is_null());
 
@@ -194,7 +195,8 @@ impl<'a> Interpreter<'a> {
             let obj_ptr = unsafe { target.as_ptr::<Object>() }
                 .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
             let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            obj.set_field(field_index, value).map_err(VmError::RuntimeError)?;
+            obj.set_field(field_index, value)
+                .map_err(VmError::RuntimeError)?;
         }
 
         self.set_descriptor_metadata(target, key, descriptor);
@@ -1382,8 +1384,7 @@ impl<'a> Interpreter<'a> {
                         // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | null
                         if args.len() < 2 {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.getOwnPropertyDescriptor requires 2 arguments"
-                                    .to_string(),
+                                "Object.getOwnPropertyDescriptor requires 2 arguments".to_string(),
                             ));
                         }
                         let target = args[0];
@@ -1398,11 +1399,12 @@ impl<'a> Interpreter<'a> {
                             unsafe { &*ptr.as_ptr() }.data.clone()
                         } else {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.getOwnPropertyDescriptor key must be a string"
-                                    .to_string(),
+                                "Object.getOwnPropertyDescriptor key must be a string".to_string(),
                             ));
                         };
-                        let value = self.get_descriptor_metadata(target, &key).unwrap_or(Value::null());
+                        let value = self
+                            .get_descriptor_metadata(target, &key)
+                            .unwrap_or(Value::null());
                         if let Err(e) = stack.push(value) {
                             return OpcodeResult::Error(e);
                         }
@@ -1448,8 +1450,7 @@ impl<'a> Interpreter<'a> {
                             }
                         } else {
                             return OpcodeResult::Error(VmError::TypeError(
-                                "Object.defineProperties descriptors must be an object"
-                                    .to_string(),
+                                "Object.defineProperties descriptors must be an object".to_string(),
                             ));
                         }
                         if let Err(e) = stack.push(target) {

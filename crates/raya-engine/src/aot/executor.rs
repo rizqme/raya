@@ -533,11 +533,18 @@ mod tests {
 
             match result.result {
                 ExecutionResult::Completed(val) => {
-                    assert_eq!(val, Value::null(), "stub fast path should return null sentinel");
+                    assert_eq!(
+                        val,
+                        Value::null(),
+                        "stub fast path should return null sentinel"
+                    );
                 }
                 other => panic!("Expected Completed(null), got {:?}", other),
             }
-            assert!(result.frame.is_null(), "Frame should be freed on completion");
+            assert!(
+                result.frame.is_null(),
+                "Frame should be freed on completion"
+            );
         }
     }
 

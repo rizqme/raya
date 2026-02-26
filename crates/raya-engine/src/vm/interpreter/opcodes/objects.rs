@@ -23,7 +23,8 @@ impl<'a> Interpreter<'a> {
             return Ok(None);
         }
         let header = unsafe {
-            let hp = (callable.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            let hp =
+                (callable.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
             &*(hp as *const GcHeader)
         };
         if header.type_id() == std::any::TypeId::of::<BoundMethod>() {
@@ -215,7 +216,12 @@ impl<'a> Interpreter<'a> {
         }
     }
 
-    fn descriptor_accessor(&self, obj_val: Value, field_name: &str, accessor_name: &str) -> Option<Value> {
+    fn descriptor_accessor(
+        &self,
+        obj_val: Value,
+        field_name: &str,
+        accessor_name: &str,
+    ) -> Option<Value> {
         let descriptor = {
             let metadata = self.metadata.lock();
             metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, obj_val, field_name)
@@ -391,7 +397,9 @@ impl<'a> Interpreter<'a> {
                             Err(e) => return OpcodeResult::Error(e),
                         }
                     }
-                    if self.descriptor_accessor(actual_obj, &field_name, "get").is_some()
+                    if self
+                        .descriptor_accessor(actual_obj, &field_name, "get")
+                        .is_some()
                         && !self.is_field_writable(actual_obj, &field_name)
                     {
                         return OpcodeResult::Error(VmError::TypeError(format!(
@@ -538,7 +546,9 @@ impl<'a> Interpreter<'a> {
                             Err(e) => return OpcodeResult::Error(e),
                         }
                     }
-                    if self.descriptor_accessor(actual_obj, &field_name, "get").is_some()
+                    if self
+                        .descriptor_accessor(actual_obj, &field_name, "get")
+                        .is_some()
                         && !self.is_field_writable(actual_obj, &field_name)
                     {
                         return OpcodeResult::Error(VmError::TypeError(format!(

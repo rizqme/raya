@@ -1645,7 +1645,10 @@ mod tests {
     #[test]
     fn test_descriptor_metadata_exported_for_dynamic_properties() {
         let sigs = to_checker_signatures();
-        let map_sig = sigs.iter().find(|s| s.name == "Map").expect("Map signature");
+        let map_sig = sigs
+            .iter()
+            .find(|s| s.name == "Map")
+            .expect("Map signature");
         let map_class = map_sig
             .classes
             .iter()
