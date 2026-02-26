@@ -331,6 +331,22 @@ fn test_promise_finally_instance() {
 }
 
 #[test]
+fn test_promise_finally_runs_on_rejection_and_passthrough() {
+    expect_i32_with_builtins(
+        r#"
+        let marker = 1;
+        let p = Promise
+            .reject<number>("boom")
+            .finally((): void => { marker = marker + 1; })
+            .catch((_: Object): number => 40);
+        let out = await p;
+        return out + marker;
+    "#,
+        42,
+    );
+}
+
+#[test]
 fn test_promise_then_fifo_order() {
     expect_i32_with_builtins(
         r#"

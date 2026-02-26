@@ -1068,11 +1068,62 @@ impl<'a> Lowerer<'a> {
                                 return dest;
                             }
                             "finally" => {
-                                let awaited = self.alloc_register(awaited_ty);
-                                self.emit(IrInstr::Await {
-                                    dest: awaited.clone(),
-                                    task: task_reg.clone(),
+                                self.emit(IrInstr::NativeCall {
+                                    dest: None,
+                                    native_id: 0x0504, // TASK_MARK_OBSERVED
+                                    args: vec![task_reg.clone()],
                                 });
+
+                                let check_block = self.alloc_block();
+                                let sleep_block = self.alloc_block();
+                                let settled_block = self.alloc_block();
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(check_block));
+                                self.current_block = check_block;
+                                let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
+                                let is_done = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_done.clone()),
+                                    native_id: 0x0500, // TASK_IS_DONE
+                                    args: vec![task_reg.clone()],
+                                });
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_done,
+                                    then_block: settled_block,
+                                    else_block: sleep_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(sleep_block));
+                                self.current_block = sleep_block;
+                                let zero = self.emit_i32_const(0);
+                                self.emit(IrInstr::Sleep { duration_ms: zero });
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(settled_block));
+                                self.current_block = settled_block;
+                                let is_failed = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_failed.clone()),
+                                    native_id: 0x0502, // TASK_IS_FAILED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let failed_block = self.alloc_block();
+                                let success_block = self.alloc_block();
+                                let merge_block = self.alloc_block();
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_failed,
+                                    then_block: failed_block,
+                                    else_block: success_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(failed_block));
+                                self.current_block = failed_block;
                                 if let Some(callback) = args.first().cloned() {
                                     self.emit(IrInstr::CallClosure {
                                         dest: None,
@@ -1080,9 +1131,41 @@ impl<'a> Lowerer<'a> {
                                         args: vec![],
                                     });
                                 }
+                                let failed_result = self.alloc_register(dest.ty);
                                 self.emit(IrInstr::Assign {
+                                    dest: failed_result.clone(),
+                                    value: IrValue::Register(task_reg.clone()),
+                                });
+                                let failed_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(success_block));
+                                self.current_block = success_block;
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::CallClosure {
+                                        dest: None,
+                                        closure: callback,
+                                        args: vec![],
+                                    });
+                                }
+                                let success_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
+                                    dest: success_result.clone(),
+                                    value: IrValue::Register(task_reg),
+                                });
+                                let success_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(merge_block));
+                                self.current_block = merge_block;
+                                self.emit(IrInstr::Phi {
                                     dest: dest.clone(),
-                                    value: IrValue::Register(awaited),
+                                    sources: vec![
+                                        (failed_exit, failed_result),
+                                        (success_exit, success_result),
+                                    ],
                                 });
                                 return dest;
                             }
