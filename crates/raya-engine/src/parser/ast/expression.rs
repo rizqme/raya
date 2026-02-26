@@ -58,7 +58,7 @@ pub enum Expression {
     /// Function call: foo(1, 2, 3)
     Call(CallExpression),
 
-    /// Async call: async foo() - wraps any call in a Task
+    /// Async call: async foo() - wraps any call in a Promise
     AsyncCall(AsyncCallExpression),
 
     /// Member access: obj.prop
@@ -391,8 +391,8 @@ pub struct CallExpression {
     pub span: Span,
 }
 
-/// Async call: async foo() - wraps any function call in a Task
-/// This converts a non-async function call into an async Task.
+/// Async call: async foo() - wraps any function call in a Promise
+/// This converts a non-async function call into an async Promise.
 /// If the function is already async, this has no additional effect.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AsyncCallExpression {

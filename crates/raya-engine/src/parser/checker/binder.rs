@@ -1409,7 +1409,7 @@ impl<'a> Binder<'a> {
             None => self.type_ctx.void_type(),
         };
         // Async functions are represented as `is_async = true` with inner return type `T`.
-        // If user annotates `Task<T>`, unwrap it here to avoid `Task<Task<T>>` function types.
+        // If user annotates `Promise<T>`, unwrap it here to avoid `Promise<Promise<T>>` function types.
         let return_ty = if func.is_async {
             match self.type_ctx.get(declared_return_ty) {
                 Some(Type::Task(task_ty)) => task_ty.result,
@@ -1772,7 +1772,7 @@ impl<'a> Binder<'a> {
                         self.type_ctx.void_type()
                     };
                     // Async methods are represented as `is_async = true` with inner return type `T`.
-                    // If user annotates `Task<T>`, unwrap it here to avoid `Task<Task<T>>`.
+                    // If user annotates `Promise<T>`, unwrap it here to avoid `Promise<Promise<T>>`.
                     let return_ty = if method.is_async {
                         match self.type_ctx.get(declared_return_ty) {
                             Some(Type::Task(task_ty)) => task_ty.result,
@@ -2348,7 +2348,7 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Handle Promise<T>/Task<T> for async functions
+                // Handle Promise<T> (and legacy Task<T> alias) for async functions
                 if name == TC::PROMISE_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {

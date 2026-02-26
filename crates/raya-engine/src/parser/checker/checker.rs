@@ -2575,7 +2575,7 @@ impl<'a> TypeChecker<'a> {
             // Channel operations
             "CHANNEL_NEW" => self.type_ctx.unknown_type(), // Returns Channel type
 
-            // Task operations
+            // Promise operations
             "TASK_CANCEL" => self.type_ctx.void_type(),
             "AWAIT" => self.type_ctx.unknown_type(), // Returns the awaited value type
             "AWAIT_ALL" => self.type_ctx.unknown_type(), // Returns array of results
@@ -2612,7 +2612,7 @@ impl<'a> TypeChecker<'a> {
         // Get the callee's return type
         let callee_ty = self.check_expr(&async_call.callee);
 
-        // If the callee is a function, get its return type and wrap in Task
+        // If the callee is a function, get its return type and wrap in Promise
         if let Some(crate::parser::types::Type::Function(func_ty)) = self.type_ctx.get(callee_ty) {
             let return_ty = func_ty.return_type;
             return self.type_ctx.task_type(return_ty);
@@ -2803,7 +2803,7 @@ impl<'a> TypeChecker<'a> {
 
         // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
 
-        // Check for built-in Task/Promise methods
+        // Check for built-in Promise methods
         if let Some(crate::parser::types::Type::Task(task_ty)) = &obj_type {
             if let Some(method_type) = self.get_task_method_type(&property_name, task_ty.result) {
                 return method_type;
@@ -3468,7 +3468,7 @@ impl<'a> TypeChecker<'a> {
     // Note: Mutex methods are now resolved from mutex.raya class definition
     // (get_mutex_method_type removed - no longer needed)
 
-    /// Get the type of a built-in Task/Promise method
+    /// Get the type of a built-in Promise method
     fn get_task_method_type(&mut self, method_name: &str, result_ty: TypeId) -> Option<TypeId> {
         let void_ty = self.type_ctx.void_type();
         let bool_ty = self.type_ctx.boolean_type();
@@ -4181,7 +4181,7 @@ impl<'a> TypeChecker<'a> {
                             return self.type_ctx.task_type(result_ty);
                         }
                     }
-                    // Invalid Task usage - return unknown
+                    // Invalid Promise usage - return unknown
                     return self.type_ctx.unknown_type();
                 }
 

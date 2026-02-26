@@ -48,7 +48,7 @@ impl<'a> SubtypingContext<'a> {
 
         // Bridge specialized builtin container/runtime types with their class-type names.
         // In checker/runtime-prelude flows we can see either side represented as:
-        // - Type::Map/Set/Channel/Task/Array (specialized builtin types), or
+        // - Type::Map/Set/Channel/Promise/Array (specialized builtin types), or
         // - Type::Class { name: "Map" | "Set" | ... } (from class declarations).
         // They denote the same runtime entities and should be mutually compatible.
         if self.is_builtin_class_bridge(sub_ty, sup_ty)
@@ -123,7 +123,7 @@ impl<'a> SubtypingContext<'a> {
                     .all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
 
                 // Return type is covariant, comparing effective returns:
-                // - async fn (...): T is treated as (... ) => Task<T>
+                // - async fn (...): T is treated as (... ) => Promise<T>
                 // - sync fn (...): R is treated as (... ) => R
                 let return_match = self.is_function_return_subtype(
                     f1.return_type,
@@ -138,7 +138,7 @@ impl<'a> SubtypingContext<'a> {
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
 
-            // Task subtyping: Task<T> <: Task<U> if T <: U (covariant)
+            // Promise subtyping: Promise<T> <: Promise<U> if T <: U (covariant)
             (Type::Task(t1), Type::Task(t2)) => self.is_subtype(t1.result, t2.result),
 
             // Tuple subtyping: [T1, T2, ..., Tn] <: [U1, U2, ..., Um]
@@ -365,12 +365,12 @@ impl<'a> SubtypingContext<'a> {
     ) -> bool {
         match (sub_async, sup_async) {
             (false, false) | (true, true) => self.is_subtype(sub_return, sup_return),
-            // async (...) => T  <:  (... ) => Task<U>  iff  T <: U
+            // async (...) => T  <:  (... ) => Promise<U>  iff  T <: U
             (true, false) => match self.type_ctx.get(sup_return) {
                 Some(Type::Task(task_sup)) => self.is_subtype(sub_return, task_sup.result),
                 _ => false,
             },
-            // (... ) => Task<T>  <:  async (...) => U  iff  T <: U
+            // (... ) => Promise<T>  <:  async (...) => U  iff  T <: U
             (false, true) => match self.type_ctx.get(sub_return) {
                 Some(Type::Task(task_sub)) => self.is_subtype(task_sub.result, sup_return),
                 _ => false,
@@ -522,9 +522,9 @@ mod tests {
         let task_void = ctx.task_type(void);
         let num = ctx.number_type();
 
-        // async (number) => void  (effective return: Task<void>)
+        // async (number) => void  (effective return: Promise<void>)
         let async_fn = ctx.function_type(vec![num], void, true);
-        // (number) => Task<void>
+        // (number) => Promise<void>
         let task_callback = ctx.function_type(vec![num], task_void, false);
 
         let mut sub_ctx = SubtypingContext::new(&ctx);
@@ -538,7 +538,7 @@ mod tests {
         let void = ctx.void_type();
         let num = ctx.number_type();
 
-        // async (number) => void  (effective return: Task<void>)
+        // async (number) => void  (effective return: Promise<void>)
         let async_fn = ctx.function_type(vec![num], void, true);
         // (number) => void
         let plain_callback = ctx.function_type(vec![num], void, false);
