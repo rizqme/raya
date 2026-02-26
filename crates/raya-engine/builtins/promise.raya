@@ -31,14 +31,29 @@ class Promise<T> {
         return async onFulfilled(value);
     }
 
-    catch<U>(_onRejected: (reason: Object) => U): Promise<T | U> {
-        // Placeholder until rejection hooks are fully wired in runtime handlers.
-        return this as Promise<T | U>;
+    catch<U>(onRejected: (reason: Object) => U): Promise<T | U> {
+        let wrapped = async (): Promise<T | U> => {
+            try {
+                return await this;
+            } catch (reason) {
+                return onRejected(reason);
+            }
+        };
+        return wrapped();
     }
 
     finally(onFinally: () => void): Promise<T> {
-        onFinally();
-        return this;
+        let wrapped = async (): Promise<T> => {
+            try {
+                let value = await this;
+                onFinally();
+                return value;
+            } catch (reason) {
+                onFinally();
+                throw reason;
+            }
+        };
+        return wrapped();
     }
 
     static resolve<U>(value: U): Promise<U> {
