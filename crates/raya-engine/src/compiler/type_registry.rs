@@ -576,6 +576,12 @@ impl TypeRegistry {
                     }
                 }
 
+                // If any member resolves to unknown/unresolved, defer dispatch to runtime
+                // instead of hard-failing lowering on ambiguous unions.
+                if candidates.contains(&UNRESOLVED_TYPE_ID) {
+                    return Ok(UNRESOLVED_TYPE_ID);
+                }
+
                 // Multiple incompatible types — build error message
                 let type_names: Vec<String> = candidates
                     .iter()

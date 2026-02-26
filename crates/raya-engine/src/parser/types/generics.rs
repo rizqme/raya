@@ -404,6 +404,25 @@ impl<'a> GenericContext<'a> {
         }
     }
 
+    /// Widen literal-like argument types before binding them to a type variable.
+    ///
+    /// This matches generic call behavior where `T` inferred from `0` should be `int`
+    /// (or `number` for non-integer literals), not the singleton literal type.
+    fn widen_literal_for_unify(&mut self, ty: TypeId) -> TypeId {
+        match self.type_ctx.get(ty) {
+            Some(Type::NumberLiteral(n)) => {
+                if n.fract() == 0.0 {
+                    self.type_ctx.int_type()
+                } else {
+                    self.type_ctx.number_type()
+                }
+            }
+            Some(Type::StringLiteral(_)) => self.type_ctx.string_type(),
+            Some(Type::BooleanLiteral(_)) => self.type_ctx.boolean_type(),
+            _ => ty,
+        }
+    }
+
     /// Unify two types, finding substitutions that make them equal
     ///
     /// Returns true if unification succeeds, updating substitutions.
@@ -433,6 +452,7 @@ impl<'a> GenericContext<'a> {
         match (&ty1_data, &ty2_data) {
             // Type variable unification
             (Type::TypeVar(tv), _) => {
+                let ty2 = self.widen_literal_for_unify(ty2);
                 // Check if already substituted
                 if let Some(sub) = self.substitutions.get(&tv.name) {
                     return self.unify(*sub, ty2);
@@ -449,6 +469,7 @@ impl<'a> GenericContext<'a> {
             }
 
             (_, Type::TypeVar(tv)) => {
+                let ty1 = self.widen_literal_for_unify(ty1);
                 // Symmetric case
                 if let Some(sub) = self.substitutions.get(&tv.name) {
                     return self.unify(ty1, *sub);
@@ -520,6 +541,28 @@ impl<'a> GenericContext<'a> {
                 }
 
                 Ok(true)
+            }
+
+            // Object structural unification (property-by-property by name)
+            (Type::Object(o1), Type::Object(o2)) => {
+                if o1.properties.len() != o2.properties.len() {
+                    return Ok(false);
+                }
+
+                for p1 in &o1.properties {
+                    let Some(p2) = o2.properties.iter().find(|p| p.name == p1.name) else {
+                        return Ok(false);
+                    };
+                    if !self.unify(p1.ty, p2.ty)? {
+                        return Ok(false);
+                    }
+                }
+
+                match (&o1.index_signature, &o2.index_signature) {
+                    (Some((_k1, v1)), Some((_k2, v2))) => self.unify(*v1, *v2),
+                    (None, None) => Ok(true),
+                    _ => Ok(false),
+                }
             }
 
             // Generic unification

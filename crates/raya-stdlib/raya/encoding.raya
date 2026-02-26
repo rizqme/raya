@@ -294,6 +294,6 @@ class Encoding {
     }
 }
 
-const encoding = new Encoding();
+const encoding: Encoding = new Encoding();
 export { CsvTable, XmlNode, JsonValue, Csv, Xml, Base32, Json, Toml };
 export default encoding;

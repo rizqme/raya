@@ -3,6 +3,8 @@
 //! Parse → Bind → TypeCheck → Compile to bytecode.
 
 use raya_engine::compiler::{Compiler, Module};
+use raya_engine::compiler::module::StdModuleRegistry;
+use raya_engine::parser::ast::ImportSpecifier;
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
     BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker,
@@ -54,9 +56,15 @@ pub fn compile_source_with_mode(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
+    let std_import_prelude = build_std_import_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let user_offset = builtin_src.len() + 1;
-    let full_source = format!("{}\n{}", builtin_src, source);
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1;
+    let full_source = format!("{}\n{}", prelude_src, source);
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -145,9 +153,15 @@ pub fn compile_source_with_options_and_mode(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
+    let std_import_prelude = build_std_import_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let user_offset = builtin_src.len() + 1;
-    let full_source = format!("{}\n{}", builtin_src, source);
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1;
+    let full_source = format!("{}\n{}", prelude_src, source);
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -220,10 +234,16 @@ pub fn check_source_with_mode(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
+    let std_import_prelude = build_std_import_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let user_offset = builtin_src.len() + 1; // +1 for \n separator
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1; // +1 for \n separator
 
-    let full_source = format!("{}\n{}", builtin_src, source);
+    let full_source = format!("{}\n{}", prelude_src, source);
 
     let prefix_lines = full_source[..user_offset]
         .bytes()
@@ -352,6 +372,109 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
+    let parser = Parser::new(source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
+
+    let registry = StdModuleRegistry::new();
+    let mut prelude = String::new();
+    let mut seen_modules: HashSet<String> = HashSet::new();
+    let mut default_alias_by_module: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut default_expr_by_module: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut seen_bindings: HashSet<String> = HashSet::new();
+
+    for stmt in &ast.statements {
+        let Statement::ImportDecl(import) = stmt else {
+            continue;
+        };
+        let specifier = interner.resolve(import.source.value).to_string();
+        if !specifier.starts_with("std:") {
+            continue;
+        }
+
+        if seen_modules.insert(specifier.clone()) {
+            let module_name = StdModuleRegistry::module_name(&specifier).ok_or_else(|| {
+                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+            })?;
+            let module_src = registry.get(module_name).ok_or_else(|| {
+                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+            })?;
+            let (module_body, default_expr) = strip_default_export(module_src);
+            prelude.push_str(&module_body);
+            prelude.push('\n');
+
+            if let Some(expr) = default_expr {
+                let alias = format!("__std_default_{}", sanitize_std_specifier(&specifier));
+                prelude.push_str(&format!("const {} = {};\n", alias, expr));
+                default_alias_by_module.insert(specifier.clone(), alias);
+                default_expr_by_module.insert(specifier.clone(), expr);
+            }
+        }
+
+        for spec in &import.specifiers {
+            if let ImportSpecifier::Default(local) = spec {
+                let local_name = interner.resolve(local.name).to_string();
+                let binding_key = format!("{}::{}", specifier, local_name);
+                if !seen_bindings.insert(binding_key) {
+                    continue;
+                }
+
+                if let Some(expr) = default_expr_by_module.get(&specifier) {
+                    if expr == &local_name {
+                        continue;
+                    }
+                }
+
+                let alias = default_alias_by_module.get(&specifier).ok_or_else(|| {
+                    RuntimeError::Dependency(format!(
+                        "std module '{}' has no default export for import '{}'",
+                        specifier, local_name
+                    ))
+                })?;
+                prelude.push_str(&format!("const {} = {};\n", local_name, alias));
+            }
+        }
+    }
+
+    Ok(prelude)
+}
+
+fn strip_default_export(module_src: &str) -> (String, Option<String>) {
+    let mut out = String::new();
+    let mut default_expr: Option<String> = None;
+
+    for line in module_src.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("export default ") {
+            let expr = rest.trim_end_matches(';').trim();
+            if !expr.is_empty() {
+                default_expr = Some(expr.to_string());
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    (out, default_expr)
+}
+
+fn sanitize_std_specifier(specifier: &str) -> String {
+    let mut out = String::new();
+    for ch in specifier.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
 }
 
 /// Detect duplicate top-level declarations within user source before builtin/std

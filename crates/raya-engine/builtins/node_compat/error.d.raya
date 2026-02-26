@@ -7,7 +7,7 @@ export const ERR_INVALID_THIS: string;
 export const ERR_NOT_IMPLEMENTED: string;
 export const E_UNIMPLEMENTED_BUILTIN_BEHAVIOR: string;
 
-export type ErrorLike = Error | string | number | boolean | null;
+export type ErrorLike = Error | Object | string | number | boolean | null;
 export type ErrorOptions = { cause?: ErrorLike };
 
 export function createError(code: string, message: string, options?: ErrorOptions | null): Error;

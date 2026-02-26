@@ -11,7 +11,7 @@ const ERR_INVALID_THIS: string = "ERR_INVALID_THIS";
 const ERR_NOT_IMPLEMENTED: string = "ERR_NOT_IMPLEMENTED";
 const E_UNIMPLEMENTED_BUILTIN_BEHAVIOR: string = "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR";
 
-type ErrorLike = Error | string | number | boolean | null;
+type ErrorLike = Error | Object | string | number | boolean | null;
 type ErrorOptions = { cause?: ErrorLike };
 
 function createError(code: string, message: string, options: ErrorOptions | null = null): Error {

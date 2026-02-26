@@ -148,6 +148,14 @@ impl<'a> Interpreter<'a> {
                             return OpcodeResult::Continue;
                         };
 
+                        if awaited_task.is_cancelled() {
+                            awaited_task.mark_rejection_observed();
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Awaited task {:?} cancelled",
+                                awaited_id
+                            )));
+                        }
+
                         match awaited_task.state() {
                             TaskState::Completed => {
                                 let result = awaited_task.result().unwrap_or(Value::null());
@@ -219,6 +227,14 @@ impl<'a> Interpreter<'a> {
                 let tasks_guard = self.tasks.read();
                 if let Some(awaited_task) = tasks_guard.get(&awaited_id).cloned() {
                     drop(tasks_guard);
+                    if awaited_task.is_cancelled() {
+                        awaited_task.mark_rejection_observed();
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Awaited task {:?} cancelled",
+                            awaited_id
+                        )));
+                    }
+
                     match awaited_task.state() {
                         TaskState::Completed => {
                             // Already done, push result
@@ -303,6 +319,11 @@ impl<'a> Interpreter<'a> {
                         let awaited_id = TaskId::from_u64(task_id_u64);
 
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
+                            if awaited_task.is_cancelled() {
+                                failed_task_info = Some((awaited_id, None));
+                                break;
+                            }
+
                             match awaited_task.state() {
                                 TaskState::Completed => {
                                     let result = awaited_task.result().unwrap_or(Value::null());

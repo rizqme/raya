@@ -765,9 +765,9 @@ impl<'a> Interpreter<'a> {
             if task.is_cancelled() {
                 save_frame_state!();
                 drop(stack_guard);
-                // Cancellation is modeled as graceful completion so detached/background
-                // tasks do not fail parent control-flow with unhandled rejections.
-                return ExecutionResult::Completed(Value::null());
+                // Cancellation is observable to awaiters as a rejected task.
+                // Unhandled rejection reporting already suppresses cancelled tasks.
+                return ExecutionResult::Failed(VmError::RuntimeError("Task cancelled".to_string()));
             }
 
             // Bounds check - implicit return at end of function

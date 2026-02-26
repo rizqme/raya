@@ -1818,9 +1818,42 @@ impl<'a> TypeChecker<'a> {
                 if is_generic {
                     // Use type unification for generic functions
                     let (inferred_return, failed_unifications) = {
-                        let mut gen_ctx = GenericContext::new(self.type_ctx);
                         let mut failed_unifications: Vec<(TypeId, TypeId, crate::parser::Span)> =
                             Vec::new();
+
+                        // Apply explicit type arguments first (e.g., fn<int, string>(...)).
+                        let explicit_substitutions: Vec<(String, TypeId)> =
+                            if let Some(type_args) = &call.type_args {
+                            let mut type_param_names = Vec::new();
+                            let mut seen = std::collections::HashSet::new();
+                            for &param_ty in &func.params {
+                                self.collect_type_var_names(
+                                    param_ty,
+                                    &mut type_param_names,
+                                    &mut seen,
+                                );
+                            }
+                            if let Some(rest_ty) = func.rest_param {
+                                self.collect_type_var_names(rest_ty, &mut type_param_names, &mut seen);
+                            }
+                            self.collect_type_var_names(
+                                func.return_type,
+                                &mut type_param_names,
+                                &mut seen,
+                            );
+                            type_param_names
+                                .into_iter()
+                                .zip(type_args.iter())
+                                .map(|(name, arg)| (name, self.resolve_type_annotation(arg)))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                        let mut gen_ctx = GenericContext::new(self.type_ctx);
+                        for (name, resolved) in explicit_substitutions {
+                            gen_ctx.add_substitution(name, resolved);
+                        }
 
                         // Unify each argument type with parameter type.
                         for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
@@ -4934,6 +4967,60 @@ impl<'a> TypeChecker<'a> {
             method.is_async,
             min_params,
         )
+    }
+
+    fn collect_type_var_names(
+        &self,
+        ty: TypeId,
+        out: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        use crate::parser::types::Type;
+        let Some(ty_data) = self.type_ctx.get(ty) else {
+            return;
+        };
+        match ty_data {
+            Type::TypeVar(tv) => {
+                if seen.insert(tv.name.clone()) {
+                    out.push(tv.name.clone());
+                }
+            }
+            Type::Array(arr) => self.collect_type_var_names(arr.element, out, seen),
+            Type::Task(task) => self.collect_type_var_names(task.result, out, seen),
+            Type::Tuple(tuple) => {
+                for &elem in &tuple.elements {
+                    self.collect_type_var_names(elem, out, seen);
+                }
+            }
+            Type::Function(func) => {
+                for &param in &func.params {
+                    self.collect_type_var_names(param, out, seen);
+                }
+                if let Some(rest) = func.rest_param {
+                    self.collect_type_var_names(rest, out, seen);
+                }
+                self.collect_type_var_names(func.return_type, out, seen);
+            }
+            Type::Union(union) => {
+                for &member in &union.members {
+                    self.collect_type_var_names(member, out, seen);
+                }
+            }
+            Type::Generic(generic) => {
+                self.collect_type_var_names(generic.base, out, seen);
+                for &arg in &generic.type_args {
+                    self.collect_type_var_names(arg, out, seen);
+                }
+            }
+            Type::Reference(reference) => {
+                if let Some(args) = &reference.type_args {
+                    for &arg in args {
+                        self.collect_type_var_names(arg, out, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }
 

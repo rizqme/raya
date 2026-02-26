@@ -2454,12 +2454,6 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
-                    return Ok(named_ty);
-                }
-
-                // Mutex is a normal class from mutex.raya, no special handling needed
-
                 if let Some(symbol) = self.symbols.resolve(&name) {
                     if symbol.kind == SymbolKind::TypeAlias
                         || symbol.kind == SymbolKind::TypeParameter
@@ -2512,7 +2506,13 @@ impl<'a> Binder<'a> {
                         Err(BindError::NotAType { name, span })
                     }
                 } else {
-                    Err(BindError::UndefinedType { name, span })
+                    // Fall back to globally registered named types (primitive/system aliases)
+                    // only when no in-scope symbol matches. This preserves shadowing semantics.
+                    if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                        Ok(named_ty)
+                    } else {
+                        Err(BindError::UndefinedType { name, span })
+                    }
                 }
             }
 
@@ -2868,5 +2868,38 @@ mod tests {
         let symbol = symbols.resolve("add").unwrap();
         assert_eq!(symbol.name, "add");
         assert_eq!(symbol.kind, SymbolKind::Function);
+    }
+
+    #[test]
+    fn test_class_type_name_shadows_global_named_type() {
+        let source = r#"
+            class Json {
+                parse(input: string): number { return 1; }
+            }
+            class Encoding {
+                json: Json;
+                constructor() {
+                    this.json = new Json();
+                }
+            }
+            const encoding = new Encoding();
+        "#;
+        let (symbols, ctx) = parse_and_bind(source);
+        let encoding = symbols.resolve("Encoding").expect("Encoding symbol");
+        let encoding_ty = ctx.get(encoding.ty).expect("Encoding type");
+        let field_ty = match encoding_ty {
+            Type::Class(class_ty) => class_ty
+                .properties
+                .iter()
+                .find(|p| p.name == "json")
+                .map(|p| p.ty)
+                .expect("json field"),
+            other => panic!("expected class type, got {other:?}"),
+        };
+        match ctx.get(field_ty) {
+            Some(Type::Class(class_ty)) => assert_eq!(class_ty.name, "Json"),
+            Some(other) => panic!("expected json field to be class Json, got {other:?}"),
+            None => panic!("missing field type"),
+        }
     }
 }
