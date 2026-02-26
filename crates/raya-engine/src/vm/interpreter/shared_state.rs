@@ -92,6 +92,9 @@ pub struct SharedVmState {
     /// Task registry
     pub tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
 
+    /// Failed tasks pending unhandled-rejection checkpoint evaluation.
+    pub pending_unhandled_rejections: Mutex<rustc_hash::FxHashSet<TaskId>>,
+
     /// Global task injector for scheduling
     pub injector: Arc<Injector<Arc<Task>>>,
 
@@ -187,6 +190,7 @@ impl SharedVmState {
             globals_by_index: RwLock::new(Vec::new()),
             safepoint,
             tasks,
+            pending_unhandled_rejections: Mutex::new(rustc_hash::FxHashSet::default()),
             injector,
             mutex_registry: MutexRegistry::new(),
             stack_pool: StackPool::new(num_cpus::get() * 2),

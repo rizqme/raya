@@ -140,6 +140,7 @@ impl<'a> Interpreter<'a> {
                         }
                         TaskState::Failed => {
                             // Propagate exception
+                            awaited_task.mark_rejection_observed();
                             if let Some(exc) = awaited_task.current_exception() {
                                 task.set_exception(exc);
                             }
@@ -247,6 +248,9 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 if let Some((awaited_id, exc)) = failed_task_info {
+                    if let Some(awaited_task) = self.tasks.read().get(&awaited_id).cloned() {
+                        awaited_task.mark_rejection_observed();
+                    }
                     if let Some(exc_val) = exc {
                         task.set_exception(exc_val);
                     }

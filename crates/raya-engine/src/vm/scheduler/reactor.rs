@@ -639,6 +639,9 @@ impl Reactor {
                 }
             }
 
+            // === STEP 8.5: Unhandled rejection checkpoint ===
+            Self::flush_pending_unhandled_rejections(&shared_state);
+
             // === STEP 9: Block briefly with select! ===
             let timeout = timer_heap
                 .peek()
@@ -755,9 +758,49 @@ impl Reactor {
             ExecutionResult::Failed(e) => {
                 vr.task.fail_with_error(&e);
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                Self::track_unhandled_rejection(shared_state, &vr.task);
                 // Return the stack to the pool for reuse by future tasks
                 shared_state.stack_pool.release(vr.task.take_stack());
             }
+        }
+    }
+
+    fn track_unhandled_rejection(shared_state: &Arc<SharedVmState>, task: &Arc<Task>) {
+        if task.state() != TaskState::Failed {
+            return;
+        }
+        if task.is_rejection_observed() {
+            return;
+        }
+
+        shared_state
+            .pending_unhandled_rejections
+            .lock()
+            .insert(task.id());
+    }
+
+    fn flush_pending_unhandled_rejections(shared_state: &Arc<SharedVmState>) {
+        let pending: Vec<TaskId> = {
+            let mut set = shared_state.pending_unhandled_rejections.lock();
+            if set.is_empty() {
+                return;
+            }
+            set.drain().collect()
+        };
+
+        let tasks = shared_state.tasks.read();
+        for task_id in pending {
+            let Some(task) = tasks.get(&task_id) else {
+                continue;
+            };
+            if task.state() != TaskState::Failed || task.is_rejection_observed() {
+                continue;
+            }
+            let reason = task.current_exception().unwrap_or(Value::null());
+            eprintln!(
+                "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
+                task_id, reason
+            );
         }
     }
 
@@ -994,6 +1037,7 @@ impl Reactor {
         let tasks_map = shared_state.tasks.read();
         let task_failed = task.state() == TaskState::Failed;
         let exception = if task_failed {
+            task.mark_rejection_observed();
             task.current_exception()
         } else {
             None
