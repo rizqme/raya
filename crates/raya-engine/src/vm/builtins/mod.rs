@@ -196,6 +196,7 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
                                     name: p.name.to_string(),
                                     ty: p.ty.to_string(),
                                     is_static: p.is_static,
+                                    descriptor: builtin_property_descriptor(c.name, p.name),
                                 })
                                 .collect(),
                             methods: c
@@ -242,6 +243,53 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
             }
         })
         .collect()
+}
+
+fn builtin_property_descriptor(
+    class_name: &str,
+    property_name: &str,
+) -> Option<crate::parser::checker::BuiltinPropertyDescriptor> {
+    use crate::parser::checker::BuiltinPropertyDescriptor;
+
+    let descriptor = match (class_name, property_name) {
+        ("string", "length") => BuiltinPropertyDescriptor {
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(false),
+            has_getter: true,
+            has_setter: false,
+        },
+        ("Map", "size") | ("Set", "size") | ("Buffer", "length") => BuiltinPropertyDescriptor {
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: true,
+            has_setter: false,
+        },
+        ("Error", "message")
+        | ("Error", "name")
+        | ("Error", "stack")
+        | ("Error", "cause")
+        | ("Error", "code")
+        | ("Error", "errno")
+        | ("Error", "syscall")
+        | ("Error", "path") => BuiltinPropertyDescriptor {
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: false,
+            has_setter: false,
+        },
+        ("AggregateError", "errors") => BuiltinPropertyDescriptor {
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: false,
+            has_setter: false,
+        },
+        _ => return None,
+    };
+    Some(descriptor)
 }
 
 static BUILTIN_SIGS: &[BuiltinSignatures] = &[
@@ -1509,5 +1557,28 @@ mod tests {
             !sigs.is_empty(),
             "Type signatures should always be available"
         );
+    }
+
+    #[test]
+    fn test_descriptor_metadata_exported_for_dynamic_properties() {
+        let sigs = to_checker_signatures();
+        let map_sig = sigs.iter().find(|s| s.name == "Map").expect("Map signature");
+        let map_class = map_sig
+            .classes
+            .iter()
+            .find(|c| c.name == "Map")
+            .expect("Map class signature");
+        let size_prop = map_class
+            .properties
+            .iter()
+            .find(|p| p.name == "size")
+            .expect("Map.size property");
+        let descriptor = size_prop
+            .descriptor
+            .as_ref()
+            .expect("Map.size should include descriptor metadata");
+        assert_eq!(descriptor.writable, Some(false));
+        assert!(descriptor.has_getter);
+        assert!(!descriptor.has_setter);
     }
 }

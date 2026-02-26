@@ -20,6 +20,17 @@ pub struct BuiltinProperty {
     pub name: String,
     pub ty: String,
     pub is_static: bool,
+    pub descriptor: Option<BuiltinPropertyDescriptor>,
+}
+
+/// Optional descriptor metadata for builtin properties.
+#[derive(Debug, Clone)]
+pub struct BuiltinPropertyDescriptor {
+    pub writable: Option<bool>,
+    pub enumerable: Option<bool>,
+    pub configurable: Option<bool>,
+    pub has_getter: bool,
+    pub has_setter: bool,
 }
 
 /// Class signature for a builtin type
@@ -159,6 +170,7 @@ impl BuiltinClass {
             name: name.to_string(),
             ty: ty.to_string(),
             is_static: false,
+            descriptor: None,
         });
         self
     }

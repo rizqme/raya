@@ -24,7 +24,8 @@ pub mod type_guards;
 // Re-export main types
 pub use binder::Binder;
 pub use builtins::{
-    BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty, BuiltinSignatures,
+    BuiltinClass, BuiltinFunction, BuiltinMethod, BuiltinProperty, BuiltinPropertyDescriptor,
+    BuiltinSignatures,
 };
 pub use captures::{CaptureInfo, ClosureCaptures, ClosureId, ModuleCaptureInfo};
 pub use checker::{CheckResult, InferredTypes, TypeChecker};

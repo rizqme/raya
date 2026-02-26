@@ -696,7 +696,11 @@ impl<'a> Binder<'a> {
                 name: p.name.clone(),
                 ty: self.parse_type_string(&p.ty, &type_params),
                 optional: false,
-                readonly: false,
+                readonly: p
+                    .descriptor
+                    .as_ref()
+                    .and_then(|d| d.writable)
+                    .is_some_and(|w| !w),
                 visibility: Default::default(),
             })
             .collect();
@@ -709,7 +713,11 @@ impl<'a> Binder<'a> {
                 name: p.name.clone(),
                 ty: self.parse_type_string(&p.ty, &type_params),
                 optional: false,
-                readonly: false,
+                readonly: p
+                    .descriptor
+                    .as_ref()
+                    .and_then(|d| d.writable)
+                    .is_some_and(|w| !w),
                 visibility: Default::default(),
             })
             .collect();
