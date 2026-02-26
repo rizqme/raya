@@ -22,7 +22,24 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
+const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
+
 impl<'a> Interpreter<'a> {
+    fn set_descriptor_metadata(&self, target: Value, key: &str, descriptor: Value) {
+        let mut metadata = self.metadata.lock();
+        metadata.define_metadata_property(
+            NODE_DESCRIPTOR_METADATA_KEY.to_string(),
+            descriptor,
+            target,
+            key.to_string(),
+        );
+    }
+
+    fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
+        let metadata = self.metadata.lock();
+        metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, key)
+    }
+
     pub(in crate::vm::interpreter) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
@@ -1164,6 +1181,109 @@ impl<'a> Interpreter<'a> {
                             false
                         };
                         if let Err(e) = stack.push(Value::bool(equal)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0004u16 => {
+                        // OBJECT_DEFINE_PROPERTY(target, key, descriptor) -> target
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty requires 3 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let key_val = args[1];
+                        let descriptor = args[2];
+
+                        if !target.is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty target must be an object".to_string(),
+                            ));
+                        }
+                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty key must be a string".to_string(),
+                            ));
+                        };
+
+                        self.set_descriptor_metadata(target, &key, descriptor);
+                        if let Err(e) = stack.push(target) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0005u16 => {
+                        // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | null
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getOwnPropertyDescriptor requires 2 arguments"
+                                    .to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let key_val = args[1];
+                        if !target.is_ptr() {
+                            if let Err(e) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getOwnPropertyDescriptor key must be a string"
+                                    .to_string(),
+                            ));
+                        };
+                        let value = self.get_descriptor_metadata(target, &key).unwrap_or(Value::null());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0006u16 => {
+                        // OBJECT_DEFINE_PROPERTIES(target, descriptors) -> target
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let descriptors_obj = args[1];
+                        if !target.is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties target must be an object".to_string(),
+                            ));
+                        }
+                        if let Some(desc_ptr) = unsafe { descriptors_obj.as_ptr::<Object>() } {
+                            let desc_obj = unsafe { &*desc_ptr.as_ptr() };
+                            let class_id = desc_obj.class_id;
+                            let field_names = {
+                                let metadata = self.class_metadata.read();
+                                metadata
+                                    .get(class_id)
+                                    .map(|m| m.field_names.clone())
+                                    .unwrap_or_default()
+                            };
+                            for (idx, field_name) in field_names.into_iter().enumerate() {
+                                if field_name.is_empty() {
+                                    continue;
+                                }
+                                if let Some(descriptor_val) = desc_obj.get_field(idx) {
+                                    self.set_descriptor_metadata(target, &field_name, descriptor_val);
+                                }
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties descriptors must be an object"
+                                    .to_string(),
+                            ));
+                        }
+                        if let Err(e) = stack.push(target) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

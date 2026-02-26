@@ -4,6 +4,9 @@
 // Native call IDs (must match raya-core/src/builtin.rs)
 const OBJECT_HASH_CODE: number = 0x0002;
 const OBJECT_EQUALS: number = 0x0003;
+const OBJECT_DEFINE_PROPERTY: number = 0x0004;
+const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: number = 0x0005;
+const OBJECT_DEFINE_PROPERTIES: number = 0x0006;
 
 class Object {
     // Get string representation of the object
@@ -25,15 +28,15 @@ class Object {
     }
 
     // Node compatibility APIs for descriptor-style property control.
-    static defineProperty(obj: Object, _key: string, _descriptor: Object): Object {
-        return obj;
+    static defineProperty(obj: Object, key: string, descriptor: Object): Object {
+        return __NATIVE_CALL<Object>(OBJECT_DEFINE_PROPERTY, obj, key, descriptor);
     }
 
-    static getOwnPropertyDescriptor(_obj: Object, _key: string): Object | null {
-        return null;
+    static getOwnPropertyDescriptor(obj: Object, key: string): Object | null {
+        return __NATIVE_CALL<Object | null>(OBJECT_GET_OWN_PROPERTY_DESCRIPTOR, obj, key);
     }
 
-    static defineProperties(obj: Object, _descriptors: Object): Object {
-        return obj;
+    static defineProperties(obj: Object, descriptors: Object): Object {
+        return __NATIVE_CALL<Object>(OBJECT_DEFINE_PROPERTIES, obj, descriptors);
     }
 }
