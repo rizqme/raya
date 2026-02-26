@@ -279,6 +279,30 @@ fn test_promise_then_instance() {
 }
 
 #[test]
+fn test_promise_catch_instance_recovers_rejection() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.reject<number>("boom");
+        let q = p.catch((reason: Object): number => 42);
+        return await q;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_catch_instance_passthrough_on_success() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.resolve(41);
+        let q = p.catch((reason: Object): number => 0);
+        return await q;
+    "#,
+        41,
+    );
+}
+
+#[test]
 fn test_promise_finally_instance() {
     expect_i32_with_builtins(
         r#"

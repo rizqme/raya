@@ -96,6 +96,9 @@ pub const CHANNEL_CAPACITY: u16 = 0x0408;
 
 pub const TASK_IS_DONE: u16 = 0x0500;
 pub const TASK_IS_CANCELLED: u16 = 0x0501;
+pub const TASK_IS_FAILED: u16 = 0x0502;
+pub const TASK_GET_ERROR: u16 = 0x0503;
+pub const TASK_MARK_OBSERVED: u16 = 0x0504;
 
 // ============================================================================
 // Error (0x06xx)

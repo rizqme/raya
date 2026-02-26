@@ -6,6 +6,8 @@
 // Reuse native call IDs for internal task state checks.
 const PROMISE_IS_DONE: number = 0x0500;
 const PROMISE_IS_CANCELLED: number = 0x0501;
+const PROMISE_IS_FAILED: number = 0x0502;
+const PROMISE_GET_ERROR: number = 0x0503;
 
 class Promise<T> {
     // Internal cancellation support retained for existing runtime semantics.
@@ -33,14 +35,15 @@ class Promise<T> {
 
     //@@class_method
     catch<U>(onRejected: (reason: Object) => U): Promise<T | U> {
-        let wrapped = async (): Promise<T | U> => {
-            try {
-                return await this;
-            } catch (reason) {
-                return onRejected(reason);
-            }
-        };
-        return wrapped();
+        while (!this.isDone()) {
+            sleep(0);
+        }
+        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
+            let reason = __NATIVE_CALL<Object>(PROMISE_GET_ERROR, this);
+            return Promise.resolve(onRejected(reason));
+        }
+        let value: T = __OPCODE_AWAIT(this);
+        return Promise.resolve(value);
     }
 
     //@@class_method

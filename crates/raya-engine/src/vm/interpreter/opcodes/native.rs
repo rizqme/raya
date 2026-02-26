@@ -1484,6 +1484,47 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    0x0502u16 => {
+                        // TASK_IS_FAILED: check if task failed
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let is_failed = tasks
+                            .get(&task_id)
+                            .map(|t| t.state() == TaskState::Failed)
+                            .unwrap_or(false);
+                        if let Err(e) = stack.push(Value::bool(is_failed)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0503u16 => {
+                        // TASK_GET_ERROR: retrieve rejection reason and mark it observed
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let reason = tasks
+                            .get(&task_id)
+                            .and_then(|t| {
+                                t.mark_rejection_observed();
+                                t.current_exception()
+                            })
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(reason) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0504u16 => {
+                        // TASK_MARK_OBSERVED: mark rejection as handled
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        if let Some(task) = tasks.get(&task_id) {
+                            task.mark_rejection_observed();
+                        }
+                        if let Err(e) = stack.push(Value::null()) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Error native calls
                     0x0600u16 => {
                         // ERROR_STACK (0x0600): return stack trace from error object.

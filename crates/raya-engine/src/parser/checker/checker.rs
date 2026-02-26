@@ -3382,13 +3382,12 @@ impl<'a> TypeChecker<'a> {
             }
             // catch<U>(onRejected: (reason: Object) => U) -> Promise<T | U>
             "catch" => {
-                let object_ty = self
-                    .type_ctx
-                    .lookup_named_type("Object")
-                    .unwrap_or(unknown_ty);
+                // Use `never` for handler input to keep parameter position maximally permissive
+                // under contravariant function parameter checking.
+                let reason_ty = self.type_ctx.never_type();
                 let on_rejected_ty = self
                     .type_ctx
-                    .function_type(vec![object_ty], unknown_ty, false);
+                    .function_type(vec![reason_ty], unknown_ty, false);
                 Some(
                     self.type_ctx
                         .function_type(vec![on_rejected_ty], promise_unknown_ty, false),
