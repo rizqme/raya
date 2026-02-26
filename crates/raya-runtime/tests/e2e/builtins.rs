@@ -316,6 +316,49 @@ fn test_promise_finally_instance() {
     );
 }
 
+#[test]
+fn test_promise_then_fifo_order() {
+    expect_i32_with_builtins(
+        r#"
+        let order: number[] = [];
+        Promise.resolve(1).then((_: number): number => {
+            order.push(1);
+            return 1;
+        });
+        Promise.resolve(2).then((_: number): number => {
+            order.push(2);
+            return 2;
+        });
+        await Promise.resolve(0);
+        return order[0] * 10 + order[1];
+    "#,
+        12,
+    );
+}
+
+#[test]
+fn test_promise_catch_rethrow_stays_rejected() {
+    expect_i32_with_builtins(
+        r#"
+        async function run(): Promise<number> {
+            let p = Promise
+                .reject<number>("boom")
+                .catch((_: Object): number => {
+                    throw "again";
+                });
+            try {
+                let _v = await p;
+                return 0;
+            } catch (e) {
+                return 1;
+            }
+        }
+        return await run();
+    "#,
+        1,
+    );
+}
+
 // ============================================================================
 // Symbol tests
 // ============================================================================

@@ -1065,15 +1065,15 @@ impl<'a> Lowerer<'a> {
                                 });
                                 let failed_result = self.alloc_register(dest.ty);
                                 if let Some(callback) = args.first().cloned() {
-                                    self.emit(IrInstr::CallClosure {
-                                        dest: Some(failed_result.clone()),
+                                    self.emit(IrInstr::SpawnClosure {
+                                        dest: failed_result.clone(),
                                         closure: callback,
                                         args: vec![reason],
                                     });
                                 } else {
                                     self.emit(IrInstr::Assign {
                                         dest: failed_result.clone(),
-                                        value: IrValue::Register(reason),
+                                        value: IrValue::Register(task_reg.clone()),
                                     });
                                 }
                                 let failed_exit = self.current_block;
@@ -1082,10 +1082,10 @@ impl<'a> Lowerer<'a> {
                                 self.current_function_mut()
                                     .add_block(crate::ir::BasicBlock::new(success_block));
                                 self.current_block = success_block;
-                                let success_result = self.alloc_register(awaited_ty);
-                                self.emit(IrInstr::Await {
+                                let success_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
                                     dest: success_result.clone(),
-                                    task: task_reg,
+                                    value: IrValue::Register(task_reg),
                                 });
                                 let success_exit = self.current_block;
                                 self.set_terminator(Terminator::Jump(merge_block));
