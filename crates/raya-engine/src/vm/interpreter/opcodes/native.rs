@@ -25,6 +25,88 @@ use std::sync::Arc;
 const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
 
 impl<'a> Interpreter<'a> {
+    fn builtin_field_index_for_class_name_native(
+        class_name: &str,
+        field_name: &str,
+    ) -> Option<usize> {
+        match class_name {
+            // node-compat Object descriptor shape
+            "Object" => match field_name {
+                "value" => Some(0),
+                "writable" => Some(1),
+                "configurable" => Some(2),
+                "enumerable" => Some(3),
+                "get" => Some(4),
+                "set" => Some(5),
+                _ => None,
+            },
+            "Map" => match field_name {
+                "mapPtr" => Some(0),
+                "size" => Some(1),
+                _ => None,
+            },
+            "Set" => match field_name {
+                "setPtr" => Some(0),
+                "size" => Some(1),
+                _ => None,
+            },
+            "Buffer" => match field_name {
+                "bufferPtr" => Some(0),
+                "length" => Some(1),
+                _ => None,
+            },
+            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+            | "URIError" | "EvalError" | "AggregateError" | "ChannelClosedError"
+            | "AssertionError" => match field_name {
+                "message" => Some(0),
+                "name" => Some(1),
+                "stack" => Some(2),
+                "cause" => Some(3),
+                "code" => Some(4),
+                "errno" => Some(5),
+                "syscall" => Some(6),
+                "path" => Some(7),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn get_field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let class_metadata = self.class_metadata.read();
+        let metadata_index = class_metadata
+            .get(obj.class_id)
+            .and_then(|meta| meta.get_field_index(field_name));
+        if metadata_index.is_some() {
+            return metadata_index;
+        }
+        let classes = self.classes.read();
+        let class_name = classes.get_class(obj.class_id)?.name.as_str();
+        Self::builtin_field_index_for_class_name_native(class_name, field_name)
+    }
+
+    fn get_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+        let index = self.get_field_index_for_value(obj_val, field_name)?;
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        obj.get_field(index)
+    }
+
+    fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
+        let Some(value) = self.get_field_value_by_name(descriptor, field_name) else {
+            return default;
+        };
+        if let Some(b) = value.as_bool() {
+            b
+        } else if let Some(i) = value.as_i32() {
+            i != 0
+        } else {
+            default
+        }
+    }
+
     fn set_descriptor_metadata(&self, target: Value, key: &str, descriptor: Value) {
         let mut metadata = self.metadata.lock();
         metadata.define_metadata_property(
@@ -38,6 +120,43 @@ impl<'a> Interpreter<'a> {
     fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
         let metadata = self.metadata.lock();
         metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, key)
+    }
+
+    fn apply_descriptor_to_target(
+        &self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+    ) -> Result<(), VmError> {
+        if !descriptor.is_ptr() {
+            return Err(VmError::TypeError(
+                "Object property descriptor must be an object".to_string(),
+            ));
+        }
+
+        // Block redefinition if previous descriptor was marked non-configurable.
+        if let Some(existing) = self.get_descriptor_metadata(target, key) {
+            if !self.descriptor_flag(existing, "configurable", true) {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-configurable property '{}'",
+                    key
+                )));
+            }
+        }
+
+        // Apply data descriptor value directly to the target field if present.
+        if let Some(value) = self.get_field_value_by_name(descriptor, "value") {
+            let field_index = self.get_field_index_for_value(target, key).ok_or_else(|| {
+                VmError::TypeError(format!("Unknown property '{}' on target object", key))
+            })?;
+            let obj_ptr = unsafe { target.as_ptr::<Object>() }
+                .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            obj.set_field(field_index, value).map_err(VmError::RuntimeError)?;
+        }
+
+        self.set_descriptor_metadata(target, key, descriptor);
+        Ok(())
     }
 
     pub(in crate::vm::interpreter) fn exec_native_ops(
@@ -1209,7 +1328,9 @@ impl<'a> Interpreter<'a> {
                             ));
                         };
 
-                        self.set_descriptor_metadata(target, &key, descriptor);
+                        if let Err(e) = self.apply_descriptor_to_target(target, &key, descriptor) {
+                            return OpcodeResult::Error(e);
+                        }
                         if let Err(e) = stack.push(target) {
                             return OpcodeResult::Error(e);
                         }
@@ -1274,7 +1395,13 @@ impl<'a> Interpreter<'a> {
                                     continue;
                                 }
                                 if let Some(descriptor_val) = desc_obj.get_field(idx) {
-                                    self.set_descriptor_metadata(target, &field_name, descriptor_val);
+                                    if let Err(e) = self.apply_descriptor_to_target(
+                                        target,
+                                        &field_name,
+                                        descriptor_val,
+                                    ) {
+                                        return OpcodeResult::Error(e);
+                                    }
                                 }
                             }
                         } else {
