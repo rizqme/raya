@@ -16,19 +16,17 @@ const SET_DIFFERENCE: number = 0x090A;
 
 class Set<T> {
     private setPtr: number;
+    size: number;
 
     constructor() {
         this.setPtr = __NATIVE_CALL<number>(SET_NEW);
-    }
-
-    // Get the number of elements
-    size(): number {
-        return __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
+        this.size = 0;
     }
 
     // Add a value to the set
     add(value: T): void {
         __NATIVE_CALL<void>(SET_ADD, this.setPtr, value);
+        this.size = __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
     }
 
     // Check if value exists
@@ -38,12 +36,15 @@ class Set<T> {
 
     // Delete a value (returns true if existed)
     delete(value: T): boolean {
-        return __NATIVE_CALL<boolean>(SET_DELETE, this.setPtr, value);
+        let deleted = __NATIVE_CALL<boolean>(SET_DELETE, this.setPtr, value);
+        this.size = __NATIVE_CALL<number>(SET_SIZE, this.setPtr);
+        return deleted;
     }
 
     // Remove all elements
     clear(): void {
         __NATIVE_CALL<void>(SET_CLEAR, this.setPtr);
+        this.size = 0;
     }
 
     // Get all values as an array
@@ -60,6 +61,7 @@ class Set<T> {
     union(other: Set<T>): Set<T> {
         let result = new Set<T>();
         result.setPtr = __NATIVE_CALL<number>(SET_UNION, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
         return result;
     }
 
@@ -67,6 +69,7 @@ class Set<T> {
     intersection(other: Set<T>): Set<T> {
         let result = new Set<T>();
         result.setPtr = __NATIVE_CALL<number>(SET_INTERSECTION, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
         return result;
     }
 
@@ -74,6 +77,7 @@ class Set<T> {
     difference(other: Set<T>): Set<T> {
         let result = new Set<T>();
         result.setPtr = __NATIVE_CALL<number>(SET_DIFFERENCE, this.setPtr, other.setPtr);
+        result.size = __NATIVE_CALL<number>(SET_SIZE, result.setPtr);
         return result;
     }
 }

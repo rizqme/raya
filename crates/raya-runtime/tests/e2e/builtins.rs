@@ -23,7 +23,7 @@ fn test_map_new_and_size() {
     expect_i32_with_builtins(
         r#"
         let map = new Map<string, number>();
-        return map.size();
+        return map.size;
     "#,
         0,
     );
@@ -119,7 +119,7 @@ fn test_map_clear() {
         map.set("a", 1);
         map.set("b", 2);
         map.clear();
-        return map.size();
+        return map.size;
     "#,
         0,
     );
@@ -134,7 +134,7 @@ fn test_set_new_and_size() {
     expect_i32_with_builtins(
         r#"
         let set = new Set<number>();
-        return set.size();
+        return set.size;
     "#,
         0,
     );
@@ -160,7 +160,7 @@ fn test_set_add_unique() {
         set.add(1);
         set.add(2);
         set.add(1);
-        return set.size();
+        return set.size;
     "#,
         2,
     );
@@ -188,7 +188,7 @@ fn test_set_clear() {
         set.add(2);
         set.add(3);
         set.clear();
-        return set.size();
+        return set.size;
     "#,
         0,
     );
@@ -203,7 +203,7 @@ fn test_buffer_new_and_length() {
     expect_i32_with_builtins(
         r#"
         let buf = new Buffer(16);
-        return buf.length();
+        return buf.length;
     "#,
         16,
     );
@@ -413,7 +413,7 @@ fn test_set_operations() {
         set.delete(4);
 
         // Count remaining (1, 3)
-        return set.size();
+        return set.size;
     "#,
         2,
     );
@@ -1526,7 +1526,7 @@ fn test_map_keys_transform() {
         if (valFor2 == "b") { result = result + 10; }
         if (valFor3 == "c") { result = result + 100; }
 
-        return result + inverse.size();
+        return result + inverse.size;
     "#,
         114,
     );
@@ -1580,7 +1580,7 @@ fn test_set_intersection() {
         setB.add(3); setB.add(4); setB.add(5); setB.add(6); setB.add(7);
 
         let inter = setA.intersection(setB);
-        return inter.size();
+        return inter.size;
     "#,
         3,
     );
@@ -1597,7 +1597,7 @@ fn test_set_union() {
         setB.add(3); setB.add(4); setB.add(5);
 
         let uni = setA.union(setB);
-        return uni.size();
+        return uni.size;
     "#,
         5,
     );
@@ -1614,7 +1614,7 @@ fn test_set_difference() {
         setB.add(2); setB.add(4);
 
         let diff = setA.difference(setB);
-        return diff.size();
+        return diff.size;
     "#,
         2,
     );
@@ -1634,7 +1634,7 @@ fn test_set_operations_combined() {
         let inter = setA.intersection(setB);
         let uni = setA.union(setB);
 
-        return inter.size() * 10 + uni.size();
+        return inter.size * 10 + uni.size;
     "#,
         37,
     );

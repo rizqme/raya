@@ -852,7 +852,7 @@ fn test_string_key_value_parser() {
         let port = config.get("port");
         let name = config.get("name");
 
-        let result = config.size(); // 3
+        let result = config.size; // 3
         if (host == "localhost") { result = result + 10; }
         if (port == "8080") { result = result + 100; }
         if (name == "myapp") { result = result + 1000; }
@@ -1283,7 +1283,7 @@ fn test_collection_set_operations() {
         let uni = setA.union(setB);
 
         // intersection = {3,4,5} size=3, union = {1,2,3,4,5,6,7} size=7
-        return inter.size() * 10 + uni.size();
+        return inter.size * 10 + uni.size;
         "#,
         37,
     );
@@ -1379,7 +1379,7 @@ fn test_collection_map_transform() {
         if (valFor2 == "b") { result = result + 10; }
         if (valFor3 == "c") { result = result + 100; }
 
-        return result + inverse.size();
+        return result + inverse.size;
         "#,
         114, // 100+10+1+3
     );
@@ -1797,7 +1797,7 @@ fn test_integration_cache_with_expiry() {
             }
 
             len(): number {
-                return this.data.size();
+                return this.data.size;
             }
         }
 

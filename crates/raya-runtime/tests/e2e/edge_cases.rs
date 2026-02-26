@@ -2318,7 +2318,7 @@ fn test_set_duplicate_add() {
         s.add(1);
         s.add(1);
         s.add(1);
-        return s.size();
+        return s.size;
     ",
         1,
     );
@@ -2346,7 +2346,7 @@ fn test_map_size_after_operations() {
         m.set(\"b\", 2);
         m.set(\"c\", 3);
         m.delete(\"b\");
-        return m.size();
+        return m.size;
     ",
         2,
     );

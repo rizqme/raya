@@ -17,14 +17,11 @@ const BUFFER_FROM_STRING: number = 0x070B;
 
 class Buffer {
     private bufferPtr: number;
+    length: number;
 
     constructor(size: number) {
         this.bufferPtr = __NATIVE_CALL<number>(BUFFER_NEW, size);
-    }
-
-    // Get buffer length in bytes
-    length(): number {
-        return __NATIVE_CALL<number>(BUFFER_LENGTH, this.bufferPtr);
+        this.length = __NATIVE_CALL<number>(BUFFER_LENGTH, this.bufferPtr);
     }
 
     // Read a single byte (0-255)

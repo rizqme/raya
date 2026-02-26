@@ -45,6 +45,9 @@ fn get_builtin_sources() -> &'static str {
         // Error classes (must come before other classes that might throw)
         include_str!("../../../raya-engine/builtins/error.raya"),
         "\n",
+        // Symbol class
+        include_str!("../../../raya-engine/builtins/symbol.raya"),
+        "\n",
         // Map class
         include_str!("../../../raya-engine/builtins/map.raya"),
         "\n",

@@ -14,6 +14,7 @@ const BUILTINS: &[&str] = &[
     "number",
     "array",
     "regexp",
+    "symbol",
     // Builtin classes (vtable dispatch)
     "object",
     "error",

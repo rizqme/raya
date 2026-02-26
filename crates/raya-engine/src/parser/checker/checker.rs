@@ -3389,8 +3389,8 @@ impl<'a> TypeChecker<'a> {
         let null_ty = self.type_ctx.null_type();
 
         match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // size -> number
+            "size" => Some(number_ty),
             // get(key: K) -> V | null
             "get" => {
                 let result_ty = self.type_ctx.union_type(vec![value_ty, null_ty]);
@@ -3444,8 +3444,8 @@ impl<'a> TypeChecker<'a> {
         let void_ty = self.type_ctx.void_type();
 
         match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // size -> number
+            "size" => Some(number_ty),
             // add(value: T) -> void
             "add" => Some(
                 self.type_ctx
@@ -3504,8 +3504,8 @@ impl<'a> TypeChecker<'a> {
         let void_ty = self.type_ctx.void_type();
 
         match method_name {
-            // length() -> number
-            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // length -> number
+            "length" => Some(number_ty),
             // getByte(index: number) -> number
             "getByte" => Some(
                 self.type_ctx

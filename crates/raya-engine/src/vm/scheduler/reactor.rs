@@ -888,6 +888,9 @@ impl Reactor {
                     drop(classes);
                     let mut obj = Object::new(class_id, field_count);
                     obj.fields[0] = Value::u64(handle); // bufferPtr field
+                    if field_count > 1 {
+                        obj.fields[1] = Value::i32(data.len() as i32); // length field
+                    }
                     let obj_ptr = gc.allocate(obj);
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
                 } else {

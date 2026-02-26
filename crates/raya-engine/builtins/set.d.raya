@@ -12,7 +12,7 @@ export class Set<T> {
     constructor();
 
     /** Get the number of elements */
-    size(): number;
+    size: number;
 
     /** Add a value to the set */
     add(value: T): void;

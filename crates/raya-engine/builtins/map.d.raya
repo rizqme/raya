@@ -12,7 +12,7 @@ export class Map<K, V> {
     constructor();
 
     /** Get the number of entries */
-    size(): number;
+    size: number;
 
     /** Get value by key (returns null if not found) */
     get(key: K): V | null;

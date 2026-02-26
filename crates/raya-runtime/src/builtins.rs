@@ -10,6 +10,8 @@ pub fn builtin_sources() -> &'static str {
         "\n",
         include_str!("../../raya-engine/builtins/error.raya"),
         "\n",
+        include_str!("../../raya-engine/builtins/symbol.raya"),
+        "\n",
         include_str!("../../raya-engine/builtins/map.raya"),
         "\n",
         include_str!("../../raya-engine/builtins/set.raya"),

@@ -409,16 +409,17 @@ impl<'a> Interpreter<'a> {
                             buf.length()
                         };
                         let sliced = buf.slice(start, end);
+                        let sliced_len = sliced.length() as i32;
                         let new_handle = {
                             let gc_ptr = self.gc.lock().allocate(sliced);
                             gc_ptr.as_ptr() as u64
                         };
 
                         // Create Buffer object instance wrapping the handle
-                        let buffer_class_id = {
+                        let (buffer_class_id, buffer_field_count) = {
                             let classes = self.classes.read();
                             match classes.get_class_by_name("Buffer") {
-                                Some(class) => class.id,
+                                Some(class) => (class.id, class.field_count),
                                 None => {
                                     return OpcodeResult::Error(VmError::RuntimeError(
                                         "Buffer class not found".to_string(),
@@ -427,8 +428,11 @@ impl<'a> Interpreter<'a> {
                             }
                         };
 
-                        let mut obj = Object::new(buffer_class_id, 1);
+                        let mut obj = Object::new(buffer_class_id, buffer_field_count.max(2));
                         if let Err(e) = obj.set_field(0, Value::u64(new_handle)) {
+                            return OpcodeResult::Error(VmError::RuntimeError(e));
+                        }
+                        if let Err(e) = obj.set_field(1, Value::i32(sliced_len)) {
                             return OpcodeResult::Error(VmError::RuntimeError(e));
                         }
 

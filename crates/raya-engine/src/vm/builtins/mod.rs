@@ -450,21 +450,73 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         }],
         functions: &[],
     },
+    // Symbol
+    BuiltinSignatures {
+        name: "Symbol",
+        classes: &[ClassSig {
+            name: "Symbol",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "valueOf",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "for",
+                    params: &[("key", "string")],
+                    min_params: 1,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "keyFor",
+                    params: &[("sym", "Symbol")],
+                    min_params: 1,
+                    return_type: "string",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "toStringTag",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
     // Map<K, V>
     BuiltinSignatures {
         name: "Map",
         classes: &[ClassSig {
             name: "Map",
             type_params: &["K", "V"],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "size",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "size",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "get",
                     params: &[("key", "K")],
@@ -532,15 +584,12 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Set",
             type_params: &["T"],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "size",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "size",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "add",
                     params: &[("value", "T")],
@@ -608,15 +657,12 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Buffer",
             type_params: &[],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "length",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "length",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "getByte",
                     params: &[("offset", "number")],
