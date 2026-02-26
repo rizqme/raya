@@ -316,23 +316,20 @@ impl<'a> Lowerer<'a> {
                         return;
                     }
                 };
-                let iterator_sym = match self.interner.lookup("iterator") {
-                    Some(sym) => sym,
-                    None => {
-                        self.errors
-                            .push(crate::compiler::CompileError::InternalError {
-                                message: "for-of iterator method symbol not interned".to_string(),
-                            });
-                        return;
-                    }
-                };
-                let slot = match self.method_slot_map.get(&(class_id, iterator_sym)) {
-                    Some(&slot) => slot,
+                let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
+                let iterator_sym = self.interner.lookup("iterator");
+                let slot = match symbol_iterator_sym
+                    .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
+                    .or_else(|| {
+                        iterator_sym
+                            .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
+                    }) {
+                    Some(slot) => slot,
                     None => {
                         self.errors
                             .push(crate::compiler::CompileError::InternalError {
                                 message: format!(
-                                    "for-of iterator method not found on {}",
+                                    "for-of iterator method not found on {} (expected Symbol.iterator/iterator)",
                                     class_name
                                 ),
                             });

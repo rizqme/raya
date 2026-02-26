@@ -1544,6 +1544,15 @@ impl<'a> Lowerer<'a> {
                 });
             self.method_slot_map
                 .insert((class_id, method_info.name), slot);
+            // Symbol.iterator keyed protocol bridge:
+            // until parser-level computed members land, map `iterator` method
+            // to the `Symbol.iterator` key internally.
+            if self.interner.resolve(method_info.name) == "iterator" {
+                if let Some(symbol_iterator) = self.interner.lookup("Symbol.iterator") {
+                    self.method_slot_map
+                        .insert((class_id, symbol_iterator), slot);
+                }
+            }
         }
         let method_slot_count = next_slot;
 
@@ -1677,9 +1686,10 @@ impl<'a> Lowerer<'a> {
         self.function_depth += 1;
 
         // Check if any parameters use destructuring
-        let has_destructuring_params = func.params.iter().any(|p| {
-            !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_))
-        });
+        let has_destructuring_params = func
+            .params
+            .iter()
+            .any(|p| !matches!(p.pattern, Pattern::Identifier(_) | Pattern::Rest(_)));
 
         // Reset per-function state
         self.next_register = 0;
@@ -1794,9 +1804,14 @@ impl<'a> Lowerer<'a> {
         for (param_idx, pattern, value_reg) in destructure_params {
             // Register object field layout for destructuring
             if let ast::Pattern::Object(_) = pattern {
-                if let Some(type_ann) = func.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                if let Some(type_ann) = func
+                    .params
+                    .get(param_idx)
+                    .and_then(|p| p.type_annotation.as_ref())
+                {
                     if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields.insert(value_reg.id, field_layout);
+                        self.register_object_fields
+                            .insert(value_reg.id, field_layout);
                     }
                 }
             }
@@ -2064,7 +2079,8 @@ impl<'a> Lowerer<'a> {
                         });
                         if has_destructuring {
                             // Start locals after 'this' and all explicit parameters
-                            let param_count = 1 + method.params.iter().filter(|p| !p.is_rest).count();
+                            let param_count =
+                                1 + method.params.iter().filter(|p| !p.is_rest).count();
                             self.next_local = param_count as u16;
                         } else {
                             self.next_local = 1; // Explicit parameters start at slot 1
@@ -2143,9 +2159,16 @@ impl<'a> Lowerer<'a> {
                     for (param_idx, pattern, value_reg) in destructure_params {
                         // Register object field layout for destructuring
                         if let ast::Pattern::Object(_) = pattern {
-                            if let Some(type_ann) = method.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
-                                if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                                    self.register_object_fields.insert(value_reg.id, field_layout);
+                            if let Some(type_ann) = method
+                                .params
+                                .get(param_idx)
+                                .and_then(|p| p.type_annotation.as_ref())
+                            {
+                                if let Some(field_layout) =
+                                    self.extract_field_names_from_type(type_ann)
+                                {
+                                    self.register_object_fields
+                                        .insert(value_reg.id, field_layout);
                                 }
                             }
                         }
@@ -2312,9 +2335,15 @@ impl<'a> Lowerer<'a> {
                 for (param_idx, pattern, value_reg) in destructure_params {
                     // Register object field layout for destructuring
                     if let ast::Pattern::Object(_) = pattern {
-                        if let Some(type_ann) = ctor.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
-                            if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                                self.register_object_fields.insert(value_reg.id, field_layout);
+                        if let Some(type_ann) = ctor
+                            .params
+                            .get(param_idx)
+                            .and_then(|p| p.type_annotation.as_ref())
+                        {
+                            if let Some(field_layout) = self.extract_field_names_from_type(type_ann)
+                            {
+                                self.register_object_fields
+                                    .insert(value_reg.id, field_layout);
                             }
                         }
                     }
@@ -3150,7 +3179,10 @@ impl<'a> Lowerer<'a> {
 
     /// Extract field names from an object type annotation for destructuring
     /// Returns a Vec of (field_name, field_index) tuples
-    fn extract_field_names_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<Vec<(String, usize)>> {
+    fn extract_field_names_from_type(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<Vec<(String, usize)>> {
         let mut fields = Vec::new();
         match &type_ann.ty {
             ast::Type::Object(obj_type) => {
@@ -3165,11 +3197,13 @@ impl<'a> Lowerer<'a> {
                         }
                     }
                 }
-                if fields.is_empty() { None } else { Some(fields) }
+                if fields.is_empty() {
+                    None
+                } else {
+                    Some(fields)
+                }
             }
-            _ => {
-                None
-            }
+            _ => None,
         }
     }
 
