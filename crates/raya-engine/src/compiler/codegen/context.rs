@@ -503,6 +503,7 @@ impl IrCodeGenerator {
                 object,
                 method,
                 args,
+                optional,
             } => {
                 // Push object
                 self.emit_load_register(ctx, object);
@@ -511,7 +512,11 @@ impl IrCodeGenerator {
                     self.emit_load_register(ctx, arg);
                 }
                 // Emit call
-                ctx.emit(Opcode::CallMethod);
+                if *optional {
+                    ctx.emit(Opcode::OptionalCallMethod);
+                } else {
+                    ctx.emit(Opcode::CallMethod);
+                }
                 ctx.emit_u32(*method as u32);
                 ctx.emit_u16(args.len() as u16);
                 // Store result if needed, or pop if not used
@@ -643,9 +648,14 @@ impl IrCodeGenerator {
                 dest,
                 object,
                 field,
+                optional,
             } => {
                 self.emit_load_register(ctx, object);
-                ctx.emit(Opcode::LoadField);
+                if *optional {
+                    ctx.emit(Opcode::OptionalField);
+                } else {
+                    ctx.emit(Opcode::LoadField);
+                }
                 ctx.emit_u16(*field);
                 let slot = ctx.get_or_alloc_slot(dest);
                 self.emit_store_local(ctx, slot);

@@ -111,6 +111,7 @@ impl<'a> CallSiteRewriter<'a> {
                 object: _,
                 method: _,
                 args: _,
+                optional: _,
             } => {
                 // Method calls on generic objects may need rewriting too
                 // For now, we just pass through
@@ -120,6 +121,7 @@ impl<'a> CallSiteRewriter<'a> {
                 dest: _,
                 object: _,
                 field: _,
+                optional: _,
             } => {
                 // Field access on generic objects - pass through for now
                 None

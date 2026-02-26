@@ -420,6 +420,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 dest,
                 object,
                 field,
+                optional: _,
             } => {
                 out.push(SmInstr::CallHelper {
                     dest: Some(Self::reg(dest)),
@@ -586,6 +587,7 @@ impl<'a> IrFunctionAdapter<'a> {
                 object,
                 method,
                 args,
+                optional: _,
             } => {
                 let mut call_args = vec![Self::reg(object), *method as u32];
                 call_args.extend(args.iter().map(Self::reg));

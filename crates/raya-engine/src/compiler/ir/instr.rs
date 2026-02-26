@@ -100,6 +100,7 @@ pub enum IrInstr {
         object: Register,
         method: u16,
         args: Vec<Register>,
+        optional: bool,
     },
 
     /// Bind a method to its receiver, creating a callable BoundMethod.
@@ -170,6 +171,7 @@ pub enum IrInstr {
         dest: Register,
         object: Register,
         field: u16,
+        optional: bool,
     },
 
     /// Store object field: object.field = value

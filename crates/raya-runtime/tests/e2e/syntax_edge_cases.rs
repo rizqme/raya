@@ -307,6 +307,20 @@ fn test_optional_chain_on_object() {
 }
 
 #[test]
+fn test_optional_chain_on_null_object() {
+    expect_i32(
+        "
+        class Box { value: number = 42; }
+        let b: Box | null = null;
+        let v = b?.value;
+        if (v === null) { return 42; }
+        return 0;
+    ",
+        42,
+    );
+}
+
+#[test]
 fn test_optional_chain_with_nullish_coalescing() {
     // Optional chaining with ?? fallback
     expect_i32(
@@ -329,6 +343,22 @@ fn test_optional_chain_deep() {
         class Outer { middle: Middle = new Middle(); }
         let o = new Outer();
         return o?.middle?.inner?.value;
+    ",
+        42,
+    );
+}
+
+#[test]
+fn test_optional_chain_deep_null_short_circuit() {
+    expect_i32(
+        "
+        class Inner { value: number = 42; }
+        class Middle { inner: Inner = new Inner(); }
+        class Outer { middle: Middle = new Middle(); }
+        let o: Outer | null = null;
+        let v = o?.middle?.inner?.value;
+        if (v === null) { return 42; }
+        return 0;
     ",
         42,
     );

@@ -292,6 +292,7 @@ pub fn resolve_late_bound_members(
                         dest: dest.clone(),
                         object: object.clone(),
                         field: 0,
+                        optional: false,
                     };
                 }
             }

@@ -484,10 +484,12 @@ impl Inliner {
                 dest,
                 object,
                 field,
+                optional,
             } => Some(IrInstr::LoadField {
                 dest: self.rename_or_allocate(dest, reg_map, allocated, max_reg_id),
                 object: self.rename_register(object, reg_map),
                 field: *field,
+                optional: *optional,
             }),
             IrInstr::StoreField {
                 object,
@@ -664,6 +666,7 @@ impl Inliner {
                 object,
                 method,
                 args: method_args,
+                optional,
             } => Some(IrInstr::CallMethod {
                 dest: dest
                     .as_ref()
@@ -674,6 +677,7 @@ impl Inliner {
                     .iter()
                     .map(|a| self.rename_register(a, reg_map))
                     .collect(),
+                optional: *optional,
             }),
             IrInstr::StoreGlobal { index, value } => Some(IrInstr::StoreGlobal {
                 index: *index,
@@ -794,6 +798,7 @@ mod tests {
                 dest: make_reg(0),
                 object: make_reg(1),
                 field: 0,
+                optional: false,
             },
             IrInstr::MutexLock { mutex: make_reg(0) },
         ];

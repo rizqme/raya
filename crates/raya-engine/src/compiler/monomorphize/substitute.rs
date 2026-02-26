@@ -109,11 +109,13 @@ impl TypeSubstitution {
                 object,
                 method,
                 args,
+                optional,
             } => IrInstr::CallMethod {
                 dest: dest.as_ref().map(|d| self.apply_register(d)),
                 object: self.apply_register(object),
                 method: *method,
                 args: args.iter().map(|a| self.apply_register(a)).collect(),
+                optional: *optional,
             },
             IrInstr::NativeCall {
                 dest,
@@ -178,10 +180,12 @@ impl TypeSubstitution {
                 dest,
                 object,
                 field,
+                optional,
             } => IrInstr::LoadField {
                 dest: self.apply_register(dest),
                 object: self.apply_register(object),
                 field: *field,
+                optional: *optional,
             },
             IrInstr::StoreField {
                 object,

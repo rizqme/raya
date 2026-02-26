@@ -130,19 +130,27 @@ fn format_instr(instr: &IrInstr) -> String {
             object,
             method,
             args,
+            optional,
         } => {
             let args_str: Vec<String> = args.iter().map(|a| format!("{}", a)).collect();
+            let op = if *optional {
+                "optional_call_method"
+            } else {
+                "call_method"
+            };
             if let Some(d) = dest {
                 format!(
-                    "{} = call_method {}.method{}({})",
+                    "{} = {} {}.method{}({})",
                     d,
+                    op,
                     object,
                     method,
                     args_str.join(", ")
                 )
             } else {
                 format!(
-                    "call_method {}.method{}({})",
+                    "{} {}.method{}({})",
+                    op,
                     object,
                     method,
                     args_str.join(", ")
@@ -232,8 +240,13 @@ fn format_instr(instr: &IrInstr) -> String {
             dest,
             object,
             field,
+            optional,
         } => {
-            format!("{} = load_field {}.field{}", dest, object, field)
+            if *optional {
+                format!("{} = load_optional_field {}.field{}", dest, object, field)
+            } else {
+                format!("{} = load_field {}.field{}", dest, object, field)
+            }
         }
         IrInstr::StoreField {
             object,

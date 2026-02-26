@@ -697,6 +697,7 @@ impl<'a> Lowerer<'a> {
                         dest: field_reg.clone(),
                         object: value_reg.clone(),
                         field: field_index.unwrap(),
+                        optional: false,
                     });
 
                     // Handle default values

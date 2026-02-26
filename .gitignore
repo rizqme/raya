@@ -25,6 +25,9 @@ criterion/
 # Logs
 *.log
 
+# Build artifacts
+dist/
+
 # Docs (VitePress)
 node_modules/
 docs/.vitepress/dist/

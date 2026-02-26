@@ -1062,6 +1062,7 @@ impl<'a> Lowerer<'a> {
                         dest: field_reg.clone(),
                         object,
                         field: field_info.index,
+                        optional: member.optional,
                     });
                     self.emit(IrInstr::CallClosure {
                         dest: Some(dest.clone()),
@@ -1099,6 +1100,7 @@ impl<'a> Lowerer<'a> {
                             object,
                             method: slot,
                             args,
+                            optional: member.optional,
                         });
                     } else {
                         // Fallback: static call (shouldn't happen for instance methods)
@@ -1146,6 +1148,7 @@ impl<'a> Lowerer<'a> {
                         object,
                         method: slot,
                         args,
+                        optional: member.optional,
                     });
 
                     // If checker type is unresolved, still try to carry declared return type.
@@ -1257,6 +1260,7 @@ impl<'a> Lowerer<'a> {
                 object,
                 method: method_id,
                 args,
+                optional: member.optional,
             });
 
             // Propagate return type for builtin methods so subsequent operations
@@ -1525,6 +1529,7 @@ impl<'a> Lowerer<'a> {
             dest: dest.clone(),
             object,
             field: field_index,
+            optional: member.optional,
         });
         dest
     }
@@ -1861,6 +1866,7 @@ impl<'a> Lowerer<'a> {
                             dest: field_val.clone(),
                             object: spread_reg.clone(),
                             field: src_field_idx,
+                            optional: false,
                         });
                         self.emit(IrInstr::StoreField {
                             object: dest.clone(),
@@ -2442,7 +2448,10 @@ impl<'a> Lowerer<'a> {
 
         // Check if any parameters use destructuring
         let has_destructuring_params = arrow.params.iter().any(|p| {
-            !matches!(p.pattern, ast::Pattern::Identifier(_) | ast::Pattern::Rest(_))
+            !matches!(
+                p.pattern,
+                ast::Pattern::Identifier(_) | ast::Pattern::Rest(_)
+            )
         });
 
         // IMPORTANT: If there are destructuring parameters, start local allocation AFTER parameter slots
@@ -2535,9 +2544,14 @@ impl<'a> Lowerer<'a> {
         for (param_idx, pattern, value_reg) in destructure_params {
             // Register object field layout for destructuring
             if let ast::Pattern::Object(_) = pattern {
-                if let Some(type_ann) = arrow.params.get(param_idx).and_then(|p| p.type_annotation.as_ref()) {
+                if let Some(type_ann) = arrow
+                    .params
+                    .get(param_idx)
+                    .and_then(|p| p.type_annotation.as_ref())
+                {
                     if let Some(field_layout) = self.extract_field_names_from_type(type_ann) {
-                        self.register_object_fields.insert(value_reg.id, field_layout);
+                        self.register_object_fields
+                            .insert(value_reg.id, field_layout);
                     }
                 }
             }
