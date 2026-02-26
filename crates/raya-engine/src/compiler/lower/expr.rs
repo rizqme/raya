@@ -927,43 +927,87 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Check if this is a Task method call (e.g., task.cancel())
-            // Task<T> is a special type that holds a raw task_id (u64), not an object
-            if let Expression::Identifier(ident) = &*member.object {
-                if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    if let Some(reg) = self.local_registers.get(&local_idx) {
-                        if self.type_ctx.is_task_type(reg.ty) {
-                            // Load the task handle (raw task_id u64)
-                            let task_reg = self.alloc_register(reg.ty);
-                            self.emit(IrInstr::LoadLocal {
-                                dest: task_reg.clone(),
-                                index: local_idx,
-                            });
+            // Promise<T> is represented by a raw task handle internally.
+            // Intercept promise-like methods before object dispatch.
+            let object_ty = self.get_expr_type(&member.object);
+            let is_promise_like = self.type_ctx.is_task_type(object_ty)
+                || matches!(
+                    self.type_ctx.get(object_ty),
+                    Some(crate::parser::types::Type::Class(class)) if class.name == "Promise"
+                );
+            if is_promise_like {
+                let task_reg = self.lower_expr(&member.object);
+                match method_name {
+                    "cancel" => {
+                        self.emit(IrInstr::TaskCancel { task: task_reg });
+                        return dest;
+                    }
+                    "isDone" | "isCancelled" => {
+                        let native_id = match method_name {
+                            "isDone" => 0x0500,      // TASK_IS_DONE
+                            "isCancelled" => 0x0501, // TASK_IS_CANCELLED
+                            _ => unreachable!(),
+                        };
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(dest.clone()),
+                            native_id,
+                            args: vec![task_reg],
+                        });
+                        return dest;
+                    }
+                    "then" | "catch" | "finally" => {
+                        let awaited_ty =
+                            if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
+                                self.type_ctx.get(object_ty)
+                            {
+                                task_ty.result
+                            } else {
+                                TypeId::new(UNRESOLVED_TYPE_ID)
+                            };
+                        let awaited = self.alloc_register(awaited_ty);
+                        self.emit(IrInstr::Await {
+                            dest: awaited.clone(),
+                            task: task_reg,
+                        });
 
-                            match method_name {
-                                "cancel" => {
-                                    // Emit TaskCancel opcode
-                                    self.emit(IrInstr::TaskCancel { task: task_reg });
-                                    return dest; // void return
-                                }
-                                "isDone" | "isCancelled" => {
-                                    // These are native calls that take the task handle
-                                    let native_id = match method_name {
-                                        "isDone" => 0x0500,      // TASK_IS_DONE
-                                        "isCancelled" => 0x0501, // TASK_IS_CANCELLED
-                                        _ => unreachable!(),
-                                    };
-                                    self.emit(IrInstr::NativeCall {
+                        match method_name {
+                            "then" => {
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::CallClosure {
                                         dest: Some(dest.clone()),
-                                        native_id,
-                                        args: vec![task_reg],
+                                        closure: callback,
+                                        args: vec![awaited],
                                     });
                                     return dest;
                                 }
-                                _ => {}
                             }
+                            "finally" => {
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::CallClosure {
+                                        dest: None,
+                                        closure: callback,
+                                        args: vec![],
+                                    });
+                                }
+                                self.emit(IrInstr::Assign {
+                                    dest: dest.clone(),
+                                    value: IrValue::Register(awaited),
+                                });
+                                return dest;
+                            }
+                            "catch" => {
+                                // Temporary fallback: if the task is fulfilled, return the value.
+                                // Rejection recovery will be wired in a later runtime pass.
+                                self.emit(IrInstr::Assign {
+                                    dest: dest.clone(),
+                                    value: IrValue::Register(awaited),
+                                });
+                                return dest;
+                            }
+                            _ => {}
                         }
                     }
+                    _ => {}
                 }
             }
 

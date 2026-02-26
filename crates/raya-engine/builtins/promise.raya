@@ -1,3 +1,5 @@
+//@@builtin_primitive
+
 // Promise - Represents an asynchronous computation (public async contract)
 // Internally backed by the runtime task scheduler.
 
@@ -6,35 +8,30 @@ const PROMISE_IS_DONE: number = 0x0500;
 const PROMISE_IS_CANCELLED: number = 0x0501;
 
 class Promise<T> {
-    private handle: number;
-
-    // Promises are created by the runtime via `async`/`await`.
-    private constructor(handle: number) {
-        this.handle = handle;
-    }
-
     // Internal cancellation support retained for existing runtime semantics.
     cancel(): void {
         try {
-            __OPCODE_TASK_CANCEL(this.handle);
+            __OPCODE_TASK_CANCEL(this);
         } catch (_e) {
             // Cancellation is best-effort and should never throw to user code.
         }
     }
 
     isDone(): boolean {
-        return __NATIVE_CALL<boolean>(PROMISE_IS_DONE, this.handle);
+        return __NATIVE_CALL<boolean>(PROMISE_IS_DONE, this);
     }
 
     isCancelled(): boolean {
-        return __NATIVE_CALL<boolean>(PROMISE_IS_CANCELLED, this.handle);
+        return __NATIVE_CALL<boolean>(PROMISE_IS_CANCELLED, this);
     }
 
+    //@@class_method
     then<U>(onFulfilled: (value: T) => U): Promise<U> {
-        let value: T = __OPCODE_AWAIT(this.handle);
+        let value: T = __OPCODE_AWAIT(this);
         return async onFulfilled(value);
     }
 
+    //@@class_method
     catch<U>(onRejected: (reason: Object) => U): Promise<T | U> {
         let wrapped = async (): Promise<T | U> => {
             try {
@@ -46,6 +43,7 @@ class Promise<T> {
         return wrapped();
     }
 
+    //@@class_method
     finally(onFinally: () => void): Promise<T> {
         let wrapped = async (): Promise<T> => {
             try {
@@ -80,7 +78,7 @@ class Promise<T> {
 
     static async race<U>(values: Promise<U>[]): Promise<U> {
         if (values.length === 0) {
-            throw new Error("Promise.race requires at least one promise");
+            throw "Promise.race requires at least one promise";
         }
         while (true) {
             let i = 0;

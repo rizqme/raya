@@ -266,6 +266,32 @@ fn test_promise_race_static() {
     );
 }
 
+#[test]
+fn test_promise_then_instance() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.resolve(21);
+        let q = p.then((n: number): number => n * 2);
+        return await q;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_finally_instance() {
+    expect_i32_with_builtins(
+        r#"
+        let marker = 1;
+        let p = Promise.resolve(41);
+        let q = p.finally((): void => { marker = marker + 1; });
+        let out = await q;
+        return out + marker;
+    "#,
+        43,
+    );
+}
+
 // ============================================================================
 // Buffer tests
 // ============================================================================

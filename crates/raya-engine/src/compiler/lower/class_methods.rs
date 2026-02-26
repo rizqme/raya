@@ -81,10 +81,12 @@ fn compile_and_extract(
         for &(name, _) in BUILTIN_PRIMITIVE_SOURCES {
             binder.register_external_class(name);
         }
+        binder.register_external_class("Object");
 
-        binder.bind_module(&module).unwrap_or_else(|e| {
-            panic!("Failed to bind {}: {:?}", type_name, e);
-        })
+        match binder.bind_module(&module) {
+            Ok(symbols) => symbols,
+            Err(_e) => return None,
+        }
     };
 
     // Restore canonical TypeIds — the binder may have overwritten them with

@@ -2690,9 +2690,9 @@ impl<'a> TypeChecker<'a> {
 
         // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
 
-        // Check for built-in Task methods
-        if let Some(crate::parser::types::Type::Task(_)) = &obj_type {
-            if let Some(method_type) = self.get_task_method_type(&property_name) {
+        // Check for built-in Task/Promise methods
+        if let Some(crate::parser::types::Type::Task(task_ty)) = &obj_type {
+            if let Some(method_type) = self.get_task_method_type(&property_name, task_ty.result) {
                 return method_type;
             }
         }
@@ -3355,10 +3355,13 @@ impl<'a> TypeChecker<'a> {
     // Note: Mutex methods are now resolved from mutex.raya class definition
     // (get_mutex_method_type removed - no longer needed)
 
-    /// Get the type of a built-in Task method
-    fn get_task_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+    /// Get the type of a built-in Task/Promise method
+    fn get_task_method_type(&mut self, method_name: &str, result_ty: TypeId) -> Option<TypeId> {
         let void_ty = self.type_ctx.void_type();
         let bool_ty = self.type_ctx.boolean_type();
+        let unknown_ty = self.type_ctx.unknown_type();
+        let promise_unknown_ty = self.type_ctx.task_type(unknown_ty);
+        let promise_result_ty = self.type_ctx.task_type(result_ty);
 
         match method_name {
             // cancel() -> void
@@ -3367,6 +3370,38 @@ impl<'a> TypeChecker<'a> {
             "isDone" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
             // isCancelled() -> boolean
             "isCancelled" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
+            // then<U>(onFulfilled: (value: T) => U) -> Promise<U>
+            "then" => {
+                let on_fulfilled_ty = self
+                    .type_ctx
+                    .function_type(vec![result_ty], unknown_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_fulfilled_ty], promise_unknown_ty, false),
+                )
+            }
+            // catch<U>(onRejected: (reason: Object) => U) -> Promise<T | U>
+            "catch" => {
+                let object_ty = self
+                    .type_ctx
+                    .lookup_named_type("Object")
+                    .unwrap_or(unknown_ty);
+                let on_rejected_ty = self
+                    .type_ctx
+                    .function_type(vec![object_ty], unknown_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_rejected_ty], promise_unknown_ty, false),
+                )
+            }
+            // finally(onFinally: () => void) -> Promise<T>
+            "finally" => {
+                let on_finally_ty = self.type_ctx.function_type(vec![], void_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_finally_ty], promise_result_ty, false),
+                )
+            }
             _ => None,
         }
     }

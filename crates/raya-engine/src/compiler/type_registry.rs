@@ -50,6 +50,7 @@ pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
     ("number", include_str!("../../builtins/number.raya")),
     ("Array", include_str!("../../builtins/array.raya")),
     ("RegExp", include_str!("../../builtins/regexp.raya")),
+    ("Promise", include_str!("../../builtins/promise.raya")),
 ];
 
 // ============================================================================
@@ -248,8 +249,14 @@ impl TypeRegistry {
         ];
 
         for &(type_name, methods) in builtin_types {
-            if let Some(id) = type_ctx.lookup_named_type(type_name) {
-                let tid = id.as_u32();
+            let tid = if type_name == "Promise" {
+                TypeContext::TASK_TYPE_ID
+            } else if let Some(id) = type_ctx.lookup_named_type(type_name) {
+                id.as_u32()
+            } else {
+                continue;
+            };
+            {
                 let meths = self.method_dispatch.entry(tid).or_default();
                 for &(method_name, native_id) in methods {
                     meths.insert(
@@ -259,6 +266,24 @@ impl TypeRegistry {
                 }
             }
         }
+
+        // Promise chaining methods are implemented as compiled Raya class methods.
+        let meths = self
+            .method_dispatch
+            .entry(TypeContext::TASK_TYPE_ID)
+            .or_default();
+        meths.insert(
+            "then".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "then".to_string()),
+        );
+        meths.insert(
+            "catch".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "catch".to_string()),
+        );
+        meths.insert(
+            "finally".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "finally".to_string()),
+        );
     }
 
     /// Scan a `//@@builtin_primitive` `.raya` source and populate dispatch tables.
