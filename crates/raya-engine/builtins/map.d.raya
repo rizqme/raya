@@ -38,6 +38,9 @@ export class Map<K, V> {
     /** Get all entries as array of [key, value] tuples */
     entries(): [K, V][];
 
+    /** Iterator protocol hook (same as entries) */
+    iterator(): [K, V][];
+
     /** Iterate over all entries */
     forEach(fn: (value: V, key: K) => void): void;
 }

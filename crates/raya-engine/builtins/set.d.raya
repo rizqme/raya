@@ -29,6 +29,9 @@ export class Set<T> {
     /** Get all values as an array */
     values(): T[];
 
+    /** Iterator protocol hook (same as values) */
+    iterator(): T[];
+
     /** Iterate over all values */
     forEach(fn: (value: T) => void): void;
 

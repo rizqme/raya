@@ -621,6 +621,13 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "Array<[K, V]>",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<[K, V]>",
+                    is_static: false,
+                },
             ],
             constructor: Some(&[]),
         }],
@@ -668,6 +675,13 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 },
                 MethodSig {
                     name: "values",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "iterator",
                     params: &[],
                     min_params: 0,
                     return_type: "Array<T>",

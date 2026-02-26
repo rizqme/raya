@@ -82,6 +82,11 @@ class Array<T> {
         return __NATIVE_CALL<T[]>(SPLICE, this, start, deleteCount);
     }
 
+    // Iterator protocol hook (for-of lowering target)
+    iterator(): T[] {
+        return this;
+    }
+
     // ── Callback methods — pure Raya loops, preemption-safe, JIT prewarm candidates ──
 
     //@@class_method

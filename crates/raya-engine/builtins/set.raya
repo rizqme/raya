@@ -52,6 +52,11 @@ class Set<T> {
         return __NATIVE_CALL<T[]>(SET_VALUES, this.setPtr);
     }
 
+    // Iterator protocol hook (Node-compatible shape)
+    iterator(): T[] {
+        return this.values();
+    }
+
     // Iterate over all values
     forEach(fn: (value: T) => void): void {
         __NATIVE_CALL<void>(SET_FOR_EACH, this.setPtr, fn);
