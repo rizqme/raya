@@ -6,7 +6,7 @@
 //! channel waiters, and checks preemption — all in one loop iteration.
 
 use crate::vm::abi::native_to_value;
-use crate::vm::interpreter::{ExecutionResult, Interpreter, SharedVmState};
+use crate::vm::interpreter::{ExecutionResult, Interpreter, PromiseMicrotask, SharedVmState};
 use crate::vm::object::{Buffer, ChannelObject, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
@@ -639,8 +639,8 @@ impl Reactor {
                 }
             }
 
-            // === STEP 8.5: Unhandled rejection checkpoint ===
-            Self::flush_pending_unhandled_rejections(&shared_state);
+            // === STEP 8.5: Promise microtask checkpoint ===
+            Self::drain_promise_microtasks(&shared_state);
 
             // === STEP 9: Block briefly with select! ===
             let timeout = timer_heap
@@ -693,6 +693,9 @@ impl Reactor {
                     // Timeout — loop back for timer/preempt checks
                 },
             }
+
+            // === STEP 9.5: Promise microtask checkpoint (post-select boundary) ===
+            Self::drain_promise_microtasks(&shared_state);
         }
     }
 
@@ -780,33 +783,39 @@ impl Reactor {
         }
 
         shared_state
-            .pending_unhandled_rejections
+            .promise_microtasks
             .lock()
-            .insert(task.id());
+            .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id()));
     }
 
-    fn flush_pending_unhandled_rejections(shared_state: &Arc<SharedVmState>) {
-        let pending: Vec<TaskId> = {
-            let mut set = shared_state.pending_unhandled_rejections.lock();
-            if set.is_empty() {
-                return;
+    fn drain_promise_microtasks(shared_state: &Arc<SharedVmState>) {
+        let mut drained = Vec::new();
+        {
+            let mut queue = shared_state.promise_microtasks.lock();
+            while let Some(job) = queue.pop_front() {
+                drained.push(job);
             }
-            set.drain().collect()
-        };
-
+        }
+        if drained.is_empty() {
+            return;
+        }
         let tasks = shared_state.tasks.read();
-        for task_id in pending {
-            let Some(task) = tasks.get(&task_id) else {
-                continue;
-            };
-            if task.state() != TaskState::Failed || task.is_rejection_observed() {
-                continue;
+        for job in drained {
+            match job {
+                PromiseMicrotask::ReportUnhandledRejection(task_id) => {
+                    let Some(task) = tasks.get(&task_id) else {
+                        continue;
+                    };
+                    if task.state() != TaskState::Failed || task.is_rejection_observed() {
+                        continue;
+                    }
+                    let reason = task.current_exception().unwrap_or(Value::null());
+                    eprintln!(
+                        "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
+                        task_id, reason
+                    );
+                }
             }
-            let reason = task.current_exception().unwrap_or(Value::null());
-            eprintln!(
-                "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
-                task_id, reason
-            );
         }
     }
 

@@ -20,6 +20,13 @@ use rustc_hash::FxHashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+/// Promise-related microtasks processed by scheduler checkpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseMicrotask {
+    /// Report a task rejection if still unhandled at checkpoint drain time.
+    ReportUnhandledRejection(TaskId),
+}
+
 #[cfg(feature = "jit")]
 #[derive(Default)]
 pub struct JitTelemetry {
@@ -92,8 +99,8 @@ pub struct SharedVmState {
     /// Task registry
     pub tasks: Arc<RwLock<FxHashMap<TaskId, Arc<Task>>>>,
 
-    /// Failed tasks pending unhandled-rejection checkpoint evaluation.
-    pub pending_unhandled_rejections: Mutex<rustc_hash::FxHashSet<TaskId>>,
+    /// Promise microtask queue (FIFO), drained at scheduler checkpoints.
+    pub promise_microtasks: Mutex<std::collections::VecDeque<PromiseMicrotask>>,
 
     /// Global task injector for scheduling
     pub injector: Arc<Injector<Arc<Task>>>,
@@ -190,7 +197,7 @@ impl SharedVmState {
             globals_by_index: RwLock::new(Vec::new()),
             safepoint,
             tasks,
-            pending_unhandled_rejections: Mutex::new(rustc_hash::FxHashSet::default()),
+            promise_microtasks: Mutex::new(std::collections::VecDeque::new()),
             injector,
             mutex_registry: MutexRegistry::new(),
             stack_pool: StackPool::new(num_cpus::get() * 2),
