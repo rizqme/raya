@@ -62,7 +62,7 @@ class DataView {
 
     getInt32(offset: int, littleEndian: boolean = true): int {
         if (!littleEndian) {
-            throw createError(ERR_NOT_IMPLEMENTED, "Big-endian DataView access is not implemented yet");
+            throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
         let ab = this.buffer as ArrayBuffer;
@@ -71,7 +71,7 @@ class DataView {
 
     setInt32(offset: int, value: int, littleEndian: boolean = true): void {
         if (!littleEndian) {
-            throw createError(ERR_NOT_IMPLEMENTED, "Big-endian DataView access is not implemented yet");
+            throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
         let ab = this.buffer as ArrayBuffer;
@@ -96,7 +96,7 @@ class DataView {
 
     getFloat64(offset: int, littleEndian: boolean = true): number {
         if (!littleEndian) {
-            throw createError(ERR_NOT_IMPLEMENTED, "Big-endian DataView access is not implemented yet");
+            throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
         let ab = this.buffer as ArrayBuffer;
@@ -105,7 +105,7 @@ class DataView {
 
     setFloat64(offset: int, value: number, littleEndian: boolean = true): void {
         if (!littleEndian) {
-            throw createError(ERR_NOT_IMPLEMENTED, "Big-endian DataView access is not implemented yet");
+            throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
         let ab = this.buffer as ArrayBuffer;

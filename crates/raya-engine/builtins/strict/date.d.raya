@@ -1,0 +1,75 @@
+/**
+ * Date - Date and time handling
+ *
+ * Represents a point in time with millisecond precision.
+ *
+ * Usage:
+ *   let now: Date = new Date();
+ *   let year: number = now.getFullYear();
+ */
+export class Date {
+    constructor();
+
+    /** Get timestamp in milliseconds since Unix epoch */
+    getTime(): number;
+
+    /** Get the four-digit year */
+    getFullYear(): number;
+
+    /** Get the month (0-11) */
+    getMonth(): number;
+
+    /** Get the day of month (1-31) */
+    getDate(): number;
+
+    /** Get the day of week (0=Sunday, 6=Saturday) */
+    getDay(): number;
+
+    /** Get the hours (0-23) */
+    getHours(): number;
+
+    /** Get the minutes (0-59) */
+    getMinutes(): number;
+
+    /** Get the seconds (0-59) */
+    getSeconds(): number;
+
+    /** Get the milliseconds (0-999) */
+    getMilliseconds(): number;
+
+    /** Set the timestamp directly */
+    setTime(ms: number): void;
+
+    /** Set the year */
+    setFullYear(year: number): void;
+
+    /** Set the month (0-11) */
+    setMonth(month: number): void;
+
+    /** Set the day of month (1-31) */
+    setDate(day: number): void;
+
+    /** Set the hours (0-23) */
+    setHours(hours: number): void;
+
+    /** Set the minutes (0-59) */
+    setMinutes(minutes: number): void;
+
+    /** Set the seconds (0-59) */
+    setSeconds(seconds: number): void;
+
+    /** Set the milliseconds (0-999) */
+    setMilliseconds(ms: number): void;
+
+    /** Convert to human-readable string */
+    toString(): string;
+
+    /** Convert to ISO 8601 format (e.g., "2024-01-15T10:30:00.000Z") */
+    toISOString(): string;
+
+    /** Get just the date portion as string */
+    toDateString(): string;
+
+    /** Get just the time portion as string */
+    toTimeString(): string;
+}

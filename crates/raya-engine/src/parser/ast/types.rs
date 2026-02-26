@@ -49,6 +49,12 @@ pub enum Type {
     /// Typeof type: typeof value (only for bare unions)
     Typeof(TypeofType),
 
+    /// Keyof type: keyof T
+    Keyof(KeyofType),
+
+    /// Indexed access type: T[K]
+    IndexedAccess(IndexedAccessType),
+
     /// String literal type: "foo"
     StringLiteral(crate::parser::interner::Symbol),
 
@@ -127,6 +133,19 @@ pub struct TypeReference {
     pub type_args: Option<Vec<TypeAnnotation>>,
 }
 
+/// Keyof type operator: keyof T
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyofType {
+    pub target: Box<TypeAnnotation>,
+}
+
+/// Indexed access type: T[K]
+#[derive(Debug, Clone, PartialEq)]
+pub struct IndexedAccessType {
+    pub object: Box<TypeAnnotation>,
+    pub index: Box<TypeAnnotation>,
+}
+
 impl TypeReference {
     /// Create a simple type reference without type arguments
     pub fn simple(name: Identifier) -> Self {
@@ -202,6 +221,7 @@ pub struct FunctionType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionTypeParam {
     pub name: Option<Identifier>,
+    pub is_rest: bool,
     pub optional: bool,
     pub ty: TypeAnnotation,
 }

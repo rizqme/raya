@@ -1,0 +1,67 @@
+// Node-compat Intl pragmatic subset.
+
+class IntlNumberFormat {
+    private _locale: string;
+    private _options: Object | null;
+
+    constructor(locales: string | null, options: Object | null) {
+        if (locales == null || locales == "") {
+            this._locale = "en-US";
+        } else {
+            this._locale = locales;
+        }
+        this._options = options;
+    }
+
+    format(value: number): string {
+        // Pragmatic subset: locale-aware formatting not yet implemented.
+        return value.toString();
+    }
+
+    resolvedOptions(): IntlResolvedOptions {
+        return new IntlResolvedOptions(this._locale, this._options);
+    }
+}
+
+class IntlDateTimeFormat {
+    private _locale: string;
+    private _options: Object | null;
+
+    constructor(locales: string | null, options: Object | null) {
+        if (locales == null || locales == "") {
+            this._locale = "en-US";
+        } else {
+            this._locale = locales;
+        }
+        this._options = options;
+    }
+
+    format(value: Date): string {
+        // Pragmatic subset: falls back to ISO string.
+        return value.toISOString();
+    }
+
+    resolvedOptions(): IntlResolvedOptions {
+        return new IntlResolvedOptions(this._locale, this._options);
+    }
+}
+
+class IntlResolvedOptions {
+    locale: string;
+    options: Object | null;
+
+    constructor(locale: string, options: Object | null) {
+        this.locale = locale;
+        this.options = options;
+    }
+}
+
+class Intl {
+    static NumberFormat(locales: string | null, options: Object | null): IntlNumberFormat {
+        return new IntlNumberFormat(locales, options);
+    }
+
+    static DateTimeFormat(locales: string | null, options: Object | null): IntlDateTimeFormat {
+        return new IntlDateTimeFormat(locales, options);
+    }
+}

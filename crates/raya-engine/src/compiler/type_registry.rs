@@ -46,11 +46,11 @@ pub enum OpcodeKind {
 /// Builtin primitive `.raya` sources embedded at compile time.
 /// These are scanned at TypeRegistry init to build dispatch tables.
 pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
-    ("string", include_str!("../../builtins/string.raya")),
-    ("number", include_str!("../../builtins/number.raya")),
-    ("Array", include_str!("../../builtins/array.raya")),
-    ("RegExp", include_str!("../../builtins/regexp.raya")),
-    ("Promise", include_str!("../../builtins/promise.raya")),
+    ("string", include_str!("../../builtins/strict/string.raya")),
+    ("number", include_str!("../../builtins/strict/number.raya")),
+    ("Array", include_str!("../../builtins/strict/array.raya")),
+    ("RegExp", include_str!("../../builtins/strict/regexp.raya")),
+    ("Promise", include_str!("../../builtins/strict/promise.raya")),
 ];
 
 // ============================================================================

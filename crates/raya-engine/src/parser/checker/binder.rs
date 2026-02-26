@@ -1375,12 +1375,12 @@ impl<'a> Binder<'a> {
                 // Validate and extract rest parameter type
                 if let Some(ref type_ann) = param.type_annotation {
                     let param_ty = self.resolve_type_annotation(type_ann)?;
-                    if let Some(Type::Array(_arr_ty)) = self.type_ctx.get(param_ty) {
+                    if self.is_valid_rest_param_type(param_ty) {
                         rest_param_ty = Some(param_ty);
                     } else {
                         return Err(BindError::InvalidRestParameter {
                             message:
-                                "Rest parameter type must be an array (e.g., string[] or number[])"
+                                "Rest parameter type must be an array/tuple (e.g., string[] or [number, string])"
                                     .to_string(),
                             span: type_ann.span,
                         });
@@ -1622,24 +1622,48 @@ impl<'a> Binder<'a> {
         // Enter class scope for type parameters
         self.symbols.push_scope(ScopeKind::Class);
 
-        // Register type parameters as type aliases in class scope
-        for type_param_name in &type_param_names {
-            let type_var = self.type_ctx.type_variable(type_param_name.clone());
-            let symbol = Symbol {
-                name: type_param_name.clone(),
-                kind: SymbolKind::TypeAlias,
-                ty: type_var,
-                flags: SymbolFlags::default(),
-                scope_id: self.symbols.current_scope_id(),
-                span: Span {
-                    start: 0,
-                    end: 0,
-                    line: 0,
-                    column: 0,
-                },
-                referenced: false,
-            };
-            let _ = self.symbols.define(symbol);
+        // Register type parameters (with constraints) in class scope
+        if let Some(ref class_type_params) = class.type_params {
+            for type_param in class_type_params {
+                let type_param_name = self.resolve(type_param.name.name);
+                let constraint_ty = if let Some(ref constraint) = type_param.constraint {
+                    self.resolve_type_annotation(constraint).ok()
+                } else {
+                    None
+                };
+                let type_var = self
+                    .type_ctx
+                    .type_variable_with_constraint(type_param_name.clone(), constraint_ty);
+                let symbol = Symbol {
+                    name: type_param_name,
+                    kind: SymbolKind::TypeAlias,
+                    ty: type_var,
+                    flags: SymbolFlags::default(),
+                    scope_id: self.symbols.current_scope_id(),
+                    span: type_param.span,
+                    referenced: false,
+                };
+                let _ = self.symbols.define(symbol);
+            }
+        } else {
+            for type_param_name in &type_param_names {
+                let type_var = self.type_ctx.type_variable(type_param_name.clone());
+                let symbol = Symbol {
+                    name: type_param_name.clone(),
+                    kind: SymbolKind::TypeAlias,
+                    ty: type_var,
+                    flags: SymbolFlags::default(),
+                    scope_id: self.symbols.current_scope_id(),
+                    span: Span {
+                        start: 0,
+                        end: 0,
+                        line: 0,
+                        column: 0,
+                    },
+                    referenced: false,
+                };
+                let _ = self.symbols.define(symbol);
+            }
         }
 
         // Now collect properties and methods (class name is now resolvable)
@@ -1711,23 +1735,30 @@ impl<'a> Binder<'a> {
                     let has_method_type_params = !method_type_params.is_empty();
                     if has_method_type_params {
                         self.symbols.push_scope(ScopeKind::Function);
-                        for type_param_name in &method_type_params {
-                            let type_var = self.type_ctx.type_variable(type_param_name.clone());
-                            let symbol = Symbol {
-                                name: type_param_name.clone(),
-                                kind: SymbolKind::TypeAlias,
-                                ty: type_var,
-                                flags: SymbolFlags::default(),
-                                scope_id: self.symbols.current_scope_id(),
-                                span: Span {
-                                    start: 0,
-                                    end: 0,
-                                    line: 0,
-                                    column: 0,
-                                },
-                                referenced: false,
-                            };
-                            let _ = self.symbols.define(symbol);
+                        if let Some(ref method_type_params_ast) = method.type_params {
+                            for type_param in method_type_params_ast {
+                                let type_param_name = self.resolve(type_param.name.name);
+                                let constraint_ty = if let Some(ref constraint) =
+                                    type_param.constraint
+                                {
+                                    self.resolve_type_annotation(constraint).ok()
+                                } else {
+                                    None
+                                };
+                                let type_var = self
+                                    .type_ctx
+                                    .type_variable_with_constraint(type_param_name.clone(), constraint_ty);
+                                let symbol = Symbol {
+                                    name: type_param_name,
+                                    kind: SymbolKind::TypeAlias,
+                                    ty: type_var,
+                                    flags: SymbolFlags::default(),
+                                    scope_id: self.symbols.current_scope_id(),
+                                    span: type_param.span,
+                                    referenced: false,
+                                };
+                                let _ = self.symbols.define(symbol);
+                            }
                         }
                     }
 
@@ -1740,11 +1771,11 @@ impl<'a> Binder<'a> {
                             // Validate and extract rest parameter type
                             if let Some(ref type_ann) = p.type_annotation {
                                 let param_ty = self.resolve_type_annotation(type_ann)?;
-                                if let Some(Type::Array(_arr_ty)) = self.type_ctx.get(param_ty) {
+                                if self.is_valid_rest_param_type(param_ty) {
                                     rest_param_ty = Some(param_ty);
                                 } else {
                                     return Err(BindError::InvalidRestParameter {
-                                        message: "Rest parameter type must be an array (e.g., string[] or number[])".to_string(),
+                                        message: "Rest parameter type must be an array/tuple (e.g., string[] or [number, string])".to_string(),
                                         span: type_ann.span,
                                     });
                                 }
@@ -1954,7 +1985,14 @@ impl<'a> Binder<'a> {
                         if let Some(ref type_params) = method.type_params {
                             for tp in type_params {
                                 let type_param_name = self.resolve(tp.name.name);
-                                let type_var = self.type_ctx.type_variable(type_param_name.clone());
+                                let constraint_ty = if let Some(ref constraint) = tp.constraint {
+                                    self.resolve_type_annotation(constraint).ok()
+                                } else {
+                                    None
+                                };
+                                let type_var = self
+                                    .type_ctx
+                                    .type_variable_with_constraint(type_param_name.clone(), constraint_ty);
                                 let symbol = Symbol {
                                     name: type_param_name,
                                     kind: SymbolKind::TypeAlias,
@@ -2024,7 +2062,14 @@ impl<'a> Binder<'a> {
             self.symbols.push_scope(ScopeKind::Function);
             for type_param in alias.type_params.as_ref().unwrap() {
                 let param_name = self.resolve(type_param.name.name);
-                let type_var = self.type_ctx.type_variable(param_name.clone());
+                let constraint_ty = if let Some(ref constraint) = type_param.constraint {
+                    self.resolve_type_annotation(constraint).ok()
+                } else {
+                    None
+                };
+                let type_var = self
+                    .type_ctx
+                    .type_variable_with_constraint(param_name.clone(), constraint_ty);
                 let sym = Symbol {
                     name: param_name.clone(),
                     kind: SymbolKind::TypeAlias,
@@ -2225,6 +2270,15 @@ impl<'a> Binder<'a> {
         self.resolve_type(&ty_annot.ty, ty_annot.span)
     }
 
+    fn is_valid_rest_param_type(&self, ty: TypeId) -> bool {
+        match self.type_ctx.get(ty) {
+            Some(Type::Array(_)) | Some(Type::Tuple(_)) | Some(Type::TypeVar(_))
+            | Some(Type::IndexedAccess(_)) | Some(Type::Keyof(_)) | Some(Type::Unknown) => true,
+            Some(Type::Union(u)) => u.members.iter().all(|m| self.is_valid_rest_param_type(*m)),
+            _ => false,
+        }
+    }
+
     /// Recursively substitute TypeVars in a type according to a substitution map
     fn substitute_type_vars(
         &mut self,
@@ -2380,6 +2434,30 @@ impl<'a> Binder<'a> {
                     });
                 }
 
+                // Handle Record<K, V> utility type as an indexed object shape.
+                if name == "Record" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 2 {
+                            let value_ty = self.resolve_type_annotation(&type_args[1])?;
+                            let object_type = crate::parser::types::ty::ObjectType {
+                                properties: vec![],
+                                index_signature: Some(("[key]".to_string(), value_ty)),
+                            };
+                            return Ok(self.type_ctx.intern(Type::Object(object_type)));
+                        }
+                    }
+                    return Err(BindError::InvalidTypeArguments {
+                        name,
+                        expected: 2,
+                        actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
+                        span,
+                    });
+                }
+
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                    return Ok(named_ty);
+                }
+
                 // Mutex is a normal class from mutex.raya, no special handling needed
 
                 if let Some(symbol) = self.symbols.resolve(&name) {
@@ -2484,15 +2562,26 @@ impl<'a> Binder<'a> {
             }
 
             AstType::Function(func) => {
-                let param_tys: Result<Vec<_>, _> = func
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_annotation(&p.ty))
-                    .collect();
+                let mut param_tys = Vec::new();
+                let mut rest_param = None;
+                let mut min_params = 0usize;
+
+                for p in &func.params {
+                    let p_ty = self.resolve_type_annotation(&p.ty)?;
+                    if p.is_rest {
+                        rest_param = Some(p_ty);
+                    } else {
+                        if !p.optional {
+                            min_params += 1;
+                        }
+                        param_tys.push(p_ty);
+                    }
+                }
 
                 let return_ty = self.resolve_type_annotation(&func.return_type)?;
-
-                Ok(self.type_ctx.function_type(param_tys?, return_ty, false))
+                Ok(self
+                    .type_ctx
+                    .function_type_with_rest(param_tys, return_ty, false, min_params, rest_param))
             }
 
             AstType::Object(obj) => {
@@ -2543,6 +2632,174 @@ impl<'a> Binder<'a> {
                 Ok(self
                     .type_ctx
                     .intern(crate::parser::types::ty::Type::Object(object_type)))
+            }
+
+            AstType::Keyof(keyof_ty) => {
+                let target_ty = self.resolve_type_annotation(&keyof_ty.target)?;
+                match self.type_ctx.get(target_ty).cloned() {
+                    Some(Type::Object(obj)) => {
+                        let members: Vec<TypeId> = obj
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            Ok(self.type_ctx.string_type())
+                        } else {
+                            Ok(self.type_ctx.union_type(members))
+                        }
+                    }
+                    Some(Type::Class(class)) => {
+                        let members: Vec<TypeId> = class
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            Ok(self.type_ctx.string_type())
+                        } else {
+                            Ok(self.type_ctx.union_type(members))
+                        }
+                    }
+                    Some(Type::TypeVar(tv)) => {
+                        if let Some(constraint) = tv.constraint {
+                            match self.type_ctx.get(constraint).cloned() {
+                                Some(Type::Object(obj)) => {
+                                    let members: Vec<TypeId> = obj
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        Ok(self.type_ctx.string_type())
+                                    } else {
+                                        Ok(self.type_ctx.union_type(members))
+                                    }
+                                }
+                                Some(Type::Class(class)) => {
+                                    let members: Vec<TypeId> = class
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        Ok(self.type_ctx.string_type())
+                                    } else {
+                                        Ok(self.type_ctx.union_type(members))
+                                    }
+                                }
+                                _ => Ok(self.type_ctx.string_type()),
+                            }
+                        } else {
+                            Ok(self.type_ctx.string_type())
+                        }
+                    }
+                    _ => Ok(self.type_ctx.keyof_type(target_ty)),
+                }
+            }
+
+            AstType::IndexedAccess(indexed) => {
+                let object_ty = self.resolve_type_annotation(&indexed.object)?;
+                let index_ty = self.resolve_type_annotation(&indexed.index)?;
+
+                let prop_for_key = |obj: &crate::parser::types::ty::ObjectType,
+                                    key: &str|
+                 -> Option<TypeId> {
+                    obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                };
+
+                let object_data = self.type_ctx.get(object_ty).cloned();
+                let index_data = self.type_ctx.get(index_ty).cloned();
+
+                if matches!(object_data, Some(Type::TypeVar(_)))
+                    || matches!(index_data, Some(Type::TypeVar(_)))
+                {
+                    return Ok(self.type_ctx.indexed_access_type(object_ty, index_ty));
+                }
+
+                let object_data = match object_data {
+                    Some(Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                let index_data = match index_data {
+                    Some(Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                match (object_data, index_data) {
+                    (Some(Type::Object(obj)), Some(Type::StringLiteral(s))) => {
+                        Ok(prop_for_key(&obj, &s)
+                            .or(obj.index_signature.map(|(_, ty)| ty))
+                            .unwrap_or_else(|| self.type_ctx.unknown_type()))
+                    }
+                    (Some(Type::Object(obj)), Some(Type::Union(u))) => {
+                        let mut out = Vec::new();
+                        for member in &u.members {
+                            if let Some(Type::StringLiteral(s)) = self.type_ctx.get(*member).cloned()
+                            {
+                                if let Some(ty) = prop_for_key(&obj, &s) {
+                                    out.push(ty);
+                                }
+                            }
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            Ok(self.type_ctx.unknown_type())
+                        } else {
+                            Ok(self.type_ctx.union_type(out))
+                        }
+                    }
+                    (Some(Type::Tuple(t)), Some(Type::NumberLiteral(n))) => {
+                        let idx = n as usize;
+                        if idx < t.elements.len() {
+                            Ok(t.elements[idx])
+                        } else {
+                            Ok(self.type_ctx.unknown_type())
+                        }
+                    }
+                    (
+                        Some(Type::Object(obj)),
+                        Some(Type::Primitive(crate::parser::types::PrimitiveType::String)),
+                    ) => {
+                        let mut out = Vec::new();
+                        for p in &obj.properties {
+                            out.push(p.ty);
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            Ok(self.type_ctx.unknown_type())
+                        } else {
+                            Ok(self.type_ctx.union_type(out))
+                        }
+                    }
+                    (
+                        Some(Type::Object(obj)),
+                        Some(Type::Primitive(crate::parser::types::PrimitiveType::Number)),
+                    )
+                    | (
+                        Some(Type::Object(obj)),
+                        Some(Type::Primitive(crate::parser::types::PrimitiveType::Int)),
+                    )
+                    | (Some(Type::Object(obj)), Some(Type::NumberLiteral(_))) => {
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            Ok(sig_ty)
+                        } else {
+                            Ok(self.type_ctx.unknown_type())
+                        }
+                    }
+                    _ => Ok(self.type_ctx.indexed_access_type(object_ty, index_ty)),
+                }
             }
 
             AstType::Typeof(_) => {

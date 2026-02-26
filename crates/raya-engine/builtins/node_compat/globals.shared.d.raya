@@ -1,0 +1,16 @@
+/** Shared global helpers */
+
+export const Infinity: number;
+export const NaN: number;
+export const undefined: null;
+
+export type PrimitiveCoercible = Object | string | number | boolean | null;
+
+export function Boolean(value: PrimitiveCoercible): boolean;
+export function Number(value: PrimitiveCoercible): number;
+export function String(value: PrimitiveCoercible): string;
+
+export function encodeURI(input: string): string;
+export function decodeURI(input: string): string;
+export function encodeURIComponent(input: string): string;
+export function decodeURIComponent(input: string): string;

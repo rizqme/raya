@@ -130,6 +130,11 @@ impl TypeContext {
         debug_assert_eq!(int.0, Self::INT_TYPE_ID, "INT_TYPE_ID mismatch");
         debug_assert_eq!(array.0, Self::ARRAY_TYPE_ID, "ARRAY_TYPE_ID mismatch");
 
+        // TS-like utility key type used by builtins (EventEmitter EventMap, Record, etc.).
+        // Register after fixed-ID bootstrap so TypeId constants remain stable.
+        let property_key = ctx.union_type(vec![string, number]);
+        ctx.register_named_type("PropertyKey".into(), property_key);
+
         ctx
     }
 
@@ -406,6 +411,19 @@ impl TypeContext {
     /// Create a tuple type
     pub fn tuple_type(&mut self, elements: Vec<TypeId>) -> TypeId {
         self.intern(Type::Tuple(super::ty::TupleType { elements }))
+    }
+
+    /// Create a symbolic keyof type (keyof T)
+    pub fn keyof_type(&mut self, target: TypeId) -> TypeId {
+        self.intern(Type::Keyof(super::ty::KeyofType { target }))
+    }
+
+    /// Create a symbolic indexed access type (T[K])
+    pub fn indexed_access_type(&mut self, object: TypeId, index: TypeId) -> TypeId {
+        self.intern(Type::IndexedAccess(super::ty::IndexedAccessType {
+            object,
+            index,
+        }))
     }
 
     /// Create a function type

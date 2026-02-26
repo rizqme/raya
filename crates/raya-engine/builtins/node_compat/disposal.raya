@@ -1,0 +1,117 @@
+// Node-compat disposal stacks pragmatic subset.
+
+class DisposableStack {
+    private _disposed: boolean;
+    private _callbacks: (() => void)[];
+
+    constructor() {
+        this._disposed = false;
+        this._callbacks = [];
+    }
+
+    use<T extends Object>(value: T): T {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "DisposableStack is already disposed");
+        }
+        return value;
+    }
+
+    adopt<T>(value: T, onDispose: (value: T) => void): T {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "DisposableStack is already disposed");
+        }
+
+        this._callbacks.push((): void => {
+            onDispose(value);
+        });
+        return value;
+    }
+
+    defer(onDispose: () => void): void {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "DisposableStack is already disposed");
+        }
+        this._callbacks.push(onDispose);
+    }
+
+    dispose(): void {
+        if (this._disposed) {
+            return;
+        }
+
+        this._disposed = true;
+        let i = this._callbacks.length - 1;
+        while (i >= 0) {
+            this._callbacks[i]();
+            i = i - 1;
+        }
+        this._callbacks = [];
+    }
+
+    move(): DisposableStack {
+        let next = new DisposableStack();
+        next._callbacks = this._callbacks;
+
+        this._callbacks = [];
+        this._disposed = true;
+        return next;
+    }
+}
+
+class AsyncDisposableStack {
+    private _disposed: boolean;
+    private _callbacks: (() => Promise<void>)[];
+
+    constructor() {
+        this._disposed = false;
+        this._callbacks = [];
+    }
+
+    use<T extends Object>(value: T): T {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "AsyncDisposableStack is already disposed");
+        }
+        return value;
+    }
+
+    adopt<T>(value: T, onDisposeAsync: (value: T) => Promise<void>): T {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "AsyncDisposableStack is already disposed");
+        }
+
+        this._callbacks.push((): Promise<void> => {
+            return onDisposeAsync(value);
+        });
+        return value;
+    }
+
+    defer(onDisposeAsync: () => Promise<void>): void {
+        if (this._disposed) {
+            throw createError(ERR_INVALID_THIS, "AsyncDisposableStack is already disposed");
+        }
+        this._callbacks.push(onDisposeAsync);
+    }
+
+    async disposeAsync(): Promise<void> {
+        if (this._disposed) {
+            return;
+        }
+
+        this._disposed = true;
+        let i = this._callbacks.length - 1;
+        while (i >= 0) {
+            await this._callbacks[i]();
+            i = i - 1;
+        }
+        this._callbacks = [];
+    }
+
+    move(): AsyncDisposableStack {
+        let next = new AsyncDisposableStack();
+        next._callbacks = this._callbacks;
+
+        this._callbacks = [];
+        this._disposed = true;
+        return next;
+    }
+}

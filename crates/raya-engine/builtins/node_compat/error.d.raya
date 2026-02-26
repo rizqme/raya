@@ -5,10 +5,14 @@ export const ERR_BUFFER_OUT_OF_BOUNDS: string;
 export const ERR_MISSING_ARGS: string;
 export const ERR_INVALID_THIS: string;
 export const ERR_NOT_IMPLEMENTED: string;
+export const E_UNIMPLEMENTED_BUILTIN_BEHAVIOR: string;
 
-export function createError(code: string, message: string, options?: Object | null): Error;
-export function createTypeError(code: string, message: string, options?: Object | null): TypeError;
-export function createRangeError(code: string, message: string, options?: Object | null): RangeError;
+export type ErrorLike = Error | string | number | boolean | null;
+export type ErrorOptions = { cause?: ErrorLike };
+
+export function createError(code: string, message: string, options?: ErrorOptions | null): Error;
+export function createTypeError(code: string, message: string, options?: ErrorOptions | null): TypeError;
+export function createRangeError(code: string, message: string, options?: ErrorOptions | null): RangeError;
 
 /**
  * Error - Base error class and standard error types
@@ -29,7 +33,7 @@ export class Error {
     stack: string;
 
     /** Error cause (for chained failures) */
-    cause: Object | null;
+    cause: ErrorLike | null;
 
     /** Optional operational fields for system-like errors */
     code: string;
@@ -37,7 +41,7 @@ export class Error {
     syscall: string;
     path: string;
 
-    constructor(message?: string, options?: Object | null);
+    constructor(message?: string, options?: ErrorOptions | null);
 
     /** Get string representation: "ErrorName: message" */
     toString(): string;
@@ -73,10 +77,22 @@ export class EvalError extends Error {
     constructor(message?: string);
 }
 
+/** Internal engine/runtime failure error */
+export class InternalError extends Error {
+    constructor(message?: string);
+}
+
 /** Aggregate multiple errors into one throwable */
 export class AggregateError extends Error {
-    errors: Object[];
-    constructor(errors: Object[], message?: string, options?: Object | null);
+    errors: ErrorLike[];
+    constructor(errors: ErrorLike[], message?: string, options?: ErrorOptions | null);
+}
+
+/** Error wrapper for suppression semantics */
+export class SuppressedError extends Error {
+    error: ErrorLike | null;
+    suppressed: ErrorLike | null;
+    constructor(error: ErrorLike | null, suppressed: ErrorLike | null, message?: string, options?: ErrorOptions | null);
 }
 
 /** Thrown when operating on a closed channel */

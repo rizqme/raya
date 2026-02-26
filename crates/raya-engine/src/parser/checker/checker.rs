@@ -1767,18 +1767,39 @@ impl<'a> TypeChecker<'a> {
         // Check if callee is a function type
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
+                let fixed_param_len = func.params.len();
+                let mut rest_tuple_elems: Option<Vec<TypeId>> = None;
+                let mut rest_array_elem_ty: Option<TypeId> = None;
+                if let Some(rest_ty) = func.rest_param {
+                    match self.type_ctx.get(rest_ty) {
+                        Some(crate::parser::types::Type::Tuple(t)) => {
+                            rest_tuple_elems = Some(t.elements.clone());
+                        }
+                        Some(crate::parser::types::Type::Array(arr_ty)) => {
+                            rest_array_elem_ty = Some(arr_ty.element);
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Check argument count (too many or too few required)
-                // If rest parameter is present, allow unlimited arguments
-                let max_params = if func.rest_param.is_some() {
-                    usize::MAX // Unlimited when rest param present
+                let max_params = if let Some(ref tuple_elems) = rest_tuple_elems {
+                    fixed_param_len + tuple_elems.len()
+                } else if func.rest_param.is_some() {
+                    usize::MAX
                 } else {
-                    func.params.len()
+                    fixed_param_len
+                };
+                let min_params = if let Some(ref tuple_elems) = rest_tuple_elems {
+                    func.min_params + tuple_elems.len()
+                } else {
+                    func.min_params
                 };
 
-                if arg_types.len() > max_params || arg_types.len() < func.min_params {
+                if arg_types.len() > max_params || arg_types.len() < min_params {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
-                        min_expected: func.min_params,
+                        min_expected: min_params,
                         actual: arg_types.len(),
                         span: call.span,
                     });
@@ -1789,39 +1810,52 @@ impl<'a> TypeChecker<'a> {
                     .params
                     .iter()
                     .any(|&p| contains_type_variables(self.type_ctx, p))
+                    || func
+                        .rest_param
+                        .is_some_and(|rp| contains_type_variables(self.type_ctx, rp))
                     || contains_type_variables(self.type_ctx, func.return_type);
-
-                // Extract rest parameter element type if present (before gen_ctx borrow)
-                let rest_elem_ty = func.rest_param.and_then(|rest_ty| {
-                    if let Some(crate::parser::types::Type::Array(arr_ty)) =
-                        self.type_ctx.get(rest_ty)
-                    {
-                        Some(arr_ty.element)
-                    } else {
-                        None
-                    }
-                });
 
                 if is_generic {
                     // Use type unification for generic functions
-                    let mut gen_ctx = GenericContext::new(self.type_ctx);
+                    let (inferred_return, failed_unifications) = {
+                        let mut gen_ctx = GenericContext::new(self.type_ctx);
+                        let mut failed_unifications: Vec<(TypeId, TypeId, crate::parser::Span)> =
+                            Vec::new();
 
-                    // Unify each argument type with parameter type
-                    for (i, (arg_ty, _arg_span)) in arg_types.iter().enumerate() {
-                        if let Some(&param_ty) = func.params.get(i) {
-                            // Attempt unification
-                            let _ = gen_ctx.unify(param_ty, *arg_ty);
-                        } else if let Some(elem_ty) = rest_elem_ty {
-                            // Check against rest parameter element type
-                            let _ = gen_ctx.unify(elem_ty, *arg_ty);
+                        // Unify each argument type with parameter type.
+                        for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                            let target_param = if i < fixed_param_len {
+                                Some(func.params[i])
+                            } else if let Some(rest_ty) = func.rest_param {
+                                let rest_idx = i - fixed_param_len;
+                                gen_ctx
+                                    .rest_param_element_type(rest_ty, rest_idx)
+                                    .unwrap_or(None)
+                            } else {
+                                None
+                            };
+
+                            if let Some(param_ty) = target_param {
+                                match gen_ctx.unify(param_ty, *arg_ty) {
+                                    Ok(true) => {}
+                                    Ok(false) | Err(_) => {
+                                        failed_unifications.push((*arg_ty, param_ty, *arg_span));
+                                    }
+                                }
+                            }
                         }
+
+                        let inferred_return = match gen_ctx.apply_substitution(func.return_type) {
+                            Ok(substituted_return) => substituted_return,
+                            Err(_) => func.return_type,
+                        };
+                        (inferred_return, failed_unifications)
+                    };
+
+                    for (arg_ty, param_ty, arg_span) in failed_unifications {
+                        self.check_assignable(arg_ty, param_ty, arg_span);
                     }
 
-                    // Apply substitutions to return type
-                    let inferred_return = match gen_ctx.apply_substitution(func.return_type) {
-                        Ok(substituted_return) => substituted_return,
-                        Err(_) => func.return_type,
-                    };
                     if func.is_async {
                         match self.type_ctx.get(inferred_return) {
                             Some(crate::parser::types::Type::Task(_)) => inferred_return,
@@ -1833,10 +1867,14 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     // Non-generic function - use simple type checking
                     for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
-                        if let Some(&param_ty) = func.params.get(i) {
-                            self.check_assignable(*arg_ty, param_ty, *arg_span);
-                        } else if let Some(elem_ty) = rest_elem_ty {
-                            // Check against rest parameter element type
+                        if i < fixed_param_len {
+                            self.check_assignable(*arg_ty, func.params[i], *arg_span);
+                        } else if let Some(ref tuple_elems) = rest_tuple_elems {
+                            let tuple_idx = i - fixed_param_len;
+                            if let Some(&elem_ty) = tuple_elems.get(tuple_idx) {
+                                self.check_assignable(*arg_ty, elem_ty, *arg_span);
+                            }
+                        } else if let Some(elem_ty) = rest_array_elem_ty {
                             self.check_assignable(*arg_ty, elem_ty, *arg_span);
                         }
                     }
@@ -4218,7 +4256,26 @@ impl<'a> TypeChecker<'a> {
                     }
                     return self.type_ctx.set_type();
                 }
+                if name == "Record" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 2 {
+                            let value_ty = self.resolve_type_annotation(&type_args[1]);
+                            let object_type = crate::parser::types::ty::ObjectType {
+                                properties: vec![],
+                                index_signature: Some(("[key]".to_string(), value_ty)),
+                            };
+                            return self
+                                .type_ctx
+                                .intern(crate::parser::types::Type::Object(object_type));
+                        }
+                    }
+                    return self.type_ctx.unknown_type();
+                }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
+
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                    return named_ty;
+                }
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                     // If this is a generic class with type arguments, instantiate it
@@ -4290,15 +4347,25 @@ impl<'a> TypeChecker<'a> {
             }
 
             AstType::Function(func) => {
-                let param_tys: Vec<_> = func
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_annotation(&p.ty))
-                    .collect();
+                let mut param_tys = Vec::new();
+                let mut rest_param = None;
+                let mut min_params = 0usize;
+
+                for p in &func.params {
+                    let p_ty = self.resolve_type_annotation(&p.ty);
+                    if p.is_rest {
+                        rest_param = Some(p_ty);
+                    } else {
+                        if !p.optional {
+                            min_params += 1;
+                        }
+                        param_tys.push(p_ty);
+                    }
+                }
 
                 let return_ty = self.resolve_type_annotation(&func.return_type);
-
-                self.type_ctx.function_type(param_tys, return_ty, false)
+                self.type_ctx
+                    .function_type_with_rest(param_tys, return_ty, false, min_params, rest_param)
             }
 
             AstType::Object(obj) => {
@@ -4323,6 +4390,191 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.type_ctx.object_type(properties)
+            }
+
+            AstType::Keyof(keyof_ty) => {
+                let target_ty = self.resolve_type_annotation(&keyof_ty.target);
+                match self.type_ctx.get(target_ty).cloned() {
+                    Some(crate::parser::types::Type::Object(obj)) => {
+                        let members: Vec<TypeId> = obj
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            self.type_ctx.string_type()
+                        } else {
+                            self.type_ctx.union_type(members)
+                        }
+                    }
+                    Some(crate::parser::types::Type::Class(class)) => {
+                        let members: Vec<TypeId> = class
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            self.type_ctx.string_type()
+                        } else {
+                            self.type_ctx.union_type(members)
+                        }
+                    }
+                    Some(crate::parser::types::Type::TypeVar(tv)) => {
+                        if let Some(constraint) = tv.constraint {
+                            match self.type_ctx.get(constraint).cloned() {
+                                Some(crate::parser::types::Type::Object(obj)) => {
+                                    let members: Vec<TypeId> = obj
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        self.type_ctx.string_type()
+                                    } else {
+                                        self.type_ctx.union_type(members)
+                                    }
+                                }
+                                Some(crate::parser::types::Type::Class(class)) => {
+                                    let members: Vec<TypeId> = class
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        self.type_ctx.string_type()
+                                    } else {
+                                        self.type_ctx.union_type(members)
+                                    }
+                                }
+                                _ => self.type_ctx.string_type(),
+                            }
+                        } else {
+                            self.type_ctx.string_type()
+                        }
+                    }
+                    _ => self.type_ctx.keyof_type(target_ty),
+                }
+            }
+
+            AstType::IndexedAccess(indexed) => {
+                let object_ty = self.resolve_type_annotation(&indexed.object);
+                let index_ty = self.resolve_type_annotation(&indexed.index);
+
+                let prop_for_key = |obj: &crate::parser::types::ty::ObjectType,
+                                    key: &str|
+                 -> Option<TypeId> {
+                    obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                };
+
+                let object_data = self.type_ctx.get(object_ty).cloned();
+                let index_data = self.type_ctx.get(index_ty).cloned();
+
+                if matches!(object_data, Some(crate::parser::types::Type::TypeVar(_)))
+                    || matches!(index_data, Some(crate::parser::types::Type::TypeVar(_)))
+                {
+                    return self.type_ctx.indexed_access_type(object_ty, index_ty);
+                }
+
+                let object_data = match object_data {
+                    Some(crate::parser::types::Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(crate::parser::types::Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                let index_data = match index_data {
+                    Some(crate::parser::types::Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(crate::parser::types::Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                match (object_data, index_data) {
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::StringLiteral(s)),
+                    ) => prop_for_key(&obj, &s)
+                        .or(obj.index_signature.map(|(_, ty)| ty))
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Union(u)),
+                    ) => {
+                        let mut out = Vec::new();
+                        for member in &u.members {
+                            if let Some(crate::parser::types::Type::StringLiteral(s)) =
+                                self.type_ctx.get(*member).cloned()
+                            {
+                                if let Some(ty) = prop_for_key(&obj, &s) {
+                                    out.push(ty);
+                                }
+                            }
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.union_type(out)
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Tuple(t)),
+                        Some(crate::parser::types::Type::NumberLiteral(n)),
+                    ) => {
+                        let idx = n as usize;
+                        if idx < t.elements.len() {
+                            t.elements[idx]
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::String,
+                        )),
+                    ) => {
+                        let mut out = Vec::new();
+                        for p in &obj.properties {
+                            out.push(p.ty);
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.union_type(out)
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::Number,
+                        )),
+                    )
+                    | (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::Int,
+                        )),
+                    )
+                    | (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::NumberLiteral(_)),
+                    ) => {
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            sig_ty
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    _ => self.type_ctx.indexed_access_type(object_ty, index_ty),
+                }
             }
 
             AstType::Typeof(_) => {

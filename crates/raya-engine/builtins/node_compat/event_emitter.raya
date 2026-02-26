@@ -1,0 +1,216 @@
+// EventEmitter - Node-like event emitter for strict and node-compat modes
+
+class EventEmitter<E extends Object> {
+    private _listeners: Map<string, Object[]>;
+    private _onceListeners: Map<string, Object[]>;
+    private _maxListeners: number;
+
+    constructor() {
+        this._listeners = new Map<string, Object[]>();
+        this._onceListeners = new Map<string, Object[]>();
+        this._maxListeners = 10;
+    }
+
+    on<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+            return this;
+        }
+
+        let group = this._listeners.get(eventKey);
+        if (group == null) {
+            group = [];
+            this._listeners.set(eventKey, group);
+        }
+        group.push(listener);
+        return this;
+    }
+
+    off<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        if (group != null) {
+            let i = 0;
+            while (i < group.length) {
+                if (group[i] == listener) {
+                    group.splice(i, 1);
+                    break;
+                }
+                i = i + 1;
+            }
+
+            if (group.length == 0) {
+                this._listeners.delete(eventKey);
+            }
+        }
+
+        let onceGroup = this._onceListeners.get(eventKey);
+        if (onceGroup != null) {
+            let j = 0;
+            while (j < onceGroup.length) {
+                if (onceGroup[j] == listener) {
+                    onceGroup.splice(j, 1);
+                    break;
+                }
+                j = j + 1;
+            }
+
+            if (onceGroup.length == 0) {
+                this._onceListeners.delete(eventKey);
+            }
+        }
+
+        return this;
+    }
+
+    addListener<K extends keyof E>(
+        event: K,
+        listener: (...args: E[K]) => void,
+    ): EventEmitter<E> {
+        return this.on(event, listener);
+    }
+
+    removeListener<K extends keyof E>(
+        event: K,
+        listener: (...args: E[K]) => void,
+    ): EventEmitter<E> {
+        return this.off(event, listener);
+    }
+
+    once<K extends keyof E>(event: K, listener: (...args: E[K]) => void): EventEmitter<E> {
+        let eventKey = event as string;
+        if (this._maxListeners > 0 && this.listenerCount(event) >= this._maxListeners) {
+            return this;
+        }
+
+        let group = this._onceListeners.get(eventKey);
+        if (group == null) {
+            group = [];
+            this._onceListeners.set(eventKey, group);
+        }
+        group.push(listener);
+        return this;
+    }
+
+    emit<K extends keyof E>(event: K, ...args: E[K]): boolean {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        let onceGroup = this._onceListeners.get(eventKey);
+        let hasNormal = group != null && group.length > 0;
+        let hasOnce = onceGroup != null && onceGroup.length > 0;
+        if (!hasNormal && !hasOnce) {
+            return false;
+        }
+
+        let payload = args[0];
+
+        if (hasNormal) {
+            // Snapshot listeners so `off` during emit does not skip callbacks.
+            if (group != null) {
+                let snapshot = group.slice(0, group.length);
+                let i = 0;
+                while (i < snapshot.length) {
+                    let fn = snapshot[i] as ((...items: E[K]) => void);
+                    fn(payload);
+                    i = i + 1;
+                }
+            }
+        }
+
+        if (hasOnce) {
+            if (onceGroup != null) {
+                let snapshotOnce = onceGroup.slice(0, onceGroup.length);
+                this._onceListeners.delete(eventKey);
+                let j = 0;
+                while (j < snapshotOnce.length) {
+                    let fn = snapshotOnce[j] as ((...items: E[K]) => void);
+                    fn(payload);
+                    j = j + 1;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    listenerCount(event: keyof E): number {
+        let eventKey = event as string;
+        let group = this._listeners.get(eventKey);
+        let onceGroup = this._onceListeners.get(eventKey);
+        let normalCount = group == null ? 0 : group.length;
+        let onceCount = onceGroup == null ? 0 : onceGroup.length;
+        return normalCount + onceCount;
+    }
+
+    listeners<K extends keyof E>(event: K): ((...args: E[K]) => void)[] {
+        let eventKey = event as string;
+        let out: ((...args: E[K]) => void)[] = [];
+
+        let group = this._listeners.get(eventKey);
+        if (group != null) {
+            let i = 0;
+            while (i < group.length) {
+                out.push(group[i] as ((...args: E[K]) => void));
+                i = i + 1;
+            }
+        }
+
+        let onceGroup = this._onceListeners.get(eventKey);
+        if (onceGroup != null) {
+            let j = 0;
+            while (j < onceGroup.length) {
+                out.push(onceGroup[j] as ((...args: E[K]) => void));
+                j = j + 1;
+            }
+        }
+
+        return out;
+    }
+
+    eventNames(): (keyof E)[] {
+        let names = this._listeners.keys();
+        let onceNames = this._onceListeners.keys();
+
+        let i = 0;
+        while (i < onceNames.length) {
+            if (!names.includes(onceNames[i])) {
+                names.push(onceNames[i]);
+            }
+            i = i + 1;
+        }
+
+        let out: (keyof E)[] = [];
+        let j = 0;
+        while (j < names.length) {
+            out.push(names[j] as keyof E);
+            j = j + 1;
+        }
+        return out;
+    }
+
+    setMaxListeners(n: number): EventEmitter<E> {
+        if (n < 0) {
+            this._maxListeners = 0;
+            return this;
+        }
+        this._maxListeners = n;
+        return this;
+    }
+
+    getMaxListeners(): number {
+        return this._maxListeners;
+    }
+
+    removeAllListeners(event: keyof E | null = null): EventEmitter<E> {
+        if (event == null) {
+            this._listeners.clear();
+            this._onceListeners.clear();
+            return this;
+        }
+
+        let eventKey = event as string;
+        this._listeners.delete(eventKey);
+        this._onceListeners.delete(eventKey);
+        return this;
+    }
+}

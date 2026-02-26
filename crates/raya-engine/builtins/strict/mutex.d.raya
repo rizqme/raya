@@ -1,0 +1,26 @@
+/**
+ * Mutex - Mutual exclusion lock
+ *
+ * Provides thread-safe synchronization between concurrent tasks.
+ *
+ * Usage:
+ *   let mu: Mutex = new Mutex();
+ *   mu.lock();
+ *   // critical section
+ *   mu.unlock();
+ */
+export class Mutex {
+    constructor();
+
+    /** Acquire the lock (blocks until acquired) */
+    lock(): void;
+
+    /** Release the lock */
+    unlock(): void;
+
+    /** Try to acquire the lock without blocking (returns true if acquired) */
+    tryLock(): boolean;
+
+    /** Check if the mutex is currently locked */
+    isLocked(): boolean;
+}

@@ -1,0 +1,39 @@
+/** Temporal pragmatic subset */
+
+export class TemporalInstant {
+    epochMilliseconds: number;
+    constructor(epochMilliseconds: number);
+    addMilliseconds(ms: number): TemporalInstant;
+    toString(): string;
+}
+
+export class TemporalPlainDate {
+    year: number;
+    month: number;
+    day: number;
+    constructor(year: number, month: number, day: number);
+    toString(): string;
+}
+
+export class TemporalPlainTime {
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+    constructor(hour: number, minute: number, second: number, millisecond: number);
+    toString(): string;
+}
+
+export class TemporalZonedDateTime {
+    instant: TemporalInstant;
+    timeZone: string;
+    constructor(epochMilliseconds: number, timeZone: string);
+    toString(): string;
+}
+
+export class Temporal {
+    static Instant(epochMilliseconds: number): TemporalInstant;
+    static PlainDate(year: number, month: number, day: number): TemporalPlainDate;
+    static PlainTime(hour: number, minute: number, second: number, millisecond: number): TemporalPlainTime;
+    static ZonedDateTime(epochMilliseconds: number, timeZone: string): TemporalZonedDateTime;
+}

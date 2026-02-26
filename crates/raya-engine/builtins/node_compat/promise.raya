@@ -9,6 +9,8 @@ const PROMISE_IS_CANCELLED: number = 0x0501;
 const PROMISE_IS_FAILED: number = 0x0502;
 const PROMISE_GET_ERROR: number = 0x0503;
 
+type PromiseRejectionReason = Object | string | number | boolean | null;
+
 class Promise<T> {
     // Internal cancellation support retained for existing runtime semantics.
     cancel(): void {
@@ -34,12 +36,12 @@ class Promise<T> {
     }
 
     //@@class_method
-    catch<U>(onRejected: (reason: Object) => U): Promise<T | U> {
+    catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U> {
         while (!this.isDone()) {
             sleep(0);
         }
         if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
-            let reason = __NATIVE_CALL<Object>(PROMISE_GET_ERROR, this);
+            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
             return Promise.resolve(onRejected(reason));
         }
         let value: T = __OPCODE_AWAIT(this);
@@ -65,7 +67,7 @@ class Promise<T> {
         return value;
     }
 
-    static async reject<U>(reason: Object): Promise<U> {
+    static async reject<U>(reason: PromiseRejectionReason): Promise<U> {
         throw reason;
     }
 

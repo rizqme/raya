@@ -24,6 +24,7 @@
 //! rt.run_file(Path::new("server.raya"))?;
 //! ```
 
+mod builtin_manifest;
 mod builtins;
 pub mod bundle;
 pub mod compile;

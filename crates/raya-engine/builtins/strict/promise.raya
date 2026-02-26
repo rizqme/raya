@@ -1,0 +1,100 @@
+//@@builtin_primitive
+
+// Promise - Represents an asynchronous computation (public async contract)
+// Internally backed by the runtime task scheduler.
+
+// Reuse native call IDs for internal task state checks.
+const PROMISE_IS_DONE: number = 0x0500;
+const PROMISE_IS_CANCELLED: number = 0x0501;
+const PROMISE_IS_FAILED: number = 0x0502;
+const PROMISE_GET_ERROR: number = 0x0503;
+
+type PromiseRejectionReason = Object | string | number | boolean | null;
+
+class Promise<T> {
+    // Internal cancellation support retained for existing runtime semantics.
+    cancel(): void {
+        try {
+            __OPCODE_TASK_CANCEL(this);
+        } catch (_e) {
+            // Cancellation is best-effort and should never throw to user code.
+        }
+    }
+
+    isDone(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_DONE, this);
+    }
+
+    isCancelled(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_CANCELLED, this);
+    }
+
+    //@@class_method
+    then<U>(onFulfilled: (value: T) => U): Promise<U> {
+        let value: T = __OPCODE_AWAIT(this);
+        return async onFulfilled(value);
+    }
+
+    //@@class_method
+    catch<U>(onRejected: (reason: PromiseRejectionReason) => U): Promise<T | U> {
+        while (!this.isDone()) {
+            sleep(0);
+        }
+        if (__NATIVE_CALL<boolean>(PROMISE_IS_FAILED, this)) {
+            let reason = __NATIVE_CALL<PromiseRejectionReason>(PROMISE_GET_ERROR, this);
+            return Promise.resolve(onRejected(reason));
+        }
+        let value: T = __OPCODE_AWAIT(this);
+        return Promise.resolve(value);
+    }
+
+    //@@class_method
+    finally(onFinally: () => void): Promise<T> {
+        let wrapped = async (): Promise<T> => {
+            try {
+                let value = await this;
+                onFinally();
+                return value;
+            } catch (reason) {
+                onFinally();
+                throw reason;
+            }
+        };
+        return wrapped();
+    }
+
+    static async resolve<U>(value: U): Promise<U> {
+        return value;
+    }
+
+    static async reject<U>(reason: PromiseRejectionReason): Promise<U> {
+        throw reason;
+    }
+
+    static async all<U>(values: Promise<U>[]): Promise<U[]> {
+        let results: U[] = [];
+        let i = 0;
+        while (i < values.length) {
+            results.push(await values[i]);
+            i = i + 1;
+        }
+        return results;
+    }
+
+    static async race<U>(values: Promise<U>[]): Promise<U> {
+        if (values.length === 0) {
+            throw "Promise.race requires at least one promise";
+        }
+        while (true) {
+            let i = 0;
+            while (i < values.length) {
+                const candidate = values[i];
+                if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
+                    return await candidate;
+                }
+                i = i + 1;
+            }
+            sleep(0);
+        }
+    }
+}

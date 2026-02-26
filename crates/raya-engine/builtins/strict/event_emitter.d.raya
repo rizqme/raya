@@ -1,0 +1,26 @@
+// Typed EventEmitter surface (Node-compatible shape)
+// No `any` used.
+
+export type EventMap = Record<PropertyKey, readonly unknown[]>;
+
+export class EventEmitter<E extends EventMap> {
+    constructor();
+
+    on<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+    once<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+    off<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+
+    addListener<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+    removeListener<K extends keyof E>(event: K, listener: (...args: E[K]) => void): this;
+
+    emit<K extends keyof E>(event: K, ...args: E[K]): boolean;
+
+    removeAllListeners(event?: keyof E): this;
+
+    listeners<K extends keyof E>(event: K): Array<(...args: E[K]) => void>;
+    listenerCount(event: keyof E): number;
+
+    eventNames(): Array<keyof E>;
+    setMaxListeners(n: number): this;
+    getMaxListeners(): number;
+}

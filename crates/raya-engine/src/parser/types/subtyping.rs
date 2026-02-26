@@ -3,7 +3,7 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{PrimitiveType, Type, TypeId};
+use super::ty::{FunctionType, PrimitiveType, Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Context for checking subtyping relationships
@@ -111,15 +111,34 @@ impl<'a> SubtypingContext<'a> {
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
             // if m = n, Qi <: Pi for all i (contravariant), and R <: S (covariant)
             (Type::Function(f1), Type::Function(f2)) => {
-                if f1.params.len() != f2.params.len() {
+                let expand_params = |f: &FunctionType, this: &TypeContext|
+                 -> Option<Vec<TypeId>> {
+                    let mut out = f.params.clone();
+                    if let Some(rest_ty) = f.rest_param {
+                        match this.get(rest_ty) {
+                            Some(Type::Tuple(t)) => {
+                                out.extend(t.elements.iter().copied());
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(out)
+                };
+
+                let p1 = expand_params(f1, self.type_ctx);
+                let p2 = expand_params(f2, self.type_ctx);
+                let (Some(p1), Some(p2)) = (p1, p2) else {
+                    return false;
+                };
+
+                if p1.len() != p2.len() {
                     return false;
                 }
 
                 // Parameters are contravariant: sup params <: sub params
-                let params_match = f1
-                    .params
+                let params_match = p1
                     .iter()
-                    .zip(&f2.params)
+                    .zip(&p2)
                     .all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
 
                 // Return type is covariant, comparing effective returns:

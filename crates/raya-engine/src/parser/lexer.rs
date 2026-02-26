@@ -127,6 +127,9 @@ enum LogosToken {
     #[token("readonly")]
     Readonly,
 
+    #[token("keyof")]
+    Keyof,
+
     #[token("extends")]
     Extends,
 
@@ -808,6 +811,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Static => Token::Static,
             LogosToken::Abstract => Token::Abstract,
             LogosToken::Readonly => Token::Readonly,
+            LogosToken::Keyof => Token::Keyof,
             LogosToken::Extends => Token::Extends,
             LogosToken::Implements => Token::Implements,
             LogosToken::Typeof => Token::Typeof,

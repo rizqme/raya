@@ -3110,6 +3110,64 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
+            if name == TC::ARRAY_TYPE_NAME {
+                // Lower `new Array(...)` directly to array IR so it compiles to bytecode
+                // without relying on the legacy ARRAY_NEW native constructor path.
+                let array_dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
+                match new_expr.arguments.len() {
+                    0 => {
+                        let zero = self.emit_i32_const(0);
+                        self.emit(IrInstr::NewArray {
+                            dest: array_dest.clone(),
+                            len: zero,
+                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                        });
+                    }
+                    1 => match &new_expr.arguments[0] {
+                        // JS-compatible pragmatic subset: numeric single arg = length.
+                        Expression::IntLiteral(_) | Expression::FloatLiteral(_) => {
+                            let len = self.lower_expr(&new_expr.arguments[0]);
+                            self.emit(IrInstr::NewArray {
+                                dest: array_dest.clone(),
+                                len,
+                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                            });
+                        }
+                        // Non-numeric single arg = array with one element.
+                        _ => {
+                            let zero = self.emit_i32_const(0);
+                            self.emit(IrInstr::NewArray {
+                                dest: array_dest.clone(),
+                                len: zero,
+                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                            });
+                            let element = self.lower_expr(&new_expr.arguments[0]);
+                            self.emit(IrInstr::ArrayPush {
+                                array: array_dest.clone(),
+                                element,
+                            });
+                        }
+                    },
+                    _ => {
+                        // Two or more args become initial elements.
+                        let zero = self.emit_i32_const(0);
+                        self.emit(IrInstr::NewArray {
+                            dest: array_dest.clone(),
+                            len: zero,
+                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                        });
+                        for arg in &new_expr.arguments {
+                            let element = self.lower_expr(arg);
+                            self.emit(IrInstr::ArrayPush {
+                                array: array_dest.clone(),
+                                element,
+                            });
+                        }
+                    }
+                }
+                return array_dest;
+            }
+
             if name == TC::REGEXP_TYPE_NAME {
                 // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
                 // Use TypeId 8 for RegExp

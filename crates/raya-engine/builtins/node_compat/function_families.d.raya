@@ -1,0 +1,30 @@
+/** Node-compat function/generator constructor families */
+
+export class Function {
+    constructor(body: string);
+}
+
+export class AsyncFunction extends Function {
+    constructor(body: string);
+}
+
+export class Generator {
+    constructor();
+}
+
+export class AsyncGenerator {
+    constructor();
+}
+
+export class GeneratorFunction extends Function {
+    constructor(body: string);
+}
+
+export class AsyncGeneratorFunction extends Function {
+    constructor(body: string);
+}
+
+export class AsyncIterator<T> {
+    constructor();
+    next(): Promise<IteratorResult<T> >;
+}

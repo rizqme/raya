@@ -121,13 +121,26 @@ impl<'a> GenericContext<'a> {
                 let param_ids = func.params.clone();
                 let return_id = func.return_type;
                 let is_async = func.is_async;
+                let min_params = func.min_params;
+                let rest_param = func.rest_param;
 
                 let mut params = Vec::new();
                 for param in param_ids {
                     params.push(self.apply_substitution(param)?);
                 }
                 let return_type = self.apply_substitution(return_id)?;
-                Ok(self.type_ctx.function_type(params, return_type, is_async))
+                let substituted_rest = if let Some(rest_ty) = rest_param {
+                    Some(self.apply_substitution(rest_ty)?)
+                } else {
+                    None
+                };
+                Ok(self.type_ctx.function_type_with_rest(
+                    params,
+                    return_type,
+                    is_async,
+                    min_params,
+                    substituted_rest,
+                ))
             }
 
             Type::Union(union) => {
@@ -156,9 +169,119 @@ impl<'a> GenericContext<'a> {
                 Ok(self.type_ctx.intern(gen_ty))
             }
 
+            Type::Keyof(keyof_ty) => {
+                let target = self.apply_substitution(keyof_ty.target)?;
+                if let Some(resolved) = self.resolve_keyof(target) {
+                    Ok(resolved)
+                } else {
+                    Ok(self.type_ctx.keyof_type(target))
+                }
+            }
+
+            Type::IndexedAccess(indexed) => {
+                let object = self.apply_substitution(indexed.object)?;
+                let index = self.apply_substitution(indexed.index)?;
+                if let Some(resolved) = self.resolve_indexed_access(object, index) {
+                    Ok(resolved)
+                } else {
+                    Ok(self.type_ctx.indexed_access_type(object, index))
+                }
+            }
+
             // Other types don't contain type variables
             _ => Ok(ty),
         }
+    }
+
+    fn resolve_keyof(&mut self, target: TypeId) -> Option<TypeId> {
+        match self.type_ctx.get(target).cloned() {
+            Some(Type::Object(obj)) => {
+                let members: Vec<TypeId> = obj
+                    .properties
+                    .iter()
+                    .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                    .collect();
+                if members.is_empty() {
+                    Some(self.type_ctx.string_type())
+                } else {
+                    Some(self.type_ctx.union_type(members))
+                }
+            }
+            Some(Type::Class(class)) => {
+                let members: Vec<TypeId> = class
+                    .properties
+                    .iter()
+                    .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                    .collect();
+                if members.is_empty() {
+                    Some(self.type_ctx.string_type())
+                } else {
+                    Some(self.type_ctx.union_type(members))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_indexed_access(&mut self, object: TypeId, index: TypeId) -> Option<TypeId> {
+        let obj_data = self.type_ctx.get(object).cloned();
+        let idx_data = self.type_ctx.get(index).cloned();
+        match (obj_data, idx_data) {
+            (Some(Type::Object(obj)), Some(Type::StringLiteral(s))) => {
+                obj.properties.iter().find(|p| p.name == s).map(|p| p.ty)
+            }
+            (Some(Type::Object(obj)), Some(Type::Union(u))) => {
+                let mut out = Vec::new();
+                for member in &u.members {
+                    if let Some(Type::StringLiteral(s)) = self.type_ctx.get(*member).cloned() {
+                        if let Some(ty) = obj.properties.iter().find(|p| p.name == s).map(|p| p.ty)
+                        {
+                            out.push(ty);
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(self.type_ctx.union_type(out))
+                }
+            }
+            (
+                Some(Type::Object(obj)),
+                Some(Type::Primitive(super::ty::PrimitiveType::String)),
+            ) => {
+                let mut out = Vec::new();
+                for p in &obj.properties {
+                    out.push(p.ty);
+                }
+                if out.is_empty() {
+                    None
+                } else {
+                    Some(self.type_ctx.union_type(out))
+                }
+            }
+            (Some(Type::Tuple(t)), Some(Type::NumberLiteral(n))) => {
+                let idx = n as usize;
+                t.elements.get(idx).copied()
+            }
+            _ => None,
+        }
+    }
+
+    fn expand_function_params_for_unify(
+        &mut self,
+        f: &super::ty::FunctionType,
+    ) -> Result<Option<Vec<TypeId>>, TypeError> {
+        let mut out = f.params.clone();
+        if let Some(rest_ty) = f.rest_param {
+            let resolved_rest = self.apply_substitution(rest_ty)?;
+            match self.type_ctx.get(resolved_rest) {
+                Some(Type::Tuple(t)) => out.extend(t.elements.iter().copied()),
+                Some(Type::Array(_)) => return Ok(None),
+                _ => return Ok(None),
+            }
+        }
+        Ok(Some(out))
     }
 
     /// Instantiate a generic type with concrete type arguments
@@ -242,6 +365,24 @@ impl<'a> GenericContext<'a> {
             _ => Err(TypeError::Generic {
                 message: format!("Type {:?} is not generic", ty_data),
             }),
+        }
+    }
+
+    /// Resolve the concrete parameter type for a rest parameter at a given argument index.
+    ///
+    /// Returns:
+    /// - `Some(T)` when rest resolves to tuple/array and index has a concrete element type.
+    /// - `None` when rest cannot be resolved to tuple/array at the current substitution state.
+    pub fn rest_param_element_type(
+        &mut self,
+        rest_ty: TypeId,
+        rest_index: usize,
+    ) -> Result<Option<TypeId>, TypeError> {
+        let resolved_rest = self.apply_substitution(rest_ty)?;
+        match self.type_ctx.get(resolved_rest) {
+            Some(Type::Tuple(t)) => Ok(t.elements.get(rest_index).copied()),
+            Some(Type::Array(arr)) => Ok(Some(arr.element)),
+            _ => Ok(None),
         }
     }
 
@@ -344,12 +485,18 @@ impl<'a> GenericContext<'a> {
 
             // Function unification
             (Type::Function(f1), Type::Function(f2)) => {
-                if f1.params.len() != f2.params.len() || f1.is_async != f2.is_async {
+                let p1 = self.expand_function_params_for_unify(f1)?;
+                let p2 = self.expand_function_params_for_unify(f2)?;
+                let (Some(p1), Some(p2)) = (p1, p2) else {
+                    return Ok(false);
+                };
+
+                if p1.len() != p2.len() || f1.is_async != f2.is_async {
                     return Ok(false);
                 }
 
                 // Unify parameters
-                for (&p1, &p2) in f1.params.iter().zip(&f2.params) {
+                for (&p1, &p2) in p1.iter().zip(&p2) {
                     if !self.unify(p1, p2)? {
                         return Ok(false);
                     }

@@ -596,6 +596,11 @@ pub fn walk_type_annotation<V: Visitor>(visitor: &mut V, ty: &TypeAnnotation) {
         }
         Type::Object(obj) => visitor.visit_object_type(obj),
         Type::Typeof(typeof_ty) => visitor.visit_expression(&typeof_ty.argument),
+        Type::Keyof(keyof_ty) => visitor.visit_type_annotation(&keyof_ty.target),
+        Type::IndexedAccess(indexed) => {
+            visitor.visit_type_annotation(&indexed.object);
+            visitor.visit_type_annotation(&indexed.index);
+        }
         Type::StringLiteral(_) => {}
         Type::NumberLiteral(_) => {}
         Type::BooleanLiteral(_) => {}

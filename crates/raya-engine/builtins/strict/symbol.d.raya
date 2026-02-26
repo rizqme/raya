@@ -1,0 +1,13 @@
+/**
+ * Symbol - unique identifier values
+ */
+export class Symbol {
+    toString(): string;
+    valueOf(): string;
+
+    static for(key: string): Symbol;
+    static keyFor(sym: Symbol): string;
+
+    static iterator(): Symbol;
+    static toStringTag(): Symbol;
+}
