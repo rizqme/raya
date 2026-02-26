@@ -279,6 +279,20 @@ fn test_promise_then_instance() {
 }
 
 #[test]
+fn test_promise_then_rejection_passthrough_to_catch() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise
+            .reject<number>("boom")
+            .then((n: number): number => n * 2)
+            .catch((_: Object): number => 42);
+        return await p;
+    "#,
+        42,
+    );
+}
+
+#[test]
 fn test_promise_catch_instance_recovers_rejection() {
     expect_i32_with_builtins(
         r#"
