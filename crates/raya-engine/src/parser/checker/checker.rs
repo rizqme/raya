@@ -1198,22 +1198,29 @@ impl<'a> TypeChecker<'a> {
                     self.type_ctx.unknown_type()
                 }
                 _ => {
-                    self.errors.push(CheckError::TypeMismatch {
-                        expected: "iterable (Array, Set, or Map)".to_string(),
-                        actual: self.format_type(iterable_ty),
-                        span,
-                        note: Some("for-of loops require an iterable (Array, Set, or Map)".to_string()),
-                    });
-                    self.type_ctx.unknown_type()
+                    if let Some(elem_ty) = self.for_of_element_from_reference(
+                        &reference.name,
+                        reference.type_args.as_deref(),
+                    ) {
+                        elem_ty
+                    } else {
+                        self.errors.push(CheckError::TypeMismatch {
+                            expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
+                            actual: self.format_type(iterable_ty),
+                            span,
+                            note: Some("for-of loops require an iterable with iterator() returning an array".to_string()),
+                        });
+                        self.type_ctx.unknown_type()
+                    }
                 }
             },
             Type::Generic(generic) => {
                 let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
-                    Type::Reference(reference) => Some(reference.name.as_str()),
-                    Type::Class(class_ty) => Some(class_ty.name.as_str()),
+                    Type::Reference(reference) => Some(reference.name.clone()),
+                    Type::Class(class_ty) => Some(class_ty.name.clone()),
                     _ => None,
                 });
-                match base_name {
+                match base_name.as_deref() {
                     Some("Array") | Some("Set") => generic
                         .type_args
                         .first()
@@ -1227,13 +1234,34 @@ impl<'a> TypeChecker<'a> {
                             self.type_ctx.unknown_type()
                         }
                     }
+                    Some(name) => {
+                        if let Some(elem_ty) =
+                            self.for_of_element_from_reference(name, Some(&generic.type_args))
+                        {
+                            elem_ty
+                        } else {
+                            self.errors.push(CheckError::TypeMismatch {
+                                expected:
+                                    "iterable (Array, Set, Map, or class with iterator())"
+                                        .to_string(),
+                                actual: self.format_type(iterable_ty),
+                                span,
+                                note: Some(
+                                    "for-of loops require an iterable with iterator() returning an array"
+                                        .to_string(),
+                                ),
+                            });
+                            self.type_ctx.unknown_type()
+                        }
+                    }
                     _ => {
                         self.errors.push(CheckError::TypeMismatch {
-                            expected: "iterable (Array, Set, or Map)".to_string(),
+                            expected: "iterable (Array, Set, Map, or class with iterator())"
+                                .to_string(),
                             actual: self.format_type(iterable_ty),
                             span,
                             note: Some(
-                                "for-of loops require an iterable (Array, Set, or Map)"
+                                "for-of loops require an iterable with iterator() returning an array"
                                     .to_string(),
                             ),
                         });
@@ -1241,15 +1269,100 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
+            Type::Class(class_ty) => {
+                if let Some(elem_ty) = self.for_of_element_from_class(&class_ty, None) {
+                    elem_ty
+                } else {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "iterable (Array, Set, Map, or class with iterator())"
+                            .to_string(),
+                        actual: self.format_type(iterable_ty),
+                        span,
+                        note: Some(
+                            "for-of loops require an iterable with iterator() returning an array"
+                                .to_string(),
+                        ),
+                    });
+                    self.type_ctx.unknown_type()
+                }
+            }
             _ => {
                 self.errors.push(CheckError::TypeMismatch {
-                    expected: "iterable (Array, Set, or Map)".to_string(),
+                    expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
                     actual: self.format_type(iterable_ty),
                     span,
-                    note: Some("for-of loops require an iterable (Array, Set, or Map)".to_string()),
+                    note: Some(
+                        "for-of loops require an iterable with iterator() returning an array"
+                            .to_string(),
+                    ),
                 });
                 self.type_ctx.unknown_type()
             }
+        }
+    }
+
+    fn for_of_element_from_reference(
+        &mut self,
+        name: &str,
+        type_args: Option<&[TypeId]>,
+    ) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let named_ty = self.type_ctx.lookup_named_type(name)?;
+        let class_ty = match self.type_ctx.get(named_ty).cloned()? {
+            Type::Class(class_ty) => class_ty,
+            _ => return None,
+        };
+        self.for_of_element_from_class(&class_ty, type_args)
+    }
+
+    fn for_of_element_from_class(
+        &mut self,
+        class_ty: &crate::parser::types::ty::ClassType,
+        type_args: Option<&[TypeId]>,
+    ) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let class_handle = if let Some(args) = type_args {
+            self.instantiate_class_type(class_ty, args)
+        } else {
+            self.type_ctx.intern(Type::Class(class_ty.clone()))
+        };
+
+        let instantiated = match self.type_ctx.get(class_handle).cloned()? {
+            Type::Class(class_ty) => class_ty,
+            _ => return None,
+        };
+        let (method_ty, _) = self.lookup_class_member(&instantiated, "iterator")?;
+        let method_fn = match self.type_ctx.get(method_ty).cloned()? {
+            Type::Function(func) => func,
+            _ => return None,
+        };
+        self.for_of_element_from_iterator_return(method_fn.return_type)
+    }
+
+    fn for_of_element_from_iterator_return(&mut self, return_ty: TypeId) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let ty = self.type_ctx.get(return_ty).cloned()?;
+        match ty {
+            Type::Array(arr) => Some(arr.element),
+            Type::Reference(reference) if reference.name == "Array" => {
+                reference.type_args.and_then(|args| args.first().copied())
+            }
+            Type::Generic(generic) => {
+                let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
+                    Type::Reference(reference) => Some(reference.name.as_str()),
+                    Type::Class(class_ty) => Some(class_ty.name.as_str()),
+                    _ => None,
+                });
+                if base_name == Some("Array") {
+                    generic.type_args.first().copied()
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -3372,9 +3485,9 @@ impl<'a> TypeChecker<'a> {
             "isCancelled" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
             // then<U>(onFulfilled: (value: T) => U) -> Promise<U>
             "then" => {
-                let on_fulfilled_ty = self
-                    .type_ctx
-                    .function_type(vec![result_ty], unknown_ty, false);
+                let on_fulfilled_ty =
+                    self.type_ctx
+                        .function_type(vec![result_ty], unknown_ty, false);
                 Some(
                     self.type_ctx
                         .function_type(vec![on_fulfilled_ty], promise_unknown_ty, false),
@@ -3385,9 +3498,9 @@ impl<'a> TypeChecker<'a> {
                 // Use `never` for handler input to keep parameter position maximally permissive
                 // under contravariant function parameter checking.
                 let reason_ty = self.type_ctx.never_type();
-                let on_rejected_ty = self
-                    .type_ctx
-                    .function_type(vec![reason_ty], unknown_ty, false);
+                let on_rejected_ty =
+                    self.type_ctx
+                        .function_type(vec![reason_ty], unknown_ty, false);
                 Some(
                     self.type_ctx
                         .function_type(vec![on_rejected_ty], promise_unknown_ty, false),

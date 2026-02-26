@@ -14,24 +14,34 @@ use rustc_hash::FxHashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ForOfIterableKind {
     Array,
-    Set,
-    Map,
+    ClassIterator,
     Unknown,
 }
 
 impl<'a> Lowerer<'a> {
-    fn classify_for_of_iterable(&self, iterable: &ast::Expression) -> (ForOfIterableKind, TypeId) {
+    fn classify_for_of_iterable(
+        &self,
+        iterable: &ast::Expression,
+    ) -> (ForOfIterableKind, TypeId, Option<String>) {
         use crate::parser::types::Type;
 
         let iterable_ty = self.get_expr_type(iterable);
         let Some(ty) = self.type_ctx.get(iterable_ty) else {
-            return (ForOfIterableKind::Unknown, UNRESOLVED);
+            return (ForOfIterableKind::Unknown, UNRESOLVED, None);
         };
 
         match ty {
-            Type::Array(arr) => (ForOfIterableKind::Array, arr.element),
-            Type::Set(set_ty) => (ForOfIterableKind::Set, set_ty.element),
-            Type::Map(_) => (ForOfIterableKind::Map, UNRESOLVED),
+            Type::Array(arr) => (ForOfIterableKind::Array, arr.element, None),
+            Type::Set(set_ty) => (
+                ForOfIterableKind::ClassIterator,
+                set_ty.element,
+                Some("Set".to_string()),
+            ),
+            Type::Map(_) => (
+                ForOfIterableKind::ClassIterator,
+                UNRESOLVED,
+                Some("Map".to_string()),
+            ),
             Type::Reference(reference) => match reference.name.as_str() {
                 "Array" => (
                     ForOfIterableKind::Array,
@@ -40,17 +50,17 @@ impl<'a> Lowerer<'a> {
                         .as_ref()
                         .and_then(|args| args.first().copied())
                         .unwrap_or(UNRESOLVED),
+                    None,
                 ),
-                "Set" => (
-                    ForOfIterableKind::Set,
+                _ => (
+                    ForOfIterableKind::ClassIterator,
                     reference
                         .type_args
                         .as_ref()
                         .and_then(|args| args.first().copied())
                         .unwrap_or(UNRESOLVED),
+                    Some(reference.name.clone()),
                 ),
-                "Map" => (ForOfIterableKind::Map, UNRESOLVED),
-                _ => (ForOfIterableKind::Unknown, UNRESOLVED),
             },
             Type::Generic(generic) => {
                 let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
@@ -62,22 +72,25 @@ impl<'a> Lowerer<'a> {
                     Some("Array") => (
                         ForOfIterableKind::Array,
                         *generic.type_args.first().unwrap_or(&UNRESOLVED),
+                        None,
                     ),
-                    Some("Set") => (
-                        ForOfIterableKind::Set,
+                    Some(name) => (
+                        ForOfIterableKind::ClassIterator,
                         *generic.type_args.first().unwrap_or(&UNRESOLVED),
+                        Some(name.to_string()),
                     ),
-                    Some("Map") => (ForOfIterableKind::Map, UNRESOLVED),
-                    _ => (ForOfIterableKind::Unknown, UNRESOLVED),
+                    _ => (ForOfIterableKind::Unknown, UNRESOLVED, None),
                 }
             }
             Type::Class(class_ty) => match class_ty.name.as_str() {
-                "Array" => (ForOfIterableKind::Array, UNRESOLVED),
-                "Set" => (ForOfIterableKind::Set, UNRESOLVED),
-                "Map" => (ForOfIterableKind::Map, UNRESOLVED),
-                _ => (ForOfIterableKind::Unknown, UNRESOLVED),
+                "Array" => (ForOfIterableKind::Array, UNRESOLVED, None),
+                _ => (
+                    ForOfIterableKind::ClassIterator,
+                    UNRESOLVED,
+                    Some(class_ty.name.clone()),
+                ),
             },
-            _ => (ForOfIterableKind::Unknown, UNRESOLVED),
+            _ => (ForOfIterableKind::Unknown, UNRESOLVED, None),
         }
     }
 
@@ -265,17 +278,22 @@ impl<'a> Lowerer<'a> {
 
         let number_ty = TypeId::new(2); // number type
 
-        let (iter_kind, elem_ty) = self.classify_for_of_iterable(&for_of.right);
+        let (iter_kind, elem_ty, iter_class_name) = self.classify_for_of_iterable(&for_of.right);
 
         // Normalize iterable to an indexable array for loop lowering.
         let array_reg = match iter_kind {
             ForOfIterableKind::Array | ForOfIterableKind::Unknown => self.lower_expr(&for_of.right),
-            ForOfIterableKind::Set | ForOfIterableKind::Map => {
+            ForOfIterableKind::ClassIterator => {
                 let source_reg = self.lower_expr(&for_of.right);
-                let class_name = match iter_kind {
-                    ForOfIterableKind::Set => "Set",
-                    ForOfIterableKind::Map => "Map",
-                    ForOfIterableKind::Array | ForOfIterableKind::Unknown => unreachable!(),
+                let class_name = match iter_class_name.as_deref() {
+                    Some(name) => name,
+                    None => {
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: "for-of iterable class name not available".to_string(),
+                            });
+                        return;
+                    }
                 };
                 let class_id = match self.class_id_by_name(class_name) {
                     Some(id) => id,
@@ -287,31 +305,37 @@ impl<'a> Lowerer<'a> {
                             .collect();
                         known.sort();
                         known.dedup();
-                        self.errors.push(crate::compiler::CompileError::InternalError {
-                            message: format!(
-                                "for-of iterable class '{}' not registered (known classes: {})",
-                                class_name,
-                                known.join(", ")
-                            ),
-                        });
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "for-of iterable class '{}' not registered (known classes: {})",
+                                    class_name,
+                                    known.join(", ")
+                                ),
+                            });
                         return;
                     }
                 };
                 let iterator_sym = match self.interner.lookup("iterator") {
                     Some(sym) => sym,
                     None => {
-                        self.errors.push(crate::compiler::CompileError::InternalError {
-                            message: "for-of iterator method symbol not interned".to_string(),
-                        });
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: "for-of iterator method symbol not interned".to_string(),
+                            });
                         return;
                     }
                 };
                 let slot = match self.method_slot_map.get(&(class_id, iterator_sym)) {
                     Some(&slot) => slot,
                     None => {
-                        self.errors.push(crate::compiler::CompileError::InternalError {
-                            message: format!("for-of iterator method not found on {}", class_name),
-                        });
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "for-of iterator method not found on {}",
+                                    class_name
+                                ),
+                            });
                         return;
                     }
                 };

@@ -307,6 +307,24 @@ fn test_for_of_map_entries_destructure() {
     );
 }
 
+#[test]
+fn test_for_of_custom_class_iterator() {
+    expect_i32(
+        "class Counter {
+             iterator(): number[] {
+                 return [2, 4, 6];
+             }
+         }
+         let c = new Counter();
+         let sum = 0;
+         for (let x of c) {
+             sum = sum + x;
+         }
+         return sum;",
+        12,
+    );
+}
+
 // ============================================================================
 // Callback-Based Array Methods
 // ============================================================================
