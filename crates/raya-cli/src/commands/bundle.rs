@@ -379,6 +379,7 @@ mod aot_impl {
             Opcode::ConstF64 | Opcode::ArrayLiteral | Opcode::Try => 8,
             Opcode::Call
             | Opcode::CallMethod
+            | Opcode::OptionalCallMethod
             | Opcode::CallConstructor
             | Opcode::CallSuper
             | Opcode::CallStatic
