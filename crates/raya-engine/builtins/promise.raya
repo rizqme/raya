@@ -60,42 +60,38 @@ class Promise<T> {
         return wrapped();
     }
 
-    static resolve<U>(value: U): Promise<U> {
-        let resolved = async (): Promise<U> => value;
-        return resolved();
+    static async resolve<U>(value: U): Promise<U> {
+        return value;
     }
 
-    static reject<U>(reason: Object): Promise<U> {
-        let rejected = async (): Promise<U> => {
-            throw reason;
-        };
-        return rejected();
+    static async reject<U>(reason: Object): Promise<U> {
+        throw reason;
     }
 
-    static all<U>(values: Promise<U>[]): Promise<U[]> {
-        let collect = async (): Promise<U[]> => {
-            return await values;
-        };
-        return collect();
+    static async all<U>(values: Promise<U>[]): Promise<U[]> {
+        let results: U[] = [];
+        let i = 0;
+        while (i < values.length) {
+            results.push(await values[i]);
+            i = i + 1;
+        }
+        return results;
     }
 
-    static race<U>(values: Promise<U>[]): Promise<U> {
-        let first = async (): Promise<U> => {
-            if (values.length === 0) {
-                throw new Error("Promise.race requires at least one promise");
-            }
-            while (true) {
-                let i = 0;
-                while (i < values.length) {
-                    const candidate = values[i];
-                    if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
-                        return __OPCODE_AWAIT(candidate);
-                    }
-                    i = i + 1;
+    static async race<U>(values: Promise<U>[]): Promise<U> {
+        if (values.length === 0) {
+            throw new Error("Promise.race requires at least one promise");
+        }
+        while (true) {
+            let i = 0;
+            while (i < values.length) {
+                const candidate = values[i];
+                if (__NATIVE_CALL<boolean>(PROMISE_IS_DONE, candidate)) {
+                    return await candidate;
                 }
-                sleep(0);
+                i = i + 1;
             }
-        };
-        return first();
+            sleep(0);
+        }
     }
 }

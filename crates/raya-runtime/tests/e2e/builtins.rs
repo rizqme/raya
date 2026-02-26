@@ -232,6 +232,41 @@ fn test_set_entries_value_value_pairs() {
 }
 
 // ============================================================================
+// Promise tests
+// ============================================================================
+
+#[test]
+fn test_promise_resolve_static() {
+    expect_i32_with_builtins(
+        r#"
+        return await Promise.resolve(42);
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_all_static() {
+    expect_i32_with_builtins(
+        r#"
+        let out = await Promise.all([Promise.resolve(40), Promise.resolve(2)]);
+        return out[0] + out[1];
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_race_static() {
+    expect_i32_with_builtins(
+        r#"
+        return await Promise.race([Promise.resolve(41), Promise.resolve(42)]);
+    "#,
+        41,
+    );
+}
+
+// ============================================================================
 // Buffer tests
 // ============================================================================
 
