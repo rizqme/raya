@@ -81,8 +81,6 @@ impl TypeContext {
         let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
         // Public async surface name.
         ctx.register_named_type("Promise".into(), task);
-        // Temporary alias retained for migration during hard switch rollout.
-        ctx.register_named_type("Task".into(), task);
 
         let channel = ctx.intern(Type::Channel(super::ty::ChannelType {
             message: unknown_id,
@@ -161,7 +159,6 @@ impl TypeContext {
     pub const MAP_TYPE_NAME: &str = "Map";
     pub const SET_TYPE_NAME: &str = "Set";
     pub const PROMISE_TYPE_NAME: &str = "Promise";
-    pub const TASK_TYPE_NAME: &str = "Task";
     pub const CHANNEL_TYPE_NAME: &str = "Channel";
     pub const REGEXP_TYPE_NAME: &str = "RegExp";
     pub const BUFFER_TYPE_NAME: &str = "Buffer";
@@ -212,14 +209,14 @@ impl TypeContext {
         self.type_to_id.get(ty).copied()
     }
 
-    /// Check if a TypeId refers to a Task type
+    /// Check if a TypeId refers to the async Promise representation type.
     pub fn is_task_type(&self, id: TypeId) -> bool {
         matches!(self.get(id), Some(Type::Task(_)))
     }
 
-    /// Get a generic Task<Unknown> type ID for use when the specific Task<T> is not known
+    /// Get a generic Promise<Unknown> type ID when the specific Promise<T> is not known.
     pub fn generic_task_type(&self) -> Option<TypeId> {
-        // Task<Unknown> was pre-interned in TypeContext::new()
+        // Promise<Unknown> was pre-interned in TypeContext::new()
         let unknown_id = TypeId(Self::UNKNOWN_TYPE_ID);
         self.lookup(&Type::Task(super::ty::TaskType { result: unknown_id }))
     }

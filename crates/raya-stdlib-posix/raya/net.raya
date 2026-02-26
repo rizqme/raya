@@ -25,15 +25,15 @@ class TcpListener {
         return __NATIVE_CALL<string>("net.tcpListenerAddr", this._handle);
     }
 
-    async serve(handler: (stream: TcpStream) => Task<void>): Task<void> {
+    async serve(handler: (stream: TcpStream) => Promise<void>): Promise<void> {
         while (true) {
             const stream = this.accept();
             if (stream == null) {
                 break;
             }
-            // Spawn-style behavior: invoking async handler starts a Task immediately.
+            // Spawn-style behavior: invoking async handler starts a Promise immediately.
             // We intentionally do not await to keep connection handling concurrent.
-            const _task = handler(stream);
+            const _promise = handler(stream);
         }
     }
 }
@@ -172,7 +172,7 @@ class Net {
         return new UdpSocket(h);
     }
 
-    async serve(host: string, port: number, handler: (stream: TcpStream) => Task<void>): Task<void> {
+    async serve(host: string, port: number, handler: (stream: TcpStream) => Promise<void>): Promise<void> {
         const listener = this.listen(host, port);
         await listener.serve(handler);
     }

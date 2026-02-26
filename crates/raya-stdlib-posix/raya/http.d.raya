@@ -49,9 +49,9 @@ export class HttpServer {
     /**
      * Concurrent async callback loop for requests.
      * Each accepted request invokes handler in a new async task.
-     * Cancel with `task.cancel()`.
+     * Cancel with `promise.cancel()`.
      */
-    serve(handler: (req: HttpRequest, server: HttpServer) => void): Task<void>;
+    serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void>;
     /** Close server */
     close(): void;
     /** Server address */

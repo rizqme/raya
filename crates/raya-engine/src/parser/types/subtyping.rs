@@ -334,7 +334,7 @@ impl<'a> SubtypingContext<'a> {
     fn is_builtin_class_bridge(&self, lhs: &Type, rhs: &Type) -> bool {
         match (lhs, rhs) {
             (Type::Array(_), Type::Class(c)) => c.name == "Array",
-            (Type::Task(_), Type::Class(c)) => c.name == "Task",
+            (Type::Task(_), Type::Class(c)) => c.name == "Promise",
             (Type::Channel(_), Type::Class(c)) => c.name == "Channel",
             (Type::Map(_), Type::Class(c)) => c.name == "Map",
             (Type::Set(_), Type::Class(c)) => c.name == "Set",

@@ -54,10 +54,13 @@ use std::sync::Arc;
 /// Configuration for the Raya runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BuiltinMode {
-    /// Raya-first builtin surface. Avoids Node-only object meta-programming APIs.
+    /// Raya-first builtin surface.
+    /// Promise-first async and core builtins are always enabled.
+    /// Excludes JS legacy object meta-programming APIs.
     #[default]
     RayaStrict,
-    /// Node compatibility surface for builtins.
+    /// Enables JS legacy object meta-programming APIs (Object.define* descriptor APIs).
+    /// Does not alter Promise/channel/mutex core builtin behavior.
     NodeCompat,
 }
 

@@ -98,7 +98,7 @@ impl TypeRegistry {
         // We check all known type names
         let known_names = [
             "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex", "RegExp",
-            "Date", "Buffer", "Task", "Channel", "Map", "Set", "Json", "int", "Array",
+            "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int", "Array",
         ];
         for name in &known_names {
             if let Some(id) = type_ctx.lookup_named_type(name) {
@@ -239,7 +239,7 @@ impl TypeRegistry {
                 &[("tryLock", mutex::TRY_LOCK), ("isLocked", mutex::IS_LOCKED)],
             ),
             (
-                "Task",
+                "Promise",
                 &[
                     ("isDone", task::IS_DONE),
                     ("isCancelled", task::IS_CANCELLED),
@@ -463,7 +463,7 @@ impl TypeRegistry {
             Type::Mutex => Ok(lookup_or_unresolved(type_ctx, "Mutex")),
             Type::Date => Ok(lookup_or_unresolved(type_ctx, "Date")),
             Type::Buffer => Ok(lookup_or_unresolved(type_ctx, "Buffer")),
-            Type::Task(_) => Ok(lookup_or_unresolved(type_ctx, "Task")),
+            Type::Task(_) => Ok(lookup_or_unresolved(type_ctx, "Promise")),
             Type::Channel(_) => Ok(lookup_or_unresolved(type_ctx, "Channel")),
             Type::Map(_) => Ok(lookup_or_unresolved(type_ctx, "Map")),
             Type::Set(_) => Ok(lookup_or_unresolved(type_ctx, "Set")),

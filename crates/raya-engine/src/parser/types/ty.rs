@@ -116,7 +116,7 @@ pub struct FunctionType {
     pub params: Vec<TypeId>,
     /// Return type
     pub return_type: TypeId,
-    /// Whether this is an async function (returns Task<R>)
+    /// Whether this is an async function (returns Promise<R>)
     pub is_async: bool,
     /// Minimum number of required parameters (params without default values)
     pub min_params: usize,
@@ -131,7 +131,7 @@ pub struct ArrayType {
     pub element: TypeId,
 }
 
-/// Task type: Task<T> - represents an async computation that yields T
+/// Promise type: Promise<T> - represents an async computation that yields T
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct TaskType {
     /// Result type of the task
@@ -281,7 +281,7 @@ pub enum Type {
     /// Array type: T[]
     Array(ArrayType),
 
-    /// Task type: Task<T>
+    /// Promise type: Promise<T>
     Task(TaskType),
 
     /// Mutex type: Mutex
@@ -380,13 +380,13 @@ impl fmt::Display for Type {
                 }
                 write!(f, ") => ")?;
                 if func.is_async {
-                    write!(f, "Task<{}>", func.return_type)
+                    write!(f, "Promise<{}>", func.return_type)
                 } else {
                     write!(f, "{}", func.return_type)
                 }
             }
             Type::Array(a) => write!(f, "{}[]", a.element),
-            Type::Task(t) => write!(f, "Task<{}>", t.result),
+            Type::Task(t) => write!(f, "Promise<{}>", t.result),
             Type::Mutex => write!(f, "Mutex"),
             Type::RegExp => write!(f, "RegExp"),
             Type::Channel(c) => write!(f, "Channel<{}>", c.message),

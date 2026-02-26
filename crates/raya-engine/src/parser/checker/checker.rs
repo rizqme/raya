@@ -3951,7 +3951,7 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Handle Promise<T>/Promise<T> for async functions
-                if name == TC::PROMISE_TYPE_NAME || name == TC::TASK_TYPE_NAME {
+                if name == TC::PROMISE_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0]);
@@ -4652,7 +4652,7 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "Expected Task.isCancelled() to type-check, got {:?}",
+            "Expected Promise.isCancelled() to type-check, got {:?}",
             result
         );
     }
