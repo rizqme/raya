@@ -927,43 +927,354 @@ impl<'a> Lowerer<'a> {
                 }
             }
 
-            // Check if this is a Task method call (e.g., task.cancel())
-            // Task<T> is a special type that holds a raw task_id (u64), not an object
-            if let Expression::Identifier(ident) = &*member.object {
-                if let Some(&local_idx) = self.local_map.get(&ident.name) {
-                    if let Some(reg) = self.local_registers.get(&local_idx) {
-                        if self.type_ctx.is_task_type(reg.ty) {
-                            // Load the task handle (raw task_id u64)
-                            let task_reg = self.alloc_register(reg.ty);
-                            self.emit(IrInstr::LoadLocal {
-                                dest: task_reg.clone(),
-                                index: local_idx,
-                            });
+            // Promise<T> is represented by a raw task handle internally.
+            // Intercept promise-like methods before object dispatch.
+            let object_ty = self.get_expr_type(&member.object);
+            let is_promise_like = self.type_ctx.is_task_type(object_ty)
+                || matches!(
+                    self.type_ctx.get(object_ty),
+                    Some(crate::parser::types::Type::Class(class)) if class.name == "Promise"
+                );
+            if is_promise_like {
+                let task_reg = self.lower_expr(&member.object);
+                match method_name {
+                    "cancel" => {
+                        self.emit(IrInstr::TaskCancel { task: task_reg });
+                        return dest;
+                    }
+                    "isDone" | "isCancelled" => {
+                        let native_id = match method_name {
+                            "isDone" => 0x0500,      // TASK_IS_DONE
+                            "isCancelled" => 0x0501, // TASK_IS_CANCELLED
+                            _ => unreachable!(),
+                        };
+                        self.emit(IrInstr::NativeCall {
+                            dest: Some(dest.clone()),
+                            native_id,
+                            args: vec![task_reg],
+                        });
+                        return dest;
+                    }
+                    "then" | "catch" | "finally" => {
+                        let awaited_ty =
+                            if let Some(crate::parser::types::ty::Type::Task(task_ty)) =
+                                self.type_ctx.get(object_ty)
+                            {
+                                task_ty.result
+                            } else {
+                                TypeId::new(UNRESOLVED_TYPE_ID)
+                            };
 
-                            match method_name {
-                                "cancel" => {
-                                    // Emit TaskCancel opcode
-                                    self.emit(IrInstr::TaskCancel { task: task_reg });
-                                    return dest; // void return
-                                }
-                                "isDone" | "isCancelled" => {
-                                    // These are native calls that take the task handle
-                                    let native_id = match method_name {
-                                        "isDone" => 0x0500,      // TASK_IS_DONE
-                                        "isCancelled" => 0x0501, // TASK_IS_CANCELLED
-                                        _ => unreachable!(),
-                                    };
-                                    self.emit(IrInstr::NativeCall {
-                                        dest: Some(dest.clone()),
-                                        native_id,
-                                        args: vec![task_reg],
+                        match method_name {
+                            "then" => {
+                                self.emit(IrInstr::NativeCall {
+                                    dest: None,
+                                    native_id: 0x0504, // TASK_MARK_OBSERVED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let check_block = self.alloc_block();
+                                let sleep_block = self.alloc_block();
+                                let settled_block = self.alloc_block();
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(check_block));
+                                self.current_block = check_block;
+                                let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
+                                let is_done = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_done.clone()),
+                                    native_id: 0x0500, // TASK_IS_DONE
+                                    args: vec![task_reg.clone()],
+                                });
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_done,
+                                    then_block: settled_block,
+                                    else_block: sleep_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(sleep_block));
+                                self.current_block = sleep_block;
+                                let zero = self.emit_i32_const(0);
+                                self.emit(IrInstr::Sleep { duration_ms: zero });
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(settled_block));
+                                self.current_block = settled_block;
+                                let is_failed = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_failed.clone()),
+                                    native_id: 0x0502, // TASK_IS_FAILED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let failed_block = self.alloc_block();
+                                let success_block = self.alloc_block();
+                                let merge_block = self.alloc_block();
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_failed,
+                                    then_block: failed_block,
+                                    else_block: success_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(failed_block));
+                                self.current_block = failed_block;
+                                let failed_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
+                                    dest: failed_result.clone(),
+                                    value: IrValue::Register(task_reg.clone()),
+                                });
+                                let failed_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(success_block));
+                                self.current_block = success_block;
+                                let success_result = self.alloc_register(dest.ty);
+                                if let Some(callback) = args.first().cloned() {
+                                    let awaited = self.alloc_register(awaited_ty);
+                                    self.emit(IrInstr::Await {
+                                        dest: awaited.clone(),
+                                        task: task_reg,
                                     });
-                                    return dest;
+                                    self.emit(IrInstr::SpawnClosure {
+                                        dest: success_result.clone(),
+                                        closure: callback,
+                                        args: vec![awaited],
+                                    });
+                                } else {
+                                    self.emit(IrInstr::Assign {
+                                        dest: success_result.clone(),
+                                        value: IrValue::Register(task_reg),
+                                    });
                                 }
-                                _ => {}
+                                let success_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(merge_block));
+                                self.current_block = merge_block;
+                                self.emit(IrInstr::Phi {
+                                    dest: dest.clone(),
+                                    sources: vec![
+                                        (failed_exit, failed_result),
+                                        (success_exit, success_result),
+                                    ],
+                                });
+                                return dest;
                             }
+                            "finally" => {
+                                self.emit(IrInstr::NativeCall {
+                                    dest: None,
+                                    native_id: 0x0504, // TASK_MARK_OBSERVED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let check_block = self.alloc_block();
+                                let sleep_block = self.alloc_block();
+                                let settled_block = self.alloc_block();
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(check_block));
+                                self.current_block = check_block;
+                                let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
+                                let is_done = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_done.clone()),
+                                    native_id: 0x0500, // TASK_IS_DONE
+                                    args: vec![task_reg.clone()],
+                                });
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_done,
+                                    then_block: settled_block,
+                                    else_block: sleep_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(sleep_block));
+                                self.current_block = sleep_block;
+                                let zero = self.emit_i32_const(0);
+                                self.emit(IrInstr::Sleep { duration_ms: zero });
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(settled_block));
+                                self.current_block = settled_block;
+                                let is_failed = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_failed.clone()),
+                                    native_id: 0x0502, // TASK_IS_FAILED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let failed_block = self.alloc_block();
+                                let success_block = self.alloc_block();
+                                let merge_block = self.alloc_block();
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_failed,
+                                    then_block: failed_block,
+                                    else_block: success_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(failed_block));
+                                self.current_block = failed_block;
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::CallClosure {
+                                        dest: None,
+                                        closure: callback,
+                                        args: vec![],
+                                    });
+                                }
+                                let failed_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
+                                    dest: failed_result.clone(),
+                                    value: IrValue::Register(task_reg.clone()),
+                                });
+                                let failed_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(success_block));
+                                self.current_block = success_block;
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::CallClosure {
+                                        dest: None,
+                                        closure: callback,
+                                        args: vec![],
+                                    });
+                                }
+                                let success_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
+                                    dest: success_result.clone(),
+                                    value: IrValue::Register(task_reg),
+                                });
+                                let success_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(merge_block));
+                                self.current_block = merge_block;
+                                self.emit(IrInstr::Phi {
+                                    dest: dest.clone(),
+                                    sources: vec![
+                                        (failed_exit, failed_result),
+                                        (success_exit, success_result),
+                                    ],
+                                });
+                                return dest;
+                            }
+                            "catch" => {
+                                self.emit(IrInstr::NativeCall {
+                                    dest: None,
+                                    native_id: 0x0504, // TASK_MARK_OBSERVED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let check_block = self.alloc_block();
+                                let sleep_block = self.alloc_block();
+                                let settled_block = self.alloc_block();
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(check_block));
+                                self.current_block = check_block;
+                                let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
+                                let is_done = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_done.clone()),
+                                    native_id: 0x0500, // TASK_IS_DONE
+                                    args: vec![task_reg.clone()],
+                                });
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_done,
+                                    then_block: settled_block,
+                                    else_block: sleep_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(sleep_block));
+                                self.current_block = sleep_block;
+                                let zero = self.emit_i32_const(0);
+                                self.emit(IrInstr::Sleep { duration_ms: zero });
+                                self.set_terminator(Terminator::Jump(check_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(settled_block));
+                                self.current_block = settled_block;
+                                let is_failed = self.alloc_register(bool_ty);
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(is_failed.clone()),
+                                    native_id: 0x0502, // TASK_IS_FAILED
+                                    args: vec![task_reg.clone()],
+                                });
+
+                                let failed_block = self.alloc_block();
+                                let success_block = self.alloc_block();
+                                let merge_block = self.alloc_block();
+                                self.set_terminator(Terminator::Branch {
+                                    cond: is_failed,
+                                    then_block: failed_block,
+                                    else_block: success_block,
+                                });
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(failed_block));
+                                self.current_block = failed_block;
+                                let reason = self.alloc_register(TypeId::new(UNRESOLVED_TYPE_ID));
+                                self.emit(IrInstr::NativeCall {
+                                    dest: Some(reason.clone()),
+                                    native_id: 0x0503, // TASK_GET_ERROR
+                                    args: vec![task_reg.clone()],
+                                });
+                                let failed_result = self.alloc_register(dest.ty);
+                                if let Some(callback) = args.first().cloned() {
+                                    self.emit(IrInstr::SpawnClosure {
+                                        dest: failed_result.clone(),
+                                        closure: callback,
+                                        args: vec![reason],
+                                    });
+                                } else {
+                                    self.emit(IrInstr::Assign {
+                                        dest: failed_result.clone(),
+                                        value: IrValue::Register(task_reg.clone()),
+                                    });
+                                }
+                                let failed_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(success_block));
+                                self.current_block = success_block;
+                                let success_result = self.alloc_register(dest.ty);
+                                self.emit(IrInstr::Assign {
+                                    dest: success_result.clone(),
+                                    value: IrValue::Register(task_reg),
+                                });
+                                let success_exit = self.current_block;
+                                self.set_terminator(Terminator::Jump(merge_block));
+
+                                self.current_function_mut()
+                                    .add_block(crate::ir::BasicBlock::new(merge_block));
+                                self.current_block = merge_block;
+                                self.emit(IrInstr::Phi {
+                                    dest: dest.clone(),
+                                    sources: vec![
+                                        (failed_exit, failed_result),
+                                        (success_exit, success_result),
+                                    ],
+                                });
+                                return dest;
+                            }
+                            _ => {}
                         }
                     }
+                    _ => {}
                 }
             }
 
@@ -2799,6 +3110,64 @@ impl<'a> Lowerer<'a> {
         if let Expression::Identifier(ident) = &*new_expr.callee {
             // Handle built-in primitive constructors
             let name = self.interner.resolve(ident.name);
+            if name == TC::ARRAY_TYPE_NAME {
+                // Lower `new Array(...)` directly to array IR so it compiles to bytecode
+                // without relying on the legacy ARRAY_NEW native constructor path.
+                let array_dest = self.alloc_register(TypeId::new(super::ARRAY_TYPE_ID));
+                match new_expr.arguments.len() {
+                    0 => {
+                        let zero = self.emit_i32_const(0);
+                        self.emit(IrInstr::NewArray {
+                            dest: array_dest.clone(),
+                            len: zero,
+                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                        });
+                    }
+                    1 => match &new_expr.arguments[0] {
+                        // JS-compatible pragmatic subset: numeric single arg = length.
+                        Expression::IntLiteral(_) | Expression::FloatLiteral(_) => {
+                            let len = self.lower_expr(&new_expr.arguments[0]);
+                            self.emit(IrInstr::NewArray {
+                                dest: array_dest.clone(),
+                                len,
+                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                            });
+                        }
+                        // Non-numeric single arg = array with one element.
+                        _ => {
+                            let zero = self.emit_i32_const(0);
+                            self.emit(IrInstr::NewArray {
+                                dest: array_dest.clone(),
+                                len: zero,
+                                elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                            });
+                            let element = self.lower_expr(&new_expr.arguments[0]);
+                            self.emit(IrInstr::ArrayPush {
+                                array: array_dest.clone(),
+                                element,
+                            });
+                        }
+                    },
+                    _ => {
+                        // Two or more args become initial elements.
+                        let zero = self.emit_i32_const(0);
+                        self.emit(IrInstr::NewArray {
+                            dest: array_dest.clone(),
+                            len: zero,
+                            elem_ty: TypeId::new(NUMBER_TYPE_ID),
+                        });
+                        for arg in &new_expr.arguments {
+                            let element = self.lower_expr(arg);
+                            self.emit(IrInstr::ArrayPush {
+                                array: array_dest.clone(),
+                                element,
+                            });
+                        }
+                    }
+                }
+                return array_dest;
+            }
+
             if name == TC::REGEXP_TYPE_NAME {
                 // new RegExp(pattern, flags?) -> NativeCall(0x0A00)
                 // Use TypeId 8 for RegExp
@@ -3335,7 +3704,7 @@ impl<'a> Lowerer<'a> {
                 _ => {}
             },
             "Set" => match method_name {
-                "values" => {
+                "keys" | "values" | "entries" => {
                     dest.ty = TypeId::new(super::ARRAY_TYPE_ID);
                 }
                 "has" => {

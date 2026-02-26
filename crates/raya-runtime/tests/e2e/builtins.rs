@@ -10,8 +10,9 @@
 //! are added to the VM. The tests verify compilation succeeds.
 
 use super::harness::{
-    expect_bool, expect_bool_with_builtins, expect_i32, expect_i32_with_builtins, expect_string,
-    expect_string_with_builtins,
+    expect_bool, expect_bool_runtime, expect_bool_runtime_node_compat, expect_bool_with_builtins, expect_i32,
+    expect_i32_runtime_node_compat, expect_i32_with_builtins, expect_string,
+    expect_string_runtime_node_compat, expect_string_with_builtins,
 };
 
 // ============================================================================
@@ -23,7 +24,7 @@ fn test_map_new_and_size() {
     expect_i32_with_builtins(
         r#"
         let map = new Map<string, number>();
-        return map.size();
+        return map.size;
     "#,
         0,
     );
@@ -119,7 +120,7 @@ fn test_map_clear() {
         map.set("a", 1);
         map.set("b", 2);
         map.clear();
-        return map.size();
+        return map.size;
     "#,
         0,
     );
@@ -134,7 +135,7 @@ fn test_set_new_and_size() {
     expect_i32_with_builtins(
         r#"
         let set = new Set<number>();
-        return set.size();
+        return set.size;
     "#,
         0,
     );
@@ -160,7 +161,7 @@ fn test_set_add_unique() {
         set.add(1);
         set.add(2);
         set.add(1);
-        return set.size();
+        return set.size;
     "#,
         2,
     );
@@ -188,9 +189,241 @@ fn test_set_clear() {
         set.add(2);
         set.add(3);
         set.clear();
-        return set.size();
+        return set.size;
     "#,
         0,
+    );
+}
+
+#[test]
+fn test_set_keys_alias_values() {
+    expect_bool_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(7);
+        set.add(9);
+        let keys = set.keys();
+        let values = set.values();
+        return keys.length == values.length && keys.includes(7) && keys.includes(9);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_set_entries_value_value_pairs() {
+    expect_bool_with_builtins(
+        r#"
+        let set = new Set<number>();
+        set.add(5);
+        set.add(8);
+        let entries = set.entries();
+        let ok = true;
+        let i = 0;
+        while (i < entries.length) {
+            if (entries[i][0] != entries[i][1]) {
+                ok = false;
+            }
+            i = i + 1;
+        }
+        return ok && entries.length == 2;
+    "#,
+        true,
+    );
+}
+
+// ============================================================================
+// Promise tests
+// ============================================================================
+
+#[test]
+fn test_promise_resolve_static() {
+    expect_i32_with_builtins(
+        r#"
+        return await Promise.resolve(42);
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_all_static() {
+    expect_i32_with_builtins(
+        r#"
+        let out = await Promise.all([Promise.resolve(40), Promise.resolve(2)]);
+        return out[0] + out[1];
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_race_static() {
+    expect_i32_with_builtins(
+        r#"
+        return await Promise.race([Promise.resolve(41), Promise.resolve(42)]);
+    "#,
+        41,
+    );
+}
+
+#[test]
+fn test_promise_then_instance() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.resolve(21);
+        let q = p.then((n: number): number => n * 2);
+        return await q;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_then_rejection_passthrough_to_catch() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise
+            .reject<number>("boom")
+            .then((reason: PromiseRejectionReason): unknown => reason)
+            .catch<number>((reason: Object | string | number | boolean | null): number => 42);
+        return await p;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_catch_instance_recovers_rejection() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.reject<number>("boom");
+        let q = p.catch((reason: Object | string | number | boolean | null): number => 42);
+        return await q;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_catch_instance_passthrough_on_success() {
+    expect_i32_with_builtins(
+        r#"
+        let p = Promise.resolve(41);
+        let q = p.catch((reason: Object | string | number | boolean | null): number => 0);
+        return await q;
+    "#,
+        41,
+    );
+}
+
+#[test]
+fn test_promise_finally_instance() {
+    expect_i32_with_builtins(
+        r#"
+        let marker = 1;
+        let p = Promise.resolve(41);
+        let q = p.finally((): void => { marker = marker + 1; });
+        let out = await q;
+        return out + marker;
+    "#,
+        43,
+    );
+}
+
+#[test]
+fn test_promise_finally_runs_on_rejection_and_passthrough() {
+    expect_i32_with_builtins(
+        r#"
+        let marker = 1;
+        let p = Promise
+            .reject<number>("boom")
+            .finally((): void => { marker = marker + 1; })
+            .catch((_: Object | string | number | boolean | null): number => 40);
+        let out = await p;
+        return out + marker;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_promise_then_fifo_order() {
+    expect_i32_with_builtins(
+        r#"
+        let order: number[] = [];
+        Promise.resolve(1).then((_: number): number => {
+            order.push(1);
+            return 1;
+        });
+        Promise.resolve(2).then((_: number): number => {
+            order.push(2);
+            return 2;
+        });
+        await Promise.resolve(0);
+        return order[0] * 10 + order[1];
+    "#,
+        12,
+    );
+}
+
+#[test]
+fn test_promise_catch_rethrow_stays_rejected() {
+    expect_i32_with_builtins(
+        r#"
+        async function run(): Promise<number> {
+            let p = Promise
+                .reject<number>("boom")
+                .catch((_: Object | string | number | boolean | null): number => {
+                    throw "again";
+                });
+            try {
+                let _v = await p;
+                return 0;
+            } catch (e) {
+                return 1;
+            }
+        }
+        return await run();
+    "#,
+        1,
+    );
+}
+
+// ============================================================================
+// Symbol tests
+// ============================================================================
+
+#[test]
+fn test_symbol_for_and_key_for() {
+    expect_string_with_builtins(
+        r#"
+        let s = Symbol.for("alpha");
+        return Symbol.keyFor(s);
+    "#,
+        "alpha",
+    );
+}
+
+#[test]
+fn test_symbol_to_string_surface() {
+    expect_string_with_builtins(
+        r#"
+        let s = Symbol.for("iter");
+        return s.toString();
+    "#,
+        "Symbol(iter)",
+    );
+}
+
+#[test]
+fn test_symbol_iterator_key() {
+    expect_string_with_builtins(
+        r#"
+        let it = Symbol.iterator();
+        return it.valueOf();
+    "#,
+        "Symbol.iterator",
     );
 }
 
@@ -203,7 +436,7 @@ fn test_buffer_new_and_length() {
     expect_i32_with_builtins(
         r#"
         let buf = new Buffer(16);
-        return buf.length();
+        return buf.length;
     "#,
         16,
     );
@@ -242,6 +475,200 @@ fn test_buffer_get_set_float64() {
         buf.setFloat64(0, 3.14159);
         let val = buf.getFloat64(0);
         return val > 3.14 && val < 3.15;
+    "#,
+        true,
+    );
+}
+
+// ============================================================================
+// TypedArray / DataView tests
+// ============================================================================
+
+#[test]
+fn test_arraybuffer_slice_length() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let ab = new ArrayBuffer(16);
+        let sub = ab.slice(4, 10);
+        return sub.byteLength;
+    "#,
+        6,
+    );
+}
+
+#[test]
+fn test_uint8array_get_set() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let arr = new Uint8Array(4);
+        arr.set(0, 7);
+        arr.set(1, 8);
+        return arr.get(0) + arr.get(1);
+    "#,
+        15,
+    );
+}
+
+#[test]
+fn test_int8array_signed_roundtrip() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let arr = new Int8Array(2);
+        arr.set(0, -1);
+        arr.set(1, -128);
+        return arr.get(0) + arr.get(1);
+    "#,
+        -129,
+    );
+}
+
+#[test]
+fn test_int32array_get_set() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let backing = new ArrayBuffer(8);
+        let arr = new Int32Array(backing);
+        arr.set(0, 123456);
+        return arr.get(0);
+    "#,
+        123456,
+    );
+}
+
+#[test]
+fn test_extended_integer_typed_arrays_roundtrip() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let u16 = new Uint16Array(2);
+        try {
+            u16.set(0, 65535);
+        } catch (e) {
+            return 101;
+        }
+        let i16 = new Int16Array(2);
+        try {
+            i16.set(0, -2);
+        } catch (e) {
+            return 102;
+        }
+        let c = new Uint8ClampedArray(1);
+        try {
+            c.set(0, 999);
+        } catch (e) {
+            return 104;
+        }
+        return u16.get(0) + i16.get(0) + c.get(0);
+    "#,
+        65788,
+    );
+}
+
+#[test]
+fn test_extended_float_and_bigint_typed_arrays_pragmatic_subset() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let f32 = new Float32Array(1);
+        try { f32.set(0, 3.25); } catch (e) { return false; }
+        let f16 = new Float16Array(1);
+        try { f16.set(0, 2.5); } catch (e) { return false; }
+        let i64 = new BigInt64Array(1);
+        try { i64.set(0, 11); } catch (e) { return false; }
+        let u64 = new BigUint64Array(1);
+        try { u64.set(0, 12); } catch (e) { return false; }
+        return f32.length == 1 && f16.length == 1 && i64.length == 1 && u64.length == 1;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_typedarray_global_pragmatic_surface() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let t = new TypedArray<number>(5);
+        return t.length;
+    "#,
+        5,
+    );
+}
+
+#[test]
+fn test_dataview_get_set_int32() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let ab = new ArrayBuffer(16);
+        let view = new DataView(ab);
+        view.setInt32(4, 42, true);
+        return view.getInt32(4, true);
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_dataview_out_of_range_error_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        let ab = new ArrayBuffer(8);
+        let view = new DataView(ab);
+        try {
+            view.getInt32(6, true);
+            return "NO_ERR";
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "ERR_OUT_OF_RANGE",
+    );
+}
+
+#[test]
+fn test_dataview_big_endian_unimplemented_behavior_error_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        let ab = new ArrayBuffer(8);
+        let view = new DataView(ab);
+        try {
+            view.getInt32(0, false);
+            return "NO_ERR";
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+    );
+}
+
+#[test]
+fn test_err_factory_sets_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        let err = createRangeError(ERR_OUT_OF_RANGE, "bad index");
+        return err.code;
+    "#,
+        "ERR_OUT_OF_RANGE",
+    );
+}
+
+#[test]
+fn test_internal_error_name_surface() {
+    expect_string_with_builtins(
+        r#"
+        let err = new InternalError("boom");
+        return err.name;
+    "#,
+        "InternalError",
+    );
+}
+
+#[test]
+fn test_suppressed_error_payloads() {
+    expect_bool_with_builtins(
+        r#"
+        let cause = new Error("cause");
+        let suppressed = new Error("suppressed");
+        let err = new SuppressedError(cause, suppressed, "wrapped");
+        return err.error != null && err.suppressed != null && err.name == "SuppressedError";
     "#,
         true,
     );
@@ -413,7 +840,7 @@ fn test_set_operations() {
         set.delete(4);
 
         // Count remaining (1, 3)
-        return set.size();
+        return set.size;
     "#,
         2,
     );
@@ -1526,7 +1953,7 @@ fn test_map_keys_transform() {
         if (valFor2 == "b") { result = result + 10; }
         if (valFor3 == "c") { result = result + 100; }
 
-        return result + inverse.size();
+        return result + inverse.size;
     "#,
         114,
     );
@@ -1580,7 +2007,7 @@ fn test_set_intersection() {
         setB.add(3); setB.add(4); setB.add(5); setB.add(6); setB.add(7);
 
         let inter = setA.intersection(setB);
-        return inter.size();
+        return inter.size;
     "#,
         3,
     );
@@ -1597,7 +2024,7 @@ fn test_set_union() {
         setB.add(3); setB.add(4); setB.add(5);
 
         let uni = setA.union(setB);
-        return uni.size();
+        return uni.size;
     "#,
         5,
     );
@@ -1614,7 +2041,7 @@ fn test_set_difference() {
         setB.add(2); setB.add(4);
 
         let diff = setA.difference(setB);
-        return diff.size();
+        return diff.size;
     "#,
         2,
     );
@@ -1634,7 +2061,7 @@ fn test_set_operations_combined() {
         let inter = setA.intersection(setB);
         let uni = setA.union(setB);
 
-        return inter.size() * 10 + uni.size();
+        return inter.size * 10 + uni.size;
     "#,
         37,
     );
@@ -1664,5 +2091,611 @@ fn test_set_deduplication() {
         return sum * 10 + unique.length;
     "#,
         155,
+    );
+}
+
+// ============================================================================
+// Node-compat globals tests
+// ============================================================================
+
+#[test]
+fn test_node_compat_parseint_basic() {
+    expect_i32_runtime_node_compat(
+        r#"
+        return parseInt("42");
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_node_compat_parseint_signed_decimal() {
+    expect_i32_runtime_node_compat(
+        r#"
+        return parseInt("  -42");
+    "#,
+        -42,
+    );
+}
+
+#[test]
+fn test_node_compat_parsefloat_basic() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let v = parseFloat("3.5");
+        return (v * 10.0) as int;
+    "#,
+        35,
+    );
+}
+
+#[test]
+fn test_node_compat_isnan_and_isfinite() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let nan = parseFloat("not-a-number");
+        let n = 10.5;
+        return isNaN(nan) && !isFinite(nan) && isFinite(n);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_escape_unescape_roundtrip_space() {
+    expect_string_runtime_node_compat(
+        r#"
+        let s = "hello world";
+        return unescape(escape(s));
+    "#,
+        "hello world",
+    );
+}
+
+#[test]
+fn test_node_compat_globalthis_exists() {
+    expect_bool_runtime_node_compat(
+        r#"
+        return globalThis != null;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_reflect_global_basic_ops() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = new Object();
+        let okSet = Reflect.set(o, "x", 10);
+        let okHas = Reflect.has(o, "x");
+        let got = Reflect.get(o, "x");
+        return okSet && okHas && got == 10;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_reflect_runtime_integration() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let target = new Object();
+        Reflect.set(target, "x", 7);
+        let handler = new Object();
+        let proxy = new Proxy<Object>(target, handler);
+        let a = proxy.isProxy();
+        let b = Reflect.isProxy(proxy);
+        let t1 = proxy.getTarget();
+        let t2 = Reflect.getProxyTarget(proxy);
+        if (t1 == null || t2 == null) {
+            return false;
+        }
+        let v = Reflect.get(target, "x");
+        return a && b && v == 7;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_reflect_get_trap() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let target = new Object();
+        Reflect.set(target, "x", 7);
+        let handler = new Object();
+        handler["get"] = (t: Object, k: string): number => {
+            return 99;
+        };
+        let proxy = new Proxy<Object>(target, handler);
+        return Reflect.get(proxy, "x") == 99;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_reflect_set_trap() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let target = new Object();
+        let handler = new Object();
+        handler["set"] = (t: Object, k: string, v: Object | string | number | boolean | null): boolean => {
+            Reflect.set(t, k, (v as number) + 1);
+            return true;
+        };
+        let proxy = new Proxy<Object>(target, handler);
+        let ok = Reflect.set(proxy, "x", 7);
+        return ok && Reflect.get(target, "x") == 8;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_proxy_reflect_has_trap() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let target = new Object();
+        let handler = new Object();
+        handler["has"] = (_t: Object, _k: string): boolean => {
+            return true;
+        };
+        let proxy = new Proxy<Object>(target, handler);
+        return Reflect.has(proxy, "missing");
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_intl_number_format_basic() {
+    expect_string_runtime_node_compat(
+        r#"
+        let nf = Intl.NumberFormat("en-US", null);
+        return nf.format(1234.5);
+    "#,
+        "1234.5",
+    );
+}
+
+#[test]
+fn test_node_compat_intl_datetime_format_iso_fallback() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let d = new Date();
+        let df = Intl.DateTimeFormat("en-US", null);
+        return df.format(d) == d.toISOString();
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_intl_resolved_options_locale() {
+    expect_string_runtime_node_compat(
+        r#"
+        let nf = Intl.NumberFormat("id-ID", null);
+        let opts = nf.resolvedOptions();
+        return opts.locale;
+    "#,
+        "id-ID",
+    );
+}
+
+#[test]
+fn test_temporal_instant_to_string_epoch() {
+    expect_string_with_builtins(
+        r#"
+        let inst = Temporal.Instant(0);
+        return inst.toString();
+    "#,
+        "1970-01-01T00:00:00.000Z",
+    );
+}
+
+#[test]
+fn test_temporal_plain_date_to_string() {
+    expect_string_with_builtins(
+        r#"
+        let d = Temporal.PlainDate(2026, 2, 6);
+        return d.toString();
+    "#,
+        "2026-02-06",
+    );
+}
+
+#[test]
+fn test_temporal_plain_time_to_string() {
+    expect_string_with_builtins(
+        r#"
+        let t = Temporal.PlainTime(3, 4, 5, 6);
+        return t.toString();
+    "#,
+        "03:04:05.006",
+    );
+}
+
+#[test]
+fn test_temporal_zoned_datetime_to_string_suffix() {
+    expect_bool_with_builtins(
+        r#"
+        let z = Temporal.ZonedDateTime(0, "UTC");
+        return z.toString().endsWith("[UTC]");
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_iterator_from_array_next_and_done() {
+    expect_i32_with_builtins(
+        r#"
+        let it = Iterator.fromArray<number>([7, 8]);
+        let a = it.next();
+        let b = it.next();
+        let c = it.next();
+        if (a.value == null || b.value == null) {
+            return -1;
+        }
+        return (a.value as int) * 100 + (b.value as int) * 10 + (c.done ? 1 : 0);
+    "#,
+        781,
+    );
+}
+
+#[test]
+fn test_iterator_to_array_remaining_values() {
+    expect_i32_with_builtins(
+        r#"
+        let it = Iterator.fromArray<number>([1, 2, 3, 4]);
+        let _first = it.next();
+        let rest = it.toArray();
+        return rest.length * 10 + rest[0];
+    "#,
+        32,
+    );
+}
+
+#[test]
+fn test_node_compat_function_constructor_unimplemented_behavior_error_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        try {
+            let f = new Function("return 1;");
+            return "NO_ERR";
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+    );
+}
+
+#[test]
+fn test_node_compat_disposable_stack_lifo_order() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let out = 0;
+        let s = new DisposableStack();
+        s.defer((): void => {
+            out = out * 10 + 1;
+        });
+        s.defer((): void => {
+            out = out * 10 + 2;
+        });
+        s.dispose();
+        return out;
+    "#,
+        21,
+    );
+}
+
+#[test]
+fn test_node_compat_disposable_stack_move_transfers_callbacks() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let out = 0;
+        let s1 = new DisposableStack();
+        s1.defer((): void => {
+            out = out + 7;
+        });
+        let s2 = s1.move();
+        s1.dispose();
+        s2.dispose();
+        return out;
+    "#,
+        7,
+    );
+}
+
+#[test]
+fn test_node_compat_async_disposable_stack_lifo_order() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let out = 0;
+        let s = new AsyncDisposableStack();
+        s.defer(async (): Promise<void> => {
+            out = out * 10 + 1;
+        });
+        s.defer(async (): Promise<void> => {
+            out = out * 10 + 2;
+        });
+        await s.disposeAsync();
+        return out;
+    "#,
+        21,
+    );
+}
+
+#[test]
+fn test_node_compat_shared_array_buffer_byte_length() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let sab = new SharedArrayBuffer(24);
+        return sab.byteLength;
+    "#,
+        24,
+    );
+}
+
+#[test]
+fn test_node_compat_atomics_add_and_load() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let sab = new SharedArrayBuffer(16);
+        let a = new Int32Array(sab);
+        Atomics.store(a, 0, 10);
+        let old = Atomics.add(a, 0, 5);
+        return old * 10 + Atomics.load(a, 0);
+    "#,
+        115,
+    );
+}
+
+#[test]
+fn test_node_compat_atomics_compare_exchange() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let sab = new SharedArrayBuffer(16);
+        let a = new Int32Array(sab);
+        Atomics.store(a, 0, 9);
+        let old1 = Atomics.compareExchange(a, 0, 9, 12);
+        let old2 = Atomics.compareExchange(a, 0, 9, 20);
+        return old1 * 100 + old2 * 10 + Atomics.load(a, 0);
+    "#,
+        1032,
+    );
+}
+
+#[test]
+fn test_node_compat_atomics_wait_unimplemented_behavior_error_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        try {
+            let sab = new SharedArrayBuffer(16);
+            let a = new Int32Array(sab);
+            return Atomics.wait(a, 0, 0, 0);
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+    );
+}
+
+#[test]
+fn test_uri_helpers_roundtrip_strict_surface() {
+    expect_bool_with_builtins(
+        r#"
+        let s = "a b%";
+        let e1 = encodeURI(s);
+        let d1 = decodeURI(e1);
+        let e2 = encodeURIComponent(s);
+        let d2 = decodeURIComponent(e2);
+        return d1 == s && d2 == s;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_shared_numeric_constants_and_undefined_surface() {
+    expect_bool_with_builtins(
+        r#"
+        return Infinity > 1.0 && NaN != NaN && undefined == null;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_constructor_globals_strict_surface() {
+    expect_bool_runtime(
+        r#"
+        let b = Boolean("x");
+        let n = Number("42");
+        let s = String(42);
+        let a = new Array<number>(2);
+        a[0] = 7;
+        a[1] = 8;
+        let b2 = new Array<number>(1, 2);
+        return b && n == 42 && s == "42" && a.length == 2 && (a[0] + a[1]) == 15 && b2.length == 2;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_eval_unimplemented_behavior_error_code() {
+    expect_string_runtime_node_compat(
+        r#"
+        try {
+            eval("1 + 1");
+            return "NO_ERR";
+        } catch (e) {
+            return e.code;
+        }
+    "#,
+        "E_UNIMPLEMENTED_BUILTIN_BEHAVIOR",
+    );
+}
+
+#[test]
+fn test_node_compat_weakmap_basic_object_key_roundtrip() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let wm = new WeakMap<number>();
+        let k = new Object();
+        wm.set(k, 42);
+        let v = wm.get(k);
+        if (v == null) {
+            return 0;
+        }
+        return v;
+    "#,
+        42,
+    );
+}
+
+#[test]
+fn test_node_compat_weakset_basic_identity_membership() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let ws = new WeakSet<Object>();
+        let a = new Object();
+        ws.add(a);
+        return ws.has(a) && ws.delete(a) && !ws.has(a);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_weakset_distinct_objects_do_not_alias() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let ws = new WeakSet<Object>();
+        let a = new Object();
+        let b = new Object();
+        ws.add(a);
+        return ws.has(a) && !ws.has(b);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_weakref_deref_roundtrip() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = new Object();
+        let wr = new WeakRef<Object>(o);
+        return wr.deref() != null;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_finalization_registry_unregister_with_token() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let reg = new FinalizationRegistry<string>((heldValue: string): void => {});
+        let target = new Object();
+        let token = new Object();
+        reg.register(target, "held", token);
+        return reg.unregister(token) && !reg.unregister(token);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_finalization_registry_cleanup_some_callback() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let reg = new FinalizationRegistry<number>((heldValue: number): void => {
+            let _x = heldValue;
+        });
+        let token = new Object();
+        reg.register(new Object(), 15, token);
+        reg.cleanupSome(null);
+        return !reg.unregister(token);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_finalization_registry_cleanup_some_override_callback() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let reg = new FinalizationRegistry<number>((heldValue: number): void => {
+            let _x = heldValue;
+        });
+        let token = new Object();
+        reg.register(new Object(), 3, token);
+        reg.register(new Object(), 4, token);
+        reg.cleanupSome((heldValue: number): void => {
+            let _x = heldValue;
+        });
+        return !reg.unregister(token);
+    "#,
+        true,
+    );
+}
+
+// ============================================================================
+// EventEmitter tests
+// ============================================================================
+
+#[test]
+fn test_event_emitter_on_and_emit() {
+    expect_i32_with_builtins(
+        r#"
+        let emitter = new EventEmitter<{ tick: [number] }>();
+        let total = 0;
+        emitter.on("tick", (payload: number): void => {
+            total = total + payload;
+        });
+        emitter.emit("tick", 10);
+        emitter.emit("tick", 5);
+        return total;
+    "#,
+        15,
+    );
+}
+
+#[test]
+fn test_event_emitter_once_and_listener_count() {
+    expect_i32_with_builtins(
+        r#"
+        let emitter = new EventEmitter<{ tick: [number] }>();
+        let total = 0;
+        emitter.once("tick", (payload: number): void => {
+            total = total + payload;
+        });
+        emitter.emit("tick", 7);
+        emitter.emit("tick", 9);
+        return total * 10 + emitter.listenerCount("tick");
+    "#,
+        70,
+    );
+}
+
+#[test]
+fn test_event_emitter_remove_all_listeners() {
+    expect_bool_with_builtins(
+        r#"
+        let emitter = new EventEmitter<{ a: [number], b: [number] }>();
+        emitter.on("a", (_: number): void => {});
+        emitter.on("b", (_: number): void => {});
+        emitter.removeAllListeners("a");
+        emitter.removeAllListeners("b");
+        return emitter.listenerCount("a") == 0 && emitter.listenerCount("b") == 0;
+    "#,
+        true,
     );
 }

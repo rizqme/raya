@@ -1,0 +1,18 @@
+/** Node-compat weak refs/finalization APIs (pragmatic subset) */
+
+export class WeakRef<T extends Object> {
+    constructor(target: T);
+    deref(): T | null;
+}
+
+export class FinalizationRegistry<T> {
+    constructor(cleanupCallback: (heldValue: T) => void);
+
+    register<K extends Object, U extends Object>(
+        target: K,
+        heldValue: T,
+        unregisterToken: U | null,
+    ): void;
+    unregister<U extends Object>(unregisterToken: U): boolean;
+    cleanupSome(callback: ((heldValue: T) => void) | null): void;
+}

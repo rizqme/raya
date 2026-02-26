@@ -1,0 +1,42 @@
+// Node-compat function/generator constructor families.
+// Pragmatic subset: compile-visible surface with unimplemented runtime behavior.
+
+class Function {
+    constructor(_body: string) {
+        throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Function constructor is not implemented in node-compat runtime yet");
+    }
+}
+
+class AsyncFunction extends Function {
+    constructor(body: string) {
+        super(body);
+    }
+}
+
+class Generator {
+    constructor() {}
+}
+
+class AsyncGenerator {
+    constructor() {}
+}
+
+class GeneratorFunction extends Function {
+    constructor(body: string) {
+        super(body);
+    }
+}
+
+class AsyncGeneratorFunction extends Function {
+    constructor(body: string) {
+        super(body);
+    }
+}
+
+class AsyncIterator<T> {
+    constructor() {}
+
+    async next(): Promise<IteratorResult<T> > {
+        throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "AsyncIterator.next is not implemented in node-compat runtime yet");
+    }
+}

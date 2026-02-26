@@ -11,12 +11,11 @@ fn test_http_server_parses_and_responds() {
         import net from "std:net";
         import { HttpServer, HttpRequest } from "std:http";
 
-        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+        async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const methodOk = req.method() == "POST";
             const pathOk = req.path() == "/test";
@@ -28,7 +27,7 @@ fn test_http_server_parses_and_responds() {
             return methodOk && pathOk && queryOk && headerOk && bodyOk;
         }
 
-        async function clientTask(): Task<boolean> {
+        async function clientTask(): Promise<boolean> {
             const stream = net.connect("127.0.0.1", 38181);
             const request =
                 "POST /test?id=7 HTTP/1.1\r\n" +
@@ -43,7 +42,7 @@ fn test_http_server_parses_and_responds() {
             return response.includes("HTTP/1.1 200 OK") && response.includes("server-ok");
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const server = new HttpServer("127.0.0.1", 38181);
             const serverResult = serverTask(server);
             sleep(5);
@@ -65,12 +64,11 @@ fn test_http_server_custom_headers() {
         import net from "std:net";
         import { HttpServer, HttpRequest } from "std:http";
 
-        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+        async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const headerValue = req.header("x-test");
             server.respondWithHeaders(req._handle, 201, ["X-Test", "header-value"], "payload");
@@ -78,7 +76,7 @@ fn test_http_server_custom_headers() {
             return headerValue == "header-value";
         }
 
-        async function clientTask(): Task<boolean> {
+        async function clientTask(): Promise<boolean> {
             const stream = net.connect("127.0.0.1", 38182);
             const request =
                 "GET /headers HTTP/1.1\r\n" +
@@ -91,7 +89,7 @@ fn test_http_server_custom_headers() {
             return response.includes("HTTP/1.1 201") && response.includes("X-Test: header-value");
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const server = new HttpServer("127.0.0.1", 38182);
             const serverResult = serverTask(server);
             sleep(5);
@@ -113,13 +111,12 @@ fn test_http_server_serve_task_cancel() {
         import net from "std:net";
         import { HttpServer, HttpRequest } from "std:http";
 
-        async function onRequest(req: HttpRequest, server: HttpServer): Task<void> {
+        async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
-        async function clientTask(): Task<boolean> {
-            const stream = net.connect("127.0.0.1", 38183);
+        async function clientTask(port: number): Promise<boolean> {
+            const stream = net.connect("127.0.0.1", port);
             const request =
                 "GET /serve HTTP/1.1\r\n" +
                 "Host: 127.0.0.1\r\n" +
@@ -130,11 +127,13 @@ fn test_http_server_serve_task_cancel() {
             return response.includes("HTTP/1.1 200 OK") && response.includes("ok-from-serve");
         }
 
-        async function main(): Task<boolean> {
-            const server = new HttpServer("127.0.0.1", 38183);
+        async function main(): Promise<boolean> {
+            const server = new HttpServer("127.0.0.1", 0);
+            const port = server.localPort();
             const serveTask = server.serve(onRequest);
             sleep(5);
-            const ok = await clientTask();
+            const ok = await clientTask(port);
+            server.close();
             serveTask.cancel();
             return ok;
         }

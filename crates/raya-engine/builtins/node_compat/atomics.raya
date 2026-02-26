@@ -1,0 +1,60 @@
+// Node-compat SharedArrayBuffer + Atomics pragmatic subset.
+
+class SharedArrayBuffer {
+    private _inner: ArrayBuffer;
+    byteLength: int;
+
+    constructor(byteLength: int = 0) {
+        this._inner = new ArrayBuffer(byteLength);
+        this.byteLength = this._inner.byteLength;
+    }
+
+    asArrayBuffer(): ArrayBuffer {
+        return this._inner;
+    }
+}
+
+class Atomics {
+    static load(arr: Int32Array, index: int): number {
+        return arr.get(index) as number;
+    }
+
+    static store(arr: Int32Array, index: int, value: int): number {
+        arr.set(index, value);
+        return value as number;
+    }
+
+    static add(arr: Int32Array, index: int, value: int): number {
+        let old = arr.get(index) as number;
+        arr.set(index, (old + (value as number)) as int);
+        return old;
+    }
+
+    static sub(arr: Int32Array, index: int, value: int): number {
+        let old = arr.get(index) as number;
+        arr.set(index, (old - (value as number)) as int);
+        return old;
+    }
+
+    static exchange(arr: Int32Array, index: int, value: int): number {
+        let old = arr.get(index) as number;
+        arr.set(index, value);
+        return old;
+    }
+
+    static compareExchange(arr: Int32Array, index: int, expected: int, replacement: int): number {
+        let old = arr.get(index) as number;
+        if (old == (expected as number)) {
+            arr.set(index, replacement);
+        }
+        return old;
+    }
+
+    static wait(_arr: Int32Array, _index: int, _value: int, _timeoutMs: int): string {
+        throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Atomics.wait is not implemented in node-compat runtime yet");
+    }
+
+    static notify(_arr: Int32Array, _index: int, _count: int): number {
+        throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Atomics.notify is not implemented in node-compat runtime yet");
+    }
+}

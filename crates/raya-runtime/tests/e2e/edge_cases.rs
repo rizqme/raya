@@ -2116,11 +2116,11 @@ fn test_control_do_while_break() {
 fn test_async_await_in_try_catch() {
     expect_i32(
         "
-        async function mayFail(fail: boolean): Task<number> {
+        async function mayFail(fail: boolean): Promise<number> {
             if (fail) { throw new Error(\"async error\"); }
             return 42;
         }
-        async function test(): Task<number> {
+        async function test(): Promise<number> {
             try {
                 return await mayFail(false);
             } catch (e) {
@@ -2137,10 +2137,10 @@ fn test_async_await_in_try_catch() {
 fn test_async_exception_caught() {
     expect_i32(
         "
-        async function boom(): Task<number> {
+        async function boom(): Promise<number> {
             throw new Error(\"async boom\");
         }
-        async function test(): Task<number> {
+        async function test(): Promise<number> {
             try {
                 return await boom();
             } catch (e) {
@@ -2157,10 +2157,10 @@ fn test_async_exception_caught() {
 fn test_async_sequential_awaits() {
     expect_i32(
         "
-        async function step(x: number): Task<number> {
+        async function step(x: number): Promise<number> {
             return x + 1;
         }
-        async function pipeline(): Task<number> {
+        async function pipeline(): Promise<number> {
             let a = await step(0);
             let b = await step(a);
             let c = await step(b);
@@ -2177,7 +2177,7 @@ fn test_async_sequential_awaits() {
 fn test_async_returns_string() {
     expect_string(
         "
-        async function greet(name: string): Task<string> {
+        async function greet(name: string): Promise<string> {
             return \"hello \" + name;
         }
         return await greet(\"world\");
@@ -2190,7 +2190,7 @@ fn test_async_returns_string() {
 fn test_async_returns_bool() {
     expect_bool(
         "
-        async function isPositive(x: number): Task<boolean> {
+        async function isPositive(x: number): Promise<boolean> {
             return x > 0;
         }
         return await isPositive(42);
@@ -2318,7 +2318,7 @@ fn test_set_duplicate_add() {
         s.add(1);
         s.add(1);
         s.add(1);
-        return s.size();
+        return s.size;
     ",
         1,
     );
@@ -2346,7 +2346,7 @@ fn test_map_size_after_operations() {
         m.set(\"b\", 2);
         m.set(\"c\", 3);
         m.delete(\"b\");
-        return m.size();
+        return m.size;
     ",
         2,
     );

@@ -141,6 +141,7 @@ struct LifecycleState {
     result: Option<Value>,
     waiters: Vec<TaskId>,
     awaiting_task: Option<TaskId>,
+    rejection_observed: bool,
 }
 
 /// Exception handling state (VM worker only)
@@ -266,6 +267,7 @@ impl Task {
                 result: None,
                 waiters: Vec::new(),
                 awaiting_task: None,
+                rejection_observed: false,
             }),
 
             exceptions: ParkingMutex::new(ExceptionState {
@@ -515,12 +517,19 @@ impl Task {
 
     /// Add a task that is waiting for this task to complete
     pub fn add_waiter(&self, waiter_id: TaskId) {
-        self.lifecycle.lock().waiters.push(waiter_id);
+        let mut lifecycle = self.lifecycle.lock();
+        lifecycle.waiters.push(waiter_id);
+        lifecycle.rejection_observed = true;
     }
 
     /// Take all waiting tasks (used when task completes)
     pub fn take_waiters(&self) -> Vec<TaskId> {
         std::mem::take(&mut self.lifecycle.lock().waiters)
+    }
+
+    /// Number of tasks currently waiting on this task.
+    pub fn waiter_count(&self) -> usize {
+        self.lifecycle.lock().waiters.len()
     }
 
     /// Set the task this task is waiting for (await)
@@ -593,6 +602,16 @@ impl Task {
     /// Take the resume value (consumes it)
     pub fn take_resume_value(&self) -> Option<Value> {
         self.lifecycle.lock().resume_value.take()
+    }
+
+    /// Mark this task's rejection as observed by a consumer.
+    pub fn mark_rejection_observed(&self) {
+        self.lifecycle.lock().rejection_observed = true;
+    }
+
+    /// Whether this task's rejection has been observed by a consumer.
+    pub fn is_rejection_observed(&self) -> bool {
+        self.lifecycle.lock().rejection_observed
     }
 
     // =========================================================================
@@ -911,6 +930,7 @@ impl Task {
                 result: serialized.result,
                 waiters: Vec::new(),
                 awaiting_task: None,
+                rejection_observed: false,
             }),
 
             exceptions: ParkingMutex::new(ExceptionState {

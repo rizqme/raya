@@ -1,10 +1,21 @@
 //! `raya eval` — Evaluate an inline expression or statement.
 
-use raya_runtime::{Runtime, RuntimeOptions, Value};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions, Value};
 
-pub fn execute(code: String, print: bool, no_print: bool, no_jit: bool) -> anyhow::Result<()> {
+pub fn execute(
+    code: String,
+    print: bool,
+    no_print: bool,
+    no_jit: bool,
+    node_compat: bool,
+) -> anyhow::Result<()> {
     let rt = Runtime::with_options(RuntimeOptions {
         no_jit,
+        builtin_mode: if node_compat {
+            BuiltinMode::NodeCompat
+        } else {
+            BuiltinMode::RayaStrict
+        },
         ..Default::default()
     });
 

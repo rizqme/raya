@@ -97,7 +97,27 @@ fn parse_intersection_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseE
 fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError> {
     let start_span = parser.current_span();
 
+    // Support readonly type modifier (e.g., `readonly unknown[]`) in type position.
+    // Runtime/type-checker currently treat this as a non-mutability-affecting wrapper.
+    if parser.check(&Token::Readonly) {
+        parser.advance();
+        return parse_primary_type(parser);
+    }
+
     let mut base_type = match parser.current() {
+        // keyof type operator: keyof T
+        Token::Keyof => {
+            parser.advance();
+            let target = parse_primary_type(parser)?;
+            let span = parser.combine_spans(&start_span, &target.span);
+            TypeAnnotation {
+                ty: Type::Keyof(KeyofType {
+                    target: Box::new(target),
+                }),
+                span,
+            }
+        }
+
         // Void keyword as a type
         Token::Void => {
             parser.advance();
@@ -188,6 +208,9 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
                 } else {
                     false
                 }
+            } else if parser.check(&Token::DotDotDot) {
+                // (...args: T[]) => U
+                true
             } else if parser.check(&Token::RightParen) {
                 // () - could be empty function type
                 true
@@ -377,17 +400,32 @@ fn parse_primary_type(parser: &mut Parser) -> Result<TypeAnnotation, ParseError>
         }
     };
 
-    // Handle postfix array type: T[]
+    // Handle postfix array/indexed-access types: T[] or T[K]
     let mut guard = super::guards::LoopGuard::new("array_type_postfix");
     while parser.check(&Token::LeftBracket) {
         guard.check()?;
         parser.advance();
+
+        if parser.check(&Token::RightBracket) {
+            parser.advance(); // consume ]
+            let span = parser.combine_spans(&start_span, &parser.current_span());
+            base_type = TypeAnnotation {
+                ty: Type::Array(ArrayType {
+                    element_type: Box::new(base_type),
+                }),
+                span,
+            };
+            continue;
+        }
+
+        // Indexed access: T[K]
+        let index_ty = parse_type_annotation(parser)?;
         parser.expect(Token::RightBracket)?;
         let span = parser.combine_spans(&start_span, &parser.current_span());
-
         base_type = TypeAnnotation {
-            ty: Type::Array(ArrayType {
-                element_type: Box::new(base_type),
+            ty: Type::IndexedAccess(IndexedAccessType {
+                object: Box::new(base_type),
+                index: Box::new(index_ty),
             }),
             span,
         };
@@ -419,9 +457,40 @@ pub fn parse_type_arguments(parser: &mut Parser) -> Result<Vec<TypeAnnotation>, 
 fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypeParam>, ParseError> {
     let mut params = Vec::new();
     let mut guard = super::guards::LoopGuard::new("function_type_params");
+    let mut seen_rest = false;
 
     while !parser.check(&Token::RightParen) && !parser.at_eof() {
         guard.check()?;
+        let is_rest = if parser.check(&Token::DotDotDot) {
+            parser.advance();
+            true
+        } else {
+            false
+        };
+
+        if is_rest {
+            if seen_rest {
+                return Err(ParseError {
+                    kind: ParseErrorKind::InvalidSyntax {
+                        reason: "Only one rest parameter is allowed in function type".to_string(),
+                    },
+                    span: parser.current_span(),
+                    message: "Duplicate rest parameter".to_string(),
+                    suggestion: None,
+                });
+            }
+            seen_rest = true;
+        } else if seen_rest {
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidSyntax {
+                    reason: "Rest parameter must be last in function type".to_string(),
+                },
+                span: parser.current_span(),
+                message: "Rest parameter must be last".to_string(),
+                suggestion: None,
+            });
+        }
+
         let (name, optional) = if let Token::Identifier(n) = parser.current() {
             let identifier = Identifier {
                 name: *n,
@@ -456,9 +525,25 @@ fn parse_function_type_params(parser: &mut Parser) -> Result<Vec<FunctionTypePar
             (None, false)
         };
 
+        if is_rest && optional {
+            return Err(ParseError {
+                kind: ParseErrorKind::InvalidSyntax {
+                    reason: "Rest parameter cannot be optional".to_string(),
+                },
+                span: parser.current_span(),
+                message: "Rest parameter cannot be optional".to_string(),
+                suggestion: None,
+            });
+        }
+
         let ty = parse_type_annotation(parser)?;
 
-        params.push(FunctionTypeParam { name, optional, ty });
+        params.push(FunctionTypeParam {
+            name,
+            is_rest,
+            optional,
+            ty,
+        });
 
         if !parser.check(&Token::RightParen) {
             parser.expect(Token::Comma)?;

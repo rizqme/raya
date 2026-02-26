@@ -46,10 +46,11 @@ pub enum OpcodeKind {
 /// Builtin primitive `.raya` sources embedded at compile time.
 /// These are scanned at TypeRegistry init to build dispatch tables.
 pub(crate) const BUILTIN_PRIMITIVE_SOURCES: &[(&str, &str)] = &[
-    ("string", include_str!("../../builtins/string.raya")),
-    ("number", include_str!("../../builtins/number.raya")),
-    ("Array", include_str!("../../builtins/array.raya")),
-    ("RegExp", include_str!("../../builtins/regexp.raya")),
+    ("string", include_str!("../../builtins/strict/string.raya")),
+    ("number", include_str!("../../builtins/strict/number.raya")),
+    ("Array", include_str!("../../builtins/strict/array.raya")),
+    ("RegExp", include_str!("../../builtins/strict/regexp.raya")),
+    ("Promise", include_str!("../../builtins/strict/promise.raya")),
 ];
 
 // ============================================================================
@@ -98,7 +99,7 @@ impl TypeRegistry {
         // We check all known type names
         let known_names = [
             "number", "string", "boolean", "null", "void", "never", "unknown", "Mutex", "RegExp",
-            "Date", "Buffer", "Task", "Channel", "Map", "Set", "Json", "int", "Array",
+            "Date", "Buffer", "Promise", "Channel", "Map", "Set", "Json", "int", "Array",
         ];
         for name in &known_names {
             if let Some(id) = type_ctx.lookup_named_type(name) {
@@ -239,7 +240,7 @@ impl TypeRegistry {
                 &[("tryLock", mutex::TRY_LOCK), ("isLocked", mutex::IS_LOCKED)],
             ),
             (
-                "Task",
+                "Promise",
                 &[
                     ("isDone", task::IS_DONE),
                     ("isCancelled", task::IS_CANCELLED),
@@ -248,8 +249,14 @@ impl TypeRegistry {
         ];
 
         for &(type_name, methods) in builtin_types {
-            if let Some(id) = type_ctx.lookup_named_type(type_name) {
-                let tid = id.as_u32();
+            let tid = if type_name == "Promise" {
+                TypeContext::TASK_TYPE_ID
+            } else if let Some(id) = type_ctx.lookup_named_type(type_name) {
+                id.as_u32()
+            } else {
+                continue;
+            };
+            {
                 let meths = self.method_dispatch.entry(tid).or_default();
                 for &(method_name, native_id) in methods {
                     meths.insert(
@@ -259,6 +266,24 @@ impl TypeRegistry {
                 }
             }
         }
+
+        // Promise chaining methods are implemented as compiled Raya class methods.
+        let meths = self
+            .method_dispatch
+            .entry(TypeContext::TASK_TYPE_ID)
+            .or_default();
+        meths.insert(
+            "then".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "then".to_string()),
+        );
+        meths.insert(
+            "catch".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "catch".to_string()),
+        );
+        meths.insert(
+            "finally".to_string(),
+            DispatchAction::ClassMethod("Promise".to_string(), "finally".to_string()),
+        );
     }
 
     /// Scan a `//@@builtin_primitive` `.raya` source and populate dispatch tables.
@@ -463,7 +488,7 @@ impl TypeRegistry {
             Type::Mutex => Ok(lookup_or_unresolved(type_ctx, "Mutex")),
             Type::Date => Ok(lookup_or_unresolved(type_ctx, "Date")),
             Type::Buffer => Ok(lookup_or_unresolved(type_ctx, "Buffer")),
-            Type::Task(_) => Ok(lookup_or_unresolved(type_ctx, "Task")),
+            Type::Task(_) => Ok(lookup_or_unresolved(type_ctx, "Promise")),
             Type::Channel(_) => Ok(lookup_or_unresolved(type_ctx, "Channel")),
             Type::Map(_) => Ok(lookup_or_unresolved(type_ctx, "Map")),
             Type::Set(_) => Ok(lookup_or_unresolved(type_ctx, "Set")),
@@ -549,6 +574,12 @@ impl TypeRegistry {
                             return Ok(nid); // number | int → number
                         }
                     }
+                }
+
+                // If any member resolves to unknown/unresolved, defer dispatch to runtime
+                // instead of hard-failing lowering on ambiguous unions.
+                if candidates.contains(&UNRESOLVED_TYPE_ID) {
+                    return Ok(UNRESOLVED_TYPE_ID);
                 }
 
                 // Multiple incompatible types — build error message

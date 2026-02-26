@@ -267,7 +267,7 @@ fn test_parse_protected_abstract_method() {
 
 #[test]
 fn test_parse_private_async_method() {
-    let source = "class Api { private async fetch(): Task<string> {} }";
+    let source = "class Api { private async fetch(): Promise<string> {} }";
     let parser = Parser::new(source).unwrap();
     let (module, interner) = parser.parse().unwrap();
 

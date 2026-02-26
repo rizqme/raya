@@ -17,12 +17,12 @@ function ensureDir(p: string): void {
     }
 }
 
-async function delayedValue(v: number): Task<number> {
+async function delayedValue(v: number): Promise<number> {
     time.sleep(5);
     return v;
 }
 
-async function runSuite(dir: string): Task<void> {
+async function runSuite(dir: string): Promise<void> {
     const ch = new Channel<number>(3);
     ch.send(10);
     ch.send(20);

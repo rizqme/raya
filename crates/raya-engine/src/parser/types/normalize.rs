@@ -44,7 +44,23 @@ pub fn normalize_type(ctx: &mut TypeContext, ty: TypeId) -> TypeId {
                 .map(|&p| normalize_type(ctx, p))
                 .collect();
             let return_type = normalize_type(ctx, func.return_type);
-            ctx.function_type(params, return_type, func.is_async)
+            let rest_param = func.rest_param.map(|rp| normalize_type(ctx, rp));
+            ctx.function_type_with_rest(
+                params,
+                return_type,
+                func.is_async,
+                func.min_params,
+                rest_param,
+            )
+        }
+        Type::Keyof(keyof_ty) => {
+            let target = normalize_type(ctx, keyof_ty.target);
+            ctx.keyof_type(target)
+        }
+        Type::IndexedAccess(indexed) => {
+            let object = normalize_type(ctx, indexed.object);
+            let index = normalize_type(ctx, indexed.index);
+            ctx.indexed_access_type(object, index)
         }
         _ => ty,
     }
@@ -142,6 +158,9 @@ pub fn contains_type_variables(ctx: &TypeContext, ty: TypeId) -> bool {
         Type::Function(func) => {
             func.params.iter().any(|&p| contains_type_variables(ctx, p))
                 || contains_type_variables(ctx, func.return_type)
+                || func
+                    .rest_param
+                    .is_some_and(|rp| contains_type_variables(ctx, rp))
         }
         Type::Union(union) => union
             .members
@@ -153,6 +172,11 @@ pub fn contains_type_variables(ctx: &TypeContext, ty: TypeId) -> bool {
                     .type_args
                     .iter()
                     .any(|&a| contains_type_variables(ctx, a))
+        }
+        Type::Keyof(keyof_ty) => contains_type_variables(ctx, keyof_ty.target),
+        Type::IndexedAccess(indexed) => {
+            contains_type_variables(ctx, indexed.object)
+                || contains_type_variables(ctx, indexed.index)
         }
         _ => false,
     }

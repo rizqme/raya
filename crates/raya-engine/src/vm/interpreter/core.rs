@@ -12,7 +12,7 @@ use crate::vm::builtins::handlers::{
 };
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::NativeHandler;
-use crate::vm::object::RayaString;
+use crate::vm::object::{Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
@@ -41,8 +41,8 @@ mod tests {
     use super::Interpreter;
     use crate::compiler::{Function, Opcode};
     use crate::jit::runtime::trampoline::JitExitInfo;
-    use crate::vm::value::Value;
     use crate::vm::interpreter::JitTelemetry;
+    use crate::vm::value::Value;
     use std::sync::Arc;
 
     fn make_function(code: Vec<u8>) -> Function {
@@ -91,7 +91,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(1u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 0), Some(1));
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 0),
+            Some(1)
+        );
     }
 
     #[test]
@@ -102,7 +105,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(0u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 1), None);
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 1),
+            None
+        );
     }
 
     #[test]
@@ -114,7 +120,10 @@ mod tests {
         code.extend_from_slice(&0u16.to_le_bytes());
         code.push(2u8);
         let func = make_function(code);
-        assert_eq!(Interpreter::native_resume_boundary_arg_count(&func, 2), Some(2));
+        assert_eq!(
+            Interpreter::native_resume_boundary_arg_count(&func, 2),
+            Some(2)
+        );
     }
 
     #[test]
@@ -292,6 +301,29 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    #[inline]
+    fn format_exception_value(exception: Value) -> String {
+        if exception.is_null() {
+            return "null".to_string();
+        }
+        if !exception.is_ptr() {
+            return format!("{:?}", exception);
+        }
+        if let Some(s) = unsafe { exception.as_ptr::<RayaString>() } {
+            return unsafe { &*s.as_ptr() }.data.clone();
+        }
+        if let Some(obj) = unsafe { exception.as_ptr::<Object>() } {
+            if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
+                if msg_val.is_ptr() {
+                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
+                        return unsafe { &*s.as_ptr() }.data.clone();
+                    }
+                }
+            }
+        }
+        format!("{:?}", exception)
+    }
+
     #[cfg(feature = "jit")]
     #[inline]
     fn record_native_resume_decision(
@@ -593,8 +625,8 @@ impl<'a> Interpreter<'a> {
                 task.set_ip(ip);
                 drop(stack_guard);
                 return ExecutionResult::Failed(VmError::RuntimeError(format!(
-                    "Unhandled exception from awaited task: {:?}",
-                    exception
+                    "Unhandled exception from awaited task: {}",
+                    Self::format_exception_value(exception)
                 )));
             }
         }
@@ -733,9 +765,9 @@ impl<'a> Interpreter<'a> {
             if task.is_cancelled() {
                 save_frame_state!();
                 drop(stack_guard);
-                return ExecutionResult::Failed(VmError::RuntimeError(
-                    "Task cancelled".to_string(),
-                ));
+                // Cancellation is observable to awaiters as a rejected task.
+                // Unhandled rejection reporting already suppresses cancelled tasks.
+                return ExecutionResult::Failed(VmError::RuntimeError("Task cancelled".to_string()));
             }
 
             // Bounds check - implicit return at end of function
@@ -1074,24 +1106,25 @@ impl<'a> Interpreter<'a> {
                     #[cfg(feature = "jit")]
                     if forced_callee_ip.is_some() {
                         if let Some(extra_locals) = forced_callee_extra_locals.as_ref() {
-                        for (i, raw) in extra_locals.iter().enumerate() {
-                            let slot = locals_base + arg_count + i;
-                            if slot >= stack_guard.depth() {
-                                break;
-                            }
-                            if let Err(e) = stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
-                            {
-                                return ExecutionResult::Failed(e);
-                            }
-                        }
-                        if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
-                            for v in operand_vals {
-                                if let Err(e) = stack_guard.push(*v) {
+                            for (i, raw) in extra_locals.iter().enumerate() {
+                                let slot = locals_base + arg_count + i;
+                                if slot >= stack_guard.depth() {
+                                    break;
+                                }
+                                if let Err(e) =
+                                    stack_guard.set_at(slot, unsafe { Value::from_raw(*raw) })
+                                {
                                     return ExecutionResult::Failed(e);
                                 }
                             }
+                            if let Some(operand_vals) = forced_callee_operand_values.as_ref() {
+                                for v in operand_vals {
+                                    if let Err(e) = stack_guard.push(*v) {
+                                        return ExecutionResult::Failed(e);
+                                    }
+                                }
+                            }
                         }
-                    }
                     }
 
                     // Switch to callee's code
@@ -1382,9 +1415,7 @@ impl<'a> Interpreter<'a> {
             | Opcode::CallMethod
             | Opcode::OptionalCallMethod
             | Opcode::CallConstructor
-            | Opcode::CallSuper => {
-                self.exec_call_ops(stack, ip, code, module, task, opcode)
-            }
+            | Opcode::CallSuper => self.exec_call_ops(stack, ip, code, module, task, opcode),
 
             // =========================================================
             // Native Calls (needs MutexGuard for suspend/resume)
@@ -1694,10 +1725,14 @@ impl<'a> Interpreter<'a> {
                 | Opcode::LoadLocal0
                 | Opcode::LoadLocal1
                 | Opcode::LoadGlobal
-                | Opcode::LoadConst => (0, 1, match op {
-                    Opcode::LoadGlobal | Opcode::LoadConst => 4,
-                    _ => 0,
-                }),
+                | Opcode::LoadConst => (
+                    0,
+                    1,
+                    match op {
+                        Opcode::LoadGlobal | Opcode::LoadConst => 4,
+                        _ => 0,
+                    },
+                ),
                 Opcode::ConstI32 => (0, 1, 4),
                 Opcode::ConstF64 => (0, 1, 8),
                 Opcode::ConstStr => (0, 1, 2),

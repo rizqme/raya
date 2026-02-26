@@ -1,0 +1,17 @@
+/** Node-compat SharedArrayBuffer + Atomics pragmatic subset */
+
+export class SharedArrayBuffer {
+    constructor(byteLength?: int);
+    asArrayBuffer(): ArrayBuffer;
+}
+
+export class Atomics {
+    static load(arr: Int32Array, index: int): number;
+    static store(arr: Int32Array, index: int, value: int): number;
+    static add(arr: Int32Array, index: int, value: int): number;
+    static sub(arr: Int32Array, index: int, value: int): number;
+    static exchange(arr: Int32Array, index: int, value: int): number;
+    static compareExchange(arr: Int32Array, index: int, expected: int, replacement: int): number;
+    static wait(arr: Int32Array, index: int, value: int, timeoutMs: int): string;
+    static notify(arr: Int32Array, index: int, count: int): number;
+}

@@ -1,0 +1,55 @@
+// Node-compat weak collections.
+// Pragmatic implementation: object-identity keys backed by existing Map/Set.
+
+let __WEAK_SET_NEXT_ID = 1;
+
+class WeakMap<V> {
+    private _store: Map<Object, V>;
+
+    constructor() {
+        this._store = new Map<Object, V>();
+    }
+
+    get<K extends Object>(key: K): V | null {
+        return this._store.get(key);
+    }
+
+    set<K extends Object>(key: K, value: V): WeakMap<V> {
+        this._store.set(key, value);
+        return this;
+    }
+
+    has<K extends Object>(key: K): boolean {
+        return this._store.has(key);
+    }
+
+    delete<K extends Object>(key: K): boolean {
+        return this._store.delete(key);
+    }
+}
+
+class WeakSet<T extends Object> {
+    private _tag: string;
+
+    constructor() {
+        this._tag = "__raya_weakset_" + String(__WEAK_SET_NEXT_ID);
+        __WEAK_SET_NEXT_ID = __WEAK_SET_NEXT_ID + 1;
+    }
+
+    add(value: T): WeakSet<T> {
+        value[this._tag] = true;
+        return this;
+    }
+
+    has(value: T): boolean {
+        return value[this._tag] == true;
+    }
+
+    delete(value: T): boolean {
+        let existed = value[this._tag] == true;
+        if (existed) {
+            value[this._tag] = null;
+        }
+        return existed;
+    }
+}

@@ -11,7 +11,7 @@ fn test_fetch_get_request_and_response() {
         import fetch from "std:fetch";
         import { HttpServer } from "std:http";
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const methodOk = req.method() == "GET";
             const pathOk = req.path() == "/fetch";
@@ -21,11 +21,11 @@ fn test_fetch_get_request_and_response() {
             return methodOk && pathOk && queryOk;
         }
 
-        async function main(): Task<boolean> {
-            const server = new HttpServer("127.0.0.1", 38183);
+        async function main(): Promise<boolean> {
+            const server = new HttpServer("127.0.0.1", 38185);
             const serverResult = serverTask(server);
             sleep(5);
-            const response = fetch.get("http://127.0.0.1:38183/fetch?q=1");
+            const response = fetch.get("http://127.0.0.1:38185/fetch?q=1");
             const statusOk = response.status() == 200 && response.ok();
             const body = response.text();
             response.release();
@@ -46,7 +46,7 @@ fn test_fetch_post_with_extra_headers() {
         import fetch from "std:fetch";
         import { HttpServer } from "std:http";
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const methodOk = req.method() == "POST";
             const headerOk = req.header("x-api") == "true";
@@ -56,13 +56,13 @@ fn test_fetch_post_with_extra_headers() {
             return methodOk && headerOk && bodyOk;
         }
 
-        async function main(): Task<boolean> {
-            const server = new HttpServer("127.0.0.1", 38184);
+        async function main(): Promise<boolean> {
+            const server = new HttpServer("127.0.0.1", 38186);
             const serverResult = serverTask(server);
             sleep(5);
             const response = fetch.request(
                 "POST",
-                "http://127.0.0.1:38184/submit",
+                "http://127.0.0.1:38186/submit",
                 "payload",
                 "X-Api: true"
             );

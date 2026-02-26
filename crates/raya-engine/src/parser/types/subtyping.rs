@@ -3,7 +3,7 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{PrimitiveType, Type, TypeId};
+use super::ty::{FunctionType, PrimitiveType, Type, TypeId};
 use rustc_hash::FxHashMap;
 
 /// Context for checking subtyping relationships
@@ -48,7 +48,7 @@ impl<'a> SubtypingContext<'a> {
 
         // Bridge specialized builtin container/runtime types with their class-type names.
         // In checker/runtime-prelude flows we can see either side represented as:
-        // - Type::Map/Set/Channel/Task/Array (specialized builtin types), or
+        // - Type::Map/Set/Channel/Promise/Array (specialized builtin types), or
         // - Type::Class { name: "Map" | "Set" | ... } (from class declarations).
         // They denote the same runtime entities and should be mutually compatible.
         if self.is_builtin_class_bridge(sub_ty, sup_ty)
@@ -111,19 +111,38 @@ impl<'a> SubtypingContext<'a> {
             // (P1, P2, ..., Pn) => R <: (Q1, Q2, ..., Qm) => S
             // if m = n, Qi <: Pi for all i (contravariant), and R <: S (covariant)
             (Type::Function(f1), Type::Function(f2)) => {
-                if f1.params.len() != f2.params.len() {
+                let expand_params = |f: &FunctionType, this: &TypeContext|
+                 -> Option<Vec<TypeId>> {
+                    let mut out = f.params.clone();
+                    if let Some(rest_ty) = f.rest_param {
+                        match this.get(rest_ty) {
+                            Some(Type::Tuple(t)) => {
+                                out.extend(t.elements.iter().copied());
+                            }
+                            _ => return None,
+                        }
+                    }
+                    Some(out)
+                };
+
+                let p1 = expand_params(f1, self.type_ctx);
+                let p2 = expand_params(f2, self.type_ctx);
+                let (Some(p1), Some(p2)) = (p1, p2) else {
+                    return false;
+                };
+
+                if p1.len() != p2.len() {
                     return false;
                 }
 
                 // Parameters are contravariant: sup params <: sub params
-                let params_match = f1
-                    .params
+                let params_match = p1
                     .iter()
-                    .zip(&f2.params)
+                    .zip(&p2)
                     .all(|(&p1, &p2)| self.is_subtype(p2, p1)); // Note: reversed!
 
                 // Return type is covariant, comparing effective returns:
-                // - async fn (...): T is treated as (... ) => Task<T>
+                // - async fn (...): T is treated as (... ) => Promise<T>
                 // - sync fn (...): R is treated as (... ) => R
                 let return_match = self.is_function_return_subtype(
                     f1.return_type,
@@ -138,7 +157,7 @@ impl<'a> SubtypingContext<'a> {
             // Array subtyping: T[] <: U[] if T <: U
             (Type::Array(a1), Type::Array(a2)) => self.is_subtype(a1.element, a2.element),
 
-            // Task subtyping: Task<T> <: Task<U> if T <: U (covariant)
+            // Promise subtyping: Promise<T> <: Promise<U> if T <: U (covariant)
             (Type::Task(t1), Type::Task(t2)) => self.is_subtype(t1.result, t2.result),
 
             // Tuple subtyping: [T1, T2, ..., Tn] <: [U1, U2, ..., Um]
@@ -334,7 +353,7 @@ impl<'a> SubtypingContext<'a> {
     fn is_builtin_class_bridge(&self, lhs: &Type, rhs: &Type) -> bool {
         match (lhs, rhs) {
             (Type::Array(_), Type::Class(c)) => c.name == "Array",
-            (Type::Task(_), Type::Class(c)) => c.name == "Task",
+            (Type::Task(_), Type::Class(c)) => c.name == "Promise",
             (Type::Channel(_), Type::Class(c)) => c.name == "Channel",
             (Type::Map(_), Type::Class(c)) => c.name == "Map",
             (Type::Set(_), Type::Class(c)) => c.name == "Set",
@@ -365,12 +384,12 @@ impl<'a> SubtypingContext<'a> {
     ) -> bool {
         match (sub_async, sup_async) {
             (false, false) | (true, true) => self.is_subtype(sub_return, sup_return),
-            // async (...) => T  <:  (... ) => Task<U>  iff  T <: U
+            // async (...) => T  <:  (... ) => Promise<U>  iff  T <: U
             (true, false) => match self.type_ctx.get(sup_return) {
                 Some(Type::Task(task_sup)) => self.is_subtype(sub_return, task_sup.result),
                 _ => false,
             },
-            // (... ) => Task<T>  <:  async (...) => U  iff  T <: U
+            // (... ) => Promise<T>  <:  async (...) => U  iff  T <: U
             (false, true) => match self.type_ctx.get(sub_return) {
                 Some(Type::Task(task_sub)) => self.is_subtype(task_sub.result, sup_return),
                 _ => false,
@@ -522,9 +541,9 @@ mod tests {
         let task_void = ctx.task_type(void);
         let num = ctx.number_type();
 
-        // async (number) => void  (effective return: Task<void>)
+        // async (number) => void  (effective return: Promise<void>)
         let async_fn = ctx.function_type(vec![num], void, true);
-        // (number) => Task<void>
+        // (number) => Promise<void>
         let task_callback = ctx.function_type(vec![num], task_void, false);
 
         let mut sub_ctx = SubtypingContext::new(&ctx);
@@ -538,7 +557,7 @@ mod tests {
         let void = ctx.void_type();
         let num = ctx.number_type();
 
-        // async (number) => void  (effective return: Task<void>)
+        // async (number) => void  (effective return: Promise<void>)
         let async_fn = ctx.function_type(vec![num], void, true);
         // (number) => void
         let plain_callback = ctx.function_type(vec![num], void, false);

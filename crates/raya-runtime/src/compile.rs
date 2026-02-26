@@ -3,6 +3,8 @@
 //! Parse → Bind → TypeCheck → Compile to bytecode.
 
 use raya_engine::compiler::{Compiler, Module};
+use raya_engine::compiler::module::StdModuleRegistry;
+use raya_engine::parser::ast::ImportSpecifier;
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
     BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker,
@@ -11,8 +13,10 @@ use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
+use crate::BuiltinMode;
 
 /// Options controlling compilation output.
 #[derive(Debug, Clone, Default)]
@@ -29,7 +33,7 @@ pub struct CheckDiagnostics {
     pub bind_errors: Vec<BindError>,
     /// Warnings from type checking
     pub warnings: Vec<CheckWarning>,
-    /// Full source (builtins + stdlib + user code)
+    /// Full source (builtins + user code)
     pub source: String,
     /// Byte offset where user code begins in `source`
     pub user_offset: usize,
@@ -37,15 +41,30 @@ pub struct CheckDiagnostics {
 
 /// Compile Raya source code to a bytecode module.
 ///
-/// Prepends builtin class sources and standard library sources so that
-/// user code can reference Map, Set, Channel, Logger, Math, etc.
+/// Prepends builtin class sources so user code can reference core globals
+/// (Map, Set, Buffer, Date, Promise, etc.). Standard library modules are not
+/// auto-injected; they must be imported explicitly.
 pub fn compile_source(source: &str) -> Result<(Module, Interner), RuntimeError> {
-    precheck_user_top_level_duplicates(source)?;
+    compile_source_with_mode(source, BuiltinMode::RayaStrict)
+}
 
-    let builtin_src = builtins::builtin_sources();
-    let std_src = builtins::std_sources();
-    let user_offset = builtin_src.len() + 1 + std_src.len() + 1;
-    let full_source = format!("{}\n{}\n{}", builtin_src, std_src, source);
+/// Compile Raya source code to a bytecode module with builtin API mode.
+pub fn compile_source_with_mode(
+    source: &str,
+    builtin_mode: BuiltinMode,
+) -> Result<(Module, Interner), RuntimeError> {
+    precheck_user_top_level_duplicates(source)?;
+    precheck_node_compat_symbol_usage(source, builtin_mode)?;
+
+    let std_import_prelude = build_std_import_prelude(source)?;
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1;
+    let full_source = format!("{}\n{}", prelude_src, source);
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -122,12 +141,27 @@ pub fn compile_source_with_options(
     source: &str,
     options: &CompileOptions,
 ) -> Result<(Module, Interner), RuntimeError> {
-    precheck_user_top_level_duplicates(source)?;
+    compile_source_with_options_and_mode(source, options, BuiltinMode::RayaStrict)
+}
 
-    let builtin_src = builtins::builtin_sources();
-    let std_src = builtins::std_sources();
-    let user_offset = builtin_src.len() + 1 + std_src.len() + 1;
-    let full_source = format!("{}\n{}\n{}", builtin_src, std_src, source);
+/// Compile source with explicit compile options and builtin compatibility mode.
+pub fn compile_source_with_options_and_mode(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+) -> Result<(Module, Interner), RuntimeError> {
+    precheck_user_top_level_duplicates(source)?;
+    precheck_node_compat_symbol_usage(source, builtin_mode)?;
+
+    let std_import_prelude = build_std_import_prelude(source)?;
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1;
+    let full_source = format!("{}\n{}", prelude_src, source);
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -189,13 +223,27 @@ pub fn compile_source_with_options(
 /// Runs Parse → Bind → TypeCheck and returns all errors and warnings.
 /// Does not perform IR lowering, optimization, or code generation.
 pub fn check_source(source: &str) -> Result<CheckDiagnostics, RuntimeError> {
+    check_source_with_mode(source, BuiltinMode::RayaStrict)
+}
+
+/// Type-check source using a specific builtin compatibility mode.
+pub fn check_source_with_mode(
+    source: &str,
+    builtin_mode: BuiltinMode,
+) -> Result<CheckDiagnostics, RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
+    precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let builtin_src = builtins::builtin_sources();
-    let std_src = builtins::std_sources();
-    let user_offset = builtin_src.len() + 1 + std_src.len() + 1; // +1 for \n separators
+    let std_import_prelude = build_std_import_prelude(source)?;
+    let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
+    let prelude_src = if std_import_prelude.is_empty() {
+        builtin_src.to_string()
+    } else {
+        format!("{}\n{}", builtin_src, std_import_prelude)
+    };
+    let user_offset = prelude_src.len() + 1; // +1 for \n separator
 
-    let full_source = format!("{}\n{}\n{}", builtin_src, std_src, source);
+    let full_source = format!("{}\n{}", prelude_src, source);
 
     let prefix_lines = full_source[..user_offset]
         .bytes()
@@ -326,6 +374,109 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
         .join("\n")
 }
 
+fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
+    let parser = Parser::new(source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
+    let (ast, interner) = parser
+        .parse()
+        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
+
+    let registry = StdModuleRegistry::new();
+    let mut prelude = String::new();
+    let mut seen_modules: HashSet<String> = HashSet::new();
+    let mut default_alias_by_module: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut default_expr_by_module: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut seen_bindings: HashSet<String> = HashSet::new();
+
+    for stmt in &ast.statements {
+        let Statement::ImportDecl(import) = stmt else {
+            continue;
+        };
+        let specifier = interner.resolve(import.source.value).to_string();
+        if !specifier.starts_with("std:") {
+            continue;
+        }
+
+        if seen_modules.insert(specifier.clone()) {
+            let module_name = StdModuleRegistry::module_name(&specifier).ok_or_else(|| {
+                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+            })?;
+            let module_src = registry.get(module_name).ok_or_else(|| {
+                RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
+            })?;
+            let (module_body, default_expr) = strip_default_export(module_src);
+            prelude.push_str(&module_body);
+            prelude.push('\n');
+
+            if let Some(expr) = default_expr {
+                let alias = format!("__std_default_{}", sanitize_std_specifier(&specifier));
+                prelude.push_str(&format!("const {} = {};\n", alias, expr));
+                default_alias_by_module.insert(specifier.clone(), alias);
+                default_expr_by_module.insert(specifier.clone(), expr);
+            }
+        }
+
+        for spec in &import.specifiers {
+            if let ImportSpecifier::Default(local) = spec {
+                let local_name = interner.resolve(local.name).to_string();
+                let binding_key = format!("{}::{}", specifier, local_name);
+                if !seen_bindings.insert(binding_key) {
+                    continue;
+                }
+
+                if let Some(expr) = default_expr_by_module.get(&specifier) {
+                    if expr == &local_name {
+                        continue;
+                    }
+                }
+
+                let alias = default_alias_by_module.get(&specifier).ok_or_else(|| {
+                    RuntimeError::Dependency(format!(
+                        "std module '{}' has no default export for import '{}'",
+                        specifier, local_name
+                    ))
+                })?;
+                prelude.push_str(&format!("const {} = {};\n", local_name, alias));
+            }
+        }
+    }
+
+    Ok(prelude)
+}
+
+fn strip_default_export(module_src: &str) -> (String, Option<String>) {
+    let mut out = String::new();
+    let mut default_expr: Option<String> = None;
+
+    for line in module_src.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("export default ") {
+            let expr = rest.trim_end_matches(';').trim();
+            if !expr.is_empty() {
+                default_expr = Some(expr.to_string());
+            }
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+
+    (out, default_expr)
+}
+
+fn sanitize_std_specifier(specifier: &str) -> String {
+    let mut out = String::new();
+    for ch in specifier.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    out
+}
+
 /// Detect duplicate top-level declarations within user source before builtin/std
 /// sources are prepended.
 ///
@@ -381,6 +532,24 @@ fn precheck_user_top_level_duplicates(source: &str) -> Result<(), RuntimeError> 
             }
             _ => {}
         }
+    }
+
+    Ok(())
+}
+
+fn precheck_node_compat_symbol_usage(
+    source: &str,
+    builtin_mode: BuiltinMode,
+) -> Result<(), RuntimeError> {
+    if builtin_mode != BuiltinMode::RayaStrict {
+        return Ok(());
+    }
+
+    if let Some(found) = builtin_manifest::find_first_node_compat_symbol_usage(source) {
+        return Err(RuntimeError::TypeCheck(format!(
+            "E_STRICT_NODE_COMPAT_SYMBOL: '{}' is node-compat-only (line {}). {}",
+            found.symbol, found.line, found.hint
+        )));
     }
 
     Ok(())
@@ -536,5 +705,965 @@ mod tests {
         // Ensure compile_source is unaffected
         let result = compile_source("return 42;");
         assert!(result.is_ok(), "compile_source should still work");
+    }
+
+    #[test]
+    fn test_object_define_property_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            let desc = new Object();
+            Object.defineProperty(obj, "x", desc);
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.defineProperty should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_property_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            let desc = new Object();
+            Object.defineProperty(obj, "x", desc);
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.defineProperty should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_object_get_own_property_descriptor_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            Object.getOwnPropertyDescriptor(obj, "x");
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.getOwnPropertyDescriptor should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_get_own_property_descriptor_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            Object.getOwnPropertyDescriptor(obj, "x");
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.getOwnPropertyDescriptor should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_properties_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            let descriptors = {};
+            Object.defineProperties(obj, descriptors);
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.defineProperties should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_properties_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            let descriptors = {};
+            Object.defineProperties(obj, descriptors);
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.defineProperties should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_arraybuffer_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let b = new ArrayBuffer(8);
+            return b.byteLength;
+            "#,
+        );
+        assert!(result.is_err(), "ArrayBuffer should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("ArrayBuffer"),
+            "expected symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_arraybuffer_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let b = new ArrayBuffer(8);
+            return b.byteLength;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "ArrayBuffer should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_extended_typed_arrays_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let a = new Uint8ClampedArray(2);
+            return a.length;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "extended typed arrays should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Uint8ClampedArray"),
+            "expected symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_extended_typed_arrays_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let a = new Uint16Array(2);
+            let b = new Int16Array(2);
+            let c = new Uint32Array(2);
+            let d = new Float32Array(2);
+            let e = new Float16Array(2);
+            let f = new BigInt64Array(2);
+            let g = new BigUint64Array(2);
+            let h = new TypedArray<number>(2);
+            return a.length + b.length + c.length + d.length + e.length + f.length + g.length + h.length;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "extended typed arrays should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            return emitter.listenerCount("tick");
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "EventEmitter should be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_typed_usage_compiles() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            emitter.on("tick", (payload: number): void => {
+                let x: number = payload;
+            });
+            emitter.emit("tick", 42);
+            return emitter.listenerCount("tick");
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Typed EventEmitter<{{ tick: [number] }}> usage should compile"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_emit_wrong_payload_type_fails() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            emitter.emit("tick", "oops");
+            return 0;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "EventEmitter<{{ tick: [number] }}>.emit should reject non-number payloads"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_listener_wrong_param_type_fails() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            emitter.on("tick", (payload: string): void => {});
+            return 0;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "EventEmitter<{{ tick: [number] }}>.on should reject listener with wrong payload type"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_listener_count_missing_arg_fails() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            return emitter.listenerCount();
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "listenerCount should require an event name argument"
+        );
+    }
+
+    #[test]
+    fn test_event_emitter_set_max_listeners_wrong_arg_type_fails() {
+        let result = compile_source(
+            r#"
+            let emitter = new EventEmitter<{ tick: [number] }>();
+            emitter.setMaxListeners("10");
+            return 0;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "setMaxListeners should require a number argument"
+        );
+    }
+
+    #[test]
+    fn test_parseint_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            return parseInt("42");
+            "#,
+        );
+        assert!(result.is_err(), "parseInt should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("parseInt"),
+            "expected parseInt symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_parseint_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            return parseInt("42");
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "parseInt should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_globalthis_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            return globalThis != null;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "globalThis should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_reflect_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let o = new Object();
+            Reflect.set(o, "x", 1);
+            return Reflect.has(o, "x");
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Reflect global should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_intl_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let nf = Intl.NumberFormat("en-US", null);
+            return nf.format(1.5);
+            "#,
+        );
+        assert!(result.is_err(), "Intl should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Intl"),
+            "expected Intl symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_intl_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let nf = Intl.NumberFormat("en-US", null);
+            let df = Intl.DateTimeFormat("en-US", null);
+            let d = new Date();
+            return nf.format(1.5) != "" && df.format(d) != "";
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Intl should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_temporal_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let inst = Temporal.Instant(0);
+            let d = Temporal.PlainDate(2026, 2, 26);
+            return inst.toString() != "" && d.toString() != "";
+            "#,
+        );
+        assert!(result.is_ok(), "Temporal should be available in strict mode");
+    }
+
+    #[test]
+    fn test_temporal_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let t = Temporal.PlainTime(1, 2, 3, 4);
+            let z = Temporal.ZonedDateTime(0, "UTC");
+            return t.toString() != "" && z.toString() != "";
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Temporal should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_temporal_plain_date_wrong_arity_fails() {
+        let result = compile_source(
+            r#"
+            let d = Temporal.PlainDate(2026, 2);
+            return d;
+            "#,
+        );
+        assert!(result.is_err(), "Temporal.PlainDate arity should be enforced");
+    }
+
+    #[test]
+    fn test_iterator_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let it = Iterator.fromArray<number>([1, 2, 3]);
+            let r = it.next();
+            return !r.done;
+            "#,
+        );
+        assert!(result.is_ok(), "Iterator should be available in strict mode");
+    }
+
+    #[test]
+    fn test_function_constructor_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let f = new Function("return 1;");
+            return f;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Function constructor should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Function"),
+            "expected Function symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_function_constructor_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let f = new Function("return 1;");
+            let g = new GeneratorFunction("yield 1;");
+            let af = new AsyncFunction("return 1;");
+            return f != null && g != null && af != null;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Function/generator constructor families should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_disposable_stack_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let s = new DisposableStack();
+            return s;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "DisposableStack should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("DisposableStack"),
+            "expected DisposableStack symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_disposable_stack_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let s = new DisposableStack();
+            s.defer((): void => {});
+            s.dispose();
+            return true;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "DisposableStack should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_async_disposable_stack_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let s = new AsyncDisposableStack();
+            return s;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "AsyncDisposableStack should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("AsyncDisposableStack"),
+            "expected AsyncDisposableStack symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_async_disposable_stack_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let s = new AsyncDisposableStack();
+            s.defer(async (): Promise<void> => {});
+            await s.disposeAsync();
+            return true;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "AsyncDisposableStack should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_shared_array_buffer_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let sab = new SharedArrayBuffer(16);
+            return sab.byteLength;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "SharedArrayBuffer should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("SharedArrayBuffer"),
+            "expected SharedArrayBuffer symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_shared_array_buffer_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let sab = new SharedArrayBuffer(16);
+            return sab.byteLength;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "SharedArrayBuffer should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_atomics_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            return Atomics != null;
+            "#,
+        );
+        assert!(result.is_err(), "Atomics should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Atomics"),
+            "expected Atomics symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_atomics_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let sab = new SharedArrayBuffer(16);
+            let a = new Int32Array(sab);
+            Atomics.store(a, 0, 41);
+            let old = Atomics.add(a, 0, 1);
+            return old == 41 && Atomics.load(a, 0) == 42;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Atomics should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_uri_helpers_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let e = encodeURI("a b");
+            let d = decodeURI(e);
+            let ec = encodeURIComponent("x y");
+            let dc = decodeURIComponent(ec);
+            return d == "a b" && dc == "x y";
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "URI helpers should be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_shared_numeric_constants_and_undefined_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let infOk = Infinity > 1.0;
+            let nanOk = NaN != NaN;
+            let undefOk = undefined == null;
+            return infOk && nanOk && undefOk;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Infinity/NaN/undefined should be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_constructor_globals_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let b = Boolean("x");
+            let n = Number("42");
+            let s = String(42);
+            let a = new Array<number>(2);
+            return b && n == 42 && s == "42" && a.length == 2;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Boolean/Number/String and Array constructors should be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_std_symbols_not_available_without_import() {
+        let result = compile_source(
+            r#"
+            return math.abs(-1);
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "std symbols should not be available without explicit import"
+        );
+    }
+
+    #[test]
+    fn test_shadowing_node_compat_symbol_in_strict_mode_works() {
+        let result = compile_source(
+            r#"
+            function parseInt(v: string): number { return 7; }
+            return parseInt("ignored");
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "shadowing node-compat symbol should be allowed in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_reflect_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let o = new Object();
+            return Reflect.has(o, "x");
+            "#,
+        );
+        assert!(result.is_err(), "Reflect should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Reflect"),
+            "expected Reflect symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_proxy_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let t = new Object();
+            let h = new Object();
+            let p = new Proxy<Object>(t, h);
+            return p;
+            "#,
+        );
+        assert!(result.is_err(), "Proxy should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("Proxy"),
+            "expected Proxy symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_proxy_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let t = new Object();
+            let h = new Object();
+            let p = new Proxy<Object>(t, h);
+            return p.isProxy();
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Proxy should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_weakmap_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let w = new WeakMap<number>();
+            let k = new Object();
+            w.set(k, 1);
+            return w.has(k);
+            "#,
+        );
+        assert!(result.is_err(), "WeakMap should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("WeakMap"),
+            "expected WeakMap symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_weakmap_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let w = new WeakMap<number>();
+            let k = new Object();
+            w.set(k, 7);
+            return w.has(k);
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "WeakMap should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_weakset_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let ws = new WeakSet<Object>();
+            let o = new Object();
+            ws.add(o);
+            return ws.has(o);
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "WeakSet should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_weakref_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let o = new Object();
+            let wr = new WeakRef<Object>(o);
+            return wr.deref() != null;
+            "#,
+        );
+        assert!(result.is_err(), "WeakRef should be strict-incompatible");
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("WeakRef"),
+            "expected WeakRef symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_weakref_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let o = new Object();
+            let wr = new WeakRef<Object>(o);
+            return wr.deref() != null;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "WeakRef should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_finalization_registry_not_available_in_strict_mode_with_explicit_error_code() {
+        let result = compile_source(
+            r#"
+            let reg = new FinalizationRegistry<string>((heldValue: string): void => {});
+            return reg;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "FinalizationRegistry should be strict-incompatible"
+        );
+        let msg = match result {
+            Ok(_) => String::new(),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            msg.contains("E_STRICT_NODE_COMPAT_SYMBOL"),
+            "expected strict compat error code, got: {msg}"
+        );
+        assert!(
+            msg.contains("FinalizationRegistry"),
+            "expected FinalizationRegistry symbol in error message, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_finalization_registry_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let reg = new FinalizationRegistry<string>((heldValue: string): void => {});
+            let o = new Object();
+            reg.register(o, "held", o);
+            return reg.unregister(o);
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "FinalizationRegistry should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_shadowing_reflect_symbol_in_strict_mode_works() {
+        let result = compile_source(
+            r#"
+            class Reflect {
+                has(o: Object, k: string): boolean { return true; }
+            }
+            let r = new Reflect();
+            return r.has(new Object(), "x");
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "shadowing Reflect symbol should be allowed in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_shadowing_arraybuffer_symbol_in_strict_mode_works() {
+        let result = compile_source(
+            r#"
+            class ArrayBuffer {
+                byteLength: number;
+                constructor(n: number) { this.byteLength = n; }
+            }
+            let b = new ArrayBuffer(8);
+            return b.byteLength;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "shadowing ArrayBuffer symbol should be allowed in strict mode"
+        );
     }
 }

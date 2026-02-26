@@ -28,12 +28,12 @@ class Counter {
     }
 }
 
-async function work(v: number): Task<number> {
+async function work(v: number): Promise<number> {
     time.sleep(5);
     return v * 2;
 }
 
-async function runSuite(dir: string): Task<void> {
+async function runSuite(dir: string): Promise<void> {
     const queue = new Channel<number>(16);
     queue.send(1);
     queue.send(2);

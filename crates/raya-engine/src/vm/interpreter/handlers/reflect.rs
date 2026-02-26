@@ -3,7 +3,7 @@
 use crate::compiler::Module;
 use crate::vm::interpreter::core::value_to_f64;
 use crate::vm::interpreter::Interpreter;
-use crate::vm::object::{Array, Closure, MapObject, Object, RayaString};
+use crate::vm::object::{Array, Closure, MapObject, Object, Proxy, RayaString};
 use crate::vm::reflect::{ObjectDiff, ObjectSnapshot, SnapshotContext, SnapshotValue};
 use crate::vm::scheduler::Task;
 use crate::vm::stack::Stack;
@@ -1860,6 +1860,66 @@ impl<'a> Interpreter<'a> {
                 let mut visited = Vec::new();
                 let is_circular = self.check_circular(target, &mut visited);
                 Value::bool(is_circular)
+            }
+
+            // ===== Phase 9: Proxy Objects =====
+            reflect::CREATE_PROXY => {
+                // createProxy(target, handler)
+                if args.len() < 2 {
+                    return Err(VmError::RuntimeError(
+                        "createProxy requires 2 arguments (target, handler)".to_string(),
+                    ));
+                }
+                let target = args[0];
+                let handler = args[1];
+
+                if !target.is_ptr() || !handler.is_ptr() {
+                    return Err(VmError::TypeError(
+                        "createProxy: target and handler must be objects".to_string(),
+                    ));
+                }
+
+                let proxy = Proxy::new(target, handler);
+                let proxy_gc = self.gc.lock().allocate(proxy);
+                unsafe { Value::from_ptr(std::ptr::NonNull::new(proxy_gc.as_ptr()).unwrap()) }
+            }
+
+            reflect::IS_PROXY => {
+                // isProxy(obj)
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "isProxy requires 1 argument".to_string(),
+                    ));
+                }
+                Value::bool(crate::vm::reflect::is_proxy(args[0]))
+            }
+
+            reflect::GET_PROXY_TARGET => {
+                // getProxyTarget(proxy)
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getProxyTarget requires 1 argument".to_string(),
+                    ));
+                }
+                if let Some(unwrapped) = crate::vm::reflect::try_unwrap_proxy(args[0]) {
+                    unwrapped.target
+                } else {
+                    Value::null()
+                }
+            }
+
+            reflect::GET_PROXY_HANDLER => {
+                // getProxyHandler(proxy)
+                if args.is_empty() {
+                    return Err(VmError::RuntimeError(
+                        "getProxyHandler requires 1 argument".to_string(),
+                    ));
+                }
+                if let Some(unwrapped) = crate::vm::reflect::try_unwrap_proxy(args[0]) {
+                    unwrapped.handler
+                } else {
+                    Value::null()
+                }
             }
 
             // ===== Decorator Registration (Phase 3/4 codegen) =====

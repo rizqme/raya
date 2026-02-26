@@ -9,11 +9,12 @@ use crate::compiler::native_id::{
 };
 use crate::compiler::{Module, Opcode};
 use crate::vm::builtin::{buffer, date, map, mutex, regexp, set};
+use crate::vm::gc::GcHeader;
 use crate::vm::interpreter::execution::OpcodeResult;
 use crate::vm::interpreter::Interpreter;
 use crate::vm::object::{
-    Array, Buffer, ChannelObject, DateObject, MapObject, Object, RayaString, RegExpObject,
-    SetObject,
+    Array, BoundMethod, Buffer, ChannelObject, Closure, DateObject, MapObject, Object, RayaString,
+    RegExpObject, SetObject,
 };
 use crate::vm::scheduler::{Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
@@ -22,7 +23,186 @@ use crate::vm::value::Value;
 use crate::vm::VmError;
 use std::sync::Arc;
 
+const NODE_DESCRIPTOR_METADATA_KEY: &str = "__node_compat_descriptor";
+
 impl<'a> Interpreter<'a> {
+    fn is_callable_value(value: Value) -> bool {
+        if !value.is_ptr() {
+            return false;
+        }
+        let header = unsafe {
+            let hp = (value.as_ptr::<u8>().unwrap().as_ptr()).sub(std::mem::size_of::<GcHeader>());
+            &*(hp as *const GcHeader)
+        };
+        header.type_id() == std::any::TypeId::of::<Closure>()
+            || header.type_id() == std::any::TypeId::of::<BoundMethod>()
+    }
+
+    fn builtin_field_index_for_class_name_native(
+        class_name: &str,
+        field_name: &str,
+    ) -> Option<usize> {
+        match class_name {
+            // node-compat Object descriptor shape
+            "Object" => match field_name {
+                "value" => Some(0),
+                "writable" => Some(1),
+                "configurable" => Some(2),
+                "enumerable" => Some(3),
+                "get" => Some(4),
+                "set" => Some(5),
+                _ => None,
+            },
+            "Map" => match field_name {
+                "mapPtr" => Some(0),
+                "size" => Some(1),
+                _ => None,
+            },
+            "Set" => match field_name {
+                "setPtr" => Some(0),
+                "size" => Some(1),
+                _ => None,
+            },
+            "Buffer" => match field_name {
+                "bufferPtr" => Some(0),
+                "length" => Some(1),
+                _ => None,
+            },
+            "Error" | "TypeError" | "RangeError" | "ReferenceError" | "SyntaxError"
+            | "URIError" | "EvalError" | "AggregateError" | "ChannelClosedError"
+            | "AssertionError" => match field_name {
+                "message" => Some(0),
+                "name" => Some(1),
+                "stack" => Some(2),
+                "cause" => Some(3),
+                "code" => Some(4),
+                "errno" => Some(5),
+                "syscall" => Some(6),
+                "path" => Some(7),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn get_field_index_for_value(&self, obj_val: Value, field_name: &str) -> Option<usize> {
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        let class_metadata = self.class_metadata.read();
+        let metadata_index = class_metadata
+            .get(obj.class_id)
+            .and_then(|meta| meta.get_field_index(field_name));
+        if metadata_index.is_some() {
+            return metadata_index;
+        }
+        let classes = self.classes.read();
+        let class_name = classes.get_class(obj.class_id)?.name.as_str();
+        Self::builtin_field_index_for_class_name_native(class_name, field_name)
+    }
+
+    fn get_field_value_by_name(&self, obj_val: Value, field_name: &str) -> Option<Value> {
+        let index = self.get_field_index_for_value(obj_val, field_name)?;
+        let obj_ptr = unsafe { obj_val.as_ptr::<Object>() }?;
+        let obj = unsafe { &*obj_ptr.as_ptr() };
+        obj.get_field(index)
+    }
+
+    fn descriptor_flag(&self, descriptor: Value, field_name: &str, default: bool) -> bool {
+        let Some(value) = self.get_field_value_by_name(descriptor, field_name) else {
+            return default;
+        };
+        if let Some(b) = value.as_bool() {
+            b
+        } else if let Some(i) = value.as_i32() {
+            i != 0
+        } else {
+            default
+        }
+    }
+
+    fn set_descriptor_metadata(&self, target: Value, key: &str, descriptor: Value) {
+        let mut metadata = self.metadata.lock();
+        metadata.define_metadata_property(
+            NODE_DESCRIPTOR_METADATA_KEY.to_string(),
+            descriptor,
+            target,
+            key.to_string(),
+        );
+    }
+
+    fn get_descriptor_metadata(&self, target: Value, key: &str) -> Option<Value> {
+        let metadata = self.metadata.lock();
+        metadata.get_metadata_property(NODE_DESCRIPTOR_METADATA_KEY, target, key)
+    }
+
+    fn apply_descriptor_to_target(
+        &self,
+        target: Value,
+        key: &str,
+        descriptor: Value,
+    ) -> Result<(), VmError> {
+        if !descriptor.is_ptr() {
+            return Err(VmError::TypeError(
+                "Object property descriptor must be an object".to_string(),
+            ));
+        }
+
+        // Block redefinition if previous descriptor was marked non-configurable.
+        if let Some(existing) = self.get_descriptor_metadata(target, key) {
+            if !self.descriptor_flag(existing, "configurable", true) {
+                return Err(VmError::TypeError(format!(
+                    "Cannot redefine non-configurable property '{}'",
+                    key
+                )));
+            }
+        }
+
+        let getter = self.get_field_value_by_name(descriptor, "get");
+        let setter = self.get_field_value_by_name(descriptor, "set");
+        let has_accessor =
+            getter.is_some_and(|v| !v.is_null()) || setter.is_some_and(|v| !v.is_null());
+        let value_field = self.get_field_value_by_name(descriptor, "value");
+        let has_value = value_field.is_some_and(|v| !v.is_null());
+
+        if let Some(getter_val) = getter.filter(|v| !v.is_null()) {
+            if !Self::is_callable_value(getter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Getter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if let Some(setter_val) = setter.filter(|v| !v.is_null()) {
+            if !Self::is_callable_value(setter_val) {
+                return Err(VmError::TypeError(format!(
+                    "Setter for property '{}' must be callable",
+                    key
+                )));
+            }
+        }
+        if has_accessor && has_value {
+            return Err(VmError::TypeError(format!(
+                "Invalid property descriptor for '{}': cannot mix accessors and value",
+                key
+            )));
+        }
+
+        // Apply data descriptor value directly to the target field if provided.
+        if let Some(value) = value_field.filter(|v| !v.is_null()) {
+            let field_index = self.get_field_index_for_value(target, key).ok_or_else(|| {
+                VmError::TypeError(format!("Unknown property '{}' on target object", key))
+            })?;
+            let obj_ptr = unsafe { target.as_ptr::<Object>() }
+                .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
+            let obj = unsafe { &mut *obj_ptr.as_ptr() };
+            obj.set_field(field_index, value)
+                .map_err(VmError::RuntimeError)?;
+        }
+
+        self.set_descriptor_metadata(target, key, descriptor);
+        Ok(())
+    }
+
     pub(in crate::vm::interpreter) fn exec_native_ops(
         &mut self,
         stack: &mut Stack,
@@ -409,16 +589,17 @@ impl<'a> Interpreter<'a> {
                             buf.length()
                         };
                         let sliced = buf.slice(start, end);
+                        let sliced_len = sliced.length() as i32;
                         let new_handle = {
                             let gc_ptr = self.gc.lock().allocate(sliced);
                             gc_ptr.as_ptr() as u64
                         };
 
                         // Create Buffer object instance wrapping the handle
-                        let buffer_class_id = {
+                        let (buffer_class_id, buffer_field_count) = {
                             let classes = self.classes.read();
                             match classes.get_class_by_name("Buffer") {
-                                Some(class) => class.id,
+                                Some(class) => (class.id, class.field_count),
                                 None => {
                                     return OpcodeResult::Error(VmError::RuntimeError(
                                         "Buffer class not found".to_string(),
@@ -427,8 +608,11 @@ impl<'a> Interpreter<'a> {
                             }
                         };
 
-                        let mut obj = Object::new(buffer_class_id, 1);
+                        let mut obj = Object::new(buffer_class_id, buffer_field_count.max(2));
                         if let Err(e) = obj.set_field(0, Value::u64(new_handle)) {
+                            return OpcodeResult::Error(VmError::RuntimeError(e));
+                        }
+                        if let Err(e) = obj.set_field(1, Value::i32(sliced_len)) {
                             return OpcodeResult::Error(VmError::RuntimeError(e));
                         }
 
@@ -1164,6 +1348,116 @@ impl<'a> Interpreter<'a> {
                         }
                         OpcodeResult::Continue
                     }
+                    0x0004u16 => {
+                        // OBJECT_DEFINE_PROPERTY(target, key, descriptor) -> target
+                        if args.len() < 3 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty requires 3 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let key_val = args[1];
+                        let descriptor = args[2];
+
+                        if !target.is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty target must be an object".to_string(),
+                            ));
+                        }
+                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperty key must be a string".to_string(),
+                            ));
+                        };
+
+                        if let Err(e) = self.apply_descriptor_to_target(target, &key, descriptor) {
+                            return OpcodeResult::Error(e);
+                        }
+                        if let Err(e) = stack.push(target) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0005u16 => {
+                        // OBJECT_GET_OWN_PROPERTY_DESCRIPTOR(target, key) -> descriptor | null
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getOwnPropertyDescriptor requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let key_val = args[1];
+                        if !target.is_ptr() {
+                            if let Err(e) = stack.push(Value::null()) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        }
+                        let key = if let Some(ptr) = unsafe { key_val.as_ptr::<RayaString>() } {
+                            unsafe { &*ptr.as_ptr() }.data.clone()
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.getOwnPropertyDescriptor key must be a string".to_string(),
+                            ));
+                        };
+                        let value = self
+                            .get_descriptor_metadata(target, &key)
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(value) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0006u16 => {
+                        // OBJECT_DEFINE_PROPERTIES(target, descriptors) -> target
+                        if args.len() < 2 {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties requires 2 arguments".to_string(),
+                            ));
+                        }
+                        let target = args[0];
+                        let descriptors_obj = args[1];
+                        if !target.is_ptr() {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties target must be an object".to_string(),
+                            ));
+                        }
+                        if let Some(desc_ptr) = unsafe { descriptors_obj.as_ptr::<Object>() } {
+                            let desc_obj = unsafe { &*desc_ptr.as_ptr() };
+                            let class_id = desc_obj.class_id;
+                            let field_names = {
+                                let metadata = self.class_metadata.read();
+                                metadata
+                                    .get(class_id)
+                                    .map(|m| m.field_names.clone())
+                                    .unwrap_or_default()
+                            };
+                            for (idx, field_name) in field_names.into_iter().enumerate() {
+                                if field_name.is_empty() {
+                                    continue;
+                                }
+                                if let Some(descriptor_val) = desc_obj.get_field(idx) {
+                                    if let Err(e) = self.apply_descriptor_to_target(
+                                        target,
+                                        &field_name,
+                                        descriptor_val,
+                                    ) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                }
+                            }
+                        } else {
+                            return OpcodeResult::Error(VmError::TypeError(
+                                "Object.defineProperties descriptors must be an object".to_string(),
+                            ));
+                        }
+                        if let Err(e) = stack.push(target) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
                     // Task native calls
                     0x0500u16 => {
                         // TASK_IS_DONE: check if task completed
@@ -1187,6 +1481,47 @@ impl<'a> Interpreter<'a> {
                             .map(|t| t.is_cancelled())
                             .unwrap_or(false);
                         if let Err(e) = stack.push(Value::bool(is_cancelled)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0502u16 => {
+                        // TASK_IS_FAILED: check if task failed
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let is_failed = tasks
+                            .get(&task_id)
+                            .map(|t| t.state() == TaskState::Failed)
+                            .unwrap_or(false);
+                        if let Err(e) = stack.push(Value::bool(is_failed)) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0503u16 => {
+                        // TASK_GET_ERROR: retrieve rejection reason and mark it observed
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        let reason = tasks
+                            .get(&task_id)
+                            .and_then(|t| {
+                                t.mark_rejection_observed();
+                                t.current_exception()
+                            })
+                            .unwrap_or(Value::null());
+                        if let Err(e) = stack.push(reason) {
+                            return OpcodeResult::Error(e);
+                        }
+                        OpcodeResult::Continue
+                    }
+                    0x0504u16 => {
+                        // TASK_MARK_OBSERVED: mark rejection as handled
+                        let task_id = TaskId::from_u64(args[0].as_u64().unwrap_or(0));
+                        let tasks = self.tasks.read();
+                        if let Some(task) = tasks.get(&task_id) {
+                            task.mark_rejection_observed();
+                        }
+                        if let Err(e) = stack.push(Value::null()) {
                             return OpcodeResult::Error(e);
                         }
                         OpcodeResult::Continue

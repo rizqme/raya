@@ -79,7 +79,8 @@ impl TypeContext {
         let unknown_id = unknown;
 
         let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
-        ctx.register_named_type("Task".into(), task);
+        // Public async surface name.
+        ctx.register_named_type("Promise".into(), task);
 
         let channel = ctx.intern(Type::Channel(super::ty::ChannelType {
             message: unknown_id,
@@ -129,6 +130,11 @@ impl TypeContext {
         debug_assert_eq!(int.0, Self::INT_TYPE_ID, "INT_TYPE_ID mismatch");
         debug_assert_eq!(array.0, Self::ARRAY_TYPE_ID, "ARRAY_TYPE_ID mismatch");
 
+        // TS-like utility key type used by builtins (EventEmitter EventMap, Record, etc.).
+        // Register after fixed-ID bootstrap so TypeId constants remain stable.
+        let property_key = ctx.union_type(vec![string, number]);
+        ctx.register_named_type("PropertyKey".into(), property_key);
+
         ctx
     }
 
@@ -157,7 +163,7 @@ impl TypeContext {
     pub const ARRAY_TYPE_NAME: &str = "Array";
     pub const MAP_TYPE_NAME: &str = "Map";
     pub const SET_TYPE_NAME: &str = "Set";
-    pub const TASK_TYPE_NAME: &str = "Task";
+    pub const PROMISE_TYPE_NAME: &str = "Promise";
     pub const CHANNEL_TYPE_NAME: &str = "Channel";
     pub const REGEXP_TYPE_NAME: &str = "RegExp";
     pub const BUFFER_TYPE_NAME: &str = "Buffer";
@@ -208,14 +214,14 @@ impl TypeContext {
         self.type_to_id.get(ty).copied()
     }
 
-    /// Check if a TypeId refers to a Task type
+    /// Check if a TypeId refers to the async Promise representation type.
     pub fn is_task_type(&self, id: TypeId) -> bool {
         matches!(self.get(id), Some(Type::Task(_)))
     }
 
-    /// Get a generic Task<Unknown> type ID for use when the specific Task<T> is not known
+    /// Get a generic Promise<Unknown> type ID when the specific Promise<T> is not known.
     pub fn generic_task_type(&self) -> Option<TypeId> {
-        // Task<Unknown> was pre-interned in TypeContext::new()
+        // Promise<Unknown> was pre-interned in TypeContext::new()
         let unknown_id = TypeId(Self::UNKNOWN_TYPE_ID);
         self.lookup(&Type::Task(super::ty::TaskType { result: unknown_id }))
     }
@@ -405,6 +411,19 @@ impl TypeContext {
     /// Create a tuple type
     pub fn tuple_type(&mut self, elements: Vec<TypeId>) -> TypeId {
         self.intern(Type::Tuple(super::ty::TupleType { elements }))
+    }
+
+    /// Create a symbolic keyof type (keyof T)
+    pub fn keyof_type(&mut self, target: TypeId) -> TypeId {
+        self.intern(Type::Keyof(super::ty::KeyofType { target }))
+    }
+
+    /// Create a symbolic indexed access type (T[K])
+    pub fn indexed_access_type(&mut self, object: TypeId, index: TypeId) -> TypeId {
+        self.intern(Type::IndexedAccess(super::ty::IndexedAccessType {
+            object,
+            index,
+        }))
     }
 
     /// Create a function type

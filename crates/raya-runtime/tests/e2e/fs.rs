@@ -206,7 +206,7 @@ fn test_fs_read_file_buffer_length() {
         const fp: string = fs.tempFile("raya_test_buf_");
         fs.writeTextFile(fp, "hello");
         let buf: Buffer = fs.readFile(fp);
-        let len: number = buf.length();
+        let len: number = buf.length;
         fs.remove(fp);
         return len == 5;
     "#,

@@ -1,0 +1,34 @@
+// Symbol - Unique identifier primitive-like object
+// Initial implementation provides API compatibility surface.
+
+class Symbol {
+    private key: string;
+
+    private constructor(key: string) {
+        this.key = key;
+    }
+
+    toString(): string {
+        return "Symbol(" + this.key + ")";
+    }
+
+    valueOf(): string {
+        return this.key;
+    }
+
+    static for(key: string): Symbol {
+        return new Symbol(key);
+    }
+
+    static keyFor(sym: Symbol): string {
+        return sym.key;
+    }
+
+    static iterator(): Symbol {
+        return new Symbol("Symbol.iterator");
+    }
+
+    static toStringTag(): Symbol {
+        return new Symbol("Symbol.toStringTag");
+    }
+}

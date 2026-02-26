@@ -654,7 +654,7 @@ fn test_generic_pipe_from_method_async() {
 #[test]
 fn test_method_with_extra_type_param() {
     // Class<T> has method<O> that creates Channel<O>
-    expect_i32_with_builtins(
+    expect_i32(
         "class Box<T> {
              val: T;
              constructor(v: T) { this.val = v; }

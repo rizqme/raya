@@ -126,9 +126,17 @@ impl NativeContext for EngineContext<'_> {
             let buf_ptr = gc.allocate(buffer);
             let handle = buf_ptr.as_ptr() as u64;
 
-            // Create Buffer object wrapping the handle
-            let mut obj = Object::new(buffer_class_id, 1);
+            // Create Buffer object wrapping the handle + descriptor-backed length field.
+            let field_count = {
+                let classes = self.classes.read();
+                classes
+                    .get_class(buffer_class_id)
+                    .map(|c| c.field_count)
+                    .unwrap_or(2)
+            };
+            let mut obj = Object::new(buffer_class_id, field_count.max(2));
             let _ = obj.set_field(0, Value::u64(handle));
+            let _ = obj.set_field(1, Value::i32(data.len() as i32));
 
             // Allocate Object
             gc.allocate(obj)

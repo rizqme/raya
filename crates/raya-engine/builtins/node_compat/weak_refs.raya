@@ -1,0 +1,70 @@
+// Node-compat weak references/finalization APIs.
+// Pragmatic subset: explicit registration/unregistration and manual cleanup trigger.
+
+class WeakRef<T extends Object> {
+    private _target: T | null;
+
+    constructor(target: T) {
+        this._target = target;
+    }
+
+    deref(): T | null {
+        return this._target;
+    }
+}
+
+class FinalizationRegistry<T> {
+    private _targets: Object[];
+    private _heldValues: T[];
+    private _tokens: (Object | null)[];
+    private _cleanupCallback: (heldValue: T) => void;
+
+    constructor(cleanupCallback: (heldValue: T) => void) {
+        this._targets = [];
+        this._heldValues = [];
+        this._tokens = [];
+        this._cleanupCallback = cleanupCallback;
+    }
+
+    register<K extends Object, U extends Object>(
+        target: K,
+        heldValue: T,
+        unregisterToken: U | null,
+    ): void {
+        this._targets.push(target);
+        this._heldValues.push(heldValue);
+        this._tokens.push(unregisterToken);
+    }
+
+    unregister<U extends Object>(unregisterToken: U): boolean {
+        let removed = false;
+        let i = this._tokens.length - 1;
+        while (i >= 0) {
+            if (this._tokens[i] == unregisterToken) {
+                this._targets.splice(i, 1);
+                this._heldValues.splice(i, 1);
+                this._tokens.splice(i, 1);
+                removed = true;
+            }
+            i = i - 1;
+        }
+        return removed;
+    }
+
+    cleanupSome(_callback: ((heldValue: T) => void) | null): void {
+        let callback = this._cleanupCallback;
+        if (_callback != null) {
+            callback = _callback as (heldValue: T) => void;
+        }
+
+        let i = 0;
+        while (i < this._heldValues.length) {
+            callback(this._heldValues[i]);
+            i = i + 1;
+        }
+
+        this._targets = [];
+        this._heldValues = [];
+        this._tokens = [];
+    }
+}

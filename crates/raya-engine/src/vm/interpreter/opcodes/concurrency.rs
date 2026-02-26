@@ -109,18 +109,116 @@ impl<'a> Interpreter<'a> {
             }
 
             Opcode::Await => {
-                let task_id_val = match stack.pop() {
+                let awaited_val = match stack.pop() {
                     Ok(v) => v,
                     Err(e) => return OpcodeResult::Error(e),
                 };
 
-                let task_id_u64 = match task_id_val.as_u64() {
-                    Some(id) => id,
-                    None => {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "Expected TaskId".to_string(),
-                        ));
+                // Await over array variables should behave like WaitAll when every element
+                // is a task handle; otherwise treat as plain value normalization.
+                if let Some(arr_ptr) = unsafe { awaited_val.as_ptr::<Array>() } {
+                    let arr = unsafe { &*arr_ptr.as_ptr() };
+                    let task_count = arr.len();
+
+                    let mut task_ids = Vec::with_capacity(task_count);
+                    for i in 0..task_count {
+                        let Some(id) = arr.get(i).and_then(|v| v.as_u64()) else {
+                            if let Err(e) = stack.push(awaited_val) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        };
+                        task_ids.push(TaskId::from_u64(id));
                     }
+
+                    let mut results = Vec::with_capacity(task_count);
+                    let mut all_completed = true;
+                    let mut first_incomplete: Option<TaskId> = None;
+
+                    for awaited_id in &task_ids {
+                        let awaited_task = {
+                            let tasks_guard = self.tasks.read();
+                            tasks_guard.get(awaited_id).cloned()
+                        };
+
+                        let Some(awaited_task) = awaited_task else {
+                            if let Err(e) = stack.push(awaited_val) {
+                                return OpcodeResult::Error(e);
+                            }
+                            return OpcodeResult::Continue;
+                        };
+
+                        if awaited_task.is_cancelled() {
+                            awaited_task.mark_rejection_observed();
+                            return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                "Awaited task {:?} cancelled",
+                                awaited_id
+                            )));
+                        }
+
+                        match awaited_task.state() {
+                            TaskState::Completed => {
+                                let result = awaited_task.result().unwrap_or(Value::null());
+                                results.push(result);
+                            }
+                            TaskState::Failed => {
+                                awaited_task.mark_rejection_observed();
+                                if let Some(exc) = awaited_task.current_exception() {
+                                    task.set_exception(exc);
+                                }
+                                return OpcodeResult::Error(VmError::RuntimeError(format!(
+                                    "Awaited task {:?} failed",
+                                    awaited_id
+                                )));
+                            }
+                            _ => {
+                                all_completed = false;
+                                if first_incomplete.is_none() {
+                                    first_incomplete = Some(*awaited_id);
+                                }
+                                results.push(Value::null());
+                            }
+                        }
+                    }
+
+                    if all_completed {
+                        let mut result_arr = Array::new(task_count, task_count);
+                        for (i, result) in results.into_iter().enumerate() {
+                            let _ = result_arr.set(i, result);
+                        }
+                        let gc_ptr = self.gc.lock().allocate(result_arr);
+                        let result_val = unsafe {
+                            Value::from_ptr(std::ptr::NonNull::new(gc_ptr.as_ptr()).unwrap())
+                        };
+                        if let Err(e) = stack.push(result_val) {
+                            return OpcodeResult::Error(e);
+                        }
+                        return OpcodeResult::Continue;
+                    }
+
+                    if let Err(e) = stack.push(awaited_val) {
+                        return OpcodeResult::Error(e);
+                    }
+                    *ip -= 1;
+
+                    if let Some(awaited_id) = first_incomplete {
+                        let tasks_guard = self.tasks.read();
+                        if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
+                            awaited_task.add_waiter(task.id());
+                        }
+                        drop(tasks_guard);
+                        return OpcodeResult::Suspend(SuspendReason::AwaitTask(awaited_id));
+                    }
+
+                    return OpcodeResult::Continue;
+                }
+
+                // JS-like await normalization: awaiting a non-promise value resolves immediately.
+                let Some(task_id_u64) = awaited_val.as_u64() else {
+                    if let Err(e) = stack.push(awaited_val) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
                 };
 
                 let awaited_id = TaskId::from_u64(task_id_u64);
@@ -129,6 +227,14 @@ impl<'a> Interpreter<'a> {
                 let tasks_guard = self.tasks.read();
                 if let Some(awaited_task) = tasks_guard.get(&awaited_id).cloned() {
                     drop(tasks_guard);
+                    if awaited_task.is_cancelled() {
+                        awaited_task.mark_rejection_observed();
+                        return OpcodeResult::Error(VmError::RuntimeError(format!(
+                            "Awaited task {:?} cancelled",
+                            awaited_id
+                        )));
+                    }
+
                     match awaited_task.state() {
                         TaskState::Completed => {
                             // Already done, push result
@@ -140,6 +246,7 @@ impl<'a> Interpreter<'a> {
                         }
                         TaskState::Failed => {
                             // Propagate exception
+                            awaited_task.mark_rejection_observed();
                             if let Some(exc) = awaited_task.current_exception() {
                                 task.set_exception(exc);
                             }
@@ -156,10 +263,11 @@ impl<'a> Interpreter<'a> {
                     }
                 } else {
                     drop(tasks_guard);
-                    OpcodeResult::Error(VmError::RuntimeError(format!(
-                        "Task {:?} not found",
-                        awaited_id
-                    )))
+                    // Unknown task id value: treat as already-resolved literal.
+                    if let Err(e) = stack.push(awaited_val) {
+                        return OpcodeResult::Error(e);
+                    }
+                    OpcodeResult::Continue
                 }
             }
 
@@ -190,7 +298,6 @@ impl<'a> Interpreter<'a> {
                 let task_count = arr.len();
 
                 // Collect task IDs and check their states
-                let mut task_ids = Vec::with_capacity(task_count);
                 let mut results = Vec::with_capacity(task_count);
                 let mut all_completed = true;
                 let mut first_incomplete: Option<TaskId> = None;
@@ -210,9 +317,13 @@ impl<'a> Interpreter<'a> {
                             }
                         };
                         let awaited_id = TaskId::from_u64(task_id_u64);
-                        task_ids.push(awaited_id);
 
                         if let Some(awaited_task) = tasks_guard.get(&awaited_id) {
+                            if awaited_task.is_cancelled() {
+                                failed_task_info = Some((awaited_id, None));
+                                break;
+                            }
+
                             match awaited_task.state() {
                                 TaskState::Completed => {
                                     let result = awaited_task.result().unwrap_or(Value::null());
@@ -247,6 +358,9 @@ impl<'a> Interpreter<'a> {
                     )));
                 }
                 if let Some((awaited_id, exc)) = failed_task_info {
+                    if let Some(awaited_task) = self.tasks.read().get(&awaited_id).cloned() {
+                        awaited_task.mark_rejection_observed();
+                    }
                     if let Some(exc_val) = exc {
                         task.set_exception(exc_val);
                     }

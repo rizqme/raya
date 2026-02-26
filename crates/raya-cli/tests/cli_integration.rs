@@ -2,7 +2,7 @@
 //!
 //! Tests the Runtime API that powers `raya run`, `raya eval`, and `raya build`.
 
-use raya_runtime::{Runtime, RuntimeOptions};
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -385,7 +385,7 @@ fn test_eval_async_waitall_complex_program() {
     let rt = Runtime::new();
 
     let source = r#"
-async function worker(x: number): Task<number> {
+async function worker(x: number): Promise<number> {
     return x * x;
 }
 function main(): number {
@@ -411,7 +411,7 @@ fn test_eval_async_waitall_with_imported_io_method_calls() {
     let source = r#"
 import io from "std:io";
 
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -443,7 +443,7 @@ fn test_eval_top_level_main_call_with_waitall_runs_once() {
     let source = r#"
 let runCount: number = 0;
 
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -584,6 +584,7 @@ fn test_runtime_with_options() {
         jit_threshold: 500,
         cpu_prof: None,
         prof_interval_us: 10_000,
+        builtin_mode: BuiltinMode::RayaStrict,
     });
 
     let value = rt.eval("return 99;").expect("eval with options failed");
@@ -765,7 +766,7 @@ fn test_session_repl_waitall_and_imported_io_method_calls() {
             r#"
 import io from "std:io";
 
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -806,7 +807,7 @@ let base: number = 10;
     let value = session
         .eval(
             r#"
-async function addBase(n: number): Task<number> {
+async function addBase(n: number): Promise<number> {
     return base + n;
 }
 const values = await [addBase(1), addBase(2), addBase(3)];
@@ -830,7 +831,7 @@ class Acc {
     sum: number = 0;
     add(n: number): void { this.sum = this.sum + n; }
 }
-async function square(n: number): Task<number> { return n * n; }
+async function square(n: number): Promise<number> { return n * n; }
 function main(): number {
     const acc = new Acc();
     const values = await [square(1), square(2), square(3), square(4)];
@@ -870,7 +871,7 @@ fn test_ryb_roundtrip_waitall_with_imported_io_method_calls() {
     let source = r#"
 import io from "std:io";
 
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -906,7 +907,7 @@ fn test_eval_duplicate_toplevel_async_program_returns_error_not_hang() {
     let rt = Runtime::new();
     let snippet = r#"
 import io from "std:io";
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -937,7 +938,7 @@ fn test_session_repl_paste_same_async_program_twice_returns_error() {
     let mut session = Session::new(&RuntimeOptions::default());
     let snippet = r#"
 import io from "std:io";
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     if (id == 1) return "User 1";
     if (id == 2) return "User 2";
     return "User 3";
@@ -974,7 +975,7 @@ fn test_eval_declared_main_not_called_returns_null() {
     let rt = Runtime::new();
     let source = r#"
 import io from "std:io";
-async function fetchUser(id: number): Task<string> {
+async function fetchUser(id: number): Promise<string> {
     return "User " + id.toString();
 }
 function main(): void {

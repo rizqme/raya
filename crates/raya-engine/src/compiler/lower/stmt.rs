@@ -11,7 +11,104 @@ use crate::parser::ast::{self, Statement};
 use crate::parser::TypeId;
 use rustc_hash::FxHashSet;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForOfIterableKind {
+    Array,
+    ClassIterator,
+    Unknown,
+}
+
 impl<'a> Lowerer<'a> {
+    fn classify_for_of_iterable(
+        &self,
+        iterable: &ast::Expression,
+    ) -> (ForOfIterableKind, TypeId, Option<String>) {
+        use crate::parser::types::Type;
+
+        let iterable_ty = self.get_expr_type(iterable);
+        let Some(ty) = self.type_ctx.get(iterable_ty) else {
+            return (ForOfIterableKind::Unknown, UNRESOLVED, None);
+        };
+
+        match ty {
+            Type::Array(arr) => (ForOfIterableKind::Array, arr.element, None),
+            Type::Set(set_ty) => (
+                ForOfIterableKind::ClassIterator,
+                set_ty.element,
+                Some("Set".to_string()),
+            ),
+            Type::Map(_) => (
+                ForOfIterableKind::ClassIterator,
+                UNRESOLVED,
+                Some("Map".to_string()),
+            ),
+            Type::Reference(reference) => match reference.name.as_str() {
+                "Array" => (
+                    ForOfIterableKind::Array,
+                    reference
+                        .type_args
+                        .as_ref()
+                        .and_then(|args| args.first().copied())
+                        .unwrap_or(UNRESOLVED),
+                    None,
+                ),
+                _ => (
+                    ForOfIterableKind::ClassIterator,
+                    reference
+                        .type_args
+                        .as_ref()
+                        .and_then(|args| args.first().copied())
+                        .unwrap_or(UNRESOLVED),
+                    Some(reference.name.clone()),
+                ),
+            },
+            Type::Generic(generic) => {
+                let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
+                    Type::Reference(reference) => Some(reference.name.as_str()),
+                    Type::Class(class_ty) => Some(class_ty.name.as_str()),
+                    _ => None,
+                });
+                match base_name {
+                    Some("Array") => (
+                        ForOfIterableKind::Array,
+                        *generic.type_args.first().unwrap_or(&UNRESOLVED),
+                        None,
+                    ),
+                    Some(name) => (
+                        ForOfIterableKind::ClassIterator,
+                        *generic.type_args.first().unwrap_or(&UNRESOLVED),
+                        Some(name.to_string()),
+                    ),
+                    _ => (ForOfIterableKind::Unknown, UNRESOLVED, None),
+                }
+            }
+            Type::Class(class_ty) => match class_ty.name.as_str() {
+                "Array" => (ForOfIterableKind::Array, UNRESOLVED, None),
+                _ => (
+                    ForOfIterableKind::ClassIterator,
+                    UNRESOLVED,
+                    Some(class_ty.name.clone()),
+                ),
+            },
+            _ => (ForOfIterableKind::Unknown, UNRESOLVED, None),
+        }
+    }
+
+    fn class_id_by_name(&self, class_name: &str) -> Option<crate::compiler::ir::ClassId> {
+        if let Some(sym) = self.interner.lookup(class_name) {
+            if let Some(&id) = self.class_map.get(&sym) {
+                return Some(id);
+            }
+        }
+        self.class_map.iter().find_map(|(&sym, &id)| {
+            if self.interner.resolve(sym) == class_name {
+                Some(id)
+            } else {
+                None
+            }
+        })
+    }
+
     /// Lower a statement
     pub fn lower_stmt(&mut self, stmt: &Statement) {
         // Don't emit code after a terminator
@@ -181,8 +278,75 @@ impl<'a> Lowerer<'a> {
 
         let number_ty = TypeId::new(2); // number type
 
-        // Lower the iterable (array) expression
-        let array_reg = self.lower_expr(&for_of.right);
+        let (iter_kind, elem_ty, iter_class_name) = self.classify_for_of_iterable(&for_of.right);
+
+        // Normalize iterable to an indexable array for loop lowering.
+        let array_reg = match iter_kind {
+            ForOfIterableKind::Array | ForOfIterableKind::Unknown => self.lower_expr(&for_of.right),
+            ForOfIterableKind::ClassIterator => {
+                let source_reg = self.lower_expr(&for_of.right);
+                let class_name = match iter_class_name.as_deref() {
+                    Some(name) => name,
+                    None => {
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: "for-of iterable class name not available".to_string(),
+                            });
+                        return;
+                    }
+                };
+                let class_id = match self.class_id_by_name(class_name) {
+                    Some(id) => id,
+                    None => {
+                        let mut known: Vec<String> = self
+                            .class_map
+                            .keys()
+                            .map(|sym| self.interner.resolve(*sym).to_string())
+                            .collect();
+                        known.sort();
+                        known.dedup();
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "for-of iterable class '{}' not registered (known classes: {})",
+                                    class_name,
+                                    known.join(", ")
+                                ),
+                            });
+                        return;
+                    }
+                };
+                let symbol_iterator_sym = self.interner.lookup("Symbol.iterator");
+                let iterator_sym = self.interner.lookup("iterator");
+                let slot = match symbol_iterator_sym
+                    .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
+                    .or_else(|| {
+                        iterator_sym
+                            .and_then(|sym| self.method_slot_map.get(&(class_id, sym)).copied())
+                    }) {
+                    Some(slot) => slot,
+                    None => {
+                        self.errors
+                            .push(crate::compiler::CompileError::InternalError {
+                                message: format!(
+                                    "for-of iterator method not found on {} (expected Symbol.iterator/iterator)",
+                                    class_name
+                                ),
+                            });
+                        return;
+                    }
+                };
+                let iter_array = self.alloc_register(UNRESOLVED);
+                self.emit(IrInstr::CallMethod {
+                    dest: Some(iter_array.clone()),
+                    object: source_reg,
+                    method: slot,
+                    args: vec![],
+                    optional: false,
+                });
+                iter_array
+            }
+        };
 
         // Get array length: _len = arr.length
         let len_reg = self.alloc_register(number_ty);
@@ -263,15 +427,6 @@ impl<'a> Lowerer<'a> {
         });
 
         // Load element: x = arr[_idx]
-        // Get the element type from the array type
-        let elem_ty = if array_reg.ty.as_u32() >= 5 {
-            // Array types start at TypeId 5+, element type is encoded
-            // For simplicity, use number type as default
-            number_ty
-        } else {
-            number_ty
-        };
-
         let elem_reg = self.alloc_register(elem_ty);
         self.emit(IrInstr::LoadElement {
             dest: elem_reg.clone(),

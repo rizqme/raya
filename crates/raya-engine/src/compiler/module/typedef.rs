@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn test_parse_async_function() {
         let source = r#"
-            export async function fetch(url: string): Task<string> { return ""; }
+            export async function fetch(url: string): Promise<string> { return ""; }
         "#;
 
         let typedef = parse_source(source).unwrap();

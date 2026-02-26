@@ -6,7 +6,7 @@
 //! channel waiters, and checks preemption — all in one loop iteration.
 
 use crate::vm::abi::native_to_value;
-use crate::vm::interpreter::{ExecutionResult, Interpreter, SharedVmState};
+use crate::vm::interpreter::{ExecutionResult, Interpreter, PromiseMicrotask, SharedVmState};
 use crate::vm::object::{Buffer, ChannelObject, Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::value::Value;
@@ -639,6 +639,9 @@ impl Reactor {
                 }
             }
 
+            // === STEP 8.5: Promise microtask checkpoint ===
+            Self::drain_promise_microtasks(&shared_state);
+
             // === STEP 9: Block briefly with select! ===
             let timeout = timer_heap
                 .peek()
@@ -690,6 +693,9 @@ impl Reactor {
                     // Timeout — loop back for timer/preempt checks
                 },
             }
+
+            // === STEP 9.5: Promise microtask checkpoint (post-select boundary) ===
+            Self::drain_promise_microtasks(&shared_state);
         }
     }
 
@@ -755,8 +761,60 @@ impl Reactor {
             ExecutionResult::Failed(e) => {
                 vr.task.fail_with_error(&e);
                 Self::wake_waiters(shared_state, &vr.task, ready_queue);
+                Self::track_unhandled_rejection(shared_state, &vr.task);
                 // Return the stack to the pool for reuse by future tasks
                 shared_state.stack_pool.release(vr.task.take_stack());
+            }
+        }
+    }
+
+    fn track_unhandled_rejection(shared_state: &Arc<SharedVmState>, task: &Arc<Task>) {
+        if task.state() != TaskState::Failed {
+            return;
+        }
+        // Cancelled tasks are expected control-flow for fire-and-forget work
+        // (e.g. server background loops) and should not be treated as unhandled
+        // Promise rejections.
+        if task.is_cancelled() {
+            return;
+        }
+        if task.is_rejection_observed() {
+            return;
+        }
+
+        shared_state
+            .promise_microtasks
+            .lock()
+            .push_back(PromiseMicrotask::ReportUnhandledRejection(task.id()));
+    }
+
+    fn drain_promise_microtasks(shared_state: &Arc<SharedVmState>) {
+        let mut drained = Vec::new();
+        {
+            let mut queue = shared_state.promise_microtasks.lock();
+            while let Some(job) = queue.pop_front() {
+                drained.push(job);
+            }
+        }
+        if drained.is_empty() {
+            return;
+        }
+        let tasks = shared_state.tasks.read();
+        for job in drained {
+            match job {
+                PromiseMicrotask::ReportUnhandledRejection(task_id) => {
+                    let Some(task) = tasks.get(&task_id) else {
+                        continue;
+                    };
+                    if task.state() != TaskState::Failed || task.is_rejection_observed() {
+                        continue;
+                    }
+                    let reason = task.current_exception().unwrap_or(Value::null());
+                    eprintln!(
+                        "[runtime] Unhandled Promise rejection (task {:?}): {:?}",
+                        task_id, reason
+                    );
+                }
             }
         }
     }
@@ -869,6 +927,14 @@ impl Reactor {
         shared_state: &Arc<SharedVmState>,
         ready_queue: &mut VecDeque<Arc<Task>>,
     ) {
+        let task_cancelled = {
+            let tasks = shared_state.tasks.read();
+            tasks
+                .get(&completion.task_id)
+                .map(|t| t.is_cancelled())
+                .unwrap_or(false)
+        };
+
         let value = match completion.result {
             IoCompletion::Bytes(data) => {
                 // Create raw Buffer on heap (same as BUFFER_NEW native call)
@@ -888,6 +954,9 @@ impl Reactor {
                     drop(classes);
                     let mut obj = Object::new(class_id, field_count);
                     obj.fields[0] = Value::u64(handle); // bufferPtr field
+                    if field_count > 1 {
+                        obj.fields[1] = Value::i32(data.len() as i32); // length field
+                    }
                     let obj_ptr = gc.allocate(obj);
                     unsafe { Value::from_ptr(std::ptr::NonNull::new(obj_ptr.as_ptr()).unwrap()) }
                 } else {
@@ -922,6 +991,17 @@ impl Reactor {
             }
             IoCompletion::Primitive(native_val) => native_to_value(native_val),
             IoCompletion::Error(msg) => {
+                if task_cancelled {
+                    // Ignore late IO errors for cancelled tasks and resume them
+                    // as cancelled completion instead.
+                    Self::complete_task(
+                        shared_state,
+                        completion.task_id,
+                        Value::null(),
+                        ready_queue,
+                    );
+                    return;
+                }
                 eprintln!(
                     "[reactor] IO error for task {:?}: {}",
                     completion.task_id, msg
@@ -968,6 +1048,14 @@ impl Reactor {
     ) {
         let tasks = shared_state.tasks.read();
         if let Some(task) = tasks.get(&task_id) {
+            if task.is_cancelled() {
+                // Cancellation wins over delayed IO exceptions.
+                task.set_resume_value(Value::null());
+                task.set_state(TaskState::Resumed);
+                task.clear_suspend_reason();
+                ready_queue.push_back(task.clone());
+                return;
+            }
             // Ensure stale resume values are not materialized when resuming with exception.
             let _ = task.take_resume_value();
             task.set_exception(exception);
@@ -991,6 +1079,7 @@ impl Reactor {
         let tasks_map = shared_state.tasks.read();
         let task_failed = task.state() == TaskState::Failed;
         let exception = if task_failed {
+            task.mark_rejection_observed();
             task.current_exception()
         } else {
             None

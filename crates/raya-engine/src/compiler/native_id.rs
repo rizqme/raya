@@ -12,6 +12,9 @@
 pub const OBJECT_TO_STRING: u16 = 0x0001;
 pub const OBJECT_HASH_CODE: u16 = 0x0002;
 pub const OBJECT_EQUAL: u16 = 0x0003;
+pub const OBJECT_DEFINE_PROPERTY: u16 = 0x0004;
+pub const OBJECT_GET_OWN_PROPERTY_DESCRIPTOR: u16 = 0x0005;
+pub const OBJECT_DEFINE_PROPERTIES: u16 = 0x0006;
 
 // ============================================================================
 // Array (0x01xx) - Must match raya-core/src/builtin.rs
@@ -93,6 +96,9 @@ pub const CHANNEL_CAPACITY: u16 = 0x0408;
 
 pub const TASK_IS_DONE: u16 = 0x0500;
 pub const TASK_IS_CANCELLED: u16 = 0x0501;
+pub const TASK_IS_FAILED: u16 = 0x0502;
+pub const TASK_GET_ERROR: u16 = 0x0503;
+pub const TASK_MARK_OBSERVED: u16 = 0x0504;
 
 // ============================================================================
 // Error (0x06xx)
@@ -496,6 +502,9 @@ pub fn native_name(id: u16) -> &'static str {
         OBJECT_TO_STRING => "Object.toString",
         OBJECT_HASH_CODE => "Object.hashCode",
         OBJECT_EQUAL => "Object.equal",
+        OBJECT_DEFINE_PROPERTY => "Object.defineProperty",
+        OBJECT_GET_OWN_PROPERTY_DESCRIPTOR => "Object.getOwnPropertyDescriptor",
+        OBJECT_DEFINE_PROPERTIES => "Object.defineProperties",
 
         // Array
         ARRAY_PUSH => "Array.push",

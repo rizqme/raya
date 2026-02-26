@@ -196,6 +196,7 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
                                     name: p.name.to_string(),
                                     ty: p.ty.to_string(),
                                     is_static: p.is_static,
+                                    descriptor: builtin_property_descriptor(c.name, p.name),
                                 })
                                 .collect(),
                             methods: c
@@ -242,6 +243,62 @@ pub fn to_checker_signatures() -> Vec<crate::parser::checker::BuiltinSignatures>
             }
         })
         .collect()
+}
+
+fn builtin_property_descriptor(
+    class_name: &str,
+    property_name: &str,
+) -> Option<crate::parser::checker::BuiltinPropertyDescriptor> {
+    use crate::parser::checker::BuiltinPropertyDescriptor;
+
+    let descriptor = match (class_name, property_name) {
+        ("string", "length") => BuiltinPropertyDescriptor {
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(false),
+            has_getter: true,
+            has_setter: false,
+        },
+        ("Map", "size")
+        | ("Set", "size")
+        | ("Buffer", "length")
+        | ("ArrayBuffer", "byteLength")
+        | ("Uint8Array", "length")
+        | ("Int8Array", "length")
+        | ("Int32Array", "length")
+        | ("Float64Array", "length")
+        | ("DataView", "byteLength")
+        | ("DataView", "byteOffset") => BuiltinPropertyDescriptor {
+            writable: Some(false),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: true,
+            has_setter: false,
+        },
+        ("Error", "message")
+        | ("Error", "name")
+        | ("Error", "stack")
+        | ("Error", "cause")
+        | ("Error", "code")
+        | ("Error", "errno")
+        | ("Error", "syscall")
+        | ("Error", "path") => BuiltinPropertyDescriptor {
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: false,
+            has_setter: false,
+        },
+        ("AggregateError", "errors") => BuiltinPropertyDescriptor {
+            writable: Some(true),
+            enumerable: Some(false),
+            configurable: Some(true),
+            has_getter: false,
+            has_setter: false,
+        },
+        _ => return None,
+    };
+    Some(descriptor)
 }
 
 static BUILTIN_SIGS: &[BuiltinSignatures] = &[
@@ -450,21 +507,73 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         }],
         functions: &[],
     },
+    // Symbol
+    BuiltinSignatures {
+        name: "Symbol",
+        classes: &[ClassSig {
+            name: "Symbol",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "valueOf",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "for",
+                    params: &[("key", "string")],
+                    min_params: 1,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "keyFor",
+                    params: &[("sym", "Symbol")],
+                    min_params: 1,
+                    return_type: "string",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "toStringTag",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
+    },
     // Map<K, V>
     BuiltinSignatures {
         name: "Map",
         classes: &[ClassSig {
             name: "Map",
             type_params: &["K", "V"],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "size",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "size",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "get",
                     params: &[("key", "K")],
@@ -521,6 +630,13 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "Array<[K, V]>",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<[K, V]>",
+                    is_static: false,
+                },
             ],
             constructor: Some(&[]),
         }],
@@ -532,15 +648,12 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Set",
             type_params: &["T"],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "size",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "size",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "add",
                     params: &[("value", "T")],
@@ -571,6 +684,27 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 },
                 MethodSig {
                     name: "values",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "keys",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "entries",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Array<[T, T]>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "iterator",
                     params: &[],
                     min_params: 0,
                     return_type: "Array<T>",
@@ -608,15 +742,12 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         classes: &[ClassSig {
             name: "Buffer",
             type_params: &[],
-            properties: &[],
+            properties: &[PropertySig {
+                name: "length",
+                ty: "number",
+                is_static: false,
+            }],
             methods: &[
-                MethodSig {
-                    name: "length",
-                    params: &[],
-                    min_params: 0,
-                    return_type: "number",
-                    is_static: false,
-                },
                 MethodSig {
                     name: "getByte",
                     params: &[("offset", "number")],
@@ -702,6 +833,283 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 return_type: "Buffer",
             },
         ],
+    },
+    // Typed arrays + DataView
+    BuiltinSignatures {
+        name: "TypedArray",
+        classes: &[
+            ClassSig {
+                name: "ArrayBuffer",
+                type_params: &[],
+                properties: &[PropertySig {
+                    name: "byteLength",
+                    ty: "int",
+                    is_static: false,
+                }],
+                methods: &[MethodSig {
+                    name: "slice",
+                    params: &[("begin", "int"), ("end", "int")],
+                    min_params: 0,
+                    return_type: "ArrayBuffer",
+                    is_static: false,
+                }],
+                constructor: Some(&[("byteLength", "int")]),
+            },
+            ClassSig {
+                name: "Uint8Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Int8Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Int32Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "Float64Array",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "length",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "get",
+                        params: &[("index", "int")],
+                        min_params: 1,
+                        return_type: "number",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "set",
+                        params: &[("index", "int"), ("value", "number")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("source", "int | ArrayBuffer")]),
+            },
+            ClassSig {
+                name: "DataView",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "byteLength",
+                        ty: "int",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "byteOffset",
+                        ty: "int",
+                        is_static: false,
+                    },
+                ],
+                methods: &[
+                    MethodSig {
+                        name: "getUint8",
+                        params: &[("offset", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setUint8",
+                        params: &[("offset", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getInt8",
+                        params: &[("offset", "int")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setInt8",
+                        params: &[("offset", "int"), ("value", "int")],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getInt32",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setInt32",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "int"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getUint32",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "int",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setUint32",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "int"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "getFloat64",
+                        params: &[("offset", "int"), ("littleEndian", "boolean")],
+                        min_params: 1,
+                        return_type: "number",
+                        is_static: false,
+                    },
+                    MethodSig {
+                        name: "setFloat64",
+                        params: &[
+                            ("offset", "int"),
+                            ("value", "number"),
+                            ("littleEndian", "boolean"),
+                        ],
+                        min_params: 2,
+                        return_type: "void",
+                        is_static: false,
+                    },
+                ],
+                constructor: Some(&[("buffer", "ArrayBuffer")]),
+            },
+        ],
+        functions: &[],
     },
     // Date
     BuiltinSignatures {
@@ -972,11 +1380,11 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         }],
         functions: &[],
     },
-    // Task<T>
+    // Promise<T> (public async contract; internally scheduler-backed)
     BuiltinSignatures {
-        name: "Task",
+        name: "Promise",
         classes: &[ClassSig {
-            name: "Task",
+            name: "Promise",
             type_params: &["T"],
             properties: &[],
             methods: &[
@@ -1001,23 +1409,114 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "boolean",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "then",
+                    params: &[("onFulfilled", "(T) => Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "catch",
+                    params: &[("onRejected", "(Object) => Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "finally",
+                    params: &[("onFinally", "() => void")],
+                    min_params: 1,
+                    return_type: "Promise<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "resolve",
+                    params: &[("value", "Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "reject",
+                    params: &[("reason", "Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "all",
+                    params: &[("values", "Array<Promise<Object>>")],
+                    min_params: 1,
+                    return_type: "Promise<Array<Object>>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "race",
+                    params: &[("values", "Array<Promise<Object>>")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
             ],
-            constructor: None, // Tasks are created via async keyword
+            constructor: None, // Promises are created via async keyword
         }],
-        functions: &[
-            FunctionSig {
-                name: "yield",
-                type_params: &[],
-                params: &[],
-                return_type: "void",
-            },
-            FunctionSig {
-                name: "sleep",
-                type_params: &[],
-                params: &[("durationMs", "number")],
-                return_type: "void",
-            },
-        ],
+        functions: &[],
+    },
+    // Symbol
+    BuiltinSignatures {
+        name: "Symbol",
+        classes: &[ClassSig {
+            name: "Symbol",
+            type_params: &[],
+            properties: &[],
+            methods: &[
+                MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "valueOf",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "for",
+                    params: &[("key", "string")],
+                    min_params: 1,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "keyFor",
+                    params: &[("sym", "Symbol")],
+                    min_params: 1,
+                    return_type: "string",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "iterator",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "toStringTag",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "Symbol",
+                    is_static: true,
+                },
+            ],
+            constructor: None,
+        }],
+        functions: &[],
     },
     // Error classes
     BuiltinSignatures {
@@ -1034,6 +1533,31 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "Object | null",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
                         ty: "string",
                         is_static: false,
                     },
@@ -1142,6 +1666,83 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     is_static: false,
                 }],
                 constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "URIError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "EvalError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "AggregateError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errors",
+                        ty: "Object[]",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("errors", "Object[]"), ("message", "string")]),
             },
             ClassSig {
                 name: "ChannelClosedError",
@@ -1325,5 +1926,31 @@ mod tests {
             !sigs.is_empty(),
             "Type signatures should always be available"
         );
+    }
+
+    #[test]
+    fn test_descriptor_metadata_exported_for_dynamic_properties() {
+        let sigs = to_checker_signatures();
+        let map_sig = sigs
+            .iter()
+            .find(|s| s.name == "Map")
+            .expect("Map signature");
+        let map_class = map_sig
+            .classes
+            .iter()
+            .find(|c| c.name == "Map")
+            .expect("Map class signature");
+        let size_prop = map_class
+            .properties
+            .iter()
+            .find(|p| p.name == "size")
+            .expect("Map.size property");
+        let descriptor = size_prop
+            .descriptor
+            .as_ref()
+            .expect("Map.size should include descriptor metadata");
+        assert_eq!(descriptor.writable, Some(false));
+        assert!(descriptor.has_getter);
+        assert!(!descriptor.has_setter);
     }
 }

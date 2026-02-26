@@ -13,6 +13,7 @@ use super::narrowing::{apply_type_guard, TypeEnv};
 use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_all_type_guards, extract_type_guard, TypeGuard};
 use crate::parser::ast::*;
+use crate::parser::token::Span;
 use crate::parser::types::normalize::contains_type_variables;
 use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
 use crate::{Interner, Symbol as ParserSymbol};
@@ -484,7 +485,7 @@ impl<'a> TypeChecker<'a> {
             {
                 let mut return_ty = func_ty.return_type;
 
-                // For async functions, the declared return type is Task<T>,
+                // For async functions, the declared return type is Promise<T>,
                 // but return statements should check against T (the inner type)
                 if func.is_async {
                     if let Some(crate::parser::types::Type::Task(task_ty)) =
@@ -750,7 +751,7 @@ impl<'a> TypeChecker<'a> {
                             .map(|t| self.resolve_type_annotation(t))
                             .unwrap_or_else(|| self.type_ctx.void_type());
 
-                        // For async methods, return statements are checked against Task<T>'s inner T
+                        // For async methods, return statements are checked against Promise<T>'s inner T
                         if method.is_async {
                             if let Some(crate::parser::types::Type::Task(task_ty)) =
                                 self.type_ctx.get(return_ty)
@@ -1138,21 +1139,7 @@ impl<'a> TypeChecker<'a> {
         // Check the iterable (right side) and get its type
         let iterable_ty = self.check_expr(&for_of.right);
 
-        // Get the element type from the array
-        // For now, we only support arrays
-        let elem_ty =
-            if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(iterable_ty) {
-                arr.element
-            } else {
-                // Not an array - report error and use unknown type
-                self.errors.push(CheckError::TypeMismatch {
-                    expected: "array".to_string(),
-                    actual: self.format_type(iterable_ty),
-                    span: *for_of.right.span(),
-                    note: Some("for-of loops require an iterable (array)".to_string()),
-                });
-                self.type_ctx.unknown_type()
-            };
+        let elem_ty = self.for_of_element_type(iterable_ty, *for_of.right.span());
 
         // Handle the loop variable (left side)
         // The binder should have already registered the variable
@@ -1184,6 +1171,199 @@ impl<'a> TypeChecker<'a> {
 
         // Exit loop scope
         self.exit_scope();
+    }
+
+    fn for_of_element_type(&mut self, iterable_ty: TypeId, span: Span) -> TypeId {
+        use crate::parser::types::Type;
+
+        let Some(ty) = self.type_ctx.get(iterable_ty).cloned() else {
+            return self.type_ctx.unknown_type();
+        };
+
+        match ty {
+            Type::Array(arr) => arr.element,
+            Type::Set(set_ty) => set_ty.element,
+            Type::Map(map_ty) => self.type_ctx.tuple_type(vec![map_ty.key, map_ty.value]),
+            Type::Reference(reference) => match reference.name.as_str() {
+                "Array" | "Set" => reference
+                    .type_args
+                    .and_then(|args| args.first().copied())
+                    .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                "Map" => {
+                    if let Some(args) = reference.type_args {
+                        if args.len() >= 2 {
+                            return self.type_ctx.tuple_type(vec![args[0], args[1]]);
+                        }
+                    }
+                    self.type_ctx.unknown_type()
+                }
+                _ => {
+                    if let Some(elem_ty) = self.for_of_element_from_reference(
+                        &reference.name,
+                        reference.type_args.as_deref(),
+                    ) {
+                        elem_ty
+                    } else {
+                        self.errors.push(CheckError::TypeMismatch {
+                            expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
+                            actual: self.format_type(iterable_ty),
+                            span,
+                            note: Some("for-of loops require an iterable with iterator() returning an array".to_string()),
+                        });
+                        self.type_ctx.unknown_type()
+                    }
+                }
+            },
+            Type::Generic(generic) => {
+                let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
+                    Type::Reference(reference) => Some(reference.name.clone()),
+                    Type::Class(class_ty) => Some(class_ty.name.clone()),
+                    _ => None,
+                });
+                match base_name.as_deref() {
+                    Some("Array") | Some("Set") => generic
+                        .type_args
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    Some("Map") => {
+                        if generic.type_args.len() >= 2 {
+                            self.type_ctx
+                                .tuple_type(vec![generic.type_args[0], generic.type_args[1]])
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    Some(name) => {
+                        if let Some(elem_ty) =
+                            self.for_of_element_from_reference(name, Some(&generic.type_args))
+                        {
+                            elem_ty
+                        } else {
+                            self.errors.push(CheckError::TypeMismatch {
+                                expected:
+                                    "iterable (Array, Set, Map, or class with iterator())"
+                                        .to_string(),
+                                actual: self.format_type(iterable_ty),
+                                span,
+                                note: Some(
+                                    "for-of loops require an iterable with iterator() returning an array"
+                                        .to_string(),
+                                ),
+                            });
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    _ => {
+                        self.errors.push(CheckError::TypeMismatch {
+                            expected: "iterable (Array, Set, Map, or class with iterator())"
+                                .to_string(),
+                            actual: self.format_type(iterable_ty),
+                            span,
+                            note: Some(
+                                "for-of loops require an iterable with iterator() returning an array"
+                                    .to_string(),
+                            ),
+                        });
+                        self.type_ctx.unknown_type()
+                    }
+                }
+            }
+            Type::Class(class_ty) => {
+                if let Some(elem_ty) = self.for_of_element_from_class(&class_ty, None) {
+                    elem_ty
+                } else {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "iterable (Array, Set, Map, or class with iterator())"
+                            .to_string(),
+                        actual: self.format_type(iterable_ty),
+                        span,
+                        note: Some(
+                            "for-of loops require an iterable with iterator() returning an array"
+                                .to_string(),
+                        ),
+                    });
+                    self.type_ctx.unknown_type()
+                }
+            }
+            _ => {
+                self.errors.push(CheckError::TypeMismatch {
+                    expected: "iterable (Array, Set, Map, or class with iterator())".to_string(),
+                    actual: self.format_type(iterable_ty),
+                    span,
+                    note: Some(
+                        "for-of loops require an iterable with iterator() returning an array"
+                            .to_string(),
+                    ),
+                });
+                self.type_ctx.unknown_type()
+            }
+        }
+    }
+
+    fn for_of_element_from_reference(
+        &mut self,
+        name: &str,
+        type_args: Option<&[TypeId]>,
+    ) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let named_ty = self.type_ctx.lookup_named_type(name)?;
+        let class_ty = match self.type_ctx.get(named_ty).cloned()? {
+            Type::Class(class_ty) => class_ty,
+            _ => return None,
+        };
+        self.for_of_element_from_class(&class_ty, type_args)
+    }
+
+    fn for_of_element_from_class(
+        &mut self,
+        class_ty: &crate::parser::types::ty::ClassType,
+        type_args: Option<&[TypeId]>,
+    ) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let class_handle = if let Some(args) = type_args {
+            self.instantiate_class_type(class_ty, args)
+        } else {
+            self.type_ctx.intern(Type::Class(class_ty.clone()))
+        };
+
+        let instantiated = match self.type_ctx.get(class_handle).cloned()? {
+            Type::Class(class_ty) => class_ty,
+            _ => return None,
+        };
+        let (method_ty, _) = self.lookup_class_member(&instantiated, "iterator")?;
+        let method_fn = match self.type_ctx.get(method_ty).cloned()? {
+            Type::Function(func) => func,
+            _ => return None,
+        };
+        self.for_of_element_from_iterator_return(method_fn.return_type)
+    }
+
+    fn for_of_element_from_iterator_return(&mut self, return_ty: TypeId) -> Option<TypeId> {
+        use crate::parser::types::Type;
+
+        let ty = self.type_ctx.get(return_ty).cloned()?;
+        match ty {
+            Type::Array(arr) => Some(arr.element),
+            Type::Reference(reference) if reference.name == "Array" => {
+                reference.type_args.and_then(|args| args.first().copied())
+            }
+            Type::Generic(generic) => {
+                let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
+                    Type::Reference(reference) => Some(reference.name.as_str()),
+                    Type::Class(class_ty) => Some(class_ty.name.as_str()),
+                    _ => None,
+                });
+                if base_name == Some("Array") {
+                    generic.type_args.first().copied()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
 
     /// Check switch statement
@@ -1229,15 +1409,18 @@ impl<'a> TypeChecker<'a> {
 
             // Check catch parameter pattern (handles destructuring)
             if let Some(ref param) = catch.param {
-                // Get Error type for the catch parameter
-                let error_ty = self
-                    .symbols
-                    .resolve("Error")
-                    .map(|s| s.ty)
-                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+                let catch_ty = match param {
+                    Pattern::Identifier(_) => self
+                        .symbols
+                        .resolve("Error")
+                        .map(|s| s.ty)
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    // Destructuring catch params need to accept arbitrary thrown values.
+                    _ => self.type_ctx.unknown_type(),
+                };
 
                 // Register types for all variables bound in the pattern
-                self.check_destructure_pattern(param, error_ty);
+                self.check_destructure_pattern(param, catch_ty);
             }
 
             // Check catch body statements
@@ -1584,18 +1767,39 @@ impl<'a> TypeChecker<'a> {
         // Check if callee is a function type
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
+                let fixed_param_len = func.params.len();
+                let mut rest_tuple_elems: Option<Vec<TypeId>> = None;
+                let mut rest_array_elem_ty: Option<TypeId> = None;
+                if let Some(rest_ty) = func.rest_param {
+                    match self.type_ctx.get(rest_ty) {
+                        Some(crate::parser::types::Type::Tuple(t)) => {
+                            rest_tuple_elems = Some(t.elements.clone());
+                        }
+                        Some(crate::parser::types::Type::Array(arr_ty)) => {
+                            rest_array_elem_ty = Some(arr_ty.element);
+                        }
+                        _ => {}
+                    }
+                }
+
                 // Check argument count (too many or too few required)
-                // If rest parameter is present, allow unlimited arguments
-                let max_params = if func.rest_param.is_some() {
-                    usize::MAX // Unlimited when rest param present
+                let max_params = if let Some(ref tuple_elems) = rest_tuple_elems {
+                    fixed_param_len + tuple_elems.len()
+                } else if func.rest_param.is_some() {
+                    usize::MAX
                 } else {
-                    func.params.len()
+                    fixed_param_len
+                };
+                let min_params = if let Some(ref tuple_elems) = rest_tuple_elems {
+                    func.min_params + tuple_elems.len()
+                } else {
+                    func.min_params
                 };
 
-                if arg_types.len() > max_params || arg_types.len() < func.min_params {
+                if arg_types.len() > max_params || arg_types.len() < min_params {
                     self.errors.push(CheckError::ArgumentCountMismatch {
                         expected: func.params.len(),
-                        min_expected: func.min_params,
+                        min_expected: min_params,
                         actual: arg_types.len(),
                         span: call.span,
                     });
@@ -1606,39 +1810,85 @@ impl<'a> TypeChecker<'a> {
                     .params
                     .iter()
                     .any(|&p| contains_type_variables(self.type_ctx, p))
+                    || func
+                        .rest_param
+                        .is_some_and(|rp| contains_type_variables(self.type_ctx, rp))
                     || contains_type_variables(self.type_ctx, func.return_type);
-
-                // Extract rest parameter element type if present (before gen_ctx borrow)
-                let rest_elem_ty = func.rest_param.and_then(|rest_ty| {
-                    if let Some(crate::parser::types::Type::Array(arr_ty)) =
-                        self.type_ctx.get(rest_ty)
-                    {
-                        Some(arr_ty.element)
-                    } else {
-                        None
-                    }
-                });
 
                 if is_generic {
                     // Use type unification for generic functions
-                    let mut gen_ctx = GenericContext::new(self.type_ctx);
+                    let (inferred_return, failed_unifications) = {
+                        let mut failed_unifications: Vec<(TypeId, TypeId, crate::parser::Span)> =
+                            Vec::new();
 
-                    // Unify each argument type with parameter type
-                    for (i, (arg_ty, _arg_span)) in arg_types.iter().enumerate() {
-                        if let Some(&param_ty) = func.params.get(i) {
-                            // Attempt unification
-                            let _ = gen_ctx.unify(param_ty, *arg_ty);
-                        } else if let Some(elem_ty) = rest_elem_ty {
-                            // Check against rest parameter element type
-                            let _ = gen_ctx.unify(elem_ty, *arg_ty);
+                        // Apply explicit type arguments first (e.g., fn<int, string>(...)).
+                        let explicit_substitutions: Vec<(String, TypeId)> =
+                            if let Some(type_args) = &call.type_args {
+                            let mut type_param_names = Vec::new();
+                            let mut seen = std::collections::HashSet::new();
+                            for &param_ty in &func.params {
+                                self.collect_type_var_names(
+                                    param_ty,
+                                    &mut type_param_names,
+                                    &mut seen,
+                                );
+                            }
+                            if let Some(rest_ty) = func.rest_param {
+                                self.collect_type_var_names(rest_ty, &mut type_param_names, &mut seen);
+                            }
+                            self.collect_type_var_names(
+                                func.return_type,
+                                &mut type_param_names,
+                                &mut seen,
+                            );
+                            type_param_names
+                                .into_iter()
+                                .zip(type_args.iter())
+                                .map(|(name, arg)| (name, self.resolve_type_annotation(arg)))
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+
+                        let mut gen_ctx = GenericContext::new(self.type_ctx);
+                        for (name, resolved) in explicit_substitutions {
+                            gen_ctx.add_substitution(name, resolved);
                         }
+
+                        // Unify each argument type with parameter type.
+                        for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                            let target_param = if i < fixed_param_len {
+                                Some(func.params[i])
+                            } else if let Some(rest_ty) = func.rest_param {
+                                let rest_idx = i - fixed_param_len;
+                                gen_ctx
+                                    .rest_param_element_type(rest_ty, rest_idx)
+                                    .unwrap_or(None)
+                            } else {
+                                None
+                            };
+
+                            if let Some(param_ty) = target_param {
+                                match gen_ctx.unify(param_ty, *arg_ty) {
+                                    Ok(true) => {}
+                                    Ok(false) | Err(_) => {
+                                        failed_unifications.push((*arg_ty, param_ty, *arg_span));
+                                    }
+                                }
+                            }
+                        }
+
+                        let inferred_return = match gen_ctx.apply_substitution(func.return_type) {
+                            Ok(substituted_return) => substituted_return,
+                            Err(_) => func.return_type,
+                        };
+                        (inferred_return, failed_unifications)
+                    };
+
+                    for (arg_ty, param_ty, arg_span) in failed_unifications {
+                        self.check_assignable(arg_ty, param_ty, arg_span);
                     }
 
-                    // Apply substitutions to return type
-                    let inferred_return = match gen_ctx.apply_substitution(func.return_type) {
-                        Ok(substituted_return) => substituted_return,
-                        Err(_) => func.return_type,
-                    };
                     if func.is_async {
                         match self.type_ctx.get(inferred_return) {
                             Some(crate::parser::types::Type::Task(_)) => inferred_return,
@@ -1650,10 +1900,14 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     // Non-generic function - use simple type checking
                     for (i, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
-                        if let Some(&param_ty) = func.params.get(i) {
-                            self.check_assignable(*arg_ty, param_ty, *arg_span);
-                        } else if let Some(elem_ty) = rest_elem_ty {
-                            // Check against rest parameter element type
+                        if i < fixed_param_len {
+                            self.check_assignable(*arg_ty, func.params[i], *arg_span);
+                        } else if let Some(ref tuple_elems) = rest_tuple_elems {
+                            let tuple_idx = i - fixed_param_len;
+                            if let Some(&elem_ty) = tuple_elems.get(tuple_idx) {
+                                self.check_assignable(*arg_ty, elem_ty, *arg_span);
+                            }
+                        } else if let Some(elem_ty) = rest_array_elem_ty {
                             self.check_assignable(*arg_ty, elem_ty, *arg_span);
                         }
                     }
@@ -2087,7 +2341,7 @@ impl<'a> TypeChecker<'a> {
                 // Save and set return type for return statement checking
                 let prev_return_ty = self.current_function_return_type;
 
-                // For async arrows, unwrap Task<T> → T so return statements
+                // For async arrows, unwrap Promise<T> → T so return statements
                 // are checked against T (same logic as check_function)
                 let effective_return_ty = if arrow.is_async {
                     declared_return_ty.map(|ty| {
@@ -2334,12 +2588,12 @@ impl<'a> TypeChecker<'a> {
         // Check the argument expression
         let arg_ty = self.check_expr(&await_expr.argument);
 
-        // If the argument is a Task<T>, return T
+        // If the argument is a Promise<T>, return T
         if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(arg_ty) {
             return task_ty.result;
         }
 
-        // If the argument is Task<T>[], return T[] (parallel await)
+        // If the argument is Promise<T>[], return T[] (parallel await)
         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(arg_ty) {
             if let Some(crate::parser::types::Type::Task(task_ty)) =
                 self.type_ctx.get(arr_ty.element)
@@ -2392,7 +2646,7 @@ impl<'a> TypeChecker<'a> {
             // Channel operations
             "CHANNEL_NEW" => self.type_ctx.unknown_type(), // Returns Channel type
 
-            // Task operations
+            // Promise operations
             "TASK_CANCEL" => self.type_ctx.void_type(),
             "AWAIT" => self.type_ctx.unknown_type(), // Returns the awaited value type
             "AWAIT_ALL" => self.type_ctx.unknown_type(), // Returns array of results
@@ -2429,13 +2683,13 @@ impl<'a> TypeChecker<'a> {
         // Get the callee's return type
         let callee_ty = self.check_expr(&async_call.callee);
 
-        // If the callee is a function, get its return type and wrap in Task
+        // If the callee is a function, get its return type and wrap in Promise
         if let Some(crate::parser::types::Type::Function(func_ty)) = self.type_ctx.get(callee_ty) {
             let return_ty = func_ty.return_type;
             return self.type_ctx.task_type(return_ty);
         }
 
-        // Otherwise just return Task<unknown>
+        // Otherwise just return Promise<unknown>
         let unknown = self.type_ctx.unknown_type();
         self.type_ctx.task_type(unknown)
     }
@@ -2620,9 +2874,9 @@ impl<'a> TypeChecker<'a> {
 
         // Note: Mutex methods are now resolved via normal class method lookup from mutex.raya
 
-        // Check for built-in Task methods
-        if let Some(crate::parser::types::Type::Task(_)) = &obj_type {
-            if let Some(method_type) = self.get_task_method_type(&property_name) {
+        // Check for built-in Promise methods
+        if let Some(crate::parser::types::Type::Task(task_ty)) = &obj_type {
+            if let Some(method_type) = self.get_task_method_type(&property_name, task_ty.result) {
                 return method_type;
             }
         }
@@ -3285,10 +3539,13 @@ impl<'a> TypeChecker<'a> {
     // Note: Mutex methods are now resolved from mutex.raya class definition
     // (get_mutex_method_type removed - no longer needed)
 
-    /// Get the type of a built-in Task method
-    fn get_task_method_type(&mut self, method_name: &str) -> Option<TypeId> {
+    /// Get the type of a built-in Promise method
+    fn get_task_method_type(&mut self, method_name: &str, result_ty: TypeId) -> Option<TypeId> {
         let void_ty = self.type_ctx.void_type();
         let bool_ty = self.type_ctx.boolean_type();
+        let unknown_ty = self.type_ctx.unknown_type();
+        let promise_unknown_ty = self.type_ctx.task_type(unknown_ty);
+        let promise_result_ty = self.type_ctx.task_type(result_ty);
 
         match method_name {
             // cancel() -> void
@@ -3297,6 +3554,37 @@ impl<'a> TypeChecker<'a> {
             "isDone" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
             // isCancelled() -> boolean
             "isCancelled" => Some(self.type_ctx.function_type(vec![], bool_ty, false)),
+            // then<U>(onFulfilled: (value: T) => U) -> Promise<U>
+            "then" => {
+                let on_fulfilled_ty =
+                    self.type_ctx
+                        .function_type(vec![result_ty], unknown_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_fulfilled_ty], promise_unknown_ty, false),
+                )
+            }
+            // catch<U>(onRejected: (reason: Object) => U) -> Promise<T | U>
+            "catch" => {
+                // Use `never` for handler input to keep parameter position maximally permissive
+                // under contravariant function parameter checking.
+                let reason_ty = self.type_ctx.never_type();
+                let on_rejected_ty =
+                    self.type_ctx
+                        .function_type(vec![reason_ty], unknown_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_rejected_ty], promise_unknown_ty, false),
+                )
+            }
+            // finally(onFinally: () => void) -> Promise<T>
+            "finally" => {
+                let on_finally_ty = self.type_ctx.function_type(vec![], void_ty, false);
+                Some(
+                    self.type_ctx
+                        .function_type(vec![on_finally_ty], promise_result_ty, false),
+                )
+            }
             _ => None,
         }
     }
@@ -3389,8 +3677,8 @@ impl<'a> TypeChecker<'a> {
         let null_ty = self.type_ctx.null_type();
 
         match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // size -> number
+            "size" => Some(number_ty),
             // get(key: K) -> V | null
             "get" => {
                 let result_ty = self.type_ctx.union_type(vec![value_ty, null_ty]);
@@ -3444,8 +3732,8 @@ impl<'a> TypeChecker<'a> {
         let void_ty = self.type_ctx.void_type();
 
         match method_name {
-            // size() -> number
-            "size" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // size -> number
+            "size" => Some(number_ty),
             // add(value: T) -> void
             "add" => Some(
                 self.type_ctx
@@ -3463,9 +3751,15 @@ impl<'a> TypeChecker<'a> {
             ),
             // clear() -> void
             "clear" => Some(self.type_ctx.function_type(vec![], void_ty, false)),
-            // values() -> Array<T>
-            "values" => {
+            // keys()/values() -> Array<T>
+            "keys" | "values" => {
                 let array_ty = self.type_ctx.array_type(element_ty);
+                Some(self.type_ctx.function_type(vec![], array_ty, false))
+            }
+            // entries() -> Array<[T, T]>
+            "entries" => {
+                let tuple_ty = self.type_ctx.tuple_type(vec![element_ty, element_ty]);
+                let array_ty = self.type_ctx.array_type(tuple_ty);
                 Some(self.type_ctx.function_type(vec![], array_ty, false))
             }
             // forEach(fn: (value: T) => void) -> void
@@ -3504,8 +3798,8 @@ impl<'a> TypeChecker<'a> {
         let void_ty = self.type_ctx.void_type();
 
         match method_name {
-            // length() -> number
-            "length" => Some(self.type_ctx.function_type(vec![], number_ty, false)),
+            // length -> number
+            "length" => Some(number_ty),
             // getByte(index: number) -> number
             "getByte" => Some(
                 self.type_ctx
@@ -3950,15 +4244,15 @@ impl<'a> TypeChecker<'a> {
                     return self.type_ctx.unknown_type();
                 }
 
-                // Handle Task<T> for async functions
-                if name == TC::TASK_TYPE_NAME {
+                // Handle Promise<T>/Promise<T> for async functions
+                if name == TC::PROMISE_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0]);
                             return self.type_ctx.task_type(result_ty);
                         }
                     }
-                    // Invalid Task usage - return unknown
+                    // Invalid Promise usage - return unknown
                     return self.type_ctx.unknown_type();
                 }
 
@@ -3995,7 +4289,26 @@ impl<'a> TypeChecker<'a> {
                     }
                     return self.type_ctx.set_type();
                 }
+                if name == "Record" {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 2 {
+                            let value_ty = self.resolve_type_annotation(&type_args[1]);
+                            let object_type = crate::parser::types::ty::ObjectType {
+                                properties: vec![],
+                                index_signature: Some(("[key]".to_string(), value_ty)),
+                            };
+                            return self
+                                .type_ctx
+                                .intern(crate::parser::types::Type::Object(object_type));
+                        }
+                    }
+                    return self.type_ctx.unknown_type();
+                }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
+
+                if let Some(named_ty) = self.type_ctx.lookup_named_type(&name) {
+                    return named_ty;
+                }
 
                 if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
                     // If this is a generic class with type arguments, instantiate it
@@ -4067,15 +4380,25 @@ impl<'a> TypeChecker<'a> {
             }
 
             AstType::Function(func) => {
-                let param_tys: Vec<_> = func
-                    .params
-                    .iter()
-                    .map(|p| self.resolve_type_annotation(&p.ty))
-                    .collect();
+                let mut param_tys = Vec::new();
+                let mut rest_param = None;
+                let mut min_params = 0usize;
+
+                for p in &func.params {
+                    let p_ty = self.resolve_type_annotation(&p.ty);
+                    if p.is_rest {
+                        rest_param = Some(p_ty);
+                    } else {
+                        if !p.optional {
+                            min_params += 1;
+                        }
+                        param_tys.push(p_ty);
+                    }
+                }
 
                 let return_ty = self.resolve_type_annotation(&func.return_type);
-
-                self.type_ctx.function_type(param_tys, return_ty, false)
+                self.type_ctx
+                    .function_type_with_rest(param_tys, return_ty, false, min_params, rest_param)
             }
 
             AstType::Object(obj) => {
@@ -4100,6 +4423,191 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.type_ctx.object_type(properties)
+            }
+
+            AstType::Keyof(keyof_ty) => {
+                let target_ty = self.resolve_type_annotation(&keyof_ty.target);
+                match self.type_ctx.get(target_ty).cloned() {
+                    Some(crate::parser::types::Type::Object(obj)) => {
+                        let members: Vec<TypeId> = obj
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            self.type_ctx.string_type()
+                        } else {
+                            self.type_ctx.union_type(members)
+                        }
+                    }
+                    Some(crate::parser::types::Type::Class(class)) => {
+                        let members: Vec<TypeId> = class
+                            .properties
+                            .iter()
+                            .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                            .collect();
+                        if members.is_empty() {
+                            self.type_ctx.string_type()
+                        } else {
+                            self.type_ctx.union_type(members)
+                        }
+                    }
+                    Some(crate::parser::types::Type::TypeVar(tv)) => {
+                        if let Some(constraint) = tv.constraint {
+                            match self.type_ctx.get(constraint).cloned() {
+                                Some(crate::parser::types::Type::Object(obj)) => {
+                                    let members: Vec<TypeId> = obj
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        self.type_ctx.string_type()
+                                    } else {
+                                        self.type_ctx.union_type(members)
+                                    }
+                                }
+                                Some(crate::parser::types::Type::Class(class)) => {
+                                    let members: Vec<TypeId> = class
+                                        .properties
+                                        .iter()
+                                        .map(|p| self.type_ctx.string_literal(p.name.clone()))
+                                        .collect();
+                                    if members.is_empty() {
+                                        self.type_ctx.string_type()
+                                    } else {
+                                        self.type_ctx.union_type(members)
+                                    }
+                                }
+                                _ => self.type_ctx.string_type(),
+                            }
+                        } else {
+                            self.type_ctx.string_type()
+                        }
+                    }
+                    _ => self.type_ctx.keyof_type(target_ty),
+                }
+            }
+
+            AstType::IndexedAccess(indexed) => {
+                let object_ty = self.resolve_type_annotation(&indexed.object);
+                let index_ty = self.resolve_type_annotation(&indexed.index);
+
+                let prop_for_key = |obj: &crate::parser::types::ty::ObjectType,
+                                    key: &str|
+                 -> Option<TypeId> {
+                    obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                };
+
+                let object_data = self.type_ctx.get(object_ty).cloned();
+                let index_data = self.type_ctx.get(index_ty).cloned();
+
+                if matches!(object_data, Some(crate::parser::types::Type::TypeVar(_)))
+                    || matches!(index_data, Some(crate::parser::types::Type::TypeVar(_)))
+                {
+                    return self.type_ctx.indexed_access_type(object_ty, index_ty);
+                }
+
+                let object_data = match object_data {
+                    Some(crate::parser::types::Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(crate::parser::types::Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                let index_data = match index_data {
+                    Some(crate::parser::types::Type::TypeVar(tv)) => tv
+                        .constraint
+                        .and_then(|c| self.type_ctx.get(c).cloned())
+                        .or(Some(crate::parser::types::Type::TypeVar(tv))),
+                    other => other,
+                };
+
+                match (object_data, index_data) {
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::StringLiteral(s)),
+                    ) => prop_for_key(&obj, &s)
+                        .or(obj.index_signature.map(|(_, ty)| ty))
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Union(u)),
+                    ) => {
+                        let mut out = Vec::new();
+                        for member in &u.members {
+                            if let Some(crate::parser::types::Type::StringLiteral(s)) =
+                                self.type_ctx.get(*member).cloned()
+                            {
+                                if let Some(ty) = prop_for_key(&obj, &s) {
+                                    out.push(ty);
+                                }
+                            }
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.union_type(out)
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Tuple(t)),
+                        Some(crate::parser::types::Type::NumberLiteral(n)),
+                    ) => {
+                        let idx = n as usize;
+                        if idx < t.elements.len() {
+                            t.elements[idx]
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::String,
+                        )),
+                    ) => {
+                        let mut out = Vec::new();
+                        for p in &obj.properties {
+                            out.push(p.ty);
+                        }
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.type_ctx.union_type(out)
+                        }
+                    }
+                    (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::Number,
+                        )),
+                    )
+                    | (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::Primitive(
+                            crate::parser::types::PrimitiveType::Int,
+                        )),
+                    )
+                    | (
+                        Some(crate::parser::types::Type::Object(obj)),
+                        Some(crate::parser::types::Type::NumberLiteral(_)),
+                    ) => {
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            sig_ty
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    _ => self.type_ctx.indexed_access_type(object_ty, index_ty),
+                }
             }
 
             AstType::Typeof(_) => {
@@ -4460,6 +4968,60 @@ impl<'a> TypeChecker<'a> {
             min_params,
         )
     }
+
+    fn collect_type_var_names(
+        &self,
+        ty: TypeId,
+        out: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        use crate::parser::types::Type;
+        let Some(ty_data) = self.type_ctx.get(ty) else {
+            return;
+        };
+        match ty_data {
+            Type::TypeVar(tv) => {
+                if seen.insert(tv.name.clone()) {
+                    out.push(tv.name.clone());
+                }
+            }
+            Type::Array(arr) => self.collect_type_var_names(arr.element, out, seen),
+            Type::Task(task) => self.collect_type_var_names(task.result, out, seen),
+            Type::Tuple(tuple) => {
+                for &elem in &tuple.elements {
+                    self.collect_type_var_names(elem, out, seen);
+                }
+            }
+            Type::Function(func) => {
+                for &param in &func.params {
+                    self.collect_type_var_names(param, out, seen);
+                }
+                if let Some(rest) = func.rest_param {
+                    self.collect_type_var_names(rest, out, seen);
+                }
+                self.collect_type_var_names(func.return_type, out, seen);
+            }
+            Type::Union(union) => {
+                for &member in &union.members {
+                    self.collect_type_var_names(member, out, seen);
+                }
+            }
+            Type::Generic(generic) => {
+                self.collect_type_var_names(generic.base, out, seen);
+                for &arg in &generic.type_args {
+                    self.collect_type_var_names(arg, out, seen);
+                }
+            }
+            Type::Reference(reference) => {
+                if let Some(args) = &reference.type_args {
+                    for &arg in args {
+                        self.collect_type_var_names(arg, out, seen);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4642,8 +5204,8 @@ mod tests {
     fn test_task_is_cancelled_method_type_checked() {
         let result = parse_and_check(
             r#"
-            async function job(): Task<number> { return 1; }
-            async function main(): Task<boolean> {
+            async function job(): Promise<number> { return 1; }
+            async function main(): Promise<boolean> {
                 const t = job();
                 t.cancel();
                 return t.isCancelled();
@@ -4652,7 +5214,7 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "Expected Task.isCancelled() to type-check, got {:?}",
+            "Expected Promise.isCancelled() to type-check, got {:?}",
             result
         );
     }

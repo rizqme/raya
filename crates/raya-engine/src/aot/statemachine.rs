@@ -808,9 +808,7 @@ impl<'a> StateMachineTransformer<'a> {
                 super::analysis::SuspensionKind::Yield => {
                     super::frame::SuspendReason::Yielded as i32
                 }
-                super::analysis::SuspensionKind::Sleep => {
-                    super::frame::SuspendReason::Sleep as i32
-                }
+                super::analysis::SuspensionKind::Sleep => super::frame::SuspendReason::Sleep as i32,
                 // Native calls should round-trip through the VM thread loop before resuming AOT code.
                 super::analysis::SuspensionKind::NativeCall => {
                     super::frame::SuspendReason::NativeCallBoundary as i32
@@ -1028,15 +1026,13 @@ mod tests {
             .expect("expected a body block");
 
         assert!(
-            body.instructions.iter().any(
-                |i| matches!(
-                    i,
-                    SmInstr::CallHelper {
-                        helper: HelperCall::CheckPreemption,
-                        ..
-                    }
-                )
-            ),
+            body.instructions.iter().any(|i| matches!(
+                i,
+                SmInstr::CallHelper {
+                    helper: HelperCall::CheckPreemption,
+                    ..
+                }
+            )),
             "preemption checkpoint should emit HelperCall::CheckPreemption"
         );
         assert!(
@@ -1084,15 +1080,13 @@ mod tests {
             .expect("expected a body block");
 
         assert!(
-            body.instructions
-                .iter()
-                .any(|i| matches!(
-                    i,
-                    SmInstr::CallHelper {
-                        helper: HelperCall::IsNativeSuspend,
-                        ..
-                    }
-                )),
+            body.instructions.iter().any(|i| matches!(
+                i,
+                SmInstr::CallHelper {
+                    helper: HelperCall::IsNativeSuspend,
+                    ..
+                }
+            )),
             "native call suspension point should emit helper-based IsNativeSuspend check"
         );
         assert!(

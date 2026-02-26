@@ -2,10 +2,12 @@
 
 use crate::handles::HandleRegistry;
 use crate::tls;
+use dashmap::DashSet;
 use raya_sdk::{IoCompletion, IoRequest, NativeCallResult, NativeContext, NativeValue};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net;
+use std::os::fd::AsRawFd;
 use std::sync::{Arc, LazyLock, Mutex};
 
 /// Server entry: TcpListener + optional TLS config
@@ -17,6 +19,7 @@ struct HttpServerEntry {
 static HTTP_SERVERS: LazyLock<HandleRegistry<HttpServerEntry>> = LazyLock::new(HandleRegistry::new);
 static HTTP_REQUESTS: LazyLock<HandleRegistry<HttpRequestData>> =
     LazyLock::new(HandleRegistry::new);
+static CLOSED_HTTP_SERVERS: LazyLock<DashSet<u64>> = LazyLock::new(DashSet::new);
 
 /// Parsed HTTP request data
 struct HttpRequestData {
@@ -49,6 +52,7 @@ pub fn server_create(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
                 tls_config: None,
             };
             let handle = HTTP_SERVERS.insert(entry);
+            CLOSED_HTTP_SERVERS.remove(&handle);
             NativeCallResult::f64(handle as f64)
         }
         Err(e) => NativeCallResult::Error(format!("http.serverCreate: {}", e)),
@@ -87,6 +91,7 @@ pub fn server_create_tls(ctx: &dyn NativeContext, args: &[NativeValue]) -> Nativ
                 tls_config: Some(tls_config),
             };
             let handle = HTTP_SERVERS.insert(entry);
+            CLOSED_HTTP_SERVERS.remove(&handle);
             NativeCallResult::f64(handle as f64)
         }
         Err(e) => NativeCallResult::Error(format!("http.serverCreateTls: {}", e)),
@@ -101,12 +106,36 @@ pub fn server_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
     NativeCallResult::Suspend(IoRequest::BlockingWork {
-        work: Box::new(move || match HTTP_SERVERS.get(handle) {
-            Some(entry) => match entry.listener.accept() {
+        work: Box::new(move || {
+            if CLOSED_HTTP_SERVERS.contains(&handle) {
+                return IoCompletion::Primitive(NativeValue::f64(0.0));
+            }
+
+            let (listener, tls_config) = match HTTP_SERVERS.get(handle) {
+                Some(entry) => {
+                    let listener = match entry.listener.try_clone() {
+                        Ok(listener) => listener,
+                        Err(e) => return IoCompletion::Error(format!("http.serverAccept: {}", e)),
+                    };
+                    (listener, entry.tls_config.clone())
+                }
+                None => {
+                    return if CLOSED_HTTP_SERVERS.contains(&handle) {
+                        IoCompletion::Primitive(NativeValue::f64(0.0))
+                    } else {
+                        IoCompletion::Error(format!("http.serverAccept: invalid handle {}", handle))
+                    };
+                }
+            };
+
+            match listener.accept() {
                 Ok((stream, addr)) => {
+                    if CLOSED_HTTP_SERVERS.contains(&handle) {
+                        return IoCompletion::Primitive(NativeValue::f64(0.0));
+                    }
                     let remote = addr.to_string();
-                    let result = if let Some(ref tls_config) = entry.tls_config {
-                        accept_tls_request(stream, tls_config.clone(), &remote)
+                    let result = if let Some(ref tls) = tls_config {
+                        accept_tls_request(stream, tls.clone(), &remote)
                     } else {
                         accept_plain_request(stream, &remote)
                     };
@@ -118,9 +147,14 @@ pub fn server_accept(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCa
                         Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
                     }
                 }
-                Err(e) => IoCompletion::Error(format!("http.serverAccept: {}", e)),
-            },
-            None => IoCompletion::Error(format!("http.serverAccept: invalid handle {}", handle)),
+                Err(e) => {
+                    if CLOSED_HTTP_SERVERS.contains(&handle) {
+                        IoCompletion::Primitive(NativeValue::f64(0.0))
+                    } else {
+                        IoCompletion::Error(format!("http.serverAccept: {}", e))
+                    }
+                }
+            }
         }),
     })
 }
@@ -260,7 +294,11 @@ pub fn server_close(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCal
         .first()
         .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
         .unwrap_or(0.0) as u64;
-    HTTP_SERVERS.remove(handle);
+    CLOSED_HTTP_SERVERS.insert(handle);
+    if let Some((_id, entry)) = HTTP_SERVERS.remove(handle) {
+        // Wake pending accept() calls immediately.
+        let _ = unsafe { libc::shutdown(entry.listener.as_raw_fd(), libc::SHUT_RDWR) };
+    }
     NativeCallResult::null()
 }
 
@@ -276,6 +314,21 @@ pub fn server_addr(ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallR
             Err(e) => NativeCallResult::Error(format!("http.serverAddr: {}", e)),
         },
         None => NativeCallResult::Error(format!("http.serverAddr: invalid handle {}", handle)),
+    }
+}
+
+/// Get HTTP server local port
+pub fn server_port(_ctx: &dyn NativeContext, args: &[NativeValue]) -> NativeCallResult {
+    let handle = args
+        .first()
+        .and_then(|v| v.as_f64().or_else(|| v.as_i32().map(|i| i as f64)))
+        .unwrap_or(0.0) as u64;
+    match HTTP_SERVERS.get(handle) {
+        Some(entry) => match entry.listener.local_addr() {
+            Ok(addr) => NativeCallResult::f64(addr.port() as f64),
+            Err(e) => NativeCallResult::Error(format!("http.serverPort: {}", e)),
+        },
+        None => NativeCallResult::Error(format!("http.serverPort: invalid handle {}", handle)),
     }
 }
 

@@ -1,0 +1,34 @@
+/**
+ * Object - Base class for all objects
+ *
+ * Every class implicitly extends Object.
+ */
+export class Object {
+    /** Descriptor-compatible fields (node-compat mode only) */
+    value: Object | string | number | boolean | null;
+    writable: boolean;
+    configurable: boolean;
+    enumerable: boolean;
+    get: (() => Object) | null;
+    set: ((value: Object) => void) | null;
+
+    constructor();
+
+    /** Get string representation of the object */
+    toString(): string;
+
+    /** Get hash code for this object (based on object identity) */
+    hashCode(): number;
+
+    /** Check equality with another object (identity comparison) */
+    equals(other: Object): boolean;
+
+    /** Define a property descriptor on an object */
+    static defineProperty<T, D>(obj: T, key: string, descriptor: D): T;
+
+    /** Get own property descriptor for a key */
+    static getOwnPropertyDescriptor<T>(obj: T, key: string): Object | null;
+
+    /** Define many properties on an object */
+    static defineProperties<T, D>(obj: T, descriptors: D): T;
+}

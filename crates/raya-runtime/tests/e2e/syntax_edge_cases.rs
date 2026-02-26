@@ -976,9 +976,9 @@ fn test_await_in_binary_expression() {
     // Await used in both sides of binary expression
     expect_i32(
         "
-        async function getA(): Task<number> { return 10; }
-        async function getB(): Task<number> { return 32; }
-        async function main(): Task<number> {
+        async function getA(): Promise<number> { return 10; }
+        async function getB(): Promise<number> { return 32; }
+        async function main(): Promise<number> {
             return await getA() + await getB();
         }
         return await main();
@@ -992,9 +992,9 @@ fn test_await_in_ternary() {
     // Await in both branches of ternary
     expect_i32(
         "
-        async function yes(): Task<number> { return 42; }
-        async function no(): Task<number> { return 0; }
-        async function main(): Task<number> {
+        async function yes(): Promise<number> { return 42; }
+        async function no(): Promise<number> { return 0; }
+        async function main(): Promise<number> {
             let cond: boolean = true;
             return cond ? await yes() : await no();
         }
@@ -1010,9 +1010,9 @@ fn test_await_as_function_argument() {
     expect_i32(
         "
         function add(a: number, b: number): number { return a + b; }
-        async function getX(): Task<number> { return 10; }
-        async function getY(): Task<number> { return 32; }
-        async function main(): Task<number> {
+        async function getX(): Promise<number> { return 10; }
+        async function getY(): Promise<number> { return 32; }
+        async function main(): Promise<number> {
             return add(await getX(), await getY());
         }
         return await main();
@@ -1026,8 +1026,8 @@ fn test_await_in_comparison() {
     // Await in comparison expression
     expect_bool(
         "
-        async function getCount(): Task<number> { return 10; }
-        async function main(): Task<boolean> {
+        async function getCount(): Promise<number> { return 10; }
+        async function main(): Promise<boolean> {
             return await getCount() > 5;
         }
         return await main();
@@ -1044,9 +1044,9 @@ fn test_await_chained_method() {
         class AsyncProvider {
             value: number = 0;
             constructor(v: number) { this.value = v; }
-            async getValue(): Task<number> { return this.value; }
+            async getValue(): Promise<number> { return this.value; }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let p = new AsyncProvider(42);
             return await p.getValue();
         }
@@ -1061,9 +1061,9 @@ fn test_await_in_array_literal() {
     // Await results collected into array
     expect_i32(
         "
-        async function getA(): Task<number> { return 10; }
-        async function getB(): Task<number> { return 20; }
-        async function main(): Task<number> {
+        async function getA(): Promise<number> { return 10; }
+        async function getB(): Promise<number> { return 20; }
+        async function main(): Promise<number> {
             let a: number = await getA();
             let b: number = await getB();
             let arr: number[] = [a, b];
@@ -1080,10 +1080,10 @@ fn test_multiple_awaits_in_expression() {
     // Three awaits in a single arithmetic expression
     expect_i32(
         "
-        async function a(): Task<number> { return 10; }
-        async function b(): Task<number> { return 20; }
-        async function c(): Task<number> { return 12; }
-        async function main(): Task<number> {
+        async function a(): Promise<number> { return 10; }
+        async function b(): Promise<number> { return 20; }
+        async function c(): Promise<number> { return 12; }
+        async function main(): Promise<number> {
             return await a() + await b() + await c();
         }
         return await main();
@@ -1097,8 +1097,8 @@ fn test_async_arrow_as_variable() {
     // Async arrow stored in variable and called
     expect_i32(
         "
-        async function main(): Task<number> {
-            let compute = async (): Task<number> => {
+        async function main(): Promise<number> {
+            let compute = async (): Promise<number> => {
                 return 42;
             };
             return await compute();
@@ -1531,9 +1531,9 @@ fn test_ternary_with_await() {
     // Ternary choosing between sync and async result
     expect_i32(
         "
-        async function asyncVal(): Task<number> { return 42; }
+        async function asyncVal(): Promise<number> { return 42; }
         function syncVal(): number { return 0; }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let useAsync: boolean = true;
             return useAsync ? await asyncVal() : syncVal();
         }
@@ -1590,7 +1590,7 @@ fn test_async_with_closure_and_class() {
             constructor(f: number) { this.factor = f; }
             apply(x: number): number { return this.factor * x; }
         }
-        async function compute(): Task<number> {
+        async function compute(): Promise<number> {
             let m = new Multiplier(2);
             let addOne = (x: number): number => x + 1;
             return addOne(m.apply(20));

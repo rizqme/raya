@@ -1,0 +1,33 @@
+/** Node-compat global helpers */
+export const globalThis: Object;
+
+export function parseInt(input: string, radix?: number): number;
+export function parseFloat(input: string): number;
+export function isNaN(value: number): boolean;
+export function isFinite(value: number): boolean;
+export function escape(input: string): string;
+export function unescape(input: string): string;
+export function eval(source: string): Object;
+
+export interface ProxyHandler<T extends Object> {
+    get?(target: T, propertyKey: string): Object | string | number | boolean | null;
+    set?(target: T, propertyKey: string, value: Object | string | number | boolean | null): boolean;
+    has?(target: T, propertyKey: string): boolean;
+}
+
+export class Proxy<T extends Object> {
+    constructor(target: T, handler: Object);
+    isProxy(): boolean;
+    getTarget(): Object | null;
+    getHandler(): Object | null;
+}
+
+export interface ReflectAPI {
+    get(target: Proxy<Object> | Object, key: string): Object | string | number | boolean | null;
+    set(target: Proxy<Object> | Object, key: string, value: Object | string | number | boolean | null): boolean;
+    has(target: Proxy<Object> | Object, key: string): boolean;
+    isProxy(obj: Proxy<Object> | Object): boolean;
+    getProxyTarget(proxy: Proxy<Object> | Object): Object | null;
+}
+
+export const Reflect: ReflectAPI;
