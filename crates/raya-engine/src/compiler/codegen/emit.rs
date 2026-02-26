@@ -161,6 +161,7 @@ pub fn opcode_size(opcode: Opcode) -> usize {
         // u32 + u16 operands
         Opcode::Call
         | Opcode::CallMethod
+        | Opcode::OptionalCallMethod
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic

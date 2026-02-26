@@ -284,6 +284,7 @@ fn decode_operands(
         // u32 + u16 operands — calls (7 bytes total)
         Opcode::Call
         | Opcode::CallMethod
+        | Opcode::OptionalCallMethod
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic => {

@@ -223,6 +223,9 @@ pub enum Opcode {
     /// Stack: [object] → [bound_method]
     /// Operands: u16 method_slot (vtable index)
     BindMethod = 0xA7,
+    /// Call method on object with optional chaining semantics.
+    /// If receiver is null, pops receiver + args and pushes null.
+    OptionalCallMethod = 0xA8,
 
     // ===== Object Operations (0xB0-0xBF) =====
     /// Allocate new object (operand: u32 classIndex)
@@ -505,6 +508,7 @@ impl Opcode {
             0xA5 => Some(Self::CallSuper),
             0xA6 => Some(Self::CallStatic),
             0xA7 => Some(Self::BindMethod),
+            0xA8 => Some(Self::OptionalCallMethod),
 
             // Object operations
             0xB0 => Some(Self::New),
@@ -682,6 +686,7 @@ impl Opcode {
             Self::JmpIfNotNull => "JMP_IF_NOT_NULL",
             Self::Call => "CALL",
             Self::CallMethod => "CALL_METHOD",
+            Self::OptionalCallMethod => "OPTIONAL_CALL_METHOD",
             Self::Return => "RETURN",
             Self::ReturnVoid => "RETURN_VOID",
             Self::CallConstructor => "CALL_CONSTRUCTOR",
@@ -772,6 +777,7 @@ impl Opcode {
             self,
             Self::Call
                 | Self::CallMethod
+                | Self::OptionalCallMethod
                 | Self::CallConstructor
                 | Self::CallSuper
                 | Self::CallStatic
@@ -921,6 +927,7 @@ mod tests {
     fn test_call_detection() {
         assert!(Opcode::Call.is_call());
         assert!(Opcode::CallMethod.is_call());
+        assert!(Opcode::OptionalCallMethod.is_call());
         assert!(Opcode::CallConstructor.is_call());
         assert!(Opcode::CallSuper.is_call());
         assert!(Opcode::CallStatic.is_call());
@@ -1027,6 +1034,7 @@ mod tests {
             Opcode::JmpIfNotNull,
             Opcode::Call,
             Opcode::CallMethod,
+            Opcode::OptionalCallMethod,
             Opcode::Return,
             Opcode::ReturnVoid,
             Opcode::CallConstructor,

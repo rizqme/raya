@@ -1378,7 +1378,11 @@ impl<'a> Interpreter<'a> {
             // =========================================================
             // Function Calls (needs MutexGuard for frame operations)
             // =========================================================
-            Opcode::Call | Opcode::CallMethod | Opcode::CallConstructor | Opcode::CallSuper => {
+            Opcode::Call
+            | Opcode::CallMethod
+            | Opcode::OptionalCallMethod
+            | Opcode::CallConstructor
+            | Opcode::CallSuper => {
                 self.exec_call_ops(stack, ip, code, module, task, opcode)
             }
 

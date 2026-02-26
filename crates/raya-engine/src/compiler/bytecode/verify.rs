@@ -310,6 +310,7 @@ pub(crate) fn operand_size(opcode: Opcode) -> usize {
         // 6-byte operands (u32 + u16)
         Opcode::Call
         | Opcode::CallMethod
+        | Opcode::OptionalCallMethod
         | Opcode::CallConstructor
         | Opcode::CallSuper
         | Opcode::CallStatic
@@ -440,7 +441,7 @@ fn get_stack_effect(opcode: Opcode) -> (i32, i32) {
         Opcode::Return => (1, 0),
         Opcode::ReturnVoid => (0, 0),
         Opcode::Call => (0, 1), // Simplified - actual depends on arg count
-        Opcode::CallMethod => (1, 1), // Simplified
+        Opcode::CallMethod | Opcode::OptionalCallMethod => (1, 1), // Simplified
         Opcode::CallConstructor | Opcode::CallSuper | Opcode::CallStatic => (0, 1),
         Opcode::New => (0, 1),
         Opcode::LoadField => (1, 1),

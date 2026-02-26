@@ -299,6 +299,17 @@ fn test_optional_chaining_on_present() {
 }
 
 #[test]
+fn test_optional_chaining_method_on_null_short_circuits() {
+    expect_null(
+        "class Calc {
+             compute(): int { return 42; }
+         }
+         let c: Calc | null = null;
+         return c?.compute();",
+    );
+}
+
+#[test]
 fn test_optional_chaining_method() {
     expect_i32(
         "class Calc {

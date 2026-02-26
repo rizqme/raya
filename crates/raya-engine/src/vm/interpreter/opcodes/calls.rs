@@ -113,8 +113,9 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
-            Opcode::CallMethod => {
+            Opcode::CallMethod | Opcode::OptionalCallMethod => {
                 self.safepoint.poll();
+                let optional = matches!(opcode, Opcode::OptionalCallMethod);
                 let method_index = match Self::read_u32(code, ip) {
                     Ok(v) => v as usize,
                     Err(e) => return OpcodeResult::Error(e),
@@ -125,6 +126,27 @@ impl<'a> Interpreter<'a> {
                 };
 
                 let method_id = method_index as u16;
+                let receiver_pos = match stack.depth().checked_sub(arg_count + 1) {
+                    Some(pos) => pos,
+                    None => return OpcodeResult::Error(VmError::StackUnderflow),
+                };
+                let receiver_val = match stack.peek_at(receiver_pos) {
+                    Ok(v) => v,
+                    Err(e) => return OpcodeResult::Error(e),
+                };
+
+                // Optional chaining semantics: if receiver is null, skip invocation and return null.
+                if optional && receiver_val.is_null() {
+                    for _ in 0..(arg_count + 1) {
+                        if let Err(e) = stack.pop() {
+                            return OpcodeResult::Error(e);
+                        }
+                    }
+                    if let Err(e) = stack.push(Value::null()) {
+                        return OpcodeResult::Error(e);
+                    }
+                    return OpcodeResult::Continue;
+                }
 
                 // Check for built-in array methods
                 if crate::vm::builtin::is_array_method(method_id) {
@@ -306,16 +328,6 @@ impl<'a> Interpreter<'a> {
                 }
 
                 // Fall through to vtable dispatch for user-defined methods
-                let receiver_pos = match stack.depth().checked_sub(arg_count + 1) {
-                    Some(pos) => pos,
-                    None => return OpcodeResult::Error(VmError::StackUnderflow),
-                };
-
-                let receiver_val = match stack.peek_at(receiver_pos) {
-                    Ok(v) => v,
-                    Err(e) => return OpcodeResult::Error(e),
-                };
-
                 if !receiver_val.is_ptr() {
                     return OpcodeResult::Error(VmError::TypeError(
                         "Expected object for method call".to_string(),

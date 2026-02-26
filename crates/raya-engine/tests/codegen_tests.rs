@@ -742,6 +742,7 @@ fn test_field_access() {
         dest: x.clone(),
         object: obj,
         field: 0,
+        optional: false,
     });
     entry.set_terminator(Terminator::Return(Some(x)));
     func.add_block(entry);
