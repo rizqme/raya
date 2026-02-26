@@ -64,6 +64,9 @@ class HttpServer {
 
     accept(): HttpRequest {
         const h: number = __NATIVE_CALL<number>("http.serverAccept", this._handle);
+        if (h == 0) {
+            throw new Error("http server is closed");
+        }
         return new HttpRequest(h);
     }
 
@@ -99,9 +102,18 @@ class HttpServer {
         return __NATIVE_CALL<string>("http.serverAddr", this._handle);
     }
 
+    localPort(): number {
+        return __NATIVE_CALL<number>("http.serverPort", this._handle);
+    }
+
     async serve(handler: (req: HttpRequest, server: HttpServer) => Promise<void>): Promise<void> {
         while (true) {
-            const req = this.accept();
+            const reqHandle: number = __NATIVE_CALL<number>("http.serverAccept", this._handle);
+            if (reqHandle == 0) {
+                // Server closed (or closing): terminate serve loop without rejection.
+                break;
+            }
+            const req = new HttpRequest(reqHandle);
             // Spawn-style behavior: invoking async handler starts a Promise immediately.
             // We intentionally do not await to keep request handling concurrent.
             const _promise = handler(req, this);

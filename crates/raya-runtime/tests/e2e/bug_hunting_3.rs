@@ -980,10 +980,10 @@ fn test_nested_switch() {
 
 #[test]
 fn test_closure_in_catch_block() {
-    expect_i32_with_builtins(
+    expect_i32(
         "let captured = 0;
          try {
-             throw new Error(\"test\");
+             throw 1;
          } catch (e) {
              let fn = (): void => { captured = 42; };
              fn();

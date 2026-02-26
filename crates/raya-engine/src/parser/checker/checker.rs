@@ -1296,15 +1296,18 @@ impl<'a> TypeChecker<'a> {
 
             // Check catch parameter pattern (handles destructuring)
             if let Some(ref param) = catch.param {
-                // Get Error type for the catch parameter
-                let error_ty = self
-                    .symbols
-                    .resolve("Error")
-                    .map(|s| s.ty)
-                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+                let catch_ty = match param {
+                    Pattern::Identifier(_) => self
+                        .symbols
+                        .resolve("Error")
+                        .map(|s| s.ty)
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    // Destructuring catch params need to accept arbitrary thrown values.
+                    _ => self.type_ctx.unknown_type(),
+                };
 
                 // Register types for all variables bound in the pattern
-                self.check_destructure_pattern(param, error_ty);
+                self.check_destructure_pattern(param, catch_ty);
             }
 
             // Check catch body statements

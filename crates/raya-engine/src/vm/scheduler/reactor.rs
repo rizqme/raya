@@ -769,6 +769,12 @@ impl Reactor {
         if task.state() != TaskState::Failed {
             return;
         }
+        // Cancelled tasks are expected control-flow for fire-and-forget work
+        // (e.g. server background loops) and should not be treated as unhandled
+        // Promise rejections.
+        if task.is_cancelled() {
+            return;
+        }
         if task.is_rejection_observed() {
             return;
         }
@@ -912,6 +918,14 @@ impl Reactor {
         shared_state: &Arc<SharedVmState>,
         ready_queue: &mut VecDeque<Arc<Task>>,
     ) {
+        let task_cancelled = {
+            let tasks = shared_state.tasks.read();
+            tasks
+                .get(&completion.task_id)
+                .map(|t| t.is_cancelled())
+                .unwrap_or(false)
+        };
+
         let value = match completion.result {
             IoCompletion::Bytes(data) => {
                 // Create raw Buffer on heap (same as BUFFER_NEW native call)
@@ -968,6 +982,12 @@ impl Reactor {
             }
             IoCompletion::Primitive(native_val) => native_to_value(native_val),
             IoCompletion::Error(msg) => {
+                if task_cancelled {
+                    // Ignore late IO errors for cancelled tasks and resume them
+                    // as cancelled completion instead.
+                    Self::complete_task(shared_state, completion.task_id, Value::null(), ready_queue);
+                    return;
+                }
                 eprintln!(
                     "[reactor] IO error for task {:?}: {}",
                     completion.task_id, msg
@@ -1014,6 +1034,14 @@ impl Reactor {
     ) {
         let tasks = shared_state.tasks.read();
         if let Some(task) = tasks.get(&task_id) {
+            if task.is_cancelled() {
+                // Cancellation wins over delayed IO exceptions.
+                task.set_resume_value(Value::null());
+                task.set_state(TaskState::Resumed);
+                task.clear_suspend_reason();
+                ready_queue.push_back(task.clone());
+                return;
+            }
             // Ensure stale resume values are not materialized when resuming with exception.
             let _ = task.take_resume_value();
             task.set_exception(exception);

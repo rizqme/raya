@@ -12,7 +12,7 @@ use crate::vm::builtins::handlers::{
 };
 use crate::vm::gc::GarbageCollector;
 use crate::vm::native_handler::NativeHandler;
-use crate::vm::object::RayaString;
+use crate::vm::object::{Object, RayaString};
 use crate::vm::scheduler::{SuspendReason, Task, TaskId, TaskState};
 use crate::vm::stack::Stack;
 use crate::vm::sync::MutexRegistry;
@@ -292,6 +292,29 @@ pub struct Interpreter<'a> {
 }
 
 impl<'a> Interpreter<'a> {
+    #[inline]
+    fn format_exception_value(exception: Value) -> String {
+        if exception.is_null() {
+            return "null".to_string();
+        }
+        if !exception.is_ptr() {
+            return format!("{:?}", exception);
+        }
+        if let Some(s) = unsafe { exception.as_ptr::<RayaString>() } {
+            return unsafe { &*s.as_ptr() }.data.clone();
+        }
+        if let Some(obj) = unsafe { exception.as_ptr::<Object>() } {
+            if let Some(msg_val) = unsafe { &*obj.as_ptr() }.get_field(0) {
+                if msg_val.is_ptr() {
+                    if let Some(s) = unsafe { msg_val.as_ptr::<RayaString>() } {
+                        return unsafe { &*s.as_ptr() }.data.clone();
+                    }
+                }
+            }
+        }
+        format!("{:?}", exception)
+    }
+
     #[cfg(feature = "jit")]
     #[inline]
     fn record_native_resume_decision(
@@ -593,8 +616,8 @@ impl<'a> Interpreter<'a> {
                 task.set_ip(ip);
                 drop(stack_guard);
                 return ExecutionResult::Failed(VmError::RuntimeError(format!(
-                    "Unhandled exception from awaited task: {:?}",
-                    exception
+                    "Unhandled exception from awaited task: {}",
+                    Self::format_exception_value(exception)
                 )));
             }
         }
@@ -733,9 +756,9 @@ impl<'a> Interpreter<'a> {
             if task.is_cancelled() {
                 save_frame_state!();
                 drop(stack_guard);
-                return ExecutionResult::Failed(VmError::RuntimeError(
-                    "Task cancelled".to_string(),
-                ));
+                // Cancellation is modeled as graceful completion so detached/background
+                // tasks do not fail parent control-flow with unhandled rejections.
+                return ExecutionResult::Completed(Value::null());
             }
 
             // Bounds check - implicit return at end of function

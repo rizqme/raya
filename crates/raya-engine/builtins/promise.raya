@@ -15,7 +15,11 @@ class Promise<T> {
 
     // Internal cancellation support retained for existing runtime semantics.
     cancel(): void {
-        __OPCODE_TASK_CANCEL(this.handle);
+        try {
+            __OPCODE_TASK_CANCEL(this.handle);
+        } catch (_e) {
+            // Cancellation is best-effort and should never throw to user code.
+        }
     }
 
     isDone(): boolean {

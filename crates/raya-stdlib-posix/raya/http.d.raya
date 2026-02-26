@@ -56,4 +56,6 @@ export class HttpServer {
     close(): void;
     /** Server address */
     localAddr(): string;
+    /** Server local port */
+    localPort(): number;
 }

@@ -22,10 +22,10 @@ fn test_fetch_get_request_and_response() {
         }
 
         async function main(): Promise<boolean> {
-            const server = new HttpServer("127.0.0.1", 38183);
+            const server = new HttpServer("127.0.0.1", 38185);
             const serverResult = serverTask(server);
             sleep(5);
-            const response = fetch.get("http://127.0.0.1:38183/fetch?q=1");
+            const response = fetch.get("http://127.0.0.1:38185/fetch?q=1");
             const statusOk = response.status() == 200 && response.ok();
             const body = response.text();
             response.release();
@@ -57,12 +57,12 @@ fn test_fetch_post_with_extra_headers() {
         }
 
         async function main(): Promise<boolean> {
-            const server = new HttpServer("127.0.0.1", 38184);
+            const server = new HttpServer("127.0.0.1", 38186);
             const serverResult = serverTask(server);
             sleep(5);
             const response = fetch.request(
                 "POST",
-                "http://127.0.0.1:38184/submit",
+                "http://127.0.0.1:38186/submit",
                 "payload",
                 "X-Api: true"
             );

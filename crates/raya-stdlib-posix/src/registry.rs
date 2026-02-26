@@ -343,6 +343,9 @@ fn register_http(registry: &mut NativeFunctionRegistry) {
     registry.register("http.serverAddr", |ctx, args| {
         crate::http::server_addr(ctx, args)
     });
+    registry.register("http.serverPort", |ctx, args| {
+        crate::http::server_port(ctx, args)
+    });
     registry.register("http.reqMethod", |ctx, args| {
         crate::http::req_method(ctx, args)
     });

@@ -13,7 +13,6 @@ fn test_http_server_parses_and_responds() {
 
         async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
         async function serverTask(server: HttpServer): Promise<boolean> {
@@ -67,7 +66,6 @@ fn test_http_server_custom_headers() {
 
         async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
         async function serverTask(server: HttpServer): Promise<boolean> {
@@ -115,11 +113,10 @@ fn test_http_server_serve_task_cancel() {
 
         async function onRequest(req: HttpRequest, server: HttpServer): Promise<void> {
             server.respondText(req, 200, "ok-from-serve");
-            server.close();
         }
 
-        async function clientTask(): Promise<boolean> {
-            const stream = net.connect("127.0.0.1", 38183);
+        async function clientTask(port: number): Promise<boolean> {
+            const stream = net.connect("127.0.0.1", port);
             const request =
                 "GET /serve HTTP/1.1\r\n" +
                 "Host: 127.0.0.1\r\n" +
@@ -131,10 +128,12 @@ fn test_http_server_serve_task_cancel() {
         }
 
         async function main(): Promise<boolean> {
-            const server = new HttpServer("127.0.0.1", 38183);
+            const server = new HttpServer("127.0.0.1", 0);
+            const port = server.localPort();
             const serveTask = server.serve(onRequest);
             sleep(5);
-            const ok = await clientTask();
+            const ok = await clientTask(port);
+            server.close();
             serveTask.cancel();
             return ok;
         }
