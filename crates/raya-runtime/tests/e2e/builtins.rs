@@ -317,6 +317,43 @@ fn test_promise_finally_instance() {
 }
 
 // ============================================================================
+// Symbol tests
+// ============================================================================
+
+#[test]
+fn test_symbol_for_and_key_for() {
+    expect_string_with_builtins(
+        r#"
+        let s = Symbol.for("alpha");
+        return Symbol.keyFor(s);
+    "#,
+        "alpha",
+    );
+}
+
+#[test]
+fn test_symbol_to_string_surface() {
+    expect_string_with_builtins(
+        r#"
+        let s = Symbol.for("iter");
+        return s.toString();
+    "#,
+        "Symbol(iter)",
+    );
+}
+
+#[test]
+fn test_symbol_iterator_key() {
+    expect_string_with_builtins(
+        r#"
+        let it = Symbol.iterator();
+        return it.valueOf();
+    "#,
+        "Symbol.iterator",
+    );
+}
+
+// ============================================================================
 // Buffer tests
 // ============================================================================
 
