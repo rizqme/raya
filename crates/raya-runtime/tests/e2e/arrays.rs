@@ -275,6 +275,38 @@ fn test_for_of_array_break() {
     );
 }
 
+#[test]
+fn test_for_of_set() {
+    expect_i32_with_builtins(
+        "let s = new Set<number>();
+         s.add(2);
+         s.add(4);
+         s.add(6);
+         let sum = 0;
+         for (const x of s) {
+             sum = sum + x;
+         }
+         return sum;",
+        12,
+    );
+}
+
+#[test]
+fn test_for_of_map_entries_destructure() {
+    expect_i32_with_builtins(
+        "let m = new Map<number, number>();
+         m.set(1, 10);
+         m.set(2, 20);
+         m.set(3, 30);
+         let sum = 0;
+         for (const [k, v] of m) {
+             sum = sum + k + v;
+         }
+         return sum;",
+        66,
+    );
+}
+
 // ============================================================================
 // Callback-Based Array Methods
 // ============================================================================

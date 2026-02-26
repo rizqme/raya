@@ -13,6 +13,7 @@ use super::narrowing::{apply_type_guard, TypeEnv};
 use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_all_type_guards, extract_type_guard, TypeGuard};
 use crate::parser::ast::*;
+use crate::parser::token::Span;
 use crate::parser::types::normalize::contains_type_variables;
 use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
 use crate::{Interner, Symbol as ParserSymbol};
@@ -1138,21 +1139,7 @@ impl<'a> TypeChecker<'a> {
         // Check the iterable (right side) and get its type
         let iterable_ty = self.check_expr(&for_of.right);
 
-        // Get the element type from the array
-        // For now, we only support arrays
-        let elem_ty =
-            if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(iterable_ty) {
-                arr.element
-            } else {
-                // Not an array - report error and use unknown type
-                self.errors.push(CheckError::TypeMismatch {
-                    expected: "array".to_string(),
-                    actual: self.format_type(iterable_ty),
-                    span: *for_of.right.span(),
-                    note: Some("for-of loops require an iterable (array)".to_string()),
-                });
-                self.type_ctx.unknown_type()
-            };
+        let elem_ty = self.for_of_element_type(iterable_ty, *for_of.right.span());
 
         // Handle the loop variable (left side)
         // The binder should have already registered the variable
@@ -1184,6 +1171,86 @@ impl<'a> TypeChecker<'a> {
 
         // Exit loop scope
         self.exit_scope();
+    }
+
+    fn for_of_element_type(&mut self, iterable_ty: TypeId, span: Span) -> TypeId {
+        use crate::parser::types::Type;
+
+        let Some(ty) = self.type_ctx.get(iterable_ty).cloned() else {
+            return self.type_ctx.unknown_type();
+        };
+
+        match ty {
+            Type::Array(arr) => arr.element,
+            Type::Set(set_ty) => set_ty.element,
+            Type::Map(map_ty) => self.type_ctx.tuple_type(vec![map_ty.key, map_ty.value]),
+            Type::Reference(reference) => match reference.name.as_str() {
+                "Array" | "Set" => reference
+                    .type_args
+                    .and_then(|args| args.first().copied())
+                    .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                "Map" => {
+                    if let Some(args) = reference.type_args {
+                        if args.len() >= 2 {
+                            return self.type_ctx.tuple_type(vec![args[0], args[1]]);
+                        }
+                    }
+                    self.type_ctx.unknown_type()
+                }
+                _ => {
+                    self.errors.push(CheckError::TypeMismatch {
+                        expected: "iterable (Array, Set, or Map)".to_string(),
+                        actual: self.format_type(iterable_ty),
+                        span,
+                        note: Some("for-of loops require an iterable (Array, Set, or Map)".to_string()),
+                    });
+                    self.type_ctx.unknown_type()
+                }
+            },
+            Type::Generic(generic) => {
+                let base_name = self.type_ctx.get(generic.base).and_then(|base| match base {
+                    Type::Reference(reference) => Some(reference.name.as_str()),
+                    Type::Class(class_ty) => Some(class_ty.name.as_str()),
+                    _ => None,
+                });
+                match base_name {
+                    Some("Array") | Some("Set") => generic
+                        .type_args
+                        .first()
+                        .copied()
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    Some("Map") => {
+                        if generic.type_args.len() >= 2 {
+                            self.type_ctx
+                                .tuple_type(vec![generic.type_args[0], generic.type_args[1]])
+                        } else {
+                            self.type_ctx.unknown_type()
+                        }
+                    }
+                    _ => {
+                        self.errors.push(CheckError::TypeMismatch {
+                            expected: "iterable (Array, Set, or Map)".to_string(),
+                            actual: self.format_type(iterable_ty),
+                            span,
+                            note: Some(
+                                "for-of loops require an iterable (Array, Set, or Map)"
+                                    .to_string(),
+                            ),
+                        });
+                        self.type_ctx.unknown_type()
+                    }
+                }
+            }
+            _ => {
+                self.errors.push(CheckError::TypeMismatch {
+                    expected: "iterable (Array, Set, or Map)".to_string(),
+                    actual: self.format_type(iterable_ty),
+                    span,
+                    note: Some("for-of loops require an iterable (Array, Set, or Map)".to_string()),
+                });
+                self.type_ctx.unknown_type()
+            }
+        }
     }
 
     /// Check switch statement
