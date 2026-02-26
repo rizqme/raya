@@ -25,7 +25,7 @@ export class Error {
     syscall: string;
     path: string;
 
-    constructor(message?: string, cause?: Object | null);
+    constructor(message?: string, options?: Object | null);
 
     /** Get string representation: "ErrorName: message" */
     toString(): string;
@@ -64,7 +64,7 @@ export class EvalError extends Error {
 /** Aggregate multiple errors into one throwable */
 export class AggregateError extends Error {
     errors: Object[];
-    constructor(errors: Object[], message?: string, cause?: Object | null);
+    constructor(errors: Object[], message?: string, options?: Object | null);
 }
 
 /** Thrown when operating on a closed channel */

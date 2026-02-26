@@ -11,11 +11,11 @@ class Error {
     public syscall: string;
     public path: string;
 
-    constructor(message: string = "", cause: Object | null = null) {
+    constructor(message: string = "", options: Object | null = null) {
         this.message = message;
         this.name = "Error";
         this.stack = "";
-        this.cause = cause;
+        this.cause = options == null ? null : options.cause;
         this.code = "";
         this.errno = 0;
         this.syscall = "";
@@ -75,8 +75,8 @@ class EvalError extends Error {
 class AggregateError extends Error {
     public errors: Object[];
 
-    constructor(errors: Object[], message: string = "", cause: Object | null = null) {
-        super(message, cause);
+    constructor(errors: Object[], message: string = "", options: Object | null = null) {
+        super(message, options);
         this.name = "AggregateError";
         this.errors = errors;
     }

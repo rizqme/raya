@@ -371,6 +371,26 @@ fn test_error_name_property() {
 }
 
 #[test]
+fn test_error_constructor_options_cause() {
+    expect_bool_with_builtins(
+        "let inner = new Error('inner');
+         let err = new Error('outer', { cause: inner });
+         return err.cause != null && err.cause.message == 'inner';",
+        true,
+    );
+}
+
+#[test]
+fn test_aggregate_error_constructor_options_cause() {
+    expect_bool_with_builtins(
+        "let root = new Error('root');
+         let agg = new AggregateError([new Error('leaf')], 'boom', { cause: root });
+         return agg.name == 'AggregateError' && agg.cause != null && agg.cause.message == 'root' && agg.errors.length == 1;",
+        true,
+    );
+}
+
+#[test]
 fn test_error_to_string_direct() {
     // Test Error.toString() directly (not via catch)
     expect_string_with_builtins(
