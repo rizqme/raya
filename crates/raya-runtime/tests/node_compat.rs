@@ -124,3 +124,34 @@ fn test_node_compat_define_property_setter_invoked_on_write() {
 
     expect_bool(value, true);
 }
+
+#[test]
+fn test_node_compat_get_own_property_descriptor_roundtrip() {
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
+
+    let value = runtime
+        .eval(
+            r#"
+            let err = new Error("base");
+            let d = new Object();
+            d.value = "locked";
+            d.writable = false;
+            d.configurable = true;
+            d.enumerable = false;
+            Object.defineProperty(err, "message", d);
+
+            let got = Object.getOwnPropertyDescriptor(err, "message");
+            return got != null
+                && got.value == "locked"
+                && got.writable == false
+                && got.configurable == true
+                && got.enumerable == false;
+            "#,
+        )
+        .expect("node-compat eval should succeed");
+
+    expect_bool(value, true);
+}

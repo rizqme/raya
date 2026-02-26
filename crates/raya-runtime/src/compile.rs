@@ -596,4 +596,68 @@ mod tests {
             "Object.defineProperty should be available in node-compat mode"
         );
     }
+
+    #[test]
+    fn test_object_get_own_property_descriptor_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            Object.getOwnPropertyDescriptor(obj, "x");
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.getOwnPropertyDescriptor should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_get_own_property_descriptor_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            Object.getOwnPropertyDescriptor(obj, "x");
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.getOwnPropertyDescriptor should be available in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_properties_not_available_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let obj = new Object();
+            let descriptors = {};
+            Object.defineProperties(obj, descriptors);
+            return obj;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "Object.defineProperties should not be available in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_object_define_properties_available_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let obj = new Object();
+            let descriptors = {};
+            Object.defineProperties(obj, descriptors);
+            return obj;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "Object.defineProperties should be available in node-compat mode"
+        );
+    }
 }
