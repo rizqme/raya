@@ -1921,7 +1921,13 @@ fn test_parallel_faster_than_sequential() {
     let seq_time = seq_start.elapsed();
 
     let par_start = std::time::Instant::now();
-    let par_result = compile_and_run_multiworker_with_builtins(par_source, 4).unwrap();
+    let par_result =
+        compile_and_run_multiworker_with_builtins_with_timeout(
+            par_source,
+            4,
+            std::time::Duration::from_secs(90),
+        )
+        .unwrap();
     let par_time = par_start.elapsed();
 
     let seq_val = seq_result

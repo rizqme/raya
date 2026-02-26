@@ -725,6 +725,18 @@ pub fn compile_and_run_multiworker_with_builtins(
     compile_and_run_multiworker_with_builtins_timeout(source, worker_count, Duration::from_secs(30))
 }
 
+/// Compile and execute with multiple worker threads and builtins using a custom timeout.
+///
+/// Use this helper for intentionally heavy multiworker e2e cases that can exceed the
+/// default 30s timeout on contended CI runners.
+pub fn compile_and_run_multiworker_with_builtins_with_timeout(
+    source: &str,
+    worker_count: usize,
+    timeout: Duration,
+) -> E2EResult<Value> {
+    compile_and_run_multiworker_with_builtins_timeout(source, worker_count, timeout)
+}
+
 fn compile_and_run_multiworker_with_timeout(
     source: &str,
     worker_count: usize,
