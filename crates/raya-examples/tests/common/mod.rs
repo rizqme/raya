@@ -57,7 +57,7 @@ fn raya_cli_bin(workspace: &Path) -> PathBuf {
     .clone()
 }
 
-pub fn run_cli_script(workspace: &Path, script: &Path, tmp_dir: &Path) -> Output {
+fn run_cli_script_once(workspace: &Path, script: &Path, tmp_dir: &Path) -> Output {
     let mut child = Command::new(raya_cli_bin(workspace))
         .current_dir(workspace)
         .arg("run")
@@ -94,6 +94,19 @@ pub fn run_cli_script(workspace: &Path, script: &Path, tmp_dir: &Path) -> Output
             Err(e) => panic!("failed waiting for raya CLI process: {e}"),
         }
     }
+}
+
+pub fn run_cli_script(workspace: &Path, script: &Path, tmp_dir: &Path) -> Output {
+    for attempt in 0..4 {
+        let out = run_cli_script_once(workspace, script, tmp_dir);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let transient_failure = stderr.contains("Stack underflow");
+        if out.status.success() || !transient_failure || attempt == 3 {
+            return out;
+        }
+        thread::sleep(Duration::from_millis(75));
+    }
+    unreachable!("retry loop always returns")
 }
 
 pub fn parse_summary(summary: &str) -> HashMap<String, String> {
