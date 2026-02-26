@@ -16,7 +16,16 @@ export class Error {
     /** Stack trace (if available) */
     stack: string;
 
-    constructor(message?: string);
+    /** Error cause (for chained failures) */
+    cause: Object | null;
+
+    /** Optional operational fields for system-like errors */
+    code: string;
+    errno: number;
+    syscall: string;
+    path: string;
+
+    constructor(message?: string, cause?: Object | null);
 
     /** Get string representation: "ErrorName: message" */
     toString(): string;
@@ -40,6 +49,22 @@ export class ReferenceError extends Error {
 /** Thrown when a parsing error occurs */
 export class SyntaxError extends Error {
     constructor(message?: string);
+}
+
+/** URI parsing/encoding error */
+export class URIError extends Error {
+    constructor(message?: string);
+}
+
+/** eval() related error */
+export class EvalError extends Error {
+    constructor(message?: string);
+}
+
+/** Aggregate multiple errors into one throwable */
+export class AggregateError extends Error {
+    errors: Object[];
+    constructor(errors: Object[], message?: string, cause?: Object | null);
 }
 
 /** Thrown when operating on a closed channel */

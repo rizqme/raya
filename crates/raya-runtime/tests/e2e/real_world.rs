@@ -872,14 +872,14 @@ fn test_async_producer_consumer() {
     // Producer-consumer with Channel
     expect_i32_with_builtins(
         r#"
-        async function producer(ch: Channel<number>, count: number): Task<void> {
+        async function producer(ch: Channel<number>, count: number): Promise<void> {
             for (let i = 1; i <= count; i = i + 1) {
                 ch.send(i);
             }
             ch.close();
         }
 
-        async function consumer(ch: Channel<number>): Task<number> {
+        async function consumer(ch: Channel<number>): Promise<number> {
             let sum = 0;
             let val = ch.receive();
             while (val != null) {
@@ -889,7 +889,7 @@ fn test_async_producer_consumer() {
             return sum;
         }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch = new Channel<number>(4);
             let prod = producer(ch, 10);
             let cons = consumer(ch);
@@ -910,11 +910,11 @@ fn test_async_fan_out_fan_in() {
     // Dispatch work to multiple tasks, collect results
     expect_i32_with_builtins(
         r#"
-        async function compute(x: number): Task<number> {
+        async function compute(x: number): Promise<number> {
             return x * x;
         }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             // Fan-out: launch multiple tasks
             let t1 = compute(1);
             let t2 = compute(2);
@@ -970,13 +970,13 @@ fn test_async_mutex_concurrent_map_updates() {
             }
         }
 
-        async function worker(counter: SharedCounter, key: string, times: number): Task<void> {
+        async function worker(counter: SharedCounter, key: string, times: number): Promise<void> {
             for (let i = 0; i < times; i = i + 1) {
                 counter.increment(key);
             }
         }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let counter = new SharedCounter();
             let w1 = worker(counter, "a", 5);
             let w2 = worker(counter, "a", 5);
@@ -998,14 +998,14 @@ fn test_async_pipeline_stages() {
     // Pipeline: stage1 → stage2 → stage3 via channels
     expect_i32_with_builtins(
         r#"
-        async function stage1(out: Channel<number>): Task<void> {
+        async function stage1(out: Channel<number>): Promise<void> {
             for (let i = 1; i <= 5; i = i + 1) {
                 out.send(i);
             }
             out.close();
         }
 
-        async function stage2(input: Channel<number>, out: Channel<number>): Task<void> {
+        async function stage2(input: Channel<number>, out: Channel<number>): Promise<void> {
             let val = input.receive();
             while (val != null) {
                 out.send(val * 2);
@@ -1014,7 +1014,7 @@ fn test_async_pipeline_stages() {
             out.close();
         }
 
-        async function stage3(input: Channel<number>): Task<number> {
+        async function stage3(input: Channel<number>): Promise<number> {
             let sum = 0;
             let val = input.receive();
             while (val != null) {
@@ -1024,7 +1024,7 @@ fn test_async_pipeline_stages() {
             return sum;
         }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch1 = new Channel<number>(4);
             let ch2 = new Channel<number>(4);
 

@@ -11,7 +11,7 @@ fn test_fetch_get_request_and_response() {
         import fetch from "std:fetch";
         import { HttpServer } from "std:http";
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const methodOk = req.method() == "GET";
             const pathOk = req.path() == "/fetch";
@@ -21,7 +21,7 @@ fn test_fetch_get_request_and_response() {
             return methodOk && pathOk && queryOk;
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const server = new HttpServer("127.0.0.1", 38183);
             const serverResult = serverTask(server);
             sleep(5);
@@ -46,7 +46,7 @@ fn test_fetch_post_with_extra_headers() {
         import fetch from "std:fetch";
         import { HttpServer } from "std:http";
 
-        async function serverTask(server: HttpServer): Task<boolean> {
+        async function serverTask(server: HttpServer): Promise<boolean> {
             const req = server.accept();
             const methodOk = req.method() == "POST";
             const headerOk = req.header("x-api") == "true";
@@ -56,7 +56,7 @@ fn test_fetch_post_with_extra_headers() {
             return methodOk && headerOk && bodyOk;
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const server = new HttpServer("127.0.0.1", 38184);
             const serverResult = serverTask(server);
             sleep(5);

@@ -63,8 +63,8 @@ fn get_builtin_sources() -> &'static str {
         // Mutex class
         include_str!("../../../raya-engine/builtins/mutex.raya"),
         "\n",
-        // Task class
-        include_str!("../../../raya-engine/builtins/task.raya"),
+        // Promise class
+        include_str!("../../../raya-engine/builtins/promise.raya"),
         "\n",
     )
 }

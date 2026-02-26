@@ -24,7 +24,7 @@ fn test_net_tcp_echo_round_trip() {
             return net.listen("127.0.0.1", 0);
         }
 
-        async function serverTask(listener: TcpListener): Task<boolean> {
+        async function serverTask(listener: TcpListener): Promise<boolean> {
             const stream = listener.accept();
             if (stream == null) {
                 listener.close();
@@ -37,7 +37,7 @@ fn test_net_tcp_echo_round_trip() {
             return message == "ping";
         }
 
-        async function clientTask(host: string, port: number): Task<boolean> {
+        async function clientTask(host: string, port: number): Promise<boolean> {
             const stream = net.connect(host, port);
             const remote = stream.remoteAddr();
             stream.writeText("ping\n");
@@ -46,7 +46,7 @@ fn test_net_tcp_echo_round_trip() {
             return response == "echo:ping" && remote.length > 0;
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const listener = bindListener();
             const addr = listener.localAddr();
             const sep = addr.lastIndexOf(":");
@@ -74,7 +74,7 @@ fn test_net_accept_returns_null_after_close() {
         r#"
         import net, { TcpListener } from "std:net";
 
-        async function acceptLoop(listener: TcpListener): Task<number> {
+        async function acceptLoop(listener: TcpListener): Promise<number> {
             let accepted: number = 0;
             while (true) {
                 const stream = listener.accept();
@@ -87,7 +87,7 @@ fn test_net_accept_returns_null_after_close() {
             return accepted;
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const listener = net.listen("127.0.0.1", 0);
             const loopTask = acceptLoop(listener);
             sleep(10);
@@ -108,11 +108,11 @@ fn test_net_serve_exits_when_listener_closed() {
         r#"
         import net, { TcpStream } from "std:net";
 
-        async function onConn(stream: TcpStream): Task<void> {
+        async function onConn(stream: TcpStream): Promise<void> {
             stream.close();
         }
 
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             const listener = net.listen("127.0.0.1", 0);
             const serveTask = listener.serve(onConn);
             sleep(10);

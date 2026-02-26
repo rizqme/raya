@@ -972,11 +972,11 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
         }],
         functions: &[],
     },
-    // Task<T>
+    // Promise<T> (public async contract; internally scheduler-backed)
     BuiltinSignatures {
-        name: "Task",
+        name: "Promise",
         classes: &[ClassSig {
-            name: "Task",
+            name: "Promise",
             type_params: &["T"],
             properties: &[],
             methods: &[
@@ -1001,23 +1001,59 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     return_type: "boolean",
                     is_static: false,
                 },
+                MethodSig {
+                    name: "then",
+                    params: &[("onFulfilled", "(T) => Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "catch",
+                    params: &[("onRejected", "(Object) => Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "finally",
+                    params: &[("onFinally", "() => void")],
+                    min_params: 1,
+                    return_type: "Promise<T>",
+                    is_static: false,
+                },
+                MethodSig {
+                    name: "resolve",
+                    params: &[("value", "Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "reject",
+                    params: &[("reason", "Object")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "all",
+                    params: &[("values", "Array<Promise<Object>>")],
+                    min_params: 1,
+                    return_type: "Promise<Array<Object>>",
+                    is_static: true,
+                },
+                MethodSig {
+                    name: "race",
+                    params: &[("values", "Array<Promise<Object>>")],
+                    min_params: 1,
+                    return_type: "Promise<Object>",
+                    is_static: true,
+                },
             ],
-            constructor: None, // Tasks are created via async keyword
+            constructor: None, // Promises are created via async keyword
         }],
-        functions: &[
-            FunctionSig {
-                name: "yield",
-                type_params: &[],
-                params: &[],
-                return_type: "void",
-            },
-            FunctionSig {
-                name: "sleep",
-                type_params: &[],
-                params: &[("durationMs", "number")],
-                return_type: "void",
-            },
-        ],
+        functions: &[],
     },
     // Error classes
     BuiltinSignatures {
@@ -1034,6 +1070,31 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                     },
                     PropertySig {
                         name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "cause",
+                        ty: "Object | null",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "code",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errno",
+                        ty: "number",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "syscall",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "path",
                         ty: "string",
                         is_static: false,
                     },
@@ -1144,6 +1205,83 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 constructor: Some(&[("message", "string")]),
             },
             ClassSig {
+                name: "URIError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "EvalError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("message", "string")]),
+            },
+            ClassSig {
+                name: "AggregateError",
+                type_params: &[],
+                properties: &[
+                    PropertySig {
+                        name: "message",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "name",
+                        ty: "string",
+                        is_static: false,
+                    },
+                    PropertySig {
+                        name: "errors",
+                        ty: "Object[]",
+                        is_static: false,
+                    },
+                ],
+                methods: &[MethodSig {
+                    name: "toString",
+                    params: &[],
+                    min_params: 0,
+                    return_type: "string",
+                    is_static: false,
+                }],
+                constructor: Some(&[("errors", "Object[]"), ("message", "string")]),
+            },
+            ClassSig {
                 name: "ChannelClosedError",
                 type_params: &[],
                 properties: &[
@@ -1207,6 +1345,27 @@ static BUILTIN_SIGS: &[BuiltinSignatures] = &[
                 min_params: 0,
                 return_type: "string",
                 is_static: false,
+            },
+            MethodSig {
+                name: "defineProperty",
+                params: &[("obj", "Object"), ("key", "string"), ("descriptor", "Object")],
+                min_params: 3,
+                return_type: "Object",
+                is_static: true,
+            },
+            MethodSig {
+                name: "getOwnPropertyDescriptor",
+                params: &[("obj", "Object"), ("key", "string")],
+                min_params: 2,
+                return_type: "Object | null",
+                is_static: true,
+            },
+            MethodSig {
+                name: "defineProperties",
+                params: &[("obj", "Object"), ("descriptors", "Object")],
+                min_params: 2,
+                return_type: "Object",
+                is_static: true,
             }],
             constructor: Some(&[]),
         }],

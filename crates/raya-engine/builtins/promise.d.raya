@@ -1,0 +1,19 @@
+/**
+ * Promise<T> - Asynchronous computation
+ *
+ * Public async contract for Node-like builtin compatibility.
+ */
+export class Promise<T> {
+    cancel(): void;
+    isDone(): boolean;
+    isCancelled(): boolean;
+
+    then<U>(onFulfilled: (value: T) => U): Promise<U>;
+    catch<U>(onRejected: (reason: Object) => U): Promise<T | U>;
+    finally(onFinally: () => void): Promise<T>;
+
+    static resolve<U>(value: U): Promise<U>;
+    static reject<U>(reason: Object): Promise<U>;
+    static all<U>(values: Promise<U>[]): Promise<U[]>;
+    static race<U>(values: Promise<U>[]): Promise<U>;
+}

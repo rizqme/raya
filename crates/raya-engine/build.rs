@@ -18,7 +18,7 @@ const BUILTINS: &[&str] = &[
     "object",
     "error",
     "mutex",
-    "task",
+    "promise",
     "channel",
     "map",
     "set",

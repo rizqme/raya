@@ -18,9 +18,9 @@ fn test_async_arrow_capturing_outer_variable() {
     // Async arrow captures a variable from the enclosing scope
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let x: number = 10;
-            let work = async (): Task<number> => x * 3;
+            let work = async (): Promise<number> => x * 3;
             return await work();
         }
         return await main();
@@ -34,9 +34,9 @@ fn test_async_arrow_with_parameter_and_capture() {
     // Async arrow captures outer variable AND takes a parameter
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let base: number = 100;
-            let add = async (n: number): Task<number> => base + n;
+            let add = async (n: number): Promise<number> => base + n;
             return await add(42);
         }
         return await main();
@@ -55,15 +55,15 @@ fn test_async_method_calls_another_async_method() {
             constructor(v: number) {
                 this.value = v;
             }
-            async double(): Task<number> {
+            async double(): Promise<number> {
                 return this.value * 2;
             }
-            async quadruple(): Task<number> {
+            async quadruple(): Promise<number> {
                 let d = await this.double();
                 return d * 2;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let calc = new Calculator(5);
             return await calc.quadruple();
         }
@@ -78,8 +78,8 @@ fn test_nested_async_arrow_inside_async_function() {
     // Async arrow defined and called inside another async function
     expect_i32(
         "
-        async function outer(): Task<number> {
-            let inner = async (): Task<number> => 7;
+        async function outer(): Promise<number> {
+            let inner = async (): Promise<number> => 7;
             let result = await inner();
             return result + 3;
         }
@@ -90,14 +90,14 @@ fn test_nested_async_arrow_inside_async_function() {
 }
 
 // ============================================================================
-// 2. Task Result Types
+// 2. Promise Result Types
 // ============================================================================
 
 #[test]
 fn test_task_returns_negative_number() {
     expect_i32(
         "
-        async function negative(): Task<number> {
+        async function negative(): Promise<number> {
             return -42;
         }
         return await negative();
@@ -110,7 +110,7 @@ fn test_task_returns_negative_number() {
 fn test_task_returns_zero() {
     expect_i32(
         "
-        async function zero(): Task<number> {
+        async function zero(): Promise<number> {
             return 0;
         }
         return await zero();
@@ -121,10 +121,10 @@ fn test_task_returns_zero() {
 
 #[test]
 fn test_task_returns_large_computation() {
-    // Task does significant work before returning
+    // Promise does significant work before returning
     expect_i32(
         "
-        async function compute(): Task<number> {
+        async function compute(): Promise<number> {
             let sum: number = 0;
             let i: number = 1;
             while (i <= 100) {
@@ -143,7 +143,7 @@ fn test_task_returns_large_computation() {
 fn test_task_returns_boolean_true() {
     expect_bool(
         "
-        async function check(): Task<boolean> {
+        async function check(): Promise<boolean> {
             return true;
         }
         return await check();
@@ -156,7 +156,7 @@ fn test_task_returns_boolean_true() {
 fn test_task_returns_boolean_false() {
     expect_bool(
         "
-        async function check(): Task<boolean> {
+        async function check(): Promise<boolean> {
             return 3 > 5;
         }
         return await check();
@@ -174,16 +174,16 @@ fn test_exception_propagates_through_nested_await() {
     // Exception thrown in deeply nested async chain should propagate to top
     expect_i32(
         "
-        async function level2(): Task<number> {
+        async function level2(): Promise<number> {
             throw 'deep error';
         }
-        async function level1(): Task<number> {
+        async function level1(): Promise<number> {
             return await level2();
         }
-        async function level0(): Task<number> {
+        async function level0(): Promise<number> {
             return await level1();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 return await level0();
             } catch (e) {
@@ -201,13 +201,13 @@ fn test_exception_in_one_parallel_task() {
     // One task in a parallel group fails — error should propagate
     expect_i32(
         "
-        async function good(): Task<number> {
+        async function good(): Promise<number> {
             return 1;
         }
-        async function bad(): Task<number> {
+        async function bad(): Promise<number> {
             throw 'fail';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 let results = await [good(), bad()];
                 return results[0];
@@ -226,10 +226,10 @@ fn test_try_catch_wrapping_await() {
     // Try-catch around a single await catches the exception
     expect_i32(
         "
-        async function failing(): Task<number> {
+        async function failing(): Promise<number> {
             throw 'oops';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 let result = await failing();
                 return result;
@@ -248,13 +248,13 @@ fn test_exception_in_async_does_not_affect_other_tasks() {
     // One task fails, but a separately awaited task succeeds
     expect_i32(
         "
-        async function goodTask(): Task<number> {
+        async function goodTask(): Promise<number> {
             return 10;
         }
-        async function badTask(): Task<number> {
+        async function badTask(): Promise<number> {
             throw 'error';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let g = goodTask();
             let b = badTask();
             let goodResult = await g;
@@ -276,10 +276,10 @@ fn test_finally_runs_after_async_exception() {
     // Finally block executes even when async function throws
     expect_i32(
         "
-        async function failing(): Task<number> {
+        async function failing(): Promise<number> {
             throw 'error';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let cleanup: number = 0;
             try {
                 await failing();
@@ -301,17 +301,17 @@ fn test_rethrow_in_async_catch() {
     // Catch and rethrow in async function
     expect_i32(
         "
-        async function inner(): Task<number> {
+        async function inner(): Promise<number> {
             throw 'inner error';
         }
-        async function middle(): Task<number> {
+        async function middle(): Promise<number> {
             try {
                 return await inner();
             } catch (e) {
                 throw 'rethrown';
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 return await middle();
             } catch (e) {
@@ -329,10 +329,10 @@ fn test_exception_after_successful_await() {
     // First await succeeds, then an exception is thrown and caught locally
     expect_i32(
         "
-        async function ok(): Task<number> {
+        async function ok(): Promise<number> {
             return 5;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let result = await ok();
             try {
                 if (result == 5) {
@@ -350,7 +350,7 @@ fn test_exception_after_successful_await() {
 }
 
 // ============================================================================
-// 4. Multiple Waiters / Shared Task
+// 4. Multiple Waiters / Shared Promise
 // ============================================================================
 
 #[test]
@@ -358,13 +358,13 @@ fn test_two_tasks_await_same_task() {
     // Two tasks both await the same shared task
     expect_i32(
         "
-        async function shared(): Task<number> {
+        async function shared(): Promise<number> {
             return 10;
         }
-        async function waiter(t: Task<number>): Task<number> {
+        async function waiter(t: Promise<number>): Promise<number> {
             return await t;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let s = shared();
             let w1 = waiter(s);
             let w2 = waiter(s);
@@ -380,13 +380,13 @@ fn test_two_tasks_await_same_task() {
 
 #[test]
 fn test_await_already_completed_task() {
-    // Task completes before we await it
+    // Promise completes before we await it
     expect_i32(
         "
-        async function fast(): Task<number> {
+        async function fast(): Promise<number> {
             return 42;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = fast();
             // The task likely completes immediately (trivial work)
             // Awaiting a completed task should return result instantly
@@ -404,10 +404,10 @@ fn test_await_same_task_twice() {
     // Await the same task twice — second await should get cached result
     expect_i32(
         "
-        async function work(): Task<number> {
+        async function work(): Promise<number> {
             return 7;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = work();
             let r1 = await t;
             let r2 = await t;
@@ -428,10 +428,10 @@ fn test_waitall_single_task() {
     // await [...] with just one task
     expect_i32(
         "
-        async function work(): Task<number> {
+        async function work(): Promise<number> {
             return 42;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let results = await [work()];
             return results[0];
         }
@@ -446,15 +446,15 @@ fn test_waitall_preserves_order() {
     // Results should be in array order, not completion order
     expect_i32(
         "
-        async function slow(): Task<number> {
+        async function slow(): Promise<number> {
             let i: number = 0;
             while (i < 50) { i = i + 1; }
             return 1;
         }
-        async function fast(): Task<number> {
+        async function fast(): Promise<number> {
             return 2;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let results = await [slow(), fast()];
             // results[0] should be slow's result (1), results[1] should be fast's (2)
             return results[0] * 10 + results[1];
@@ -470,10 +470,10 @@ fn test_waitall_all_same_value() {
     // All tasks return the same value
     expect_i32(
         "
-        async function same(): Task<number> {
+        async function same(): Promise<number> {
             return 5;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let results = await [same(), same(), same(), same()];
             return results[0] + results[1] + results[2] + results[3];
         }
@@ -488,18 +488,18 @@ fn test_nested_waitall() {
     // Inner parallel inside outer parallel
     expect_i32(
         "
-        async function leaf(x: number): Task<number> {
+        async function leaf(x: number): Promise<number> {
             return x;
         }
-        async function inner1(): Task<number> {
+        async function inner1(): Promise<number> {
             let results = await [leaf(1), leaf(2)];
             return results[0] + results[1];
         }
-        async function inner2(): Task<number> {
+        async function inner2(): Promise<number> {
             let results = await [leaf(3), leaf(4)];
             return results[0] + results[1];
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let results = await [inner1(), inner2()];
             return results[0] + results[1];
         }
@@ -514,7 +514,7 @@ fn test_waitall_with_computation() {
     // Tasks in waitall do real work (not just return constants)
     expect_i32(
         "
-        async function sum_to(n: number): Task<number> {
+        async function sum_to(n: number): Promise<number> {
             let s: number = 0;
             let i: number = 1;
             while (i <= n) {
@@ -523,7 +523,7 @@ fn test_waitall_with_computation() {
             }
             return s;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let results = await [sum_to(10), sum_to(20), sum_to(30)];
             return results[0] + results[1] + results[2];
         }
@@ -539,7 +539,7 @@ fn test_waitall_pointer_results_string_multiple_waves() {
     // Ensures resume handling does not leak state between waves.
     expect_string(
         "
-        async function user(id: number): Task<string> {
+        async function user(id: number): Promise<string> {
             return 'U' + id.toString();
         }
         function main(): string {
@@ -558,7 +558,7 @@ fn test_waitall_pointer_results_array_values() {
     // Each task returns an array (heap pointer) and waitall returns array-of-arrays.
     expect_i32(
         "
-        async function row(x: number): Task<number[]> {
+        async function row(x: number): Promise<number[]> {
             return [x, x + 1, x + 2];
         }
         function main(): number {
@@ -577,10 +577,10 @@ fn test_waitall_failure_with_pointer_task_result() {
     // WaitAll should propagate failure rather than misinterpreting pointer values.
     expect_runtime_error(
         "
-        async function ok(): Task<string> {
+        async function ok(): Promise<string> {
             return 'done';
         }
-        async function bad(): Task<string> {
+        async function bad(): Promise<string> {
             throw 'boom';
         }
         function main(): void {
@@ -594,10 +594,10 @@ fn test_waitall_failure_with_pointer_task_result() {
 
 #[test]
 fn test_waitall_same_task_array_awaited_twice_with_strings() {
-    // Await the same Task<string>[] twice; both should return cached results in order.
+    // Await the same Promise<string>[] twice; both should return cached results in order.
     expect_string(
         "
-        async function label(n: number): Task<string> {
+        async function label(n: number): Promise<string> {
             return 'S' + n.toString();
         }
         function main(): string {
@@ -621,10 +621,10 @@ fn test_spawn_await_in_while_loop() {
     // Repeatedly spawn and await tasks in a loop
     expect_i32(
         "
-        async function work(x: number): Task<number> {
+        async function work(x: number): Promise<number> {
             return x * 2;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let sum: number = 0;
             let i: number = 1;
             while (i <= 5) {
@@ -645,10 +645,10 @@ fn test_batch_spawn_then_batch_await() {
     // Spawn all tasks first, then await them all individually
     expect_i32(
         "
-        async function work(x: number): Task<number> {
+        async function work(x: number): Promise<number> {
             return x;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t1 = work(1);
             let t2 = work(2);
             let t3 = work(3);
@@ -673,10 +673,10 @@ fn test_task_chain_through_loop() {
     // Each iteration spawns a task that depends on previous result
     expect_i32(
         "
-        async function addOne(x: number): Task<number> {
+        async function addOne(x: number): Promise<number> {
             return x + 1;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let value: number = 0;
             let i: number = 0;
             while (i < 10) {
@@ -696,10 +696,10 @@ fn test_alternating_sync_async_work() {
     // Mix sync computation with async spawning
     expect_i32(
         "
-        async function asyncDouble(x: number): Task<number> {
+        async function asyncDouble(x: number): Promise<number> {
             return x * 2;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let result: number = 1;
             // sync
             result = result + 1;
@@ -732,7 +732,7 @@ fn test_mutex_two_tasks_increment() {
             count: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function incrementN(counter: SharedCounter, n: number): Task<void> {
+        async function incrementN(counter: SharedCounter, n: number): Promise<void> {
             let i: number = 0;
             while (i < n) {
                 counter.mu.lock();
@@ -741,7 +741,7 @@ fn test_mutex_two_tasks_increment() {
                 i = i + 1;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let c = new SharedCounter();
             let t1 = incrementN(c, 5);
             let t2 = incrementN(c, 5);
@@ -760,7 +760,7 @@ fn test_mutex_lock_unlock_cycle() {
     // Lock and unlock multiple times in sequence
     expect_i32_with_builtins(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let mu = new Mutex();
             let sum: number = 0;
             mu.lock();
@@ -785,7 +785,7 @@ fn test_mutex_with_sleep_between() {
     // Lock, sleep, unlock — tests that mutex is held across suspension
     expect_i32_with_builtins(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let mu = new Mutex();
             mu.lock();
             sleep(0);
@@ -840,12 +840,12 @@ fn test_mutex_protects_accumulation() {
             total: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function add(state: State, value: number): Task<void> {
+        async function add(state: State, value: number): Promise<void> {
             state.mu.lock();
             state.total = state.total + value;
             state.mu.unlock();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let s = new State();
             let t1 = add(s, 10);
             let t2 = add(s, 20);
@@ -968,18 +968,18 @@ fn test_channel_producer_consumer_pattern() {
     // Producer sends multiple values, consumer receives them via async
     expect_i32_with_builtins(
         "
-        async function producer(ch: Channel<number>): Task<void> {
+        async function producer(ch: Channel<number>): Promise<void> {
             ch.send(10);
             ch.send(20);
             ch.send(30);
         }
-        async function consumer(ch: Channel<number>): Task<number> {
+        async function consumer(ch: Channel<number>): Promise<number> {
             let a = ch.receive();
             let b = ch.receive();
             let c = ch.receive();
             return a + b + c;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch = new Channel<number>(3);
             let p = producer(ch);
             let c = consumer(ch);
@@ -1013,7 +1013,7 @@ fn test_sleep_zero_as_yield() {
     // sleep(0) should yield control and resume
     expect_i32(
         "
-        async function work(): Task<number> {
+        async function work(): Promise<number> {
             let x: number = 1;
             sleep(0);
             x = x + 1;
@@ -1032,7 +1032,7 @@ fn test_multiple_sequential_sleeps() {
     // Multiple sleeps in a row
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             sleep(0);
             sleep(0);
             sleep(0);
@@ -1049,7 +1049,7 @@ fn test_sleep_in_loop() {
     // Sleep inside a loop with work
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let sum: number = 0;
             let i: number = 0;
             while (i < 5) {
@@ -1074,10 +1074,10 @@ fn test_closure_used_after_await() {
     // Closure created before async work, used after await
     expect_i32(
         "
-        async function work(): Task<number> {
+        async function work(): Promise<number> {
             return 5;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let multiplier: number = 3;
             let mul = (x: number): number => x * multiplier;
             let base = await work();
@@ -1094,11 +1094,11 @@ fn test_multiple_async_tasks_with_closures() {
     // Multiple tasks each using closures with different captures
     expect_i32(
         "
-        async function makeTask(base: number): Task<number> {
+        async function makeTask(base: number): Promise<number> {
             let add = (x: number): number => x + base;
             return add(10);
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t1 = makeTask(1);
             let t2 = makeTask(2);
             let t3 = makeTask(3);
@@ -1116,7 +1116,7 @@ fn test_async_function_returning_closure_result() {
     // Async function that builds and calls a closure internally
     expect_i32(
         "
-        async function compute(a: number, b: number): Task<number> {
+        async function compute(a: number, b: number): Promise<number> {
             let op = (x: number, y: number): number => x * y + 1;
             return op(a, b);
         }
@@ -1131,10 +1131,10 @@ fn test_closure_captures_task_result() {
     // Create a closure that uses the result of an await
     expect_i32(
         "
-        async function getData(): Task<number> {
+        async function getData(): Promise<number> {
             return 100;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let data = await getData();
             let process = (x: number): number => x + data;
             return process(23);
@@ -1150,11 +1150,11 @@ fn test_async_function_with_closure_inside() {
     // Async function that creates and uses a closure internally
     expect_i32(
         "
-        async function compute(factor: number): Task<number> {
+        async function compute(factor: number): Promise<number> {
             let double = (x: number): number => x * 2;
             return double(factor);
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             return await compute(5);
         }
         return await main();
@@ -1168,8 +1168,8 @@ fn test_async_arrow_block_body() {
     // Async arrow with block body (not just expression body)
     expect_i32(
         "
-        async function main(): Task<number> {
-            let compute = async (): Task<number> => {
+        async function main(): Promise<number> {
+            let compute = async (): Promise<number> => {
                 let x: number = 10;
                 let y: number = 20;
                 return x + y;
@@ -1187,9 +1187,9 @@ fn test_async_arrow_block_body_with_capture() {
     // Async arrow block body capturing outer variable
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let factor: number = 5;
-            let compute = async (): Task<number> => {
+            let compute = async (): Promise<number> => {
                 let double = (x: number): number => x * 2;
                 return double(factor);
             };
@@ -1206,8 +1206,8 @@ fn test_async_arrow_block_body_with_param() {
     // Async arrow block body with parameters
     expect_i32(
         "
-        async function main(): Task<number> {
-            let add = async (a: number, b: number): Task<number> => {
+        async function main(): Promise<number> {
+            let add = async (a: number, b: number): Promise<number> => {
                 let sum: number = a + b;
                 return sum;
             };
@@ -1228,7 +1228,7 @@ fn test_try_catch_inside_async() {
     // Try-catch within an async function (no cross-task boundary)
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 throw 'error';
             } catch (e) {
@@ -1246,7 +1246,7 @@ fn test_finally_runs_in_async() {
     // Finally block executes in async function
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let result: number = 0;
             try {
                 result = 1;
@@ -1266,10 +1266,10 @@ fn test_await_inside_try_catches_task_exception() {
     // Await inside try block where the awaited task throws
     expect_i32(
         "
-        async function failing(): Task<number> {
+        async function failing(): Promise<number> {
             throw 'task error';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             try {
                 return await failing();
             } catch (e) {
@@ -1287,7 +1287,7 @@ fn test_nested_try_catch_in_async() {
     // Nested try-catch in async function
     expect_i32(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let result: number = 0;
             try {
                 try {
@@ -1312,10 +1312,10 @@ fn test_finally_with_cleanup_after_async_error() {
     // Finally runs cleanup even after async exception
     expect_i32(
         "
-        async function failing(): Task<number> {
+        async function failing(): Promise<number> {
             throw 'fail';
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let cleaned: number = 0;
             try {
                 await failing();
@@ -1346,12 +1346,12 @@ fn test_multiworker_mutex_counter() {
             value: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function increment(c: Counter): Task<void> {
+        async function increment(c: Counter): Promise<void> {
             c.mu.lock();
             c.value = c.value + 1;
             c.mu.unlock();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let c = new Counter();
             let t1 = increment(c);
             let t2 = increment(c);
@@ -1378,18 +1378,18 @@ fn test_multiworker_channel_producer_consumer() {
     // Channel producer-consumer with 4 workers
     expect_i32_multiworker_with_builtins(
         "
-        async function producer(ch: Channel<number>): Task<void> {
+        async function producer(ch: Channel<number>): Promise<void> {
             ch.send(10);
             ch.send(20);
             ch.send(30);
         }
-        async function consumer(ch: Channel<number>): Task<number> {
+        async function consumer(ch: Channel<number>): Promise<number> {
             let a = ch.receive();
             let b = ch.receive();
             let c = ch.receive();
             return a + b + c;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch = new Channel<number>(3);
             let p = producer(ch);
             let c = consumer(ch);
@@ -1413,12 +1413,12 @@ fn test_multiworker_mutex_multiple_tasks() {
             sum: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function addValue(s: State, v: number): Task<void> {
+        async function addValue(s: State, v: number): Promise<void> {
             s.mu.lock();
             s.sum = s.sum + v;
             s.mu.unlock();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let s = new State();
             let t1 = addValue(s, 1);
             let t2 = addValue(s, 2);
@@ -1451,7 +1451,7 @@ fn test_multiworker_channel_fifo() {
     // Channel FIFO ordering preserved under 4 workers
     expect_i32_multiworker_with_builtins(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch = new Channel<number>(5);
             ch.send(1);
             ch.send(2);
@@ -1478,7 +1478,7 @@ fn test_multiworker_parallel_with_mutex() {
             total: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function work(acc: Acc, iterations: number): Task<void> {
+        async function work(acc: Acc, iterations: number): Promise<void> {
             let sum: number = 0;
             let i: number = 0;
             while (i < iterations) {
@@ -1489,7 +1489,7 @@ fn test_multiworker_parallel_with_mutex() {
             acc.total = acc.total + sum;
             acc.mu.unlock();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let acc = new Acc();
             let t1 = work(acc, 10);
             let t2 = work(acc, 20);
@@ -1514,7 +1514,7 @@ fn test_multiworker_rapid_channel() {
     // Rapid channel send/receive under 4 workers
     expect_i32_multiworker_with_builtins(
         "
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let ch = new Channel<number>(20);
             let i: number = 0;
             while (i < 10) {
@@ -1546,13 +1546,13 @@ fn test_multiworker_mixed_mutex_channel() {
             count: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function worker(s: State, ch: Channel<number>, value: number): Task<void> {
+        async function worker(s: State, ch: Channel<number>, value: number): Promise<void> {
             s.mu.lock();
             s.count = s.count + 1;
             s.mu.unlock();
             ch.send(value);
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let s = new State();
             let ch = new Channel<number>(3);
             let t1 = worker(s, ch, 10);
@@ -1577,7 +1577,7 @@ fn test_multiworker_try_lock_contention() {
     // tryLock contention under 4 workers — at least one tryLock call works
     expect_bool_multiworker_with_builtins(
         "
-        async function main(): Task<boolean> {
+        async function main(): Promise<boolean> {
             let mu = new Mutex();
             let success = mu.tryLock();
             if (success) {
@@ -1603,7 +1603,7 @@ fn test_async_recursive_fibonacci_parallel() {
     // Uses braceless if body: `if (n <= 1) return n;`
     expect_i32(
         "
-        async function fib(n: number): Task<number> {
+        async function fib(n: number): Promise<number> {
             if (n <= 1) return n;
             let t1 = fib(n - 1);
             let t2 = fib(n - 2);
@@ -1623,14 +1623,14 @@ fn test_async_recursive_fibonacci_sequence() {
     // Expected: 0*1 + 1*2 + 1*4 + 2*8 + 3*16 + 5*32 + 8*64 + 13*128 = 2406
     expect_i32(
         "
-        async function fib(n: number): Task<number> {
+        async function fib(n: number): Promise<number> {
             if (n <= 1) { return n; }
             let t1 = fib(n - 1);
             let t2 = fib(n - 2);
             let results = await [t1, t2];
             return results[0] + results[1];
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let f0 = fib(0);
             let f1 = fib(1);
             let f2 = fib(2);
@@ -1655,7 +1655,7 @@ fn test_async_recursive_sum_divide_and_conquer() {
     // Splits range in half, recurses, combines via parallel await
     expect_i32(
         "
-        async function rangeSum(lo: number, hi: number): Task<number> {
+        async function rangeSum(lo: number, hi: number): Promise<number> {
             if (hi - lo <= 1) {
                 if (lo < hi) { return lo; }
                 return 0;
@@ -1679,7 +1679,7 @@ fn test_async_recursive_power() {
     // Each level spawns a task for the half-power, then squares
     expect_i32(
         "
-        async function power(base: number, exp: number): Task<number> {
+        async function power(base: number, exp: number): Promise<number> {
             if (exp == 0) { return 1; }
             if (exp == 1) { return base; }
             let half: number = exp / 2 - (exp / 2) % 1;
@@ -1713,7 +1713,7 @@ fn test_parallel_matrix_multiply_16x16() {
         function a(i: number, j: number): number { return i + 1; }
         function b(i: number, j: number): number { return j + 1; }
 
-        async function computeRow(row: number): Task<number> {
+        async function computeRow(row: number): Promise<number> {
             let sum: number = 0;
             let j: number = 0;
             while (j < 16) {
@@ -1729,9 +1729,9 @@ fn test_parallel_matrix_multiply_16x16() {
             return sum;
         }
 
-        async function add(x: number, y: number): Task<number> { return x + y; }
+        async function add(x: number, y: number): Promise<number> { return x + y; }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let rows = await [
                 computeRow(0), computeRow(1), computeRow(2), computeRow(3),
                 computeRow(4), computeRow(5), computeRow(6), computeRow(7),
@@ -1765,10 +1765,10 @@ fn test_parallel_vector_dot_product() {
     // = 6 + 14 + 24 + 36 + 50 = 130
     expect_i32(
         "
-        async function mul(a: number, b: number): Task<number> {
+        async function mul(a: number, b: number): Promise<number> {
             return a * b;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t1 = mul(1, 6);
             let t2 = mul(2, 7);
             let t3 = mul(3, 8);
@@ -1790,10 +1790,10 @@ fn test_parallel_map_reduce_sum() {
     // reduce: 1+4+9+16+25 = 55
     expect_i32(
         "
-        async function square(x: number): Task<number> {
+        async function square(x: number): Promise<number> {
             return x * x;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t1 = square(1);
             let t2 = square(2);
             let t3 = square(3);
@@ -1816,18 +1816,18 @@ fn test_parallel_pipeline_stages() {
     // sum = 80
     expect_i32(
         "
-        async function stage1(x: number): Task<number> { return x + 10; }
-        async function stage2(x: number): Task<number> { return x * 2; }
-        async function stage3(x: number): Task<number> { return x - 5; }
+        async function stage1(x: number): Promise<number> { return x + 10; }
+        async function stage2(x: number): Promise<number> { return x * 2; }
+        async function stage3(x: number): Promise<number> { return x - 5; }
 
-        async function pipeline(input: number): Task<number> {
+        async function pipeline(input: number): Promise<number> {
             let s1 = await stage1(input);
             let s2 = await stage2(s1);
             let s3 = await stage3(s2);
             return s3;
         }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let p1 = pipeline(1);
             let p2 = pipeline(2);
             let p3 = pipeline(3);
@@ -1874,7 +1874,7 @@ fn test_parallel_faster_than_sequential() {
 
     // Parallel: optimized (inlined formula, no function calls, no inner k-loop)
     let par_source = "
-        async function computeRow(row: number): Task<number> {
+        async function computeRow(row: number): Promise<number> {
             let sum: number = 0;
             let r: number = row + 1;
             let rep: number = 0;
@@ -1889,9 +1889,9 @@ fn test_parallel_faster_than_sequential() {
             return sum;
         }
 
-        async function add(x: number, y: number): Task<number> { return x + y; }
+        async function add(x: number, y: number): Promise<number> { return x + y; }
 
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let rows = await [
                 computeRow(0), computeRow(1), computeRow(2), computeRow(3),
                 computeRow(4), computeRow(5), computeRow(6), computeRow(7),
@@ -1961,12 +1961,12 @@ fn test_closure_captures_task_and_awaits() {
     // Async closure captures a task variable and awaits it
     expect_i32(
         "
-        async function compute(): Task<number> {
+        async function compute(): Promise<number> {
             return 42;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = compute();
-            let getResult = async (): Task<number> => {
+            let getResult = async (): Promise<number> => {
                 return await t;
             };
             return await getResult();
@@ -1982,13 +1982,13 @@ fn test_nested_closure_captures_outer_task() {
     // Two levels of async closure nesting, inner awaits outer's captured task
     expect_i32(
         "
-        async function compute(): Task<number> {
+        async function compute(): Promise<number> {
             return 100;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = compute();
-            let outer = async (): Task<number> => {
-                let inner = async (): Task<number> => {
+            let outer = async (): Promise<number> => {
+                let inner = async (): Promise<number> => {
                     return await t;
                 };
                 return await inner();
@@ -2006,12 +2006,12 @@ fn test_closure_factory_with_task_spawning() {
     // Closure captures base value, spawns tasks internally, combines results
     expect_i32(
         "
-        async function compute(x: number): Task<number> {
+        async function compute(x: number): Promise<number> {
             return x * 10;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let base: number = 5;
-            let addBase = async (x: number): Task<number> => {
+            let addBase = async (x: number): Promise<number> => {
                 let result = await compute(x);
                 return result + base;
             };
@@ -2031,16 +2031,16 @@ fn test_multiple_closures_share_captured_task() {
     // Two async closures both capture and await the same task
     expect_i32(
         "
-        async function compute(): Task<number> {
+        async function compute(): Promise<number> {
             return 42;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = compute();
-            let a = async (): Task<number> => {
+            let a = async (): Promise<number> => {
                 let v = await t;
                 return v + 1;
             };
-            let b = async (): Task<number> => {
+            let b = async (): Promise<number> => {
                 let v = await t;
                 return v + 2;
             };
@@ -2058,10 +2058,10 @@ fn test_closure_captures_parallel_await_results() {
     // Closure created after parallel await, uses captured results
     expect_i32(
         "
-        async function work(x: number): Task<number> {
+        async function work(x: number): Promise<number> {
             return x * x;
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t1 = work(3);
             let t2 = work(4);
             let t3 = work(5);
@@ -2090,7 +2090,7 @@ fn test_mutex_prevents_lost_updates_heavy() {
             value: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function incrementMany(c: Counter, n: number): Task<void> {
+        async function incrementMany(c: Counter, n: number): Promise<void> {
             let i: number = 0;
             while (i < n) {
                 c.mu.lock();
@@ -2099,7 +2099,7 @@ fn test_mutex_prevents_lost_updates_heavy() {
                 i = i + 1;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let c = new Counter();
             let t1 = incrementMany(c, 100);
             let t2 = incrementMany(c, 100);
@@ -2129,7 +2129,7 @@ fn test_mutex_protects_compound_read_modify_write() {
             total: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function accumulate(s: State): Task<void> {
+        async function accumulate(s: State): Promise<void> {
             let i: number = 1;
             while (i < 11) {
                 s.mu.lock();
@@ -2140,7 +2140,7 @@ fn test_mutex_protects_compound_read_modify_write() {
                 i = i + 1;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let s = new State();
             let t1 = accumulate(s);
             let t2 = accumulate(s);
@@ -2172,7 +2172,7 @@ fn test_mutex_bank_transfer_atomicity() {
             b: number = 1000;
             mu: Mutex = new Mutex();
         }
-        async function transfer(bank: Bank, amount: number): Task<void> {
+        async function transfer(bank: Bank, amount: number): Promise<void> {
             let i: number = 0;
             while (i < 10) {
                 bank.mu.lock();
@@ -2182,7 +2182,7 @@ fn test_mutex_bank_transfer_atomicity() {
                 i = i + 1;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let bank = new Bank();
             let t1 = transfer(bank, 1);
             let t2 = transfer(bank, 1);
@@ -2211,7 +2211,7 @@ fn test_mutex_protects_running_max() {
             max: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function updateMax(t: MaxTracker, v1: number, v2: number, v3: number): Task<void> {
+        async function updateMax(t: MaxTracker, v1: number, v2: number, v3: number): Promise<void> {
             t.mu.lock();
             if (v1 > t.max) t.max = v1;
             t.mu.unlock();
@@ -2222,7 +2222,7 @@ fn test_mutex_protects_running_max() {
             if (v3 > t.max) t.max = v3;
             t.mu.unlock();
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let t = new MaxTracker();
             let w1 = updateMax(t, 10, 20, 30);
             let w2 = updateMax(t, 5, 25, 35);
@@ -2253,7 +2253,7 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
             value: number = 0;
             mu: Mutex = new Mutex();
         }
-        async function produce(buf: Buffer, count: number): Task<void> {
+        async function produce(buf: Buffer, count: number): Promise<void> {
             let bound: number = count + 1;
             let i: number = 1;
             while (i < bound) {
@@ -2263,7 +2263,7 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
                 i = i + 1;
             }
         }
-        async function consume(buf: Buffer, count: number): Task<void> {
+        async function consume(buf: Buffer, count: number): Promise<void> {
             let bound: number = count + 1;
             let i: number = 1;
             while (i < bound) {
@@ -2273,7 +2273,7 @@ fn test_mutex_producer_consumer_with_shared_buffer() {
                 i = i + 1;
             }
         }
-        async function main(): Task<number> {
+        async function main(): Promise<number> {
             let buf = new Buffer();
             let p1 = produce(buf, 5);
             let p2 = produce(buf, 5);

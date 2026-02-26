@@ -1,0 +1,72 @@
+// Promise - Represents an asynchronous computation (public async contract)
+// Internally backed by the runtime task scheduler.
+
+// Reuse native call IDs for internal task state checks.
+const PROMISE_IS_DONE: number = 0x0500;
+const PROMISE_IS_CANCELLED: number = 0x0501;
+
+class Promise<T> {
+    private handle: number;
+
+    // Promises are created by the runtime via `async`/`await`.
+    private constructor(handle: number) {
+        this.handle = handle;
+    }
+
+    // Internal cancellation support retained for existing runtime semantics.
+    cancel(): void {
+        __OPCODE_TASK_CANCEL(this.handle);
+    }
+
+    isDone(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_DONE, this.handle);
+    }
+
+    isCancelled(): boolean {
+        return __NATIVE_CALL<boolean>(PROMISE_IS_CANCELLED, this.handle);
+    }
+
+    then<U>(onFulfilled: (value: T) => U): Promise<U> {
+        let value: T = __OPCODE_AWAIT(this.handle);
+        return async onFulfilled(value);
+    }
+
+    catch<U>(_onRejected: (reason: Object) => U): Promise<T | U> {
+        // Placeholder until rejection hooks are fully wired in runtime handlers.
+        return this as Promise<T | U>;
+    }
+
+    finally(onFinally: () => void): Promise<T> {
+        onFinally();
+        return this;
+    }
+
+    static resolve<U>(value: U): Promise<U> {
+        let resolved = async (): Promise<U> => value;
+        return resolved();
+    }
+
+    static reject<U>(reason: Object): Promise<U> {
+        let rejected = async (): Promise<U> => {
+            throw reason;
+        };
+        return rejected();
+    }
+
+    static all<U>(values: Promise<U>[]): Promise<U[]> {
+        let collect = async (): Promise<U[]> => {
+            return await values;
+        };
+        return collect();
+    }
+
+    static race<U>(values: Promise<U>[]): Promise<U> {
+        let first = async (): Promise<U> => {
+            if (values.length === 0) {
+                throw new Error("Promise.race requires at least one promise");
+            }
+            return await values[0];
+        };
+        return first();
+    }
+}

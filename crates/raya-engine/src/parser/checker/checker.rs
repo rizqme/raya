@@ -484,7 +484,7 @@ impl<'a> TypeChecker<'a> {
             {
                 let mut return_ty = func_ty.return_type;
 
-                // For async functions, the declared return type is Task<T>,
+                // For async functions, the declared return type is Promise<T>,
                 // but return statements should check against T (the inner type)
                 if func.is_async {
                     if let Some(crate::parser::types::Type::Task(task_ty)) =
@@ -750,7 +750,7 @@ impl<'a> TypeChecker<'a> {
                             .map(|t| self.resolve_type_annotation(t))
                             .unwrap_or_else(|| self.type_ctx.void_type());
 
-                        // For async methods, return statements are checked against Task<T>'s inner T
+                        // For async methods, return statements are checked against Promise<T>'s inner T
                         if method.is_async {
                             if let Some(crate::parser::types::Type::Task(task_ty)) =
                                 self.type_ctx.get(return_ty)
@@ -2087,7 +2087,7 @@ impl<'a> TypeChecker<'a> {
                 // Save and set return type for return statement checking
                 let prev_return_ty = self.current_function_return_type;
 
-                // For async arrows, unwrap Task<T> → T so return statements
+                // For async arrows, unwrap Promise<T> → T so return statements
                 // are checked against T (same logic as check_function)
                 let effective_return_ty = if arrow.is_async {
                     declared_return_ty.map(|ty| {
@@ -2334,12 +2334,12 @@ impl<'a> TypeChecker<'a> {
         // Check the argument expression
         let arg_ty = self.check_expr(&await_expr.argument);
 
-        // If the argument is a Task<T>, return T
+        // If the argument is a Promise<T>, return T
         if let Some(crate::parser::types::Type::Task(task_ty)) = self.type_ctx.get(arg_ty) {
             return task_ty.result;
         }
 
-        // If the argument is Task<T>[], return T[] (parallel await)
+        // If the argument is Promise<T>[], return T[] (parallel await)
         if let Some(crate::parser::types::Type::Array(arr_ty)) = self.type_ctx.get(arg_ty) {
             if let Some(crate::parser::types::Type::Task(task_ty)) =
                 self.type_ctx.get(arr_ty.element)
@@ -2435,7 +2435,7 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.task_type(return_ty);
         }
 
-        // Otherwise just return Task<unknown>
+        // Otherwise just return Promise<unknown>
         let unknown = self.type_ctx.unknown_type();
         self.type_ctx.task_type(unknown)
     }
@@ -3950,8 +3950,8 @@ impl<'a> TypeChecker<'a> {
                     return self.type_ctx.unknown_type();
                 }
 
-                // Handle Task<T> for async functions
-                if name == TC::TASK_TYPE_NAME {
+                // Handle Promise<T>/Promise<T> for async functions
+                if name == TC::PROMISE_TYPE_NAME || name == TC::TASK_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0]);
@@ -4642,8 +4642,8 @@ mod tests {
     fn test_task_is_cancelled_method_type_checked() {
         let result = parse_and_check(
             r#"
-            async function job(): Task<number> { return 1; }
-            async function main(): Task<boolean> {
+            async function job(): Promise<number> { return 1; }
+            async function main(): Promise<boolean> {
                 const t = job();
                 t.cancel();
                 return t.isCancelled();

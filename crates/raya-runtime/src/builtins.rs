@@ -22,7 +22,7 @@ pub fn builtin_sources() -> &'static str {
         "\n",
         include_str!("../../raya-engine/builtins/mutex.raya"),
         "\n",
-        include_str!("../../raya-engine/builtins/task.raya"),
+        include_str!("../../raya-engine/builtins/promise.raya"),
         "\n",
     )
 }

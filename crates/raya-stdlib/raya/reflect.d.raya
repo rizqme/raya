@@ -1565,10 +1565,10 @@ export function getModuleByName(name: string): number | null;
 export function execute(functionId: number, ...args: any[]): any;
 
 /**
- * Spawn a function as a Task
+ * Spawn a function as a Promise
  * @param functionId - Function ID to spawn
  * @param args - Arguments
- * @returns Task handle
+ * @returns Promise handle
  */
 export function spawn(functionId: number, ...args: any[]): any;
 
@@ -1614,8 +1614,8 @@ export function getArrayClass(): number;
 export function getStringClass(): number;
 
 /**
- * Get the core Task class ID
- * @returns Class ID for Task
+ * Get the core Promise class ID
+ * @returns Class ID for Promise
  */
 export function getTaskClass(): number;
 

@@ -5,11 +5,21 @@ class Error {
     public message: string;
     public name: string;
     public stack: string;
+    public cause: Object | null;
+    public code: string;
+    public errno: number;
+    public syscall: string;
+    public path: string;
 
-    constructor(message: string = "") {
+    constructor(message: string = "", cause: Object | null = null) {
         this.message = message;
         this.name = "Error";
         this.stack = "";
+        this.cause = cause;
+        this.code = "";
+        this.errno = 0;
+        this.syscall = "";
+        this.path = "";
     }
 
     toString(): string {
@@ -45,6 +55,30 @@ class SyntaxError extends Error {
     constructor(message: string = "") {
         super(message);
         this.name = "SyntaxError";
+    }
+}
+
+class URIError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "URIError";
+    }
+}
+
+class EvalError extends Error {
+    constructor(message: string = "") {
+        super(message);
+        this.name = "EvalError";
+    }
+}
+
+class AggregateError extends Error {
+    public errors: Object[];
+
+    constructor(errors: Object[], message: string = "", cause: Object | null = null) {
+        super(message, cause);
+        this.name = "AggregateError";
+        this.errors = errors;
     }
 }
 

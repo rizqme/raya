@@ -1,7 +1,7 @@
-//! Rule: no-floating-task (L1007)
+//! Rule: no-floating-promise (L1007)
 //!
-//! Flags `async foo()` used as an expression statement where the Task result
-//! is silently discarded. You can't await, cancel, or check a discarded Task.
+//! Flags `async foo()` used as an expression statement where the Promise result
+//! is silently discarded. You can't await, cancel, or check a discarded Promise.
 //!
 //! **Excluded:** `async { ... }` blocks (desugared to `async (() => { ... })()`)
 //! are intentional fire-and-forget patterns and are not flagged.
@@ -9,18 +9,18 @@
 use crate::linter::rule::*;
 use crate::parser::ast;
 
-pub struct NoFloatingTask;
+pub struct NoFloatingPromise;
 
 static META: RuleMeta = RuleMeta {
-    name: "no-floating-task",
+    name: "no-floating-promise",
     code: "L1007",
-    description: "Disallow discarding Task results from async calls",
+    description: "Disallow discarding Promise results from async calls",
     category: Category::Correctness,
     default_severity: Severity::Warn,
     fixable: false,
 };
 
-impl LintRule for NoFloatingTask {
+impl LintRule for NoFloatingPromise {
     fn meta(&self) -> &RuleMeta {
         &META
     }
@@ -49,12 +49,12 @@ impl LintRule for NoFloatingTask {
         vec![LintDiagnostic {
             rule: META.name,
             code: META.code,
-            message: "Task result from 'async' call is discarded".to_string(),
+            message: "Promise result from 'async' call is discarded".to_string(),
             span: async_call.span,
             severity: META.default_severity,
             fix: None,
             notes: vec![
-                "The spawned Task cannot be awaited, cancelled, or checked".to_string(),
+                "The spawned Promise cannot be awaited, cancelled, or checked".to_string(),
                 "Store in a variable: let task = async foo()".to_string(),
                 "Or await immediately: await async foo()".to_string(),
                 "Or use async { ... } for intentional fire-and-forget".to_string(),
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn test_assigned_async_call_ok() {
-        let diags = lint("function foo(): void {}\nlet task: Task<void> = async foo();");
+        let diags = lint("function foo(): void {}\nlet task: Promise<void> = async foo();");
         assert!(
             !has_rule(&diags, "L1007"),
             "assigned async call should be ok"
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_async_call_in_variable_ok() {
-        let diags = lint("function work(): void {}\nconst t: Task<void> = async work();");
+        let diags = lint("function work(): void {}\nconst t: Promise<void> = async work();");
         assert!(!has_rule(&diags, "L1007"));
     }
 }

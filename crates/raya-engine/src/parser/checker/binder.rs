@@ -2340,8 +2340,8 @@ impl<'a> Binder<'a> {
                     });
                 }
 
-                // Handle Task<T> for async functions
-                if name == TC::TASK_TYPE_NAME {
+                // Handle Promise<T>/Task<T> for async functions
+                if name == TC::PROMISE_TYPE_NAME || name == TC::TASK_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
                         if type_args.len() == 1 {
                             let result_ty = self.resolve_type_annotation(&type_args[0])?;

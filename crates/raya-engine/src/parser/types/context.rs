@@ -79,6 +79,9 @@ impl TypeContext {
         let unknown_id = unknown;
 
         let task = ctx.intern(Type::Task(super::ty::TaskType { result: unknown_id }));
+        // Public async surface name.
+        ctx.register_named_type("Promise".into(), task);
+        // Temporary alias retained for migration during hard switch rollout.
         ctx.register_named_type("Task".into(), task);
 
         let channel = ctx.intern(Type::Channel(super::ty::ChannelType {
@@ -157,6 +160,7 @@ impl TypeContext {
     pub const ARRAY_TYPE_NAME: &str = "Array";
     pub const MAP_TYPE_NAME: &str = "Map";
     pub const SET_TYPE_NAME: &str = "Set";
+    pub const PROMISE_TYPE_NAME: &str = "Promise";
     pub const TASK_TYPE_NAME: &str = "Task";
     pub const CHANNEL_TYPE_NAME: &str = "Channel";
     pub const REGEXP_TYPE_NAME: &str = "RegExp";

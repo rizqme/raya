@@ -10,7 +10,7 @@ pub mod no_duplicate_case;
 pub mod no_duplicate_imports;
 pub mod no_empty_block;
 pub mod no_fallthrough;
-pub mod no_floating_task;
+pub mod no_floating_promise;
 pub mod no_invalid_typeof;
 pub mod no_self_assign;
 pub mod no_throw_literal;
@@ -29,7 +29,7 @@ pub fn all_rules() -> Vec<Box<dyn LintRule>> {
         Box::new(no_duplicate_case::NoDuplicateCase),
         Box::new(no_fallthrough::NoFallthrough),
         Box::new(await_in_loop::AwaitInLoop),
-        Box::new(no_floating_task::NoFloatingTask),
+        Box::new(no_floating_promise::NoFloatingPromise),
         Box::new(no_invalid_typeof::NoInvalidTypeof),
         Box::new(no_typeof_class::NoTypeofClass),
         // Style
