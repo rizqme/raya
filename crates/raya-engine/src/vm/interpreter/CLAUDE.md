@@ -1,5 +1,7 @@
 # interpreter module
 
+_Verified against source on 2026-02-27._
+
 Single-executor bytecode interpreter with suspendable task execution.
 
 ## Module Structure
@@ -184,3 +186,5 @@ Native IDs: 0x0D00-0x0E2F (see `vm/builtin.rs`)
 - Task preemption is cooperative (checked at safepoints and backward jumps)
 - Reflect handlers are in `handlers/reflect.rs` (Phases 1-17, 149+ methods)
 - Array callback methods (map/filter/reduce/forEach) are **compiler intrinsics**, not runtime CallMethod
+- `Opcode::Cast` in `opcodes/types.rs` performs runtime validation for explicit
+  cast sites (class casts and runtime kind-mask casts). It is not a per-op guard system.

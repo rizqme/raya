@@ -1,5 +1,7 @@
 # raya-stdlib-posix
 
+_Verified against source on 2026-02-27._
+
 POSIX/OS-dependent native implementations for Raya's standard library.
 
 ## Overview

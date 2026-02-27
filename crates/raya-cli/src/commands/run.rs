@@ -40,6 +40,7 @@ impl RunArgs {
             } else {
                 BuiltinMode::RayaStrict
             },
+            type_mode: None,
         }
     }
 }

@@ -1,5 +1,7 @@
 # ir module
 
+_Verified against source on 2026-02-27._
+
 Intermediate Representation for the Raya compiler.
 
 ## Module Structure

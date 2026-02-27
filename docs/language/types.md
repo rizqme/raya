@@ -78,6 +78,36 @@ function divide(a: number, b: number): Result<number> {
 }
 ```
 
-## No `any` Type
+## Mode-Specific Dynamic Types
 
-All values have known types. No escape hatches.
+Raya has two type-system modes:
+
+- `RayaStrict` (default):
+  - `any` is forbidden.
+  - bare `let x;` is forbidden.
+  - fallback inference uses `unknown`.
+  - `unknown` is not actionable until narrowed/casted.
+- `NodeCompat`:
+  - `any` is allowed.
+  - bare `let x;` is allowed.
+  - dynamic fallback may infer `JSObject`.
+
+### Method Extraction Binding
+
+Extracted methods are unbound (JS-like):
+
+```typescript
+class Counter {
+  value: number;
+  constructor(v: number) { this.value = v; }
+  get(): number { return this.value; }
+}
+
+let c = new Counter(1);
+let f = c.get;
+// f(); // compile-time error (unbound method call)
+let bound = f.bind(c);
+bound(); // ok
+```
+
+Binding checks are compile-time validated for `.bind/.call/.apply` when the target is an extracted method.

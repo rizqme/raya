@@ -1,5 +1,7 @@
 # vm/reflect module
 
+_Verified against source on 2026-02-27._
+
 Runtime reflection implementation for the Raya VM.
 
 ## Overview

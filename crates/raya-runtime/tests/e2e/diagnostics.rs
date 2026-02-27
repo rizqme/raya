@@ -225,7 +225,8 @@ fn test_caught_error_message() {
         "try {
              throw new Error(\"custom message\");
          } catch (e) {
-             return e.message;
+             const err = e as Error;
+             return err.message;
          }
          return \"no error\";",
         "custom message",

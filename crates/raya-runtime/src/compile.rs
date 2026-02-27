@@ -18,11 +18,32 @@ use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
 
+/// Checker behavior mode, independent from builtin API surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeMode {
+    /// Raya strict typing (`any` forbidden, untyped vars forbidden).
+    #[default]
+    Strict,
+    /// Strict typing with explicit `any` enabled; still forbids untyped vars.
+    AllowAny,
+    /// JS-like dynamic typing (`any` + untyped vars + widening/escalation).
+    JsMode,
+}
+
 #[inline]
-fn type_system_mode(mode: BuiltinMode) -> TypeSystemMode {
+pub fn default_type_mode_for_builtin(mode: BuiltinMode) -> TypeMode {
     match mode {
-        BuiltinMode::RayaStrict => TypeSystemMode::Strict,
-        BuiltinMode::NodeCompat => TypeSystemMode::NodeCompat,
+        BuiltinMode::RayaStrict => TypeMode::Strict,
+        BuiltinMode::NodeCompat => TypeMode::JsMode,
+    }
+}
+
+#[inline]
+fn type_system_mode(mode: TypeMode) -> TypeSystemMode {
+    match mode {
+        TypeMode::Strict => TypeSystemMode::Strict,
+        TypeMode::AllowAny => TypeSystemMode::AllowAny,
+        TypeMode::JsMode => TypeSystemMode::JsMode,
     }
 }
 
@@ -61,6 +82,15 @@ pub fn compile_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
 ) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_modes(source, builtin_mode, default_type_mode_for_builtin(builtin_mode))
+}
+
+/// Compile Raya source code to a bytecode module with explicit builtin + type modes.
+pub fn compile_source_with_modes(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    type_mode: TypeMode,
+) -> Result<(Module, Interner), RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
@@ -87,8 +117,7 @@ pub fn compile_source_with_mode(
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder =
-        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(type_mode));
 
     // Register only intrinsics (__NATIVE_CALL, etc.) — builtin class sources
     // are included in the source text, so their types come from parsing.
@@ -108,7 +137,7 @@ pub fn compile_source_with_mode(
 
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-        .with_mode(type_system_mode(builtin_mode))
+        .with_mode(type_system_mode(type_mode))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -126,7 +155,9 @@ pub fn compile_source_with_mode(
     }
 
     // Compile via IR pipeline
-    let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types)
+        .with_js_this_binding_compat(true);
     let bytecode = compiler.compile_via_ir(&ast)?;
 
     Ok((bytecode, interner))
@@ -160,6 +191,21 @@ pub fn compile_source_with_options_and_mode(
     options: &CompileOptions,
     builtin_mode: BuiltinMode,
 ) -> Result<(Module, Interner), RuntimeError> {
+    compile_source_with_options_and_modes(
+        source,
+        options,
+        builtin_mode,
+        default_type_mode_for_builtin(builtin_mode),
+    )
+}
+
+/// Compile source with explicit compile options, builtin mode, and type mode.
+pub fn compile_source_with_options_and_modes(
+    source: &str,
+    options: &CompileOptions,
+    builtin_mode: BuiltinMode,
+    type_mode: TypeMode,
+) -> Result<(Module, Interner), RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
@@ -186,8 +232,7 @@ pub fn compile_source_with_options_and_mode(
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder =
-        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(type_mode));
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
     binder.skip_top_level_duplicate_detection();
@@ -204,7 +249,7 @@ pub fn compile_source_with_options_and_mode(
 
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-        .with_mode(type_system_mode(builtin_mode))
+        .with_mode(type_system_mode(type_mode))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -224,7 +269,8 @@ pub fn compile_source_with_options_and_mode(
     // Compile via IR pipeline
     let compiler = Compiler::new(type_ctx, &interner)
         .with_expr_types(check_result.expr_types)
-        .with_sourcemap(options.sourcemap);
+        .with_sourcemap(options.sourcemap)
+        .with_js_this_binding_compat(true);
     let bytecode = compiler.compile_via_ir(&ast)?;
 
     Ok((bytecode, interner))
@@ -242,6 +288,15 @@ pub fn check_source(source: &str) -> Result<CheckDiagnostics, RuntimeError> {
 pub fn check_source_with_mode(
     source: &str,
     builtin_mode: BuiltinMode,
+) -> Result<CheckDiagnostics, RuntimeError> {
+    check_source_with_modes(source, builtin_mode, default_type_mode_for_builtin(builtin_mode))
+}
+
+/// Type-check source using explicit builtin compatibility + type mode.
+pub fn check_source_with_modes(
+    source: &str,
+    builtin_mode: BuiltinMode,
+    type_mode: TypeMode,
 ) -> Result<CheckDiagnostics, RuntimeError> {
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
@@ -271,8 +326,7 @@ pub fn check_source_with_mode(
 
     // Bind
     let mut type_ctx = TypeContext::new();
-    let mut binder =
-        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(type_mode));
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
     binder.skip_top_level_duplicate_detection();
@@ -287,7 +341,7 @@ pub fn check_source_with_mode(
         Ok(symbols) => {
             // Binding succeeded — run type checker
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
-                .with_mode(type_system_mode(builtin_mode))
+                .with_mode(type_system_mode(type_mode))
                 .with_skip_class_bodies_before(user_offset);
             match checker.check_module(&ast) {
                 Ok(result) => (vec![], vec![], result.warnings),
@@ -1408,7 +1462,8 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "Boolean/Number/String and Array constructors should be available in strict mode"
+            "Boolean/Number/String and Array constructors should be available in strict mode, got: {:?}",
+            result.err()
         );
     }
 
@@ -1759,6 +1814,33 @@ mod tests {
     }
 
     #[test]
+    fn test_no_implicit_any_parameter_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            function id(x) { return x; }
+            return id(1);
+            "#,
+        );
+        assert!(result.is_err(), "implicit any parameter should be forbidden in strict mode");
+    }
+
+    #[test]
+    fn test_implicit_any_parameter_allowed_in_allow_any_mode() {
+        let result = compile_source_with_modes(
+            r#"
+            function id(x) { return x; }
+            return id(1);
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        );
+        assert!(
+            result.is_ok(),
+            "implicit any parameter should be allowed in allowAny mode"
+        );
+    }
+
+    #[test]
     fn test_unknown_not_actionable_in_strict_mode() {
         let result = compile_source(
             r#"
@@ -1856,6 +1938,67 @@ mod tests {
     }
 
     #[test]
+    fn test_strict_call_rejects_wrong_this_for_extracted_method() {
+        let result = compile_source(
+            r#"
+            class Counter {
+                value: number;
+                constructor(v: number) { this.value = v; }
+                get(): number { return this.value; }
+            }
+            let c = new Counter(1);
+            let f = c.get;
+            return f.call("not-counter");
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict call should reject incompatible thisArg for extracted methods"
+        );
+    }
+
+    #[test]
+    fn test_strict_bind_rejects_wrong_this_for_extracted_method() {
+        let result = compile_source(
+            r#"
+            class Counter {
+                value: number;
+                constructor(v: number) { this.value = v; }
+                get(): number { return this.value; }
+            }
+            let c = new Counter(1);
+            let f = c.get;
+            let g = f.bind("not-counter");
+            return g();
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict bind should reject incompatible thisArg for extracted methods"
+        );
+    }
+
+    #[test]
+    fn test_strict_apply_rejects_wrong_this_for_extracted_method() {
+        let result = compile_source(
+            r#"
+            class Counter {
+                value: number;
+                constructor(v: number) { this.value = v; }
+                get(): number { return this.value; }
+            }
+            let c = new Counter(1);
+            let f = c.get;
+            return f.apply("not-counter", []);
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict apply should reject incompatible thisArg for extracted methods"
+        );
+    }
+
+    #[test]
     fn test_strict_null_checks_reject_null_to_string() {
         let result = compile_source(
             r#"
@@ -1917,6 +2060,332 @@ mod tests {
         assert!(
             result.is_err(),
             "strict catch variable should be unknown and not directly actionable"
+        );
+    }
+
+    #[test]
+    fn test_node_compat_reassignment_infers_union() {
+        let result = compile_source_with_mode(
+            r#"
+            let a = 10;
+            a = "hello";
+            return a;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "node-compat should widen contradictory reassignments to a union"
+        );
+    }
+
+    #[test]
+    fn test_strict_reassignment_keeps_initial_inference() {
+        let result = compile_source(
+            r#"
+            let a = 10;
+            a = "hello";
+            return a;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict mode should not auto-widen inferred variable to union on reassignment"
+        );
+    }
+
+    #[test]
+    fn test_node_compat_dynamic_index_write_allowed_on_inferred_object() {
+        let result = compile_source_with_mode(
+            r#"
+            class User { name: string = "a"; }
+            let o = new User();
+            let k = "dynamic";
+            o[k] = "ok";
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "node-compat should permit dynamic index writes via JSObject fallback inference"
+        );
+    }
+
+    #[test]
+    fn test_node_compat_bare_let_flow_infers_union() {
+        let result = compile_source_with_mode(
+            r#"
+            let a;
+            a = 10;
+            a = "hello";
+            return a;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "node-compat bare-let flow inference should widen contradictory assignments to a union"
+        );
+    }
+
+    #[test]
+    fn test_node_compat_constructor_flow_allows_dynamic_monkey_patch() {
+        let result = compile_source_with_mode(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let obj;
+            obj = new User("alice");
+            let dynamicKey = "extra";
+            obj[dynamicKey] = 42;
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "node-compat should allow constructor-initialized values to escalate for dynamic monkey patch writes"
+        );
+    }
+
+    #[test]
+    fn test_nodecompat_strict_forbids_any_and_bare_let() {
+        let any_result = compile_source_with_modes(
+            r#"
+            let x: any = 1;
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::Strict,
+        );
+        assert!(any_result.is_err(), "strict type mode should forbid explicit any");
+
+        let bare_let_result = compile_source_with_modes(
+            r#"
+            let x;
+            x = 1;
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::Strict,
+        );
+        assert!(
+            bare_let_result.is_err(),
+            "strict type mode should forbid bare let even in node-compat builtins"
+        );
+    }
+
+    #[test]
+    fn test_nodecompat_allow_any_still_forbids_bare_let() {
+        let any_result = compile_source_with_modes(
+            r#"
+            let x: any = 1;
+            x = "ok";
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        );
+        assert!(any_result.is_ok(), "allowAny mode should allow explicit any");
+
+        let bare_let_result = compile_source_with_modes(
+            r#"
+            let x;
+            x = 1;
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        );
+        assert!(
+            bare_let_result.is_err(),
+            "allowAny mode should still forbid untyped bare-let declarations"
+        );
+    }
+
+    #[test]
+    fn test_nodecompat_js_mode_allows_bare_let_and_any() {
+        let result = compile_source_with_modes(
+            r#"
+            let x;
+            x = 1;
+            let y: any = x;
+            return y;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::JsMode,
+        );
+        assert!(
+            result.is_ok(),
+            "jsMode should allow untyped variables and any semantics"
+        );
+    }
+
+    #[test]
+    fn test_nodecompat_js_mode_rejects_dot_monkeypatch_without_any_cast() {
+        let result = compile_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            u.extra = 1;
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::JsMode,
+        );
+        assert!(
+            result.is_err(),
+            "dot field writes should be rejected unless object is explicitly any-casted"
+        );
+    }
+
+    #[test]
+    fn test_jsobject_wrapper_preserves_known_fields_from_base_type() {
+        let result = compile_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let k = "extra";
+            u[k] = 1;
+            let n: string = u.name;
+            return n;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::JsMode,
+        );
+        assert!(
+            result.is_ok(),
+            "JSObject<T> should preserve known fields from T with normal typing"
+        );
+    }
+
+    #[test]
+    fn test_jsobject_wrapper_unknown_member_is_dynamic_any() {
+        let result = check_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let k = "extra";
+            u[k] = 1;
+            let z = u.nonExisting;
+            z();
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::JsMode,
+        )
+        .expect("check_source_with_modes should produce diagnostics");
+
+        assert!(
+            result.errors.is_empty() && result.bind_errors.is_empty(),
+            "unknown members on JSObject<T> should be dynamic in jsMode"
+        );
+    }
+
+    #[test]
+    fn test_jsobject_wrapper_keeps_known_monkeypatched_field_type() {
+        let result = check_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let dynU: any = u;
+            dynU.extra = 123;
+            let x: int = dynU.extra;
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        )
+        .expect("check_source_with_modes should produce diagnostics");
+
+        assert!(
+            result.errors.is_empty() && result.bind_errors.is_empty(),
+            "known monkeypatched fields should be tracked with concrete assigned type; check_errors={:?} bind_errors={:?}",
+            result.errors,
+            result.bind_errors
+        );
+    }
+
+    #[test]
+    fn test_allow_any_dot_write_existing_field_compiles_and_runs() {
+        let compiled = compile_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let dynU: any = u;
+            dynU.name = "b";
+            return dynU.name;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        );
+        assert!(
+            compiled.is_ok(),
+            "dot writes through explicit any should compile without lowering internal errors"
+        );
+    }
+
+    #[test]
+    fn test_allow_any_dot_write_unknown_field_compiles_without_internal_error() {
+        let compiled = compile_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let dynU: any = u;
+            dynU.extra = 1;
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        );
+        assert!(
+            compiled.is_ok(),
+            "unknown dot writes in dynamic-any flows should not fail lowering with internal compiler errors"
+        );
+    }
+
+    #[test]
+    fn test_nodecompat_allow_any_check_allows_dot_write_after_any_cast() {
+        let result = check_source_with_modes(
+            r#"
+            class User {
+                name: string;
+                constructor(name: string) { this.name = name; }
+            }
+            let u = new User("a");
+            let dynU: any = u;
+            dynU.extra = 1;
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+            TypeMode::AllowAny,
+        )
+        .expect("check_source_with_modes should return diagnostics");
+
+        assert!(
+            result.errors.is_empty() && result.bind_errors.is_empty(),
+            "explicit any cast/annotation should allow dot monkeypatch at checker level"
         );
     }
 }

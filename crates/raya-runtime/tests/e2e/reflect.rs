@@ -11,8 +11,6 @@
 //! - Avoid `let x: number = __NATIVE_CALL(...)` when classes are defined
 //!   in the same compilation unit (triggers type checker issue). Use
 //!   `let x = __NATIVE_CALL(...)` without explicit type annotation instead.
-//! - Field access (has/get/set) requires ClassMetadataRegistry to be populated,
-//!   which is not yet connected to the e2e compilation pipeline.
 //! - Proxy, permissions, and bootstrap handlers are in handlers/reflect.rs.
 
 use super::harness::{
@@ -179,6 +177,66 @@ fn test_reflect_is_object_true() {
         class Obj { x: number = 1; }
         let o: Obj = new Obj();
         return __NATIVE_CALL(0x0D56, o);
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_get_field_names_user_class() {
+    // REFLECT_GET_FIELD_NAMES = 0x0D23
+    expect_bool_with_builtins(
+        r#"
+        import reflect from "std:reflect";
+        class User {
+            id: number;
+            name: string;
+            constructor(id: number, name: string) {
+                this.id = id;
+                this.name = name;
+            }
+        }
+        let u: User = new User(1, "a");
+        let fields = __NATIVE_CALL(0x0D23, u) as string[];
+        return fields.length == 2 && fields[0] == "id" && fields[1] == "name";
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_has_field_user_class() {
+    // REFLECT_HAS = 0x0D22
+    expect_bool_with_builtins(
+        r#"
+        import reflect from "std:reflect";
+        class User {
+            id: number = 1;
+            name: string = "a";
+        }
+        let u: User = new User();
+        let hasId = __NATIVE_CALL(0x0D22, u, "id") as boolean;
+        let hasMissing = __NATIVE_CALL(0x0D22, u, "missing") as boolean;
+        return hasId && !hasMissing;
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_reflect_get_set_field_user_class() {
+    // REFLECT_GET = 0x0D20, REFLECT_SET = 0x0D21
+    expect_bool_with_builtins(
+        r#"
+        import reflect from "std:reflect";
+        class User {
+            id: number = 1;
+            name: string = "a";
+        }
+        let u: User = new User();
+        __NATIVE_CALL(0x0D21, u, "id", 42);
+        let got = __NATIVE_CALL(0x0D20, u, "id") as number;
+        return got == 42;
     "#,
         true,
     );

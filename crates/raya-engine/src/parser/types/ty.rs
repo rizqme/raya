@@ -361,6 +361,12 @@ pub enum Type {
     /// Bottom type (unreachable code)
     Never,
 
+    /// Dynamic top/bottom escape hatch (node-compat only).
+    Any,
+
+    /// JS dynamic object fallback for node-compat inference.
+    JSObject,
+
     /// Top type (unknown type)
     Unknown,
 }
@@ -495,6 +501,8 @@ impl fmt::Display for Type {
             Type::NumberLiteral(n) => write!(f, "{}", n),
             Type::BooleanLiteral(b) => write!(f, "{}", b),
             Type::Never => write!(f, "never"),
+            Type::Any => write!(f, "any"),
+            Type::JSObject => write!(f, "JSObject"),
             Type::Unknown => write!(f, "unknown"),
         }
     }
@@ -524,6 +532,16 @@ impl Type {
     /// Check if this type is the unknown type
     pub fn is_unknown(&self) -> bool {
         matches!(self, Type::Unknown)
+    }
+
+    /// Check if this type is the any type
+    pub fn is_any(&self) -> bool {
+        matches!(self, Type::Any)
+    }
+
+    /// Check if this type is the JSObject fallback type
+    pub fn is_jsobject(&self) -> bool {
+        matches!(self, Type::JSObject)
     }
 
     /// Check if this type is the json type (dynamic JSON value)
@@ -588,6 +606,8 @@ impl PartialEq for Type {
             }
             (Type::BooleanLiteral(a), Type::BooleanLiteral(b)) => a == b,
             (Type::Never, Type::Never) => true,
+            (Type::Any, Type::Any) => true,
+            (Type::JSObject, Type::JSObject) => true,
             (Type::Unknown, Type::Unknown) => true,
             _ => false,
         }
@@ -631,6 +651,8 @@ impl std::hash::Hash for Type {
             }
             Type::BooleanLiteral(b) => b.hash(state),
             Type::Never => {}
+            Type::Any => {}
+            Type::JSObject => {}
             Type::Unknown => {}
         }
     }
@@ -666,10 +688,24 @@ mod tests {
         let never_ty = Type::Never;
         assert!(never_ty.is_never());
         assert!(!never_ty.is_unknown());
+        assert!(!never_ty.is_any());
+        assert!(!never_ty.is_jsobject());
 
         let unknown_ty = Type::Unknown;
         assert!(unknown_ty.is_unknown());
         assert!(!unknown_ty.is_never());
+        assert!(!unknown_ty.is_any());
+        assert!(!unknown_ty.is_jsobject());
+
+        let any_ty = Type::Any;
+        assert!(any_ty.is_any());
+        assert!(!any_ty.is_unknown());
+        assert!(!any_ty.is_jsobject());
+
+        let jsobject_ty = Type::JSObject;
+        assert!(jsobject_ty.is_jsobject());
+        assert!(!jsobject_ty.is_any());
+        assert!(!jsobject_ty.is_unknown());
     }
 
     #[test]

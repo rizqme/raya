@@ -1,5 +1,7 @@
 # raya-pm
 
+_Verified against source on 2026-02-27._
+
 Package manager library for Raya. This is a library crate used by the main `raya` CLI.
 
 ## Overview

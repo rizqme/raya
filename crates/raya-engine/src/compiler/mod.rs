@@ -58,6 +58,8 @@ pub struct Compiler<'a> {
     jsx_options: Option<lower::JsxOptions>,
     /// Whether to emit source map (bytecode offset → source location)
     emit_sourcemap: bool,
+    /// Use JS-compatible method extraction semantics in lowerer.
+    js_this_binding_compat: bool,
 }
 
 impl<'a> Compiler<'a> {
@@ -68,6 +70,7 @@ impl<'a> Compiler<'a> {
             expr_types: FxHashMap::default(),
             jsx_options: None,
             emit_sourcemap: false,
+            js_this_binding_compat: false,
         }
     }
 
@@ -89,6 +92,12 @@ impl<'a> Compiler<'a> {
         self
     }
 
+    /// Enable JS-compatible method extraction (`obj.method` is unbound).
+    pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
+        self.js_this_binding_compat = enable;
+        self
+    }
+
     /// Compile a module into bytecode
     pub fn compile(&mut self, module: &ast::Module) -> CompileResult<Module> {
         let mut codegen = CodeGenerator::new(&self.type_ctx, self.interner);
@@ -99,7 +108,8 @@ impl<'a> Compiler<'a> {
     pub fn compile_to_ir(&self, module: &ast::Module) -> ir::IrModule {
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_sourcemap(self.emit_sourcemap);
+                .with_sourcemap(self.emit_sourcemap)
+                .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -116,7 +126,8 @@ impl<'a> Compiler<'a> {
         // Step 1: Lower AST to IR
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_sourcemap(self.emit_sourcemap);
+                .with_sourcemap(self.emit_sourcemap)
+                .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }
@@ -185,7 +196,8 @@ impl<'a> Compiler<'a> {
         // Step 1: Lower AST to IR
         let mut lowerer =
             lower::Lowerer::with_expr_types(&self.type_ctx, self.interner, self.expr_types.clone())
-                .with_sourcemap(self.emit_sourcemap);
+                .with_sourcemap(self.emit_sourcemap)
+                .with_js_this_binding_compat(self.js_this_binding_compat);
         if let Some(ref jsx_opts) = self.jsx_options {
             lowerer = lowerer.with_jsx(jsx_opts.clone());
         }

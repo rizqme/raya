@@ -27,8 +27,10 @@ pub enum TypeSystemMode {
     /// Raya strict mode: no `any`, stricter inference/usage rules.
     #[default]
     Strict,
-    /// Node compatibility mode: TypeScript-like dynamic escape hatches.
-    NodeCompat,
+    /// Strict semantics but explicit/implicit `any` is permitted.
+    AllowAny,
+    /// JS-like dynamic semantics (`any`, bare-let flow widening, JSObject fallback).
+    JsMode,
 }
 
 // Re-export main types

@@ -295,6 +295,37 @@ impl TypeContext {
         self.intern(Type::Unknown)
     }
 
+    /// Get the any type (node-compat dynamic escape hatch)
+    pub fn any_type(&mut self) -> TypeId {
+        self.intern(Type::Any)
+    }
+
+    /// Get the JSObject fallback type (node-compat inference fallback)
+    pub fn jsobject_type(&mut self) -> TypeId {
+        self.intern(Type::JSObject)
+    }
+
+    /// Wrap a base type as JSObject<T>, preserving known members from T
+    /// while allowing dynamic key access on the wrapper.
+    pub fn jsobject_of(&mut self, base: TypeId) -> TypeId {
+        let js_base = self.jsobject_type();
+        self.intern(Type::Generic(super::ty::GenericType {
+            base: js_base,
+            type_args: vec![base],
+        }))
+    }
+
+    /// If `ty` is JSObject<T>, return T.
+    pub fn jsobject_inner(&self, ty: TypeId) -> Option<TypeId> {
+        match self.get(ty) {
+            Some(Type::Generic(g)) if g.type_args.len() == 1 => match self.get(g.base) {
+                Some(Type::JSObject) => g.type_args.first().copied(),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Get the json type (for JSON.parse return values)
     pub fn json_type(&mut self) -> TypeId {
         self.intern(Type::Json)

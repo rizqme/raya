@@ -322,6 +322,15 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// Calling an extracted method without explicit binding.
+    #[error("E_METHOD_BIND_REQUIRED: method value '{name}' must be explicitly bound before calling")]
+    UnboundMethodCall {
+        /// Variable name holding unbound method reference
+        name: String,
+        /// Location of call expression
+        span: Span,
+    },
+
     // ========================================================================
     // Decorator Errors
     // ========================================================================
@@ -389,6 +398,7 @@ impl CheckError {
             CheckError::ImplicitAnyForbidden { span } => *span,
             CheckError::UnknownNotActionable { span, .. } => *span,
             CheckError::StrictPropertyInitialization { span, .. } => *span,
+            CheckError::UnboundMethodCall { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,
             CheckError::DecoratorReturnMismatch { span, .. } => *span,

@@ -870,7 +870,9 @@ fn test_catch_clause_destructuring() {
         function test(): number {
             try {
                 throw new CustomError(42, \"error\");
-            } catch ({ code, message }) {
+            } catch (e) {
+                const err = e as CustomError;
+                const { code, message } = err;
                 return code;
             }
             return 0;

@@ -1,5 +1,7 @@
 # vm module
 
+_Verified against source on 2026-02-27._
+
 Raya Virtual Machine runtime: interpreter, scheduler, GC, and runtime support.
 
 ## Module Structure
@@ -25,7 +27,7 @@ vm/
 │   ├── handlers/       # Native method handlers (array, string, regexp, reflect)
 │   └── ...             # marshal, capabilities, safepoint, module_registry, class_registry
 │
-├── scheduler/          # Task scheduler (work-stealing)
+├── scheduler/          # Unified reactor scheduler (single control thread + VM/IO workers)
 ├── gc/                 # Garbage collector
 ├── sync/               # Synchronization primitives (Mutex, MutexRegistry)
 ├── snapshot/           # VM snapshotting
@@ -140,7 +142,7 @@ const result = await task;  // Suspends current task
 
 - VM is stack-based with local variable slots
 - Tasks are green threads, not OS threads (optimized spawn with lazy stacks + pooling)
-- Scheduler uses work-stealing for parallelism
+- Scheduler uses a unified reactor control loop with VM/IO worker pools
 - Objects have vtables for method dispatch
 - Values are NaN-boxed (64-bit tagged), not heap-boxed for primitives
 - **Nursery allocator**: per-task 64KB bump allocator for short-lived objects (no GC lock)

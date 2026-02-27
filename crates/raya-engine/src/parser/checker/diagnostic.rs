@@ -331,6 +331,13 @@ impl Diagnostic {
             .with_code(error_code(error))
             .with_primary_label(file_id, *span, "missing property initialization")
             .with_help("Add an initializer or assign this property in every constructor path"),
+            UnboundMethodCall { name, span } => Diagnostic::error(format!(
+                "Method value '{}' must be explicitly bound before calling",
+                name
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "unbound method call")
+            .with_help("Use `.bind(receiver)` before invoking an extracted method value"),
 
             // Decorator errors
             InvalidDecorator { ty, expected, span } => Diagnostic::error(format!(
@@ -600,6 +607,7 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         UnknownNotActionable { .. } => ErrorCode("E2024"),
         ImplicitAnyForbidden { .. } => ErrorCode("E2025"),
         StrictPropertyInitialization { .. } => ErrorCode("E2026"),
+        UnboundMethodCall { .. } => ErrorCode("E2027"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

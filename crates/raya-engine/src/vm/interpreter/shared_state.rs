@@ -8,7 +8,7 @@ use crate::vm::gc::GarbageCollector;
 use crate::vm::interpreter::{ClassRegistry, ModuleRegistry, SafepointCoordinator};
 use crate::vm::native_handler::{NativeHandler, NoopNativeHandler};
 use crate::vm::native_registry::{NativeFunctionRegistry, ResolvedNatives};
-use crate::vm::reflect::{ClassMetadataRegistry, MetadataStore};
+use crate::vm::reflect::{ClassMetadata, ClassMetadataRegistry, MetadataStore};
 use crate::vm::scheduler::{IoSubmission, StackPool, Task, TaskId};
 use crate::vm::sync::MutexRegistry;
 use crate::vm::value::Value;
@@ -242,6 +242,7 @@ impl SharedVmState {
     /// Register classes from a module
     pub fn register_classes(&self, module: &Module) {
         let mut classes = self.classes.write();
+        let mut class_metadata_registry = self.class_metadata.write();
         for (i, class_def) in module.classes.iter().enumerate() {
             let mut class = if let Some(parent_id) = class_def.parent_id {
                 let mut c = crate::vm::object::Class::with_parent(
@@ -274,6 +275,37 @@ impl SharedVmState {
             }
 
             classes.register_class(class);
+
+            // Populate reflection metadata for runtime field/method lookups.
+            // Reflection data is always emitted by codegen for bytecode modules.
+            if let Some(class_reflection) = module
+                .reflection
+                .as_ref()
+                .and_then(|r| r.classes.get(i))
+            {
+                let mut class_meta = ClassMetadata::new();
+
+                for (field_index, field) in class_reflection.fields.iter().enumerate() {
+                    if field.is_static {
+                        class_meta.add_static_field(field.name.clone(), field_index);
+                    } else {
+                        class_meta.add_field(field.name.clone(), field_index);
+                    }
+                }
+
+                for (method_index, method_name) in class_reflection.method_names.iter().enumerate()
+                {
+                    class_meta.add_method(method_name.clone(), method_index);
+                }
+
+                for (static_index, static_name) in
+                    class_reflection.static_field_names.iter().enumerate()
+                {
+                    class_meta.add_static_field(static_name.clone(), static_index);
+                }
+
+                class_metadata_registry.register(i, class_meta);
+            }
         }
     }
 

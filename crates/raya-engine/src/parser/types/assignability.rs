@@ -5,7 +5,17 @@
 
 use super::context::TypeContext;
 use super::subtyping::SubtypingContext;
-use super::ty::{PrimitiveType, Type, TypeId};
+use super::ty::{GenericType, PrimitiveType, Type, TypeId};
+
+fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
+    if generic.type_args.len() != 1 {
+        return None;
+    }
+    match type_ctx.get(generic.base) {
+        Some(Type::JSObject) => generic.type_args.first().copied(),
+        _ => None,
+    }
+}
 
 /// Context for checking assignability
 #[derive(Debug)]
@@ -61,12 +71,43 @@ impl<'a> AssignabilityContext<'a> {
             None => return false,
         };
 
+        let is_object_like = |ty: &Type| {
+            matches!(
+                ty,
+                Type::Object(_)
+                    | Type::Class(_)
+                    | Type::Interface(_)
+                    | Type::Map(_)
+                    | Type::Set(_)
+                    | Type::Array(_)
+                    | Type::Tuple(_)
+                    | Type::Json
+                    | Type::JSObject
+            )
+        };
+
         match (source_ty, target_ty) {
+            // Node-compat dynamic `any`: assignable to/from everything.
+            (Type::Any, _) | (_, Type::Any) => true,
+
             // TypeVar (unresolved generic) is compatible with any type
             // Raya uses monomorphization, so generics are resolved at compile time.
             // The checker runs before monomorphization and shouldn't reject
             // assignments involving unresolved type parameters.
             (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+
+            // JSObject is a permissive object-ish fallback type used in node-compat.
+            (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
+            (Type::Generic(g), t)
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Generic(g))
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
 
             // In non-strict mode, unknown acts like permissive top/bottom for compatibility.
             // In strict mode, this path is disabled and subtyping still allows T <: unknown

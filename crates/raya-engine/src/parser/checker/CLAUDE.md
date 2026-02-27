@@ -1,5 +1,7 @@
 # checker module
 
+_Verified against source on 2026-02-27._
+
 Type checking, inference, and semantic analysis for Raya.
 
 ## Module Structure
@@ -7,7 +9,7 @@ Type checking, inference, and semantic analysis for Raya.
 ```
 checker/
 ├── mod.rs           # Entry point, TypeChecker, CheckResult
-├── checker.rs       # Main type checking logic (~2500 lines)
+├── checker.rs       # Main type checking logic
 ├── binder.rs        # Name resolution, symbol binding
 ├── symbols.rs       # Symbol table management
 ├── narrowing.rs     # Control flow-based type narrowing
@@ -63,6 +65,10 @@ symbols.exit_scope()
 - Local variable types inferred from initializers
 - Generic type argument inference
 - Return type inference (when possible)
+- Mode-specific inference:
+  - `Strict`: forbids explicit/implicit `any`, forbids bare `let x;`, no `JSObject` fallback
+  - `AllowAny`: strict checks remain, but `any` is allowed
+  - `JsMode`: allows untyped flows, union widening, and `JSObject<T>` escalation for dynamic monkeypatch-like behavior
 
 ### Type Narrowing (`narrowing.rs`)
 ```typescript
@@ -151,7 +157,9 @@ Pre-defined signatures for:
 - Type checking is bidirectional (inference + checking)
 - `typeof` is only for primitives, `instanceof` for classes
 - Discriminated unions use a discriminant field (kind/type/tag)
-- No `any` type - system is fully sound
+- Type behavior is mode-driven: `Strict`, `AllowAny`, `JsMode`
+- In strict mode, `unknown` is non-actionable until narrowed/casted
+- Catch variables default to `unknown` in strict mode (`useUnknownInCatchVariables` behavior)
 - Errors include span for precise location
 - `expr_types` maps expression pointers to their inferred types
 - **Scope resolution**: Always use `resolve_from_scope` with `self.current_scope` when resolving names during type checking (not bare `resolve` which uses scope 0)

@@ -25,15 +25,15 @@ class Atomics {
     }
 
     static add(arr: Int32Array, index: int, value: int): number {
-        let old = arr.get(index) as number;
-        arr.set(index, (old + (value as number)) as int);
-        return old;
+        let oldInt = arr.get(index);
+        arr.set(index, oldInt + value);
+        return oldInt as number;
     }
 
     static sub(arr: Int32Array, index: int, value: int): number {
-        let old = arr.get(index) as number;
-        arr.set(index, (old - (value as number)) as int);
-        return old;
+        let oldInt = arr.get(index);
+        arr.set(index, oldInt - value);
+        return oldInt as number;
     }
 
     static exchange(arr: Int32Array, index: int, value: int): number {

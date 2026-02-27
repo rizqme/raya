@@ -148,6 +148,12 @@ pub struct TypeChecker<'a> {
     /// Inferred types for variables without type annotations
     /// Maps (scope_id, variable_name) -> inferred_type
     inferred_var_types: FxHashMap<(u32, String), TypeId>,
+    /// Variables currently known to store extracted (unbound) method references.
+    /// Keyed by (declaration_scope_id, variable_name).
+    unbound_method_vars: FxHashSet<(u32, String)>,
+    /// Expected receiver (`this`) type for unbound extracted method variables.
+    /// Keyed by (declaration_scope_id, variable_name).
+    unbound_method_receiver_types: FxHashMap<(u32, String), TypeId>,
 
     /// Capture information for all closures
     capture_info: ModuleCaptureInfo,
@@ -176,6 +182,8 @@ pub struct TypeChecker<'a> {
     skip_class_bodies_before: Option<usize>,
     /// Type-system behavior mode.
     mode: TypeSystemMode,
+    /// True while checking the left-hand side of an assignment expression.
+    in_assignment_lhs: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -197,6 +205,8 @@ impl<'a> TypeChecker<'a> {
             next_scope_id: 1,                          // Global is 0, next scope will be 1
             scope_stack: vec![super::symbols::ScopeId(0)], // Start with global on stack
             inferred_var_types: FxHashMap::default(),
+            unbound_method_vars: FxHashSet::default(),
+            unbound_method_receiver_types: FxHashMap::default(),
             capture_info: ModuleCaptureInfo::new(),
             current_class_type: None,
             in_constructor: false,
@@ -205,6 +215,7 @@ impl<'a> TypeChecker<'a> {
             skip_class_bodies_before: None,
             return_type_collector: Vec::new(),
             mode: TypeSystemMode::Strict,
+            in_assignment_lhs: false,
         }
     }
 
@@ -216,7 +227,17 @@ impl<'a> TypeChecker<'a> {
 
     #[inline]
     fn is_strict_mode(&self) -> bool {
-        matches!(self.mode, TypeSystemMode::Strict)
+        matches!(self.mode, TypeSystemMode::Strict | TypeSystemMode::AllowAny)
+    }
+
+    #[inline]
+    fn allows_any(&self) -> bool {
+        matches!(self.mode, TypeSystemMode::AllowAny | TypeSystemMode::JsMode)
+    }
+
+    #[inline]
+    fn is_js_mode(&self) -> bool {
+        matches!(self.mode, TypeSystemMode::JsMode)
     }
 
     #[inline]
@@ -225,6 +246,39 @@ impl<'a> TypeChecker<'a> {
             self.type_ctx.get(ty),
             Some(crate::parser::types::Type::Unknown)
         )
+    }
+
+    #[inline]
+    fn type_is_dynamic_anyish(&self, ty: TypeId) -> bool {
+        self.type_ctx.jsobject_inner(ty).is_some()
+            || matches!(
+                self.type_ctx.get(ty),
+                Some(crate::parser::types::Type::Any) | Some(crate::parser::types::Type::JSObject)
+            )
+    }
+
+    #[inline]
+    fn is_string_concat_operand_type(&self, ty: TypeId) -> bool {
+        use crate::parser::types::{PrimitiveType, Type};
+        match self.type_ctx.get(ty) {
+            Some(Type::Primitive(
+                PrimitiveType::String
+                | PrimitiveType::Number
+                | PrimitiveType::Int
+                | PrimitiveType::Boolean
+                | PrimitiveType::Null,
+            ))
+            | Some(Type::StringLiteral(_))
+            | Some(Type::NumberLiteral(_))
+            | Some(Type::BooleanLiteral(_))
+            | Some(Type::Any)
+            | Some(Type::Json) => true,
+            Some(Type::Union(u)) => u
+                .members
+                .iter()
+                .all(|&member| self.is_string_concat_operand_type(member)),
+            _ => false,
+        }
     }
 
     fn check_unknown_actionable(&mut self, ty: TypeId, operation: &str, span: Span) {
@@ -238,6 +292,296 @@ impl<'a> TypeChecker<'a> {
 
     fn make_assignability_ctx(&self) -> AssignabilityContext<'_> {
         AssignabilityContext::with_strict_mode(self.type_ctx, self.is_strict_mode())
+    }
+
+    #[inline]
+    fn inference_fallback_type(&mut self) -> TypeId {
+        self.type_ctx.unknown_type()
+    }
+
+    fn is_dynamic_seed_type(&mut self, ty: TypeId) -> bool {
+        self.type_ctx.jsobject_inner(ty).is_some()
+            || matches!(
+            self.type_ctx.get(ty),
+            Some(crate::parser::types::Type::Unknown)
+                | Some(crate::parser::types::Type::Any)
+                | Some(crate::parser::types::Type::JSObject)
+        )
+    }
+
+    fn join_inferred_types(&mut self, left: TypeId, right: TypeId) -> TypeId {
+        if left == right {
+            return left;
+        }
+        if let Some(base) = self.type_ctx.jsobject_inner(left) {
+            let merged = self.type_ctx.union_type(vec![base, right]);
+            return self.type_ctx.jsobject_of(merged);
+        }
+        if let Some(base) = self.type_ctx.jsobject_inner(right) {
+            let merged = self.type_ctx.union_type(vec![left, base]);
+            return self.type_ctx.jsobject_of(merged);
+        }
+        if matches!(
+            self.type_ctx.get(left),
+            Some(crate::parser::types::Type::JSObject)
+        ) || matches!(
+            self.type_ctx.get(right),
+            Some(crate::parser::types::Type::JSObject)
+        ) {
+            return self.type_ctx.jsobject_type();
+        }
+        self.type_ctx.union_type(vec![left, right])
+    }
+
+    fn is_predictable_index_expr(expr: &Expression) -> bool {
+        matches!(
+            expr,
+            Expression::StringLiteral(_)
+                | Expression::IntLiteral(_)
+                | Expression::FloatLiteral(_)
+                | Expression::BooleanLiteral(_)
+        )
+    }
+
+    fn is_explicit_any_cast_expr(&self, expr: &Expression) -> bool {
+        let Expression::TypeCast(cast) = expr else {
+            return false;
+        };
+        use crate::parser::ast::Type as AstType;
+        let is_any_ref = |type_ref: &crate::parser::ast::TypeReference| -> bool {
+            self.resolve(type_ref.name.name) == "any"
+        };
+        match &cast.target_type.ty {
+            AstType::Reference(type_ref) => is_any_ref(type_ref),
+            AstType::Parenthesized(inner) => match &inner.ty {
+                AstType::Reference(type_ref) => is_any_ref(type_ref),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn maybe_escalate_identifier_to_jsobject(
+        &mut self,
+        expr: &Expression,
+        index_expr: Option<&Expression>,
+    ) {
+        if !self.is_js_mode() {
+            return;
+        }
+        if let Some(idx) = index_expr {
+            if Self::is_predictable_index_expr(idx) {
+                return;
+            }
+        }
+        let Expression::Identifier(ident) = expr else {
+            return;
+        };
+        let name = self.resolve(ident.name);
+        let base_ty = self
+            .type_env
+            .get(&name)
+            .or_else(|| {
+                self.symbols.resolve_from_scope(&name, self.current_scope).and_then(|symbol| {
+                    self.inferred_var_types
+                        .get(&(symbol.scope_id.0, name.clone()))
+                        .copied()
+                })
+            })
+            .or_else(|| self.get_var_declared_type(&name))
+            .or_else(|| {
+                self.symbols
+                    .resolve_from_scope(&name, self.current_scope)
+                    .map(|s| s.ty)
+            })
+            .unwrap_or_else(|| self.type_ctx.unknown_type());
+        let jsobject_ty = self.type_ctx.jsobject_of(base_ty);
+        if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+            self.inferred_var_types
+                .insert((symbol.scope_id.0, name.clone()), jsobject_ty);
+        }
+        self.type_env.set(name, jsobject_ty);
+    }
+
+    fn widen_identifier_with_monkeypatch_field(
+        &mut self,
+        object_expr: &Expression,
+        field_name: &str,
+        field_ty: TypeId,
+    ) {
+        if self.is_strict_mode() {
+            return;
+        }
+        let Expression::Identifier(ident) = object_expr else {
+            return;
+        };
+        let name = self.resolve(ident.name);
+        let base_ty = self
+            .type_env
+            .get(&name)
+            .or_else(|| {
+                self.symbols.resolve_from_scope(&name, self.current_scope).and_then(|symbol| {
+                    self.inferred_var_types
+                        .get(&(symbol.scope_id.0, name.clone()))
+                        .copied()
+                })
+            })
+            .or_else(|| self.get_var_declared_type(&name))
+            .or_else(|| {
+                self.symbols
+                    .resolve_from_scope(&name, self.current_scope)
+                    .map(|s| s.ty)
+            })
+            .unwrap_or_else(|| self.type_ctx.unknown_type());
+
+        let inner_base = self.type_ctx.jsobject_inner(base_ty).unwrap_or(base_ty);
+        let index_value_ty = if self.allows_any() {
+            self.type_ctx.any_type()
+        } else {
+            self.type_ctx.unknown_type()
+        };
+        let ext_obj_ty = self.type_ctx.intern(crate::parser::types::Type::Object(
+            crate::parser::types::ty::ObjectType {
+                properties: vec![crate::parser::types::ty::PropertySignature {
+                    name: field_name.to_string(),
+                    ty: field_ty,
+                    optional: false,
+                    readonly: false,
+                    visibility: crate::parser::ast::Visibility::Public,
+                }],
+                index_signature: Some(("[key]".to_string(), index_value_ty)),
+            },
+        ));
+        let widened_inner = self.type_ctx.union_type(vec![inner_base, ext_obj_ty]);
+        let wrapped = self.type_ctx.jsobject_of(widened_inner);
+        if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+            self.inferred_var_types
+                .insert((symbol.scope_id.0, name.clone()), wrapped);
+        }
+        self.type_env.set(name, wrapped);
+    }
+
+    fn lookup_method_in_class_hierarchy(
+        &self,
+        class: &crate::parser::types::ty::ClassType,
+        method_name: &str,
+    ) -> bool {
+        if class.methods.iter().any(|m| m.name == method_name) {
+            return true;
+        }
+        if let Some(parent_ty) = class.extends {
+            if let Some(crate::parser::types::Type::Class(parent)) = self.type_ctx.get(parent_ty) {
+                return self.lookup_method_in_class_hierarchy(parent, method_name);
+            }
+        }
+        false
+    }
+
+    fn infer_method_extract_object_type(&self, expr: &Expression) -> Option<TypeId> {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                self.get_var_type(&name)
+            }
+            Expression::This(_) => self.current_class_type,
+            _ => None,
+        }
+    }
+
+    fn infer_extracted_unbound_method_receiver_type(&self, expr: &Expression) -> Option<TypeId> {
+        let Expression::Member(member) = expr else {
+            return None;
+        };
+        let method_name = self.resolve(member.property.name);
+        let Some(object_ty) = self.infer_method_extract_object_type(&member.object) else {
+            return None;
+        };
+        match self.type_ctx.get(object_ty).cloned() {
+            Some(crate::parser::types::Type::Class(class)) => {
+                if self.lookup_method_in_class_hierarchy(&class, &method_name) {
+                    Some(object_ty)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn is_bind_call_expr(&self, expr: &Expression) -> bool {
+        let Expression::Call(call) = expr else {
+            return false;
+        };
+        let Expression::Member(member) = call.callee.as_ref() else {
+            return false;
+        };
+        self.resolve(member.property.name) == "bind"
+    }
+
+    fn set_unbound_method_var_state(&mut self, name: &str, expr: &Expression) {
+        let symbol = self.symbols.resolve_from_scope(name, self.current_scope);
+        let scope_id = symbol.map(|s| s.scope_id.0).unwrap_or(self.current_scope.0);
+        let key = (scope_id, name.to_string());
+        if let Some(receiver_ty) = self.infer_extracted_unbound_method_receiver_type(expr) {
+            if self.is_bind_call_expr(expr) {
+                self.unbound_method_vars.remove(&key);
+                self.unbound_method_receiver_types.remove(&key);
+                return;
+            }
+            self.unbound_method_vars.insert(key);
+            self.unbound_method_receiver_types.insert(
+                (scope_id, name.to_string()),
+                receiver_ty,
+            );
+        } else {
+            self.unbound_method_vars.remove(&key);
+            self.unbound_method_receiver_types.remove(&key);
+        }
+    }
+
+    fn is_unbound_method_var(&self, name: &str) -> bool {
+        if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
+            return self
+                .unbound_method_vars
+                .contains(&(symbol.scope_id.0, name.to_string()));
+        }
+        self.unbound_method_vars
+            .contains(&(self.current_scope.0, name.to_string()))
+    }
+
+    fn get_unbound_method_receiver_type_for_var(&self, name: &str) -> Option<TypeId> {
+        if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
+            return self
+                .unbound_method_receiver_types
+                .get(&(symbol.scope_id.0, name.to_string()))
+                .copied();
+        }
+        self.unbound_method_receiver_types
+            .get(&(self.current_scope.0, name.to_string()))
+            .copied()
+    }
+
+    fn infer_helper_expected_this_type(&self, target_expr: &Expression) -> Option<TypeId> {
+        match target_expr {
+            Expression::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                self.get_unbound_method_receiver_type_for_var(&name)
+            }
+            _ => self.infer_extracted_unbound_method_receiver_type(target_expr),
+        }
+    }
+
+    fn check_helper_this_arg(
+        &mut self,
+        expected_this_ty: Option<TypeId>,
+        helper_args: &[(TypeId, crate::parser::Span)],
+    ) {
+        let Some(expected) = expected_this_ty else {
+            return;
+        };
+        if let Some((actual_this_ty, actual_span)) = helper_args.first().copied() {
+            self.check_assignable(actual_this_ty, expected, actual_span);
+        }
     }
 
     /// Skip full class member body checking for classes before `offset`.
@@ -431,6 +775,7 @@ impl<'a> TypeChecker<'a> {
                     };
 
                     // Also add to type_env so nested arrow functions can see it
+                    self.set_unbound_method_var_state(&name, init);
                     self.type_env.set(name, var_ty);
                 }
                 Pattern::Array(_) | Pattern::Object(_) => {
@@ -453,21 +798,53 @@ impl<'a> TypeChecker<'a> {
                 self.type_env.set(name, value_ty);
             }
             Pattern::Array(array_pat) => {
-                // Extract element type from the array type
-                let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) =
+                if let Some(crate::parser::types::Type::Tuple(tuple_ty)) =
                     self.type_ctx.get(value_ty).cloned()
                 {
-                    arr.element
+                    for (idx, elem) in array_pat.elements.iter().enumerate() {
+                        if let Some(elem) = elem {
+                            let elem_ty = tuple_ty
+                                .elements
+                                .get(idx)
+                                .copied()
+                                .unwrap_or_else(|| self.inference_fallback_type());
+                            self.check_destructure_pattern(&elem.pattern, elem_ty);
+                        }
+                    }
+                    if let Some(rest) = &array_pat.rest {
+                        let rest_members: Vec<TypeId> = tuple_ty
+                            .elements
+                            .iter()
+                            .skip(array_pat.elements.len())
+                            .copied()
+                            .collect();
+                        let rest_elem_ty = if rest_members.is_empty() {
+                            self.inference_fallback_type()
+                        } else if rest_members.len() == 1 {
+                            rest_members[0]
+                        } else {
+                            self.type_ctx.union_type(rest_members)
+                        };
+                        let rest_ty = self.type_ctx.array_type(rest_elem_ty);
+                        self.check_destructure_pattern(rest, rest_ty);
+                    }
                 } else {
-                    self.type_ctx.unknown_type()
-                };
+                    // Extract element type from the array type
+                    let elem_ty = if let Some(crate::parser::types::Type::Array(arr)) =
+                        self.type_ctx.get(value_ty).cloned()
+                    {
+                        arr.element
+                    } else {
+                        self.inference_fallback_type()
+                    };
 
-                for elem in array_pat.elements.iter().flatten() {
-                    self.check_destructure_pattern(&elem.pattern, elem_ty);
-                }
-                if let Some(rest) = &array_pat.rest {
-                    // Rest element gets the same array type
-                    self.check_destructure_pattern(rest, value_ty);
+                    for elem in array_pat.elements.iter().flatten() {
+                        self.check_destructure_pattern(&elem.pattern, elem_ty);
+                    }
+                    if let Some(rest) = &array_pat.rest {
+                        // Rest element gets the same array type
+                        self.check_destructure_pattern(rest, value_ty);
+                    }
                 }
             }
             Pattern::Object(obj_pat) => {
@@ -496,12 +873,12 @@ impl<'a> TypeChecker<'a> {
                         let default_ty = self.check_expr(default_expr);
                         prop_ty.unwrap_or(default_ty)
                     } else {
-                        prop_ty.unwrap_or_else(|| self.type_ctx.unknown_type())
+                        prop_ty.unwrap_or_else(|| self.inference_fallback_type())
                     };
                     self.check_destructure_pattern(&prop.value, final_ty);
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
-                    let unknown = self.type_ctx.unknown_type();
+                    let unknown = self.inference_fallback_type();
                     let name = self.resolve(rest_ident.name);
                     self.inferred_var_types
                         .insert((self.current_scope.0, name.clone()), unknown);
@@ -519,7 +896,7 @@ impl<'a> TypeChecker<'a> {
         let saved_env = self.type_env.clone();
         self.type_env = TypeEnv::new();
 
-        if self.is_strict_mode() {
+        if self.is_strict_mode() && !self.allows_any() {
             for param in &func.params {
                 if param.type_annotation.is_none() {
                     self.errors
@@ -829,7 +1206,7 @@ impl<'a> TypeChecker<'a> {
                     self.type_env = TypeEnv::new();
 
                     for param in &ctor.params {
-                        if self.is_strict_mode() && param.type_annotation.is_none() {
+                        if self.is_strict_mode() && !self.allows_any() && param.type_annotation.is_none() {
                             self.errors
                                 .push(CheckError::ImplicitAnyForbidden { span: param.span });
                         }
@@ -866,6 +1243,7 @@ impl<'a> TypeChecker<'a> {
                 crate::parser::ast::ClassMember::Field(field) => {
                     self.check_field_decorators(field);
                     if self.is_strict_mode()
+                        && !self.allows_any()
                         && field.type_annotation.is_none()
                         && field.initializer.is_none()
                     {
@@ -1692,14 +2070,11 @@ impl<'a> TypeChecker<'a> {
                         if self.is_strict_mode() {
                             self.type_ctx.unknown_type()
                         } else {
-                            self.symbols
-                                .resolve("Error")
-                                .map(|s| s.ty)
-                                .unwrap_or_else(|| self.type_ctx.unknown_type())
+                            self.inference_fallback_type()
                         }
                     }
                     // Destructuring catch params need to accept arbitrary thrown values.
-                    _ => self.type_ctx.unknown_type(),
+                    _ => self.inference_fallback_type(),
                 };
 
                 // Register types for all variables bound in the pattern
@@ -1844,9 +2219,13 @@ impl<'a> TypeChecker<'a> {
                 let right_is_string = right_ty == string_ty;
 
                 if left_is_string || right_is_string {
-                    // String concatenation - both operands should be strings
-                    self.check_assignable(left_ty, string_ty, *bin.left.span());
-                    self.check_assignable(right_ty, string_ty, *bin.right.span());
+                    // JS-style string concatenation supports primitive operands.
+                    if !self.is_string_concat_operand_type(left_ty) {
+                        self.check_assignable(left_ty, string_ty, *bin.left.span());
+                    }
+                    if !self.is_string_concat_operand_type(right_ty) {
+                        self.check_assignable(right_ty, string_ty, *bin.right.span());
+                    }
                     string_ty
                 } else if left_ty == int_ty && right_ty == int_ty {
                     // int + int = int
@@ -1906,11 +2285,10 @@ impl<'a> TypeChecker<'a> {
 
     /// Check logical expression
     fn check_logical(&mut self, log: &LogicalExpression) -> TypeId {
-        let left_ty = self.check_expr(&log.left);
-        let right_ty = self.check_expr(&log.right);
-
         match log.operator {
             LogicalOperator::NullishCoalescing => {
+                let left_ty = self.check_expr(&log.left);
+                let right_ty = self.check_expr(&log.right);
                 // For x ?? y:
                 // - x can be any type (typically T | null)
                 // - y is the fallback value
@@ -1933,6 +2311,23 @@ impl<'a> TypeChecker<'a> {
                 non_null_ty
             }
             LogicalOperator::And | LogicalOperator::Or => {
+                let left_ty = self.check_expr(&log.left);
+                let right_ty = if matches!(log.operator, LogicalOperator::And) {
+                    let saved_env = self.type_env.clone();
+                    if let Some(guard) = extract_type_guard(&log.left, self.interner) {
+                        let var = get_guard_var(&guard);
+                        if let Some(var_ty) = self.type_env.get(var) {
+                            if let Some(narrowed_ty) = apply_type_guard(self.type_ctx, var_ty, &guard) {
+                                self.type_env.set(var.clone(), narrowed_ty);
+                            }
+                        }
+                    }
+                    let ty = self.check_expr(&log.right);
+                    self.type_env = saved_env;
+                    ty
+                } else {
+                    self.check_expr(&log.right)
+                };
                 // Logical AND/OR require boolean operands
                 let bool_ty = self.type_ctx.boolean_type();
                 self.check_assignable(left_ty, bool_ty, *log.left.span());
@@ -2038,9 +2433,23 @@ impl<'a> TypeChecker<'a> {
             return intrinsic_ty;
         }
 
+        if let Expression::Identifier(ident) = call.callee.as_ref() {
+            let name = self.resolve(ident.name);
+            if self.is_unbound_method_var(&name) {
+                self.errors.push(CheckError::UnboundMethodCall {
+                    name,
+                    span: call.span,
+                });
+            }
+        }
+
         // Function helper calls: fn.call(...), fn.apply(...), fn.bind(...)
         if let Some(helper_ty) = self.try_check_function_helper_call(call) {
             return helper_ty;
+        }
+
+        if let Expression::Index(idx) = call.callee.as_ref() {
+            self.maybe_escalate_identifier_to_jsobject(&idx.object, Some(&idx.index));
         }
 
         let callee_ty = self.check_expr(&call.callee);
@@ -2214,6 +2623,9 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             _ => {
+                if self.allows_any() && self.type_is_dynamic_anyish(callee_ty) {
+                    return self.type_ctx.any_type();
+                }
                 self.errors.push(CheckError::NotCallable {
                     ty: self.format_type(callee_ty),
                     span: call.span,
@@ -2237,15 +2649,15 @@ impl<'a> TypeChecker<'a> {
         let target_fn = match self.type_ctx.get(target_ty).cloned() {
             Some(crate::parser::types::Type::Function(func)) => func,
             _ => {
-                // Keep argument checking behavior for better diagnostics.
-                for arg in &call.arguments {
-                    self.check_expr(arg);
+                if self.allows_any() && self.type_is_dynamic_anyish(target_ty) {
+                    for arg in &call.arguments {
+                        self.check_expr(arg);
+                    }
+                    return Some(self.type_ctx.any_type());
                 }
-                self.errors.push(CheckError::NotCallable {
-                    ty: self.format_type(target_ty),
-                    span: *member.object.span(),
-                });
-                return Some(self.type_ctx.unknown_type());
+                // Not a Function.prototype helper call on this target; treat it as
+                // a regular member call (e.g. object.apply(...)).
+                return None;
             }
         };
 
@@ -2254,17 +2666,21 @@ impl<'a> TypeChecker<'a> {
             .iter()
             .map(|arg| (self.check_expr(arg), *arg.span()))
             .collect();
+        let expected_this_ty = self.infer_helper_expected_this_type(&member.object);
 
         match helper.as_str() {
             "call" => {
+                self.check_helper_this_arg(expected_this_ty, &arg_types);
                 self.check_function_args_for_helper(&target_fn, &arg_types, 1, call.span);
                 Some(target_fn.return_type)
             }
             "apply" => {
+                self.check_helper_this_arg(expected_this_ty, &arg_types);
                 self.check_apply_helper_args(&target_fn, &arg_types, call.span);
                 Some(target_fn.return_type)
             }
             "bind" => {
+                self.check_helper_this_arg(expected_this_ty, &arg_types);
                 let bound_count = self.check_bind_helper_args(&target_fn, &arg_types, call.span);
                 Some(self.make_bound_function_type(&target_fn, bound_count))
             }
@@ -2808,7 +3224,7 @@ impl<'a> TypeChecker<'a> {
         let mut param_types = Vec::new();
 
         for param in &arrow.params {
-            if self.is_strict_mode() && param.type_annotation.is_none() {
+            if self.is_strict_mode() && !self.allows_any() && param.type_annotation.is_none() {
                 self.errors
                     .push(CheckError::ImplicitAnyForbidden { span: param.span });
             }
@@ -3021,6 +3437,40 @@ impl<'a> TypeChecker<'a> {
         let object_ty = self.check_expr(&index.object);
         let _index_ty = self.check_expr(&index.index);
         self.check_unknown_actionable(object_ty, "index", *index.object.span());
+        self.maybe_escalate_identifier_to_jsobject(&index.object, Some(&index.index));
+
+        // JSObject<T> supports dynamic key lookup.
+        if self.type_ctx.jsobject_inner(object_ty).is_some()
+            || matches!(
+                self.type_ctx.get(object_ty),
+                Some(crate::parser::types::Type::JSObject)
+                    | Some(crate::parser::types::Type::Any)
+            )
+        {
+            return if self.allows_any() {
+                self.type_ctx.any_type()
+            } else {
+                self.type_ctx.unknown_type()
+            };
+        }
+
+        if matches!(
+            self.type_ctx.get(object_ty),
+            Some(crate::parser::types::Type::Json)
+        ) {
+            return self.type_ctx.json_type();
+        }
+
+        if let Some(crate::parser::types::Type::Tuple(tuple_ty)) = self.type_ctx.get(object_ty) {
+            if let Expression::IntLiteral(int_lit) = &*index.index {
+                if let Ok(idx) = usize::try_from(int_lit.value) {
+                    if let Some(&elem_ty) = tuple_ty.elements.get(idx) {
+                        return elem_ty;
+                    }
+                }
+            }
+            return self.inference_fallback_type();
+        }
 
         // Get element type if object is an array
         if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(object_ty) {
@@ -3052,6 +3502,15 @@ impl<'a> TypeChecker<'a> {
             // Note: Mutex is now a normal class from mutex.raya, not special-cased
             let builtin_type = match name.as_str() {
                 "RegExp" => Some(self.type_ctx.regexp_type()),
+                "Array" => {
+                    // Array<T> - expect 1 type argument, defaults to unknown element type
+                    if resolved_type_args.len() == 1 {
+                        Some(self.type_ctx.array_type(resolved_type_args[0]))
+                    } else {
+                        let unknown = self.type_ctx.unknown_type();
+                        Some(self.type_ctx.array_type(unknown))
+                    }
+                }
                 "Map" => {
                     // Map<K, V> - expect 2 type arguments
                     if resolved_type_args.len() == 2 {
@@ -3416,8 +3875,14 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // Get the type for property lookup
-        let obj_type = self.type_ctx.get(object_ty).cloned();
+        // Get the type for property lookup.
+        // For JSObject<T>, use T to keep known member checks/typing as fast as normal T.
+        let jsobject_inner = self.type_ctx.jsobject_inner(object_ty);
+        let obj_type = if let Some(inner) = jsobject_inner {
+            self.type_ctx.get(inner).cloned()
+        } else {
+            self.type_ctx.get(object_ty).cloned()
+        };
 
         // Check for built-in array methods
         if let Some(crate::parser::types::Type::Array(arr)) = &obj_type {
@@ -3486,6 +3951,11 @@ impl<'a> TypeChecker<'a> {
                     return method_type;
                 }
             }
+        }
+
+        // JSON values support duck-typed member access; property type remains json.
+        if matches!(&obj_type, Some(crate::parser::types::Type::Json)) {
+            return self.type_ctx.json_type();
         }
 
         // Note: Date methods are now resolved via normal class method lookup
@@ -3557,6 +4027,15 @@ impl<'a> TypeChecker<'a> {
             // If we have a class type and the member was not found, emit an error
             // (unless the class has no properties/methods, which means it's a placeholder)
             if !class_to_use.properties.is_empty() || !class_to_use.methods.is_empty() {
+                if !self.is_strict_mode() {
+                    let object_is_anyish = self.type_is_dynamic_anyish(object_ty);
+                    let explicit_any_cast = self.is_explicit_any_cast_expr(&member.object);
+                    // Dot writes on class instances require explicit dynamic opt-in.
+                    if !self.in_assignment_lhs || object_is_anyish || explicit_any_cast {
+                        self.maybe_escalate_identifier_to_jsobject(&member.object, None);
+                        return self.type_ctx.jsobject_of(object_ty);
+                    }
+                }
                 self.errors.push(CheckError::PropertyNotFound {
                     property: property_name.clone(),
                     ty: format!("class {}", class_to_use.name),
@@ -3647,7 +4126,22 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        // For now, return unknown for other member access
+        // For JSObject<T>, unknown member falls back to index-signature value type.
+        if jsobject_inner.is_some()
+            || matches!(
+                self.type_ctx.get(object_ty),
+                Some(crate::parser::types::Type::JSObject)
+                    | Some(crate::parser::types::Type::Any)
+            )
+        {
+            return if self.allows_any() {
+                self.type_ctx.any_type()
+            } else {
+                self.type_ctx.unknown_type()
+            };
+        }
+
+        // For now, return unknown for other member access.
         self.type_ctx.unknown_type()
     }
 
@@ -4149,7 +4643,7 @@ impl<'a> TypeChecker<'a> {
                         .function_type(vec![reason_ty], unknown_ty, false);
                 Some(
                     self.type_ctx
-                        .function_type(vec![on_rejected_ty], promise_unknown_ty, false),
+                        .function_type(vec![on_rejected_ty], promise_result_ty, false),
                 )
             }
             // finally(onFinally: () => void) -> Promise<T>
@@ -4684,11 +5178,34 @@ impl<'a> TypeChecker<'a> {
                 .unwrap_or_else(|| self.check_expr(&assign.left));
             (declared_ty, Some(name))
         } else {
-            (self.check_expr(&assign.left), None)
+            let is_member_lhs = matches!(&*assign.left, Expression::Member(_));
+            let prev = self.in_assignment_lhs;
+            if is_member_lhs {
+                self.in_assignment_lhs = true;
+            }
+            let ty = self.check_expr(&assign.left);
+            self.in_assignment_lhs = prev;
+            (ty, None)
         };
         // Evaluate RHS before clearing narrowing so `current = current.next`
         // can use the narrowed type of `current` when evaluating `current.next`.
         let right_ty = self.check_expr(&assign.right);
+
+        if let Expression::Member(member) = &*assign.left {
+            let field_name = self.resolve(member.property.name);
+            let lhs_object_ty = self.check_expr(&member.object);
+            if self.type_is_dynamic_anyish(lhs_object_ty)
+                || self.is_explicit_any_cast_expr(&member.object)
+                || self.is_js_mode()
+            {
+                self.widen_identifier_with_monkeypatch_field(
+                    &member.object,
+                    &field_name,
+                    right_ty,
+                );
+            }
+        }
+
         // Clear narrowing after RHS evaluation since the variable is being reassigned.
         if let Some(name) = clear_var {
             self.type_env.remove(&name);
@@ -4704,17 +5221,30 @@ impl<'a> TypeChecker<'a> {
                 let scope_id = symbol.scope_id.0;
                 let inferred_key = (scope_id, name.clone());
                 let inferred_current = self.inferred_var_types.get(&inferred_key).copied();
-                let unknown_ty = TypeId(TypeContext::UNKNOWN_TYPE_ID);
                 let null_ty = self.type_ctx.null_type();
 
-                // Variable has no explicit annotation (binder stores unknown).
-                if symbol.ty == unknown_ty && !symbol.flags.is_const {
+                // Variable has no explicit annotation (binder stores dynamic seed type).
+                if self.is_dynamic_seed_type(symbol.ty) && !symbol.flags.is_const {
                     match inferred_current {
                         // `let x = null; x = <T>;` => widen declaration to `null | T`
                         Some(inferred_ty) if inferred_ty == null_ty && right_ty != null_ty => {
                             let widened = self.type_ctx.union_type(vec![inferred_ty, right_ty]);
                             self.inferred_var_types.insert(inferred_key, widened);
                             target_ty = widened;
+                        }
+                        // Node-compat auto-widen inference across contradictory assignments.
+                        Some(inferred_ty) if self.is_js_mode() => {
+                            // Use strict assignability here so non-strict coercions
+                            // (e.g. number -> string) don't suppress union widening.
+                            let mut strict_assign_ctx =
+                                AssignabilityContext::with_strict_mode(self.type_ctx, true);
+                            if !strict_assign_ctx.is_assignable(right_ty, inferred_ty)
+                                && !strict_assign_ctx.is_assignable(inferred_ty, right_ty)
+                            {
+                                let widened = self.join_inferred_types(inferred_ty, right_ty);
+                                self.inferred_var_types.insert(inferred_key, widened);
+                                target_ty = widened;
+                            }
                         }
                         // `let x; x = <T>;` => first concrete assignment sets inferred declaration.
                         None => {
@@ -4726,8 +5256,11 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Assignment updates current flow type (used by branch merges).
+                self.set_unbound_method_var_state(&name, &assign.right);
                 self.type_env.set(name, right_ty);
             }
+        } else if let Expression::Index(idx) = &*assign.left {
+            self.maybe_escalate_identifier_to_jsobject(&idx.object, Some(&idx.index));
         }
 
         self.check_assignable(right_ty, target_ty, *assign.right.span());
@@ -4806,12 +5339,13 @@ impl<'a> TypeChecker<'a> {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
                 if name == "any" {
-                    if self.is_strict_mode() {
+                    if !self.allows_any() {
                         self.errors.push(CheckError::StrictAnyForbidden {
                             span: type_ref.name.span,
                         });
+                        return self.type_ctx.unknown_type();
                     }
-                    return self.type_ctx.unknown_type();
+                    return self.type_ctx.any_type();
                 }
 
                 // Handle built-in generic types
@@ -6048,7 +6582,7 @@ mod tests {
 
             class Entity {
                 @validate
-                name: string;
+                name: string = "";
             }
         "#,
         );

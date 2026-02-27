@@ -348,7 +348,8 @@ fn test_error_message_property() {
          try {
              throw new Error('hello');
          } catch (e) {
-             msg = e.message;
+             const err = e as Error;
+             msg = err.message;
          }
          return msg;",
         "hello",
@@ -363,7 +364,8 @@ fn test_error_name_property() {
          try {
              throw new TypeError('oops');
          } catch (e) {
-             name = e.name;
+             const err = e as TypeError;
+             name = err.name;
          }
          return name;",
         "TypeError",
@@ -408,7 +410,8 @@ fn test_error_to_string() {
          try {
              throw new Error('test');
          } catch (e) {
-             str = e.toString();
+             const err = e as Error;
+             str = err.toString();
          }
          return str;",
         "Error: test",
@@ -477,7 +480,8 @@ fn test_error_stack_trace_simple() {
          try {
              throw new Error('test error');
          } catch (e) {
-             stack = e.stack;
+             const err = e as Error;
+             stack = err.stack;
          }
          return stack;",
         "Error: test error",
@@ -495,7 +499,8 @@ fn test_error_stack_trace_from_function() {
          try {
              fail();
          } catch (e) {
-             stack = e.stack;
+             const err = e as Error;
+             stack = err.stack;
          }
          return stack;",
         "at fail",
@@ -516,7 +521,8 @@ fn test_error_stack_trace_nested_functions() {
          try {
              outer();
          } catch (e) {
-             stack = e.stack;
+             const err = e as Error;
+             stack = err.stack;
          }
          return stack;",
         "at inner",
@@ -531,7 +537,8 @@ fn test_type_error_stack_trace() {
          try {
              throw new TypeError('bad type');
          } catch (e) {
-             stack = e.stack;
+             const err = e as TypeError;
+             stack = err.stack;
          }
          return stack;",
         "TypeError: bad type",
