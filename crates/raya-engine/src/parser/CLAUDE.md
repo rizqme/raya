@@ -1,5 +1,7 @@
 # parser module
 
+_Verified against source on 2026-02-27._
+
 Frontend of the Raya compiler: lexer, parser, type system, and type checker.
 
 ## Module Structure

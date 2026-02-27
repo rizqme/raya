@@ -1,5 +1,7 @@
 # compiler/module - Multi-Module Compilation
 
+_Verified against source on 2026-02-27._
+
 Module compilation system for multi-file Raya projects.
 
 ## Overview

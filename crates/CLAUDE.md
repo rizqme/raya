@@ -1,5 +1,7 @@
 # Crates Overview
 
+_Verified against source on 2026-02-27._
+
 This directory contains all Rust crates that make up the Raya language implementation.
 
 ## Crate Hierarchy

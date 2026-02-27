@@ -1,6 +1,11 @@
 # bytecode module
 
+_Verified against source on 2026-02-27._
+
 Bytecode format definitions, encoding/decoding, and verification.
+
+Note: opcode/category listings here are descriptive, not exhaustive. Use
+`crates/raya-engine/src/compiler/bytecode/opcode.rs` as the source of truth.
 
 ## Module Structure
 

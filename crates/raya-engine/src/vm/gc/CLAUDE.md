@@ -1,5 +1,7 @@
 # gc module
 
+_Verified against source on 2026-02-27._
+
 Garbage collector for Raya VM heap management.
 
 ## Overview

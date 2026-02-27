@@ -475,6 +475,8 @@ pub struct Lowerer<'a> {
     type_param_substitutions: FxHashMap<String, TypeId>,
     /// Cache of already-specialized generic functions: "funcName$typeId1_typeId2" → FunctionId
     specialized_function_cache: FxHashMap<String, FunctionId>,
+    /// JS-compatible method extraction mode (`obj.method` is unbound).
+    js_this_binding_compat: bool,
     /// Inner type for RefCell-wrapped variables (for preserving type info through loads)
     refcell_inner_types: FxHashMap<u16, TypeId>,
 }
@@ -828,6 +830,7 @@ impl<'a> Lowerer<'a> {
             generic_function_asts: FxHashMap::default(),
             type_param_substitutions: FxHashMap::default(),
             specialized_function_cache: FxHashMap::default(),
+            js_this_binding_compat: false,
         }
     }
 
@@ -840,6 +843,12 @@ impl<'a> Lowerer<'a> {
     /// Enable JSX compilation with the given options
     pub fn with_jsx(mut self, options: JsxOptions) -> Self {
         self.jsx_options = Some(options);
+        self
+    }
+
+    /// Enable JS-compatible method extraction (`obj.method` is unbound).
+    pub fn with_js_this_binding_compat(mut self, enable: bool) -> Self {
+        self.js_this_binding_compat = enable;
         self
     }
 

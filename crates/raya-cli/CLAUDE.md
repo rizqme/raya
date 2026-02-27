@@ -1,5 +1,7 @@
 # raya-cli
 
+_Verified against source on 2026-02-27._
+
 Unified command-line interface for the Raya toolchain.
 
 ## Overview

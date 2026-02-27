@@ -1,5 +1,7 @@
 # lower module
 
+_Verified against source on 2026-02-27._
+
 AST to IR lowering - transforms typed AST into three-address code IR.
 
 ## Module Structure
@@ -192,3 +194,6 @@ Object spread (`{ ...obj }`) is lowered via static field-copy expansion:
 - **Array callback methods** (map/filter/reduce/forEach/find/findIndex/some/every/sort) are compiler intrinsics — NOT runtime CallMethod
 - **replaceWith** is also a compiler intrinsic — uses REGEXP_REPLACE_MATCHES + inline loop
 - When adding new callback-taking methods, follow the intrinsic pattern in `lower_array_intrinsic()`
+- `as T` lowering emits runtime `Cast` instructions when `T` is runtime-checkable
+  (class targets and supported runtime kind masks). Cast checks happen at cast
+  sites, not on every later operation.

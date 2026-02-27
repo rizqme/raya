@@ -21,6 +21,19 @@ use rustc_hash::FxHashMap;
 use crate::vm::builtin::number as builtin_number;
 use crate::vm::builtin::regexp as builtin_regexp;
 
+const CAST_KIND_MASK_FLAG: u16 = 0x8000;
+const CAST_TUPLE_LEN_FLAG: u16 = 0x4000;
+const CAST_OBJECT_MIN_FIELDS_FLAG: u16 = 0x2000;
+const CAST_ARRAY_ELEM_KIND_FLAG: u16 = 0x1000;
+const CAST_KIND_NULL: u16 = 0x0001;
+const CAST_KIND_BOOL: u16 = 0x0002;
+const CAST_KIND_INT: u16 = 0x0004;
+const CAST_KIND_NUMBER: u16 = 0x0008;
+const CAST_KIND_STRING: u16 = 0x0010;
+const CAST_KIND_ARRAY: u16 = 0x0020;
+const CAST_KIND_OBJECT: u16 = 0x0040;
+const CAST_KIND_FUNCTION: u16 = 0x0080;
+
 impl<'a> Lowerer<'a> {
     /// Lower an expression, returning the register holding its value
     pub fn lower_expr(&mut self, expr: &Expression) -> Register {
@@ -482,6 +495,41 @@ impl<'a> Lowerer<'a> {
                                 args: method_args,
                             });
                             return dest;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Node-compat JS semantics: explicit method binding via `.bind(thisArg)`.
+        // Example: `let f = obj.method.bind(obj);`
+        if self.js_this_binding_compat {
+            if let Expression::Member(bind_member) = &*call.callee {
+                let bind_name = self.interner.resolve(bind_member.property.name);
+                if bind_name == "bind" {
+                    if let Expression::Member(target_member) = &*bind_member.object {
+                        if let Some(class_id) = self.infer_class_id(&target_member.object) {
+                            if let Some(&slot) =
+                                self.method_slot_map.get(&(class_id, target_member.property.name))
+                            {
+                                // Only handle receiver binding here.
+                                // Partial argument binding still follows existing generic path.
+                                if args.len() > 1 {
+                                    // Fall through to normal lowering.
+                                } else {
+                                let receiver = if let Some(first) = args.first() {
+                                    first.clone()
+                                } else {
+                                    self.lower_expr(&target_member.object)
+                                };
+                                self.emit(IrInstr::BindMethod {
+                                    dest: dest.clone(),
+                                    object: receiver,
+                                    method: slot,
+                                });
+                                return dest;
+                                }
+                            }
                         }
                     }
                 }
@@ -1727,27 +1775,38 @@ impl<'a> Lowerer<'a> {
             // Get all fields including parent fields
             let all_fields = self.get_all_fields(class_id);
             // Use .rev() so child fields shadow parent fields with the same name
-            if let Some(field) = all_fields
-                .iter()
-                .rev()
-                .find(|f| self.interner.resolve(f.name) == prop_name)
-            {
-                (field.index, field.ty)
-            } else {
-                // Field not found — check if it's a method (bound method extraction)
-                if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
-                    let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
-                    self.emit(IrInstr::BindMethod {
-                        dest: dest.clone(),
-                        object,
-                        method: slot,
-                    });
-                    return dest;
+                if let Some(field) = all_fields
+                    .iter()
+                    .rev()
+                    .find(|f| self.interner.resolve(f.name) == prop_name)
+                {
+                    (field.index, field.ty)
+                } else {
+                    // Field not found — check if it's a method (bound method extraction)
+                    if let Some(&slot) = self.method_slot_map.get(&(class_id, member.property.name)) {
+                        if self.js_this_binding_compat {
+                            if let Some(func_id) = self.find_method(class_id, member.property.name) {
+                                let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                                self.emit(IrInstr::MakeClosure {
+                                    dest: dest.clone(),
+                                    func: func_id,
+                                    captures: vec![],
+                                });
+                                return dest;
+                            }
+                        }
+                        let dest = self.alloc_register(TypeId::new(NUMBER_TYPE_ID));
+                        self.emit(IrInstr::BindMethod {
+                            dest: dest.clone(),
+                            object,
+                            method: slot,
+                        });
+                        return dest;
+                    }
+                    // Not a field or method — fall through to the non-class path below.
+                    (0, UNRESOLVED)
                 }
-                // Not a field or method — fall through to the non-class path below.
-                (0, UNRESOLVED)
-            }
-        } else {
+            } else {
             // Check variable_object_fields for decoded object field layout
             let obj_field_idx = match &*member.object {
                 Expression::Identifier(ident) => self
@@ -2309,38 +2368,43 @@ impl<'a> Lowerer<'a> {
                 Expression::Member(member) => {
                     let prop_name = self.interner.resolve(member.property.name);
                     let class_id = self.infer_class_id(&member.object);
-                    let field_index = if let Some(class_id) = class_id {
+                    let object = self.lower_expr(&member.object);
+                    if let Some(class_id) = class_id {
                         if let Some(field) = self
                             .get_all_fields(class_id)
                             .iter()
                             .rev()
                             .find(|f| self.interner.resolve(f.name) == prop_name)
                         {
-                            field.index
-                        } else {
-                            self.errors.push(CompileError::InternalError {
-                                message: format!(
-                                    "Unknown field '{}' in nullish assignment target",
-                                    prop_name
-                                ),
+                            self.emit(IrInstr::StoreField {
+                                object,
+                                field: field.index,
+                                value: rhs,
                             });
-                            0
+                        } else {
+                            let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                            self.emit(IrInstr::Assign {
+                                dest: prop_reg.clone(),
+                                value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
+                            });
+                            self.emit(IrInstr::NativeCall {
+                                dest: None,
+                                native_id: crate::compiler::native_id::REFLECT_SET,
+                                args: vec![object, prop_reg, rhs],
+                            });
                         }
                     } else {
-                        self.errors.push(CompileError::InternalError {
-                            message: format!(
-                                "Cannot resolve class type for nullish assignment target field '{}'",
-                                prop_name
-                            ),
+                        let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: prop_reg.clone(),
+                            value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
                         });
-                        0
-                    };
-                    let object = self.lower_expr(&member.object);
-                    self.emit(IrInstr::StoreField {
-                        object,
-                        field: field_index,
-                        value: rhs,
-                    });
+                        self.emit(IrInstr::NativeCall {
+                            dest: None,
+                            native_id: crate::compiler::native_id::REFLECT_SET,
+                            args: vec![object, prop_reg, rhs],
+                        });
+                    }
                 }
                 Expression::Index(index) => {
                     let array = self.lower_expr(&index.object);
@@ -2554,37 +2618,45 @@ impl<'a> Lowerer<'a> {
 
                 // Instance field write
                 let class_id = self.infer_class_id(&member.object);
-
-                let field_index = if let Some(class_id) = class_id {
+                let object = self.lower_expr(&member.object);
+                if let Some(class_id) = class_id {
                     if let Some(field) = self
                         .get_all_fields(class_id)
                         .iter()
                         .rev()
                         .find(|f| self.interner.resolve(f.name) == prop_name)
                     {
-                        field.index
-                    } else {
-                        self.errors.push(CompileError::InternalError {
-                            message: format!("Unknown field '{}' in assignment target", prop_name),
+                        self.emit(IrInstr::StoreField {
+                            object,
+                            field: field.index,
+                            value: value.clone(),
                         });
-                        0
+                    } else {
+                        // Dynamic fallback for unresolved field names (e.g. `any`/monkeypatch flows).
+                        let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                        self.emit(IrInstr::Assign {
+                            dest: prop_reg.clone(),
+                            value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
+                        });
+                        self.emit(IrInstr::NativeCall {
+                            dest: None,
+                            native_id: crate::compiler::native_id::REFLECT_SET,
+                            args: vec![object, prop_reg, value.clone()],
+                        });
                     }
                 } else {
-                    self.errors.push(CompileError::InternalError {
-                        message: format!(
-                            "Cannot resolve class type for assignment target field '{}'",
-                            prop_name
-                        ),
+                    // Dynamic fallback for non-class/static-unknown object writes.
+                    let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                    self.emit(IrInstr::Assign {
+                        dest: prop_reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(prop_name.to_string())),
                     });
-                    0
-                };
-
-                let object = self.lower_expr(&member.object);
-                self.emit(IrInstr::StoreField {
-                    object,
-                    field: field_index,
-                    value: value.clone(),
-                });
+                    self.emit(IrInstr::NativeCall {
+                        dest: None,
+                        native_id: crate::compiler::native_id::REFLECT_SET,
+                        args: vec![object, prop_reg, value.clone()],
+                    });
+                }
             }
             Expression::Index(index) => {
                 let array = self.lower_expr(&index.object);
@@ -3488,7 +3560,9 @@ impl<'a> Lowerer<'a> {
         let object = self.lower_expr(&instanceof.object);
 
         // Resolve the class ID from the type annotation
-        let class_id = self.resolve_class_from_type(&instanceof.type_name);
+        let class_id = self
+            .resolve_class_from_type(&instanceof.type_name)
+            .unwrap_or(ClassId::new(0));
 
         // Allocate register for boolean result
         let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID)); // Boolean type
@@ -3507,61 +3581,196 @@ impl<'a> Lowerer<'a> {
         // Lower the object expression
         let object = self.lower_expr(&cast.object);
 
-        // Primitive type casts (as string, as number, etc.) are no-ops —
-        // no runtime check needed in a statically-typed language
-        if self.is_primitive_type_cast(&cast.target_type) {
-            return object;
+        // Allocate register for the casted value. Type checker treats this expression
+        // as target type; lowering keeps runtime value flow here.
+        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+
+        // Runtime cast checks are currently supported for class-reference targets.
+        // Non-class targets use compile-time cast typing only.
+        if let Some(class_id) = self.resolve_class_from_type(&cast.target_type) {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id,
+            });
+        } else if let Some(class_id) = self.resolve_nullable_class_from_union(&cast.target_type) {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id,
+            });
+        } else if let Some(tuple_len_encoded) = self.resolve_runtime_tuple_len_cast_target(&cast.target_type) {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id: ClassId::new(tuple_len_encoded as u32),
+            });
+        } else if let Some(object_min_fields_encoded) =
+            self.resolve_runtime_object_min_fields_cast_target(&cast.target_type)
+        {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id: ClassId::new(object_min_fields_encoded as u32),
+            });
+        } else if let Some(array_elem_kind_encoded) =
+            self.resolve_runtime_array_element_kind_cast_target(&cast.target_type)
+        {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id: ClassId::new(array_elem_kind_encoded as u32),
+            });
+        } else if let Some(kind_mask) = self.resolve_runtime_cast_kind_mask(&cast.target_type) {
+            self.emit(IrInstr::Cast {
+                dest: dest.clone(),
+                object,
+                class_id: ClassId::new((CAST_KIND_MASK_FLAG | kind_mask) as u32),
+            });
+        } else {
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Register(object),
+            });
         }
-
-        // Resolve the class ID from the type annotation
-        let class_id = self.resolve_class_from_type(&cast.target_type);
-
-        // Allocate register for the casted object (same type as target)
-        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID)); // Unknown type - will be refined by type checker
-
-        self.emit(IrInstr::Cast {
-            dest: dest.clone(),
-            object,
-            class_id,
-        });
 
         dest
     }
 
-    fn is_primitive_type_cast(&self, type_ann: &ast::TypeAnnotation) -> bool {
-        use crate::parser::ast::types::Type;
-        match &type_ann.ty {
-            Type::Primitive(_) => true,
-            Type::Reference(type_ref) => {
-                let name = self.interner.resolve(type_ref.name.name);
-                matches!(
-                    name,
-                    "string" | "number" | "boolean" | "int" | "void" | "null"
-                )
-            }
-            _ => false,
-        }
-    }
-
-    /// Resolve a ClassId from a type annotation
-    fn resolve_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> ClassId {
+    /// Resolve a class runtime cast target from a type annotation.
+    /// Returns None for non-class targets (primitive/union/object/etc).
+    fn resolve_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
         use crate::parser::ast::types::Type;
 
         match &type_ann.ty {
             Type::Reference(type_ref) => {
                 // Look up the class by name
                 if let Some(&class_id) = self.class_map.get(&type_ref.name.name) {
-                    return class_id;
+                    return Some(class_id);
                 }
-                // Unknown class - return class ID 0 as fallback
-                ClassId::new(0)
+                None
             }
-            _ => {
-                // Non-reference types (primitives, unions, etc.) - not valid for instanceof/as
-                // Return class ID 0 as fallback
-                ClassId::new(0)
-            }
+            _ => None,
         }
+    }
+
+    fn resolve_runtime_cast_kind_mask(&self, type_ann: &ast::TypeAnnotation) -> Option<u16> {
+        use crate::parser::ast::types::{PrimitiveType, Type};
+        match &type_ann.ty {
+            Type::Primitive(prim) => match prim {
+                PrimitiveType::Null => Some(CAST_KIND_NULL),
+                PrimitiveType::Boolean => Some(CAST_KIND_BOOL),
+                PrimitiveType::Int => Some(CAST_KIND_INT),
+                PrimitiveType::Number => Some(CAST_KIND_INT | CAST_KIND_NUMBER),
+                PrimitiveType::String => Some(CAST_KIND_STRING),
+                PrimitiveType::Void => None,
+            },
+            Type::Array(_) | Type::Tuple(_) => Some(CAST_KIND_ARRAY),
+            Type::Object(_) => Some(CAST_KIND_OBJECT),
+            Type::Function(_) => Some(CAST_KIND_FUNCTION),
+            Type::StringLiteral(_) => Some(CAST_KIND_STRING),
+            Type::NumberLiteral(n) => {
+                if n.fract() == 0.0 {
+                    Some(CAST_KIND_INT)
+                } else {
+                    Some(CAST_KIND_NUMBER)
+                }
+            }
+            Type::BooleanLiteral(_) => Some(CAST_KIND_BOOL),
+            Type::Parenthesized(inner) => self.resolve_runtime_cast_kind_mask(inner),
+            Type::Union(union) => {
+                let mut combined = 0u16;
+                for ty in &union.types {
+                    let mask = self.resolve_runtime_cast_kind_mask(ty)?;
+                    combined |= mask;
+                }
+                if combined == 0 { None } else { Some(combined) }
+            }
+            // For class references/intersections/indexed access/keyof/typeof we currently
+            // use either class-id casts or compile-time-only casts.
+            _ => None,
+        }
+    }
+
+    fn resolve_runtime_tuple_len_cast_target(&self, type_ann: &ast::TypeAnnotation) -> Option<u16> {
+        use crate::parser::ast::types::Type;
+        let tuple = match &type_ann.ty {
+            Type::Tuple(t) => t,
+            Type::Parenthesized(inner) => return self.resolve_runtime_tuple_len_cast_target(inner),
+            _ => return None,
+        };
+        let len = u16::try_from(tuple.element_types.len()).ok()?;
+        if len > 0x3FFF {
+            return None;
+        }
+        Some(CAST_KIND_MASK_FLAG | CAST_TUPLE_LEN_FLAG | len)
+    }
+
+    fn resolve_runtime_object_min_fields_cast_target(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<u16> {
+        use crate::parser::ast::types::{ObjectTypeMember, Type};
+        let object = match &type_ann.ty {
+            Type::Object(o) => o,
+            Type::Parenthesized(inner) => {
+                return self.resolve_runtime_object_min_fields_cast_target(inner);
+            }
+            _ => return None,
+        };
+
+        let required_props = object
+            .members
+            .iter()
+            .filter(|m| {
+                matches!(
+                    m,
+                    ObjectTypeMember::Property(p) if !p.optional
+                )
+            })
+            .count();
+        let required_props = u16::try_from(required_props).ok()?;
+        if required_props > 0x1FFF {
+            return None;
+        }
+        Some(CAST_KIND_MASK_FLAG | CAST_OBJECT_MIN_FIELDS_FLAG | required_props)
+    }
+
+    fn resolve_runtime_array_element_kind_cast_target(
+        &self,
+        type_ann: &ast::TypeAnnotation,
+    ) -> Option<u16> {
+        use crate::parser::ast::types::Type;
+        let array = match &type_ann.ty {
+            Type::Array(a) => a,
+            Type::Parenthesized(inner) => {
+                return self.resolve_runtime_array_element_kind_cast_target(inner);
+            }
+            _ => return None,
+        };
+        let elem_mask = self.resolve_runtime_cast_kind_mask(&array.element_type)?;
+        Some(CAST_KIND_MASK_FLAG | CAST_ARRAY_ELEM_KIND_FLAG | elem_mask)
+    }
+
+    fn resolve_nullable_class_from_union(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
+        use crate::parser::ast::types::{PrimitiveType, Type};
+        let Type::Union(union) = &type_ann.ty else {
+            return None;
+        };
+        if union.types.len() != 2 {
+            return None;
+        }
+        let first = &union.types[0];
+        let second = &union.types[1];
+        let (class_candidate, null_candidate) = match (&first.ty, &second.ty) {
+            (Type::Reference(_), Type::Primitive(PrimitiveType::Null)) => (first, second),
+            (Type::Primitive(PrimitiveType::Null), Type::Reference(_)) => (second, first),
+            _ => return None,
+        };
+        if !matches!(null_candidate.ty, Type::Primitive(PrimitiveType::Null)) {
+            return None;
+        }
+        self.resolve_class_from_type(class_candidate)
     }
 
     /// Find a method in a class or its parent classes.
@@ -3952,7 +4161,14 @@ impl<'a> Lowerer<'a> {
                     None
                 }
             }),
-            Type::Generic(generic) => self.class_id_from_type_id(generic.base),
+            Type::Generic(generic) => {
+                if let Some(Type::JSObject) = self.type_ctx.get(generic.base) {
+                    if let Some(&inner) = generic.type_args.first() {
+                        return self.class_id_from_type_id(inner);
+                    }
+                }
+                self.class_id_from_type_id(generic.base)
+            }
             Type::TypeVar(tv) => tv
                 .constraint
                 .and_then(|constraint| self.class_id_from_type_id(constraint)),

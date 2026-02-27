@@ -45,7 +45,8 @@ Raya is built for engineers who:
 Raya uses familiar TypeScript-like syntax, but:
 
 - No JavaScript compatibility layer
-- No `any`
+- `RayaStrict`: no `any` (default)
+- `NodeCompat`: `any` + dynamic fallbacks for JS interop flows
 - No implicit coercions
 - No runtime type assertions in hot paths
 

@@ -1,5 +1,7 @@
 # types module
 
+_Verified against source on 2026-02-27._
+
 Type system representation and operations for Raya.
 
 ## Module Structure
@@ -35,6 +37,9 @@ pub struct TypeId(u32);
 Full type representation.
 ```rust
 pub enum Type {
+    Any,
+    Unknown,
+    JSObject,              // dynamic object fallback (node-compat)
     Primitive(PrimitiveType),
     Class(ClassType),
     Function(FunctionType),
@@ -107,4 +112,6 @@ Establishes subtype relationships:
 - Discriminated unions require a common discriminant field
 - Bare unions are for primitives only (`string | number`)
 - Assignability is NOT symmetric (`A assignable to B` ≠ `B assignable to A`)
-- No implicit type coercion - all conversions must be explicit
+- Strict mode blocks unsafe coercions; non-strict modes allow selected compatibility coercions (for example primitive-to-string in concat contexts)
+- `JSObject<T>` wrappers may be used in node-compat inference to preserve known
+  fields from `T` while still allowing dynamic property access fallback

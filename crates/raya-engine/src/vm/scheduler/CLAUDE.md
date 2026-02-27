@@ -1,5 +1,7 @@
 # scheduler module
 
+_Verified against source on 2026-02-27._
+
 Unified reactor with VM + IO worker pools for Raya's goroutine-style concurrency.
 
 ## Overview

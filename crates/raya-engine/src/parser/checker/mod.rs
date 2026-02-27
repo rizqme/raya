@@ -21,6 +21,18 @@ pub mod narrowing;
 pub mod symbols;
 pub mod type_guards;
 
+/// Type system behavior mode for checker/binder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeSystemMode {
+    /// Raya strict mode: no `any`, stricter inference/usage rules.
+    #[default]
+    Strict,
+    /// Strict semantics but explicit/implicit `any` is permitted.
+    AllowAny,
+    /// JS-like dynamic semantics (`any`, bare-let flow widening, JSObject fallback).
+    JsMode,
+}
+
 // Re-export main types
 pub use binder::Binder;
 pub use builtins::{

@@ -6,6 +6,7 @@
 use super::builtins::BuiltinSignatures;
 use super::error::BindError;
 use super::symbols::{ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
+use super::TypeSystemMode;
 use crate::parser::ast::*;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
@@ -32,6 +33,8 @@ pub struct Binder<'a> {
     detect_top_level_duplicates: bool,
     /// Tracks type parameter names for generic type aliases (e.g., Container<T> → ["T"])
     generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
+    /// Type system behavior mode.
+    mode: TypeSystemMode,
 }
 
 impl<'a> Binder<'a> {
@@ -45,6 +48,32 @@ impl<'a> Binder<'a> {
             bound_functions: std::collections::HashMap::new(),
             detect_top_level_duplicates: true,
             generic_type_alias_params: std::collections::HashMap::new(),
+            mode: TypeSystemMode::Strict,
+        }
+    }
+
+    /// Set checker/binder behavior mode.
+    pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    #[inline]
+    fn allows_any(&self) -> bool {
+        matches!(self.mode, TypeSystemMode::AllowAny | TypeSystemMode::JsMode)
+    }
+
+    #[inline]
+    fn uses_js_dynamic_fallback(&self) -> bool {
+        false
+    }
+
+    #[inline]
+    fn inference_fallback_type(&mut self) -> TypeId {
+        if self.uses_js_dynamic_fallback() {
+            self.type_ctx.jsobject_type()
+        } else {
+            self.type_ctx.unknown_type()
         }
     }
 
@@ -142,7 +171,7 @@ impl<'a> Binder<'a> {
     fn register_intrinsics(&mut self) {
         // __NATIVE_CALL(native_id: number, ...args): any
         // This is a variadic function that can return any type
-        let any_ty = self.type_ctx.unknown_type();
+        let any_ty = self.type_ctx.any_type();
         let number_ty = self.type_ctx.number_type();
 
         // Create a function type: (number) -> any
@@ -432,7 +461,7 @@ impl<'a> Binder<'a> {
     /// The `json` type supports duck typing - property access returns json values.
     fn register_json_global(&mut self) {
         let string_ty = self.type_ctx.string_type();
-        let any_ty = self.type_ctx.unknown_type();
+        let any_ty = self.type_ctx.any_type();
         let json_ty = self.type_ctx.json_type();
 
         // Build static methods for JSON object
@@ -1300,7 +1329,7 @@ impl<'a> Binder<'a> {
         // Resolve type annotation or use unknown
         let ty = match &decl.type_annotation {
             Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
-            None => self.type_ctx.unknown_type(),
+            None => self.inference_fallback_type(),
         };
 
         let is_const = matches!(decl.kind, VariableKind::Const);
@@ -1399,7 +1428,13 @@ impl<'a> Binder<'a> {
 
             let param_ty = match &param.type_annotation {
                 Some(ty_annot) => self.resolve_type_annotation(ty_annot)?,
-                None => self.type_ctx.unknown_type(),
+                None => {
+                    if self.allows_any() {
+                        self.type_ctx.any_type()
+                    } else {
+                        self.type_ctx.unknown_type()
+                    }
+                }
             };
             param_types.push(param_ty);
         }
@@ -1497,7 +1532,7 @@ impl<'a> Binder<'a> {
                 // Use the rest parameter type
                 match rest_param_ty {
                     Some(ty) => ty,
-                    None => self.type_ctx.unknown_type(),
+                    None => self.inference_fallback_type(),
                 }
             } else {
                 // Use the regular parameter type
@@ -2210,13 +2245,8 @@ impl<'a> Binder<'a> {
 
             // Bind catch parameter
             if let Some(ref param) = catch.param {
-                // Look up Error class type for catch parameter
-                // If Error class isn't registered, fall back to unknown
-                let error_ty = self
-                    .symbols
-                    .resolve("Error")
-                    .map(|s| s.ty)
-                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+                // Strict mode defaults catch variables to unknown.
+                let error_ty = self.inference_fallback_type();
 
                 // Bind all names in the pattern (handles destructuring)
                 self.bind_pattern_names(param, error_ty, true)?;
@@ -2384,6 +2414,16 @@ impl<'a> Binder<'a> {
             AstType::Reference(type_ref) => {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
+                if name == "any" {
+                    return if self.allows_any() {
+                        Ok(self.type_ctx.any_type())
+                    } else {
+                        Err(BindError::InvalidTypeExpr {
+                            message: "E_STRICT_ANY_FORBIDDEN: `any` is not allowed in Raya strict mode".to_string(),
+                            span,
+                        })
+                    };
+                }
 
                 // Handle built-in generic types
                 use crate::parser::TypeContext as TC;

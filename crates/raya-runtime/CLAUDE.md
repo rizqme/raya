@@ -1,5 +1,7 @@
 # raya-runtime
 
+_Verified against source on 2026-02-27._
+
 High-level runtime API for compiling and executing Raya programs. Hosts all e2e tests.
 
 ## Overview
@@ -53,6 +55,7 @@ raya-cli (CLI commands use Runtime)
 - `timeout: u64` — milliseconds (0 = unlimited)
 - `no_jit: bool` — disable JIT
 - `jit_threshold: u32` — invocations before JIT kicks in
+- `type_mode: Option<TypeMode>` — checker behavior override (`Strict`, `AllowAny`, `JsMode`)
 
 ### `RuntimeError`
 - `Io`, `Lex`, `Parse`, `TypeCheck`, `Compile`, `Bytecode`, `Vm`, `Dependency`
@@ -76,7 +79,7 @@ src/
 
 tests/
 ├── e2e_tests.rs        # E2E test entry point
-└── e2e/                # 62 test modules (2,450+ tests)
+└── e2e/                # Runtime end-to-end suites (counts evolve)
     ├── harness.rs       # Test harness (compile + execute)
     ├── bug_hunting*.rs  # 5 modules: bug hunting rounds 1-5 (773 tests)
     ├── compiler_edge_cases.rs
@@ -98,6 +101,11 @@ builtin_sources() + std_sources() + user source
     → Compiler::compile_via_ir()
     → Module (bytecode)
 ```
+
+Type behavior is controlled independently from builtin API mode:
+- `TypeMode::Strict` (default for `BuiltinMode::RayaStrict`)
+- `TypeMode::AllowAny`
+- `TypeMode::JsMode` (default for `BuiltinMode::NodeCompat`)
 
 ## Dependency Resolution (`deps.rs`)
 
@@ -122,7 +130,7 @@ Routing is handled by `StdNativeHandler` in `raya-stdlib/src/handler.rs`:
 
 ## Tests
 
-- **E2E tests** (2,450+): Full compilation + execution tests using `StdNativeHandler`
+- **E2E tests**: Full compilation + execution tests using `StdNativeHandler` (see `cargo test -q -p raya-runtime`)
   - 773 new comprehensive tests (bug hunting rounds 1-5)
   - Test coverage: edge cases, cross-feature interactions, parser stress, type system, diagnostics
   - Discovered and fixed 26+ bugs

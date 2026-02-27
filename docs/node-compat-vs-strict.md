@@ -2,6 +2,21 @@
 
 This document formalizes which JavaScript/Node-style builtin behaviors are intentionally excluded from `RayaStrict`, and therefore only enabled in `NodeCompat`.
 
+## Type-System Contract
+
+1. `RayaStrict`
+2. `any` is forbidden.
+3. Bare `let x;` is forbidden.
+4. Inference fallback is `unknown` (not `JSObject`).
+5. `unknown` cannot be used for actionable operations until narrowed/casted.
+6. Extracted methods are unbound and must be explicitly bound before direct calls.
+
+1. `NodeCompat`
+2. `any` is allowed.
+3. Bare `let x;` is allowed.
+4. Inference fallback can use `JSObject` for unpredictable dynamic object flows.
+5. Extracted methods are also unbound (JS-like), with explicit `.bind(...)` for stable `this`.
+
 ## `NodeCompat`-only surface (by design)
 
 1. `Object.defineProperty`

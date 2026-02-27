@@ -559,6 +559,181 @@ fn test_cast_upcast_always_succeeds() {
     );
 }
 
+#[test]
+fn test_cast_primitive_passthrough_runtime() {
+    expect_i32(
+        "let x = 1 as number;
+         return x + 1;",
+        2,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_primitive_then_use() {
+    expect_i32(
+        "let x: unknown = 1;
+         let y = x as number;
+         return y + 1;",
+        2,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_object_shape_then_use() {
+    expect_i32(
+        "let x: unknown = { value: 41 };
+         let y = x as { value: number };
+         return y.value + 1;",
+        42,
+    );
+}
+
+#[test]
+fn test_cast_unknown_string_to_number_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = \"hello\";
+         let y = x as number;
+         return y;",
+        "Cannot cast value",
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_union_runtime_checked() {
+    expect_i32(
+        "let x: unknown = \"hello\";
+         let y = x as number | string;
+         if (typeof y == \"string\") { return 1; }
+         return 0;",
+        1,
+    );
+}
+
+#[test]
+fn test_cast_unknown_number_to_string_union_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = 42;
+         let y = x as string | boolean;
+         return y;",
+        "Cannot cast value",
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_nullable_class_runtime_checked() {
+    expect_i32(
+        "class Animal { age: number = 5; }
+         class Dog extends Animal {}
+         let x: unknown = new Dog();
+         let y = x as Animal | null;
+         if (y == null) { return 0; }
+         return y.age;",
+        5,
+    );
+}
+
+#[test]
+fn test_cast_unknown_invalid_to_nullable_class_throws() {
+    super::harness::expect_runtime_error(
+        "class Animal { age: number = 5; }
+         let x: unknown = \"oops\";
+         let y = x as Animal | null;
+         return y;",
+        "Cannot cast",
+    );
+}
+
+#[test]
+fn test_cast_unknown_float_to_int_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = 1.5;
+         let y = x as int;
+         return y;",
+        "Cannot cast value",
+    );
+}
+
+#[test]
+fn test_cast_unknown_int_to_number_succeeds() {
+    expect_i32(
+        "let x: unknown = 1;
+         let y = x as number;
+         return y + 1;",
+        2,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_tuple_length_checked() {
+    expect_i32(
+        "let x: unknown = [1, 2];
+         let y = x as [number, number];
+         let z = y as number[];
+         return z[0] + z[1];",
+        3,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_tuple_wrong_length_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = [1];
+         let y = x as [number, number];
+         return y[0];",
+        "tuple(length=2)",
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_object_shape_required_fields_succeeds() {
+    expect_i32(
+        "let x: unknown = { a: 1, b: 2 };
+         let y = x as { a: number };
+         return y.a;",
+        1,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_object_shape_required_fields_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = {};
+         let y = x as { a: number };
+         return y;",
+        "required field count",
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_number_array_runtime_checked() {
+    expect_i32(
+        "let x: unknown = [1, 2, 3];
+         let y = x as number[];
+         return y[0] + y[1] + y[2];",
+        6,
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_number_array_invalid_element_throws() {
+    super::harness::expect_runtime_error(
+        "let x: unknown = [1, \"oops\", 3];
+         let y = x as number[];
+         return y[0];",
+        "array element",
+    );
+}
+
+#[test]
+fn test_cast_unknown_to_union_element_array_runtime_checked() {
+    expect_i32(
+        "let x: unknown = [1, \"ok\", 2];
+         let y = x as (number | string)[];
+         return y.length;",
+        3,
+    );
+}
+
 // ============================================================================
 // Bound Method Extraction
 // ============================================================================
@@ -572,7 +747,7 @@ fn test_bound_method_basic() {
              get(): number { return this.value; }
          }
          let c = new Counter(42);
-         let f = c.get;
+         let f = c.get.bind(c);
          return f();",
         42,
     );
@@ -587,7 +762,7 @@ fn test_bound_method_preserves_this() {
              bark(): string { return this.name + \" says woof!\"; }
          }
          let dog = new Dog(\"Rex\");
-         let bark = dog.bark;
+         let bark = dog.bark.bind(dog);
          return bark();",
         "Rex says woof!",
     );
@@ -602,7 +777,7 @@ fn test_bound_method_with_args() {
              add(x: number): number { return this.base + x; }
          }
          let m = new Math(10);
-         let add = m.add;
+         let add = m.add.bind(m);
          return add(32);",
         42,
     );
@@ -617,7 +792,7 @@ fn test_bound_method_return_value_field() {
              make(): Factory { return new Factory(this.value * 2); }
          }
          let f = new Factory(10);
-         let maker = f.make;
+         let maker = f.make.bind(f);
          let result = maker();
          return result.value;",
         20,
@@ -635,7 +810,7 @@ fn test_bound_method_return_value_method_call() {
              get(): number { return this.value; }
          }
          let b = new Box(10);
-         let maker = b.make;
+         let maker = b.make.bind(b);
          let result = maker();
          return result.get();",
         20,
@@ -652,9 +827,42 @@ fn test_bound_method_different_instances() {
          }
          let a = new Greeter(\"Alice\");
          let b = new Greeter(\"Bob\");
-         let greetA = a.greet;
-         let greetB = b.greet;
+         let greetA = a.greet.bind(a);
+         let greetB = b.greet.bind(b);
          return greetA() + \" and \" + greetB();",
         "Hello, Alice and Hello, Bob",
+    );
+}
+
+#[test]
+fn test_node_compat_method_extraction_is_unbound_without_bind() {
+    let result = compile_and_run_runtime_node_compat(
+        "class Dog {
+             name: string;
+             constructor(name: string) { this.name = name; }
+             bark(): string { return this.name + \" says woof!\"; }
+         }
+         let dog = new Dog(\"Rex\");
+         let bark = dog.bark;
+         return bark();",
+    );
+    assert!(
+        result.is_err(),
+        "node-compat should use JS-like unbound method extraction unless .bind is used"
+    );
+}
+
+#[test]
+fn test_node_compat_method_bind_explicit_preserves_this() {
+    expect_string_runtime_node_compat(
+        "class Dog {
+             name: string;
+             constructor(name: string) { this.name = name; }
+             bark(): string { return this.name + \" says woof!\"; }
+         }
+         let dog = new Dog(\"Rex\");
+         let bark = dog.bark.bind(dog);
+         return bark();",
+        "Rex says woof!",
     );
 }

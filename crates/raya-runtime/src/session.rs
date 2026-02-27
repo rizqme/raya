@@ -62,8 +62,12 @@ impl Session {
             format!("{}\n{}", self.declarations.join("\n"), code)
         };
 
+        let type_mode = self
+            .options
+            .type_mode
+            .unwrap_or_else(|| compile::default_type_mode_for_builtin(self.options.builtin_mode));
         let (module, _interner) =
-            compile::compile_source_with_mode(&full_source, self.options.builtin_mode)?;
+            compile::compile_source_with_modes(&full_source, self.options.builtin_mode, type_mode)?;
 
         let mut vm = vm_setup::create_vm(&self.options);
         // REPL/session should execute only the compiler entry main and avoid

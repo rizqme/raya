@@ -3,7 +3,7 @@
 //! Provides utilities for compiling Raya source code and executing it in the VM.
 
 use raya_engine::compiler::{Compiler, Module};
-use raya_engine::parser::checker::{Binder, TypeChecker};
+use raya_engine::parser::checker::{Binder, TypeChecker, TypeSystemMode};
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::vm::gc::GcHeader;
 use raya_engine::vm::scheduler::SchedulerLimits;
@@ -209,7 +209,7 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Strict);
 
     // Register builtin type signatures only if NOT including builtin sources
     // (to avoid duplicate symbol errors when source files define the same classes)
@@ -231,9 +231,11 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
 
     // Type check
     let checker = if let Some(offset) = prelude_offset {
-        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_skip_class_bodies_before(offset)
-    } else {
         TypeChecker::new(&mut type_ctx, &symbols, &interner)
+            .with_mode(TypeSystemMode::Strict)
+            .with_skip_class_bodies_before(offset)
+    } else {
+        TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict)
     };
     let check_result = checker
         .check_module(&ast)
@@ -247,7 +249,9 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
     // Note: check_result.captures contains closure capture info for future use
 
     // Compile via IR pipeline with expression types from type checker
-    let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types)
+        .with_js_this_binding_compat(true);
     let bytecode = compiler.compile_via_ir(&ast).map_err(E2EError::Compile)?;
 
     Ok((bytecode, interner))
@@ -1383,7 +1387,7 @@ pub fn debug_compile(source: &str) -> String {
     };
 
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder = Binder::new(&mut type_ctx, &interner).with_mode(TypeSystemMode::Strict);
 
     // Register builtin signatures
     let builtin_sigs = raya_engine::builtins::to_checker_signatures();
@@ -1394,13 +1398,15 @@ pub fn debug_compile(source: &str) -> String {
         Err(e) => return format!("Binding error: {:?}", e),
     };
 
-    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner);
+    let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner).with_mode(TypeSystemMode::Strict);
     let check_result = match checker.check_module(&ast) {
         Ok(r) => r,
         Err(e) => return format!("Type check error: {:?}", e),
     };
 
-    let compiler = Compiler::new(type_ctx, &interner).with_expr_types(check_result.expr_types);
+    let compiler = Compiler::new(type_ctx, &interner)
+        .with_expr_types(check_result.expr_types)
+        .with_js_this_binding_compat(true);
     match compiler.compile_with_debug(&ast) {
         Ok((_, debug_output)) => debug_output,
         Err(e) => format!("Compile error: {}", e),

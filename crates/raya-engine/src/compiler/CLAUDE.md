@@ -1,5 +1,7 @@
 # compiler module
 
+_Verified against source on 2026-02-27._
+
 Middle-end and backend of the Raya compiler: IR, optimizations, and bytecode generation.
 
 ## Module Structure

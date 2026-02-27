@@ -1,5 +1,7 @@
 # sync module
 
+_Verified against source on 2026-02-27._
+
 Task-aware synchronization primitives for Raya.
 
 ## Overview

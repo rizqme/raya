@@ -1,5 +1,7 @@
 # raya-stdlib
 
+_Verified against source on 2026-02-27._
+
 Cross-platform native implementations for Raya's standard library.
 
 ## Overview

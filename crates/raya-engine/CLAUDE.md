@@ -1,5 +1,7 @@
 # raya-engine
 
+_Verified against source on 2026-02-27._
+
 The core Raya language engine containing the parser, compiler, and virtual machine.
 
 ## Module Structure
@@ -197,7 +199,7 @@ Vm::execute(&Module) -> VmResult<Value>
 
 ## Important Notes
 
-- **No runtime type checks**: All types verified at compile time
+- Runtime type checks exist at explicit cast boundaries (`as T`) and selected dynamic interop operations
 - **Monomorphization**: Generics are specialized per concrete type
 - **Task-based concurrency**: `async` creates Tasks, `await` suspends; optimized spawn (lazy stacks, pooling)
 - **Nursery allocator**: Per-task 64KB bump allocator reduces GC lock contention

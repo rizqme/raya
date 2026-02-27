@@ -1,6 +1,8 @@
 # CLAUDE.md - Raya Project
 
-**Raya** is a statically-typed language with TypeScript syntax, implemented in Rust. Custom bytecode VM with goroutine-style concurrency. Fully static type system with zero runtime type checks.
+_Verified against source on 2026-02-27._
+
+**Raya** is a statically-typed language with TypeScript syntax, implemented in Rust. Custom bytecode VM with goroutine-style concurrency. Static-first type system with compile-time checking plus explicit runtime-checked casts where required.
 
 ---
 
@@ -181,7 +183,7 @@ Prefer using a git worktree for isolated changes, but it is optional.
 - Test coverage: bug hunting (5 rounds, 26 bugs found/fixed), compiler edge cases, cross-feature interactions, parser stress tests, type system edge cases, diagnostics, missing features
 - Discovered and fixed: method-level type params, Array.splice(), closure capture, JSON GC safety, rest parameters, optional parameters
 
-**Tests:** 4,121+ total (1,136 engine lib + 147 JIT + 55 AOT, 2,450 runtime e2e + 30 runtime lib + 15 bundle, 39 CLI (26 integration + 13 unit), 41 stdlib, 204 raya-pm) — 0 ignored
+**Tests:** Use `cargo test -q` for current totals (counts change frequently).
 
 **`raya check` Command:** Complete
 - Type-check without building: Parse → Bind → TypeCheck (no codegen)
@@ -247,7 +249,7 @@ See [plans/milestone-3.8.md](plans/milestone-3.8.md), [plans/milestone-3.9.md](p
 ### Compilation
 - Monomorphization (generics specialized at compile time)
 - Typed opcodes: `IADD` (int), `FADD` (float/number)
-- No runtime type checking overhead
+- Runtime checks are emitted for explicit casts and selected dynamic interop paths
 - Builtin classes: lowercase filenames (array.raya, string.raya), centralized TypeRegistry dispatch
 
 ---
@@ -301,7 +303,7 @@ Each crate has its own `CLAUDE.md` with module-specific details.
 
 ```bash
 cargo build                    # Build all
-cargo test                     # Run all tests (3,328+)
+cargo test                     # Run all tests
 cargo test -p raya-engine      # Engine tests only (1,721)
 cargo test -p raya-engine --features jit  # Engine + JIT tests (1,868)
 cargo test -p raya-engine --features aot  # Engine + AOT tests (1,776)

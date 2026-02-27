@@ -1042,7 +1042,8 @@ impl<'a> Lowerer<'a> {
                     }
 
                     // Track bound method variables (e.g., `let f = obj.method`)
-                    if let ast::Expression::Member(member) = init {
+                    if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
+                        let ast::Expression::Member(member) = init else { unreachable!() };
                         if let Some(class_id) = self.infer_class_id(&member.object) {
                             if self
                                 .method_slot_map
@@ -1144,7 +1145,8 @@ impl<'a> Lowerer<'a> {
             }
 
             // Track bound method variables (e.g., `let f = obj.method`)
-            if let ast::Expression::Member(member) = init {
+            if !self.js_this_binding_compat && matches!(init, ast::Expression::Member(_)) {
+                let ast::Expression::Member(member) = init else { unreachable!() };
                 if let Some(class_id) = self.infer_class_id(&member.object) {
                     if self
                         .method_slot_map

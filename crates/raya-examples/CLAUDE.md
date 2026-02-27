@@ -1,5 +1,7 @@
 # raya-examples
 
+_Verified against source on 2026-02-27._
+
 Example Raya applications plus end-to-end tests.
 
 ## Purpose

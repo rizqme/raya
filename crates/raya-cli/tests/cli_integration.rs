@@ -585,6 +585,7 @@ fn test_runtime_with_options() {
         cpu_prof: None,
         prof_interval_us: 10_000,
         builtin_mode: BuiltinMode::RayaStrict,
+        type_mode: None,
     });
 
     let value = rt.eval("return 99;").expect("eval with options failed");

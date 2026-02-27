@@ -298,6 +298,46 @@ impl Diagnostic {
                     .with_primary_label(file_id, *span, "not a class")
                     .with_help("'new' can only be used with class types")
             }
+            StrictAnyForbidden { span } => Diagnostic::error(
+                "`any` is not allowed in Raya strict mode",
+            )
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "forbidden `any`"),
+            StrictBareLetForbidden { span } => Diagnostic::error(
+                "Bare `let` declarations are not allowed in strict mode",
+            )
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "missing type annotation or initializer"),
+            ImplicitThisForbidden { span } => Diagnostic::error(
+                "`this` is not allowed here in strict mode",
+            )
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "implicit `this`"),
+            ImplicitAnyForbidden { span } => Diagnostic::error(
+                "Implicit `any` is not allowed in strict mode",
+            )
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "add a type annotation"),
+            UnknownNotActionable { operation, span } => Diagnostic::error(format!(
+                "Cannot use `unknown` in '{}' without narrowing or explicit cast",
+                operation
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "unknown is not actionable"),
+            StrictPropertyInitialization { property, span } => Diagnostic::error(format!(
+                "Property '{}' is not definitely assigned",
+                property
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "missing property initialization")
+            .with_help("Add an initializer or assign this property in every constructor path"),
+            UnboundMethodCall { name, span } => Diagnostic::error(format!(
+                "Method value '{}' must be explicitly bound before calling",
+                name
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "unbound method call")
+            .with_help("Use `.bind(receiver)` before invoking an extracted method value"),
 
             // Decorator errors
             InvalidDecorator { ty, expected, span } => Diagnostic::error(format!(
@@ -561,6 +601,13 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         ReadonlyAssignment { .. } => ErrorCode("E2018"),
         ConstReassignment { .. } => ErrorCode("E2019"),
         NewNonClass { .. } => ErrorCode("E2020"),
+        StrictAnyForbidden { .. } => ErrorCode("E2021"),
+        StrictBareLetForbidden { .. } => ErrorCode("E2022"),
+        ImplicitThisForbidden { .. } => ErrorCode("E2023"),
+        UnknownNotActionable { .. } => ErrorCode("E2024"),
+        ImplicitAnyForbidden { .. } => ErrorCode("E2025"),
+        StrictPropertyInitialization { .. } => ErrorCode("E2026"),
+        UnboundMethodCall { .. } => ErrorCode("E2027"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

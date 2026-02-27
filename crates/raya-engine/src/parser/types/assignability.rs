@@ -5,7 +5,17 @@
 
 use super::context::TypeContext;
 use super::subtyping::SubtypingContext;
-use super::ty::{PrimitiveType, Type, TypeId};
+use super::ty::{GenericType, PrimitiveType, Type, TypeId};
+
+fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
+    if generic.type_args.len() != 1 {
+        return None;
+    }
+    match type_ctx.get(generic.base) {
+        Some(Type::JSObject) => generic.type_args.first().copied(),
+        _ => None,
+    }
+}
 
 /// Context for checking assignability
 #[derive(Debug)]
@@ -15,6 +25,8 @@ pub struct AssignabilityContext<'a> {
 
     /// Subtyping context
     subtyping: SubtypingContext<'a>,
+    /// Strict mode flag toggles TS-strict assignability behavior.
+    strict_mode: bool,
 }
 
 impl<'a> AssignabilityContext<'a> {
@@ -23,6 +35,16 @@ impl<'a> AssignabilityContext<'a> {
         AssignabilityContext {
             type_ctx,
             subtyping: SubtypingContext::new(type_ctx),
+            strict_mode: false,
+        }
+    }
+
+    /// Create assignability context with explicit strict-mode behavior.
+    pub fn with_strict_mode(type_ctx: &'a TypeContext, strict_mode: bool) -> Self {
+        AssignabilityContext {
+            type_ctx,
+            subtyping: SubtypingContext::new(type_ctx),
+            strict_mode,
         }
     }
 
@@ -49,32 +71,76 @@ impl<'a> AssignabilityContext<'a> {
             None => return false,
         };
 
+        let is_object_like = |ty: &Type| {
+            matches!(
+                ty,
+                Type::Object(_)
+                    | Type::Class(_)
+                    | Type::Interface(_)
+                    | Type::Map(_)
+                    | Type::Set(_)
+                    | Type::Array(_)
+                    | Type::Tuple(_)
+                    | Type::Json
+                    | Type::JSObject
+            )
+        };
+
         match (source_ty, target_ty) {
+            // Node-compat dynamic `any`: assignable to/from everything.
+            (Type::Any, _) | (_, Type::Any) => true,
+
             // TypeVar (unresolved generic) is compatible with any type
             // Raya uses monomorphization, so generics are resolved at compile time.
             // The checker runs before monomorphization and shouldn't reject
             // assignments involving unresolved type parameters.
             (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
 
-            // unknown is assignable to any type (like TypeScript's any)
-            // This is primarily used for catch clause parameters which can be any value
-            (Type::Unknown, _) | (_, Type::Unknown) => true,
+            // JSObject is a permissive object-ish fallback type used in node-compat.
+            (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
+            (Type::Generic(g), t)
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
+            (t, Type::Generic(g))
+                if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) =>
+            {
+                true
+            }
 
-            // number ~> string
-            (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String)) => {
+            // In non-strict mode, unknown acts like permissive top/bottom for compatibility.
+            // In strict mode, this path is disabled and subtyping still allows T <: unknown
+            // while blocking unknown -> concrete T without cast/narrowing.
+            (Type::Unknown, _) | (_, Type::Unknown) if !self.strict_mode => true,
+
+            // Implicit primitive-to-string coercions are non-strict only.
+            (Type::Primitive(PrimitiveType::Number), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
                 true
             }
 
             // int ~> string
-            (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String)) => true,
+            (Type::Primitive(PrimitiveType::Int), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
             // boolean ~> string
-            (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::String)) => {
+            (Type::Primitive(PrimitiveType::Boolean), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
                 true
             }
 
             // null ~> string
-            (Type::Primitive(PrimitiveType::Null), Type::Primitive(PrimitiveType::String)) => true,
+            (Type::Primitive(PrimitiveType::Null), Type::Primitive(PrimitiveType::String))
+                if !self.strict_mode =>
+            {
+                true
+            }
 
             // Union assignability: T1 | T2 | ... | Tn ~> U if Ti ~> U for all i
             (Type::Union(union), _) => union

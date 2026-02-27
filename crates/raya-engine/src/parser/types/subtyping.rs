@@ -3,8 +3,18 @@
 //! Implements the subtyping relation T <: U (T is a subtype of U).
 
 use super::context::TypeContext;
-use super::ty::{FunctionType, PrimitiveType, Type, TypeId};
+use super::ty::{FunctionType, GenericType, PrimitiveType, Type, TypeId};
 use rustc_hash::FxHashMap;
+
+fn jsobject_generic_inner(type_ctx: &TypeContext, generic: &GenericType) -> Option<TypeId> {
+    if generic.type_args.len() != 1 {
+        return None;
+    }
+    match type_ctx.get(generic.base) {
+        Some(Type::JSObject) => generic.type_args.first().copied(),
+        _ => None,
+    }
+}
 
 /// Context for checking subtyping relationships
 ///
@@ -57,12 +67,35 @@ impl<'a> SubtypingContext<'a> {
             return true;
         }
 
+        let is_object_like = |ty: &Type| {
+            matches!(
+                ty,
+                Type::Object(_)
+                    | Type::Class(_)
+                    | Type::Interface(_)
+                    | Type::Map(_)
+                    | Type::Set(_)
+                    | Type::Array(_)
+                    | Type::Tuple(_)
+                    | Type::Json
+                    | Type::JSObject
+            )
+        };
+
         match (sub_ty, sup_ty) {
             // Never is subtype of everything
             (Type::Never, _) => true,
 
+            // Any is both top and bottom in node-compat style typing.
+            (Type::Any, _) | (_, Type::Any) => true,
+
             // Everything is subtype of Unknown (Unknown is top type)
             (_, Type::Unknown) => true,
+
+            // JSObject is a structural object-ish top/bottom for dynamic object values.
+            (Type::JSObject, t) | (t, Type::JSObject) if is_object_like(t) => true,
+            (Type::Generic(g), t) if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) => true,
+            (t, Type::Generic(g)) if jsobject_generic_inner(self.type_ctx, g).is_some() && is_object_like(t) => true,
 
             // json is a dynamic duck-typed value from JSON.parse()/decode.
             // Allow bidirectional compatibility with other types to support
