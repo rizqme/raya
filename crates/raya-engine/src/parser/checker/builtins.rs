@@ -219,6 +219,50 @@ impl BuiltinTypeAlias {
 /// Users can use these to create type-safe decorators.
 pub fn decorator_type_aliases() -> Vec<BuiltinTypeAlias> {
     vec![
+        // Ctor<T> = Class<T> (strict approximation without `any`)
+        BuiltinTypeAlias::new("Ctor", vec!["T"], "Class<T>"),
+        // TS-like decorator context interfaces
+        BuiltinTypeAlias::new(
+            "ClassDecoratorContext",
+            vec![],
+            "{ kind: string, name: string }",
+        ),
+        BuiltinTypeAlias::new(
+            "MethodDecoratorContext",
+            vec!["This"],
+            "{ kind: string, name: string, static: boolean, class: Class<This> }",
+        ),
+        BuiltinTypeAlias::new(
+            "FieldDecoratorContext",
+            vec!["This", "V"],
+            "{ kind: string, name: string, static: boolean, class: Class<This> }",
+        ),
+        BuiltinTypeAlias::new(
+            "ParameterDecoratorContext",
+            vec!["This"],
+            "{ kind: string, name: string, index: number, class: Class<This> }",
+        ),
+        // TS-like strict decorator aliases (no `any`)
+        BuiltinTypeAlias::new(
+            "TsClassDecorator",
+            vec!["T"],
+            "(target: Class<T>, context: ClassDecoratorContext) => Class<T> | void",
+        ),
+        BuiltinTypeAlias::new(
+            "TsMethodDecorator",
+            vec!["This", "F"],
+            "(value: F, context: MethodDecoratorContext<This>) => F | void",
+        ),
+        BuiltinTypeAlias::new(
+            "TsFieldDecorator",
+            vec!["This", "V"],
+            "(target: This, context: FieldDecoratorContext<This, V>) => void",
+        ),
+        BuiltinTypeAlias::new(
+            "TsParameterDecorator",
+            vec!["This"],
+            "(target: This, context: ParameterDecoratorContext<This>) => void",
+        ),
         // ClassDecorator<T> = (target: Class<T>) => Class<T> | void
         BuiltinTypeAlias::new(
             "ClassDecorator",

@@ -183,12 +183,21 @@ enum DecoratorTarget {
     /// Class decorator - applied to the class itself
     Class { class_id: u32, class_name: String },
     /// Method decorator - applied to a specific method
-    Method { class_id: u32, method_name: String },
+    Method {
+        class_id: u32,
+        class_name: String,
+        method_name: String,
+    },
     /// Field decorator - applied to a specific field
-    Field { class_id: u32, field_name: String },
+    Field {
+        class_id: u32,
+        class_name: String,
+        field_name: String,
+    },
     /// Parameter decorator - applied to a specific parameter
     Parameter {
         class_id: u32,
+        class_name: String,
         method_name: String,
         param_index: u32,
     },
@@ -1581,6 +1590,13 @@ impl<'a> Lowerer<'a> {
                 break;
             }
         }
+        if constructor.is_none() {
+            // Always materialize a constructor function ID so decorators can
+            // receive a class/function target even for classes without explicit ctors.
+            let func_id = FunctionId::new(self.next_function_id);
+            self.next_function_id += 1;
+            constructor = Some(func_id);
+        }
 
         // Decorators
         let class_decorators: Vec<DecoratorInfo> = class
@@ -2259,8 +2275,10 @@ impl<'a> Lowerer<'a> {
         }
 
         // Lower constructor if present
+        let mut explicit_ctor_lowered = false;
         for member in &class.members {
             if let ast::ClassMember::Constructor(ctor) = member {
+                explicit_ctor_lowered = true;
                 let full_name = format!("{}::constructor", name);
 
                 // Reset per-function state
@@ -2414,6 +2432,61 @@ impl<'a> Lowerer<'a> {
                 self.this_register = None;
                 break; // Only one constructor
             }
+        }
+
+        // Emit implicit constructor when the class omits one.
+        if !explicit_ctor_lowered {
+            let ctor_func_id = self
+                .class_info_map
+                .get(&class_id)
+                .and_then(|info| info.constructor)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ICE: missing constructor function id for class '{}' (class_id={})",
+                        name,
+                        class_id.as_u32()
+                    )
+                });
+
+            // Reset per-function state
+            self.next_register = 0;
+            self.next_block = 0;
+            self.next_local = 0;
+            self.local_map.clear();
+            self.local_registers.clear();
+            self.refcell_vars.clear();
+            self.refcell_registers.clear();
+            self.refcell_inner_types.clear();
+            self.loop_captured_vars.clear();
+
+            self.current_class = Some(class_id);
+
+            // Implicit ctor has only `this`.
+            let this_ty = self
+                .type_ctx
+                .lookup_named_type(name)
+                .unwrap_or(TypeId::new(0));
+            let this_reg = self.alloc_register(this_ty);
+            self.this_register = Some(this_reg.clone());
+            let params = vec![this_reg];
+            let mut ir_func = IrFunction::new(&format!("{}::constructor", name), params, TypeId::new(0));
+            if self.emit_sourcemap {
+                ir_func.source_span = class.span;
+            }
+            self.current_function = Some(ir_func);
+
+            let entry_block = self.alloc_block();
+            self.current_block = entry_block;
+            self.current_function_mut()
+                .add_block(BasicBlock::with_label(entry_block, "entry"));
+            self.set_terminator(Terminator::Return(None));
+
+            let ir_func = self.current_function.take().unwrap();
+            self.pending_arrow_functions
+                .push((ctor_func_id.as_u32(), ir_func));
+
+            self.current_class = None;
+            self.this_register = None;
         }
 
         ir_class
@@ -2851,6 +2924,7 @@ impl<'a> Lowerer<'a> {
                     self.emit_decorator_call(
                         DecoratorTarget::Parameter {
                             class_id: class_id_val,
+                            class_name: class_name.clone(),
                             method_name: param_dec.method_name.clone(),
                             param_index: param_dec.param_index,
                         },
@@ -2867,6 +2941,7 @@ impl<'a> Lowerer<'a> {
                     self.emit_decorator_call(
                         DecoratorTarget::Field {
                             class_id: class_id_val,
+                            class_name: class_name.clone(),
                             field_name: field_name.clone(),
                         },
                         &dec_info.expression,
@@ -2882,6 +2957,7 @@ impl<'a> Lowerer<'a> {
                     self.emit_decorator_call(
                         DecoratorTarget::Method {
                             class_id: class_id_val,
+                            class_name: class_name.clone(),
                             method_name: method_name.clone(),
                         },
                         &dec_info.expression,
@@ -2939,30 +3015,45 @@ impl<'a> Lowerer<'a> {
             _ => None,
         };
 
-        // Build the arguments based on target type
+        // Build JS-model decorator arguments from runtime targets.
+        // Registration still uses internal class IDs in separate native calls.
         let args = match &target {
-            DecoratorTarget::Class { .. } => vec![class_id_reg.clone()],
-            DecoratorTarget::Method { method_name, .. } => {
+            DecoratorTarget::Class { class_id, .. } => {
+                vec![self.build_class_decorator_target(*class_id)]
+            }
+            DecoratorTarget::Method {
+                class_id,
+                method_name,
+                ..
+            } => {
+                let target_reg = self.build_method_decorator_target(*class_id, method_name);
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(method_name.clone())),
                 });
-                vec![class_id_reg.clone(), method_name_reg]
+                vec![target_reg, method_name_reg]
             }
-            DecoratorTarget::Field { field_name, .. } => {
+            DecoratorTarget::Field {
+                class_id,
+                field_name,
+                ..
+            } => {
+                let target_reg = self.build_class_decorator_target(*class_id);
                 let field_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: field_name_reg.clone(),
                     value: IrValue::Constant(IrConstant::String(field_name.clone())),
                 });
-                vec![class_id_reg.clone(), field_name_reg]
+                vec![target_reg, field_name_reg]
             }
             DecoratorTarget::Parameter {
+                class_id,
                 method_name,
                 param_index,
                 ..
             } => {
+                let target_reg = self.build_class_decorator_target(*class_id);
                 let method_name_reg = self.alloc_register(TypeId::new(1));
                 self.emit(IrInstr::Assign {
                     dest: method_name_reg.clone(),
@@ -2973,7 +3064,7 @@ impl<'a> Lowerer<'a> {
                     dest: param_index_reg.clone(),
                     value: IrValue::Constant(IrConstant::I32(*param_index as i32)),
                 });
-                vec![class_id_reg.clone(), method_name_reg, param_index_reg]
+                vec![target_reg, method_name_reg, param_index_reg]
             }
         };
 
@@ -3090,6 +3181,57 @@ impl<'a> Lowerer<'a> {
                 format!("{}.{}", obj_name, prop_name)
             }
             _ => "unknown".to_string(),
+        }
+    }
+
+    /// Build runtime target for class/field/parameter decorators.
+    ///
+    /// Prefer constructor function closure when available; otherwise materialize
+    /// a class instance as a pragmatic runtime target object.
+    fn build_class_decorator_target(&mut self, class_id: u32) -> Register {
+        let target = self.alloc_register(TypeId::new(0));
+        let ctor_func = self
+            .class_info_map
+            .get(&ClassId::new(class_id))
+            .and_then(|info| info.constructor);
+        if let Some(func) = ctor_func {
+            self.emit(IrInstr::MakeClosure {
+                dest: target.clone(),
+                func,
+                captures: vec![],
+            });
+        } else {
+            self.emit(IrInstr::NewObject {
+                dest: target.clone(),
+                class: ClassId::new(class_id),
+            });
+        }
+        target
+    }
+
+    /// Build runtime target for method decorators.
+    ///
+    /// Prefer the actual method function closure; if unresolved, fall back to
+    /// class target semantics.
+    fn build_method_decorator_target(&mut self, class_id: u32, method_name: &str) -> Register {
+        let class_id = ClassId::new(class_id);
+        let func_id = self.interner.lookup(method_name).and_then(|sym| {
+            self.method_map
+                .get(&(class_id, sym))
+                .copied()
+                .or_else(|| self.static_method_map.get(&(class_id, sym)).copied())
+        });
+
+        if let Some(func) = func_id {
+            let target = self.alloc_register(TypeId::new(0));
+            self.emit(IrInstr::MakeClosure {
+                dest: target.clone(),
+                func,
+                captures: vec![],
+            });
+            target
+        } else {
+            self.build_class_decorator_target(class_id.as_u32())
         }
     }
 

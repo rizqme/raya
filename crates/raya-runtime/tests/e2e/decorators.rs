@@ -8,6 +8,32 @@
 
 use super::harness::*;
 
+#[test]
+fn test_js_model_decorator_runtime_strict() {
+    expect_i32_runtime(
+        "function Track(target: unknown, methodName: string): void {}
+         class Service {
+             @Track
+             run(x: number): number { return x * 2; }
+         }
+         return new Service().run(21);",
+        42,
+    );
+}
+
+#[test]
+fn test_js_model_decorator_runtime_node_compat() {
+    expect_i32_runtime_node_compat(
+        "function Track(target: unknown, methodName: string): void {}
+         class Service {
+             @Track
+             run(x: number): number { return x * 2; }
+         }
+         return new Service().run(21);",
+        42,
+    );
+}
+
 // ============================================================================
 // Class Decorators - Basic
 // ============================================================================
@@ -16,9 +42,9 @@ use super::harness::*;
 fn test_class_decorator_simple() {
     // Simple class decorator - verify class still works after decoration
     expect_i32(
-        "function Injectable(classId: number): void {
+        "function Injectable(target: unknown): void {
              // Decorator that marks a class as injectable
-             // classId is the internal class identifier
+             // target is the decorated class name
          }
 
          @Injectable
@@ -36,8 +62,8 @@ fn test_class_decorator_simple() {
 fn test_class_decorator_factory() {
     // Decorator factory that takes arguments
     expect_i32(
-        "function Controller(path: string): (classId: number) => void {
-             return (classId: number): void => {
+        "function Controller(path: string): (target: unknown) => void {
+             return (target: unknown): void => {
                  // Factory creates decorator that receives path
              };
          }
@@ -57,9 +83,9 @@ fn test_class_decorator_factory() {
 fn test_class_decorator_multiple() {
     // Multiple decorators are applied to the class
     expect_i32(
-        "function First(classId: number): void {}
-         function Second(classId: number): void {}
-         function Third(classId: number): void {}
+        "function First(target: unknown): void {}
+         function Second(target: unknown): void {}
+         function Third(target: unknown): void {}
 
          @First
          @Second
@@ -78,7 +104,7 @@ fn test_class_decorator_multiple() {
 fn test_class_decorator_on_multiple_classes() {
     // Same decorator applied to multiple classes
     expect_i32(
-        "function Mark(classId: number): void {}
+        "function Mark(target: unknown): void {}
 
          @Mark
          class ServiceA {
@@ -111,7 +137,7 @@ fn test_class_decorator_on_multiple_classes() {
 fn test_method_decorator_simple() {
     // Method decorator - verify method still works after decoration
     expect_i32(
-        "function Log(classId: number, methodName: string): void {
+        "function Log(target: unknown, methodName: string): void {
              // Decorator that marks a method for logging
          }
 
@@ -132,8 +158,8 @@ fn test_method_decorator_simple() {
 fn test_method_decorator_factory() {
     // Method decorator factory
     expect_i32(
-        "function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {
+        "function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {
                  // Register route
              };
          }
@@ -155,9 +181,9 @@ fn test_method_decorator_factory() {
 fn test_method_decorator_multiple() {
     // Multiple method decorators
     expect_i32(
-        "function Auth(classId: number, methodName: string): void {}
-         function Log(classId: number, methodName: string): void {}
-         function Cache(classId: number, methodName: string): void {}
+        "function Auth(target: unknown, methodName: string): void {}
+         function Log(target: unknown, methodName: string): void {}
+         function Cache(target: unknown, methodName: string): void {}
 
          class Service {
              @Auth
@@ -178,7 +204,7 @@ fn test_method_decorator_multiple() {
 fn test_method_decorator_on_different_methods() {
     // Decorators on multiple methods
     expect_i32(
-        "function Track(classId: number, methodName: string): void {}
+        "function Track(target: unknown, methodName: string): void {}
 
          class Calculator {
              @Track
@@ -206,7 +232,7 @@ fn test_method_decorator_on_different_methods() {
 fn test_field_decorator_simple() {
     // Field decorator - verify field still works after decoration
     expect_i32(
-        "function Column(classId: number, fieldName: string): void {
+        "function Column(target: unknown, fieldName: string): void {
              // Decorator that marks a field as a database column
          }
 
@@ -227,8 +253,8 @@ fn test_field_decorator_simple() {
 fn test_field_decorator_factory() {
     // Field decorator factory
     expect_i32(
-        "function Column(dbType: string): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {
+        "function Column(dbType: string): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {
                  // Register column type
              };
          }
@@ -250,7 +276,7 @@ fn test_field_decorator_factory() {
 fn test_field_decorator_on_multiple_fields() {
     // Decorators on multiple fields
     expect_i32(
-        "function Required(classId: number, fieldName: string): void {}
+        "function Required(target: unknown, fieldName: string): void {}
 
          class Form {
              @Required
@@ -275,14 +301,14 @@ fn test_field_decorator_on_multiple_fields() {
 fn test_field_decorator_multiple_on_same_field() {
     // Multiple decorators on same field
     expect_i32(
-        "function Required(classId: number, fieldName: string): void {}
+        "function Required(target: unknown, fieldName: string): void {}
 
-         function Min(len: number): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {};
+         function Min(len: number): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {};
          }
 
-         function Max(len: number): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {};
+         function Max(len: number): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {};
          }
 
          class User {
@@ -308,9 +334,9 @@ fn test_field_decorator_multiple_on_same_field() {
 fn test_combined_decorators() {
     // All decorator types on one class
     expect_i32(
-        "function Entity(classId: number): void {}
-         function Column(classId: number, fieldName: string): void {}
-         function Route(classId: number, methodName: string): void {}
+        "function Entity(target: unknown): void {}
+         function Column(target: unknown, fieldName: string): void {}
+         function Route(target: unknown, methodName: string): void {}
 
          @Entity
          class User {
@@ -349,7 +375,7 @@ fn test_combined_decorators() {
 fn test_dependency_injection_pattern() {
     // DI-style decorator pattern
     expect_i32(
-        "function Injectable(classId: number): void {}
+        "function Injectable(target: unknown): void {}
 
          @Injectable
          class Logger {
@@ -378,16 +404,16 @@ fn test_dependency_injection_pattern() {
 fn test_http_routing_pattern() {
     // HTTP routing decorator pattern
     expect_i32(
-        "function Controller(path: string): (classId: number) => void {
-             return (classId: number): void => {};
+        "function Controller(path: string): (target: unknown) => void {
+             return (target: unknown): void => {};
          }
 
-         function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+         function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
-         function POST(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+         function POST(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
          @Controller(\"/api/users\")
@@ -414,14 +440,14 @@ fn test_http_routing_pattern() {
 fn test_orm_entity_pattern() {
     // ORM-style entity/column decorators
     expect_i32(
-        "function Entity(tableName: string): (classId: number) => void {
-             return (classId: number): void => {};
+        "function Entity(tableName: string): (target: unknown) => void {
+             return (target: unknown): void => {};
          }
 
-         function PrimaryKey(classId: number, fieldName: string): void {}
+         function PrimaryKey(target: unknown, fieldName: string): void {}
 
-         function Column(dbType: string): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {};
+         function Column(dbType: string): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {};
          }
 
          @Entity(\"users\")
@@ -446,15 +472,15 @@ fn test_orm_entity_pattern() {
 fn test_validation_pattern() {
     // Validation decorator pattern
     expect_i32(
-        "function Validate(classId: number): void {}
+        "function Validate(target: unknown): void {}
 
-         function Required(classId: number, fieldName: string): void {}
+         function Required(target: unknown, fieldName: string): void {}
 
-         function MinLength(len: number): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {};
+         function MinLength(len: number): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {};
          }
 
-         function Email(classId: number, fieldName: string): void {}
+         function Email(target: unknown, fieldName: string): void {}
 
          @Validate
          class UserForm {
@@ -483,13 +509,13 @@ fn test_validation_pattern() {
 fn test_serialization_pattern() {
     // JSON serialization decorator pattern
     expect_i32(
-        "function Serializable(classId: number): void {}
+        "function Serializable(target: unknown): void {}
 
-         function JsonProperty(jsonName: string): (classId: number, fieldName: string) => void {
-             return (classId: number, fieldName: string): void => {};
+         function JsonProperty(jsonName: string): (target: unknown, fieldName: string) => void {
+             return (target: unknown, fieldName: string): void => {};
          }
 
-         function JsonIgnore(classId: number, fieldName: string): void {}
+         function JsonIgnore(target: unknown, fieldName: string): void {}
 
          @Serializable
          class ApiResponse {
@@ -519,7 +545,7 @@ fn test_serialization_pattern() {
 fn test_decorator_on_empty_class() {
     // Decorator on class with no members
     expect_i32(
-        "function Mark(classId: number): void {}
+        "function Mark(target: unknown): void {}
 
          @Mark
          class Empty {}
@@ -555,7 +581,7 @@ fn test_decorator_on_class_with_constructor() {
 fn test_decorator_on_class_with_inheritance() {
     // Decorators with inheritance
     expect_i32(
-        "function Track(classId: number): void {}
+        "function Track(target: unknown): void {}
 
          @Track
          class Base {
@@ -577,7 +603,7 @@ fn test_decorator_on_class_with_inheritance() {
 fn test_decorator_preserves_method_functionality() {
     // Decorated methods still work correctly
     expect_i32(
-        "function Log(classId: number, methodName: string): void {}
+        "function Log(target: unknown, methodName: string): void {}
 
          class Calculator {
              @Log
@@ -601,9 +627,9 @@ fn test_decorator_preserves_method_functionality() {
 fn test_nested_decorator_factories() {
     // Decorator factories that return decorator factories
     expect_i32(
-        "function WithOptions(prefix: string): (suffix: string) => (classId: number) => void {
-             return (suffix: string): (classId: number) => void => {
-                 return (classId: number): void => {};
+        "function WithOptions(prefix: string): (suffix: string) => (target: unknown) => void {
+             return (suffix: string): (target: unknown) => void => {
+                 return (target: unknown): void => {};
              };
          }
 
@@ -626,8 +652,8 @@ fn test_nested_decorator_factories() {
 fn test_decorator_with_multiple_arguments() {
     // Decorator factory receiving multiple args
     expect_i32(
-        "function Server(h: string, p: number): (classId: number) => void {
-             return (classId: number): void => {};
+        "function Server(h: string, p: number): (target: unknown) => void {
+             return (target: unknown): void => {};
          }
 
          @Server(\"localhost\", 8080)
@@ -645,8 +671,8 @@ fn test_decorator_with_multiple_arguments() {
 fn test_decorator_with_boolean_argument() {
     // Decorator with boolean flag
     expect_i32(
-        "function Async(flag: boolean): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+        "function Async(flag: boolean): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
          class Worker {
@@ -670,8 +696,8 @@ fn test_decorator_with_boolean_argument() {
 fn test_class_and_method_both_decorated() {
     // Both class and its methods have decorators
     expect_i32(
-        "function Service(classId: number): void {}
-         function Action(classId: number, methodName: string): void {}
+        "function Service(target: unknown): void {}
+         function Action(target: unknown, methodName: string): void {}
 
          @Service
          class MyService {
@@ -736,8 +762,8 @@ fn test_minimal_closure_with_two_args() {
 fn test_minimal_method_decorator_factory_isolated() {
     // Isolate the decorator factory call - no method call
     expect_i32(
-        "function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+        "function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
          let f = GET(\"/users\");
          return 42;",
@@ -749,8 +775,8 @@ fn test_minimal_method_decorator_factory_isolated() {
 fn test_minimal_class_with_factory_decorated_method() {
     // Class with a factory-decorated method - can we call the method?
     expect_i32(
-        "function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+        "function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
          class Api {
@@ -770,8 +796,8 @@ fn test_minimal_class_with_factory_decorated_method() {
 fn test_minimal_factory_decorated_no_method_call() {
     // Class exists but we don't call the decorated method - just return a constant
     expect_i32(
-        "function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+        "function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
          class Api {
@@ -791,8 +817,8 @@ fn test_minimal_factory_decorated_no_method_call() {
 fn test_minimal_factory_decorated_call_other_method() {
     // Class has two methods - one decorated, one not. Call the non-decorated one.
     expect_i32(
-        "function GET(path: string): (classId: number, methodName: string) => void {
-             return (classId: number, methodName: string): void => {};
+        "function GET(path: string): (target: unknown, methodName: string) => void {
+             return (target: unknown, methodName: string): void => {};
          }
 
          class Api {
@@ -832,7 +858,7 @@ fn test_minimal_undecorated_class_baseline() {
 fn test_minimal_direct_decorator_no_factory() {
     // Direct decorator (not factory) on a method
     expect_i32(
-        "function Log(classId: number, methodName: string): void {}
+        "function Log(target: unknown, methodName: string): void {}
 
          class Api {
              @Log
@@ -855,7 +881,7 @@ fn test_minimal_direct_decorator_no_factory() {
 fn test_parameter_decorator_on_method() {
     // Simple parameter decorator on a method parameter
     expect_i32(
-        "function Inject(classId: number, methodName: string, paramIndex: number): void {}
+        "function Inject(target: unknown, methodName: string, paramIndex: number): void {}
 
          class Service {
              process(@Inject input: number): number {
@@ -873,7 +899,7 @@ fn test_parameter_decorator_on_method() {
 fn test_parameter_decorator_on_constructor() {
     // Parameter decorator on constructor parameter
     expect_i32(
-        "function Inject(classId: number, methodName: string, paramIndex: number): void {}
+        "function Inject(target: unknown, methodName: string, paramIndex: number): void {}
 
          class Service {
              value: number;
@@ -893,8 +919,8 @@ fn test_parameter_decorator_on_constructor() {
 fn test_parameter_decorator_multiple_params() {
     // Multiple decorated parameters on same method
     expect_i32(
-        "function Required(classId: number, methodName: string, paramIndex: number): void {}
-         function Optional(classId: number, methodName: string, paramIndex: number): void {}
+        "function Required(target: unknown, methodName: string, paramIndex: number): void {}
+         function Optional(target: unknown, methodName: string, paramIndex: number): void {}
 
          class Calculator {
              add(@Required a: number, @Optional b: number): number {
@@ -912,8 +938,8 @@ fn test_parameter_decorator_multiple_params() {
 fn test_parameter_decorator_factory() {
     // Parameter decorator factory
     expect_i32(
-        "function Validate(rule: string): (classId: number, methodName: string, paramIndex: number) => void {
-             return (classId: number, methodName: string, paramIndex: number): void => {};
+        "function Validate(rule: string): (target: unknown, methodName: string, paramIndex: number) => void {
+             return (target: unknown, methodName: string, paramIndex: number): void => {};
          }
 
          class Service {
@@ -932,8 +958,8 @@ fn test_parameter_decorator_factory() {
 fn test_parameter_decorator_with_method_decorator() {
     // Combining parameter and method decorators
     expect_i32(
-        "function Log(classId: number, methodName: string): void {}
-         function Inject(classId: number, methodName: string, paramIndex: number): void {}
+        "function Log(target: unknown, methodName: string): void {}
+         function Inject(target: unknown, methodName: string, paramIndex: number): void {}
 
          class Service {
              @Log
@@ -952,10 +978,10 @@ fn test_parameter_decorator_with_method_decorator() {
 fn test_parameter_decorator_all_types_combined() {
     // All decorator types together: class, method, field, parameter
     expect_i32(
-        "function ClassDec(classId: number): void {}
-         function MethodDec(classId: number, methodName: string): void {}
-         function FieldDec(classId: number, fieldName: string): void {}
-         function ParamDec(classId: number, methodName: string, paramIndex: number): void {}
+        "function ClassDec(target: unknown): void {}
+         function MethodDec(target: unknown, methodName: string): void {}
+         function FieldDec(target: unknown, fieldName: string): void {}
+         function ParamDec(target: unknown, methodName: string, paramIndex: number): void {}
 
          @ClassDec
          class FullyDecorated {

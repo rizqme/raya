@@ -538,6 +538,10 @@ impl<'a> Binder<'a> {
     /// Register decorator-related built-in types
     ///
     /// This registers:
+    /// - Ctor<T>: strict constructor alias (approximation of class constructor type)
+    /// - *DecoratorContext interfaces (TS-like context payload types)
+    /// - Ts*Decorator aliases (TS-like decorator signatures without `any`)
+    /// - Legacy ClassDecorator/MethodDecorator/FieldDecorator/ParameterDecorator for compatibility
     /// - Class<T>: Interface representing a class constructor
     /// - ClassDecorator<T>: (target: Class<T>) => Class<T> | void
     /// - MethodDecorator<F>: (method: F) => F
@@ -546,6 +550,7 @@ impl<'a> Binder<'a> {
     fn register_decorator_types(&mut self) {
         let string_ty = self.type_ctx.string_type();
         let number_ty = self.type_ctx.number_type();
+        let boolean_ty = self.type_ctx.boolean_type();
         let void_ty = self.type_ctx.void_type();
 
         // Register Class<T> interface
@@ -599,6 +604,400 @@ impl<'a> Binder<'a> {
             referenced: false,
         };
         let _ = self.symbols.define(class_symbol);
+        self.type_ctx.register_named_type("Class".to_string(), class_ty);
+
+        // Ctor<T> = Class<T> (strict approximation without `any`)
+        let ctor_symbol = Symbol {
+            name: "Ctor".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: class_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        };
+        let _ = self.symbols.define(ctor_symbol);
+        self.type_ctx.register_named_type("Ctor".to_string(), class_ty);
+
+        // ClassDecoratorContext
+        let class_decorator_context_ty = self.type_ctx.intern(Type::Class(ClassType {
+            name: "ClassDecoratorContext".to_string(),
+            type_params: vec![],
+            properties: vec![
+                PropertySignature {
+                    name: "kind".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "name".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+            ],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+        let _ = self.symbols.define(Symbol {
+            name: "ClassDecoratorContext".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: class_decorator_context_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx.register_named_type(
+            "ClassDecoratorContext".to_string(),
+            class_decorator_context_ty,
+        );
+
+        // MethodDecoratorContext<This>
+        let method_decorator_context_ty = self.type_ctx.intern(Type::Class(ClassType {
+            name: "MethodDecoratorContext".to_string(),
+            type_params: vec!["This".to_string()],
+            properties: vec![
+                PropertySignature {
+                    name: "kind".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "name".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "static".to_string(),
+                    ty: boolean_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "class".to_string(),
+                    ty: class_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+            ],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+        let _ = self.symbols.define(Symbol {
+            name: "MethodDecoratorContext".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: method_decorator_context_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx.register_named_type(
+            "MethodDecoratorContext".to_string(),
+            method_decorator_context_ty,
+        );
+
+        // FieldDecoratorContext<This, V>
+        let field_decorator_context_ty = self.type_ctx.intern(Type::Class(ClassType {
+            name: "FieldDecoratorContext".to_string(),
+            type_params: vec!["This".to_string(), "V".to_string()],
+            properties: vec![
+                PropertySignature {
+                    name: "kind".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "name".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "static".to_string(),
+                    ty: boolean_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "class".to_string(),
+                    ty: class_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+            ],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+        let _ = self.symbols.define(Symbol {
+            name: "FieldDecoratorContext".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: field_decorator_context_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx.register_named_type(
+            "FieldDecoratorContext".to_string(),
+            field_decorator_context_ty,
+        );
+
+        // ParameterDecoratorContext<This>
+        let parameter_decorator_context_ty = self.type_ctx.intern(Type::Class(ClassType {
+            name: "ParameterDecoratorContext".to_string(),
+            type_params: vec!["This".to_string()],
+            properties: vec![
+                PropertySignature {
+                    name: "kind".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "name".to_string(),
+                    ty: string_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "index".to_string(),
+                    ty: number_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+                PropertySignature {
+                    name: "class".to_string(),
+                    ty: class_ty,
+                    optional: false,
+                    readonly: true,
+                    visibility: Default::default(),
+                },
+            ],
+            methods: vec![],
+            static_properties: vec![],
+            static_methods: vec![],
+            extends: None,
+            implements: vec![],
+            is_abstract: false,
+        }));
+        let _ = self.symbols.define(Symbol {
+            name: "ParameterDecoratorContext".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: parameter_decorator_context_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx.register_named_type(
+            "ParameterDecoratorContext".to_string(),
+            parameter_decorator_context_ty,
+        );
+
+        // TS-style strict decorator aliases (without `any`)
+        let ts_class_t_var = self.type_ctx.type_variable("T".to_string());
+        let ts_class_decorator_return = self.type_ctx.union_type(vec![ts_class_t_var, void_ty]);
+        let ts_class_decorator_ty = self.type_ctx.function_type(
+            vec![ts_class_t_var, class_decorator_context_ty],
+            ts_class_decorator_return,
+            false,
+        );
+        let _ = self.symbols.define(Symbol {
+            name: "TsClassDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: ts_class_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx
+            .register_named_type("TsClassDecorator".to_string(), ts_class_decorator_ty);
+
+        let ts_f_var = self.type_ctx.type_variable("F".to_string());
+        let ts_method_decorator_return = self.type_ctx.union_type(vec![ts_f_var, void_ty]);
+        let ts_method_decorator_ty = self.type_ctx.function_type(
+            vec![ts_f_var, method_decorator_context_ty],
+            ts_method_decorator_return,
+            false,
+        );
+        let _ = self.symbols.define(Symbol {
+            name: "TsMethodDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: ts_method_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx
+            .register_named_type("TsMethodDecorator".to_string(), ts_method_decorator_ty);
+
+        let ts_field_t_var = self.type_ctx.type_variable("This".to_string());
+        let ts_field_decorator_ty = self.type_ctx.function_type(
+            vec![ts_field_t_var, field_decorator_context_ty],
+            void_ty,
+            false,
+        );
+        let _ = self.symbols.define(Symbol {
+            name: "TsFieldDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: ts_field_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx
+            .register_named_type("TsFieldDecorator".to_string(), ts_field_decorator_ty);
+
+        let ts_param_t_var = self.type_ctx.type_variable("This".to_string());
+        let ts_param_decorator_ty = self.type_ctx.function_type(
+            vec![ts_param_t_var, parameter_decorator_context_ty],
+            void_ty,
+            false,
+        );
+        let _ = self.symbols.define(Symbol {
+            name: "TsParameterDecorator".to_string(),
+            kind: SymbolKind::TypeAlias,
+            ty: ts_param_decorator_ty,
+            flags: SymbolFlags {
+                is_exported: true,
+                is_const: true,
+                is_async: false,
+                is_readonly: true,
+                is_imported: false,
+            },
+            scope_id: self.symbols.current_scope_id(),
+            span: Span {
+                start: 0,
+                end: 0,
+                line: 0,
+                column: 0,
+            },
+            referenced: false,
+        });
+        self.type_ctx
+            .register_named_type("TsParameterDecorator".to_string(), ts_param_decorator_ty);
 
         // ClassDecorator<T> = (target: Class<T>) => Class<T> | void
         // For simplicity, we register it as a function type with type variable

@@ -5826,7 +5826,7 @@ impl<'a> TypeChecker<'a> {
     /// Check a single method decorator
     ///
     /// Raya supports two method decorator styles:
-    /// 1. Metadata style: (classId: number, methodName: string) => void
+    /// 1. Metadata style: (target: unknown, methodName: string) => void
     /// 2. Type-constrained style: (method: F) => F (where F is a specific function type)
     ///
     /// The type-constrained style allows decorators to constrain which methods they
@@ -5844,15 +5844,13 @@ impl<'a> TypeChecker<'a> {
 
         match func_ty_opt {
             Some(crate::parser::types::Type::Function(func)) => {
-                let num_ty = self.type_ctx.number_type();
                 let str_ty = self.type_ctx.string_type();
                 let void_ty = self.type_ctx.void_type();
 
-                // Check for metadata-style method decorator: (classId: number, methodName: string) => void
+                // Check for metadata-style method decorator: (target: unknown, methodName: string) => void
                 if func.params.len() == 2 {
                     let mut assign_ctx = self.make_assignability_ctx();
-                    if assign_ctx.is_assignable(num_ty, func.params[0])
-                        && assign_ctx.is_assignable(str_ty, func.params[1])
+                    if assign_ctx.is_assignable(str_ty, func.params[1])
                         && assign_ctx.is_assignable(func.return_type, void_ty)
                     {
                         // Valid metadata-style decorator - no method type constraint
@@ -6624,6 +6622,7 @@ mod tests {
         );
         assert!(result.is_ok(), "Expected ok, got {:?}", result);
     }
+
 
     #[test]
     fn test_decorator_factory_with_generic() {
