@@ -11,7 +11,7 @@
     <strong>modern VM</strong> designed for <strong>predictable performance</strong> 
     and <strong>native multi-core concurrency</strong>.
   </p>
-  <div>📚 Documentation: [https://raya.land](https://raya.land)</div>
+  <div>📚 Documentation: <a href="https://raya.land" target="_blank">https://raya.land</a></div>
 </div>
 
 ---
