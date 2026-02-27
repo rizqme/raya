@@ -3507,12 +3507,6 @@ impl<'a> Lowerer<'a> {
         // Lower the object expression
         let object = self.lower_expr(&cast.object);
 
-        // Primitive type casts (as string, as number, etc.) are no-ops —
-        // no runtime check needed in a statically-typed language
-        if self.is_primitive_type_cast(&cast.target_type) {
-            return object;
-        }
-
         // Resolve the class ID from the type annotation
         let class_id = self.resolve_class_from_type(&cast.target_type);
 
@@ -3526,21 +3520,6 @@ impl<'a> Lowerer<'a> {
         });
 
         dest
-    }
-
-    fn is_primitive_type_cast(&self, type_ann: &ast::TypeAnnotation) -> bool {
-        use crate::parser::ast::types::Type;
-        match &type_ann.ty {
-            Type::Primitive(_) => true,
-            Type::Reference(type_ref) => {
-                let name = self.interner.resolve(type_ref.name.name);
-                matches!(
-                    name,
-                    "string" | "number" | "boolean" | "int" | "void" | "null"
-                )
-            }
-            _ => false,
-        }
     }
 
     /// Resolve a ClassId from a type annotation

@@ -249,7 +249,13 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
         | CheckError::DecoratorReturnMismatch { span, .. }
         | CheckError::ReadonlyAssignment { span, .. }
         | CheckError::ConstReassignment { span, .. }
-        | CheckError::NewNonClass { span, .. } => {
+        | CheckError::NewNonClass { span, .. }
+        | CheckError::StrictAnyForbidden { span }
+        | CheckError::StrictBareLetForbidden { span }
+        | CheckError::ImplicitThisForbidden { span }
+        | CheckError::ImplicitAnyForbidden { span }
+        | CheckError::UnknownNotActionable { span, .. }
+        | CheckError::StrictPropertyInitialization { span, .. } => {
             if let Some(new_span) = adjust_span(*span, offset) {
                 *span = new_span;
             }

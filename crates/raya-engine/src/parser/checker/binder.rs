@@ -6,6 +6,7 @@
 use super::builtins::BuiltinSignatures;
 use super::error::BindError;
 use super::symbols::{ScopeKind, Symbol, SymbolFlags, SymbolKind, SymbolTable};
+use super::TypeSystemMode;
 use crate::parser::ast::*;
 use crate::parser::types::ty::{ClassType, MethodSignature, PropertySignature, Type};
 use crate::parser::types::{TypeContext, TypeId};
@@ -32,6 +33,8 @@ pub struct Binder<'a> {
     detect_top_level_duplicates: bool,
     /// Tracks type parameter names for generic type aliases (e.g., Container<T> → ["T"])
     generic_type_alias_params: std::collections::HashMap<String, Vec<String>>,
+    /// Type system behavior mode.
+    mode: TypeSystemMode,
 }
 
 impl<'a> Binder<'a> {
@@ -45,7 +48,14 @@ impl<'a> Binder<'a> {
             bound_functions: std::collections::HashMap::new(),
             detect_top_level_duplicates: true,
             generic_type_alias_params: std::collections::HashMap::new(),
+            mode: TypeSystemMode::Strict,
         }
+    }
+
+    /// Set checker/binder behavior mode.
+    pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// Disable top-level duplicate class/function detection.
@@ -2210,13 +2220,16 @@ impl<'a> Binder<'a> {
 
             // Bind catch parameter
             if let Some(ref param) = catch.param {
-                // Look up Error class type for catch parameter
-                // If Error class isn't registered, fall back to unknown
-                let error_ty = self
-                    .symbols
-                    .resolve("Error")
-                    .map(|s| s.ty)
-                    .unwrap_or_else(|| self.type_ctx.unknown_type());
+                // Strict mode defaults catch variables to unknown.
+                // NodeCompat keeps historical Error-like typing.
+                let error_ty = match self.mode {
+                    TypeSystemMode::Strict => self.type_ctx.unknown_type(),
+                    TypeSystemMode::NodeCompat => self
+                        .symbols
+                        .resolve("Error")
+                        .map(|s| s.ty)
+                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                };
 
                 // Bind all names in the pattern (handles destructuring)
                 self.bind_pattern_names(param, error_ty, true)?;
@@ -2384,6 +2397,16 @@ impl<'a> Binder<'a> {
             AstType::Reference(type_ref) => {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
+                if name == "any" {
+                    return match self.mode {
+                        TypeSystemMode::Strict => Err(BindError::InvalidTypeExpr {
+                            message: "E_STRICT_ANY_FORBIDDEN: `any` is not allowed in Raya strict mode".to_string(),
+                            span,
+                        }),
+                        // NodeCompat maps `any` to dynamic unknown-like type.
+                        TypeSystemMode::NodeCompat => Ok(self.type_ctx.unknown_type()),
+                    };
+                }
 
                 // Handle built-in generic types
                 use crate::parser::TypeContext as TC;

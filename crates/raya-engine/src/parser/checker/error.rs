@@ -39,7 +39,7 @@ pub enum BindError {
     },
 
     /// Invalid type expression
-    #[error("Invalid type expression")]
+    #[error("Invalid type expression: {message}")]
     InvalidTypeExpr {
         /// Error message
         message: String,
@@ -276,6 +276,52 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// `any` is forbidden in strict mode.
+    #[error("E_STRICT_ANY_FORBIDDEN: `any` is not allowed in strict mode")]
+    StrictAnyForbidden {
+        /// Location of forbidden `any` usage
+        span: Span,
+    },
+
+    /// Bare let declarations are forbidden in strict mode.
+    #[error("E_STRICT_BARE_LET_FORBIDDEN: `let` declarations require a type annotation or initializer in strict mode")]
+    StrictBareLetForbidden {
+        /// Location of forbidden bare let declaration
+        span: Span,
+    },
+
+    /// `this` cannot be implicitly unknown in strict mode.
+    #[error("E_STRICT_NO_IMPLICIT_THIS: `this` is not allowed outside a class/member context in strict mode")]
+    ImplicitThisForbidden {
+        /// Location of invalid `this` usage
+        span: Span,
+    },
+
+    /// Implicit any is forbidden in strict mode.
+    #[error("E_STRICT_NO_IMPLICIT_ANY: implicit `any` is not allowed in strict mode")]
+    ImplicitAnyForbidden {
+        /// Location of implicit any source
+        span: Span,
+    },
+
+    /// Actionable operation on unknown is forbidden in strict mode.
+    #[error("E_STRICT_UNKNOWN_NOT_ACTIONABLE: cannot use unknown in operation '{operation}' without narrowing or cast")]
+    UnknownNotActionable {
+        /// Operation name (member/call/index/arithmetic/etc.)
+        operation: String,
+        /// Location of operation
+        span: Span,
+    },
+
+    /// Strict property initialization failure.
+    #[error("E_STRICT_PROPERTY_INITIALIZATION: property '{property}' has no initializer and is not definitely assigned in constructor")]
+    StrictPropertyInitialization {
+        /// Uninitialized property name
+        property: String,
+        /// Location of property declaration
+        span: Span,
+    },
+
     // ========================================================================
     // Decorator Errors
     // ========================================================================
@@ -337,6 +383,12 @@ impl CheckError {
             CheckError::ReadonlyAssignment { span, .. } => *span,
             CheckError::ConstReassignment { span, .. } => *span,
             CheckError::NewNonClass { span, .. } => *span,
+            CheckError::StrictAnyForbidden { span } => *span,
+            CheckError::StrictBareLetForbidden { span } => *span,
+            CheckError::ImplicitThisForbidden { span } => *span,
+            CheckError::ImplicitAnyForbidden { span } => *span,
+            CheckError::UnknownNotActionable { span, .. } => *span,
+            CheckError::StrictPropertyInitialization { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,
             CheckError::DecoratorReturnMismatch { span, .. } => *span,

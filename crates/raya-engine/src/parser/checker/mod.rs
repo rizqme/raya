@@ -21,6 +21,16 @@ pub mod narrowing;
 pub mod symbols;
 pub mod type_guards;
 
+/// Type system behavior mode for checker/binder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TypeSystemMode {
+    /// Raya strict mode: no `any`, stricter inference/usage rules.
+    #[default]
+    Strict,
+    /// Node compatibility mode: TypeScript-like dynamic escape hatches.
+    NodeCompat,
+}
+
 // Re-export main types
 pub use binder::Binder;
 pub use builtins::{

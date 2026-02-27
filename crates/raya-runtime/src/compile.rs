@@ -7,7 +7,7 @@ use raya_engine::compiler::module::StdModuleRegistry;
 use raya_engine::parser::ast::ImportSpecifier;
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
-    BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker,
+    BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker, TypeSystemMode,
 };
 use raya_engine::parser::{Interner, LexError, ParseError, Parser, TypeContext};
 use std::collections::HashSet;
@@ -17,6 +17,14 @@ use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
 use crate::BuiltinMode;
+
+#[inline]
+fn type_system_mode(mode: BuiltinMode) -> TypeSystemMode {
+    match mode {
+        BuiltinMode::RayaStrict => TypeSystemMode::Strict,
+        BuiltinMode::NodeCompat => TypeSystemMode::NodeCompat,
+    }
+}
 
 /// Options controlling compilation output.
 #[derive(Debug, Clone, Default)]
@@ -79,7 +87,8 @@ pub fn compile_source_with_mode(
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder =
+        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
 
     // Register only intrinsics (__NATIVE_CALL, etc.) — builtin class sources
     // are included in the source text, so their types come from parsing.
@@ -99,6 +108,7 @@ pub fn compile_source_with_mode(
 
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+        .with_mode(type_system_mode(builtin_mode))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -176,7 +186,8 @@ pub fn compile_source_with_options_and_mode(
 
     // Bind (creates symbol table)
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder =
+        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
     binder.skip_top_level_duplicate_detection();
@@ -193,6 +204,7 @@ pub fn compile_source_with_options_and_mode(
 
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+        .with_mode(type_system_mode(builtin_mode))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -259,7 +271,8 @@ pub fn check_source_with_mode(
 
     // Bind
     let mut type_ctx = TypeContext::new();
-    let mut binder = Binder::new(&mut type_ctx, &interner);
+    let mut binder =
+        Binder::new(&mut type_ctx, &interner).with_mode(type_system_mode(builtin_mode));
     let empty_sigs: Vec<raya_engine::parser::checker::BuiltinSignatures> = vec![];
     binder.register_builtins(&empty_sigs);
     binder.skip_top_level_duplicate_detection();
@@ -274,6 +287,7 @@ pub fn check_source_with_mode(
         Ok(symbols) => {
             // Binding succeeded — run type checker
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
+                .with_mode(type_system_mode(builtin_mode))
                 .with_skip_class_bodies_before(user_offset);
             match checker.check_module(&ast) {
                 Ok(result) => (vec![], vec![], result.warnings),
@@ -1664,6 +1678,245 @@ mod tests {
         assert!(
             result.is_ok(),
             "shadowing ArrayBuffer symbol should be allowed in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_any_forbidden_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let x: any = 1;
+            return x;
+            "#,
+        );
+        assert!(result.is_err(), "`any` should be forbidden in strict mode");
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("E_STRICT_ANY_FORBIDDEN"),
+            "expected strict-any error code, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_any_allowed_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let x: any = 1;
+            x = "ok";
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(result.is_ok(), "`any` should be allowed in node-compat mode");
+    }
+
+    #[test]
+    fn test_bare_let_forbidden_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let x;
+            x = 1;
+            return x;
+            "#,
+        );
+        assert!(result.is_err(), "bare let should be forbidden in strict mode");
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("E_STRICT_BARE_LET_FORBIDDEN"),
+            "expected strict bare-let error code, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_bare_let_allowed_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            let x;
+            x = 1;
+            return x;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(result.is_ok(), "bare let should be allowed in node-compat mode");
+    }
+
+    #[test]
+    fn test_no_implicit_this_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            function f(): number {
+                return this as number;
+            }
+            return f();
+            "#,
+        );
+        assert!(result.is_err(), "implicit this should be forbidden in strict mode");
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("E_STRICT_NO_IMPLICIT_THIS"),
+            "expected strict implicit-this error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_unknown_not_actionable_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            let x: unknown = 1;
+            return x.toString();
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "unknown member access should be forbidden in strict mode"
+        );
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("E_STRICT_UNKNOWN_NOT_ACTIONABLE"),
+            "expected unknown-not-actionable error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_strict_property_initialization_required_in_strict_mode() {
+        let result = compile_source(
+            r#"
+            class User {
+                name: string;
+            }
+            return 0;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "uninitialized instance field should fail in strict mode"
+        );
+        let msg = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(
+            msg.contains("E_STRICT_PROPERTY_INITIALIZATION"),
+            "expected strict property initialization error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_strict_property_initialization_not_required_in_node_compat_mode() {
+        let result = compile_source_with_mode(
+            r#"
+            class User {
+                name: string;
+            }
+            return 0;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "uninitialized instance field should be allowed in node-compat mode"
+        );
+    }
+
+    #[test]
+    fn test_strict_bind_call_apply_valid() {
+        let result = compile_source(
+            r#"
+            function add(a: number, b: number): number { return a + b; }
+            let plusOne = add.bind(null, 1);
+            let x = plusOne(2);
+            let y = add.call(null, 3, 4);
+            let z = add.apply(null, [5, 6]);
+            return x + y + z;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "bind/call/apply should type-check for compatible signatures in strict mode"
+        );
+    }
+
+    #[test]
+    fn test_strict_call_rejects_wrong_args() {
+        let result = compile_source(
+            r#"
+            function add(a: number, b: number): number { return a + b; }
+            return add.call(null, "x", 2);
+            "#,
+        );
+        assert!(result.is_err(), "strict call should reject wrong argument type");
+    }
+
+    #[test]
+    fn test_strict_apply_rejects_non_array_args_list() {
+        let result = compile_source(
+            r#"
+            function add(a: number, b: number): number { return a + b; }
+            return add.apply(null, 1);
+            "#,
+        );
+        assert!(result.is_err(), "strict apply should require tuple/array args list");
+    }
+
+    #[test]
+    fn test_strict_null_checks_reject_null_to_string() {
+        let result = compile_source(
+            r#"
+            let s: string = null;
+            return s;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict mode should reject null assignment to string"
+        );
+    }
+
+    #[test]
+    fn test_node_compat_allows_null_to_string_assignment() {
+        let result = compile_source_with_mode(
+            r#"
+            let s: string = null;
+            return s;
+            "#,
+            BuiltinMode::NodeCompat,
+        );
+        assert!(
+            result.is_ok(),
+            "node-compat should allow non-strict null coercion behavior"
+        );
+    }
+
+    #[test]
+    fn test_strict_function_types_reject_unsafe_parameter_variance() {
+        let result = compile_source(
+            r#"
+            class Animal { name: string = "a"; }
+            class Dog extends Animal { breed: string = "b"; }
+
+            let dogOnly: (d: Dog) => void = (d: Dog): void => {};
+            let bad: (a: Animal) => void = dogOnly;
+            bad(new Animal());
+            return 0;
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict function types should reject unsafe callback variance"
+        );
+    }
+
+    #[test]
+    fn test_strict_catch_variable_unknown_requires_narrowing() {
+        let result = compile_source(
+            r#"
+            try {
+                throw "x";
+            } catch (e) {
+                return e.toString();
+            }
+            "#,
+        );
+        assert!(
+            result.is_err(),
+            "strict catch variable should be unknown and not directly actionable"
         );
     }
 }

@@ -12,12 +12,13 @@ use super::exhaustiveness::{check_switch_exhaustiveness, ExhaustivenessResult};
 use super::narrowing::{apply_type_guard, TypeEnv};
 use super::symbols::{SymbolKind, SymbolTable};
 use super::type_guards::{extract_all_type_guards, extract_type_guard, TypeGuard};
+use super::TypeSystemMode;
 use crate::parser::ast::*;
 use crate::parser::token::Span;
 use crate::parser::types::normalize::contains_type_variables;
 use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, TypeId};
 use crate::{Interner, Symbol as ParserSymbol};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Get the variable name from a type guard
 fn get_guard_var(guard: &TypeGuard) -> &String {
@@ -173,6 +174,8 @@ pub struct TypeChecker<'a> {
     /// will skip full member body checking and only sync scopes.
     /// Used by runtime compile pipeline to trust prepended builtin/stdlib sources.
     skip_class_bodies_before: Option<usize>,
+    /// Type-system behavior mode.
+    mode: TypeSystemMode,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -201,7 +204,40 @@ impl<'a> TypeChecker<'a> {
             warnings: Vec::new(),
             skip_class_bodies_before: None,
             return_type_collector: Vec::new(),
+            mode: TypeSystemMode::Strict,
         }
+    }
+
+    /// Set checker behavior mode.
+    pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    #[inline]
+    fn is_strict_mode(&self) -> bool {
+        matches!(self.mode, TypeSystemMode::Strict)
+    }
+
+    #[inline]
+    fn type_is_unknown(&mut self, ty: TypeId) -> bool {
+        matches!(
+            self.type_ctx.get(ty),
+            Some(crate::parser::types::Type::Unknown)
+        )
+    }
+
+    fn check_unknown_actionable(&mut self, ty: TypeId, operation: &str, span: Span) {
+        if self.is_strict_mode() && self.type_is_unknown(ty) {
+            self.errors.push(CheckError::UnknownNotActionable {
+                operation: operation.to_string(),
+                span,
+            });
+        }
+    }
+
+    fn make_assignability_ctx(&self) -> AssignabilityContext<'_> {
+        AssignabilityContext::with_strict_mode(self.type_ctx, self.is_strict_mode())
     }
 
     /// Skip full class member body checking for classes before `offset`.
@@ -351,6 +387,15 @@ impl<'a> TypeChecker<'a> {
 
     /// Check variable declaration
     fn check_var_decl(&mut self, decl: &VariableDecl) {
+        if self.is_strict_mode()
+            && decl.kind == VariableKind::Let
+            && decl.type_annotation.is_none()
+            && decl.initializer.is_none()
+        {
+            self.errors.push(CheckError::StrictBareLetForbidden { span: decl.span });
+            return;
+        }
+
         if let Some(ref init) = decl.initializer {
             let init_ty = self.check_expr(init);
 
@@ -473,6 +518,15 @@ impl<'a> TypeChecker<'a> {
     fn check_function(&mut self, func: &FunctionDecl) {
         let saved_env = self.type_env.clone();
         self.type_env = TypeEnv::new();
+
+        if self.is_strict_mode() {
+            for param in &func.params {
+                if param.type_annotation.is_none() {
+                    self.errors
+                        .push(CheckError::ImplicitAnyForbidden { span: param.span });
+                }
+            }
+        }
 
         // Get return type from symbol table
         let func_name = self.resolve(func.name.name);
@@ -775,6 +829,10 @@ impl<'a> TypeChecker<'a> {
                     self.type_env = TypeEnv::new();
 
                     for param in &ctor.params {
+                        if self.is_strict_mode() && param.type_annotation.is_none() {
+                            self.errors
+                                .push(CheckError::ImplicitAnyForbidden { span: param.span });
+                        }
                         self.check_parameter_decorators(param);
                     }
 
@@ -807,6 +865,12 @@ impl<'a> TypeChecker<'a> {
                 }
                 crate::parser::ast::ClassMember::Field(field) => {
                     self.check_field_decorators(field);
+                    if self.is_strict_mode()
+                        && field.type_annotation.is_none()
+                        && field.initializer.is_none()
+                    {
+                        self.errors.push(CheckError::ImplicitAnyForbidden { span: field.span });
+                    }
 
                     if let Some(ref init) = field.initializer {
                         let init_ty = self.check_expr(init);
@@ -819,11 +883,225 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // strictPropertyInitialization: non-static fields without initializer
+        // must be definitely assigned in constructor.
+        if self.is_strict_mode() {
+            let required_fields: Vec<(String, Span)> = class
+                .members
+                .iter()
+                .filter_map(|m| {
+                    if let crate::parser::ast::ClassMember::Field(field) = m {
+                        if !field.is_static && field.initializer.is_none() {
+                            return Some((self.resolve(field.name.name), field.span));
+                        }
+                    }
+                    None
+                })
+                .collect();
+
+            if !required_fields.is_empty() {
+                let ctor_opt = class.members.iter().find_map(|m| {
+                    if let crate::parser::ast::ClassMember::Constructor(ctor) = m {
+                        Some(ctor)
+                    } else {
+                        None
+                    }
+                });
+
+                let mut assigned = FxHashSet::default();
+                if let Some(ctor) = ctor_opt {
+                    for param in &ctor.params {
+                        if param.visibility.is_some() {
+                            if let Pattern::Identifier(id) = &param.pattern {
+                                assigned.insert(self.resolve(id.name));
+                            }
+                        }
+                    }
+                    self.collect_this_assignments_block(&ctor.body, &mut assigned);
+                }
+
+                for (name, span) in required_fields {
+                    if !assigned.contains(&name) {
+                        self.errors.push(CheckError::StrictPropertyInitialization {
+                            property: name,
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+
         // Exit class scope
         self.exit_scope();
 
         // Restore previous class type (for nested classes)
         self.current_class_type = prev_class_type;
+    }
+
+    fn collect_this_assignments_block(
+        &self,
+        block: &crate::parser::ast::BlockStatement,
+        assigned: &mut FxHashSet<String>,
+    ) {
+        for stmt in &block.statements {
+            self.collect_this_assignments_stmt(stmt, assigned);
+        }
+    }
+
+    fn collect_this_assignments_stmt(&self, stmt: &crate::parser::ast::Statement, assigned: &mut FxHashSet<String>) {
+        use crate::parser::ast::Statement;
+        match stmt {
+            Statement::Expression(expr_stmt) => {
+                self.collect_this_assignments_expr(&expr_stmt.expression, assigned)
+            }
+            Statement::If(s) => {
+                self.collect_this_assignments_expr(&s.condition, assigned);
+                self.collect_this_assignments_stmt(&s.then_branch, assigned);
+                if let Some(else_branch) = &s.else_branch {
+                    self.collect_this_assignments_stmt(else_branch, assigned);
+                }
+            }
+            Statement::While(s) => {
+                self.collect_this_assignments_expr(&s.condition, assigned);
+                self.collect_this_assignments_stmt(&s.body, assigned);
+            }
+            Statement::DoWhile(s) => {
+                self.collect_this_assignments_stmt(&s.body, assigned);
+                self.collect_this_assignments_expr(&s.condition, assigned);
+            }
+            Statement::For(s) => {
+                if let Some(init) = &s.init {
+                    match init {
+                        crate::parser::ast::ForInit::Expression(e) => {
+                            self.collect_this_assignments_expr(e, assigned)
+                        }
+                        crate::parser::ast::ForInit::VariableDecl(decl) => {
+                            if let Some(init) = &decl.initializer {
+                                self.collect_this_assignments_expr(init, assigned);
+                            }
+                        }
+                    }
+                }
+                if let Some(test) = &s.test {
+                    self.collect_this_assignments_expr(test, assigned);
+                }
+                if let Some(update) = &s.update {
+                    self.collect_this_assignments_expr(update, assigned);
+                }
+                self.collect_this_assignments_stmt(&s.body, assigned);
+            }
+            Statement::ForOf(s) => {
+                self.collect_this_assignments_expr(&s.right, assigned);
+                self.collect_this_assignments_stmt(&s.body, assigned);
+            }
+            Statement::Switch(s) => {
+                self.collect_this_assignments_expr(&s.discriminant, assigned);
+                for case in &s.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_this_assignments_expr(test, assigned);
+                    }
+                    for cons in &case.consequent {
+                        self.collect_this_assignments_stmt(cons, assigned);
+                    }
+                }
+            }
+            Statement::Try(s) => {
+                self.collect_this_assignments_block(&s.body, assigned);
+                if let Some(c) = &s.catch_clause {
+                    self.collect_this_assignments_block(&c.body, assigned);
+                }
+                if let Some(f) = &s.finally_clause {
+                    self.collect_this_assignments_block(f, assigned);
+                }
+            }
+            Statement::Return(s) => {
+                if let Some(v) = &s.value {
+                    self.collect_this_assignments_expr(v, assigned);
+                }
+            }
+            Statement::Throw(s) => self.collect_this_assignments_expr(&s.value, assigned),
+            Statement::Block(b) => self.collect_this_assignments_block(b, assigned),
+            _ => {}
+        }
+    }
+
+    fn collect_this_assignments_expr(
+        &self,
+        expr: &crate::parser::ast::Expression,
+        assigned: &mut FxHashSet<String>,
+    ) {
+        use crate::parser::ast::Expression;
+        match expr {
+            Expression::Assignment(a) => {
+                if let Expression::Member(member) = &*a.left {
+                    if matches!(&*member.object, Expression::This(_)) {
+                        assigned.insert(self.resolve(member.property.name));
+                    }
+                }
+                self.collect_this_assignments_expr(&a.left, assigned);
+                self.collect_this_assignments_expr(&a.right, assigned);
+            }
+            Expression::Call(c) => {
+                self.collect_this_assignments_expr(&c.callee, assigned);
+                for a in &c.arguments {
+                    self.collect_this_assignments_expr(a, assigned);
+                }
+            }
+            Expression::AsyncCall(c) => {
+                self.collect_this_assignments_expr(&c.callee, assigned);
+                for a in &c.arguments {
+                    self.collect_this_assignments_expr(a, assigned);
+                }
+            }
+            Expression::Member(m) => self.collect_this_assignments_expr(&m.object, assigned),
+            Expression::Index(i) => {
+                self.collect_this_assignments_expr(&i.object, assigned);
+                self.collect_this_assignments_expr(&i.index, assigned);
+            }
+            Expression::Unary(u) => self.collect_this_assignments_expr(&u.operand, assigned),
+            Expression::Binary(b) => {
+                self.collect_this_assignments_expr(&b.left, assigned);
+                self.collect_this_assignments_expr(&b.right, assigned);
+            }
+            Expression::Logical(l) => {
+                self.collect_this_assignments_expr(&l.left, assigned);
+                self.collect_this_assignments_expr(&l.right, assigned);
+            }
+            Expression::Conditional(c) => {
+                self.collect_this_assignments_expr(&c.test, assigned);
+                self.collect_this_assignments_expr(&c.consequent, assigned);
+                self.collect_this_assignments_expr(&c.alternate, assigned);
+            }
+            Expression::Parenthesized(p) => self.collect_this_assignments_expr(&p.expression, assigned),
+            Expression::TypeCast(c) => self.collect_this_assignments_expr(&c.object, assigned),
+            Expression::InstanceOf(i) => self.collect_this_assignments_expr(&i.object, assigned),
+            Expression::Await(a) => self.collect_this_assignments_expr(&a.argument, assigned),
+            Expression::Array(a) => {
+                for e in &a.elements {
+                    if let Some(elem) = e {
+                        match elem {
+                            crate::parser::ast::ArrayElement::Expression(expr)
+                            | crate::parser::ast::ArrayElement::Spread(expr) => {
+                                self.collect_this_assignments_expr(expr, assigned);
+                            }
+                        }
+                    }
+                }
+            }
+            Expression::Object(o) => {
+                for p in &o.properties {
+                    match p {
+                        crate::parser::ast::ObjectProperty::Property(prop) => {
+                            self.collect_this_assignments_expr(&prop.value, assigned);
+                        }
+                        crate::parser::ast::ObjectProperty::Spread(spread) => {
+                            self.collect_this_assignments_expr(&spread.argument, assigned);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Check return statement
@@ -1410,11 +1688,16 @@ impl<'a> TypeChecker<'a> {
             // Check catch parameter pattern (handles destructuring)
             if let Some(ref param) = catch.param {
                 let catch_ty = match param {
-                    Pattern::Identifier(_) => self
-                        .symbols
-                        .resolve("Error")
-                        .map(|s| s.ty)
-                        .unwrap_or_else(|| self.type_ctx.unknown_type()),
+                    Pattern::Identifier(_) => {
+                        if self.is_strict_mode() {
+                            self.type_ctx.unknown_type()
+                        } else {
+                            self.symbols
+                                .resolve("Error")
+                                .map(|s| s.ty)
+                                .unwrap_or_else(|| self.type_ctx.unknown_type())
+                        }
+                    }
                     // Destructuring catch params need to accept arbitrary thrown values.
                     _ => self.type_ctx.unknown_type(),
                 };
@@ -1466,7 +1749,7 @@ impl<'a> TypeChecker<'a> {
             Expression::Arrow(arrow) => self.check_arrow(arrow),
             Expression::Index(index) => self.check_index(index),
             Expression::New(new_expr) => self.check_new(new_expr),
-            Expression::This(_) => self.check_this(),
+            Expression::This(span) => self.check_this(*span),
             Expression::Await(await_expr) => self.check_await(await_expr),
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
@@ -1546,6 +1829,8 @@ impl<'a> TypeChecker<'a> {
     fn check_binary(&mut self, bin: &BinaryExpression) -> TypeId {
         let left_ty = self.check_expr(&bin.left);
         let right_ty = self.check_expr(&bin.right);
+        self.check_unknown_actionable(left_ty, "binary", *bin.left.span());
+        self.check_unknown_actionable(right_ty, "binary", *bin.right.span());
 
         match bin.operator {
             BinaryOperator::Add => {
@@ -1638,7 +1923,7 @@ impl<'a> TypeChecker<'a> {
                 // (or we take a union of both)
                 if non_null_ty != right_ty {
                     // Check if right is assignable to non-null left type
-                    let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+                    let mut assign_ctx = self.make_assignability_ctx();
                     if !assign_ctx.is_assignable(right_ty, non_null_ty) {
                         // If not directly assignable, result is union of both
                         return self.type_ctx.union_type(vec![non_null_ty, right_ty]);
@@ -1690,6 +1975,7 @@ impl<'a> TypeChecker<'a> {
     /// Check unary expression
     fn check_unary(&mut self, un: &UnaryExpression) -> TypeId {
         let operand_ty = self.check_expr(&un.operand);
+        self.check_unknown_actionable(operand_ty, "unary", *un.operand.span());
 
         match un.operator {
             UnaryOperator::Not => {
@@ -1752,7 +2038,13 @@ impl<'a> TypeChecker<'a> {
             return intrinsic_ty;
         }
 
+        // Function helper calls: fn.call(...), fn.apply(...), fn.bind(...)
+        if let Some(helper_ty) = self.try_check_function_helper_call(call) {
+            return helper_ty;
+        }
+
         let callee_ty = self.check_expr(&call.callee);
+        self.check_unknown_actionable(callee_ty, "call", *call.callee.span());
 
         // Check all argument types first (before creating GenericContext)
         let arg_types: Vec<(TypeId, crate::parser::Span)> = call
@@ -1929,6 +2221,280 @@ impl<'a> TypeChecker<'a> {
                 self.type_ctx.unknown_type()
             }
         }
+    }
+
+    fn try_check_function_helper_call(&mut self, call: &CallExpression) -> Option<TypeId> {
+        let Expression::Member(member) = call.callee.as_ref() else {
+            return None;
+        };
+        let helper = self.resolve(member.property.name);
+        if helper != "call" && helper != "apply" && helper != "bind" {
+            return None;
+        }
+
+        let target_ty = self.check_expr(&member.object);
+        self.check_unknown_actionable(target_ty, "call", *member.object.span());
+        let target_fn = match self.type_ctx.get(target_ty).cloned() {
+            Some(crate::parser::types::Type::Function(func)) => func,
+            _ => {
+                // Keep argument checking behavior for better diagnostics.
+                for arg in &call.arguments {
+                    self.check_expr(arg);
+                }
+                self.errors.push(CheckError::NotCallable {
+                    ty: self.format_type(target_ty),
+                    span: *member.object.span(),
+                });
+                return Some(self.type_ctx.unknown_type());
+            }
+        };
+
+        let arg_types: Vec<(TypeId, crate::parser::Span)> = call
+            .arguments
+            .iter()
+            .map(|arg| (self.check_expr(arg), *arg.span()))
+            .collect();
+
+        match helper.as_str() {
+            "call" => {
+                self.check_function_args_for_helper(&target_fn, &arg_types, 1, call.span);
+                Some(target_fn.return_type)
+            }
+            "apply" => {
+                self.check_apply_helper_args(&target_fn, &arg_types, call.span);
+                Some(target_fn.return_type)
+            }
+            "bind" => {
+                let bound_count = self.check_bind_helper_args(&target_fn, &arg_types, call.span);
+                Some(self.make_bound_function_type(&target_fn, bound_count))
+            }
+            _ => None,
+        }
+    }
+
+    fn compute_fn_arity_bounds(
+        &self,
+        func: &crate::parser::types::ty::FunctionType,
+    ) -> (usize, usize) {
+        let fixed_len = func.params.len();
+        match func
+            .rest_param
+            .and_then(|rest| self.type_ctx.get(rest))
+            .cloned()
+        {
+            Some(crate::parser::types::Type::Tuple(t)) => {
+                (func.min_params + t.elements.len(), fixed_len + t.elements.len())
+            }
+            Some(crate::parser::types::Type::Array(_)) => (func.min_params, usize::MAX),
+            Some(_) => (func.min_params, usize::MAX),
+            None => (func.min_params, fixed_len),
+        }
+    }
+
+    fn helper_param_type_at(
+        &self,
+        func: &crate::parser::types::ty::FunctionType,
+        index: usize,
+    ) -> Option<TypeId> {
+        if index < func.params.len() {
+            return Some(func.params[index]);
+        }
+        let rest_index = index.saturating_sub(func.params.len());
+        match func
+            .rest_param
+            .and_then(|rest| self.type_ctx.get(rest))
+            .cloned()
+        {
+            Some(crate::parser::types::Type::Tuple(t)) => t.elements.get(rest_index).copied(),
+            Some(crate::parser::types::Type::Array(arr)) => Some(arr.element),
+            _ => None,
+        }
+    }
+
+    /// Check args for fn.call/fn.bind style helpers.
+    /// `skip` is the number of leading helper args ignored for target invocation (thisArg).
+    /// Returns count of consumed function arguments after the skipped helper args.
+    fn check_function_args_for_helper(
+        &mut self,
+        func: &crate::parser::types::ty::FunctionType,
+        helper_args: &[(TypeId, crate::parser::Span)],
+        skip: usize,
+        span: crate::parser::Span,
+    ) -> usize {
+        if helper_args.len() < skip {
+            self.errors.push(CheckError::ArgumentCountMismatch {
+                expected: skip,
+                min_expected: skip,
+                actual: helper_args.len(),
+                span,
+            });
+            return 0;
+        }
+
+        let invocation_count = helper_args.len() - skip;
+        let (min_args, max_args) = self.compute_fn_arity_bounds(func);
+        if invocation_count < min_args || invocation_count > max_args {
+            self.errors.push(CheckError::ArgumentCountMismatch {
+                expected: max_args,
+                min_expected: min_args,
+                actual: invocation_count,
+                span,
+            });
+        }
+
+        for (idx, &(arg_ty, arg_span)) in helper_args.iter().skip(skip).enumerate() {
+            if let Some(param_ty) = self.helper_param_type_at(func, idx) {
+                self.check_assignable(arg_ty, param_ty, arg_span);
+            }
+        }
+
+        invocation_count
+    }
+
+    fn check_apply_helper_args(
+        &mut self,
+        func: &crate::parser::types::ty::FunctionType,
+        helper_args: &[(TypeId, crate::parser::Span)],
+        span: crate::parser::Span,
+    ) {
+        if helper_args.is_empty() || helper_args.len() > 2 {
+            self.errors.push(CheckError::ArgumentCountMismatch {
+                expected: 2,
+                min_expected: 1,
+                actual: helper_args.len(),
+                span,
+            });
+            return;
+        }
+
+        // fn.apply(thisArg) is valid and equivalent to empty arg list.
+        if helper_args.len() == 1 {
+            let (min_args, _max_args) = self.compute_fn_arity_bounds(func);
+            if min_args > 0 {
+                self.errors.push(CheckError::ArgumentCountMismatch {
+                    expected: func.params.len(),
+                    min_expected: min_args,
+                    actual: 0,
+                    span,
+                });
+            }
+            return;
+        }
+
+        let (args_ty, args_span) = helper_args[1];
+        match self.type_ctx.get(args_ty).cloned() {
+            Some(crate::parser::types::Type::Tuple(t)) => {
+                let tuple_args: Vec<(TypeId, crate::parser::Span)> =
+                    t.elements.iter().copied().map(|ty| (ty, args_span)).collect();
+                self.check_function_args_for_helper(func, &tuple_args, 0, span);
+            }
+            Some(crate::parser::types::Type::Array(arr)) => {
+                // With homogeneous arrays, each function parameter must accept the element type.
+                let elem_ty = arr.element;
+                let (min_args, _max_args) = self.compute_fn_arity_bounds(func);
+                if min_args > 0 {
+                    for idx in 0..min_args {
+                        if let Some(param_ty) = self.helper_param_type_at(func, idx) {
+                            self.check_assignable(elem_ty, param_ty, args_span);
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.errors.push(CheckError::TypeMismatch {
+                    expected: "tuple or array".to_string(),
+                    actual: self.format_type(args_ty),
+                    span: args_span,
+                    note: Some(
+                        "Function.prototype.apply expects argument list as tuple/array".to_string(),
+                    ),
+                });
+            }
+        }
+    }
+
+    /// Check args for fn.bind(thisArg, ...boundArgs).
+    /// Returns number of bound args (excluding thisArg).
+    fn check_bind_helper_args(
+        &mut self,
+        func: &crate::parser::types::ty::FunctionType,
+        helper_args: &[(TypeId, crate::parser::Span)],
+        span: crate::parser::Span,
+    ) -> usize {
+        if helper_args.is_empty() {
+            self.errors.push(CheckError::ArgumentCountMismatch {
+                expected: 1,
+                min_expected: 1,
+                actual: 0,
+                span,
+            });
+            return 0;
+        }
+
+        let bound_count = helper_args.len() - 1;
+        let (_min_args, max_args) = self.compute_fn_arity_bounds(func);
+        if bound_count > max_args {
+            self.errors.push(CheckError::ArgumentCountMismatch {
+                expected: max_args,
+                min_expected: 0,
+                actual: bound_count,
+                span,
+            });
+        }
+
+        for (idx, &(arg_ty, arg_span)) in helper_args.iter().skip(1).enumerate() {
+            if let Some(param_ty) = self.helper_param_type_at(func, idx) {
+                self.check_assignable(arg_ty, param_ty, arg_span);
+            }
+        }
+
+        bound_count
+    }
+
+    fn make_bound_function_type(
+        &mut self,
+        func: &crate::parser::types::ty::FunctionType,
+        bound_arg_count: usize,
+    ) -> TypeId {
+        let mut remaining_params = func.params.clone();
+        let mut remaining_rest = func.rest_param;
+        let mut consumed = bound_arg_count;
+
+        if consumed >= remaining_params.len() {
+            consumed -= remaining_params.len();
+            remaining_params.clear();
+        } else {
+            remaining_params = remaining_params[consumed..].to_vec();
+            consumed = 0;
+        }
+
+        if consumed > 0 {
+            if let Some(rest_ty) = remaining_rest {
+                match self.type_ctx.get(rest_ty).cloned() {
+                    Some(crate::parser::types::Type::Tuple(t)) => {
+                        if consumed >= t.elements.len() {
+                            remaining_rest = None;
+                        } else {
+                            remaining_rest =
+                                Some(self.type_ctx.tuple_type(t.elements[consumed..].to_vec()));
+                        }
+                    }
+                    Some(crate::parser::types::Type::Array(_)) => {
+                        // Still variadic after consuming prefix arguments.
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let min_params = func.min_params.saturating_sub(bound_arg_count);
+        self.type_ctx.function_type_with_rest(
+            remaining_params,
+            func.return_type,
+            func.is_async,
+            min_params,
+            remaining_rest,
+        )
     }
 
     /// Collect free variables from an expression
@@ -2242,6 +2808,10 @@ impl<'a> TypeChecker<'a> {
         let mut param_types = Vec::new();
 
         for param in &arrow.params {
+            if self.is_strict_mode() && param.type_annotation.is_none() {
+                self.errors
+                    .push(CheckError::ImplicitAnyForbidden { span: param.span });
+            }
             let param_ty = param
                 .type_annotation
                 .as_ref()
@@ -2450,6 +3020,7 @@ impl<'a> TypeChecker<'a> {
     fn check_index(&mut self, index: &crate::parser::ast::IndexExpression) -> TypeId {
         let object_ty = self.check_expr(&index.object);
         let _index_ty = self.check_expr(&index.index);
+        self.check_unknown_actionable(object_ty, "index", *index.object.span());
 
         // Get element type if object is an array
         if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(object_ty) {
@@ -2574,10 +3145,13 @@ impl<'a> TypeChecker<'a> {
     }
 
     /// Check this expression
-    fn check_this(&mut self) -> TypeId {
+    fn check_this(&mut self, span: Span) -> TypeId {
         // Return the current class type if we're inside a class method
         if let Some(class_ty) = self.current_class_type {
             return class_ty;
+        }
+        if self.is_strict_mode() {
+            self.errors.push(CheckError::ImplicitThisForbidden { span });
         }
         // Outside of a class, 'this' is unknown
         self.type_ctx.unknown_type()
@@ -2791,6 +3365,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         let object_ty = self.check_expr(&member.object);
+        self.check_unknown_actionable(object_ty, "member", *member.object.span());
 
         // Check for forbidden access to $type/$value on bare unions
         if property_name == "$type" || property_name == "$value" {
@@ -4162,7 +4737,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check if source type is assignable to target type
     fn check_assignable(&mut self, source: TypeId, target: TypeId, span: crate::parser::Span) {
-        let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+        let mut assign_ctx = self.make_assignability_ctx();
         if !assign_ctx.is_assignable(source, target) {
             self.errors.push(CheckError::TypeMismatch {
                 expected: self.format_type(target),
@@ -4230,6 +4805,14 @@ impl<'a> TypeChecker<'a> {
             AstType::Reference(type_ref) => {
                 // Check if it's a user-defined type or type parameter
                 let name = self.resolve(type_ref.name.name);
+                if name == "any" {
+                    if self.is_strict_mode() {
+                        self.errors.push(CheckError::StrictAnyForbidden {
+                            span: type_ref.name.span,
+                        });
+                    }
+                    return self.type_ctx.unknown_type();
+                }
 
                 // Handle built-in generic types
                 use crate::parser::TypeContext as TC;
@@ -4733,7 +5316,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Check for metadata-style method decorator: (classId: number, methodName: string) => void
                 if func.params.len() == 2 {
-                    let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+                    let mut assign_ctx = self.make_assignability_ctx();
                     if assign_ctx.is_assignable(num_ty, func.params[0])
                         && assign_ctx.is_assignable(str_ty, func.params[1])
                         && assign_ctx.is_assignable(func.return_type, void_ty)
@@ -4753,7 +5336,7 @@ impl<'a> TypeChecker<'a> {
                     {
                         // This is a type-constrained decorator
                         // Check if the method type is assignable to the parameter type
-                        let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+                        let mut assign_ctx = self.make_assignability_ctx();
                         if !assign_ctx.is_assignable(method_ty, param_ty) {
                             self.errors.push(CheckError::DecoratorSignatureMismatch {
                                 expected_signature: self.type_ctx.display(param_ty),
@@ -4824,7 +5407,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Second parameter should be string
                 let string_ty = self.type_ctx.string_type();
-                let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
+                let mut assign_ctx = self.make_assignability_ctx();
                 if !assign_ctx.is_assignable(string_ty, func.params[1]) {
                     self.errors.push(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
@@ -4890,9 +5473,11 @@ impl<'a> TypeChecker<'a> {
                 // Second parameter should be string
                 let string_ty = self.type_ctx.string_type();
                 let number_ty = self.type_ctx.number_type();
-                let mut assign_ctx = AssignabilityContext::new(self.type_ctx);
-
-                if !assign_ctx.is_assignable(string_ty, func.params[1]) {
+                let second_ok = {
+                    let mut assign_ctx = self.make_assignability_ctx();
+                    assign_ctx.is_assignable(string_ty, func.params[1])
+                };
+                if !second_ok {
                     self.errors.push(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ParameterDecorator<T> - second param should be string"
@@ -4902,7 +5487,11 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 // Third parameter should be number
-                if !assign_ctx.is_assignable(number_ty, func.params[2]) {
+                let third_ok = {
+                    let mut assign_ctx = self.make_assignability_ctx();
+                    assign_ctx.is_assignable(number_ty, func.params[2])
+                };
+                if !third_ok {
                     self.errors.push(CheckError::InvalidDecorator {
                         ty: self.type_ctx.display(decorator_ty),
                         expected: "ParameterDecorator<T> - third param should be number"
@@ -5284,7 +5873,7 @@ mod tests {
 
             class User {
                 @Column
-                name: string;
+                name: string = "guest";
             }
         "#,
         );
