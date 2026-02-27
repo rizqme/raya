@@ -2177,6 +2177,29 @@ fn test_node_compat_reflect_global_basic_ops() {
 }
 
 #[test]
+fn test_node_compat_reflect_has_true_for_null_valued_property() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = new Object();
+        Reflect.set(o, "x", null);
+        return Reflect.has(o, "x");
+    "#,
+        true,
+    );
+}
+
+#[test]
+fn test_node_compat_reflect_has_false_for_missing_property() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = new Object();
+        return !Reflect.has(o, "missing");
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_proxy_reflect_runtime_integration() {
     expect_bool_runtime_node_compat(
         r#"

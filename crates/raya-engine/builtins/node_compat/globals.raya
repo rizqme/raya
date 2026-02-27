@@ -172,6 +172,12 @@ class __NodeCompatReflect {
     }
 
     set(target: Proxy<Object> | Object, key: string, value: Object | string | number | boolean | null): boolean {
+        let descriptor = new Object();
+        descriptor.value = value;
+        descriptor.writable = true;
+        descriptor.configurable = true;
+        descriptor.enumerable = true;
+
         if (target instanceof Proxy) {
             let proxy = target as Proxy<Object>;
             let proxyTarget = proxy.getTarget();
@@ -189,9 +195,15 @@ class __NodeCompatReflect {
             }
 
             proxyTarget[key] = value;
+            try {
+                Object.defineProperty(proxyTarget, key, descriptor);
+            } catch (_e) { }
             return true;
         }
         target[key] = value;
+        try {
+            Object.defineProperty(target, key, descriptor);
+        } catch (_e) { }
         return true;
     }
 
@@ -212,7 +224,13 @@ class __NodeCompatReflect {
                 }
             }
 
+            if (Object.getOwnPropertyDescriptor(proxyTarget, key) != null) {
+                return true;
+            }
             return proxyTarget[key] != null;
+        }
+        if (Object.getOwnPropertyDescriptor(target, key) != null) {
+            return true;
         }
         return target[key] != null;
     }

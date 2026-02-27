@@ -370,6 +370,21 @@ impl Diagnostic {
             ))
             .with_code(error_code(error))
             .with_primary_label(file_id, *span, "invalid return type"),
+            StrictDeleteForbidden { span } => {
+                Diagnostic::error("`delete` is only available in NodeCompat builtin mode")
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "delete is forbidden in strict builtins")
+            }
+            UnknownLabel { label, span } => {
+                Diagnostic::error(format!("Unknown label '{}'", label))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "label not found in this scope")
+            }
+            ContinueLabelNotLoop { label, span } => {
+                Diagnostic::error(format!("Continue label '{}' does not target a loop", label))
+                    .with_code(error_code(error))
+                    .with_primary_label(file_id, *span, "continue requires a loop label")
+            }
         }
     }
 
@@ -608,6 +623,9 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         ImplicitAnyForbidden { .. } => ErrorCode("E2025"),
         StrictPropertyInitialization { .. } => ErrorCode("E2026"),
         UnboundMethodCall { .. } => ErrorCode("E2027"),
+        StrictDeleteForbidden { .. } => ErrorCode("E2028"),
+        UnknownLabel { .. } => ErrorCode("E2029"),
+        ContinueLabelNotLoop { .. } => ErrorCode("E2030"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

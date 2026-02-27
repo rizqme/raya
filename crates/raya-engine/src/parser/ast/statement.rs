@@ -51,6 +51,12 @@ pub enum Statement {
     /// For-of loop
     ForOf(ForOfStatement),
 
+    /// For-in loop
+    ForIn(ForInStatement),
+
+    /// Labeled statement
+    Labeled(LabeledStatement),
+
     /// Break statement
     Break(BreakStatement),
 
@@ -98,6 +104,8 @@ impl Statement {
             Statement::DoWhile(s) => &s.span,
             Statement::For(s) => &s.span,
             Statement::ForOf(s) => &s.span,
+            Statement::ForIn(s) => &s.span,
+            Statement::Labeled(s) => &s.span,
             Statement::Break(s) => &s.span,
             Statement::Continue(s) => &s.span,
             Statement::Return(s) => &s.span,
@@ -563,6 +571,35 @@ pub enum ForOfLeft {
     VariableDecl(VariableDecl),
     /// Existing variable
     Pattern(Pattern),
+}
+
+/// For-in loop: for (const key in object) { ... }
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForInStatement {
+    /// Left side of the for-in (variable declaration or identifier pattern)
+    pub left: ForInLeft,
+    /// Right side expression (the object)
+    pub right: Expression,
+    /// Loop body
+    pub body: Box<Statement>,
+    pub span: Span,
+}
+
+/// Left-hand side of a for-in statement
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForInLeft {
+    /// let/const pattern
+    VariableDecl(VariableDecl),
+    /// Existing variable
+    Pattern(Pattern),
+}
+
+/// Labeled statement: label: statement
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabeledStatement {
+    pub label: Identifier,
+    pub body: Box<Statement>,
+    pub span: Span,
 }
 
 /// Break statement

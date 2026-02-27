@@ -281,6 +281,8 @@ pub enum UnaryOperator {
     Minus,            // -x
     Not,              // !x
     BitwiseNot,       // ~x
+    Delete,           // delete x.y
+    Void,             // void expr
     PrefixIncrement,  // ++x
     PrefixDecrement,  // --x
     PostfixIncrement, // x++

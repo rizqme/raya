@@ -331,6 +331,31 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// `delete` is not available when strict builtins are active.
+    #[error("E_STRICT_DELETE_FORBIDDEN: `delete` is only available in NodeCompat builtin mode")]
+    StrictDeleteForbidden {
+        /// Location of delete usage
+        span: Span,
+    },
+
+    /// Labeled flow references a missing label.
+    #[error("Unknown label '{label}'")]
+    UnknownLabel {
+        /// Label name
+        label: String,
+        /// Location of labeled flow statement
+        span: Span,
+    },
+
+    /// `continue` label does not target a loop statement.
+    #[error("Continue label '{label}' does not target a loop")]
+    ContinueLabelNotLoop {
+        /// Label name
+        label: String,
+        /// Location of continue statement
+        span: Span,
+    },
+
     // ========================================================================
     // Decorator Errors
     // ========================================================================
@@ -399,6 +424,9 @@ impl CheckError {
             CheckError::UnknownNotActionable { span, .. } => *span,
             CheckError::StrictPropertyInitialization { span, .. } => *span,
             CheckError::UnboundMethodCall { span, .. } => *span,
+            CheckError::StrictDeleteForbidden { span } => *span,
+            CheckError::UnknownLabel { span, .. } => *span,
+            CheckError::ContinueLabelNotLoop { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,
             CheckError::DecoratorSignatureMismatch { span, .. } => *span,
             CheckError::DecoratorReturnMismatch { span, .. } => *span,

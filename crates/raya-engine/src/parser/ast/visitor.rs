@@ -85,6 +85,14 @@ pub trait Visitor: Sized {
         walk_for_of_statement(self, stmt);
     }
 
+    fn visit_for_in_statement(&mut self, stmt: &ForInStatement) {
+        walk_for_in_statement(self, stmt);
+    }
+
+    fn visit_labeled_statement(&mut self, stmt: &LabeledStatement) {
+        walk_labeled_statement(self, stmt);
+    }
+
     fn visit_block_statement(&mut self, stmt: &BlockStatement) {
         walk_block_statement(self, stmt);
     }
@@ -186,6 +194,8 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
         }
         Statement::For(stmt) => visitor.visit_for_statement(stmt),
         Statement::ForOf(stmt) => visitor.visit_for_of_statement(stmt),
+        Statement::ForIn(stmt) => visitor.visit_for_in_statement(stmt),
+        Statement::Labeled(stmt) => visitor.visit_labeled_statement(stmt),
         Statement::Break(_) | Statement::Continue(_) => {}
         Statement::Return(stmt) => {
             if let Some(value) = &stmt.value {
@@ -391,6 +401,20 @@ pub fn walk_for_of_statement<V: Visitor>(visitor: &mut V, stmt: &ForOfStatement)
         ForOfLeft::Pattern(pattern) => visitor.visit_pattern(pattern),
     }
     visitor.visit_expression(&stmt.right);
+    visitor.visit_statement(&stmt.body);
+}
+
+pub fn walk_for_in_statement<V: Visitor>(visitor: &mut V, stmt: &ForInStatement) {
+    match &stmt.left {
+        ForInLeft::VariableDecl(decl) => visitor.visit_variable_decl(decl),
+        ForInLeft::Pattern(pattern) => visitor.visit_pattern(pattern),
+    }
+    visitor.visit_expression(&stmt.right);
+    visitor.visit_statement(&stmt.body);
+}
+
+pub fn walk_labeled_statement<V: Visitor>(visitor: &mut V, stmt: &LabeledStatement) {
+    visitor.visit_identifier(&stmt.label);
     visitor.visit_statement(&stmt.body);
 }
 

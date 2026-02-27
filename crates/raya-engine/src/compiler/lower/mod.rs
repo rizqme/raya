@@ -264,6 +264,8 @@ struct LoopContext {
     /// Depth of try_finally_stack when this loop started
     /// (used to know which finally blocks to inline on break/continue)
     try_finally_depth: usize,
+    /// Optional source label for labeled break/continue.
+    label: Option<String>,
 }
 
 /// Entry on the try-finally stack for inline finally duplication
@@ -360,6 +362,8 @@ pub struct Lowerer<'a> {
     switch_stack: Vec<BasicBlockId>,
     /// Stack of try-finally contexts for inlining finally blocks at return/break/continue
     try_finally_stack: Vec<TryFinallyEntry>,
+    /// Pending label to apply to the next lowered loop statement.
+    pending_loop_label: Option<String>,
     /// Pending arrow functions to be added to module (with their assigned func_id)
     pending_arrow_functions: Vec<(u32, IrFunction)>,
     /// Pending classes from nested declarations (inside function bodies)
@@ -780,6 +784,7 @@ impl<'a> Lowerer<'a> {
             loop_stack: Vec::new(),
             switch_stack: Vec::new(),
             try_finally_stack: Vec::new(),
+            pending_loop_label: None,
             pending_arrow_functions: Vec::new(),
             pending_classes: Vec::new(),
             arrow_counter: 0,

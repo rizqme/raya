@@ -138,6 +138,7 @@ pub fn compile_source_with_modes(
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
         .with_mode(type_system_mode(type_mode))
+        .with_node_compat_builtins(matches!(builtin_mode, BuiltinMode::NodeCompat))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -250,6 +251,7 @@ pub fn compile_source_with_options_and_modes(
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
         .with_mode(type_system_mode(type_mode))
+        .with_node_compat_builtins(matches!(builtin_mode, BuiltinMode::NodeCompat))
         .with_skip_class_bodies_before(user_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
@@ -342,6 +344,7 @@ pub fn check_source_with_modes(
             // Binding succeeded — run type checker
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
                 .with_mode(type_system_mode(type_mode))
+                .with_node_compat_builtins(matches!(builtin_mode, BuiltinMode::NodeCompat))
                 .with_skip_class_bodies_before(user_offset);
             match checker.check_module(&ast) {
                 Ok(result) => (vec![], vec![], result.warnings),
@@ -2387,5 +2390,69 @@ mod tests {
             result.errors.is_empty() && result.bind_errors.is_empty(),
             "explicit any cast/annotation should allow dot monkeypatch at checker level"
         );
+    }
+
+    #[test]
+    fn test_delete_forbidden_in_raya_strict_for_all_type_modes() {
+        let src = r#"
+            let a: number[] = [1, 2];
+            let ok = delete a[0];
+            return ok;
+        "#;
+
+        for mode in [TypeMode::Strict, TypeMode::AllowAny, TypeMode::JsMode] {
+            let result = compile_source_with_modes(src, BuiltinMode::RayaStrict, mode);
+            assert!(
+                result.is_err(),
+                "delete should be forbidden in RayaStrict builtins for mode {:?}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn test_delete_allowed_in_node_compat_for_all_type_modes() {
+        let src = r#"
+            let a: number[] = [1, 2];
+            let ok = delete a[0];
+            return ok;
+        "#;
+
+        for mode in [TypeMode::Strict, TypeMode::AllowAny, TypeMode::JsMode] {
+            let result = compile_source_with_modes(src, BuiltinMode::NodeCompat, mode);
+            assert!(
+                result.is_ok(),
+                "delete should be allowed in NodeCompat builtins for mode {:?}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn test_void_for_in_and_labels_compile_in_all_mode_combinations() {
+        let src = r#"
+            let a: number[] = [1, 2, 3];
+            let c = 0;
+            outer: for (let i = 0; i < 3; i = i + 1) {
+                for (let k in a) {
+                    c = c + 1;
+                    continue outer;
+                }
+            }
+            let v = void (c = c);
+            return c + (v == null ? 0 : 100);
+        "#;
+
+        for builtin in [BuiltinMode::RayaStrict, BuiltinMode::NodeCompat] {
+            for mode in [TypeMode::Strict, TypeMode::AllowAny, TypeMode::JsMode] {
+                let result = compile_source_with_modes(src, builtin, mode);
+                assert!(
+                    result.is_ok(),
+                    "void/for-in/labels should compile for builtin {:?} mode {:?}",
+                    builtin,
+                    mode
+                );
+            }
+        }
     }
 }

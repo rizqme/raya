@@ -73,6 +73,62 @@ fn test_do_while_countdown() {
     );
 }
 
+#[test]
+fn test_for_in_iterates_collection() {
+    expect_i32(
+        "let arr: int[] = [10, 20, 30];
+         let count = 0;
+         for (let k in arr) {
+             count = count + 1;
+         }
+         return count;",
+        3,
+    );
+}
+
+#[test]
+fn test_for_in_array_uses_index_keys_not_values() {
+    expect_string(
+        "let arr: int[] = [10, 20];
+         let keys = \"\";
+         for (let k in arr) {
+             keys = keys + k;
+         }
+         return keys;",
+        "01",
+    );
+}
+
+#[test]
+fn test_void_returns_null_and_preserves_side_effects() {
+    expect_bool(
+        "let side = 0;
+         let v = void (side = 42);
+         return v == null && side == 42;",
+        true,
+    );
+}
+
+#[test]
+fn test_delete_index_mutates_target_in_node_compat() {
+    expect_bool_runtime_node_compat(
+        "let arr: int[] = [7, 8];
+         let ok = delete arr[0];
+         return ok && arr[0] == null && arr[1] == 8;",
+        true,
+    );
+}
+
+#[test]
+fn test_delete_member_mutates_target_in_node_compat() {
+    expect_bool_runtime_node_compat(
+        "let obj = { x: 1, y: 2 };
+         let ok = delete obj.x;
+         return ok && obj.x == null && obj.y == 2;",
+        true,
+    );
+}
+
 // ============================================================================
 // 2. Compound Assignment Operators
 // ============================================================================

@@ -20,6 +20,12 @@ use crate::parser::types::{AssignabilityContext, GenericContext, TypeContext, Ty
 use crate::{Interner, Symbol as ParserSymbol};
 use rustc_hash::{FxHashMap, FxHashSet};
 
+#[derive(Clone)]
+struct LabelContext {
+    name: String,
+    is_loop: bool,
+}
+
 /// Get the variable name from a type guard
 fn get_guard_var(guard: &TypeGuard) -> &String {
     match guard {
@@ -184,6 +190,14 @@ pub struct TypeChecker<'a> {
     mode: TypeSystemMode,
     /// True while checking the left-hand side of an assignment expression.
     in_assignment_lhs: bool,
+    /// Whether NodeCompat builtins are active (enables `delete`).
+    allow_delete: bool,
+    /// Current loop nesting depth.
+    loop_depth: usize,
+    /// Current switch nesting depth.
+    switch_depth: usize,
+    /// Active labels in scope.
+    labels: Vec<LabelContext>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -216,12 +230,22 @@ impl<'a> TypeChecker<'a> {
             return_type_collector: Vec::new(),
             mode: TypeSystemMode::Strict,
             in_assignment_lhs: false,
+            allow_delete: false,
+            loop_depth: 0,
+            switch_depth: 0,
+            labels: Vec::new(),
         }
     }
 
     /// Set checker behavior mode.
     pub fn with_mode(mut self, mode: TypeSystemMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    /// Enable NodeCompat-only checker behavior.
+    pub fn with_node_compat_builtins(mut self, enabled: bool) -> Self {
+        self.allow_delete = enabled;
         self
     }
 
@@ -699,6 +723,7 @@ impl<'a> TypeChecker<'a> {
             Statement::If(if_stmt) => self.check_if(if_stmt),
             Statement::While(while_stmt) => self.check_while(while_stmt),
             Statement::For(for_stmt) => self.check_for(for_stmt),
+            Statement::ForIn(for_in) => self.check_for_in(for_in),
             Statement::Block(block) => {
                 // Enter block scope (mirrors binder's push_scope)
                 self.enter_scope();
@@ -711,6 +736,9 @@ impl<'a> TypeChecker<'a> {
             Statement::Switch(switch_stmt) => self.check_switch(switch_stmt),
             Statement::Try(try_stmt) => self.check_try(try_stmt),
             Statement::ForOf(for_of) => self.check_for_of(for_of),
+            Statement::Labeled(labeled) => self.check_labeled(labeled),
+            Statement::Break(brk) => self.check_break(brk),
+            Statement::Continue(cont) => self.check_continue(cont),
             Statement::ClassDecl(class) => {
                 // Check class declaration including decorators
                 self.check_class(class);
@@ -1744,8 +1772,10 @@ impl<'a> TypeChecker<'a> {
         // will create its own scope. We need to mirror binder's behavior.
         self.enter_scope(); // Loop scope
 
+        self.loop_depth += 1;
         // Check body - if it's a Block, it will enter another scope
         self.check_stmt(&while_stmt.body);
+        self.loop_depth = self.loop_depth.saturating_sub(1);
 
         self.exit_scope(); // Exit loop scope
 
@@ -1780,8 +1810,10 @@ impl<'a> TypeChecker<'a> {
             self.check_expr(update);
         }
 
+        self.loop_depth += 1;
         // Check body
         self.check_stmt(&for_stmt.body);
+        self.loop_depth = self.loop_depth.saturating_sub(1);
 
         // Exit loop scope
         self.exit_scope();
@@ -1822,10 +1854,41 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        self.loop_depth += 1;
         // Check body
         self.check_stmt(&for_of.body);
+        self.loop_depth = self.loop_depth.saturating_sub(1);
 
         // Exit loop scope
+        self.exit_scope();
+    }
+
+    /// Check for-in loop
+    fn check_for_in(&mut self, for_in: &ForInStatement) {
+        self.enter_scope();
+
+        self.check_expr(&for_in.right);
+        let key_ty = self.type_ctx.string_type();
+
+        match &for_in.left {
+            ForInLeft::VariableDecl(decl) => match &decl.pattern {
+                Pattern::Identifier(ident) => {
+                    let name = self.resolve(ident.name);
+                    self.inferred_var_types
+                        .insert((self.current_scope.0, name), key_ty);
+                }
+                Pattern::Array(_) | Pattern::Object(_) => {
+                    self.check_destructure_pattern(&decl.pattern, key_ty);
+                }
+                _ => {}
+            },
+            ForInLeft::Pattern(_) => {}
+        }
+
+        self.loop_depth += 1;
+        self.check_stmt(&for_in.body);
+        self.loop_depth = self.loop_depth.saturating_sub(1);
+
         self.exit_scope();
     }
 
@@ -2024,6 +2087,7 @@ impl<'a> TypeChecker<'a> {
 
     /// Check switch statement
     fn check_switch(&mut self, switch_stmt: &SwitchStatement) {
+        self.switch_depth += 1;
         // Check discriminant and get its type
         let discriminant_ty = self.check_expr(&switch_stmt.discriminant);
 
@@ -2048,6 +2112,59 @@ impl<'a> TypeChecker<'a> {
             for stmt in &case.consequent {
                 self.check_stmt(stmt);
             }
+        }
+        self.switch_depth = self.switch_depth.saturating_sub(1);
+    }
+
+    fn check_labeled(&mut self, labeled: &LabeledStatement) {
+        let name = self.resolve(labeled.label.name);
+        let is_loop = matches!(
+            labeled.body.as_ref(),
+            Statement::While(_) | Statement::For(_) | Statement::ForOf(_) | Statement::ForIn(_) | Statement::DoWhile(_)
+        );
+        self.labels.push(LabelContext { name, is_loop });
+        self.check_stmt(&labeled.body);
+        self.labels.pop();
+    }
+
+    fn check_break(&mut self, brk: &BreakStatement) {
+        if let Some(label) = &brk.label {
+            let name = self.resolve(label.name);
+            if !self.labels.iter().rev().any(|ctx| ctx.name == name) {
+                self.errors.push(CheckError::UnknownLabel {
+                    label: name,
+                    span: brk.span,
+                });
+            }
+            return;
+        }
+
+        if self.loop_depth == 0 && self.switch_depth == 0 {
+            self.errors.push(CheckError::BreakOutsideLoop { span: brk.span });
+        }
+    }
+
+    fn check_continue(&mut self, cont: &ContinueStatement) {
+        if let Some(label) = &cont.label {
+            let name = self.resolve(label.name);
+            if let Some(target) = self.labels.iter().rev().find(|ctx| ctx.name == name) {
+                if !target.is_loop {
+                    self.errors.push(CheckError::ContinueLabelNotLoop {
+                        label: name,
+                        span: cont.span,
+                    });
+                }
+            } else {
+                self.errors.push(CheckError::UnknownLabel {
+                    label: name,
+                    span: cont.span,
+                });
+            }
+            return;
+        }
+
+        if self.loop_depth == 0 {
+            self.errors.push(CheckError::ContinueOutsideLoop { span: cont.span });
         }
     }
 
@@ -2393,6 +2510,24 @@ impl<'a> TypeChecker<'a> {
                 let number_ty = self.type_ctx.number_type();
                 self.check_assignable(operand_ty, number_ty, *un.operand.span());
                 number_ty
+            }
+            UnaryOperator::Void => self.type_ctx.null_type(),
+            UnaryOperator::Delete => {
+                if !self.allow_delete {
+                    self.errors
+                        .push(CheckError::StrictDeleteForbidden { span: un.span });
+                }
+                match un.operand.as_ref() {
+                    Expression::Member(_) | Expression::Index(_) => {}
+                    _ => {
+                        self.errors.push(CheckError::InvalidUnaryOp {
+                            op: "delete".to_string(),
+                            ty: self.format_type(operand_ty),
+                            span: un.span,
+                        });
+                    }
+                }
+                self.type_ctx.boolean_type()
             }
         }
     }

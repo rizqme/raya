@@ -109,6 +109,9 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             parser.advance();
             Ok(Statement::Empty(span))
         }
+        Token::Identifier(_) if matches!(parser.peek(), Some(Token::Colon)) => {
+            parse_labeled_statement(parser)
+        }
         _ => {
             // Parse expression statement
             let start_span = parser.current_span();
@@ -127,6 +130,32 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             }))
         }
     }
+}
+
+/// Parse labeled statement: label: statement
+fn parse_labeled_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+
+    let label = if let Token::Identifier(name) = parser.current() {
+        let label = Identifier {
+            name: *name,
+            span: parser.current_span(),
+        };
+        parser.advance();
+        label
+    } else {
+        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+    };
+
+    parser.expect(Token::Colon)?;
+    let body = parse_statement(parser)?;
+    let span = parser.combine_spans(&start_span, body.span());
+
+    Ok(Statement::Labeled(LabeledStatement {
+        label,
+        body: Box::new(body),
+        span,
+    }))
 }
 
 // ============================================================================
@@ -672,6 +701,17 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
             };
             return parse_for_of(parser, start_span, ForOfLeft::VariableDecl(decl));
         }
+        if parser.check(&Token::In) {
+            parser.advance();
+            let decl = VariableDecl {
+                kind,
+                pattern,
+                type_annotation: None,
+                initializer: None,
+                span: start_span,
+            };
+            return parse_for_in(parser, start_span, ForInLeft::VariableDecl(decl));
+        }
 
         // Otherwise, this is a traditional for loop
         let type_annotation = if parser.check(&Token::Colon) {
@@ -711,6 +751,10 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         if parser.check(&Token::Of) {
             parser.advance();
             return parse_for_of(parser, start_span, ForOfLeft::Pattern(pattern));
+        }
+        if parser.check(&Token::In) {
+            parser.advance();
+            return parse_for_in(parser, start_span, ForInLeft::Pattern(pattern));
         }
 
         // Not a for-of, so this pattern is part of an expression
@@ -839,6 +883,26 @@ fn parse_for_of(
     }))
 }
 
+/// Parse the rest of a for-in loop after the 'in' keyword
+fn parse_for_in(
+    parser: &mut Parser,
+    start_span: Span,
+    left: ForInLeft,
+) -> Result<Statement, ParseError> {
+    let right = super::expr::parse_expression(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    let body = parse_block_or_statement(parser)?;
+    let span = parser.combine_spans(&start_span, body.span());
+
+    Ok(Statement::ForIn(ForInStatement {
+        left,
+        right,
+        body,
+        span,
+    }))
+}
+
 // ============================================================================
 // Jump Statements
 // ============================================================================
@@ -900,8 +964,17 @@ fn parse_break_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Break)?;
 
-    // Optional label (TODO: labels not yet supported)
-    let label = None;
+    // Optional label
+    let label = if let Token::Identifier(name) = parser.current() {
+        let ident = Identifier {
+            name: *name,
+            span: parser.current_span(),
+        };
+        parser.advance();
+        Some(ident)
+    } else {
+        None
+    };
 
     // Optional semicolon
     if parser.check(&Token::Semicolon) {
@@ -919,8 +992,17 @@ fn parse_continue_statement(parser: &mut Parser) -> Result<Statement, ParseError
     let start_span = parser.current_span();
     parser.expect(Token::Continue)?;
 
-    // Optional label (TODO: labels not yet supported)
-    let label = None;
+    // Optional label
+    let label = if let Token::Identifier(name) = parser.current() {
+        let ident = Identifier {
+            name: *name,
+            span: parser.current_span(),
+        };
+        parser.advance();
+        Some(ident)
+    } else {
+        None
+    };
 
     // Optional semicolon
     if parser.check(&Token::Semicolon) {

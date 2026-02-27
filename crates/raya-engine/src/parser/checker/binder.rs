@@ -1117,6 +1117,8 @@ impl<'a> Binder<'a> {
             Statement::While(while_stmt) => self.bind_while(while_stmt),
             Statement::For(for_stmt) => self.bind_for(for_stmt),
             Statement::ForOf(for_of) => self.bind_for_of(for_of),
+            Statement::ForIn(for_in) => self.bind_for_in(for_in),
+            Statement::Labeled(labeled) => self.bind_stmt(&labeled.body),
             Statement::Try(try_stmt) => self.bind_try(try_stmt),
             Statement::ExportDecl(export) => self.bind_export(export),
             // ImportDecl is handled during pre-binding phase
@@ -2227,6 +2229,21 @@ impl<'a> Binder<'a> {
 
         // Bind body
         self.bind_stmt(&for_of.body)?;
+
+        self.symbols.pop_scope();
+        Ok(())
+    }
+
+    /// Bind for-in loop
+    fn bind_for_in(&mut self, for_in: &ForInStatement) -> Result<(), BindError> {
+        self.symbols.push_scope(ScopeKind::Loop);
+
+        match &for_in.left {
+            ForInLeft::VariableDecl(decl) => self.bind_var_decl(decl)?,
+            ForInLeft::Pattern(_) => {}
+        }
+
+        self.bind_stmt(&for_in.body)?;
 
         self.symbols.pop_scope();
         Ok(())

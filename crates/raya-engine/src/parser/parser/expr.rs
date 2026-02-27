@@ -161,13 +161,15 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
 
     match parser.current() {
         // Unary operators
-        Token::Bang | Token::Minus | Token::Plus | Token::Tilde => {
+        Token::Bang | Token::Minus | Token::Plus | Token::Tilde | Token::Delete | Token::Void => {
             let op_token = parser.advance();
             let operator = match op_token {
                 Token::Bang => UnaryOperator::Not,
                 Token::Minus => UnaryOperator::Minus,
                 Token::Plus => UnaryOperator::Plus,
                 Token::Tilde => UnaryOperator::BitwiseNot,
+                Token::Delete => UnaryOperator::Delete,
+                Token::Void => UnaryOperator::Void,
                 _ => unreachable!(),
             };
             let operand = parse_expression_with_precedence(parser, Precedence::Unary)?;
@@ -443,16 +445,6 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
                 }
             }
         }
-
-        // delete and void (TODO: not yet implemented)
-        Token::Delete | Token::Void => Err(ParseError {
-            kind: ParseErrorKind::InvalidSyntax {
-                reason: "delete and void operators not yet implemented".to_string(),
-            },
-            span: start_span,
-            message: "delete/void not supported yet".to_string(),
-            suggestion: None,
-        }),
 
         // new operator
         Token::New => {

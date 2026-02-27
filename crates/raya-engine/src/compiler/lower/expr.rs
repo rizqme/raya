@@ -350,6 +350,143 @@ impl<'a> Lowerer<'a> {
             | ast::UnaryOperator::PrefixDecrement => {
                 return self.lower_increment_decrement(unary);
             }
+            ast::UnaryOperator::Void => {
+                let _ = self.lower_expr(&unary.operand);
+                let dest = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Null),
+                });
+                return dest;
+            }
+            ast::UnaryOperator::Delete => {
+                let null_reg = self.lower_null_literal();
+                match unary.operand.as_ref() {
+                    Expression::Member(member) => {
+                        let prop_name = self.interner.resolve(member.property.name);
+
+                        // Static field delete: ClassName.field
+                        if let Expression::Identifier(ident) = &*member.object {
+                            if let Some(&class_id) = self.class_map.get(&ident.name) {
+                                let global_index =
+                                    self.class_info_map.get(&class_id).and_then(|info| {
+                                        info.static_fields
+                                            .iter()
+                                            .find(|f| self.interner.resolve(f.name) == prop_name)
+                                            .map(|sf| sf.global_index)
+                                    });
+                                if let Some(index) = global_index {
+                                    self.emit(IrInstr::StoreGlobal {
+                                        index,
+                                        value: null_reg.clone(),
+                                    });
+                                } else {
+                                    let object = self.lower_expr(&member.object);
+                                    let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                                    self.emit(IrInstr::Assign {
+                                        dest: prop_reg.clone(),
+                                        value: IrValue::Constant(IrConstant::String(
+                                            prop_name.to_string(),
+                                        )),
+                                    });
+                                    self.emit(IrInstr::NativeCall {
+                                        dest: None,
+                                        native_id: crate::compiler::native_id::REFLECT_SET,
+                                        args: vec![object, prop_reg, null_reg.clone()],
+                                        });
+                                }
+                            } else {
+                                let class_id = self.infer_class_id(&member.object);
+                                let object = self.lower_expr(&member.object);
+                                let field_index = if let Some(class_id) = class_id {
+                                    self.get_all_fields(class_id)
+                                        .iter()
+                                        .rev()
+                                        .find(|f| self.interner.resolve(f.name) == prop_name)
+                                        .map(|f| f.index)
+                                } else {
+                                    self.variable_object_fields
+                                        .get(&ident.name)
+                                        .and_then(|fields| {
+                                            fields
+                                                .iter()
+                                                .find(|(name, _)| name == prop_name)
+                                                .map(|(_, idx)| *idx as u16)
+                                        })
+                                };
+
+                                if let Some(field) = field_index {
+                                    self.emit(IrInstr::StoreField {
+                                        object,
+                                        field,
+                                        value: null_reg.clone(),
+                                    });
+                                } else {
+                                    let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                                    self.emit(IrInstr::Assign {
+                                        dest: prop_reg.clone(),
+                                        value: IrValue::Constant(IrConstant::String(
+                                            prop_name.to_string(),
+                                        )),
+                                    });
+                                    self.emit(IrInstr::NativeCall {
+                                        dest: None,
+                                        native_id: crate::compiler::native_id::REFLECT_SET,
+                                        args: vec![object, prop_reg, null_reg.clone()],
+                                    });
+                                }
+                            }
+                        } else {
+                            let class_id = self.infer_class_id(&member.object);
+                            let object = self.lower_expr(&member.object);
+                            if let Some(field) = class_id.and_then(|cid| {
+                                self.get_all_fields(cid)
+                                    .iter()
+                                    .rev()
+                                    .find(|f| self.interner.resolve(f.name) == prop_name)
+                                    .map(|f| f.index)
+                            }) {
+                                self.emit(IrInstr::StoreField {
+                                    object,
+                                    field,
+                                    value: null_reg.clone(),
+                                });
+                            } else {
+                                let prop_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+                                self.emit(IrInstr::Assign {
+                                    dest: prop_reg.clone(),
+                                    value: IrValue::Constant(IrConstant::String(
+                                        prop_name.to_string(),
+                                    )),
+                                });
+                                self.emit(IrInstr::NativeCall {
+                                    dest: None,
+                                    native_id: crate::compiler::native_id::REFLECT_SET,
+                                    args: vec![object, prop_reg, null_reg.clone()],
+                                });
+                            }
+                        }
+                    }
+                    Expression::Index(index) => {
+                        let array = self.lower_expr(&index.object);
+                        let idx = self.lower_expr(&index.index);
+                        self.emit(IrInstr::StoreElement {
+                            array,
+                            index: idx,
+                            value: null_reg.clone(),
+                        });
+                    }
+                    _ => {
+                        let _ = self.lower_expr(&unary.operand);
+                    }
+                }
+                let dest = self.alloc_register(TypeId::new(BOOLEAN_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Boolean(true)),
+                });
+                return dest;
+            }
             _ => {}
         }
 

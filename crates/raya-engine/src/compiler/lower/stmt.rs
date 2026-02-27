@@ -133,6 +133,7 @@ impl<'a> Lowerer<'a> {
             Statement::Throw(throw) => self.lower_throw(throw),
             Statement::Try(try_stmt) => self.lower_try(try_stmt),
             Statement::Switch(switch) => self.lower_switch(switch),
+            Statement::Labeled(labeled) => self.lower_labeled(labeled),
             Statement::FunctionDecl(func_decl) => {
                 if !self.function_map.contains_key(&func_decl.name.name) {
                     // Nested function declaration — treat as closure with captures
@@ -207,6 +208,23 @@ impl<'a> Lowerer<'a> {
             }
             Statement::DoWhile(do_while) => self.lower_do_while(do_while),
             Statement::ForOf(for_of) => self.lower_for_of(for_of),
+            Statement::ForIn(for_in) => self.lower_for_in(for_in),
+        }
+    }
+
+    fn lower_labeled(&mut self, labeled: &ast::LabeledStatement) {
+        let should_apply_to_loop = matches!(
+            labeled.body.as_ref(),
+            Statement::While(_) | Statement::For(_) | Statement::ForOf(_) | Statement::ForIn(_) | Statement::DoWhile(_)
+        );
+
+        if should_apply_to_loop {
+            let label = self.interner.resolve(labeled.label.name).to_string();
+            let prev = self.pending_loop_label.replace(label);
+            self.lower_stmt(&labeled.body);
+            self.pending_loop_label = prev;
+        } else {
+            self.lower_stmt(&labeled.body);
         }
     }
 
@@ -224,6 +242,7 @@ impl<'a> Lowerer<'a> {
             break_target: exit_block,
             continue_target: cond_block,
             try_finally_depth: self.try_finally_stack.len(),
+            label: self.pending_loop_label.take(),
         });
 
         // Body block
@@ -412,6 +431,7 @@ impl<'a> Lowerer<'a> {
             break_target: exit_block,
             continue_target: update_block,
             try_finally_depth: self.try_finally_stack.len(),
+            label: self.pending_loop_label.take(),
         });
 
         // Body block
@@ -583,6 +603,157 @@ impl<'a> Lowerer<'a> {
         // Exit block
         self.current_function_mut()
             .add_block(crate::ir::BasicBlock::with_label(exit_block, "forof.exit"));
+        self.current_block = exit_block;
+    }
+
+    fn lower_for_in(&mut self, for_in: &ast::ForInStatement) {
+        // Tightened semantics:
+        // - Arrays iterate index keys (0..length-1), matching JS for-in key iteration.
+        // - Other iterables currently fall back to existing for-of lowering behavior.
+        let (iter_kind, _, _) = self.classify_for_of_iterable(&for_in.right);
+        if !matches!(iter_kind, ForOfIterableKind::Array) {
+            let left = match &for_in.left {
+                ast::ForInLeft::VariableDecl(decl) => ast::ForOfLeft::VariableDecl(decl.clone()),
+                ast::ForInLeft::Pattern(pattern) => ast::ForOfLeft::Pattern(pattern.clone()),
+            };
+            let desugared = ast::ForOfStatement {
+                left,
+                right: for_in.right.clone(),
+                body: for_in.body.clone(),
+                span: for_in.span,
+            };
+            self.lower_for_of(&desugared);
+            return;
+        }
+
+        let number_ty = TypeId::new(crate::parser::TypeContext::NUMBER_TYPE_ID);
+        let array_reg = self.lower_expr(&for_in.right);
+
+        let idx_local = self.allocate_anonymous_local();
+        let idx_init = self.alloc_register(number_ty);
+        self.emit(IrInstr::Assign {
+            dest: idx_init.clone(),
+            value: IrValue::Constant(IrConstant::I32(0)),
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: idx_local,
+            value: idx_init,
+        });
+
+        let header_block = self.alloc_block();
+        let body_block = self.alloc_block();
+        let update_block = self.alloc_block();
+        let exit_block = self.alloc_block();
+
+        self.set_terminator(Terminator::Jump(header_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(header_block, "forin.header"));
+        self.current_block = header_block;
+
+        let idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: idx.clone(),
+            index: idx_local,
+        });
+
+        let len = self.alloc_register(number_ty);
+        self.emit(IrInstr::ArrayLen {
+            dest: len.clone(),
+            array: array_reg.clone(),
+        });
+
+        let cond = self.alloc_register(TypeId::new(crate::parser::TypeContext::BOOLEAN_TYPE_ID));
+        self.emit(IrInstr::BinaryOp {
+            dest: cond.clone(),
+            op: BinaryOp::Less,
+            left: idx,
+            right: len,
+        });
+
+        self.set_terminator(Terminator::Branch {
+            cond,
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        self.loop_stack.push(super::LoopContext {
+            break_target: exit_block,
+            continue_target: update_block,
+            try_finally_depth: self.try_finally_stack.len(),
+            label: self.pending_loop_label.take(),
+        });
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(body_block, "forin.body"));
+        self.current_block = body_block;
+
+        let key_num_reg = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: key_num_reg.clone(),
+            index: idx_local,
+        });
+        let key_reg = self.alloc_register(TypeId::new(crate::parser::TypeContext::STRING_TYPE_ID));
+        self.emit(IrInstr::ToString {
+            dest: key_reg.clone(),
+            operand: key_num_reg,
+        });
+
+        match &for_in.left {
+            ast::ForInLeft::VariableDecl(decl) => {
+                self.bind_pattern(&decl.pattern, key_reg);
+            }
+            ast::ForInLeft::Pattern(pattern) => match pattern {
+                ast::Pattern::Identifier(ident) => {
+                    if let Some(local_idx) = self.lookup_local(ident.name) {
+                        self.emit(IrInstr::StoreLocal {
+                            index: local_idx,
+                            value: key_reg,
+                        });
+                    }
+                }
+                _ => self.bind_pattern(pattern, key_reg),
+            },
+        }
+
+        self.lower_stmt(&for_in.body);
+        if !self.current_block_is_terminated() {
+            self.set_terminator(Terminator::Jump(update_block));
+        }
+
+        self.loop_stack.pop();
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(update_block, "forin.update"));
+        self.current_block = update_block;
+
+        let update_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::LoadLocal {
+            dest: update_idx.clone(),
+            index: idx_local,
+        });
+
+        let one_reg = self.alloc_register(number_ty);
+        self.emit(IrInstr::Assign {
+            dest: one_reg.clone(),
+            value: IrValue::Constant(IrConstant::I32(1)),
+        });
+
+        let new_idx = self.alloc_register(number_ty);
+        self.emit(IrInstr::BinaryOp {
+            dest: new_idx.clone(),
+            op: BinaryOp::Add,
+            left: update_idx,
+            right: one_reg,
+        });
+        self.emit(IrInstr::StoreLocal {
+            index: idx_local,
+            value: new_idx,
+        });
+        self.set_terminator(Terminator::Jump(header_block));
+
+        self.current_function_mut()
+            .add_block(crate::ir::BasicBlock::with_label(exit_block, "forin.exit"));
         self.current_block = exit_block;
     }
 
@@ -1444,6 +1615,7 @@ impl<'a> Lowerer<'a> {
             break_target: exit_block,
             continue_target: header_block,
             try_finally_depth: self.try_finally_stack.len(),
+            label: self.pending_loop_label.take(),
         });
 
         // Body block
@@ -1534,6 +1706,7 @@ impl<'a> Lowerer<'a> {
             break_target: exit_block,
             continue_target: update_block,
             try_finally_depth: self.try_finally_stack.len(),
+            label: self.pending_loop_label.take(),
         });
 
         // Body block
@@ -1657,13 +1830,27 @@ impl<'a> Lowerer<'a> {
         self.block_depth = self.block_depth.saturating_sub(1);
     }
 
-    fn lower_break(&mut self, _brk: &ast::BreakStatement) {
-        // If inside a switch statement, break targets the switch exit block
-        if let Some(&switch_exit) = self.switch_stack.last() {
-            self.set_terminator(Terminator::Jump(switch_exit));
-            return;
+    fn lower_break(&mut self, brk: &ast::BreakStatement) {
+        // Unlabeled break exits switch first, then nearest loop.
+        if brk.label.is_none() {
+            if let Some(&switch_exit) = self.switch_stack.last() {
+                self.set_terminator(Terminator::Jump(switch_exit));
+                return;
+            }
         }
-        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+
+        let target_loop = if let Some(label) = &brk.label {
+            let label_name = self.interner.resolve(label.name);
+            self.loop_stack
+                .iter()
+                .rev()
+                .find(|ctx| ctx.label.as_deref() == Some(label_name))
+                .cloned()
+        } else {
+            self.loop_stack.last().cloned()
+        };
+
+        if let Some(loop_ctx) = target_loop {
             // Inline finally blocks between here and the loop.
             // Drain entries to prevent recursive re-inlining.
             let depth = loop_ctx.try_finally_depth;
@@ -1684,8 +1871,19 @@ impl<'a> Lowerer<'a> {
         }
     }
 
-    fn lower_continue(&mut self, _cont: &ast::ContinueStatement) {
-        if let Some(loop_ctx) = self.loop_stack.last().cloned() {
+    fn lower_continue(&mut self, cont: &ast::ContinueStatement) {
+        let target_loop = if let Some(label) = &cont.label {
+            let label_name = self.interner.resolve(label.name);
+            self.loop_stack
+                .iter()
+                .rev()
+                .find(|ctx| ctx.label.as_deref() == Some(label_name))
+                .cloned()
+        } else {
+            self.loop_stack.last().cloned()
+        };
+
+        if let Some(loop_ctx) = target_loop {
             // Inline finally blocks between here and the loop.
             // Drain entries to prevent recursive re-inlining.
             let depth = loop_ctx.try_finally_depth;

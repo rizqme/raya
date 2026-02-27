@@ -1948,3 +1948,63 @@ fn test_multiple_optional_params_partial() {
         42,
     );
 }
+
+#[test]
+fn test_labeled_break_exits_outer_loop() {
+    expect_i32(
+        "
+        let out = 0;
+        outer: for (let i = 0; i < 3; i = i + 1) {
+            for (let j = 0; j < 3; j = j + 1) {
+                out = out + 1;
+                break outer;
+            }
+        }
+        return out;
+    ",
+        1,
+    );
+}
+
+#[test]
+fn test_labeled_continue_targets_outer_loop() {
+    expect_i32(
+        "
+        let out = 0;
+        outer: for (let i = 0; i < 3; i = i + 1) {
+            for (let j = 0; j < 3; j = j + 1) {
+                out = out + 1;
+                continue outer;
+            }
+        }
+        return out;
+    ",
+        3,
+    );
+}
+
+#[test]
+fn test_unknown_label_reports_compile_error() {
+    expect_compile_error(
+        "
+        for (let i = 0; i < 1; i = i + 1) {
+            break missingLabel;
+        }
+        return 0;
+    ",
+        "UnknownLabel",
+    );
+}
+
+#[test]
+fn test_continue_non_loop_label_reports_compile_error() {
+    expect_compile_error(
+        "
+        blockLabel: {
+            continue blockLabel;
+        }
+        return 0;
+    ",
+        "ContinueLabelNotLoop",
+    );
+}
