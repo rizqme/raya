@@ -609,25 +609,137 @@ impl<'a> Lowerer<'a> {
     fn lower_for_in(&mut self, for_in: &ast::ForInStatement) {
         // Tightened semantics:
         // - Arrays iterate index keys (0..length-1), matching JS for-in key iteration.
-        // - Other iterables currently fall back to existing for-of lowering behavior.
+        // - Non-arrays iterate own key names via Reflect.getFieldNames runtime primitive.
         let (iter_kind, _, _) = self.classify_for_of_iterable(&for_in.right);
-        if !matches!(iter_kind, ForOfIterableKind::Array) {
-            let left = match &for_in.left {
-                ast::ForInLeft::VariableDecl(decl) => ast::ForOfLeft::VariableDecl(decl.clone()),
-                ast::ForInLeft::Pattern(pattern) => ast::ForOfLeft::Pattern(pattern.clone()),
-            };
-            let desugared = ast::ForOfStatement {
-                left,
-                right: for_in.right.clone(),
-                body: for_in.body.clone(),
-                span: for_in.span,
-            };
-            self.lower_for_of(&desugared);
-            return;
-        }
-
         let number_ty = TypeId::new(crate::parser::TypeContext::NUMBER_TYPE_ID);
-        let array_reg = self.lower_expr(&for_in.right);
+        let keys_array_reg = if matches!(iter_kind, ForOfIterableKind::Array) {
+            let array_reg = self.lower_expr(&for_in.right);
+            let idx_local = self.allocate_anonymous_local();
+            let idx_init = self.alloc_register(number_ty);
+            self.emit(IrInstr::Assign {
+                dest: idx_init.clone(),
+                value: IrValue::Constant(IrConstant::I32(0)),
+            });
+            self.emit(IrInstr::StoreLocal {
+                index: idx_local,
+                value: idx_init,
+            });
+
+            let keys_local = self.allocate_anonymous_local();
+            let array_len = self.alloc_register(number_ty);
+            self.emit(IrInstr::ArrayLen {
+                dest: array_len.clone(),
+                array: array_reg,
+            });
+            let keys_array = self.alloc_register(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+            self.emit(IrInstr::NewArray {
+                dest: keys_array.clone(),
+                len: array_len.clone(),
+                elem_ty: TypeId::new(crate::parser::TypeContext::STRING_TYPE_ID),
+            });
+
+            let fill_header = self.alloc_block();
+            let fill_body = self.alloc_block();
+            let fill_update = self.alloc_block();
+            let fill_exit = self.alloc_block();
+            self.set_terminator(Terminator::Jump(fill_header));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(fill_header, "forin.fill.header"));
+            self.current_block = fill_header;
+
+            let idx = self.alloc_register(number_ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: idx.clone(),
+                index: idx_local,
+            });
+            let cond = self.alloc_register(TypeId::new(crate::parser::TypeContext::BOOLEAN_TYPE_ID));
+            self.emit(IrInstr::BinaryOp {
+                dest: cond.clone(),
+                op: BinaryOp::Less,
+                left: idx,
+                right: array_len.clone(),
+            });
+            self.set_terminator(Terminator::Branch {
+                cond,
+                then_block: fill_body,
+                else_block: fill_exit,
+            });
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(fill_body, "forin.fill.body"));
+            self.current_block = fill_body;
+            let key_num = self.alloc_register(number_ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: key_num.clone(),
+                index: idx_local,
+            });
+            let key_str = self.alloc_register(TypeId::new(crate::parser::TypeContext::STRING_TYPE_ID));
+            self.emit(IrInstr::ToString {
+                dest: key_str.clone(),
+                operand: key_num,
+            });
+            let key_index = self.alloc_register(number_ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: key_index.clone(),
+                index: idx_local,
+            });
+            self.emit(IrInstr::StoreElement {
+                array: keys_array.clone(),
+                index: key_index,
+                value: key_str,
+            });
+            self.set_terminator(Terminator::Jump(fill_update));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(fill_update, "forin.fill.update"));
+            self.current_block = fill_update;
+            let update_idx = self.alloc_register(number_ty);
+            self.emit(IrInstr::LoadLocal {
+                dest: update_idx.clone(),
+                index: idx_local,
+            });
+            let one_reg = self.alloc_register(number_ty);
+            self.emit(IrInstr::Assign {
+                dest: one_reg.clone(),
+                value: IrValue::Constant(IrConstant::I32(1)),
+            });
+            let new_idx = self.alloc_register(number_ty);
+            self.emit(IrInstr::BinaryOp {
+                dest: new_idx.clone(),
+                op: BinaryOp::Add,
+                left: update_idx,
+                right: one_reg,
+            });
+            self.emit(IrInstr::StoreLocal {
+                index: idx_local,
+                value: new_idx,
+            });
+            self.set_terminator(Terminator::Jump(fill_header));
+
+            self.current_function_mut()
+                .add_block(crate::ir::BasicBlock::with_label(fill_exit, "forin.fill.exit"));
+            self.current_block = fill_exit;
+            self.emit(IrInstr::StoreLocal {
+                index: keys_local,
+                value: keys_array.clone(),
+            });
+            let loaded_keys = self.alloc_register(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+            self.emit(IrInstr::LoadLocal {
+                dest: loaded_keys.clone(),
+                index: keys_local,
+            });
+            loaded_keys
+        } else {
+            let object_reg = self.lower_expr(&for_in.right);
+            let keys = self.alloc_register(TypeId::new(crate::parser::TypeContext::ARRAY_TYPE_ID));
+            self.emit(IrInstr::NativeCall {
+                dest: Some(keys.clone()),
+                native_id: crate::compiler::native_id::REFLECT_GET_FIELD_NAMES,
+                args: vec![object_reg],
+            });
+            keys
+        };
 
         let idx_local = self.allocate_anonymous_local();
         let idx_init = self.alloc_register(number_ty);
@@ -660,7 +772,7 @@ impl<'a> Lowerer<'a> {
         let len = self.alloc_register(number_ty);
         self.emit(IrInstr::ArrayLen {
             dest: len.clone(),
-            array: array_reg.clone(),
+            array: keys_array_reg.clone(),
         });
 
         let cond = self.alloc_register(TypeId::new(crate::parser::TypeContext::BOOLEAN_TYPE_ID));
@@ -688,15 +800,16 @@ impl<'a> Lowerer<'a> {
             .add_block(crate::ir::BasicBlock::with_label(body_block, "forin.body"));
         self.current_block = body_block;
 
-        let key_num_reg = self.alloc_register(number_ty);
+        let key_idx = self.alloc_register(number_ty);
         self.emit(IrInstr::LoadLocal {
-            dest: key_num_reg.clone(),
+            dest: key_idx.clone(),
             index: idx_local,
         });
         let key_reg = self.alloc_register(TypeId::new(crate::parser::TypeContext::STRING_TYPE_ID));
-        self.emit(IrInstr::ToString {
+        self.emit(IrInstr::LoadElement {
             dest: key_reg.clone(),
-            operand: key_num_reg,
+            array: keys_array_reg.clone(),
+            index: key_idx,
         });
 
         match &for_in.left {

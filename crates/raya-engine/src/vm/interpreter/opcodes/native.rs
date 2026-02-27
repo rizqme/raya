@@ -189,14 +189,13 @@ impl<'a> Interpreter<'a> {
 
         // Apply data descriptor value directly to the target field if provided.
         if let Some(value) = value_field.filter(|v| !v.is_null()) {
-            let field_index = self.get_field_index_for_value(target, key).ok_or_else(|| {
-                VmError::TypeError(format!("Unknown property '{}' on target object", key))
-            })?;
-            let obj_ptr = unsafe { target.as_ptr::<Object>() }
-                .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
-            let obj = unsafe { &mut *obj_ptr.as_ptr() };
-            obj.set_field(field_index, value)
-                .map_err(VmError::RuntimeError)?;
+            if let Some(field_index) = self.get_field_index_for_value(target, key) {
+                let obj_ptr = unsafe { target.as_ptr::<Object>() }
+                    .ok_or_else(|| VmError::TypeError("Expected object".to_string()))?;
+                let obj = unsafe { &mut *obj_ptr.as_ptr() };
+                obj.set_field(field_index, value)
+                    .map_err(VmError::RuntimeError)?;
+            }
         }
 
         self.set_descriptor_metadata(target, key, descriptor);

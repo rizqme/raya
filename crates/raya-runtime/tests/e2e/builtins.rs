@@ -2273,6 +2273,27 @@ fn test_node_compat_proxy_reflect_has_trap() {
 }
 
 #[test]
+fn test_node_compat_for_in_iterates_dynamic_own_keys() {
+    expect_bool_runtime_node_compat(
+        r#"
+        let o = new Object();
+        Reflect.set(o, "a", 1);
+        Reflect.set(o, "b", null);
+        let seenA = false;
+        let seenB = false;
+        let count = 0;
+        for (let k in o) {
+            if (k == "a") { seenA = true; }
+            if (k == "b") { seenB = true; }
+            count = count + 1;
+        }
+        return seenA && seenB && count >= 2;
+    "#,
+        true,
+    );
+}
+
+#[test]
 fn test_node_compat_intl_number_format_basic() {
     expect_string_runtime_node_compat(
         r#"
@@ -2460,6 +2481,19 @@ fn test_node_compat_shared_array_buffer_byte_length() {
         return sab.byteLength;
     "#,
         24,
+    );
+}
+
+#[test]
+fn test_node_compat_dataview_accepts_shared_array_buffer() {
+    expect_i32_runtime_node_compat(
+        r#"
+        let sab = new SharedArrayBuffer(8);
+        let dv = new DataView(sab);
+        dv.setInt32(0, 42, true);
+        return dv.getInt32(0, true);
+    "#,
+        42,
     );
 }
 

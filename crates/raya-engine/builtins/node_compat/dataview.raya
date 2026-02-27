@@ -1,12 +1,15 @@
 // DataView builtin over ArrayBuffer
 
 class DataView {
-    buffer: ArrayBuffer;
+    buffer: ArrayBuffer | SharedArrayBuffer;
+    private _ab: ArrayBuffer;
     byteOffset: int;
     byteLength: int;
 
-    constructor(buffer: ArrayBuffer, byteOffset: int = 0, byteLength: int = -1) {
-        let ab = buffer as ArrayBuffer;
+    constructor(buffer: ArrayBuffer | SharedArrayBuffer, byteOffset: int = 0, byteLength: int = -1) {
+        let ab = buffer instanceof SharedArrayBuffer
+            ? (buffer as SharedArrayBuffer).asArrayBuffer()
+            : (buffer as ArrayBuffer);
         if (byteOffset < 0 || byteOffset > ab.byteLength) {
             throw createRangeError(ERR_OUT_OF_RANGE, "byteOffset out of range");
         }
@@ -20,7 +23,8 @@ class DataView {
             throw createRangeError(ERR_OUT_OF_RANGE, "byteLength out of range");
         }
 
-        this.buffer = ab;
+        this.buffer = buffer;
+        this._ab = ab;
         this.byteOffset = byteOffset;
         this.byteLength = len;
     }
@@ -34,14 +38,12 @@ class DataView {
 
     getUint8(offset: int): int {
         let i = this.check(offset, 1);
-        let ab = this.buffer as ArrayBuffer;
-        return ab.getByte(i);
+        return this._ab.getByte(i);
     }
 
     setUint8(offset: int, value: int): void {
         let i = this.check(offset, 1);
-        let ab = this.buffer as ArrayBuffer;
-        ab.setByte(i, value);
+        this._ab.setByte(i, value);
     }
 
     getInt8(offset: int): int {
@@ -65,8 +67,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
-        let ab = this.buffer as ArrayBuffer;
-        return ab.getInt32(i);
+        return this._ab.getInt32(i);
     }
 
     setInt32(offset: int, value: int, littleEndian: boolean = true): void {
@@ -74,8 +75,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 4);
-        let ab = this.buffer as ArrayBuffer;
-        ab.setInt32(i, value);
+        this._ab.setInt32(i, value);
     }
 
     getUint32(offset: int, littleEndian: boolean = true): int {
@@ -99,8 +99,7 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
-        let ab = this.buffer as ArrayBuffer;
-        return ab.getFloat64(i);
+        return this._ab.getFloat64(i);
     }
 
     setFloat64(offset: int, value: number, littleEndian: boolean = true): void {
@@ -108,7 +107,6 @@ class DataView {
             throw createError(E_UNIMPLEMENTED_BUILTIN_BEHAVIOR, "Big-endian DataView access is not implemented yet");
         }
         let i = this.check(offset, 8);
-        let ab = this.buffer as ArrayBuffer;
-        ab.setFloat64(i, value);
+        this._ab.setFloat64(i, value);
     }
 }

@@ -1,6 +1,6 @@
 export class DataView {
-    constructor(buffer: ArrayBuffer, byteOffset?: int, byteLength?: int);
-    buffer: ArrayBuffer;
+    constructor(buffer: ArrayBuffer | SharedArrayBuffer, byteOffset?: int, byteLength?: int);
+    buffer: ArrayBuffer | SharedArrayBuffer;
     byteOffset: int;
     byteLength: int;
 

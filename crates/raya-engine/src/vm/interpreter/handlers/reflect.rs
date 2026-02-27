@@ -473,7 +473,7 @@ impl<'a> Interpreter<'a> {
                 }
                 let target = args[0];
 
-                let field_names = if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
+                let mut field_names = if let Some(class_id) = crate::vm::reflect::get_class_id(target) {
                     let class_metadata = self.class_metadata.read();
                     class_metadata
                         .get(class_id)
@@ -482,6 +482,14 @@ impl<'a> Interpreter<'a> {
                 } else {
                     Vec::new()
                 };
+
+                // Include descriptor-backed dynamic keys from node-compat property metadata.
+                let descriptor_keys = self.metadata.lock().get_property_keys(target);
+                for key in descriptor_keys {
+                    if !field_names.iter().any(|existing| existing == &key) {
+                        field_names.push(key);
+                    }
+                }
 
                 // Create array of strings
                 let mut arr = Array::new(0, field_names.len());

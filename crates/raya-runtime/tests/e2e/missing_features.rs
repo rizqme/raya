@@ -100,6 +100,27 @@ fn test_for_in_array_uses_index_keys_not_values() {
 }
 
 #[test]
+fn test_for_in_non_array_iterates_object_field_names() {
+    expect_bool(
+        "class Box {
+             a: int = 1;
+             b: int = 2;
+         }
+         let o = new Box();
+         let seenA = false;
+         let seenB = false;
+         let count = 0;
+         for (let k in o) {
+             if (k == \"a\") { seenA = true; }
+             if (k == \"b\") { seenB = true; }
+             count = count + 1;
+         }
+         return seenA && seenB && count == 2;",
+        true,
+    );
+}
+
+#[test]
 fn test_void_returns_null_and_preserves_side_effects() {
     expect_bool(
         "let side = 0;

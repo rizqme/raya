@@ -254,6 +254,9 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
         | CheckError::StrictBareLetForbidden { span }
         | CheckError::ImplicitThisForbidden { span }
         | CheckError::ImplicitAnyForbidden { span }
+        | CheckError::StrictDeleteForbidden { span }
+        | CheckError::UnknownLabel { span, .. }
+        | CheckError::ContinueLabelNotLoop { span, .. }
         | CheckError::UnknownNotActionable { span, .. }
         | CheckError::StrictPropertyInitialization { span, .. }
         | CheckError::UnboundMethodCall { span, .. } => {

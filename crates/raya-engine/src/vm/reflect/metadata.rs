@@ -201,6 +201,17 @@ impl MetadataStore {
             .unwrap_or_default()
     }
 
+    /// Get all property keys that have property-level metadata on a target.
+    pub fn get_property_keys(&self, target: Value) -> Vec<PropertyKey> {
+        let Some(id) = Self::target_id(target) else {
+            return Vec::new();
+        };
+        self.targets
+            .get(&id)
+            .map(|e| e.properties.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Delete metadata from a property
     ///
     /// `Reflect.deleteMetadata(key, target, propertyKey)`
