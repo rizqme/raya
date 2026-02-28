@@ -3837,6 +3837,30 @@ impl<'a> TypeChecker<'a> {
                     _ => None,
                 }
             }
+            Type::Interface(interface_ty) => {
+                if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                    return self.lookup_interface_member(&interface_ty, &key);
+                }
+                match self.type_ctx.get(index_ty) {
+                    Some(Type::Primitive(PrimitiveType::String)) | Some(Type::StringLiteral(_)) => {
+                        let mut out = Vec::new();
+                        let mut visited_parents = std::collections::HashSet::new();
+                        self.collect_interface_member_types(
+                            &interface_ty,
+                            &mut out,
+                            &mut visited_parents,
+                        );
+                        if out.is_empty() {
+                            None
+                        } else if out.len() == 1 {
+                            Some(out[0])
+                        } else {
+                            Some(self.type_ctx.union_type(out))
+                        }
+                    }
+                    _ => None,
+                }
+            }
             Type::TypeVar(tv) => tv.constraint.and_then(|constraint| {
                 self.index_access_from_type(constraint, index_ty, index_expr)
             }),
@@ -3874,6 +3898,13 @@ impl<'a> TypeChecker<'a> {
     fn has_named_member_or_index_signature(&mut self, ty: TypeId, key: &str) -> bool {
         use crate::parser::types::Type;
         match self.type_ctx.get(ty).cloned() {
+            Some(Type::Tuple(tuple_ty)) => key
+                .parse::<usize>()
+                .map(|idx| idx < tuple_ty.elements.len())
+                .unwrap_or(false),
+            Some(Type::Interface(interface_ty)) => {
+                self.lookup_interface_member(&interface_ty, key).is_some()
+            }
             Some(Type::Object(obj)) => {
                 obj.properties.iter().any(|p| p.name == key) || obj.index_signature.is_some()
             }
@@ -3899,7 +3930,11 @@ impl<'a> TypeChecker<'a> {
     ) -> bool {
         use crate::parser::types::Type;
         match self.type_ctx.get(object_ty).cloned() {
-            Some(Type::Object(_)) | Some(Type::Class(_)) | Some(Type::TypeVar(_)) => {
+            Some(Type::Tuple(_))
+            | Some(Type::Interface(_))
+            | Some(Type::Object(_))
+            | Some(Type::Class(_))
+            | Some(Type::TypeVar(_)) => {
                 if self.has_named_member_or_index_signature(object_ty, key) {
                     return false;
                 }
@@ -3919,7 +3954,11 @@ impl<'a> TypeChecker<'a> {
                         continue;
                     }
                     match self.type_ctx.get(member).cloned() {
-                        Some(Type::Object(_)) | Some(Type::Class(_)) | Some(Type::TypeVar(_)) => {
+                        Some(Type::Tuple(_))
+                        | Some(Type::Interface(_))
+                        | Some(Type::Object(_))
+                        | Some(Type::Class(_))
+                        | Some(Type::TypeVar(_)) => {
                             object_like_members += 1;
                             if self.has_named_member_or_index_signature(member, key) {
                                 found = true;
@@ -4625,6 +4664,13 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        // Check for interface properties and methods (including inherited interfaces)
+        if let Some(crate::parser::types::Type::Interface(interface_ty)) = &obj_type {
+            if let Some(member_ty) = self.lookup_interface_member(interface_ty, &property_name) {
+                return member_ty;
+            }
+        }
+
         // Handle Union types: look up member on any union variant that has it
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();
@@ -4653,6 +4699,16 @@ impl<'a> TypeChecker<'a> {
                             object_like_members += 1;
                             if let Some((ty, _vis)) =
                                 self.lookup_class_member(&class, &property_name)
+                            {
+                                if !found_types.contains(&ty) {
+                                    found_types.push(ty);
+                                }
+                            }
+                        }
+                        crate::parser::types::Type::Interface(interface_ty) => {
+                            object_like_members += 1;
+                            if let Some(ty) =
+                                self.lookup_interface_member(&interface_ty, &property_name)
                             {
                                 if !found_types.contains(&ty) {
                                     found_types.push(ty);
@@ -4705,6 +4761,13 @@ impl<'a> TypeChecker<'a> {
                                 return ty;
                             }
                         }
+                        crate::parser::types::Type::Interface(interface_ty) => {
+                            if let Some(ty) =
+                                self.lookup_interface_member(interface_ty, &property_name)
+                            {
+                                return ty;
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -4727,6 +4790,100 @@ impl<'a> TypeChecker<'a> {
 
         // Unknown member access remains a fallback path.
         self.fallback_type(member.span, FallbackReason::Unavoidable, "member-access")
+    }
+
+    fn lookup_interface_member(
+        &mut self,
+        interface_ty: &crate::parser::types::ty::InterfaceType,
+        name: &str,
+    ) -> Option<TypeId> {
+        for prop in &interface_ty.properties {
+            if prop.name == name {
+                return Some(prop.ty);
+            }
+        }
+        for method in &interface_ty.methods {
+            if method.name == name {
+                return Some(method.ty);
+            }
+        }
+        for parent in &interface_ty.extends {
+            match self.type_ctx.get(*parent).cloned() {
+                Some(crate::parser::types::Type::Interface(parent_interface)) => {
+                    if let Some(ty) = self.lookup_interface_member(&parent_interface, name) {
+                        return Some(ty);
+                    }
+                }
+                Some(crate::parser::types::Type::Object(obj)) => {
+                    if let Some(ty) = obj.properties.iter().find(|p| p.name == name).map(|p| p.ty) {
+                        return Some(ty);
+                    }
+                    if let Some((_, sig_ty)) = obj.index_signature {
+                        return Some(sig_ty);
+                    }
+                }
+                Some(crate::parser::types::Type::Class(class_ty)) => {
+                    if let Some((ty, _)) = self.lookup_class_member(&class_ty, name) {
+                        return Some(ty);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn collect_interface_member_types(
+        &mut self,
+        interface_ty: &crate::parser::types::ty::InterfaceType,
+        out: &mut Vec<TypeId>,
+        visited_parents: &mut std::collections::HashSet<TypeId>,
+    ) {
+        for prop in &interface_ty.properties {
+            if !out.contains(&prop.ty) {
+                out.push(prop.ty);
+            }
+        }
+        for method in &interface_ty.methods {
+            if !out.contains(&method.ty) {
+                out.push(method.ty);
+            }
+        }
+        for parent in &interface_ty.extends {
+            if !visited_parents.insert(*parent) {
+                continue;
+            }
+            match self.type_ctx.get(*parent).cloned() {
+                Some(crate::parser::types::Type::Interface(parent_interface)) => {
+                    self.collect_interface_member_types(&parent_interface, out, visited_parents);
+                }
+                Some(crate::parser::types::Type::Object(obj)) => {
+                    for prop in &obj.properties {
+                        if !out.contains(&prop.ty) {
+                            out.push(prop.ty);
+                        }
+                    }
+                    if let Some((_, sig_ty)) = obj.index_signature {
+                        if !out.contains(&sig_ty) {
+                            out.push(sig_ty);
+                        }
+                    }
+                }
+                Some(crate::parser::types::Type::Class(class_ty)) => {
+                    for prop in &class_ty.properties {
+                        if !out.contains(&prop.ty) {
+                            out.push(prop.ty);
+                        }
+                    }
+                    for method in &class_ty.methods {
+                        if !out.contains(&method.ty) {
+                            out.push(method.ty);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Look up a property or method in a class hierarchy, including parent classes

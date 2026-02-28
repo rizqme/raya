@@ -26,6 +26,7 @@ pub fn sync_to_statement_boundary(parser: &mut Parser) {
             Token::Function
             | Token::Class
             | Token::Type
+            | Token::Interface
             | Token::Let
             | Token::Const
             | Token::If

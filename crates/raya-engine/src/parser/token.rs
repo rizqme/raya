@@ -14,6 +14,7 @@ pub enum Token {
     Function,
     Class,
     Type,
+    Interface,
     Let,
     Const,
     // Note: 'interface' and 'enum' are BANNED in Raya (LANG.md §10, §19.2)
@@ -226,6 +227,7 @@ impl fmt::Display for Token {
             Token::Function => write!(f, "function"),
             Token::Class => write!(f, "class"),
             Token::Type => write!(f, "type"),
+            Token::Interface => write!(f, "interface"),
             Token::Let => write!(f, "let"),
             Token::Const => write!(f, "const"),
             Token::If => write!(f, "if"),
@@ -352,6 +354,7 @@ impl Token {
             Token::Function
                 | Token::Class
                 | Token::Type
+                | Token::Interface
                 | Token::Let
                 | Token::Const
                 | Token::If

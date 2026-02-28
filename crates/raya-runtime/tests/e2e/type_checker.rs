@@ -416,3 +416,43 @@ fn test_index_missing_property_reports_error() {
         "PropertyNotFound",
     );
 }
+
+#[test]
+fn test_tuple_index_out_of_bounds_reports_error() {
+    expect_compile_error(
+        "let t: [number, string] = [1, \"a\"];
+         return t[2];",
+        "PropertyNotFound",
+    );
+}
+
+#[test]
+fn test_interface_member_access_type_retained() {
+    expect_i32(
+        "interface Box { value: number }
+         let b: Box = { value: 7 };
+         return b.value;",
+        7,
+    );
+}
+
+#[test]
+fn test_interface_index_access_type_retained() {
+    expect_i32(
+        "interface Box { value: number }
+         let b: Box = { value: 9 };
+         return b[\"value\"];",
+        9,
+    );
+}
+
+#[test]
+fn test_interface_extends_type_retained() {
+    expect_i32(
+        "interface Base { x: number }
+         interface Derived extends Base { y: number }
+         let d: Derived = { x: 1, y: 2 };
+         return d.x + d.y;",
+        3,
+    );
+}

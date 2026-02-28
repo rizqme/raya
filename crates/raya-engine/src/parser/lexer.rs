@@ -42,6 +42,9 @@ enum LogosToken {
     #[token("type")]
     Type,
 
+    #[token("interface")]
+    Interface,
+
     #[token("let")]
     Let,
 
@@ -882,6 +885,7 @@ impl<'a> Lexer<'a> {
             LogosToken::Function => Token::Function,
             LogosToken::Class => Token::Class,
             LogosToken::Type => Token::Type,
+            LogosToken::Interface => Token::Interface,
             LogosToken::Let => Token::Let,
             LogosToken::Const => Token::Const,
             LogosToken::If => Token::If,

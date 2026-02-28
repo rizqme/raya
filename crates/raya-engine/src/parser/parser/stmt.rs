@@ -61,6 +61,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
 
         Token::Class | Token::Abstract | Token::At => parse_class_declaration(parser),
         Token::Type => parse_type_alias_declaration(parser, Vec::new()),
+        Token::Interface => parse_interface_declaration(parser, Vec::new()),
         Token::Annotation(_) => {
             // Annotations can appear before class or type declarations
             let annotations = parse_annotations(parser)?;
@@ -69,6 +70,7 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
                     parse_class_declaration_with_annotations(parser, annotations)
                 }
                 Token::Type => parse_type_alias_declaration(parser, annotations),
+                Token::Interface => parse_interface_declaration(parser, annotations),
                 // Allow annotations before other statements (e.g., //@@builtin_primitive before const)
                 // — annotations are discarded for non-class/type declarations
                 _ => parse_statement(parser),
@@ -503,6 +505,7 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
             | Token::Async          // Block starts with async
             | Token::Class          // Block starts with class
             | Token::Type           // Block starts with type
+            | Token::Interface      // Block starts with interface
             | Token::Export         // Block starts with export
             | Token::Import         // Block starts with import
             | Token::At             // Block starts with annotation
@@ -1088,6 +1091,79 @@ fn parse_type_alias_declaration(
 
     let span = parser.combine_spans(&start_span, &type_annotation.span);
 
+    Ok(Statement::TypeAliasDecl(TypeAliasDecl {
+        name,
+        type_params,
+        type_annotation,
+        annotations,
+        span,
+    }))
+}
+
+/// Parse interface declaration by lowering it into a type alias.
+/// Example:
+///   interface A extends B, C { x: number }
+/// becomes:
+///   type A = B & C & { x: number }
+fn parse_interface_declaration(
+    parser: &mut Parser,
+    annotations: Vec<Annotation>,
+) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+    parser.expect(Token::Interface)?;
+
+    let name = if let Token::Identifier(name) = parser.current() {
+        let ident = Identifier {
+            name: *name,
+            span: parser.current_span(),
+        };
+        parser.advance();
+        ident
+    } else {
+        return Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]));
+    };
+
+    let type_params = if parser.check(&Token::Less) {
+        parser.advance();
+        Some(parse_type_parameters(parser)?)
+    } else {
+        None
+    };
+
+    let mut parts: Vec<TypeAnnotation> = Vec::new();
+    if parser.check(&Token::Extends) {
+        parser.advance();
+        let mut guard = super::guards::LoopGuard::new("interface_extends");
+        loop {
+            guard.check()?;
+            parts.push(super::types::parse_type_annotation(parser)?);
+            if parser.check(&Token::Comma) {
+                parser.advance();
+                continue;
+            }
+            break;
+        }
+    }
+
+    // Interface body uses object-type member syntax.
+    let body = super::types::parse_type_annotation(parser)?;
+    parts.push(body.clone());
+
+    let type_annotation = if parts.len() == 1 {
+        body
+    } else {
+        let span = parser.combine_spans(&parts[0].span, &parts[parts.len() - 1].span);
+        TypeAnnotation {
+            ty: Type::Intersection(IntersectionType { types: parts }),
+            span,
+        }
+    };
+
+    if parser.check(&Token::Semicolon) {
+        parser.advance();
+    }
+
+    let span = parser.combine_spans(&start_span, &type_annotation.span);
     Ok(Statement::TypeAliasDecl(TypeAliasDecl {
         name,
         type_params,
@@ -2007,6 +2083,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
             Token::Function | Token::Async => parse_function_declaration(parser)?,
             Token::Class | Token::Abstract => parse_class_declaration(parser)?,
             Token::Type => parse_type_alias_declaration(parser, Vec::new())?,
+            Token::Interface => parse_interface_declaration(parser, Vec::new())?,
             _ => {
                 return Err(parser.unexpected_token(&[
                     Token::Let,
@@ -2014,6 +2091,7 @@ fn parse_export_declaration(parser: &mut Parser) -> Result<Statement, ParseError
                     Token::Function,
                     Token::Class,
                     Token::Type,
+                    Token::Interface,
                     Token::LeftBrace,
                     Token::Star,
                     Token::Default,
