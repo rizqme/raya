@@ -14,10 +14,11 @@
  *
  * Usage:
  *   import template from "std:template";
+ *   import { CompiledTemplate, compile, render } from "std:template";
+ *
  *   let result: string = template.render("Hello, {{name}}!", '{"name": "World"}');
  *
- *   import { CompiledTemplate } from "std:template";
- *   let compiled: CompiledTemplate = template.compile("Hello, {{name}}!");
+ *   let compiled: CompiledTemplate = compile("Hello, {{name}}!");
  *   let output: string = compiled.render('{"name": "World"}');
  *   compiled.release();
  */
@@ -37,24 +38,23 @@ export class CompiledTemplate {
     release(): void;
 }
 
-/**
- * Template engine providing compile and render operations.
- */
-declare class TemplateEngine {
-    /**
-     * Compile a template source string for repeated rendering.
-     * Returns a CompiledTemplate that can be rendered multiple times.
-     */
-    compile(source: string): CompiledTemplate;
+// ── Top-level utility functions ──
 
-    /**
-     * One-shot render: parse and render a template with JSON data.
-     * For single-use templates. For repeated rendering, use compile().
-     */
+/**
+ * Compile a template source string for repeated rendering.
+ * Returns a CompiledTemplate that can be rendered multiple times.
+ */
+export function compile(source: string): CompiledTemplate;
+
+/**
+ * One-shot render: parse and render a template with JSON data.
+ * For single-use templates. For repeated rendering, use compile().
+ */
+export function render(source: string, data: string): string;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class TemplateNamespace {
+    compile(source: string): CompiledTemplate;
     render(source: string, data: string): string;
 }
-
-/** template singleton instance */
-declare const template: TemplateEngine;
-
-export default template;

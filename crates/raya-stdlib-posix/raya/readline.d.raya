@@ -3,15 +3,17 @@
  *
  * Usage:
  *   import readline from "std:readline";
+ *   import { Readline, prompt, confirm } from "std:readline";
+ *
  *   const name: string = readline.prompt("Enter name: ");
  *
- *   import { Readline } from "std:readline";
  *   const rl = new Readline();
  *   const line: string = rl.prompt("> ");
  *   rl.addHistory(line);
  *   rl.close();
  */
 
+/** Full-featured readline instance with history support */
 export class Readline {
     /** Create a new readline instance with empty history */
     constructor();
@@ -31,16 +33,25 @@ export class Readline {
     close(): void;
 }
 
-export class ReadlineUtils {
-    /** One-shot prompt: show text, read line (no handle needed) */
+// ── Top-level utility functions ──
+
+/** One-shot prompt: show text, read line (no handle needed) */
+export function prompt(text: string): string;
+
+/** Prompt with (y/n) suffix, return true for y/yes */
+export function confirm(text: string): boolean;
+
+/** Prompt for input with echo disabled (hidden password input) */
+export function password(text: string): string;
+
+/** Display numbered list of options, return 0-based index (-1 if invalid) */
+export function select(text: string, options: string[]): number;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class ReadlineNamespace {
     prompt(text: string): string;
-    /** Prompt with (y/n) suffix, return true for y/yes */
     confirm(text: string): boolean;
-    /** Prompt for input with echo disabled (hidden password input) */
     password(text: string): string;
-    /** Display numbered list of options, return 0-based index (-1 if invalid) */
     select(text: string, options: string[]): number;
 }
-
-declare const readline: ReadlineUtils;
-export default readline;

@@ -1,83 +1,106 @@
 // Os - Standard OS information module
-// Usage: import os from "std:os";
+// Usage: import os from "std:os"
+// Usage: import { platform, arch, hostname } from "std:os"
 
-class Os {
-    platform(): string {
-        return __NATIVE_CALL<string>("os.platform");
-    }
-
-    arch(): string {
-        return __NATIVE_CALL<string>("os.arch");
-    }
-
-    hostname(): string {
-        return __NATIVE_CALL<string>("os.hostname");
-    }
-
-    cpus(): number {
-        return __NATIVE_CALL<number>("os.cpus");
-    }
-
-    totalMemory(): number {
-        return __NATIVE_CALL<number>("os.totalMemory");
-    }
-
-    freeMemory(): number {
-        return __NATIVE_CALL<number>("os.freeMemory");
-    }
-
-    uptime(): number {
-        return __NATIVE_CALL<number>("os.uptime");
-    }
-
-    eol(): string {
-        return __NATIVE_CALL<string>("os.eol");
-    }
-
-    tmpdir(): string {
-        return __NATIVE_CALL<string>("os.tmpdir");
-    }
-
-    release(): string {
-        return __NATIVE_CALL<string>("os.release");
-    }
-
-    osType(): string {
-        return __NATIVE_CALL<string>("os.osType");
-    }
-
-    machine(): string {
-        return __NATIVE_CALL<string>("os.machine");
-    }
-
-    username(): string {
-        return __NATIVE_CALL<string>("os.username");
-    }
-
-    userInfo(): string[] {
-        return __NATIVE_CALL<string[]>("os.userInfo");
-    }
-
-    shell(): string {
-        return __NATIVE_CALL<string>("os.shell");
-    }
-
-    loadavg(): number[] {
-        return __NATIVE_CALL<number[]>("os.loadavg");
-    }
-
-    networkInterfaces(): string[] {
-        return __NATIVE_CALL<string[]>("os.networkInterfaces");
-    }
-
-    endianness(): string {
-        return __NATIVE_CALL<string>("os.endianness");
-    }
-
-    pageSize(): number {
-        return __NATIVE_CALL<number>("os.pageSize");
-    }
+export function platform(): string {
+    return __NATIVE_CALL<string>("os.platform");
 }
 
-const os = new Os();
+export function arch(): string {
+    return __NATIVE_CALL<string>("os.arch");
+}
+
+export function hostname(): string {
+    return __NATIVE_CALL<string>("os.hostname");
+}
+
+export function cpus(): number {
+    return __NATIVE_CALL<number>("os.cpus");
+}
+
+export function totalMemory(): number {
+    return __NATIVE_CALL<number>("os.totalMemory");
+}
+
+export function freeMemory(): number {
+    return __NATIVE_CALL<number>("os.freeMemory");
+}
+
+export function uptime(): number {
+    return __NATIVE_CALL<number>("os.uptime");
+}
+
+export function eol(): string {
+    return __NATIVE_CALL<string>("os.eol");
+}
+
+export function tmpdir(): string {
+    return __NATIVE_CALL<string>("os.tmpdir");
+}
+
+export function release(): string {
+    return __NATIVE_CALL<string>("os.release");
+}
+
+export function osType(): string {
+    return __NATIVE_CALL<string>("os.osType");
+}
+
+export function machine(): string {
+    return __NATIVE_CALL<string>("os.machine");
+}
+
+export function username(): string {
+    return __NATIVE_CALL<string>("os.username");
+}
+
+export function userInfo(): string[] {
+    return __NATIVE_CALL<string[]>("os.userInfo");
+}
+
+export function shell(): string {
+    return __NATIVE_CALL<string>("os.shell");
+}
+
+export function loadavg(): number[] {
+    return __NATIVE_CALL<number[]>("os.loadavg");
+}
+
+export function networkInterfaces(): string[] {
+    return __NATIVE_CALL<string[]>("os.networkInterfaces");
+}
+
+export function endianness(): string {
+    return __NATIVE_CALL<string>("os.endianness");
+}
+
+export function pageSize(): number {
+    return __NATIVE_CALL<number>("os.pageSize");
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class OsNamespace {
+    platform(): string { return platform(); }
+    arch(): string { return arch(); }
+    hostname(): string { return hostname(); }
+    cpus(): number { return cpus(); }
+    totalMemory(): number { return totalMemory(); }
+    freeMemory(): number { return freeMemory(); }
+    uptime(): number { return uptime(); }
+    eol(): string { return eol(); }
+    tmpdir(): string { return tmpdir(); }
+    release(): string { return release(); }
+    osType(): string { return osType(); }
+    machine(): string { return machine(); }
+    username(): string { return username(); }
+    userInfo(): string[] { return userInfo(); }
+    shell(): string { return shell(); }
+    loadavg(): number[] { return loadavg(); }
+    networkInterfaces(): string[] { return networkInterfaces(); }
+    endianness(): string { return endianness(); }
+    pageSize(): number { return pageSize(); }
+}
+
+const os = new OsNamespace();
 export default os;

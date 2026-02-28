@@ -6,38 +6,43 @@
  *
  * Usage:
  *   import compress from "std:compress";
+ *   import { gzip, gunzip, deflate, inflate } from "std:compress";
+ *
  *   let compressed: Buffer = compress.gzip(data);
  *   let original: Buffer = compress.gunzip(compressed);
  */
 
-/**
- * Compress provides methods for gzip, raw deflate, and zlib
- * compression and decompression.
- *
- * Compression levels range from 0 (no compression) to 9 (best compression).
- * Default level is 6 (good balance of speed and compression ratio).
- */
-export class CompressClass {
-    /** Gzip compress data (level defaults to 6). */
+// ── Gzip ──
+
+/** Gzip compress data (level defaults to 6). */
+export function gzip(data: Buffer, level?: number): Buffer;
+
+/** Gzip decompress data. */
+export function gunzip(data: Buffer): Buffer;
+
+// ── Raw Deflate ──
+
+/** Raw deflate compress (level defaults to 6). */
+export function deflate(data: Buffer, level?: number): Buffer;
+
+/** Raw deflate decompress (inflate). */
+export function inflate(data: Buffer): Buffer;
+
+// ── Zlib ──
+
+/** Zlib compress (level defaults to 6). */
+export function zlibCompress(data: Buffer, level?: number): Buffer;
+
+/** Zlib decompress. */
+export function zlibDecompress(data: Buffer): Buffer;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class CompressNamespace {
     gzip(data: Buffer, level?: number): Buffer;
-
-    /** Gzip decompress data. */
     gunzip(data: Buffer): Buffer;
-
-    /** Raw deflate compress (level defaults to 6). */
     deflate(data: Buffer, level?: number): Buffer;
-
-    /** Raw deflate decompress (inflate). */
     inflate(data: Buffer): Buffer;
-
-    /** Zlib compress (level defaults to 6). */
     zlibCompress(data: Buffer, level?: number): Buffer;
-
-    /** Zlib decompress. */
     zlibDecompress(data: Buffer): Buffer;
 }
-
-/** compress singleton instance */
-declare const compress: CompressClass;
-
-export default compress;

@@ -3,28 +3,51 @@
  *
  * Usage:
  *   import archive from "std:archive";
+ *   import { tarCreate, zipExtract } from "std:archive";
+ *
  *   archive.tarCreate("out.tar", ["file1.txt", "dir/"]);
  *   archive.zipExtract("data.zip", "./output");
  */
 
-export class Archive {
-    /** Create a tar archive from input paths */
+// ── Tar ──
+
+/** Create a tar archive from input paths */
+export function tarCreate(outputPath: string, inputPaths: string[]): void;
+
+/** Extract a tar archive to a directory */
+export function tarExtract(archivePath: string, outputDir: string): void;
+
+/** List entries in a tar archive */
+export function tarList(archivePath: string): string[];
+
+// ── Tar.gz ──
+
+/** Create a gzip-compressed tar archive (.tar.gz / .tgz) */
+export function tgzCreate(outputPath: string, inputPaths: string[]): void;
+
+/** Extract a gzip-compressed tar archive (.tar.gz / .tgz) */
+export function tgzExtract(archivePath: string, outputDir: string): void;
+
+// ── Zip ──
+
+/** Create a zip archive from input paths */
+export function zipCreate(outputPath: string, inputPaths: string[]): void;
+
+/** Extract a zip archive to a directory */
+export function zipExtract(archivePath: string, outputDir: string): void;
+
+/** List entries in a zip archive */
+export function zipList(archivePath: string): string[];
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class ArchiveNamespace {
     tarCreate(outputPath: string, inputPaths: string[]): void;
-    /** Extract a tar archive to a directory */
     tarExtract(archivePath: string, outputDir: string): void;
-    /** List entries in a tar archive */
     tarList(archivePath: string): string[];
-    /** Create a gzip-compressed tar archive (.tar.gz / .tgz) */
     tgzCreate(outputPath: string, inputPaths: string[]): void;
-    /** Extract a gzip-compressed tar archive (.tar.gz / .tgz) */
     tgzExtract(archivePath: string, outputDir: string): void;
-    /** Create a zip archive from input paths */
     zipCreate(outputPath: string, inputPaths: string[]): void;
-    /** Extract a zip archive to a directory */
     zipExtract(archivePath: string, outputDir: string): void;
-    /** List entries in a zip archive */
     zipList(archivePath: string): string[];
 }
-
-declare const archive: Archive;
-export default archive;

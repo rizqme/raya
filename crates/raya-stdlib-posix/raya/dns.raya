@@ -1,43 +1,56 @@
 // Dns - Standard DNS resolution module
-// Usage: import dns from "std:dns";
+// Usage: import dns from "std:dns"
+// Usage: import { lookup, lookup4, reverse } from "std:dns"
 
-class Dns {
-    lookup(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookup", hostname);
-    }
-
-    lookup4(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookup4", hostname);
-    }
-
-    lookup6(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookup6", hostname);
-    }
-
-    lookupMx(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookupMx", hostname);
-    }
-
-    lookupTxt(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookupTxt", hostname);
-    }
-
-    lookupSrv(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookupSrv", hostname);
-    }
-
-    lookupCname(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookupCname", hostname);
-    }
-
-    lookupNs(hostname: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.lookupNs", hostname);
-    }
-
-    reverse(ip: string): string[] {
-        return __NATIVE_CALL<string[]>("dns.reverse", ip);
-    }
+export function lookup(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookup", hostname);
 }
 
-const dns = new Dns();
+export function lookup4(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookup4", hostname);
+}
+
+export function lookup6(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookup6", hostname);
+}
+
+export function lookupMx(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookupMx", hostname);
+}
+
+export function lookupTxt(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookupTxt", hostname);
+}
+
+export function lookupSrv(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookupSrv", hostname);
+}
+
+export function lookupCname(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookupCname", hostname);
+}
+
+export function lookupNs(hostname: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.lookupNs", hostname);
+}
+
+export function reverse(ip: string): string[] {
+    return __NATIVE_CALL<string[]>("dns.reverse", ip);
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class DnsNamespace {
+    lookup(hostname: string): string[] { return lookup(hostname); }
+    lookup4(hostname: string): string[] { return lookup4(hostname); }
+    lookup6(hostname: string): string[] { return lookup6(hostname); }
+    lookupMx(hostname: string): string[] { return lookupMx(hostname); }
+    lookupTxt(hostname: string): string[] { return lookupTxt(hostname); }
+    lookupSrv(hostname: string): string[] { return lookupSrv(hostname); }
+    lookupCname(hostname: string): string[] { return lookupCname(hostname); }
+    lookupNs(hostname: string): string[] { return lookupNs(hostname); }
+    reverse(ip: string): string[] { return reverse(ip); }
+}
+
+const dns = new DnsNamespace();
 export default dns;

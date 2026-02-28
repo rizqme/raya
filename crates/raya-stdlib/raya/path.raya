@@ -1,73 +1,91 @@
 // Path - Standard path module
-// Usage: import path from "std:path";
+// Usage: import path from "std:path"
+// Usage: import { join, dirname, basename } from "std:path"
 
-class Path {
-    // ── Join & Normalize ──
+// ── Join & Normalize ──
 
-    join(a: string, b: string): string {
-        return __NATIVE_CALL<string>("path.join", a, b);
-    }
-
-    normalize(p: string): string {
-        return __NATIVE_CALL<string>("path.normalize", p);
-    }
-
-    // ── Components ──
-
-    dirname(p: string): string {
-        return __NATIVE_CALL<string>("path.dirname", p);
-    }
-
-    basename(p: string): string {
-        return __NATIVE_CALL<string>("path.basename", p);
-    }
-
-    extname(p: string): string {
-        return __NATIVE_CALL<string>("path.extname", p);
-    }
-
-    // ── Resolution ──
-
-    isAbsolute(p: string): boolean {
-        return __NATIVE_CALL<boolean>("path.isAbsolute", p);
-    }
-
-    resolve(base: string, target: string): string {
-        return __NATIVE_CALL<string>("path.resolve", base, target);
-    }
-
-    relative(base: string, target: string): string {
-        return __NATIVE_CALL<string>("path.relative", base, target);
-    }
-
-    cwd(): string {
-        return __NATIVE_CALL<string>("path.cwd");
-    }
-
-    // ── OS Constants ──
-
-    sep(): string {
-        return __NATIVE_CALL<string>("path.sep");
-    }
-
-    delimiter(): string {
-        return __NATIVE_CALL<string>("path.delimiter");
-    }
-
-    // ── Utilities ──
-
-    stripExt(p: string): string {
-        return __NATIVE_CALL<string>("path.stripExt", p);
-    }
-
-    withExt(p: string, ext: string): string {
-        return __NATIVE_CALL<string>("path.withExt", p, ext);
-    }
-
-    isRelative(p: string): boolean {
-        return !this.isAbsolute(p);
-    }
+export function join(a: string, b: string): string {
+    return __NATIVE_CALL<string>("path.join", a, b);
 }
 
-const path = new Path();
+export function normalize(p: string): string {
+    return __NATIVE_CALL<string>("path.normalize", p);
+}
+
+// ── Components ──
+
+export function dirname(p: string): string {
+    return __NATIVE_CALL<string>("path.dirname", p);
+}
+
+export function basename(p: string): string {
+    return __NATIVE_CALL<string>("path.basename", p);
+}
+
+export function extname(p: string): string {
+    return __NATIVE_CALL<string>("path.extname", p);
+}
+
+// ── Resolution ──
+
+export function isAbsolute(p: string): boolean {
+    return __NATIVE_CALL<boolean>("path.isAbsolute", p);
+}
+
+export function resolve(base: string, target: string): string {
+    return __NATIVE_CALL<string>("path.resolve", base, target);
+}
+
+export function relative(base: string, target: string): string {
+    return __NATIVE_CALL<string>("path.relative", base, target);
+}
+
+export function cwd(): string {
+    return __NATIVE_CALL<string>("path.cwd");
+}
+
+// ── OS Constants ──
+
+export function sep(): string {
+    return __NATIVE_CALL<string>("path.sep");
+}
+
+export function delimiter(): string {
+    return __NATIVE_CALL<string>("path.delimiter");
+}
+
+// ── Utilities ──
+
+export function stripExt(p: string): string {
+    return __NATIVE_CALL<string>("path.stripExt", p);
+}
+
+export function withExt(p: string, ext: string): string {
+    return __NATIVE_CALL<string>("path.withExt", p, ext);
+}
+
+export function isRelative(p: string): boolean {
+    return !isAbsolute(p);
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class PathNamespace {
+    join(a: string, b: string): string { return join(a, b); }
+    normalize(p: string): string { return normalize(p); }
+    dirname(p: string): string { return dirname(p); }
+    basename(p: string): string { return basename(p); }
+    extname(p: string): string { return extname(p); }
+    isAbsolute(p: string): boolean { return isAbsolute(p); }
+    resolve(base: string, target: string): string { return resolve(base, target); }
+    relative(base: string, target: string): string { return relative(base, target); }
+    cwd(): string { return cwd(); }
+    sep(): string { return sep(); }
+    delimiter(): string { return delimiter(); }
+    stripExt(p: string): string { return stripExt(p); }
+    withExt(p: string, ext: string): string { return withExt(p, ext); }
+    isRelative(p: string): boolean { return isRelative(p); }
+}
+
+const path = new PathNamespace();
 export default path;

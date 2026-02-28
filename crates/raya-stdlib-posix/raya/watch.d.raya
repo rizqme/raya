@@ -3,12 +3,12 @@
  *
  * Usage:
  *   import watch from "std:watch";
+ *   import { FileWatcher, WatchEvent, create } from "std:watch";
+ *
  *   let watcher = watch.create(["./src"]);
  *   let event = watcher.nextEvent();
  *   print(event.kind() + " " + event.path());
  *   watcher.close();
- *
- *   import { FileWatcher, WatchEvent } from "std:watch";
  */
 
 /** Represents a single file system event */
@@ -45,12 +45,17 @@ export class FileWatcher {
     close(): void;
 }
 
-export class WatchClass {
-    /** Create a non-recursive file watcher for the given paths */
+// ── Top-level factory functions ──
+
+/** Create a non-recursive file watcher for the given paths */
+export function create(paths: string[]): FileWatcher;
+
+/** Create a file watcher with explicit recursive flag */
+export function createRecursive(paths: string[], recursive: boolean): FileWatcher;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class WatchNamespace {
     create(paths: string[]): FileWatcher;
-    /** Create a file watcher with explicit recursive flag */
     createRecursive(paths: string[], recursive: boolean): FileWatcher;
 }
-
-declare const watch: WatchClass;
-export default watch;

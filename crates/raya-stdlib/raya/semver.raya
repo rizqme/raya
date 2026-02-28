@@ -1,6 +1,6 @@
 // Semver - Standard semantic versioning module
-// Usage: import semver from "std:semver";
-// Usage: import { SemverVersion } from "std:semver";
+// Usage: import semver from "std:semver"
+// Usage: import { SemverVersion, parse, compare, satisfies } from "std:semver"
 
 export class SemverVersion {
     private _handle: number;
@@ -38,45 +38,60 @@ export class SemverVersion {
     }
 }
 
-class SemverClass {
-    parse(version: string): SemverVersion {
-        const handle = __NATIVE_CALL<number>("semver.parse", version);
-        return new SemverVersion(handle);
-    }
+// ── Top-level utility functions ──
 
-    valid(version: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.valid", version);
-    }
-
-    compare(a: string, b: string): number {
-        return __NATIVE_CALL<number>("semver.compare", a, b);
-    }
-
-    satisfies(version: string, range: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.satisfies", version, range);
-    }
-
-    gt(a: string, b: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.gt", a, b);
-    }
-
-    gte(a: string, b: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.gte", a, b);
-    }
-
-    lt(a: string, b: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.lt", a, b);
-    }
-
-    lte(a: string, b: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.lte", a, b);
-    }
-
-    eq(a: string, b: string): boolean {
-        return __NATIVE_CALL<boolean>("semver.eq", a, b);
-    }
+function parse(version: string): SemverVersion {
+    const handle = __NATIVE_CALL<number>("semver.parse", version);
+    return new SemverVersion(handle);
 }
 
-const semver = new SemverClass();
-export { semver };
+function valid(version: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.valid", version);
+}
+
+function compare(a: string, b: string): number {
+    return __NATIVE_CALL<number>("semver.compare", a, b);
+}
+
+function satisfies(version: string, range: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.satisfies", version, range);
+}
+
+function gt(a: string, b: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.gt", a, b);
+}
+
+function gte(a: string, b: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.gte", a, b);
+}
+
+function lt(a: string, b: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.lt", a, b);
+}
+
+function lte(a: string, b: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.lte", a, b);
+}
+
+function eq(a: string, b: string): boolean {
+    return __NATIVE_CALL<boolean>("semver.eq", a, b);
+}
+
+export { parse, valid, compare, satisfies, gt, gte, lt, lte, eq };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class SemverNamespace {
+    parse(version: string): SemverVersion { return parse(version); }
+    valid(version: string): boolean { return valid(version); }
+    compare(a: string, b: string): number { return compare(a, b); }
+    satisfies(version: string, range: string): boolean { return satisfies(version, range); }
+    gt(a: string, b: string): boolean { return gt(a, b); }
+    gte(a: string, b: string): boolean { return gte(a, b); }
+    lt(a: string, b: string): boolean { return lt(a, b); }
+    lte(a: string, b: string): boolean { return lte(a, b); }
+    eq(a: string, b: string): boolean { return eq(a, b); }
+}
+
+const semver = new SemverNamespace();
 export default semver;

@@ -3,17 +3,24 @@
  *
  * Usage:
  *   import glob from "std:glob";
+ *   import { find, matches } from "std:glob";
+ *
  *   let files = glob.find("src/**/*.raya");
  */
 
-export class GlobClass {
-    /** Find files matching a glob pattern relative to cwd */
+/** Find files matching a glob pattern relative to cwd */
+export function find(pattern: string): string[];
+
+/** Find files matching a glob pattern within a specific directory */
+export function findInDir(pattern: string, cwd: string): string[];
+
+/** Test if a path matches a glob pattern (no filesystem access) */
+export function matches(path: string, pattern: string): boolean;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class GlobNamespace {
     find(pattern: string): string[];
-    /** Find files matching a glob pattern within a specific directory */
     findInDir(pattern: string, cwd: string): string[];
-    /** Test if a path matches a glob pattern (no filesystem access) */
     matches(path: string, pattern: string): boolean;
 }
-
-declare const glob: GlobClass;
-export default glob;

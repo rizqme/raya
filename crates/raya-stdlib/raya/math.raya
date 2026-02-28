@@ -1,107 +1,138 @@
 // Math - Standard math module
-// Usage: import math from "std:math";
+// Usage: import math from "std:math"
+// Usage: import { abs, sqrt, PI } from "std:math"
 
-class Math {
-    // Constants
-    PI(): number {
-        return __NATIVE_CALL<number>("math.PI");
-    }
+// ── Constants ──
 
-    E(): number {
-        return __NATIVE_CALL<number>("math.E");
-    }
+export const PI: number = 3.141592653589793;
+export const E: number = 2.718281828459045;
 
-    // Basic
-    abs(x: number): number {
-        return __NATIVE_CALL<number>("math.abs", x);
-    }
+// ── Basic ──
 
-    sign(x: number): number {
-        return __NATIVE_CALL<number>("math.sign", x);
-    }
-
-    // Rounding
-    floor(x: number): number {
-        return __NATIVE_CALL<number>("math.floor", x);
-    }
-
-    ceil(x: number): number {
-        return __NATIVE_CALL<number>("math.ceil", x);
-    }
-
-    round(x: number): number {
-        return __NATIVE_CALL<number>("math.round", x);
-    }
-
-    trunc(x: number): number {
-        return __NATIVE_CALL<number>("math.trunc", x);
-    }
-
-    // Min/Max
-    min(a: number, b: number): number {
-        return __NATIVE_CALL<number>("math.min", a, b);
-    }
-
-    max(a: number, b: number): number {
-        return __NATIVE_CALL<number>("math.max", a, b);
-    }
-
-    // Power
-    pow(base: number, exp: number): number {
-        return __NATIVE_CALL<number>("math.pow", base, exp);
-    }
-
-    sqrt(x: number): number {
-        return __NATIVE_CALL<number>("math.sqrt", x);
-    }
-
-    // Trigonometry
-    sin(x: number): number {
-        return __NATIVE_CALL<number>("math.sin", x);
-    }
-
-    cos(x: number): number {
-        return __NATIVE_CALL<number>("math.cos", x);
-    }
-
-    tan(x: number): number {
-        return __NATIVE_CALL<number>("math.tan", x);
-    }
-
-    asin(x: number): number {
-        return __NATIVE_CALL<number>("math.asin", x);
-    }
-
-    acos(x: number): number {
-        return __NATIVE_CALL<number>("math.acos", x);
-    }
-
-    atan(x: number): number {
-        return __NATIVE_CALL<number>("math.atan", x);
-    }
-
-    atan2(y: number, x: number): number {
-        return __NATIVE_CALL<number>("math.atan2", y, x);
-    }
-
-    // Exponential/Logarithmic
-    exp(x: number): number {
-        return __NATIVE_CALL<number>("math.exp", x);
-    }
-
-    log(x: number): number {
-        return __NATIVE_CALL<number>("math.log", x);
-    }
-
-    log10(x: number): number {
-        return __NATIVE_CALL<number>("math.log10", x);
-    }
-
-    // Random
-    random(): number {
-        return __NATIVE_CALL<number>("math.random");
-    }
+export function abs(x: number): number {
+    return __NATIVE_CALL<number>("math.abs", x);
 }
 
-const math = new Math();
+export function sign(x: number): number {
+    return __NATIVE_CALL<number>("math.sign", x);
+}
+
+// ── Rounding ──
+
+export function floor(x: number): number {
+    return __NATIVE_CALL<number>("math.floor", x);
+}
+
+export function ceil(x: number): number {
+    return __NATIVE_CALL<number>("math.ceil", x);
+}
+
+export function round(x: number): number {
+    return __NATIVE_CALL<number>("math.round", x);
+}
+
+export function trunc(x: number): number {
+    return __NATIVE_CALL<number>("math.trunc", x);
+}
+
+// ── Min/Max ──
+
+export function min(a: number, b: number): number {
+    return __NATIVE_CALL<number>("math.min", a, b);
+}
+
+export function max(a: number, b: number): number {
+    return __NATIVE_CALL<number>("math.max", a, b);
+}
+
+// ── Power ──
+
+export function pow(base: number, exp: number): number {
+    return __NATIVE_CALL<number>("math.pow", base, exp);
+}
+
+export function sqrt(x: number): number {
+    return __NATIVE_CALL<number>("math.sqrt", x);
+}
+
+// ── Trigonometry ──
+
+export function sin(x: number): number {
+    return __NATIVE_CALL<number>("math.sin", x);
+}
+
+export function cos(x: number): number {
+    return __NATIVE_CALL<number>("math.cos", x);
+}
+
+export function tan(x: number): number {
+    return __NATIVE_CALL<number>("math.tan", x);
+}
+
+export function asin(x: number): number {
+    return __NATIVE_CALL<number>("math.asin", x);
+}
+
+export function acos(x: number): number {
+    return __NATIVE_CALL<number>("math.acos", x);
+}
+
+export function atan(x: number): number {
+    return __NATIVE_CALL<number>("math.atan", x);
+}
+
+export function atan2(y: number, x: number): number {
+    return __NATIVE_CALL<number>("math.atan2", y, x);
+}
+
+// ── Exponential/Logarithmic ──
+
+export function exp(x: number): number {
+    return __NATIVE_CALL<number>("math.exp", x);
+}
+
+export function log(x: number): number {
+    return __NATIVE_CALL<number>("math.log", x);
+}
+
+export function log10(x: number): number {
+    return __NATIVE_CALL<number>("math.log10", x);
+}
+
+// ── Random ──
+
+export function random(): number {
+    return __NATIVE_CALL<number>("math.random");
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class MathNamespace {
+    PI: number = PI;
+    E: number = E;
+
+    abs(x: number): number { return abs(x); }
+    sign(x: number): number { return sign(x); }
+    floor(x: number): number { return floor(x); }
+    ceil(x: number): number { return ceil(x); }
+    round(x: number): number { return round(x); }
+    trunc(x: number): number { return trunc(x); }
+    min(a: number, b: number): number { return min(a, b); }
+    max(a: number, b: number): number { return max(a, b); }
+    pow(base: number, exp: number): number { return pow(base, exp); }
+    sqrt(x: number): number { return sqrt(x); }
+    sin(x: number): number { return sin(x); }
+    cos(x: number): number { return cos(x); }
+    tan(x: number): number { return tan(x); }
+    asin(x: number): number { return asin(x); }
+    acos(x: number): number { return acos(x); }
+    atan(x: number): number { return atan(x); }
+    atan2(y: number, x: number): number { return atan2(y, x); }
+    exp(x: number): number { return exp(x); }
+    log(x: number): number { return log(x); }
+    log10(x: number): number { return log10(x); }
+    random(): number { return random(); }
+}
+
+const math = new MathNamespace();
 export default math;

@@ -1,6 +1,6 @@
 // Readline - Interactive line input module
-// Usage: import readline from "std:readline";
-//        import { Readline } from "std:readline";
+// Usage: import readline from "std:readline"
+// Usage: import { Readline, prompt, confirm } from "std:readline"
 
 class Readline {
     _handle: number;
@@ -38,24 +38,34 @@ class Readline {
     }
 }
 
-class ReadlineUtils {
-    prompt(text: string): string {
-        return __NATIVE_CALL<string>("readline.simplePrompt", text);
-    }
+// ── Top-level utility functions ──
 
-    confirm(text: string): boolean {
-        return __NATIVE_CALL<boolean>("readline.confirm", text);
-    }
-
-    password(text: string): string {
-        return __NATIVE_CALL<string>("readline.password", text);
-    }
-
-    select(text: string, options: string[]): number {
-        return __NATIVE_CALL<number>("readline.select", text, options);
-    }
+function prompt(text: string): string {
+    return __NATIVE_CALL<string>("readline.simplePrompt", text);
 }
 
-const readline = new ReadlineUtils();
-export { Readline };
+function confirm(text: string): boolean {
+    return __NATIVE_CALL<boolean>("readline.confirm", text);
+}
+
+function password(text: string): string {
+    return __NATIVE_CALL<string>("readline.password", text);
+}
+
+function select(text: string, options: string[]): number {
+    return __NATIVE_CALL<number>("readline.select", text, options);
+}
+
+export { Readline, prompt, confirm, password, select };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class ReadlineNamespace {
+    prompt(text: string): string { return prompt(text); }
+    confirm(text: string): boolean { return confirm(text); }
+    password(text: string): string { return password(text); }
+    select(text: string, options: string[]): number { return select(text, options); }
+}
+
+const readline = new ReadlineNamespace();
 export default readline;

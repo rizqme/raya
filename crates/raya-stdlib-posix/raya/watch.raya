@@ -1,6 +1,6 @@
 // Watch - File system watching module
-// Usage: import watch from "std:watch";
-//        import { FileWatcher, WatchEvent } from "std:watch";
+// Usage: import watch from "std:watch"
+// Usage: import { FileWatcher, WatchEvent, create } from "std:watch"
 
 export class WatchEvent {
     private _kind: string;
@@ -71,17 +71,26 @@ export class FileWatcher {
     }
 }
 
-class WatchClass {
-    create(paths: string[]): FileWatcher {
-        let handle = __NATIVE_CALL<number>("watch.create", paths);
-        return new FileWatcher(handle);
-    }
+// ── Top-level factory functions ──
 
-    createRecursive(paths: string[], recursive: boolean): FileWatcher {
-        let handle = __NATIVE_CALL<number>("watch.createRecursive", paths, recursive);
-        return new FileWatcher(handle);
-    }
+function create(paths: string[]): FileWatcher {
+    let handle = __NATIVE_CALL<number>("watch.create", paths);
+    return new FileWatcher(handle);
 }
 
-const watch = new WatchClass();
+function createRecursive(paths: string[], recursive: boolean): FileWatcher {
+    let handle = __NATIVE_CALL<number>("watch.createRecursive", paths, recursive);
+    return new FileWatcher(handle);
+}
+
+export { create, createRecursive };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class WatchNamespace {
+    create(paths: string[]): FileWatcher { return create(paths); }
+    createRecursive(paths: string[], recursive: boolean): FileWatcher { return createRecursive(paths, recursive); }
+}
+
+const watch = new WatchNamespace();
 export default watch;

@@ -3,27 +3,44 @@
  *
  * Usage:
  *   import io from "std:io";
+ *   import { readLine, writeln, write } from "std:io";
+ *
  *   io.writeln("Hello, world!");
  */
 
-export class Io {
-    /** Read a line from stdin (blocking) */
+/** Read a line from stdin (blocking) */
+export function readLine(): string;
+
+/** Read all of stdin until EOF */
+export function readAll(): string;
+
+/** Read exactly n bytes from stdin (blocking) */
+export function readExact(n: number): string;
+
+/** Write to stdout */
+export function write(data: string): void;
+
+/** Write line to stdout */
+export function writeln(data: string): void;
+
+/** Write to stderr */
+export function writeErr(data: string): void;
+
+/** Write line to stderr */
+export function writeErrln(data: string): void;
+
+/** Flush stdout */
+export function flush(): void;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class IoNamespace {
     readLine(): string;
-    /** Read all of stdin until EOF */
     readAll(): string;
-    /** Read exactly n bytes from stdin (blocking) */
     readExact(n: number): string;
-    /** Write to stdout */
     write(data: string): void;
-    /** Write line to stdout */
     writeln(data: string): void;
-    /** Write to stderr */
     writeErr(data: string): void;
-    /** Write line to stderr */
     writeErrln(data: string): void;
-    /** Flush stdout */
     flush(): void;
 }
-
-declare const io: Io;
-export default io;

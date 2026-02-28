@@ -6,12 +6,59 @@
  *
  * Usage:
  *   import url from "std:url";
- *   import { Url, UrlSearchParams } from "std:url";
+ *   import { Url, UrlSearchParams, encode, decode } from "std:url";
  *
  *   const u = new Url("https://example.com/path?q=1#frag", "");
- *   let host: string = u.hostname();  // "example.com"
- *   let encoded: string = url.encode("hello world");  // "hello%20world"
+ *   let host: string = u.hostname();
+ *   let encoded: string = url.encode("hello world");
  */
+
+/**
+ * URL search parameters (query string) manipulation.
+ *
+ * Construct with `new UrlSearchParams("")` for empty params,
+ * or `new UrlSearchParams("key=val&other=val2")` to parse a query string.
+ */
+export class UrlSearchParams {
+    /** Create search params. Pass empty string for empty params, or a query string to parse. */
+    constructor(init: string);
+
+    /** Get the first value for a parameter name, or null if not found. */
+    get(name: string): string;
+
+    /** Get all values for a parameter name. */
+    getAll(name: string): string[];
+
+    /** Check if a parameter name exists. */
+    has(name: string): boolean;
+
+    /** Set a parameter value (replaces all existing values for that name). */
+    set(name: string, value: string): void;
+
+    /** Append a new name=value pair (does not remove existing). */
+    append(name: string, value: string): void;
+
+    /** Delete all entries for a parameter name. */
+    delete(name: string): void;
+
+    /** Get all parameter names. */
+    keys(): string[];
+
+    /** Get all parameter values. */
+    values(): string[];
+
+    /** Get all entries as a flat array [key1, val1, key2, val2, ...]. */
+    entries(): string[];
+
+    /** Sort parameters by name (stable sort). */
+    sort(): void;
+
+    /** Serialize to a query string (without "?" prefix). */
+    toString(): string;
+
+    /** Get the number of parameters. */
+    size(): number;
+}
 
 /**
  * Parsed URL object. Wraps a native WHATWG URL parser handle.
@@ -75,71 +122,25 @@ export class Url {
     withHash(hash: string): Url;
 }
 
-/**
- * URL search parameters (query string) manipulation.
- *
- * Construct with `new UrlSearchParams("")` for empty params,
- * or `new UrlSearchParams("key=val&other=val2")` to parse a query string.
- */
-export class UrlSearchParams {
-    /** Create search params. Pass empty string for empty params, or a query string to parse. */
-    constructor(init: string);
+// ── Top-level utility functions ──
 
-    /** Get the first value for a parameter name, or null if not found. */
-    get(name: string): string;
+/** Percent-encode a URI component (equivalent to encodeURIComponent). */
+export function encode(component: string): string;
 
-    /** Get all values for a parameter name. */
-    getAll(name: string): string[];
+/** Percent-decode a URI component (equivalent to decodeURIComponent). */
+export function decode(component: string): string;
 
-    /** Check if a parameter name exists. */
-    has(name: string): boolean;
+/** Percent-encode a path segment. */
+export function encodePath(path: string): string;
 
-    /** Set a parameter value (replaces all existing values for that name). */
-    set(name: string, value: string): void;
+/** Percent-decode a path segment. */
+export function decodePath(path: string): string;
 
-    /** Append a new name=value pair (does not remove existing). */
-    append(name: string, value: string): void;
+// ── Default export (namespace class for method dispatch) ──
 
-    /** Delete all entries for a parameter name. */
-    delete(name: string): void;
-
-    /** Get all parameter names. */
-    keys(): string[];
-
-    /** Get all parameter values. */
-    values(): string[];
-
-    /** Get all entries as a flat array [key1, val1, key2, val2, ...]. */
-    entries(): string[];
-
-    /** Sort parameters by name (stable sort). */
-    sort(): void;
-
-    /** Serialize to a query string (without "?" prefix). */
-    toString(): string;
-
-    /** Get the number of parameters. */
-    size(): number;
-}
-
-/**
- * URL utility functions for percent-encoding and decoding.
- */
-declare class UrlUtils {
-    /** Percent-encode a URI component (equivalent to encodeURIComponent). */
+export default class UrlNamespace {
     encode(component: string): string;
-
-    /** Percent-decode a URI component (equivalent to decodeURIComponent). */
     decode(component: string): string;
-
-    /** Percent-encode a path segment. */
     encodePath(path: string): string;
-
-    /** Percent-decode a path segment. */
     decodePath(path: string): string;
 }
-
-/** url utility singleton instance */
-declare const url: UrlUtils;
-
-export default url;

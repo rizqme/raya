@@ -546,6 +546,8 @@ fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
 fn collect_declared_symbols(source: &str, out: &mut HashSet<String>) {
     for line in source.lines() {
         let trimmed = line.trim_start();
+        // Strip optional "export " prefix so `export function`, `export const`, etc. are tracked
+        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
         for prefix in ["class ", "function ", "const ", "let ", "var "] {
             if let Some(rest) = trimmed.strip_prefix(prefix) {
                 let ident: String = rest

@@ -1,39 +1,53 @@
 // Io - Standard I/O module
-// Usage: import io from "std:io";
+// Usage: import io from "std:io"
+// Usage: import { readLine, writeln } from "std:io"
 
-class Io {
-    readLine(): string {
-        return __NATIVE_CALL<string>("io.readLine");
-    }
-
-    readAll(): string {
-        return __NATIVE_CALL<string>("io.readAll");
-    }
-
-    readExact(n: number): string {
-        return __NATIVE_CALL<string>("io.readExact", n);
-    }
-
-    write(data: string): void {
-        __NATIVE_CALL("io.write", data);
-    }
-
-    writeln(data: string): void {
-        __NATIVE_CALL("io.writeln", data);
-    }
-
-    writeErr(data: string): void {
-        __NATIVE_CALL("io.writeErr", data);
-    }
-
-    writeErrln(data: string): void {
-        __NATIVE_CALL("io.writeErrln", data);
-    }
-
-    flush(): void {
-        __NATIVE_CALL("io.flush");
-    }
+export function readLine(): string {
+    return __NATIVE_CALL<string>("io.readLine");
 }
 
-const io = new Io();
+export function readAll(): string {
+    return __NATIVE_CALL<string>("io.readAll");
+}
+
+export function readExact(n: number): string {
+    return __NATIVE_CALL<string>("io.readExact", n);
+}
+
+function ioWrite(data: string): void {
+    __NATIVE_CALL("io.write", data);
+}
+
+export function writeln(data: string): void {
+    __NATIVE_CALL("io.writeln", data);
+}
+
+export function writeErr(data: string): void {
+    __NATIVE_CALL("io.writeErr", data);
+}
+
+export function writeErrln(data: string): void {
+    __NATIVE_CALL("io.writeErrln", data);
+}
+
+export function flush(): void {
+    __NATIVE_CALL("io.flush");
+}
+
+export { ioWrite as write };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class IoNamespace {
+    readLine(): string { return readLine(); }
+    readAll(): string { return readAll(); }
+    readExact(n: number): string { return readExact(n); }
+    write(data: string): void { ioWrite(data); }
+    writeln(data: string): void { writeln(data); }
+    writeErr(data: string): void { writeErr(data); }
+    writeErrln(data: string): void { writeErrln(data); }
+    flush(): void { flush(); }
+}
+
+const io = new IoNamespace();
 export default io;

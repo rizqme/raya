@@ -1,6 +1,6 @@
 // Template - Mustache-like template engine
-// Usage: import template from "std:template";
-// Usage: import { CompiledTemplate } from "std:template";
+// Usage: import template from "std:template"
+// Usage: import { CompiledTemplate, compile, render } from "std:template"
 
 export class CompiledTemplate {
     private _handle: number;
@@ -18,16 +18,25 @@ export class CompiledTemplate {
     }
 }
 
-class TemplateEngine {
-    compile(source: string): CompiledTemplate {
-        let handle = __NATIVE_CALL<number>("template.compile", source);
-        return new CompiledTemplate(handle);
-    }
+// ── Top-level utility functions ──
 
-    render(source: string, data: string): string {
-        return __NATIVE_CALL<string>("template.render", source, data);
-    }
+function compile(source: string): CompiledTemplate {
+    let handle = __NATIVE_CALL<number>("template.compile", source);
+    return new CompiledTemplate(handle);
 }
 
-const template = new TemplateEngine();
+function render(source: string, data: string): string {
+    return __NATIVE_CALL<string>("template.render", source, data);
+}
+
+export { compile, render };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class TemplateNamespace {
+    compile(source: string): CompiledTemplate { return compile(source); }
+    render(source: string, data: string): string { return render(source, data); }
+}
+
+const template = new TemplateNamespace();
 export default template;

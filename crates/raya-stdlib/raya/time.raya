@@ -1,63 +1,79 @@
 // Time - Standard time module
-// Usage: import time from "std:time";
+// Usage: import time from "std:time"
+// Usage: import { now, sleep, seconds } from "std:time"
 
-class Time {
-    // ── Wall Clock ──
+// ── Wall Clock ──
 
-    now(): number {
-        return __NATIVE_CALL<number>("time.now");
-    }
-
-    // ── Monotonic Clock ──
-
-    monotonic(): number {
-        return __NATIVE_CALL<number>("time.monotonic");
-    }
-
-    hrtime(): number {
-        return __NATIVE_CALL<number>("time.hrtime");
-    }
-
-    elapsed(start: number): number {
-        return __NATIVE_CALL<number>("time.monotonic") - start;
-    }
-
-    // ── Sleep ──
-
-    sleep(ms: number): void {
-        __NATIVE_CALL<number>("time.sleep", ms);
-    }
-
-    sleepMicros(us: number): void {
-        __NATIVE_CALL<number>("time.sleepMicros", us);
-    }
-
-    // ── Duration Conversion (pure Raya) ──
-
-    seconds(n: number): number {
-        return n * 1000;
-    }
-
-    minutes(n: number): number {
-        return n * 60000;
-    }
-
-    hours(n: number): number {
-        return n * 3600000;
-    }
-
-    toSeconds(ms: number): number {
-        return ms / 1000;
-    }
-
-    toMinutes(ms: number): number {
-        return ms / 60000;
-    }
-
-    toHours(ms: number): number {
-        return ms / 3600000;
-    }
+export function now(): number {
+    return __NATIVE_CALL<number>("time.now");
 }
 
-const time = new Time();
+// ── Monotonic Clock ──
+
+export function monotonic(): number {
+    return __NATIVE_CALL<number>("time.monotonic");
+}
+
+export function hrtime(): number {
+    return __NATIVE_CALL<number>("time.hrtime");
+}
+
+export function elapsed(start: number): number {
+    return __NATIVE_CALL<number>("time.monotonic") - start;
+}
+
+// ── Sleep ──
+
+export function sleep(ms: number): void {
+    __NATIVE_CALL<number>("time.sleep", ms);
+}
+
+export function sleepMicros(us: number): void {
+    __NATIVE_CALL<number>("time.sleepMicros", us);
+}
+
+// ── Duration Conversion (pure Raya) ──
+
+export function seconds(n: number): number {
+    return n * 1000;
+}
+
+export function minutes(n: number): number {
+    return n * 60000;
+}
+
+export function hours(n: number): number {
+    return n * 3600000;
+}
+
+export function toSeconds(ms: number): number {
+    return ms / 1000;
+}
+
+export function toMinutes(ms: number): number {
+    return ms / 60000;
+}
+
+export function toHours(ms: number): number {
+    return ms / 3600000;
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class TimeNamespace {
+    now(): number { return now(); }
+    monotonic(): number { return monotonic(); }
+    hrtime(): number { return hrtime(); }
+    elapsed(start: number): number { return elapsed(start); }
+    sleep(ms: number): void { sleep(ms); }
+    sleepMicros(us: number): void { sleepMicros(us); }
+    seconds(n: number): number { return seconds(n); }
+    minutes(n: number): number { return minutes(n); }
+    hours(n: number): number { return hours(n); }
+    toSeconds(ms: number): number { return toSeconds(ms); }
+    toMinutes(ms: number): number { return toMinutes(ms); }
+    toHours(ms: number): number { return toHours(ms); }
+}
+
+const time = new TimeNamespace();
 export default time;

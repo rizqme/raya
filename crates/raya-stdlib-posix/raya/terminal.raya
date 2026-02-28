@@ -1,181 +1,225 @@
 // Terminal - Standard terminal module
-// Usage: import terminal from "std:terminal";
+// Usage: import terminal from "std:terminal"
+// Usage: import { isTerminal, columns, bold, red } from "std:terminal"
 
-class Terminal {
-    // ── TTY Detection ──
+// ── TTY Detection ──
 
-    isTerminal(): boolean {
-        return __NATIVE_CALL<boolean>("terminal.isTerminal");
-    }
-
-    isTerminalStdin(): boolean {
-        return __NATIVE_CALL<boolean>("terminal.isTerminalStdin");
-    }
-
-    isTerminalStderr(): boolean {
-        return __NATIVE_CALL<boolean>("terminal.isTerminalStderr");
-    }
-
-    // ── Terminal Size ──
-
-    columns(): number {
-        return __NATIVE_CALL<number>("terminal.columns");
-    }
-
-    rows(): number {
-        return __NATIVE_CALL<number>("terminal.rows");
-    }
-
-    // ── Raw Mode ──
-
-    enableRawMode(): void {
-        __NATIVE_CALL("terminal.enableRawMode");
-    }
-
-    disableRawMode(): void {
-        __NATIVE_CALL("terminal.disableRawMode");
-    }
-
-    // ── Input ──
-
-    readKey(): string {
-        return __NATIVE_CALL<string>("terminal.readKey");
-    }
-
-    // ── Cursor Control ──
-
-    moveTo(col: number, row: number): void {
-        __NATIVE_CALL("terminal.moveTo", col, row);
-    }
-
-    moveUp(n: number): void {
-        __NATIVE_CALL("terminal.moveUp", n);
-    }
-
-    moveDown(n: number): void {
-        __NATIVE_CALL("terminal.moveDown", n);
-    }
-
-    moveRight(n: number): void {
-        __NATIVE_CALL("terminal.moveRight", n);
-    }
-
-    moveLeft(n: number): void {
-        __NATIVE_CALL("terminal.moveLeft", n);
-    }
-
-    saveCursor(): void {
-        __NATIVE_CALL("terminal.saveCursor");
-    }
-
-    restoreCursor(): void {
-        __NATIVE_CALL("terminal.restoreCursor");
-    }
-
-    hideCursor(): void {
-        __NATIVE_CALL("terminal.hideCursor");
-    }
-
-    showCursor(): void {
-        __NATIVE_CALL("terminal.showCursor");
-    }
-
-    // ── Screen Control ──
-
-    clearScreen(): void {
-        __NATIVE_CALL("terminal.clearScreen");
-    }
-
-    clearLine(): void {
-        __NATIVE_CALL("terminal.clearLine");
-    }
-
-    clearToEndOfLine(): void {
-        __NATIVE_CALL("terminal.clearToEndOfLine");
-    }
-
-    clearToEndOfScreen(): void {
-        __NATIVE_CALL("terminal.clearToEndOfScreen");
-    }
-
-    // ── Colors/Styling (pure Raya — ANSI escape codes) ──
-
-    bold(text: string): string {
-        return "\x1b[1m" + text + "\x1b[0m";
-    }
-
-    dim(text: string): string {
-        return "\x1b[2m" + text + "\x1b[0m";
-    }
-
-    italic(text: string): string {
-        return "\x1b[3m" + text + "\x1b[0m";
-    }
-
-    underline(text: string): string {
-        return "\x1b[4m" + text + "\x1b[0m";
-    }
-
-    strikethrough(text: string): string {
-        return "\x1b[9m" + text + "\x1b[0m";
-    }
-
-    red(text: string): string {
-        return "\x1b[31m" + text + "\x1b[0m";
-    }
-
-    green(text: string): string {
-        return "\x1b[32m" + text + "\x1b[0m";
-    }
-
-    yellow(text: string): string {
-        return "\x1b[33m" + text + "\x1b[0m";
-    }
-
-    blue(text: string): string {
-        return "\x1b[34m" + text + "\x1b[0m";
-    }
-
-    magenta(text: string): string {
-        return "\x1b[35m" + text + "\x1b[0m";
-    }
-
-    cyan(text: string): string {
-        return "\x1b[36m" + text + "\x1b[0m";
-    }
-
-    white(text: string): string {
-        return "\x1b[37m" + text + "\x1b[0m";
-    }
-
-    gray(text: string): string {
-        return "\x1b[90m" + text + "\x1b[0m";
-    }
-
-    bgRed(text: string): string {
-        return "\x1b[41m" + text + "\x1b[0m";
-    }
-
-    bgGreen(text: string): string {
-        return "\x1b[42m" + text + "\x1b[0m";
-    }
-
-    bgYellow(text: string): string {
-        return "\x1b[43m" + text + "\x1b[0m";
-    }
-
-    bgBlue(text: string): string {
-        return "\x1b[44m" + text + "\x1b[0m";
-    }
-
-    rgb(r: number, g: number, b: number, text: string): string {
-        return "\x1b[38;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
-    }
-
-    bgRgb(r: number, g: number, b: number, text: string): string {
-        return "\x1b[48;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
-    }
+export function isTerminal(): boolean {
+    return __NATIVE_CALL<boolean>("terminal.isTerminal");
 }
 
-const terminal = new Terminal();
+export function isTerminalStdin(): boolean {
+    return __NATIVE_CALL<boolean>("terminal.isTerminalStdin");
+}
+
+export function isTerminalStderr(): boolean {
+    return __NATIVE_CALL<boolean>("terminal.isTerminalStderr");
+}
+
+// ── Terminal Size ──
+
+export function columns(): number {
+    return __NATIVE_CALL<number>("terminal.columns");
+}
+
+export function rows(): number {
+    return __NATIVE_CALL<number>("terminal.rows");
+}
+
+// ── Raw Mode ──
+
+export function enableRawMode(): void {
+    __NATIVE_CALL("terminal.enableRawMode");
+}
+
+export function disableRawMode(): void {
+    __NATIVE_CALL("terminal.disableRawMode");
+}
+
+// ── Input ──
+
+export function readKey(): string {
+    return __NATIVE_CALL<string>("terminal.readKey");
+}
+
+// ── Cursor Control ──
+
+export function moveTo(col: number, row: number): void {
+    __NATIVE_CALL("terminal.moveTo", col, row);
+}
+
+export function moveUp(n: number): void {
+    __NATIVE_CALL("terminal.moveUp", n);
+}
+
+export function moveDown(n: number): void {
+    __NATIVE_CALL("terminal.moveDown", n);
+}
+
+export function moveRight(n: number): void {
+    __NATIVE_CALL("terminal.moveRight", n);
+}
+
+export function moveLeft(n: number): void {
+    __NATIVE_CALL("terminal.moveLeft", n);
+}
+
+export function saveCursor(): void {
+    __NATIVE_CALL("terminal.saveCursor");
+}
+
+export function restoreCursor(): void {
+    __NATIVE_CALL("terminal.restoreCursor");
+}
+
+export function hideCursor(): void {
+    __NATIVE_CALL("terminal.hideCursor");
+}
+
+export function showCursor(): void {
+    __NATIVE_CALL("terminal.showCursor");
+}
+
+// ── Screen Control ──
+
+export function clearScreen(): void {
+    __NATIVE_CALL("terminal.clearScreen");
+}
+
+export function clearLine(): void {
+    __NATIVE_CALL("terminal.clearLine");
+}
+
+export function clearToEndOfLine(): void {
+    __NATIVE_CALL("terminal.clearToEndOfLine");
+}
+
+export function clearToEndOfScreen(): void {
+    __NATIVE_CALL("terminal.clearToEndOfScreen");
+}
+
+// ── Colors/Styling (pure Raya — ANSI escape codes) ──
+
+export function bold(text: string): string {
+    return "\x1b[1m" + text + "\x1b[0m";
+}
+
+export function dim(text: string): string {
+    return "\x1b[2m" + text + "\x1b[0m";
+}
+
+export function italic(text: string): string {
+    return "\x1b[3m" + text + "\x1b[0m";
+}
+
+export function underline(text: string): string {
+    return "\x1b[4m" + text + "\x1b[0m";
+}
+
+export function strikethrough(text: string): string {
+    return "\x1b[9m" + text + "\x1b[0m";
+}
+
+export function red(text: string): string {
+    return "\x1b[31m" + text + "\x1b[0m";
+}
+
+export function green(text: string): string {
+    return "\x1b[32m" + text + "\x1b[0m";
+}
+
+export function yellow(text: string): string {
+    return "\x1b[33m" + text + "\x1b[0m";
+}
+
+export function blue(text: string): string {
+    return "\x1b[34m" + text + "\x1b[0m";
+}
+
+export function magenta(text: string): string {
+    return "\x1b[35m" + text + "\x1b[0m";
+}
+
+export function cyan(text: string): string {
+    return "\x1b[36m" + text + "\x1b[0m";
+}
+
+export function white(text: string): string {
+    return "\x1b[37m" + text + "\x1b[0m";
+}
+
+export function gray(text: string): string {
+    return "\x1b[90m" + text + "\x1b[0m";
+}
+
+export function bgRed(text: string): string {
+    return "\x1b[41m" + text + "\x1b[0m";
+}
+
+export function bgGreen(text: string): string {
+    return "\x1b[42m" + text + "\x1b[0m";
+}
+
+export function bgYellow(text: string): string {
+    return "\x1b[43m" + text + "\x1b[0m";
+}
+
+export function bgBlue(text: string): string {
+    return "\x1b[44m" + text + "\x1b[0m";
+}
+
+export function rgb(r: number, g: number, b: number, text: string): string {
+    return "\x1b[38;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
+}
+
+export function bgRgb(r: number, g: number, b: number, text: string): string {
+    return "\x1b[48;2;" + r.toString() + ";" + g.toString() + ";" + b.toString() + "m" + text + "\x1b[0m";
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class TerminalNamespace {
+    isTerminal(): boolean { return isTerminal(); }
+    isTerminalStdin(): boolean { return isTerminalStdin(); }
+    isTerminalStderr(): boolean { return isTerminalStderr(); }
+    columns(): number { return columns(); }
+    rows(): number { return rows(); }
+    enableRawMode(): void { enableRawMode(); }
+    disableRawMode(): void { disableRawMode(); }
+    readKey(): string { return readKey(); }
+    moveTo(col: number, row: number): void { moveTo(col, row); }
+    moveUp(n: number): void { moveUp(n); }
+    moveDown(n: number): void { moveDown(n); }
+    moveRight(n: number): void { moveRight(n); }
+    moveLeft(n: number): void { moveLeft(n); }
+    saveCursor(): void { saveCursor(); }
+    restoreCursor(): void { restoreCursor(); }
+    hideCursor(): void { hideCursor(); }
+    showCursor(): void { showCursor(); }
+    clearScreen(): void { clearScreen(); }
+    clearLine(): void { clearLine(); }
+    clearToEndOfLine(): void { clearToEndOfLine(); }
+    clearToEndOfScreen(): void { clearToEndOfScreen(); }
+    bold(text: string): string { return bold(text); }
+    dim(text: string): string { return dim(text); }
+    italic(text: string): string { return italic(text); }
+    underline(text: string): string { return underline(text); }
+    strikethrough(text: string): string { return strikethrough(text); }
+    red(text: string): string { return red(text); }
+    green(text: string): string { return green(text); }
+    yellow(text: string): string { return yellow(text); }
+    blue(text: string): string { return blue(text); }
+    magenta(text: string): string { return magenta(text); }
+    cyan(text: string): string { return cyan(text); }
+    white(text: string): string { return white(text); }
+    gray(text: string): string { return gray(text); }
+    bgRed(text: string): string { return bgRed(text); }
+    bgGreen(text: string): string { return bgGreen(text); }
+    bgYellow(text: string): string { return bgYellow(text); }
+    bgBlue(text: string): string { return bgBlue(text); }
+    rgb(r: number, g: number, b: number, text: string): string { return rgb(r, g, b, text); }
+    bgRgb(r: number, g: number, b: number, text: string): string { return bgRgb(r, g, b, text); }
+}
+
+const terminal = new TerminalNamespace();
 export default terminal;

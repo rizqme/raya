@@ -1,19 +1,26 @@
 // Glob - File pattern matching module
-// Usage: import glob from "std:glob";
+// Usage: import glob from "std:glob"
+// Usage: import { find, matches } from "std:glob"
 
-class GlobClass {
-    find(pattern: string): string[] {
-        return __NATIVE_CALL<string[]>("glob.find", pattern);
-    }
-
-    findInDir(pattern: string, cwd: string): string[] {
-        return __NATIVE_CALL<string[]>("glob.findInDir", pattern, cwd);
-    }
-
-    matches(path: string, pattern: string): boolean {
-        return __NATIVE_CALL<boolean>("glob.matches", path, pattern);
-    }
+export function find(pattern: string): string[] {
+    return __NATIVE_CALL<string[]>("glob.find", pattern);
 }
 
-const glob = new GlobClass();
+export function findInDir(pattern: string, cwd: string): string[] {
+    return __NATIVE_CALL<string[]>("glob.findInDir", pattern, cwd);
+}
+
+export function matches(path: string, pattern: string): boolean {
+    return __NATIVE_CALL<boolean>("glob.matches", path, pattern);
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class GlobNamespace {
+    find(pattern: string): string[] { return find(pattern); }
+    findInDir(pattern: string, cwd: string): string[] { return findInDir(pattern, cwd); }
+    matches(path: string, pattern: string): boolean { return matches(path, pattern); }
+}
+
+const glob = new GlobNamespace();
 export default glob;

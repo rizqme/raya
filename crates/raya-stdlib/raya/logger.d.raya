@@ -6,54 +6,65 @@
  *
  * Usage:
  *   import logger from "std:logger";
+ *   import { info, warn, error } from "std:logger";
+ *
  *   logger.info("Application started");
- *   logger.setLevel("warn");   // Only show warn and error
+ *   logger.setLevel("warn");
  */
 
-/**
- * Logger provides methods for outputting messages at different severity levels.
- */
-export class Logger {
-    /** Log a debug message (lowest severity) */
+/** Log a debug message (lowest severity) */
+export function debug(message: string): void;
+
+/** Log an informational message */
+export function info(message: string): void;
+
+/** Log a warning message */
+export function warn(message: string): void;
+
+/** Log an error message (highest severity) */
+export function error(message: string): void;
+
+/** Set minimum log level: "debug", "info", "warn", "error", "silent" */
+export function setLevel(level: string): void;
+
+/** Get current log level name */
+export function getLevel(): string;
+
+/** Log debug with structured JSON data */
+export function debugData(message: string, data: string): void;
+
+/** Log info with structured JSON data */
+export function infoData(message: string, data: string): void;
+
+/** Log warn with structured JSON data */
+export function warnData(message: string, data: string): void;
+
+/** Log error with structured JSON data */
+export function errorData(message: string, data: string): void;
+
+/** Set output format: "text" (default) or "json" */
+export function setFormat(format: string): void;
+
+/** Enable or disable ISO timestamp in output */
+export function setTimestamp(enabled: boolean): void;
+
+/** Set a prefix string (e.g., "[MyApp]") for all log messages */
+export function setPrefix(prefix: string): void;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class LoggerNamespace {
     debug(message: string): void;
-
-    /** Log an informational message */
     info(message: string): void;
-
-    /** Log a warning message */
     warn(message: string): void;
-
-    /** Log an error message (highest severity) */
     error(message: string): void;
-
-    /** Set minimum log level: "debug", "info", "warn", "error", "silent" */
     setLevel(level: string): void;
-
-    /** Get current log level name */
     getLevel(): string;
-
-    /** Log debug with structured JSON data */
     debugData(message: string, data: string): void;
-
-    /** Log info with structured JSON data */
     infoData(message: string, data: string): void;
-
-    /** Log warn with structured JSON data */
     warnData(message: string, data: string): void;
-
-    /** Log error with structured JSON data */
     errorData(message: string, data: string): void;
-
-    /** Set output format: "text" (default) or "json" */
     setFormat(format: string): void;
-
-    /** Enable or disable ISO timestamp in output */
     setTimestamp(enabled: boolean): void;
-
-    /** Set a prefix string (e.g., "[MyApp]") for all log messages */
     setPrefix(prefix: string): void;
 }
-
-/** Default logger instance */
-declare const logger: Logger;
-export default logger;

@@ -1,6 +1,6 @@
 // URL - Standard URL module (WHATWG URL parser)
-// Usage: import url from "std:url";
-// Usage: import { Url, UrlSearchParams } from "std:url";
+// Usage: import url from "std:url"
+// Usage: import { Url, UrlSearchParams, encode, decode } from "std:url"
 
 class UrlSearchParams {
     _handle: number;
@@ -171,24 +171,34 @@ class Url {
     }
 }
 
-class UrlUtils {
-    encode(component: string): string {
-        return __NATIVE_CALL<string>("url.encode", component);
-    }
+// ── Top-level utility functions ──
 
-    decode(component: string): string {
-        return __NATIVE_CALL<string>("url.decode", component);
-    }
-
-    encodePath(path: string): string {
-        return __NATIVE_CALL<string>("url.encodePath", path);
-    }
-
-    decodePath(path: string): string {
-        return __NATIVE_CALL<string>("url.decodePath", path);
-    }
+export function encode(component: string): string {
+    return __NATIVE_CALL<string>("url.encode", component);
 }
 
-const url = new UrlUtils();
+export function decode(component: string): string {
+    return __NATIVE_CALL<string>("url.decode", component);
+}
+
+export function encodePath(path: string): string {
+    return __NATIVE_CALL<string>("url.encodePath", path);
+}
+
+export function decodePath(path: string): string {
+    return __NATIVE_CALL<string>("url.decodePath", path);
+}
+
 export { Url, UrlSearchParams };
+
+// ── Default export (class namespace for method dispatch) ──
+
+class UrlNamespace {
+    encode(component: string): string { return encode(component); }
+    decode(component: string): string { return decode(component); }
+    encodePath(path: string): string { return encodePath(path); }
+    decodePath(path: string): string { return decodePath(path); }
+}
+
+const url = new UrlNamespace();
 export default url;

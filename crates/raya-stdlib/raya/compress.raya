@@ -1,37 +1,47 @@
 // Compress - Standard compression module
-// Usage: import compress from "std:compress";
+// Usage: import compress from "std:compress"
+// Usage: import { gzip, gunzip, deflate, inflate } from "std:compress"
 
-class Compress {
-    // ── Gzip ──
+// ── Gzip ──
 
-    gzip(data: Buffer, level: number = 6): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.gzip", data, level);
-    }
-
-    gunzip(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.gunzip", data);
-    }
-
-    // ── Raw Deflate ──
-
-    deflate(data: Buffer, level: number = 6): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.deflate", data, level);
-    }
-
-    inflate(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.inflate", data);
-    }
-
-    // ── Zlib ──
-
-    zlibCompress(data: Buffer, level: number = 6): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, level);
-    }
-
-    zlibDecompress(data: Buffer): Buffer {
-        return __NATIVE_CALL<Buffer>("compress.zlibDecompress", data);
-    }
+export function gzip(data: Buffer, level: number = 6): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.gzip", data, level);
 }
 
-const compress = new Compress();
+export function gunzip(data: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.gunzip", data);
+}
+
+// ── Raw Deflate ──
+
+export function deflate(data: Buffer, level: number = 6): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.deflate", data, level);
+}
+
+export function inflate(data: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.inflate", data);
+}
+
+// ── Zlib ──
+
+export function zlibCompress(data: Buffer, level: number = 6): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.zlibCompress", data, level);
+}
+
+export function zlibDecompress(data: Buffer): Buffer {
+    return __NATIVE_CALL<Buffer>("compress.zlibDecompress", data);
+}
+
+// ── Default export (class namespace for method dispatch) ──
+
+class CompressNamespace {
+    gzip(data: Buffer, level: number = 6): Buffer { return gzip(data, level); }
+    gunzip(data: Buffer): Buffer { return gunzip(data); }
+    deflate(data: Buffer, level: number = 6): Buffer { return deflate(data, level); }
+    inflate(data: Buffer): Buffer { return inflate(data); }
+    zlibCompress(data: Buffer, level: number = 6): Buffer { return zlibCompress(data, level); }
+    zlibDecompress(data: Buffer): Buffer { return zlibDecompress(data); }
+}
+
+const compress = new CompressNamespace();
 export default compress;

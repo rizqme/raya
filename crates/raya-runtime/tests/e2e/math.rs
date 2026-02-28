@@ -16,7 +16,7 @@ fn test_math_pi() {
     expect_f64_with_builtins(
         r#"
         import math from "std:math";
-        return math.PI();
+        return math.PI;
     "#,
         std::f64::consts::PI,
     );
@@ -27,7 +27,7 @@ fn test_math_e() {
     expect_f64_with_builtins(
         r#"
         import math from "std:math";
-        return math.E();
+        return math.E;
     "#,
         std::f64::consts::E,
     );
@@ -466,7 +466,7 @@ fn test_math_pi_value() {
     expect_i32_with_builtins(
         r#"
         import math from "std:math";
-        let pi: number = math.PI();
+        let pi: number = math.PI;
         if (pi > 3) {
             return 1;
         }

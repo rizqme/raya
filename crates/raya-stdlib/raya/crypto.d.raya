@@ -6,80 +6,111 @@
  *
  * Usage:
  *   import crypto from "std:crypto";
- *   let digest: string = crypto.hash("sha256", "hello world");
- *   let bytes: Buffer = crypto.randomBytes(32);
- *   let id: string = crypto.randomUUID();
- */
-
-/**
- * Crypto provides methods for hashing, HMAC, random generation,
- * encoding/decoding, and constant-time comparison.
+ *   import { hash, randomUUID, encrypt } from "std:crypto";
  *
- * Supported hash algorithms: "sha256", "sha384", "sha512", "sha1", "md5"
+ *   let digest: string = crypto.hash("sha256", "hello world");
+ *   let id: string = randomUUID();
  */
-export class CryptoClass {
-    /** One-shot hash. Returns hex-encoded digest string. */
+
+// ── Hashing ──
+
+/** One-shot hash. Returns hex-encoded digest string. */
+export function hash(algorithm: string, data: string): string;
+
+/** Hash binary data. Returns raw digest bytes. */
+export function hashBytes(algorithm: string, data: Buffer): Buffer;
+
+// ── HMAC ──
+
+/** Keyed HMAC. Returns hex-encoded MAC string. */
+export function hmac(algorithm: string, key: string, data: string): string;
+
+/** HMAC on binary data. Returns raw MAC bytes. */
+export function hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer;
+
+// ── Random ──
+
+/** Cryptographically secure random bytes. */
+export function randomBytes(size: number): Buffer;
+
+/** Random integer in [min, max). */
+export function randomInt(min: number, max: number): number;
+
+/** Generate UUID v4 string. */
+export function randomUUID(): string;
+
+// ── Encoding ──
+
+/** Binary to hex string. */
+export function toHex(data: Buffer): string;
+
+/** Hex string to binary. Errors on invalid hex. */
+export function fromHex(hex: string): Buffer;
+
+/** Binary to base64 string (standard encoding). */
+export function toBase64(data: Buffer): string;
+
+/** Base64 string to binary. Errors on invalid base64. */
+export function fromBase64(b64: string): Buffer;
+
+// ── Comparison ──
+
+/** Constant-time equality check (prevents timing attacks). */
+export function timingSafeEqual(a: Buffer, b: Buffer): boolean;
+
+// ── Encryption ──
+
+/** AES-256-GCM encrypt. Key must be 32 bytes. Returns nonce + ciphertext + tag. */
+export function encrypt(key: Buffer, plaintext: Buffer): Buffer;
+
+/** AES-256-GCM decrypt. Key must be 32 bytes. Input is nonce + ciphertext + tag. */
+export function decrypt(key: Buffer, ciphertext: Buffer): Buffer;
+
+// ── Key Generation ──
+
+/** Generate a random symmetric key. Supported bit sizes: 128, 192, 256. */
+export function generateKey(bits: number): Buffer;
+
+// ── Signing ──
+
+/** Sign data. Supported algorithms: "ed25519". Private key as PEM in Buffer. */
+export function sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer;
+
+/** Verify signature. Supported algorithms: "ed25519". Public key as PEM in Buffer. */
+export function verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean;
+
+/** Generate asymmetric key pair. Supported algorithms: "ed25519". Returns [publicPem, privatePem]. */
+export function generateKeyPair(algorithm: string): string[];
+
+// ── Key Derivation ──
+
+/** HKDF key derivation. Supported hashes: "sha256", "sha384", "sha512". */
+export function hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer;
+
+/** PBKDF2 key derivation. Supported hashes: "sha256", "sha384", "sha512". */
+export function pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer;
+
+// ── Default export (namespace class for method dispatch) ──
+
+export default class CryptoNamespace {
     hash(algorithm: string, data: string): string;
-
-    /** Hash binary data. Returns raw digest bytes. */
     hashBytes(algorithm: string, data: Buffer): Buffer;
-
-    /** Keyed HMAC. Returns hex-encoded MAC string. */
     hmac(algorithm: string, key: string, data: string): string;
-
-    /** HMAC on binary data. Returns raw MAC bytes. */
     hmacBytes(algorithm: string, key: Buffer, data: Buffer): Buffer;
-
-    /** Cryptographically secure random bytes. */
     randomBytes(size: number): Buffer;
-
-    /** Random integer in [min, max). */
     randomInt(min: number, max: number): number;
-
-    /** Generate UUID v4 string. */
     randomUUID(): string;
-
-    /** Binary to hex string. */
     toHex(data: Buffer): string;
-
-    /** Hex string to binary. Errors on invalid hex. */
     fromHex(hex: string): Buffer;
-
-    /** Binary to base64 string (standard encoding). */
     toBase64(data: Buffer): string;
-
-    /** Base64 string to binary. Errors on invalid base64. */
     fromBase64(b64: string): Buffer;
-
-    /** Constant-time equality check (prevents timing attacks). */
     timingSafeEqual(a: Buffer, b: Buffer): boolean;
-
-    /** AES-256-GCM encrypt. Key must be 32 bytes. Returns nonce + ciphertext + tag. */
     encrypt(key: Buffer, plaintext: Buffer): Buffer;
-
-    /** AES-256-GCM decrypt. Key must be 32 bytes. Input is nonce + ciphertext + tag. */
     decrypt(key: Buffer, ciphertext: Buffer): Buffer;
-
-    /** Generate a random symmetric key. Supported bit sizes: 128, 192, 256. */
     generateKey(bits: number): Buffer;
-
-    /** Sign data. Supported algorithms: "ed25519". Private key as PEM in Buffer. */
     sign(algorithm: string, privateKey: Buffer, data: Buffer): Buffer;
-
-    /** Verify signature. Supported algorithms: "ed25519". Public key as PEM in Buffer. */
     verify(algorithm: string, publicKey: Buffer, data: Buffer, signature: Buffer): boolean;
-
-    /** Generate asymmetric key pair. Supported algorithms: "ed25519". Returns [publicPem, privatePem]. */
     generateKeyPair(algorithm: string): string[];
-
-    /** HKDF key derivation. Supported hashes: "sha256", "sha384", "sha512". */
-    hkdf(hash: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer;
-
-    /** PBKDF2 key derivation. Supported hashes: "sha256", "sha384", "sha512". */
-    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hash: string): Buffer;
+    hkdf(hashAlg: string, ikm: Buffer, salt: Buffer, info: Buffer, length: number): Buffer;
+    pbkdf2(password: string, salt: Buffer, iterations: number, length: number, hashAlg: string): Buffer;
 }
-
-/** crypto singleton instance */
-declare const crypto: CryptoClass;
-
-export default crypto;
