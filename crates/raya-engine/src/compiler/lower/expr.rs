@@ -3434,8 +3434,13 @@ impl<'a> Lowerer<'a> {
                 return regexp_dest;
             }
 
-            // Look up class ID from class_map
-            if let Some(&class_id) = self.class_map.get(&ident.name) {
+            // Look up class ID from known class symbols or class-typed aliases.
+            let class_id_opt = self
+                .class_map
+                .get(&ident.name)
+                .copied()
+                .or_else(|| self.variable_class_map.get(&ident.name).copied());
+            if let Some(class_id) = class_id_opt {
                 // Create the object
                 self.emit(IrInstr::NewObject {
                     dest: dest.clone(),
@@ -4196,6 +4201,10 @@ impl<'a> Lowerer<'a> {
                 .get(&ident.name)
                 .copied()
                 .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
+            Expression::TypeCast(cast) => self
+                .try_extract_class_from_type(&cast.target_type)
+                .or_else(|| self.infer_class_id(&cast.object))
+                .or_else(|| self.class_id_from_type_id(self.get_expr_type(expr))),
             // Field access: look up the field's type in the class definition
             Expression::Member(member) => {
                 // Get the class of the object
@@ -4322,20 +4331,8 @@ impl<'a> Lowerer<'a> {
 
         let ty = self.type_ctx.get(ty_id)?;
         match ty {
-            Type::Class(class_ty) => self.class_map.iter().find_map(|(&sym, &cid)| {
-                if self.interner.resolve(sym) == class_ty.name {
-                    Some(cid)
-                } else {
-                    None
-                }
-            }),
-            Type::Reference(type_ref) => self.class_map.iter().find_map(|(&sym, &cid)| {
-                if self.interner.resolve(sym) == type_ref.name {
-                    Some(cid)
-                } else {
-                    None
-                }
-            }),
+            Type::Class(class_ty) => self.class_id_from_type_name(&class_ty.name),
+            Type::Reference(type_ref) => self.class_id_from_type_name(&type_ref.name),
             Type::Generic(generic) => {
                 if let Some(Type::JSObject) = self.type_ctx.get(generic.base) {
                     if let Some(&inner) = generic.type_args.first() {

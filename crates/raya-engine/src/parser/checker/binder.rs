@@ -3277,14 +3277,28 @@ impl<'a> Binder<'a> {
                         }
                         ObjectTypeMember::Method(method) => {
                             // Resolve method as a function type
-                            let param_tys: Result<Vec<_>, _> = method
-                                .params
-                                .iter()
-                                .map(|p| self.resolve_type_annotation(&p.ty))
-                                .collect();
-
+                            let mut param_tys = Vec::new();
+                            let mut rest_param = None;
+                            let mut min_params = 0usize;
+                            for p in &method.params {
+                                let p_ty = self.resolve_type_annotation(&p.ty)?;
+                                if p.is_rest {
+                                    rest_param = Some(p_ty);
+                                } else {
+                                    if !p.optional {
+                                        min_params += 1;
+                                    }
+                                    param_tys.push(p_ty);
+                                }
+                            }
                             let return_ty = self.resolve_type_annotation(&method.return_type)?;
-                            let func_ty = self.type_ctx.function_type(param_tys?, return_ty, false);
+                            let func_ty = self.type_ctx.function_type_with_rest(
+                                param_tys,
+                                return_ty,
+                                false,
+                                min_params,
+                                rest_param,
+                            );
 
                             properties.push(PropertySignature {
                                 name: self.resolve(method.name.name),

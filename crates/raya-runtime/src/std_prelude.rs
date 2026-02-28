@@ -37,11 +37,13 @@ struct FunctionParamSig {
     name: String,
     ty: String,
     optional: bool,
+    has_default: bool,
     is_rest: bool,
 }
 
 #[derive(Debug, Clone)]
 struct ClassTypeMeta {
+    type_params: Vec<String>,
     properties: Vec<(String, String)>,
     methods: Vec<(String, FunctionSig)>,
 }
@@ -1147,6 +1149,7 @@ fn function_sig(function: &FunctionDecl, module: &ParsedStdModule) -> FunctionSi
                     .map(|ann| normalize_type_snippet(ann.span.slice(&module.source)))
                     .unwrap_or_else(|| "unknown".to_string()),
                 optional: param.optional,
+                has_default: param.default_value.is_some(),
                 is_rest: param.is_rest,
             }
         })
@@ -1175,7 +1178,7 @@ fn function_type_from_sig(sig: &FunctionSig) -> String {
         .map(|p| {
             let name = if p.is_rest {
                 format!("...{}", p.name)
-            } else if p.optional {
+            } else if p.optional || p.has_default {
                 format!("{}?", p.name)
             } else {
                 p.name.clone()
@@ -1210,7 +1213,7 @@ fn emit_default_wrapper(
             .map(|(orig, safe)| {
                 let name = if orig.is_rest {
                     format!("...{}", orig.name)
-                } else if orig.optional {
+                } else if orig.optional || orig.has_default {
                     format!("{}?", orig.name)
                 } else {
                     orig.name.clone()
@@ -1366,6 +1369,7 @@ fn sanitize_wrapper_sig(sig: &FunctionSig, allowed_types: Option<&HashSet<String
                 name: p.name.clone(),
                 ty: sanitize_wrapper_type(&p.ty, allowed_types),
                 optional: p.optional,
+                has_default: p.has_default,
                 is_rest: p.is_rest,
             })
             .collect(),
@@ -1420,6 +1424,16 @@ fn extract_class_type_meta(
     module: &ParsedStdModule,
 ) -> ClassTypeMeta {
     use raya_engine::parser::ast::ClassMember;
+    let type_params = class
+        .type_params
+        .as_ref()
+        .map(|params| {
+            params
+                .iter()
+                .map(|tp| module.interner.resolve(tp.name.name).to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut properties = Vec::new();
     let mut methods = Vec::new();
     for member in &class.members {
@@ -1429,9 +1443,6 @@ fn extract_class_type_meta(
                     continue;
                 }
                 let name = module.interner.resolve(field.name.name).to_string();
-                if name.starts_with('_') {
-                    continue;
-                }
                 let type_expr = field
                     .type_annotation
                     .as_ref()
@@ -1465,6 +1476,7 @@ fn extract_class_type_meta(
                                 })
                                 .unwrap_or_else(|| "unknown".to_string()),
                             optional: param.optional,
+                            has_default: param.default_value.is_some(),
                             is_rest: param.is_rest,
                         }
                     })
@@ -1480,6 +1492,7 @@ fn extract_class_type_meta(
         }
     }
     ClassTypeMeta {
+        type_params,
         properties,
         methods,
     }
@@ -1499,10 +1512,29 @@ fn synthesize_type_aliases(
     let mut out = String::new();
     for name in &ordered {
         let meta = &class_types[name];
-        out.push_str(&format!("type __t_{}_{} = {{ ", module_tag, name));
+        let type_param_decl = if meta.type_params.is_empty() {
+            String::new()
+        } else {
+            let params = meta
+                .type_params
+                .iter()
+                .map(|p| format!("{} = unknown", p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("<{}>", params)
+        };
+        let allowed_type_params = if meta.type_params.is_empty() {
+            None
+        } else {
+            Some(meta.type_params.iter().cloned().collect::<HashSet<_>>())
+        };
+        out.push_str(&format!(
+            "type __t_{}_{}{} = {{ ",
+            module_tag, name, type_param_decl
+        ));
         for (prop_name, type_expr) in &meta.properties {
             let resolved = resolve_type_refs(type_expr, type_ref_map);
-            let safe = sanitize_wrapper_type(&resolved, None);
+            let safe = sanitize_wrapper_type(&resolved, allowed_type_params.as_ref());
             out.push_str(&format!("{}: {}, ", prop_name, safe));
         }
         for (method_name, sig) in &meta.methods {
@@ -1517,19 +1549,19 @@ fn synthesize_type_aliases(
                 .map(|p| {
                     let name = if p.is_rest {
                         format!("...{}", p.name)
-                    } else if p.optional {
+                    } else if p.optional || p.has_default {
                         format!("{}?", p.name)
                     } else {
                         p.name.clone()
                     };
                     let resolved = resolve_type_refs(&p.ty, type_ref_map);
-                    let safe = sanitize_wrapper_type(&resolved, None);
+                    let safe = sanitize_wrapper_type(&resolved, allowed_type_params.as_ref());
                     format!("{}: {}", name, safe)
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
             let resolved_ret = resolve_type_refs(&sig.return_type, type_ref_map);
-            let ret = sanitize_wrapper_type(&resolved_ret, None);
+            let ret = sanitize_wrapper_type(&resolved_ret, allowed_type_params.as_ref());
             out.push_str(&format!("{}: ({}) => {}, ", key, params, ret));
         }
         out.push_str("};\n");

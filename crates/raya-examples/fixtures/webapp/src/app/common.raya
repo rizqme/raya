@@ -56,7 +56,10 @@ class AppCommon {
 
     static appendRequestLog(root: string, req: HttpRequest): void {
         AppCommon.ensureDir(AppCommon.appDir(root));
-        const line = `${req.method()} ${req.path()} ?${req.query()}\n`;
+        const method = String(req.method());
+        const reqPath = String(req.path());
+        const query = String(req.query());
+        const line = method + " " + reqPath + " ?" + query + "\n";
         fs.appendFile(path.join(AppCommon.appDir(root), "request.log"), line);
     }
 

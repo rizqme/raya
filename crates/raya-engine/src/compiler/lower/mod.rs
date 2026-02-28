@@ -1111,6 +1111,7 @@ impl<'a> Lowerer<'a> {
                         self.generic_function_asts
                             .insert(func.name.name, func.clone());
                     }
+                    self.register_nested_classes_in_block(&func.body.statements);
                 }
                 Statement::ClassDecl(class) => {
                     self.register_class(class);
@@ -1239,6 +1240,64 @@ impl<'a> Lowerer<'a> {
         ir_module.native_functions = self.take_native_function_table();
 
         ir_module
+    }
+
+    /// Register class declarations reachable within nested statement blocks.
+    /// Needed for std-prelude wrapper functions where classes are function-local.
+    fn register_nested_classes_in_block(&mut self, statements: &[Statement]) {
+        for stmt in statements {
+            let stmt = Self::unwrap_export(stmt);
+            match stmt {
+                Statement::ClassDecl(class) => self.register_class(class),
+                Statement::FunctionDecl(func) => {
+                    self.register_nested_classes_in_block(&func.body.statements);
+                }
+                Statement::Block(block) => {
+                    self.register_nested_classes_in_block(&block.statements);
+                }
+                Statement::If(if_stmt) => {
+                    self.register_nested_classes_in_block(&if_stmt.then_branch.statements);
+                    if let Some(else_branch) = &if_stmt.else_branch {
+                        match else_branch.as_ref() {
+                            Statement::Block(block) => {
+                                self.register_nested_classes_in_block(&block.statements);
+                            }
+                            other => self.register_nested_classes_in_block(std::slice::from_ref(other)),
+                        }
+                    }
+                }
+                Statement::While(while_stmt) => {
+                    self.register_nested_classes_in_block(&while_stmt.body.statements);
+                }
+                Statement::DoWhile(do_while_stmt) => {
+                    self.register_nested_classes_in_block(&do_while_stmt.body.statements);
+                }
+                Statement::For(for_stmt) => {
+                    self.register_nested_classes_in_block(&for_stmt.body.statements);
+                }
+                Statement::ForIn(for_in_stmt) => {
+                    self.register_nested_classes_in_block(&for_in_stmt.body.statements);
+                }
+                Statement::ForOf(for_of_stmt) => {
+                    self.register_nested_classes_in_block(&for_of_stmt.body.statements);
+                }
+                Statement::Try(try_stmt) => {
+                    self.register_nested_classes_in_block(&try_stmt.body.statements);
+                    if let Some(catch_clause) = &try_stmt.catch_clause {
+                        self.register_nested_classes_in_block(&catch_clause.body.statements);
+                    }
+                    if let Some(finally_block) = &try_stmt.finally_block {
+                        self.register_nested_classes_in_block(&finally_block.statements);
+                    }
+                }
+                Statement::Switch(switch_stmt) => {
+                    for case in &switch_stmt.cases {
+                        self.register_nested_classes_in_block(&case.consequent);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Pre-scan statements to identify variables that will be captured by closures.
@@ -3337,7 +3396,9 @@ impl<'a> Lowerer<'a> {
     /// and nullable unions (e.g., `Node | null` → Node's ClassId).
     fn try_extract_class_from_type(&self, type_ann: &ast::TypeAnnotation) -> Option<ClassId> {
         match &type_ann.ty {
-            ast::Type::Reference(type_ref) => self.class_map.get(&type_ref.name.name).copied(),
+            ast::Type::Reference(type_ref) => self.class_id_from_type_name(
+                self.interner.resolve(type_ref.name.name),
+            ),
             ast::Type::Union(union_type) => {
                 let mut class_id = None;
                 for member in &union_type.types {
@@ -3347,7 +3408,9 @@ impl<'a> Lowerer<'a> {
                             if class_id.is_some() {
                                 return None; // multiple class refs — ambiguous
                             }
-                            class_id = self.class_map.get(&type_ref.name.name).copied();
+                            class_id = self.class_id_from_type_name(
+                                self.interner.resolve(type_ref.name.name),
+                            );
                         }
                         _ => return None, // non-null, non-class member
                     }
@@ -3356,6 +3419,34 @@ impl<'a> Lowerer<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a class ID from a type name.
+    /// Supports direct class names and synthesized std-prelude aliases:
+    /// `__t_<module>_<ClassName>`.
+    pub(super) fn class_id_from_type_name(&self, type_name: &str) -> Option<ClassId> {
+        for (&sym, &cid) in &self.class_map {
+            if self.interner.resolve(sym) == type_name {
+                return Some(cid);
+            }
+        }
+        if !type_name.starts_with("__t_") {
+            return None;
+        }
+
+        // Prefer the longest class-name suffix match to avoid ambiguous short-name matches.
+        let mut best: Option<(usize, ClassId)> = None;
+        for (&sym, &cid) in &self.class_map {
+            let class_name = self.interner.resolve(sym);
+            let suffix = format!("_{}", class_name);
+            if type_name.ends_with(&suffix) {
+                let len = class_name.len();
+                if best.is_none_or(|(best_len, _)| len > best_len) {
+                    best = Some((len, cid));
+                }
+            }
+        }
+        best.map(|(_, cid)| cid)
     }
 
     /// Extract field names from an object type annotation for destructuring

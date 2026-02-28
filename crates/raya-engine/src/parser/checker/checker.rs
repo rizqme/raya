@@ -7126,6 +7126,23 @@ mod tests {
     }
 
     #[test]
+    fn test_object_method_type_preserves_optional_params() {
+        let result = parse_and_check(
+            r#"
+            type C = { f: (a: number, b?: number) => number };
+            const c: C = { f: (a: number, b: number = 0): number => a + b };
+            const x = c.f(1);
+            const y: number = x;
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected optional method param to allow omitted arg, got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn test_class_method_body_is_type_checked() {
         let result = parse_and_check(
             r#"
