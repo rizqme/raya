@@ -186,6 +186,14 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
         }
         Statement::For(stmt) => visitor.visit_for_statement(stmt),
         Statement::ForOf(stmt) => visitor.visit_for_of_statement(stmt),
+        Statement::ForIn(stmt) => {
+            match &stmt.left {
+                ForOfLeft::VariableDecl(decl) => visitor.visit_variable_decl(decl),
+                ForOfLeft::Pattern(pattern) => visitor.visit_pattern(pattern),
+            }
+            visitor.visit_expression(&stmt.right);
+            visitor.visit_statement(&stmt.body);
+        }
         Statement::Break(_) | Statement::Continue(_) => {}
         Statement::Return(stmt) => {
             if let Some(value) = &stmt.value {
@@ -211,6 +219,7 @@ pub fn walk_statement<V: Visitor>(visitor: &mut V, stmt: &Statement) {
             }
         }
         Statement::Block(stmt) => visitor.visit_block_statement(stmt),
+        Statement::Labeled(stmt) => visitor.visit_statement(&stmt.body),
         Statement::Debugger(_) | Statement::Empty(_) => {}
     }
 }
@@ -316,6 +325,9 @@ pub fn walk_class_decl<V: Visitor>(visitor: &mut V, decl: &ClassDecl) {
                 }
                 visitor.visit_block_statement(&ctor.body);
             }
+            ClassMember::StaticBlock(block) => {
+                visitor.visit_block_statement(block);
+            }
         }
     }
 }
@@ -407,6 +419,7 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         | Expression::StringLiteral(_)
         | Expression::BooleanLiteral(_)
         | Expression::NullLiteral(_)
+        | Expression::RegexLiteral(_)
         | Expression::This(_)
         | Expression::Super(_) => {}
         Expression::Identifier(id) => visitor.visit_identifier(id),
@@ -462,6 +475,17 @@ pub fn walk_expression<V: Visitor>(visitor: &mut V, expr: &Expression) {
         Expression::TypeCast(cast) => {
             visitor.visit_expression(&cast.object);
             visitor.visit_type_annotation(&cast.target_type);
+        }
+        Expression::TaggedTemplate(tagged) => {
+            visitor.visit_expression(&tagged.tag);
+            for part in &tagged.template.parts {
+                if let TemplatePart::Expression(expr) = part {
+                    visitor.visit_expression(expr);
+                }
+            }
+        }
+        Expression::DynamicImport(import) => {
+            visitor.visit_expression(&import.source);
         }
     }
 }

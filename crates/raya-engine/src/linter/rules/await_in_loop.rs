@@ -37,6 +37,7 @@ impl LintRule for AwaitInLoop {
             ast::Statement::DoWhile(d) => &d.body,
             ast::Statement::For(f) => &f.body,
             ast::Statement::ForOf(f) => &f.body,
+            ast::Statement::ForIn(f) => &f.body,
             _ => return vec![],
         };
 

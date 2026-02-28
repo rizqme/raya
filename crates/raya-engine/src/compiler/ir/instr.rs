@@ -181,6 +181,7 @@ pub enum IrInstr {
         value: Register,
     },
 
+
     /// Load JSON property by name: dest = json_object[property_name]
     /// Used for duck typing on JSON values - property lookup by string key
     JsonLoadProperty {

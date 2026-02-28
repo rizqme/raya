@@ -333,6 +333,9 @@ impl TypeDefParser {
                         span: ctor.span,
                     });
                 }
+                ClassMember::StaticBlock(_) => {
+                    // Static blocks are not part of the type definition
+                }
             }
         }
 

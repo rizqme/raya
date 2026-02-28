@@ -68,6 +68,7 @@ pub(super) fn keyword_as_property_name(token: &Token) -> Option<&'static str> {
 fn get_property_name_symbol(parser: &mut Parser) -> Option<Symbol> {
     match parser.current() {
         Token::Identifier(sym) => Some(*sym),
+        Token::PrivateIdentifier(sym) => Some(*sym), // #name → name (strip #)
         token => keyword_as_property_name(token).map(|name| parser.intern(name)),
     }
 }
@@ -203,6 +204,30 @@ fn parse_prefix(parser: &mut Parser) -> Result<Expression, ParseError> {
             let span = parser.combine_spans(&start_span, argument.span());
             Ok(Expression::Typeof(TypeofExpression {
                 argument: Box::new(argument),
+                span,
+            }))
+        }
+
+        // void operator: evaluates expression, returns null
+        Token::Void => {
+            parser.advance();
+            let operand = parse_expression_with_precedence(parser, Precedence::Unary)?;
+            let span = parser.combine_spans(&start_span, operand.span());
+            Ok(Expression::Unary(UnaryExpression {
+                operator: UnaryOperator::Void,
+                operand: Box::new(operand),
+                span,
+            }))
+        }
+
+        // delete operator: removes a property from an object
+        Token::Delete => {
+            parser.advance();
+            let operand = parse_expression_with_precedence(parser, Precedence::Unary)?;
+            let span = parser.combine_spans(&start_span, operand.span());
+            Ok(Expression::Unary(UnaryExpression {
+                operator: UnaryOperator::Delete,
+                operand: Box::new(operand),
                 span,
             }))
         }
@@ -841,6 +866,23 @@ fn parse_postfix(parser: &mut Parser, mut expr: Expression) -> Result<Expression
                 });
             }
 
+            // Tagged template literal: tag`hello ${name}`
+            Token::TemplateLiteral(parts) => {
+                let parts = convert_template_parts(parser, parts.clone())?;
+                let template_span = parser.current_span();
+                parser.advance();
+                let span = parser.combine_spans(&start_span, &template_span);
+
+                expr = Expression::TaggedTemplate(TaggedTemplateExpression {
+                    tag: Box::new(expr),
+                    template: TemplateLiteral {
+                        parts,
+                        span: template_span,
+                    },
+                    span,
+                });
+            }
+
             // Type arguments before call: foo<T>() or foo<T, U>()
             Token::Less => {
                 // Speculatively try to parse type arguments
@@ -1056,6 +1098,31 @@ pub fn parse_primary(parser: &mut Parser) -> Result<Expression, ParseError> {
             parser.advance();
             Ok(Expression::TemplateLiteral(TemplateLiteral {
                 parts,
+                span: start_span,
+            }))
+        }
+
+        // Dynamic import: import("./module")
+        Token::Import if matches!(parser.peek(), Some(Token::LeftParen)) => {
+            parser.advance(); // consume 'import'
+            parser.advance(); // consume '('
+            let source = parse_expression(parser)?;
+            parser.expect(Token::RightParen)?;
+            let span = parser.combine_spans(&start_span, &parser.current_span());
+            Ok(Expression::DynamicImport(DynamicImportExpression {
+                source: Box::new(source),
+                span,
+            }))
+        }
+
+        // Regex literal
+        Token::RegexLiteral(pattern, flags) => {
+            let pattern = *pattern;
+            let flags = *flags;
+            parser.advance();
+            Ok(Expression::RegexLiteral(RegexLiteral {
+                pattern,
+                flags,
                 span: start_span,
             }))
         }

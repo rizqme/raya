@@ -68,6 +68,14 @@ impl<'a> Lowerer<'a> {
             Expression::AsyncCall(async_call) => self.lower_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.lower_instanceof(instanceof),
             Expression::TypeCast(cast) => self.lower_type_cast(cast),
+            Expression::RegexLiteral(regex) => self.lower_regex_literal(regex),
+            Expression::TaggedTemplate(tagged) => self.lower_tagged_template(tagged),
+            Expression::DynamicImport(import) => {
+                // Dynamic import() — evaluate the source expression, return unknown
+                // Runtime dynamic module loading is not yet supported
+                let _source = self.lower_expr(&import.source);
+                self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID))
+            }
             Expression::JsxElement(jsx) => self.lower_jsx_element(jsx),
             Expression::JsxFragment(jsx) => self.lower_jsx_fragment(jsx),
         }
@@ -120,6 +128,88 @@ impl<'a> Lowerer<'a> {
         self.emit(IrInstr::Assign {
             dest: dest.clone(),
             value: IrValue::Constant(IrConstant::Null),
+        });
+        dest
+    }
+
+    fn lower_tagged_template(&mut self, tagged: &ast::TaggedTemplateExpression) -> Register {
+        let string_ty = TypeId::new(STRING_TYPE_ID);
+        let array_ty = TypeId::new(super::ARRAY_TYPE_ID);
+        let dest = self.alloc_register(TypeId::new(UNKNOWN_TYPE_ID));
+
+        // Build the strings array from template parts
+        let mut string_regs = Vec::new();
+        let mut expr_regs = Vec::new();
+
+        for part in &tagged.template.parts {
+            match part {
+                TemplatePart::String(sym) => {
+                    let s = self.interner.resolve(*sym).to_string();
+                    let reg = self.alloc_register(string_ty);
+                    self.emit(IrInstr::Assign {
+                        dest: reg.clone(),
+                        value: IrValue::Constant(IrConstant::String(s)),
+                    });
+                    string_regs.push(reg);
+                }
+                TemplatePart::Expression(expr) => {
+                    expr_regs.push(self.lower_expr(expr));
+                }
+            }
+        }
+
+        // Create the strings array
+        let len_reg = self.emit_i32_const(string_regs.len() as i32);
+        let strings_arr = self.alloc_register(array_ty);
+        self.emit(IrInstr::NewArray {
+            dest: strings_arr.clone(),
+            len: len_reg,
+            elem_ty: string_ty,
+        });
+        for s_reg in &string_regs {
+            self.emit(IrInstr::ArrayPush {
+                array: strings_arr.clone(),
+                element: s_reg.clone(),
+            });
+        }
+
+        // Lower the tag expression and call it: tag(strings, ...exprs)
+        let tag_reg = self.lower_expr(&tagged.tag);
+        let mut args = vec![strings_arr];
+        args.extend(expr_regs);
+
+        self.emit(IrInstr::CallClosure {
+            dest: Some(dest.clone()),
+            closure: tag_reg,
+            args,
+        });
+        dest
+    }
+
+    fn lower_regex_literal(&mut self, regex: &ast::RegexLiteral) -> Register {
+        let dest = self.alloc_register(TypeId::new(REGEXP_TYPE_ID));
+        let pattern = self.interner.resolve(regex.pattern).to_string();
+        let flags = self.interner.resolve(regex.flags).to_string();
+
+        // Lower pattern string
+        let pattern_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: pattern_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(pattern)),
+        });
+
+        // Lower flags string
+        let flags_reg = self.alloc_register(TypeId::new(STRING_TYPE_ID));
+        self.emit(IrInstr::Assign {
+            dest: flags_reg.clone(),
+            value: IrValue::Constant(IrConstant::String(flags)),
+        });
+
+        // new RegExp(pattern, flags) via NativeCall
+        self.emit(IrInstr::NativeCall {
+            dest: Some(dest.clone()),
+            native_id: builtin_regexp::NEW,
+            args: vec![pattern_reg, flags_reg],
         });
         dest
     }
@@ -350,6 +440,21 @@ impl<'a> Lowerer<'a> {
             | ast::UnaryOperator::PrefixDecrement => {
                 return self.lower_increment_decrement(unary);
             }
+            // void expr: evaluate for side-effects, return null
+            ast::UnaryOperator::Void => {
+                let _operand = self.lower_expr(&unary.operand);
+                let dest = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+                self.emit(IrInstr::Assign {
+                    dest: dest.clone(),
+                    value: IrValue::Constant(IrConstant::Null),
+                });
+                return dest;
+            }
+            // delete obj.prop: remove field from object, return true
+            // delete on non-member expressions is a no-op returning true (per spec)
+            ast::UnaryOperator::Delete => {
+                return self.lower_delete(unary);
+            }
             _ => {}
         }
 
@@ -361,6 +466,69 @@ impl<'a> Lowerer<'a> {
             dest: dest.clone(),
             op,
             operand,
+        });
+        dest
+    }
+
+    fn lower_delete(&mut self, unary: &ast::UnaryExpression) -> Register {
+        let bool_ty = TypeId::new(BOOLEAN_TYPE_ID);
+        // delete on member expressions: set the property to null (pragmatic delete)
+        if let Expression::Member(member) = &*unary.operand {
+            let prop_name = self.interner.resolve(member.property.name).to_string();
+            let class_id = self.infer_class_id(&member.object);
+            let object = self.lower_expr(&member.object);
+
+            // Create a null value to assign
+            let null_reg = self.alloc_register(TypeId::new(NULL_TYPE_ID));
+            self.emit(IrInstr::Assign {
+                dest: null_reg.clone(),
+                value: IrValue::Constant(IrConstant::Null),
+            });
+
+            // If we know the class, resolve field index and use StoreField
+            if let Some(cid) = class_id {
+                let all_fields = self.get_all_fields(cid);
+                if let Some(field) = all_fields
+                    .iter()
+                    .rev()
+                    .find(|f| self.interner.resolve(f.name) == prop_name)
+                {
+                    self.emit(IrInstr::StoreField {
+                        object,
+                        field: field.index,
+                        value: null_reg,
+                    });
+                } else {
+                    // Unknown field on known class — use JSON store as fallback
+                    self.emit(IrInstr::JsonStoreProperty {
+                        object,
+                        property: prop_name,
+                        value: null_reg,
+                    });
+                }
+            } else {
+                // Unknown object type — use JSON property store
+                self.emit(IrInstr::JsonStoreProperty {
+                    object,
+                    property: prop_name,
+                    value: null_reg,
+                });
+            }
+
+            // Return true (delete always succeeds in our implementation)
+            let dest = self.alloc_register(bool_ty);
+            self.emit(IrInstr::Assign {
+                dest: dest.clone(),
+                value: IrValue::Constant(IrConstant::Boolean(true)),
+            });
+            return dest;
+        }
+        // delete on non-member expressions: evaluate for side-effects, return true
+        let _operand = self.lower_expr(&unary.operand);
+        let dest = self.alloc_register(bool_ty);
+        self.emit(IrInstr::Assign {
+            dest: dest.clone(),
+            value: IrValue::Constant(IrConstant::Boolean(true)),
         });
         dest
     }

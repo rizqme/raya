@@ -51,6 +51,9 @@ pub enum Statement {
     /// For-of loop
     ForOf(ForOfStatement),
 
+    /// For-in loop
+    ForIn(ForInStatement),
+
     /// Break statement
     Break(BreakStatement),
 
@@ -79,6 +82,9 @@ pub enum Statement {
 
     /// Empty statement (;)
     Empty(Span),
+
+    /// Labeled statement: label: statement
+    Labeled(LabeledStatement),
 }
 
 impl Statement {
@@ -98,6 +104,7 @@ impl Statement {
             Statement::DoWhile(s) => &s.span,
             Statement::For(s) => &s.span,
             Statement::ForOf(s) => &s.span,
+            Statement::ForIn(s) => &s.span,
             Statement::Break(s) => &s.span,
             Statement::Continue(s) => &s.span,
             Statement::Return(s) => &s.span,
@@ -107,6 +114,7 @@ impl Statement {
             Statement::Block(s) => &s.span,
             Statement::Debugger(span) => span,
             Statement::Empty(span) => span,
+            Statement::Labeled(s) => &s.span,
         }
     }
 
@@ -259,6 +267,8 @@ pub enum ClassMember {
     Field(FieldDecl),
     Method(MethodDecl),
     Constructor(ConstructorDecl),
+    /// Static initializer block: `static { ... }`
+    StaticBlock(BlockStatement),
 }
 
 /// Visibility modifier for class members (Java-like semantics)
@@ -299,6 +309,17 @@ pub struct FieldDecl {
     pub span: Span,
 }
 
+/// Kind of class method
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MethodKind {
+    /// Regular method
+    Normal,
+    /// Getter: `get name() { ... }`
+    Getter,
+    /// Setter: `set name(val) { ... }`
+    Setter,
+}
+
 /// Method declaration
 #[derive(Debug, Clone, PartialEq)]
 pub struct MethodDecl {
@@ -313,6 +334,9 @@ pub struct MethodDecl {
 
     /// Abstract modifier (method has no body)
     pub is_abstract: bool,
+
+    /// Method kind (normal, getter, setter)
+    pub kind: MethodKind,
 
     pub name: Identifier,
     pub type_params: Option<Vec<TypeParameter>>,
@@ -565,6 +589,18 @@ pub enum ForOfLeft {
     Pattern(Pattern),
 }
 
+/// For-in loop: for (const key in object) { ... }
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForInStatement {
+    /// Left side of the for-in (variable declaration or identifier pattern)
+    pub left: ForOfLeft,
+    /// Right side expression (the object to enumerate)
+    pub right: Expression,
+    /// Loop body
+    pub body: Box<Statement>,
+    pub span: Span,
+}
+
 /// Break statement
 #[derive(Debug, Clone, PartialEq)]
 pub struct BreakStatement {
@@ -576,6 +612,14 @@ pub struct BreakStatement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContinueStatement {
     pub label: Option<Identifier>,
+    pub span: Span,
+}
+
+/// Labeled statement: label: statement
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabeledStatement {
+    pub label: Identifier,
+    pub body: Box<Statement>,
     pub span: Span,
 }
 

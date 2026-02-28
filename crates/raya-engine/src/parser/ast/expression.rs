@@ -99,6 +99,15 @@ pub enum Expression {
 
     /// Type cast expression: expr as TypeName
     TypeCast(TypeCastExpression),
+
+    /// Regex literal: /pattern/flags
+    RegexLiteral(RegexLiteral),
+
+    /// Tagged template literal: tag`hello ${name}`
+    TaggedTemplate(TaggedTemplateExpression),
+
+    /// Dynamic import: import("./module")
+    DynamicImport(DynamicImportExpression),
 }
 
 impl Expression {
@@ -134,6 +143,9 @@ impl Expression {
             Expression::Super(span) => span,
             Expression::InstanceOf(e) => &e.span,
             Expression::TypeCast(e) => &e.span,
+            Expression::RegexLiteral(e) => &e.span,
+            Expression::TaggedTemplate(e) => &e.span,
+            Expression::DynamicImport(e) => &e.span,
         }
     }
 
@@ -285,6 +297,8 @@ pub enum UnaryOperator {
     PrefixDecrement,  // --x
     PostfixIncrement, // x++
     PostfixDecrement, // x--
+    Void,             // void x
+    Delete,           // delete obj.prop
 }
 
 /// Binary expression: x + y, a * b
@@ -676,5 +690,28 @@ pub struct TypeCastExpression {
     pub object: Box<Expression>,
     /// The target type
     pub target_type: TypeAnnotation,
+    pub span: Span,
+}
+
+/// Tagged template literal: tag`hello ${name}`
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaggedTemplateExpression {
+    pub tag: Box<Expression>,
+    pub template: TemplateLiteral,
+    pub span: Span,
+}
+
+/// Regex literal: /pattern/flags
+#[derive(Debug, Clone, PartialEq)]
+pub struct RegexLiteral {
+    pub pattern: crate::parser::interner::Symbol,
+    pub flags: crate::parser::interner::Symbol,
+    pub span: Span,
+}
+
+/// Dynamic import expression: import("./module")
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicImportExpression {
+    pub source: Box<Expression>,
     pub span: Span,
 }

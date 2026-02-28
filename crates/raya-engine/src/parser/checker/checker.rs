@@ -713,6 +713,8 @@ impl<'a> TypeChecker<'a> {
             Statement::Switch(switch_stmt) => self.check_switch(switch_stmt),
             Statement::Try(try_stmt) => self.check_try(try_stmt),
             Statement::ForOf(for_of) => self.check_for_of(for_of),
+            Statement::ForIn(for_in) => self.check_for_in(for_in),
+            Statement::Labeled(labeled) => self.check_stmt(&labeled.body),
             Statement::ClassDecl(class) => {
                 // Check class declaration including decorators
                 self.check_class(class);
@@ -1068,6 +1070,14 @@ impl<'a> TypeChecker<'a> {
                 self.sync_stmt_scopes(&for_of.body);
                 self.exit_scope();
             }
+            Statement::ForIn(for_in) => {
+                self.enter_scope();
+                self.sync_stmt_scopes(&for_in.body);
+                self.exit_scope();
+            }
+            Statement::Labeled(labeled) => {
+                self.sync_stmt_scopes(&labeled.body);
+            }
             Statement::If(if_stmt) => {
                 // If body doesn't create scope unless it's a block
                 self.sync_stmt_scopes(&if_stmt.then_branch);
@@ -1288,6 +1298,13 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                crate::parser::ast::ClassMember::StaticBlock(block) => {
+                    self.enter_scope();
+                    for stmt in &block.statements {
+                        self.check_stmt(stmt);
+                    }
+                    self.exit_scope();
+                }
             }
         }
 
@@ -1404,6 +1421,13 @@ impl<'a> TypeChecker<'a> {
             }
             Statement::ForOf(s) => {
                 self.collect_this_assignments_expr(&s.right, assigned);
+                self.collect_this_assignments_stmt(&s.body, assigned);
+            }
+            Statement::ForIn(s) => {
+                self.collect_this_assignments_expr(&s.right, assigned);
+                self.collect_this_assignments_stmt(&s.body, assigned);
+            }
+            Statement::Labeled(s) => {
                 self.collect_this_assignments_stmt(&s.body, assigned);
             }
             Statement::Switch(s) => {
@@ -1865,6 +1889,31 @@ impl<'a> TypeChecker<'a> {
         self.exit_scope();
     }
 
+    /// Check for-in loop
+    fn check_for_in(&mut self, for_in: &ForInStatement) {
+        self.enter_scope();
+
+        // Check the object expression (right side)
+        self.check_expr(&for_in.right);
+
+        // The loop variable is always a string (property key)
+        let string_ty = self.type_ctx.string_type();
+
+        match &for_in.left {
+            ForOfLeft::VariableDecl(decl) => {
+                if let Pattern::Identifier(ident) = &decl.pattern {
+                    let name = self.resolve(ident.name);
+                    self.inferred_var_types
+                        .insert((self.current_scope.0, name), string_ty);
+                }
+            }
+            ForOfLeft::Pattern(_) => {}
+        }
+
+        self.check_stmt(&for_in.body);
+        self.exit_scope();
+    }
+
     fn for_of_element_type(&mut self, iterable_ty: TypeId, span: Span) -> TypeId {
         use crate::parser::types::Type;
 
@@ -2165,6 +2214,7 @@ impl<'a> TypeChecker<'a> {
             Expression::AsyncCall(async_call) => self.check_async_call(async_call),
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
             Expression::TypeCast(cast) => self.check_type_cast(cast),
+            Expression::RegexLiteral(_) => self.type_ctx.regexp_type(),
             _ => self.type_ctx.unknown_type(),
         };
 
@@ -2431,6 +2481,14 @@ impl<'a> TypeChecker<'a> {
                 let number_ty = self.type_ctx.number_type();
                 self.check_assignable(operand_ty, number_ty, *un.operand.span());
                 number_ty
+            }
+            UnaryOperator::Void => {
+                // void evaluates operand for side-effects and returns null
+                self.type_ctx.null_type()
+            }
+            UnaryOperator::Delete => {
+                // delete returns boolean (true if property was deleted)
+                self.type_ctx.boolean_type()
             }
         }
     }
@@ -3150,6 +3208,21 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.collect_free_vars_stmt(&for_of.body, collector);
+            }
+            Statement::ForIn(for_in) => {
+                self.collect_free_vars_expr(&for_in.right, collector);
+                match &for_in.left {
+                    ForOfLeft::VariableDecl(decl) => {
+                        self.bind_pattern_in_collector(&decl.pattern, collector);
+                    }
+                    ForOfLeft::Pattern(p) => {
+                        self.bind_pattern_in_collector(p, collector);
+                    }
+                }
+                self.collect_free_vars_stmt(&for_in.body, collector);
+            }
+            Statement::Labeled(labeled) => {
+                self.collect_free_vars_stmt(&labeled.body, collector);
             }
             Statement::Block(block) => {
                 self.collect_free_vars_block(block, collector);

@@ -1518,6 +1518,8 @@ impl<'a> Binder<'a> {
             Statement::While(while_stmt) => self.bind_while(while_stmt),
             Statement::For(for_stmt) => self.bind_for(for_stmt),
             Statement::ForOf(for_of) => self.bind_for_of(for_of),
+            Statement::ForIn(for_in) => self.bind_for_in(for_in),
+            Statement::Labeled(labeled) => self.bind_stmt(&labeled.body),
             Statement::Try(try_stmt) => self.bind_try(try_stmt),
             Statement::ExportDecl(export) => self.bind_export(export),
             // ImportDecl is handled during pre-binding phase
@@ -2338,6 +2340,9 @@ impl<'a> Binder<'a> {
                         }
                     }
                 }
+                ClassMember::StaticBlock(_) => {
+                    // Static initializer blocks don't contribute to the type signature
+                }
             }
         }
 
@@ -2645,6 +2650,25 @@ impl<'a> Binder<'a> {
 
         // Bind body
         self.bind_stmt(&for_of.body)?;
+
+        self.symbols.pop_scope();
+        Ok(())
+    }
+
+    /// Bind for-in loop
+    fn bind_for_in(&mut self, for_in: &ForInStatement) -> Result<(), BindError> {
+        self.symbols.push_scope(ScopeKind::Loop);
+
+        // Bind the loop variable
+        match &for_in.left {
+            ForOfLeft::VariableDecl(decl) => self.bind_var_decl(decl)?,
+            ForOfLeft::Pattern(_) => {
+                // Existing variable - already bound in outer scope
+            }
+        }
+
+        // Bind body
+        self.bind_stmt(&for_in.body)?;
 
         self.symbols.pop_scope();
         Ok(())

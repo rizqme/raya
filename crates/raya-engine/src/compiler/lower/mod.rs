@@ -245,6 +245,8 @@ struct ClassInfo {
     constructor_params: Vec<ConstructorParamInfo>,
     /// Static fields
     static_fields: Vec<StaticFieldInfo>,
+    /// Static initializer blocks
+    static_blocks: Vec<ast::BlockStatement>,
     /// Static methods
     static_methods: Vec<StaticMethodInfo>,
     /// Parent class (for inheritance)
@@ -266,6 +268,8 @@ struct ClassInfo {
 /// Loop context for break/continue handling
 #[derive(Clone)]
 struct LoopContext {
+    /// Optional label for this loop (for labeled break/continue)
+    label: Option<Symbol>,
     /// Block to jump to for break
     break_target: BasicBlockId,
     /// Block to jump to for continue
@@ -363,6 +367,8 @@ pub struct Lowerer<'a> {
     type_alias_map: FxHashMap<Symbol, TypeAliasId>,
     /// Next type alias ID
     next_type_alias_id: u32,
+    /// Pending label for the next loop (set by labeled statements)
+    pending_label: Option<Symbol>,
     /// Stack of loop contexts for break/continue
     loop_stack: Vec<LoopContext>,
     /// Stack of switch exit blocks (break inside switch targets the switch exit, not the enclosing loop)
@@ -550,6 +556,17 @@ fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Sy
                 }
                 recurse_into_body(&for_of.body, locals);
             }
+            Statement::ForIn(for_in) => {
+                match &for_in.left {
+                    ast::ForOfLeft::VariableDecl(var) => {
+                        collect_pattern_names(&var.pattern, locals);
+                    }
+                    ast::ForOfLeft::Pattern(pat) => {
+                        collect_pattern_names(pat, locals);
+                    }
+                }
+                recurse_into_body(&for_in.body, locals);
+            }
             Statement::Try(try_stmt) => {
                 collect_block_local_names(&try_stmt.body.statements, locals);
                 if let Some(catch) = &try_stmt.catch_clause {
@@ -577,6 +594,9 @@ fn collect_block_local_names(stmts: &[ast::Statement], locals: &mut FxHashSet<Sy
             }
             Statement::Block(block) => {
                 collect_block_local_names(&block.statements, locals);
+            }
+            Statement::Labeled(labeled) => {
+                collect_block_local_names(std::slice::from_ref(&*labeled.body), locals);
             }
             _ => {}
         }
@@ -786,6 +806,7 @@ impl<'a> Lowerer<'a> {
             next_class_id: 0,
             type_alias_map: FxHashMap::default(),
             next_type_alias_id: 0,
+            pending_label: None,
             loop_stack: Vec::new(),
             switch_stack: Vec::new(),
             try_finally_stack: Vec::new(),
@@ -1172,6 +1193,7 @@ impl<'a> Lowerer<'a> {
         // Collect top-level statements for main function.
         // ExportDecl::Declaration wrapping a func/class/type-alias was already handled above;
         // ExportDecl::Declaration wrapping a VariableDecl needs to go through top-level lowering.
+        // ClassDecl is included so static initializer blocks execute at declaration position.
         let top_level_stmts: Vec<_> = module
             .statements
             .iter()
@@ -1179,9 +1201,7 @@ impl<'a> Lowerer<'a> {
                 let inner = Self::unwrap_export(s);
                 !matches!(
                     inner,
-                    Statement::FunctionDecl(_)
-                        | Statement::ClassDecl(_)
-                        | Statement::TypeAliasDecl(_)
+                    Statement::FunctionDecl(_) | Statement::TypeAliasDecl(_)
                 )
             })
             .collect();
@@ -1625,6 +1645,13 @@ impl<'a> Lowerer<'a> {
             }
         }
 
+        let mut static_blocks = Vec::new();
+        for member in &class.members {
+            if let ast::ClassMember::StaticBlock(block) = member {
+                static_blocks.push(block.clone());
+            }
+        }
+
         let mut field_decorators = Vec::new();
         for member in &class.members {
             if let ast::ClassMember::Field(field) = member {
@@ -1693,6 +1720,7 @@ impl<'a> Lowerer<'a> {
                 constructor,
                 constructor_params,
                 static_fields,
+                static_blocks,
                 static_methods: static_methods_vec,
                 parent_class,
                 extends_type_subs,
@@ -2845,6 +2873,7 @@ impl<'a> Lowerer<'a> {
                 value: value_reg,
             });
         }
+
     }
 
     /// Emit decorator initialization code for all classes

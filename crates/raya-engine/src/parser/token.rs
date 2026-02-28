@@ -80,12 +80,14 @@ pub enum Token {
     FloatLiteral(f64),
     StringLiteral(Symbol), // Interned string
     TemplateLiteral(Vec<TemplatePart>),
+    RegexLiteral(Symbol, Symbol), // (pattern, flags)
     True,
     False,
     Null,
 
     // Identifiers
     Identifier(Symbol), // Interned identifier
+    PrivateIdentifier(Symbol), // Interned private identifier (#name → name)
 
     // Operators
     // Arithmetic
@@ -272,10 +274,12 @@ impl fmt::Display for Token {
             Token::FloatLiteral(n) => write!(f, "{}", n),
             Token::StringLiteral(_) => write!(f, "\"<string>\""),
             Token::TemplateLiteral(_) => write!(f, "`...`"),
+            Token::RegexLiteral(_, _) => write!(f, "/<regex>/"),
             Token::True => write!(f, "true"),
             Token::False => write!(f, "false"),
             Token::Null => write!(f, "null"),
             Token::Identifier(_) => write!(f, "<identifier>"),
+            Token::PrivateIdentifier(_) => write!(f, "<private_identifier>"),
             Token::Plus => write!(f, "+"),
             Token::Minus => write!(f, "-"),
             Token::Star => write!(f, "*"),
@@ -403,6 +407,7 @@ impl Token {
                 | Token::FloatLiteral(_)
                 | Token::StringLiteral(_)
                 | Token::TemplateLiteral(_)
+                | Token::RegexLiteral(_, _)
                 | Token::True
                 | Token::False
                 | Token::Null

@@ -188,6 +188,10 @@ enum LogosToken {
     #[regex(r"[a-zA-Z_$][a-zA-Z0-9_$]*", |lex| lex.slice().to_string())]
     Identifier(String),
 
+    // Private identifiers (#name) for private class fields/methods
+    #[regex(r"#[a-zA-Z_$][a-zA-Z0-9_$]*", |lex| lex.slice()[1..].to_string())]
+    PrivateIdentifier(String),
+
     // Numbers with numeric separator support
     #[regex(r"0x[0-9a-fA-F]+(_[0-9a-fA-F]+)*", parse_hex)]
     #[regex(r"0b[01]+(_[01]+)*", parse_binary)]
@@ -729,6 +733,93 @@ impl<'a> Lexer<'a> {
                 }
             }
 
+            // Check for regex literal: /pattern/flags
+            // A `/` starts a regex when NOT preceded by a value-producing token
+            // and NOT followed by `/` or `*` (which are comments)
+            if self.source.as_bytes()[pos] == b'/'
+                && (pos + 1 >= self.source.len()
+                    || (self.source.as_bytes()[pos + 1] != b'/'
+                        && self.source.as_bytes()[pos + 1] != b'*'))
+            {
+                let is_division = self.tokens.last().map_or(false, |(tok, _)| {
+                    matches!(
+                        tok,
+                        Token::Identifier(_)
+                            | Token::IntLiteral(_)
+                            | Token::FloatLiteral(_)
+                            | Token::StringLiteral(_)
+                            | Token::TemplateLiteral(_)
+                            | Token::RegexLiteral(_, _)
+                            | Token::True
+                            | Token::False
+                            | Token::Null
+                            | Token::This
+                            | Token::Super
+                            | Token::RightParen
+                            | Token::RightBracket
+                            | Token::RightBrace
+                            | Token::PlusPlus
+                            | Token::MinusMinus
+                    )
+                });
+
+                if !is_division {
+                    // Scan regex pattern
+                    let start = pos;
+                    pos += 1; // skip opening /
+                    let pattern_start = pos;
+                    let mut in_char_class = false;
+
+                    while pos < self.source.len() {
+                        let ch = self.source.as_bytes()[pos];
+                        if ch == b'\\' && pos + 1 < self.source.len() {
+                            pos += 2; // skip escaped char
+                        } else if ch == b'[' {
+                            in_char_class = true;
+                            pos += 1;
+                        } else if ch == b']' {
+                            in_char_class = false;
+                            pos += 1;
+                        } else if ch == b'/' && !in_char_class {
+                            break;
+                        } else if ch == b'\n' {
+                            break; // unterminated regex
+                        } else {
+                            pos += 1;
+                        }
+                    }
+
+                    if pos < self.source.len() && self.source.as_bytes()[pos] == b'/' {
+                        let pattern = &self.source[pattern_start..pos];
+                        pos += 1; // skip closing /
+
+                        // Scan flags (gimsuvy)
+                        let flags_start = pos;
+                        while pos < self.source.len() {
+                            let ch = self.source.as_bytes()[pos];
+                            if ch.is_ascii_alphabetic() {
+                                pos += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        let flags = &self.source[flags_start..pos];
+
+                        let pattern_sym = self.interner.intern(pattern);
+                        let flags_sym = self.interner.intern(flags);
+                        let span = Span::new(start, pos, line, column);
+                        self.tokens
+                            .push((Token::RegexLiteral(pattern_sym, flags_sym), span));
+
+                        // Update column for the consumed regex
+                        column += (pos - start) as u32;
+                        continue;
+                    }
+                    // If we didn't find closing /, reset and fall through to logos
+                    pos = start;
+                }
+            }
+
             // Use logos for regular tokens
             let mut logos_lexer = LogosToken::lexer(&self.source[pos..]);
 
@@ -831,6 +922,7 @@ impl<'a> Lexer<'a> {
             LogosToken::False => Token::False,
             LogosToken::Null => Token::Null,
             LogosToken::Identifier(s) => Token::Identifier(self.interner.intern(&s)),
+            LogosToken::PrivateIdentifier(s) => Token::PrivateIdentifier(self.interner.intern(&s)),
             LogosToken::IntLiteral(n) => Token::IntLiteral(n),
             LogosToken::FloatLiteral(n) => Token::FloatLiteral(n),
             LogosToken::StringLiteral(s) => Token::StringLiteral(self.interner.intern(&s)),

@@ -44,6 +44,8 @@ impl LintRule for NoEmptyBlock {
             ast::Statement::For(for_stmt) => check_empty_body(&for_stmt.body, &META),
             // for ... of ... {}
             ast::Statement::ForOf(for_of_stmt) => check_empty_body(&for_of_stmt.body, &META),
+            // for ... in ... {}
+            ast::Statement::ForIn(for_in_stmt) => check_empty_body(&for_in_stmt.body, &META),
             // function foo() {} — empty function body
             ast::Statement::FunctionDecl(func) if func.body.statements.is_empty() => {
                 vec![LintDiagnostic {

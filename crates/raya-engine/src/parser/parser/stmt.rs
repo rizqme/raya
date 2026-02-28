@@ -110,6 +110,13 @@ fn parse_statement_inner(parser: &mut Parser) -> Result<Statement, ParseError> {
             Ok(Statement::Empty(span))
         }
         _ => {
+            // Check for labeled statement: identifier followed by colon at statement level
+            if matches!(parser.current(), Token::Identifier(_)) {
+                if let Some(Token::Colon) = parser.peek() {
+                    return parse_labeled_statement(parser);
+                }
+            }
+
             // Parse expression statement
             let start_span = parser.current_span();
             let expression = super::expr::parse_expression(parser)?;
@@ -472,13 +479,13 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
 
     // Lookahead to determine if this is a block or object literal
     // A block starts with statement keywords or declarations.
-    // NOTE: We intentionally treat `{}` as an object literal expression in
-    // statement position to preserve existing expression parsing behavior.
+    // An empty `{}` in statement position is a block (JS semantics).
     // An object literal starts with property keys (identifiers, strings, numbers, etc.)
     let is_likely_block = if let Some(next_token) = parser.peek() {
         matches!(
             next_token,
-            Token::Let            // Block starts with let
+            Token::RightBrace       // Empty block: {}
+            | Token::Let            // Block starts with let
             | Token::Const          // Block starts with const
             | Token::Return         // Block starts with return
             | Token::If             // Block starts with if
@@ -498,7 +505,8 @@ fn parse_block_or_object_literal(parser: &mut Parser) -> Result<Statement, Parse
             | Token::Type           // Block starts with type
             | Token::Export         // Block starts with export
             | Token::Import         // Block starts with import
-            | Token::At // Block starts with annotation
+            | Token::At             // Block starts with annotation
+            | Token::LeftBrace      // Nested block: { { ... } }
         )
     } else {
         false
@@ -673,6 +681,19 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
             return parse_for_of(parser, start_span, ForOfLeft::VariableDecl(decl));
         }
 
+        // Check for 'in' keyword - this is a for-in loop
+        if parser.check(&Token::In) {
+            parser.advance();
+            let decl = VariableDecl {
+                kind,
+                pattern,
+                type_annotation: None,
+                initializer: None,
+                span: start_span,
+            };
+            return parse_for_in(parser, start_span, ForOfLeft::VariableDecl(decl));
+        }
+
         // Otherwise, this is a traditional for loop
         let type_annotation = if parser.check(&Token::Colon) {
             parser.advance();
@@ -711,6 +732,11 @@ fn parse_for_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
         if parser.check(&Token::Of) {
             parser.advance();
             return parse_for_of(parser, start_span, ForOfLeft::Pattern(pattern));
+        }
+
+        if parser.check(&Token::In) {
+            parser.advance();
+            return parse_for_in(parser, start_span, ForOfLeft::Pattern(pattern));
         }
 
         // Not a for-of, so this pattern is part of an expression
@@ -839,6 +865,29 @@ fn parse_for_of(
     }))
 }
 
+/// Parse for-in loop body (after 'in' keyword has been consumed)
+fn parse_for_in(
+    parser: &mut Parser,
+    start_span: Span,
+    left: ForOfLeft,
+) -> Result<Statement, ParseError> {
+    // Parse the object expression
+    let right = super::expr::parse_expression(parser)?;
+    parser.expect(Token::RightParen)?;
+
+    // Parse body (block or single statement)
+    let body = parse_block_or_statement(parser)?;
+
+    let span = parser.combine_spans(&start_span, body.span());
+
+    Ok(Statement::ForIn(ForInStatement {
+        left,
+        right,
+        body,
+        span,
+    }))
+}
+
 // ============================================================================
 // Jump Statements
 // ============================================================================
@@ -895,13 +944,29 @@ fn parse_yield_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     Ok(Statement::Yield(YieldStatement { value, span }))
 }
 
+/// Parse an identifier token into an Identifier AST node
+fn expect_identifier(parser: &mut Parser) -> Result<Identifier, ParseError> {
+    if let Token::Identifier(name) = parser.current() {
+        let name = *name;
+        let span = parser.current_span();
+        parser.advance();
+        Ok(Identifier { name, span })
+    } else {
+        Err(parser.unexpected_token(&[Token::Identifier(Symbol::dummy())]))
+    }
+}
+
 /// Parse break statement
 fn parse_break_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
     let start_span = parser.current_span();
     parser.expect(Token::Break)?;
 
-    // Optional label (TODO: labels not yet supported)
-    let label = None;
+    // Optional label: break myLabel;
+    let label = if let Token::Identifier(_) = parser.current() {
+        Some(expect_identifier(parser)?)
+    } else {
+        None
+    };
 
     // Optional semicolon
     if parser.check(&Token::Semicolon) {
@@ -919,8 +984,12 @@ fn parse_continue_statement(parser: &mut Parser) -> Result<Statement, ParseError
     let start_span = parser.current_span();
     parser.expect(Token::Continue)?;
 
-    // Optional label (TODO: labels not yet supported)
-    let label = None;
+    // Optional label: continue myLabel;
+    let label = if let Token::Identifier(_) = parser.current() {
+        Some(expect_identifier(parser)?)
+    } else {
+        None
+    };
 
     // Optional semicolon
     if parser.check(&Token::Semicolon) {
@@ -930,6 +999,27 @@ fn parse_continue_statement(parser: &mut Parser) -> Result<Statement, ParseError
     Ok(Statement::Continue(ContinueStatement {
         label,
         span: start_span,
+    }))
+}
+
+/// Parse labeled statement: label: statement
+fn parse_labeled_statement(parser: &mut Parser) -> Result<Statement, ParseError> {
+    let start_span = parser.current_span();
+
+    // Parse the label identifier
+    let label = expect_identifier(parser)?;
+
+    // Consume the colon
+    parser.expect(Token::Colon)?;
+
+    // Parse the body statement
+    let body = parse_statement(parser)?;
+    let span = parser.combine_spans(&start_span, body.span());
+
+    Ok(Statement::Labeled(LabeledStatement {
+        label,
+        body: Box::new(body),
+        span,
     }))
 }
 
@@ -1321,7 +1411,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
     let decorators = parse_decorators(parser)?;
 
     // Parse visibility modifier (private/protected/public)
-    let visibility = match parser.current() {
+    let mut visibility = match parser.current() {
         Token::Private => {
             parser.advance();
             Visibility::Private
@@ -1347,6 +1437,12 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
 
     let is_static = if parser.check(&Token::Static) {
         parser.advance();
+        // Static initializer block: static { ... }
+        if parser.check(&Token::LeftBrace) {
+            parser.advance(); // consume '{'
+            let block = parse_block_statement(parser)?;
+            return Ok(ClassMember::StaticBlock(block));
+        }
         true
     } else {
         false
@@ -1366,8 +1462,39 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
         false
     };
 
+    // Check for getter/setter: `get name()` or `set name(val)`
+    // The `get`/`set` contextual keywords are parsed as identifiers, so check
+    // if the current identifier is "get" or "set" and is followed by another identifier
+    // (which would be the actual property name, not `:` for type annotations or `(` for calls).
+    let mut method_kind = MethodKind::Normal;
+    if let Token::Identifier(sym) = parser.current() {
+        let name_str = parser.resolve(*sym);
+        if (name_str == "get" || name_str == "set")
+            && matches!(parser.peek(), Some(Token::Identifier(_)))
+        {
+            // This is a getter or setter - the next token is the actual property name
+            if name_str == "get" {
+                method_kind = MethodKind::Getter;
+            } else {
+                method_kind = MethodKind::Setter;
+            }
+            parser.advance(); // consume the get/set keyword
+        }
+    }
+
     // Parse member name - allow keywords that are valid as method names (like JavaScript/TypeScript)
-    let name = if let Token::Identifier(name) = parser.current() {
+    // Also handle private identifiers (#name) — strip the # and treat as private
+    let name = if let Token::PrivateIdentifier(name) = parser.current() {
+        // Private field/method: #name → treated as private, name stored without #
+        let name_str = *name;
+        let name_span = parser.current_span();
+        parser.advance();
+        visibility = Visibility::Private;
+        Identifier {
+            name: name_str,
+            span: name_span,
+        }
+    } else if let Token::Identifier(name) = parser.current() {
         let name_str = *name;
         let name_span = parser.current_span();
         parser.advance();
@@ -1439,6 +1566,7 @@ fn parse_class_member(parser: &mut Parser) -> Result<ClassMember, ParseError> {
             annotations,
             visibility,
             is_abstract,
+            kind: method_kind,
             name,
             type_params,
             params,

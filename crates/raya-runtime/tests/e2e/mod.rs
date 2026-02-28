@@ -31,6 +31,7 @@ mod harness;
 mod http;
 mod inheritance;
 mod io;
+mod js_syntax_conformance;
 mod json;
 mod literals;
 mod logger;

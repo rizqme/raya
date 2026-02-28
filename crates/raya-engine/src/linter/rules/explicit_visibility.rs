@@ -76,8 +76,9 @@ impl LintRule for ExplicitVisibility {
                     vec![]
                 }
             }
-            // Constructors don't need visibility annotations.
+            // Constructors and static blocks don't need visibility annotations.
             ast::ClassMember::Constructor(_) => vec![],
+            ast::ClassMember::StaticBlock(_) => vec![],
         }
     }
 }
