@@ -389,7 +389,7 @@ fn test_node_path_normalize() {
         r#"
         import path from "node:path";
         const n = path.normalize("/foo/bar//baz/asdf/quux/..");
-        return n.includes("foo") && n.includes("baz");
+        return n == "/foo/bar/baz/asdf";
     "#,
         true,
     );
