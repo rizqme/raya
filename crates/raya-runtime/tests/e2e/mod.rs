@@ -51,6 +51,7 @@ mod runtime;
 mod scope_analysis;
 mod semver;
 mod stream;
+mod std_imports;
 mod strings;
 mod syntax_edge_cases;
 mod template;

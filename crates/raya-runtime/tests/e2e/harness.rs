@@ -3,13 +3,12 @@
 //! Provides utilities for compiling Raya source code and executing it in the VM.
 
 use raya_engine::compiler::{Compiler, Module};
-use raya_engine::compiler::module::StdModuleRegistry;
-use raya_engine::parser::ast::{ImportSpecifier, Statement};
 use raya_engine::parser::checker::{Binder, TypeChecker, TypeSystemMode};
 use raya_engine::parser::{Interner, Parser, TypeContext};
 use raya_engine::vm::gc::GcHeader;
 use raya_engine::vm::scheduler::SchedulerLimits;
 use raya_engine::vm::{Array, Object, RayaString, Value, Vm, VmError};
+use raya_runtime::std_prelude::{build_std_prelude, StdPreludeOutput};
 use raya_runtime::{BuiltinMode, StdNativeHandler};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -200,14 +199,17 @@ pub fn compile_with_builtins(source: &str) -> E2EResult<(Module, Interner)> {
 fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, Interner)> {
     // Optionally prepend builtin and std sources
     let (full_source, prelude_offset) = if include_builtins {
-        let std_import_prelude = build_std_import_prelude(source)?;
-        let prelude = if std_import_prelude.is_empty() {
+        let std_prelude = build_std_import_prelude(source)?;
+        let prelude = if std_prelude.prelude_source.is_empty() {
             get_builtin_sources().to_string()
         } else {
-            format!("{}\n{}", get_builtin_sources(), std_import_prelude)
+            format!("{}\n{}", get_builtin_sources(), std_prelude.prelude_source)
         };
         let offset = prelude.len() + 1; // +1 for separator newline before user source
-        (format!("{}\n{}", prelude, source), Some(offset))
+        (
+            format!("{}\n{}", prelude, std_prelude.rewritten_user_source),
+            Some(offset),
+        )
     } else {
         (source.to_string(), None)
     };
@@ -268,7 +270,7 @@ fn compile_internal(source: &str, include_builtins: bool) -> E2EResult<(Module, 
     Ok((bytecode, interner))
 }
 
-fn build_std_import_prelude(source: &str) -> E2EResult<String> {
+fn build_std_import_prelude(source: &str) -> E2EResult<StdPreludeOutput> {
     // E2E compatibility: historically compile_with_builtins exposed a few std
     // globals without explicit imports.
     let mut scan_source = String::new();
@@ -308,150 +310,7 @@ fn build_std_import_prelude(source: &str) -> E2EResult<String> {
     }
     scan_source.push_str(source);
 
-    let parser = Parser::new(&scan_source).map_err(|e| E2EError::Lex(format!("{:?}", e)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|e| E2EError::Parse(format!("{:?}", e)))?;
-
-    let registry = StdModuleRegistry::new();
-    let mut prelude = String::new();
-    let mut seen_modules: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut default_alias_by_module: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut default_expr_by_module: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut seen_bindings: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut declared_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for stmt in &ast.statements {
-        let Statement::ImportDecl(import) = stmt else {
-            continue;
-        };
-        let specifier = interner.resolve(import.source.value).to_string();
-        if !StdModuleRegistry::is_std_import(&specifier) {
-            continue;
-        }
-
-        let (canonical_module_name, module_src) = registry.resolve_specifier(&specifier).ok_or_else(|| {
-            if StdModuleRegistry::is_node_import(&specifier) {
-                E2EError::TypeCheck(format!(
-                    "Unsupported node module import '{}'. Supported node modules: {}",
-                    specifier,
-                    StdModuleRegistry::supported_node_module_names()
-                        .map(|name| format!("node:{}", name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            } else {
-                E2EError::TypeCheck(format!("Unknown std module import '{}'", specifier))
-            }
-        })?;
-
-        if seen_modules.insert(canonical_module_name.clone()) {
-            let (module_body, default_expr) = strip_default_export(module_src);
-            prelude.push_str(&module_body);
-            prelude.push('\n');
-            collect_declared_symbols(&module_body, &mut declared_symbols);
-
-            if let Some(expr) = default_expr {
-                let alias = format!(
-                    "__std_default_{}",
-                    sanitize_module_specifier(&canonical_module_name)
-                );
-                prelude.push_str(&format!("const {} = {};\n", alias, expr));
-                default_alias_by_module.insert(canonical_module_name.clone(), alias);
-                default_expr_by_module.insert(canonical_module_name.clone(), expr);
-                declared_symbols.insert(format!(
-                    "__std_default_{}",
-                    sanitize_module_specifier(&canonical_module_name)
-                ));
-            }
-        }
-
-        for spec in &import.specifiers {
-            if let ImportSpecifier::Default(local) = spec {
-                let local_name = interner.resolve(local.name).to_string();
-                let binding_key = format!("{}::{}", canonical_module_name, local_name);
-                if !seen_bindings.insert(binding_key) {
-                    continue;
-                }
-
-                if let Some(expr) = default_expr_by_module.get(&canonical_module_name) {
-                    if expr == &local_name {
-                        continue;
-                    }
-                }
-
-                let alias = default_alias_by_module
-                    .get(&canonical_module_name)
-                    .ok_or_else(|| {
-                        E2EError::TypeCheck(format!(
-                            "std module '{}' has no default export for import '{}'",
-                            specifier, local_name
-                        ))
-                    })?;
-                if declared_symbols.contains(&local_name) {
-                    prelude.push_str(&format!("{} = {};\n", local_name, alias));
-                } else {
-                    prelude.push_str(&format!("const {} = {};\n", local_name, alias));
-                    declared_symbols.insert(local_name);
-                }
-            }
-        }
-    }
-
-    Ok(prelude)
-}
-
-fn collect_declared_symbols(source: &str, out: &mut std::collections::HashSet<String>) {
-    for line in source.lines() {
-        let trimmed = line.trim_start();
-        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-        for prefix in ["class ", "function ", "const ", "let ", "var "] {
-            if let Some(rest) = trimmed.strip_prefix(prefix) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                    .collect();
-                if !ident.is_empty() {
-                    out.insert(ident);
-                }
-                break;
-            }
-        }
-    }
-}
-
-fn strip_default_export(module_src: &str) -> (String, Option<String>) {
-    let mut out = String::new();
-    let mut default_expr: Option<String> = None;
-
-    for line in module_src.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("export default ") {
-            let expr = rest.trim_end_matches(';').trim();
-            if !expr.is_empty() {
-                default_expr = Some(expr.to_string());
-            }
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    (out, default_expr)
-}
-
-fn sanitize_module_specifier(specifier: &str) -> String {
-    let mut out = String::new();
-    for ch in specifier.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    out
+    build_std_prelude(&scan_source).map_err(|e| E2EError::TypeCheck(e.to_string()))
 }
 
 /// Compile and execute Raya source code, returning the result

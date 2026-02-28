@@ -60,6 +60,41 @@ class TransformController<O> {
 }
 
 // ============================================================================
+// WritableStream
+// ============================================================================
+
+class WritableStream<T> {
+    private ch: Channel<T>;
+    private _closed: boolean;
+
+    constructor(consumer: (ctrl: WritableController<T>) => void, capacity: number) {
+        this.ch = new Channel<T>(capacity);
+        this._closed = false;
+        let ctrl = new WritableController<T>(this.ch);
+        async consumer(ctrl);
+    }
+
+    write(value: T): void {
+        this.ch.send(value);
+    }
+
+    close(): void {
+        if (!this._closed) {
+            this._closed = true;
+            this.ch.close();
+        }
+    }
+
+    isClosed(): boolean {
+        return this._closed;
+    }
+
+    getChannel(): Channel<T> {
+        return this.ch;
+    }
+}
+
+// ============================================================================
 // ReadableStream
 // ============================================================================
 
@@ -111,15 +146,6 @@ class ReadableStream<T> {
         dst.close();
     }
 
-    pipeThrough<O>(transform: TransformStream<T, O>): ReadableStream<O> {
-        let readable = this;
-        let w = transform.getWritable();
-        async {
-            readable.pipe(w);
-        };
-        return transform.getReadable();
-    }
-
     collect(): T[] {
         let result: T[] = [];
         let val = this.ch.tryReceive();
@@ -134,41 +160,6 @@ class ReadableStream<T> {
             }
         }
         return result;
-    }
-}
-
-// ============================================================================
-// WritableStream
-// ============================================================================
-
-class WritableStream<T> {
-    private ch: Channel<T>;
-    private _closed: boolean;
-
-    constructor(consumer: (ctrl: WritableController<T>) => void, capacity: number) {
-        this.ch = new Channel<T>(capacity);
-        this._closed = false;
-        let ctrl = new WritableController<T>(this.ch);
-        async consumer(ctrl);
-    }
-
-    write(value: T): void {
-        this.ch.send(value);
-    }
-
-    close(): void {
-        if (!this._closed) {
-            this._closed = true;
-            this.ch.close();
-        }
-    }
-
-    isClosed(): boolean {
-        return this._closed;
-    }
-
-    getChannel(): Channel<T> {
-        return this.ch;
     }
 }
 

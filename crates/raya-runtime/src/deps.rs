@@ -1,6 +1,7 @@
-//! Dependency resolution from raya.toml manifests.
+//! Dependency resolution from raya.toml or package.json manifests.
 
 use raya_pm::{Dependency, PackageManifest};
+use serde_json::Value as JsonValue;
 use std::path::{Path, PathBuf};
 
 use crate::error::RuntimeError;
@@ -12,7 +13,7 @@ use crate::CompiledModule;
 /// Resolves each dependency by type:
 /// - Path dependencies: compiled from source or loaded as .ryb
 /// - URL/git dependencies: loaded from cache (must be pre-installed)
-/// - Registry packages: loaded from raya_packages/ (must be pre-installed)
+/// - Registry packages: loaded from .raya/packages/ (preferred) or raya_packages/ (legacy)
 pub fn load_dependencies(
     manifest: &PackageManifest,
     manifest_dir: &Path,
@@ -24,6 +25,35 @@ pub fn load_dependencies(
         deps.push(module);
     }
 
+    Ok(deps)
+}
+
+/// Load dependencies declared in package.json (dependencies only).
+pub fn load_dependencies_from_package_json(
+    manifest_dir: &Path,
+) -> Result<Vec<CompiledModule>, RuntimeError> {
+    let package_json_path = manifest_dir.join("package.json");
+    let content = std::fs::read_to_string(&package_json_path).map_err(|e| {
+        RuntimeError::Dependency(format!(
+            "Failed to read {}: {}",
+            package_json_path.display(),
+            e
+        ))
+    })?;
+    let value: JsonValue = serde_json::from_str(&content).map_err(|e| {
+        RuntimeError::Dependency(format!(
+            "Failed to parse {}: {}",
+            package_json_path.display(),
+            e
+        ))
+    })?;
+
+    let mut deps = Vec::new();
+    if let Some(obj) = value.get("dependencies").and_then(|v| v.as_object()) {
+        for name in obj.keys() {
+            deps.push(load_registry_dep(name, manifest_dir)?);
+        }
+    }
     Ok(deps)
 }
 
@@ -98,15 +128,21 @@ fn load_url_dep(name: &str, url: &str) -> Result<CompiledModule, RuntimeError> {
     )))
 }
 
-/// Load a registry package from raya_packages/ or global cache.
+/// Load a registry package from local project cache or global cache.
 fn load_registry_dep(name: &str, manifest_dir: &Path) -> Result<CompiledModule, RuntimeError> {
-    // 1. Project-local: raya_packages/{name}/
+    // 1. Project-local: .raya/packages/{name}/
+    let local = manifest_dir.join(".raya").join("packages").join(name);
+    if local.exists() {
+        return loader::load_package_dir_pub(&local, name);
+    }
+
+    // 2. Legacy project-local: raya_packages/{name}/
     let local = manifest_dir.join("raya_packages").join(name);
     if local.exists() {
         return loader::load_package_dir_pub(&local, name);
     }
 
-    // 2. Global: ~/.raya/packages/{name}/
+    // 3. Global: ~/.raya/packages/{name}/
     if let Some(home) = dirs::home_dir() {
         let global = home.join(".raya").join("packages").join(name);
         if global.exists() {
@@ -120,7 +156,7 @@ fn load_registry_dep(name: &str, manifest_dir: &Path) -> Result<CompiledModule, 
     )))
 }
 
-/// Find the project root by walking up from a path to find raya.toml.
+/// Find the project root by walking up from a path to find package.json or raya.toml.
 pub fn find_manifest_dir(start: &Path) -> Option<PathBuf> {
     let mut dir = if start.is_file() {
         start.parent()?.to_path_buf()
@@ -128,7 +164,7 @@ pub fn find_manifest_dir(start: &Path) -> Option<PathBuf> {
         start.to_path_buf()
     };
     loop {
-        if dir.join("raya.toml").exists() {
+        if dir.join("package.json").exists() || dir.join("raya.toml").exists() {
             return Some(dir);
         }
         if !dir.pop() {

@@ -38,9 +38,8 @@ function describe(name: string, fn: () => void): void {
     _beforeEachHook = _noop;
     _afterEachHook = _noop;
 
-    fn();
-
     _suiteBeforeHook();
+    fn();
     _suiteAfterHook();
 
     _suiteBeforeHook = prevBefore;

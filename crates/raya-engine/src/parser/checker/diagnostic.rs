@@ -324,6 +324,33 @@ impl Diagnostic {
             ))
             .with_code(error_code(error))
             .with_primary_label(file_id, *span, "unknown is not actionable"),
+            InvalidIntrinsicInferenceContext { intrinsic, span } => Diagnostic::error(format!(
+                "Cannot infer return type for intrinsic '{}'",
+                intrinsic
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(
+                file_id,
+                *span,
+                "add explicit type arg or compatible operand",
+            ),
+            InvalidTypeReferenceArity {
+                name,
+                expected,
+                actual,
+                span,
+            } => Diagnostic::error(format!(
+                "Type '{}' expects {} type argument(s), got {}",
+                name, expected, actual
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "wrong number of type arguments"),
+            UnsupportedExpressionTypingPath { expression, span } => Diagnostic::error(format!(
+                "No typing rule implemented for expression kind '{}'",
+                expression
+            ))
+            .with_code(error_code(error))
+            .with_primary_label(file_id, *span, "unsupported expression typing path"),
             StrictPropertyInitialization { property, span } => Diagnostic::error(format!(
                 "Property '{}' is not definitely assigned",
                 property
@@ -608,6 +635,9 @@ pub fn error_code(error: &CheckError) -> ErrorCode {
         ImplicitAnyForbidden { .. } => ErrorCode("E2025"),
         StrictPropertyInitialization { .. } => ErrorCode("E2026"),
         UnboundMethodCall { .. } => ErrorCode("E2027"),
+        InvalidIntrinsicInferenceContext { .. } => ErrorCode("E2028"),
+        InvalidTypeReferenceArity { .. } => ErrorCode("E2029"),
+        UnsupportedExpressionTypingPath { .. } => ErrorCode("E2030"),
         // Decorator errors
         InvalidDecorator { .. } => ErrorCode("E2100"),
         DecoratorSignatureMismatch { .. } => ErrorCode("E2101"),

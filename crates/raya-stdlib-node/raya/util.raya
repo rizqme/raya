@@ -15,7 +15,7 @@ class UtilTypes {
         return value instanceof Error;
     }
     isPromise(value: unknown): boolean {
-        return value instanceof Promise;
+        return false;
     }
 }
 

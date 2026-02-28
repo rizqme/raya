@@ -32,6 +32,7 @@ pub mod deps;
 pub mod error;
 pub mod loader;
 pub mod session;
+pub mod std_prelude;
 pub mod test_runner;
 mod vm_setup;
 
@@ -487,8 +488,15 @@ impl Runtime {
         file_path: &Path,
         file_dir: &Path,
     ) -> Result<Vec<CompiledModule>, RuntimeError> {
-        // 1. Check for raya.toml project
+        // 1. Check for package.json/raya.toml project
         if let Some(manifest_dir) = deps::find_manifest_dir(file_path) {
+            let package_json_path = manifest_dir.join("package.json");
+            if package_json_path.exists() {
+                let package_json_deps = deps::load_dependencies_from_package_json(&manifest_dir)?;
+                if !package_json_deps.is_empty() {
+                    return Ok(package_json_deps);
+                }
+            }
             let manifest_path = manifest_dir.join("raya.toml");
             if let Ok(manifest) = raya_pm::PackageManifest::from_file(&manifest_path) {
                 if !manifest.dependencies.is_empty() {

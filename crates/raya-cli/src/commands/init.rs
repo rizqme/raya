@@ -11,6 +11,7 @@ pub fn execute(
     template: String,
     yes: bool,
     interactive: bool,
+    node: bool,
 ) -> anyhow::Result<()> {
     let default_name = path
         .file_name()
@@ -35,13 +36,17 @@ pub fn execute(
         .replace('\\', "/")
         .replace('"', "\\\"");
     let name_arg = format!("\"{}\"", resolved_name.replace('"', "\\\""));
-    let script = format!(r#"pm.init("{}", {})"#, dir_str, name_arg);
+    let script = format!(
+        r#"import pm from "std:pm";
+pm.init("{}", {}, {})"#,
+        dir_str, name_arg, node
+    );
     match rt
         .eval(&script)
         .with_context(|| "failed to initialize project via pm.init")
     {
         Ok(_) => {
-            apply_template(&path, &resolved_template)?;
+            apply_template(&path, &resolved_template, node)?;
             println!(
                 "Initialized Raya project '{}' at {} (template: {})",
                 resolved_name,
@@ -77,18 +82,15 @@ fn prompt_line(prompt: &str, default: &str) -> anyhow::Result<String> {
     }
 }
 
-fn prompt_init_config(
-    default_name: &str,
-    current_template: &str,
-) -> anyhow::Result<(String, String)> {
-    println!("This utility will walk you through creating a raya.toml file.");
+fn prompt_init_config(default_name: &str, current_template: &str) -> anyhow::Result<(String, String)> {
+    println!("This utility will walk you through creating a Raya project.");
     let name = prompt_line("package name", default_name)?;
     let default_template = normalize_template(current_template);
     let template_raw = prompt_line("template (basic/lib)", &default_template)?;
     Ok((name, normalize_template(&template_raw)))
 }
 
-fn apply_template(path: &PathBuf, template: &str) -> anyhow::Result<()> {
+fn apply_template(path: &PathBuf, template: &str, node: bool) -> anyhow::Result<()> {
     if template != "lib" {
         return Ok(());
     }
@@ -104,11 +106,29 @@ fn apply_template(path: &PathBuf, template: &str) -> anyhow::Result<()> {
         .with_context(|| "write src/lib.raya")?;
     }
 
-    let manifest_path = path.join("raya.toml");
-    if manifest_path.exists() {
-        let manifest = std::fs::read_to_string(&manifest_path).with_context(|| "read raya.toml")?;
-        let updated = manifest.replace("main = \"src/main.raya\"", "main = \"src/lib.raya\"");
-        std::fs::write(&manifest_path, updated).with_context(|| "update raya.toml")?;
+    if node {
+        let package_json_path = path.join("package.json");
+        if package_json_path.exists() {
+            let content = std::fs::read_to_string(&package_json_path)
+                .with_context(|| "read package.json")?;
+            let mut json: serde_json::Value =
+                serde_json::from_str(&content).with_context(|| "parse package.json")?;
+            if !json.get("raya").map(|v| v.is_object()).unwrap_or(false) {
+                json["raya"] = serde_json::json!({});
+            }
+            json["raya"]["entry"] = serde_json::json!("src/lib.raya");
+            let updated =
+                serde_json::to_string_pretty(&json).with_context(|| "serialize package.json")?;
+            std::fs::write(&package_json_path, updated).with_context(|| "update package.json")?;
+        }
+    } else {
+        let manifest_path = path.join("raya.toml");
+        if manifest_path.exists() {
+            let manifest =
+                std::fs::read_to_string(&manifest_path).with_context(|| "read raya.toml")?;
+            let updated = manifest.replace("main = \"src/main.raya\"", "main = \"src/lib.raya\"");
+            std::fs::write(&manifest_path, updated).with_context(|| "update raya.toml")?;
+        }
     }
 
     Ok(())

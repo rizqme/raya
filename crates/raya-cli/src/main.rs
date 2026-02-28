@@ -27,7 +27,7 @@ enum Commands {
     /// Run a script or execute a file
     #[command(alias = "r")]
     Run {
-        /// Script name (from [scripts] in raya.toml) or file path
+        /// Script name (from scripts in package.json or [scripts] in raya.toml) or file path
         target: Option<String>,
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true)]
@@ -59,7 +59,7 @@ enum Commands {
         /// Maximum execution time in ms (0 = unlimited)
         #[arg(long, default_value = "0")]
         timeout: u64,
-        /// List available scripts from raya.toml
+        /// List available scripts from project manifest
         #[arg(long)]
         list: bool,
         /// Enable CPU profiling and write output to file.
@@ -234,6 +234,9 @@ enum Commands {
         /// Force interactive prompts (npm-style)
         #[arg(long)]
         interactive: bool,
+        /// Initialize as a Node-style project using package.json
+        #[arg(long)]
+        node: bool,
     },
 
     /// Add a dependency
@@ -483,7 +486,8 @@ fn dispatch(cmd: Commands) -> anyhow::Result<()> {
             template,
             yes,
             interactive,
-        } => commands::init::execute(path, name, template, yes, interactive),
+            node,
+        } => commands::init::execute(path, name, template, yes, interactive, node),
 
         Commands::Add {
             package,
@@ -556,6 +560,7 @@ mod tests {
             "--template",
             "lib",
             "--interactive",
+            "--node",
         ]);
         match cli.command {
             Some(Commands::Init {
@@ -564,12 +569,14 @@ mod tests {
                 template,
                 yes,
                 interactive,
+                node,
             }) => {
                 assert!(path.to_string_lossy().ends_with("my-app"));
                 assert_eq!(name.as_deref(), Some("app"));
                 assert_eq!(template, "lib");
                 assert!(!yes);
                 assert!(interactive);
+                assert!(node);
             }
             _ => panic!("expected init command"),
         }

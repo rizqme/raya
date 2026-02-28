@@ -154,6 +154,9 @@ pub struct TypeChecker<'a> {
     /// Expected receiver (`this`) type for unbound extracted method variables.
     /// Keyed by (declaration_scope_id, variable_name).
     unbound_method_receiver_types: FxHashMap<(u32, String), TypeId>,
+    /// Variables currently known to alias constructible class values.
+    /// Keyed by (declaration_scope_id, variable_name).
+    constructible_vars: FxHashSet<(u32, String)>,
 
     /// Capture information for all closures
     capture_info: ModuleCaptureInfo,
@@ -186,6 +189,13 @@ pub struct TypeChecker<'a> {
     in_assignment_lhs: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FallbackReason {
+    RecoverableUnsupportedExpr,
+    RecoverableInvalidIntrinsicContext,
+    Unavoidable,
+}
+
 impl<'a> TypeChecker<'a> {
     /// Create a new type checker
     pub fn new(
@@ -207,6 +217,7 @@ impl<'a> TypeChecker<'a> {
             inferred_var_types: FxHashMap::default(),
             unbound_method_vars: FxHashSet::default(),
             unbound_method_receiver_types: FxHashMap::default(),
+            constructible_vars: FxHashSet::default(),
             capture_info: ModuleCaptureInfo::new(),
             current_class_type: None,
             in_constructor: false,
@@ -253,7 +264,9 @@ impl<'a> TypeChecker<'a> {
         self.type_ctx.jsobject_inner(ty).is_some()
             || matches!(
                 self.type_ctx.get(ty),
-                Some(crate::parser::types::Type::Any) | Some(crate::parser::types::Type::JSObject)
+                Some(crate::parser::types::Type::Unknown)
+                    | Some(crate::parser::types::Type::Any)
+                    | Some(crate::parser::types::Type::JSObject)
             )
     }
 
@@ -297,6 +310,29 @@ impl<'a> TypeChecker<'a> {
     #[inline]
     fn inference_fallback_type(&mut self) -> TypeId {
         self.type_ctx.unknown_type()
+    }
+
+    fn fallback_type(&mut self, span: Span, reason: FallbackReason, detail: &str) -> TypeId {
+        if self.is_strict_mode() {
+            match reason {
+                FallbackReason::RecoverableUnsupportedExpr => {
+                    self.errors
+                        .push(CheckError::UnsupportedExpressionTypingPath {
+                            expression: detail.to_string(),
+                            span,
+                        });
+                }
+                FallbackReason::RecoverableInvalidIntrinsicContext => {
+                    self.errors
+                        .push(CheckError::InvalidIntrinsicInferenceContext {
+                            intrinsic: detail.to_string(),
+                            span,
+                        });
+                }
+                FallbackReason::Unavoidable => {}
+            }
+        }
+        self.inference_fallback_type()
     }
 
     fn is_dynamic_seed_type(&mut self, ty: TypeId) -> bool {
@@ -563,6 +599,56 @@ impl<'a> TypeChecker<'a> {
             .copied()
     }
 
+    fn infer_constructible_alias_expr(&self, expr: &Expression) -> bool {
+        match expr {
+            Expression::Identifier(ident) => {
+                let name = self.resolve(ident.name);
+                if let Some(symbol) = self.symbols.resolve_from_scope(&name, self.current_scope) {
+                    if symbol.kind == SymbolKind::Class {
+                        return true;
+                    }
+                }
+                self.is_constructible_var(&name)
+            }
+            Expression::Member(_) => true,
+            Expression::TypeCast(cast) => self.infer_constructible_alias_expr(&cast.object),
+            Expression::Parenthesized(expr) => {
+                self.infer_constructible_alias_expr(&expr.expression)
+            }
+            _ => false,
+        }
+    }
+
+    fn type_is_constructible_alias(&self, ty: TypeId) -> bool {
+        matches!(
+            self.type_ctx.get(ty),
+            Some(crate::parser::types::Type::Class(_))
+                | Some(crate::parser::types::Type::Object(_))
+                | Some(crate::parser::types::Type::Interface(_))
+        )
+    }
+
+    fn set_constructible_var_state(&mut self, name: &str, expr: &Expression, ty: TypeId) {
+        let symbol = self.symbols.resolve_from_scope(name, self.current_scope);
+        let scope_id = symbol.map(|s| s.scope_id.0).unwrap_or(self.current_scope.0);
+        let key = (scope_id, name.to_string());
+        if self.type_is_constructible_alias(ty) && self.infer_constructible_alias_expr(expr) {
+            self.constructible_vars.insert(key);
+        } else {
+            self.constructible_vars.remove(&key);
+        }
+    }
+
+    fn is_constructible_var(&self, name: &str) -> bool {
+        if let Some(symbol) = self.symbols.resolve_from_scope(name, self.current_scope) {
+            return self
+                .constructible_vars
+                .contains(&(symbol.scope_id.0, name.to_string()));
+        }
+        self.constructible_vars
+            .contains(&(self.current_scope.0, name.to_string()))
+    }
+
     fn infer_helper_expected_this_type(&self, target_expr: &Expression) -> Option<TypeId> {
         match target_expr {
             Expression::Identifier(ident) => {
@@ -781,6 +867,7 @@ impl<'a> TypeChecker<'a> {
 
                     // Also add to type_env so nested arrow functions can see it
                     self.set_unbound_method_var_state(&name, init);
+                    self.set_constructible_var_state(&name, init, var_ty);
                     self.type_env.set(name, var_ty);
                 }
                 Pattern::Array(_) | Pattern::Object(_) => {
@@ -2206,6 +2293,7 @@ impl<'a> TypeChecker<'a> {
                 // typeof always returns a string
                 self.type_ctx.string_type()
             }
+            Expression::Parenthesized(paren) => self.check_expr(&paren.expression),
             Expression::Arrow(arrow) => self.check_arrow(arrow),
             Expression::Index(index) => self.check_index(index),
             Expression::New(new_expr) => self.check_new(new_expr),
@@ -2215,7 +2303,21 @@ impl<'a> TypeChecker<'a> {
             Expression::InstanceOf(instanceof) => self.check_instanceof(instanceof),
             Expression::TypeCast(cast) => self.check_type_cast(cast),
             Expression::RegexLiteral(_) => self.type_ctx.regexp_type(),
-            _ => self.type_ctx.unknown_type(),
+            Expression::TaggedTemplate(tagged) => self.check_tagged_template(tagged),
+            Expression::DynamicImport(dynamic_import) => self.check_dynamic_import(dynamic_import),
+            Expression::JsxElement(jsx) => self.fallback_type(
+                jsx.span,
+                FallbackReason::RecoverableUnsupportedExpr,
+                "jsx-element",
+            ),
+            Expression::JsxFragment(jsx) => self.fallback_type(
+                jsx.span,
+                FallbackReason::RecoverableUnsupportedExpr,
+                "jsx-fragment",
+            ),
+            Expression::Super(span) => {
+                self.fallback_type(*span, FallbackReason::Unavoidable, "super-expression")
+            }
         };
 
         // Store type for this expression (using pointer address as ID)
@@ -2223,6 +2325,60 @@ impl<'a> TypeChecker<'a> {
         self.expr_types.insert(expr_id, ty);
 
         ty
+    }
+
+    fn check_tagged_template(
+        &mut self,
+        tagged: &crate::parser::ast::TaggedTemplateExpression,
+    ) -> TypeId {
+        let tag_ty = self.check_expr(&tagged.tag);
+        let mut arg_types: Vec<(TypeId, Span)> = Vec::new();
+
+        // First argument in JS/TS tagged templates is an array of cooked strings.
+        let string_ty = self.type_ctx.string_type();
+        let strings_arg_ty = self.type_ctx.array_type(string_ty);
+        arg_types.push((strings_arg_ty, tagged.template.span));
+
+        for part in &tagged.template.parts {
+            if let crate::parser::ast::TemplatePart::Expression(expr) = part {
+                arg_types.push((self.check_expr(expr), *expr.span()));
+            }
+        }
+
+        if let Some(crate::parser::types::Type::Function(func)) = self.type_ctx.get(tag_ty).cloned()
+        {
+            for (idx, (arg_ty, arg_span)) in arg_types.iter().enumerate() {
+                if let Some(&param_ty) = func.params.get(idx) {
+                    self.check_assignable(*arg_ty, param_ty, *arg_span);
+                }
+            }
+            return func.return_type;
+        }
+
+        self.errors.push(CheckError::NotCallable {
+            ty: self.format_type(tag_ty),
+            span: tagged.span,
+        });
+        self.fallback_type(
+            tagged.span,
+            FallbackReason::RecoverableUnsupportedExpr,
+            "tagged-template",
+        )
+    }
+
+    fn check_dynamic_import(
+        &mut self,
+        dynamic_import: &crate::parser::ast::DynamicImportExpression,
+    ) -> TypeId {
+        let source_ty = self.check_expr(&dynamic_import.source);
+        let string_ty = self.type_ctx.string_type();
+        self.check_assignable(source_ty, string_ty, *dynamic_import.source.span());
+        let unknown = self.fallback_type(
+            dynamic_import.span,
+            FallbackReason::Unavoidable,
+            "dynamic-import-value",
+        );
+        self.type_ctx.task_type(unknown)
     }
 
     /// Check identifier
@@ -2520,13 +2676,24 @@ impl<'a> TypeChecker<'a> {
             return self.type_ctx.unknown_type();
         }
 
-        // Check for compiler intrinsics first
-        if let Some(intrinsic_ty) = self.try_check_intrinsic(call) {
-            // Still type-check the arguments for error detection
-            for arg in &call.arguments {
-                self.check_expr(arg);
+        // Check for compiler intrinsics first.
+        if let Expression::Identifier(ident) = call.callee.as_ref() {
+            let name = self.resolve(ident.name);
+            if let Some(opcode_name) = name.strip_prefix("__OPCODE_") {
+                let arg_types: Vec<(TypeId, crate::parser::Span)> = call
+                    .arguments
+                    .iter()
+                    .map(|arg| (self.check_expr(arg), *arg.span()))
+                    .collect();
+                return self.get_opcode_intrinsic_type(opcode_name, call, &arg_types);
             }
-            return intrinsic_ty;
+            if let Some(intrinsic_ty) = self.try_check_intrinsic(call) {
+                // Still type-check the arguments for error detection
+                for arg in &call.arguments {
+                    self.check_expr(arg);
+                }
+                return intrinsic_ty;
+            }
         }
 
         if let Expression::Identifier(ident) = call.callee.as_ref() {
@@ -3555,7 +3722,7 @@ impl<'a> TypeChecker<'a> {
     /// Check index access
     fn check_index(&mut self, index: &crate::parser::ast::IndexExpression) -> TypeId {
         let object_ty = self.check_expr(&index.object);
-        let _index_ty = self.check_expr(&index.index);
+        let index_ty = self.check_expr(&index.index);
         self.check_unknown_actionable(object_ty, "index", *index.object.span());
         self.maybe_escalate_identifier_to_jsobject(&index.object, Some(&index.index));
 
@@ -3569,34 +3736,132 @@ impl<'a> TypeChecker<'a> {
             return if self.allows_any() {
                 self.type_ctx.any_type()
             } else {
-                self.type_ctx.unknown_type()
+                self.inference_fallback_type()
             };
         }
 
-        if matches!(
-            self.type_ctx.get(object_ty),
-            Some(crate::parser::types::Type::Json)
-        ) {
-            return self.type_ctx.json_type();
+        if let Some(inferred) = self.index_access_from_type(object_ty, index_ty, &index.index) {
+            return inferred;
         }
 
-        if let Some(crate::parser::types::Type::Tuple(tuple_ty)) = self.type_ctx.get(object_ty) {
-            if let Expression::IntLiteral(int_lit) = &*index.index {
-                if let Ok(idx) = usize::try_from(int_lit.value) {
-                    if let Some(&elem_ty) = tuple_ty.elements.get(idx) {
-                        return elem_ty;
+        self.fallback_type(index.span, FallbackReason::Unavoidable, "index-access")
+    }
+
+    fn index_access_from_type(
+        &mut self,
+        object_ty: TypeId,
+        index_ty: TypeId,
+        index_expr: &Expression,
+    ) -> Option<TypeId> {
+        use crate::parser::types::{PrimitiveType, Type};
+
+        let obj_data = self.type_ctx.get(object_ty).cloned()?;
+        match obj_data {
+            Type::Json => Some(self.type_ctx.json_type()),
+            Type::Array(arr) => Some(arr.element),
+            Type::Tuple(tuple_ty) => {
+                if let Expression::IntLiteral(int_lit) = index_expr {
+                    if let Ok(idx) = usize::try_from(int_lit.value) {
+                        return tuple_ty.elements.get(idx).copied();
                     }
                 }
+                if matches!(
+                    self.type_ctx.get(index_ty),
+                    Some(Type::Primitive(PrimitiveType::Number | PrimitiveType::Int))
+                ) {
+                    if tuple_ty.elements.is_empty() {
+                        Some(self.inference_fallback_type())
+                    } else {
+                        Some(self.type_ctx.union_type(tuple_ty.elements))
+                    }
+                } else {
+                    None
+                }
             }
-            return self.inference_fallback_type();
+            Type::Object(obj) => {
+                if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                    if let Some(prop_ty) =
+                        obj.properties.iter().find(|p| p.name == key).map(|p| p.ty)
+                    {
+                        return Some(prop_ty);
+                    }
+                    if let Some((_, sig_ty)) = obj.index_signature {
+                        return Some(sig_ty);
+                    }
+                    return None;
+                }
+                match self.type_ctx.get(index_ty) {
+                    Some(Type::Primitive(PrimitiveType::String)) | Some(Type::StringLiteral(_)) => {
+                        let mut out: Vec<TypeId> = obj.properties.iter().map(|p| p.ty).collect();
+                        if let Some((_, sig_ty)) = obj.index_signature {
+                            out.push(sig_ty);
+                        }
+                        if out.is_empty() {
+                            None
+                        } else if out.len() == 1 {
+                            Some(out[0])
+                        } else {
+                            Some(self.type_ctx.union_type(out))
+                        }
+                    }
+                    Some(Type::Primitive(PrimitiveType::Number | PrimitiveType::Int))
+                    | Some(Type::NumberLiteral(_)) => obj.index_signature.map(|(_, sig_ty)| sig_ty),
+                    _ => None,
+                }
+            }
+            Type::Class(class_ty) => {
+                if let Some(key) = self.string_key_from_index_expr(index_expr) {
+                    if let Some((member_ty, _)) = self.lookup_class_member(&class_ty, &key) {
+                        return Some(member_ty);
+                    }
+                }
+                match self.type_ctx.get(index_ty) {
+                    Some(Type::Primitive(PrimitiveType::String)) | Some(Type::StringLiteral(_)) => {
+                        let mut out: Vec<TypeId> =
+                            class_ty.properties.iter().map(|p| p.ty).collect();
+                        out.extend(class_ty.methods.iter().map(|m| m.ty));
+                        if out.is_empty() {
+                            None
+                        } else if out.len() == 1 {
+                            Some(out[0])
+                        } else {
+                            Some(self.type_ctx.union_type(out))
+                        }
+                    }
+                    _ => None,
+                }
+            }
+            Type::TypeVar(tv) => tv.constraint.and_then(|constraint| {
+                self.index_access_from_type(constraint, index_ty, index_expr)
+            }),
+            Type::Union(union) => {
+                let mut out = Vec::new();
+                for member in union.members {
+                    if let Some(member_ty) =
+                        self.index_access_from_type(member, index_ty, index_expr)
+                    {
+                        if !out.contains(&member_ty) {
+                            out.push(member_ty);
+                        }
+                    }
+                }
+                if out.is_empty() {
+                    None
+                } else if out.len() == 1 {
+                    Some(out[0])
+                } else {
+                    Some(self.type_ctx.union_type(out))
+                }
+            }
+            _ => None,
         }
+    }
 
-        // Get element type if object is an array
-        if let Some(crate::parser::types::Type::Array(arr)) = self.type_ctx.get(object_ty) {
-            arr.element
-        } else {
-            // For other types (objects with index signature), return unknown
-            self.type_ctx.unknown_type()
+    fn string_key_from_index_expr(&self, expr: &Expression) -> Option<String> {
+        match expr {
+            Expression::StringLiteral(lit) => Some(self.resolve(lit.value)),
+            Expression::IntLiteral(int_lit) => Some(int_lit.value.to_string()),
+            _ => None,
         }
     }
 
@@ -3702,6 +3967,15 @@ impl<'a> TypeChecker<'a> {
                     }
 
                     return symbol.ty;
+                } else if self.is_constructible_var(&name) {
+                    // Support class aliases (e.g., const B = A; new B()) used by std prelude imports.
+                    for arg in &new_expr.arguments {
+                        self.check_expr(arg);
+                    }
+                    if let Some(ty) = self.get_var_type(&name) {
+                        return ty;
+                    }
+                    return self.type_ctx.unknown_type();
                 } else {
                     // Symbol exists but is not a class — cannot use 'new' on it
                     self.errors.push(CheckError::NewNonClass {
@@ -3769,11 +4043,6 @@ impl<'a> TypeChecker<'a> {
 
         let name = self.resolve(ident.name);
 
-        // Check for __OPCODE_* intrinsics
-        if let Some(opcode_name) = name.strip_prefix("__OPCODE_") {
-            return Some(self.get_opcode_intrinsic_type(opcode_name));
-        }
-
         // Check for __NATIVE_CALL intrinsic
         // Supports __NATIVE_CALL<T>(id, args...) to specify return type T
         if name == "__NATIVE_CALL" {
@@ -3782,26 +4051,102 @@ impl<'a> TypeChecker<'a> {
                     return Some(self.resolve_type_annotation(&type_args[0]));
                 }
             }
-            return Some(self.type_ctx.unknown_type());
+            return Some(self.fallback_type(
+                call.span,
+                FallbackReason::Unavoidable,
+                "__NATIVE_CALL",
+            ));
         }
 
         None
     }
 
     /// Get the return type for an __OPCODE_* intrinsic
-    fn get_opcode_intrinsic_type(&mut self, opcode_name: &str) -> TypeId {
+    fn get_opcode_intrinsic_type(
+        &mut self,
+        opcode_name: &str,
+        call: &CallExpression,
+        arg_types: &[(TypeId, Span)],
+    ) -> TypeId {
         match opcode_name {
             // Mutex operations
             "MUTEX_NEW" => self.type_ctx.number_type(), // Returns native mutex handle
             "MUTEX_LOCK" | "MUTEX_UNLOCK" => self.type_ctx.void_type(),
 
             // Channel operations
-            "CHANNEL_NEW" => self.type_ctx.unknown_type(), // Returns Channel type
+            "CHANNEL_NEW" => {
+                if let Some(type_args) = &call.type_args {
+                    if type_args.len() == 1 {
+                        let msg_ty = self.resolve_type_annotation(&type_args[0]);
+                        return self.type_ctx.channel_type_with(msg_ty);
+                    }
+                }
+                self.type_ctx.channel_type()
+            }
 
             // Promise operations
             "TASK_CANCEL" => self.type_ctx.void_type(),
-            "AWAIT" => self.type_ctx.unknown_type(), // Returns the awaited value type
-            "AWAIT_ALL" => self.type_ctx.unknown_type(), // Returns array of results
+            "AWAIT" => {
+                if let Some((operand_ty, _)) = arg_types.first() {
+                    if let Some(crate::parser::types::Type::Task(task_ty)) =
+                        self.type_ctx.get(*operand_ty)
+                    {
+                        return task_ty.result;
+                    }
+                    if let Some(crate::parser::types::Type::Class(class_ty)) =
+                        self.type_ctx.get(*operand_ty)
+                    {
+                        if class_ty.name == "Promise" {
+                            return self.fallback_type(
+                                call.span,
+                                FallbackReason::Unavoidable,
+                                "__OPCODE_AWAIT_Promise",
+                            );
+                        }
+                    }
+                    if self.allows_any() && self.type_is_dynamic_anyish(*operand_ty) {
+                        return self.type_ctx.any_type();
+                    }
+                }
+                self.fallback_type(
+                    call.span,
+                    FallbackReason::RecoverableInvalidIntrinsicContext,
+                    "__OPCODE_AWAIT",
+                )
+            }
+            "AWAIT_ALL" => {
+                if let Some((operand_ty, _)) = arg_types.first() {
+                    if let Some(crate::parser::types::Type::Array(arr_ty)) =
+                        self.type_ctx.get(*operand_ty)
+                    {
+                        if let Some(crate::parser::types::Type::Task(task_ty)) =
+                            self.type_ctx.get(arr_ty.element)
+                        {
+                            return self.type_ctx.array_type(task_ty.result);
+                        }
+                        if let Some(crate::parser::types::Type::Class(class_ty)) =
+                            self.type_ctx.get(arr_ty.element)
+                        {
+                            if class_ty.name == "Promise" {
+                                let elem = self.fallback_type(
+                                    call.span,
+                                    FallbackReason::Unavoidable,
+                                    "__OPCODE_AWAIT_ALL_Promise",
+                                );
+                                return self.type_ctx.array_type(elem);
+                            }
+                        }
+                    }
+                    if self.allows_any() && self.type_is_dynamic_anyish(*operand_ty) {
+                        return self.type_ctx.any_type();
+                    }
+                }
+                self.fallback_type(
+                    call.span,
+                    FallbackReason::RecoverableInvalidIntrinsicContext,
+                    "__OPCODE_AWAIT_ALL",
+                )
+            }
             "YIELD" => self.type_ctx.void_type(),
             "SLEEP" => self.type_ctx.void_type(),
 
@@ -3811,7 +4156,18 @@ impl<'a> TypeChecker<'a> {
             "REFCELL_STORE" => self.type_ctx.void_type(),
 
             // Global operations
-            "LOAD_GLOBAL" => self.type_ctx.unknown_type(),
+            "LOAD_GLOBAL" => {
+                if let Some(type_args) = &call.type_args {
+                    if type_args.len() == 1 {
+                        return self.resolve_type_annotation(&type_args[0]);
+                    }
+                }
+                self.fallback_type(
+                    call.span,
+                    FallbackReason::Unavoidable,
+                    "__OPCODE_LOAD_GLOBAL",
+                )
+            }
             "STORE_GLOBAL" => self.type_ctx.void_type(),
 
             // Array/Object operations
@@ -3821,7 +4177,7 @@ impl<'a> TypeChecker<'a> {
             "TO_STRING" => self.type_ctx.string_type(),
 
             // Unknown opcode - return unknown
-            _ => self.type_ctx.unknown_type(),
+            _ => self.fallback_type(call.span, FallbackReason::Unavoidable, "opcode-unknown"),
         }
     }
 
@@ -3838,11 +4194,29 @@ impl<'a> TypeChecker<'a> {
         // If the callee is a function, get its return type and wrap in Promise
         if let Some(crate::parser::types::Type::Function(func_ty)) = self.type_ctx.get(callee_ty) {
             let return_ty = func_ty.return_type;
+            if matches!(
+                self.type_ctx.get(return_ty),
+                Some(crate::parser::types::Type::Task(_))
+            ) {
+                return return_ty;
+            }
             return self.type_ctx.task_type(return_ty);
         }
 
+        // If callee already resolves to Promise<T>/Task<T>, preserve it.
+        if matches!(
+            self.type_ctx.get(callee_ty),
+            Some(crate::parser::types::Type::Task(_))
+        ) {
+            return callee_ty;
+        }
+
         // Otherwise just return Promise<unknown>
-        let unknown = self.type_ctx.unknown_type();
+        let unknown = self.fallback_type(
+            async_call.span,
+            FallbackReason::Unavoidable,
+            "async-call-unknown-return",
+        );
         self.type_ctx.task_type(unknown)
     }
 
@@ -4176,39 +4550,38 @@ impl<'a> TypeChecker<'a> {
         // Handle Union types: look up member on any union variant that has it
         if let Some(crate::parser::types::Type::Union(union)) = &obj_type {
             let null_ty = self.type_ctx.null_type();
-
-            // Try Class members first (nullable class unions)
-            let class_members: Vec<_> = union
-                .members
-                .iter()
-                .filter(|&&m| m != null_ty)
-                .filter_map(|&m| {
-                    self.type_ctx.get(m).and_then(|t| {
-                        if let crate::parser::types::Type::Class(c) = t {
-                            Some(c.clone())
-                        } else {
-                            None
-                        }
-                    })
-                })
-                .collect();
-            if class_members.len() == 1 {
-                if let Some((ty, _vis)) =
-                    self.lookup_class_member(&class_members[0], &property_name)
-                {
-                    return ty;
-                }
-            }
-
-            // Try Object members (for discriminated unions: type X = | { a: T } | { b: U })
             let mut found_types = Vec::new();
+            let mut object_like_members = 0usize;
             for &member_id in &union.members {
-                if let Some(crate::parser::types::Type::Object(obj)) = self.type_ctx.get(member_id)
-                {
-                    for prop in &obj.properties {
-                        if prop.name == property_name && !found_types.contains(&prop.ty) {
-                            found_types.push(prop.ty);
+                if member_id == null_ty {
+                    continue;
+                }
+                if let Some(member_ty) = self.type_ctx.get(member_id).cloned() {
+                    match member_ty {
+                        crate::parser::types::Type::Object(obj) => {
+                            object_like_members += 1;
+                            for prop in &obj.properties {
+                                if prop.name == property_name && !found_types.contains(&prop.ty) {
+                                    found_types.push(prop.ty);
+                                }
+                            }
+                            if let Some((_, sig_ty)) = obj.index_signature {
+                                if !found_types.contains(&sig_ty) {
+                                    found_types.push(sig_ty);
+                                }
+                            }
                         }
+                        crate::parser::types::Type::Class(class) => {
+                            object_like_members += 1;
+                            if let Some((ty, _vis)) =
+                                self.lookup_class_member(&class, &property_name)
+                            {
+                                if !found_types.contains(&ty) {
+                                    found_types.push(ty);
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -4216,6 +4589,18 @@ impl<'a> TypeChecker<'a> {
                 return found_types[0];
             } else if found_types.len() > 1 {
                 return self.type_ctx.union_type(found_types);
+            }
+            if object_like_members > 0 {
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: property_name.clone(),
+                    ty: self.format_type(object_ty),
+                    span: member.span,
+                });
+                return self.fallback_type(
+                    member.span,
+                    FallbackReason::Unavoidable,
+                    "member-union",
+                );
             }
         }
 
@@ -4230,6 +4615,9 @@ impl<'a> TypeChecker<'a> {
                                 if prop.name == property_name {
                                     return prop.ty;
                                 }
+                            }
+                            if let Some((_, sig_ty)) = obj.index_signature {
+                                return sig_ty;
                             }
                         }
                         crate::parser::types::Type::Class(class) => {
@@ -4255,12 +4643,12 @@ impl<'a> TypeChecker<'a> {
             return if self.allows_any() {
                 self.type_ctx.any_type()
             } else {
-                self.type_ctx.unknown_type()
+                self.inference_fallback_type()
             };
         }
 
-        // For now, return unknown for other member access.
-        self.type_ctx.unknown_type()
+        // Unknown member access remains a fallback path.
+        self.fallback_type(member.span, FallbackReason::Unavoidable, "member-access")
     }
 
     /// Look up a property or method in a class hierarchy, including parent classes
@@ -5371,6 +5759,7 @@ impl<'a> TypeChecker<'a> {
 
                 // Assignment updates current flow type (used by branch merges).
                 self.set_unbound_method_var_state(&name, &assign.right);
+                self.set_constructible_var_state(&name, &assign.right, right_ty);
                 self.type_env.set(name, right_ty);
             }
         } else if let Expression::Index(idx) = &*assign.left {
@@ -5471,8 +5860,18 @@ impl<'a> TypeChecker<'a> {
                             return self.type_ctx.array_type(elem_ty);
                         }
                     }
-                    // Invalid Array usage - return unknown
-                    return self.type_ctx.unknown_type();
+                    let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
+                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                        name: name.clone(),
+                        expected: 1,
+                        actual,
+                        span: type_ref.name.span,
+                    });
+                    return self.fallback_type(
+                        type_ref.name.span,
+                        FallbackReason::RecoverableUnsupportedExpr,
+                        "type-reference-array-arity",
+                    );
                 }
 
                 // Handle Promise<T>/Promise<T> for async functions
@@ -5483,8 +5882,18 @@ impl<'a> TypeChecker<'a> {
                             return self.type_ctx.task_type(result_ty);
                         }
                     }
-                    // Invalid Promise usage - return unknown
-                    return self.type_ctx.unknown_type();
+                    let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
+                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                        name: name.clone(),
+                        expected: 1,
+                        actual,
+                        span: type_ref.name.span,
+                    });
+                    return self.fallback_type(
+                        type_ref.name.span,
+                        FallbackReason::RecoverableUnsupportedExpr,
+                        "type-reference-promise-arity",
+                    );
                 }
 
                 // Handle built-in types
@@ -5533,7 +5942,18 @@ impl<'a> TypeChecker<'a> {
                                 .intern(crate::parser::types::Type::Object(object_type));
                         }
                     }
-                    return self.type_ctx.unknown_type();
+                    let actual = type_ref.type_args.as_ref().map_or(0, |args| args.len());
+                    self.errors.push(CheckError::InvalidTypeReferenceArity {
+                        name: name.clone(),
+                        expected: 2,
+                        actual,
+                        span: type_ref.name.span,
+                    });
+                    return self.fallback_type(
+                        type_ref.name.span,
+                        FallbackReason::RecoverableUnsupportedExpr,
+                        "type-reference-record-arity",
+                    );
                 }
                 // Note: Date and Buffer are now normal classes, looked up from symbol table
 
@@ -6342,6 +6762,70 @@ mod tests {
         "#,
         );
         assert!(result.is_err(), "Expected type error, got {:?}", result);
+    }
+
+    #[test]
+    fn test_new_allows_const_class_alias() {
+        let result = parse_and_check(
+            r#"
+            class A {
+                constructor() {}
+                ok(): number { return 1; }
+            }
+            const B = A;
+            const v = new B();
+            const n: number = v.ok();
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected class alias to be constructible, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_new_rejects_object_alias() {
+        let result = parse_and_check(
+            r#"
+            const obj = { x: 1 };
+            new obj();
+        "#,
+        );
+        assert!(
+            result.is_err(),
+            "Expected object alias to be non-constructible"
+        );
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|e| matches!(e, CheckError::NewNonClass { .. })),
+            "Expected NewNonClass error, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn test_new_allows_member_cast_alias() {
+        let result = parse_and_check(
+            r#"
+            class A {
+                constructor() {}
+                ok(): number { return 1; }
+            }
+            const ns = { A: A };
+            type TA = { ok: () => number };
+            const B = (ns.A as TA);
+            const v = new B();
+            const n: number = v.ok();
+        "#,
+        );
+        assert!(
+            result.is_ok(),
+            "Expected member cast alias to be constructible, got {:?}",
+            result
+        );
     }
 
     #[test]

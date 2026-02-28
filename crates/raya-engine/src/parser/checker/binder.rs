@@ -37,6 +37,12 @@ pub struct Binder<'a> {
     mode: TypeSystemMode,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinderFallbackReason {
+    UnresolvedTypeParse,
+    PatternBinding,
+}
+
 impl<'a> Binder<'a> {
     /// Create a new binder
     pub fn new(type_ctx: &'a mut TypeContext, interner: &'a Interner) -> Self {
@@ -75,6 +81,11 @@ impl<'a> Binder<'a> {
         } else {
             self.type_ctx.unknown_type()
         }
+    }
+
+    #[inline]
+    fn fallback_type(&mut self, _reason: BinderFallbackReason) -> TypeId {
+        self.inference_fallback_type()
     }
 
     /// Disable top-level duplicate class/function detection.
@@ -1331,15 +1342,35 @@ impl<'a> Binder<'a> {
 
         // Check for generic class types (e.g., "Set<T>", "Map<K, V>")
         if let Some(idx) = ty_str.find('<') {
-            let _class_name = &ty_str[..idx];
+            let class_name = &ty_str[..idx];
             let args_str = &ty_str[idx + 1..ty_str.len() - 1];
-            let _args: Vec<TypeId> = args_str
+            let args: Vec<TypeId> = args_str
                 .split(',')
                 .map(|p| self.parse_type_string(p.trim(), type_params))
                 .collect();
-            // For now, just return unknown for complex generic types
-            // The checker will handle instantiation
-            return self.type_ctx.unknown_type();
+            use crate::parser::TypeContext as TC;
+            return match class_name {
+                TC::ARRAY_TYPE_NAME if args.len() == 1 => self.type_ctx.array_type(args[0]),
+                TC::PROMISE_TYPE_NAME if args.len() == 1 => self.type_ctx.task_type(args[0]),
+                TC::CHANNEL_TYPE_NAME if args.len() == 1 => {
+                    self.type_ctx.channel_type_with(args[0])
+                }
+                TC::SET_TYPE_NAME if args.len() == 1 => self.type_ctx.set_type_with(args[0]),
+                TC::MAP_TYPE_NAME if args.len() == 2 => {
+                    self.type_ctx.map_type_with(args[0], args[1])
+                }
+                _ => {
+                    if let Some(base_ty) = self.type_ctx.lookup_named_type(class_name) {
+                        self.type_ctx
+                            .intern(Type::Generic(crate::parser::types::ty::GenericType {
+                                base: base_ty,
+                                type_args: args,
+                            }))
+                    } else {
+                        self.fallback_type(BinderFallbackReason::UnresolvedTypeParse)
+                    }
+                }
+            };
         }
 
         // Check for type parameters
@@ -1360,7 +1391,7 @@ impl<'a> Binder<'a> {
                 if let Some(sym) = self.symbols.resolve(ty_str) {
                     sym.ty
                 } else {
-                    self.type_ctx.unknown_type()
+                    self.fallback_type(BinderFallbackReason::UnresolvedTypeParse)
                 }
             }
         }
@@ -1402,12 +1433,13 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// Pre-pass: register top-level class and function names as placeholder symbols.
+    /// Pre-pass: register top-level class, function, and type alias names as placeholder symbols.
     /// This enables forward references between declarations.
     fn prepass_stmt(&mut self, stmt: &Statement) -> Result<(), BindError> {
         match stmt {
             Statement::ClassDecl(class) => self.prepass_class(class),
             Statement::FunctionDecl(func) => self.prepass_function(func),
+            Statement::TypeAliasDecl(alias) => self.prepass_type_alias(alias),
             Statement::ExportDecl(ExportDecl::Declaration(inner_stmt)) => {
                 self.prepass_stmt(inner_stmt)
             }
@@ -1493,6 +1525,49 @@ impl<'a> Binder<'a> {
             },
             scope_id: self.symbols.current_scope_id(),
             span: func.name.span,
+            referenced: false,
+        };
+
+        self.symbols
+            .define(symbol)
+            .map_err(|err| BindError::DuplicateSymbol {
+                name: err.name,
+                original: err.original,
+                duplicate: err.duplicate,
+            })
+    }
+
+    /// Pre-pass: register a type alias name with a placeholder type.
+    /// This enables self-referential type aliases (e.g., JsonValue that references itself)
+    /// and forward references between type aliases.
+    fn prepass_type_alias(&mut self, alias: &TypeAliasDecl) -> Result<(), BindError> {
+        let alias_name = self.resolve(alias.name.name);
+
+        // If a symbol with this name already exists, skip re-registration.
+        if self.symbols.resolve(&alias_name).is_some() {
+            return Ok(());
+        }
+
+        // Create a UNIQUE placeholder ObjectType for this type alias (like classes
+        // use unique ClassType placeholders with the class name). A named marker
+        // property ensures each placeholder is distinct — without this, intern()
+        // would dedup all empty ObjectTypes to the same TypeId.
+        use crate::parser::types::ty::PropertySignature;
+        let unknown_ty = self.type_ctx.unknown_type();
+        let placeholder_ty = self.type_ctx.object_type(vec![PropertySignature {
+            name: format!("__placeholder_{}", alias_name),
+            ty: unknown_ty,
+            optional: false,
+            readonly: false,
+            visibility: crate::parser::ast::Visibility::Public,
+        }]);
+        let symbol = Symbol {
+            name: alias_name.clone(),
+            kind: SymbolKind::TypeAlias,
+            ty: placeholder_ty,
+            flags: SymbolFlags::default(),
+            scope_id: self.symbols.current_scope_id(),
+            span: alias.name.span,
             referenced: false,
         };
 
@@ -1626,6 +1701,72 @@ impl<'a> Binder<'a> {
         }
     }
 
+    fn array_element_type_for_pattern(&mut self, ty: TypeId) -> TypeId {
+        match self.type_ctx.get(ty).cloned() {
+            Some(Type::Array(arr)) => arr.element,
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .map(|c| self.array_element_type_for_pattern(c))
+                .unwrap_or_else(|| self.fallback_type(BinderFallbackReason::PatternBinding)),
+            Some(Type::Union(union)) => {
+                let mut elements = Vec::new();
+                for member in union.members {
+                    let elem_ty = self.array_element_type_for_pattern(member);
+                    if !elements.contains(&elem_ty) {
+                        elements.push(elem_ty);
+                    }
+                }
+                if elements.is_empty() {
+                    self.fallback_type(BinderFallbackReason::PatternBinding)
+                } else if elements.len() == 1 {
+                    elements[0]
+                } else {
+                    self.type_ctx.union_type(elements)
+                }
+            }
+            _ => self.fallback_type(BinderFallbackReason::PatternBinding),
+        }
+    }
+
+    fn object_property_type_for_pattern(&mut self, ty: TypeId, prop_name: &str) -> TypeId {
+        match self.type_ctx.get(ty).cloned() {
+            Some(Type::Object(obj)) => obj
+                .properties
+                .iter()
+                .find(|p| p.name == prop_name)
+                .map(|p| p.ty)
+                .or_else(|| obj.index_signature.map(|(_, sig_ty)| sig_ty))
+                .unwrap_or_else(|| self.fallback_type(BinderFallbackReason::PatternBinding)),
+            Some(Type::Class(cls)) => cls
+                .properties
+                .iter()
+                .find(|p| p.name == prop_name)
+                .map(|p| p.ty)
+                .unwrap_or_else(|| self.fallback_type(BinderFallbackReason::PatternBinding)),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .map(|c| self.object_property_type_for_pattern(c, prop_name))
+                .unwrap_or_else(|| self.fallback_type(BinderFallbackReason::PatternBinding)),
+            Some(Type::Union(union)) => {
+                let mut out = Vec::new();
+                for member in union.members {
+                    let member_ty = self.object_property_type_for_pattern(member, prop_name);
+                    if !out.contains(&member_ty) {
+                        out.push(member_ty);
+                    }
+                }
+                if out.is_empty() {
+                    self.fallback_type(BinderFallbackReason::PatternBinding)
+                } else if out.len() == 1 {
+                    out[0]
+                } else {
+                    self.type_ctx.union_type(out)
+                }
+            }
+            _ => self.fallback_type(BinderFallbackReason::PatternBinding),
+        }
+    }
+
     /// Recursively register all identifiers in a pattern as variable symbols.
     fn bind_pattern_names(
         &mut self,
@@ -1661,11 +1802,7 @@ impl<'a> Binder<'a> {
             }
             Pattern::Array(array_pat) => {
                 // Extract element type from array type annotation
-                let elem_ty = if let Some(Type::Array(arr)) = self.type_ctx.get(ty).cloned() {
-                    arr.element
-                } else {
-                    self.type_ctx.unknown_type()
-                };
+                let elem_ty = self.array_element_type_for_pattern(ty);
                 for elem in array_pat.elements.iter().flatten() {
                     self.bind_pattern_names(&elem.pattern, elem_ty, is_const)?;
                 }
@@ -1677,21 +1814,7 @@ impl<'a> Binder<'a> {
                 // Extract property types from object type annotation
                 for prop in &obj_pat.properties {
                     let prop_name = self.resolve(prop.key.name);
-                    let prop_ty = if let Some(Type::Object(obj)) = self.type_ctx.get(ty).cloned() {
-                        obj.properties
-                            .iter()
-                            .find(|p| p.name == prop_name)
-                            .map(|p| p.ty)
-                            .unwrap_or_else(|| self.type_ctx.unknown_type())
-                    } else if let Some(Type::Class(cls)) = self.type_ctx.get(ty).cloned() {
-                        cls.properties
-                            .iter()
-                            .find(|p| p.name == prop_name)
-                            .map(|p| p.ty)
-                            .unwrap_or_else(|| self.type_ctx.unknown_type())
-                    } else {
-                        self.type_ctx.unknown_type()
-                    };
+                    let prop_ty = self.object_property_type_for_pattern(ty, &prop_name);
                     self.bind_pattern_names(&prop.value, prop_ty, is_const)?;
                 }
                 if let Some(rest_ident) = &obj_pat.rest {
@@ -2557,23 +2680,44 @@ impl<'a> Binder<'a> {
                 .insert(alias_name.clone(), type_param_names);
         }
 
+        let definition_scope = self.symbols.current_scope_id();
         let symbol = Symbol {
-            name: alias_name,
+            name: alias_name.clone(),
             kind: SymbolKind::TypeAlias,
             ty,
             flags: SymbolFlags::default(),
-            scope_id: self.symbols.current_scope_id(),
+            scope_id: definition_scope,
             span: alias.name.span,
             referenced: false,
         };
 
-        self.symbols
-            .define(symbol)
-            .map_err(|err| BindError::DuplicateSymbol {
-                name: err.name,
-                original: err.original,
-                duplicate: err.duplicate,
-            })
+        // If pre-registered by the prepass, use replace_type() to fill the
+        // placeholder ObjectType with the resolved type data. This ensures
+        // self-referential type aliases work: during resolution above, any
+        // reference to this alias resolved to the placeholder TypeId, and
+        // replace_type() mutates it in-place so all references see the update.
+        if let Some(existing) = self.symbols.resolve(&alias_name) {
+            let placeholder_ty = existing.ty;
+            // Copy the resolved type's data into the placeholder TypeId
+            if let Some(resolved_type) = self.type_ctx.get(ty).cloned() {
+                self.type_ctx.replace_type(placeholder_ty, resolved_type);
+            }
+            // Keep symbol pointing to placeholder_ty (which now has real data)
+            let symbol = Symbol {
+                ty: placeholder_ty,
+                ..symbol
+            };
+            self.symbols.replace_in_scope(definition_scope, symbol);
+            Ok(())
+        } else {
+            self.symbols
+                .define(symbol)
+                .map_err(|err| BindError::DuplicateSymbol {
+                    name: err.name,
+                    original: err.original,
+                    duplicate: err.duplicate,
+                })
+        }
     }
 
     /// Bind block statement

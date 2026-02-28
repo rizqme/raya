@@ -1,10 +1,13 @@
 //! End-to-end tests for node: stdlib shim imports.
 
 use super::harness::*;
-use raya_runtime::Runtime;
+use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
 
 fn expect_runtime_eval_bool(source: &str, expected: bool) {
-    let runtime = Runtime::new();
+    let runtime = Runtime::with_options(RuntimeOptions {
+        builtin_mode: BuiltinMode::NodeCompat,
+        ..Default::default()
+    });
     let value = runtime
         .eval(source)
         .expect("runtime.eval should succeed for compatibility test");

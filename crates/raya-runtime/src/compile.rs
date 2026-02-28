@@ -2,9 +2,7 @@
 //!
 //! Parse → Bind → TypeCheck → Compile to bytecode.
 
-use raya_engine::compiler::module::StdModuleRegistry;
 use raya_engine::compiler::{Compiler, Module};
-use raya_engine::parser::ast::ImportSpecifier;
 use raya_engine::parser::ast::Statement;
 use raya_engine::parser::checker::{
     BindError, Binder, CheckError, CheckWarning, ScopeId, TypeChecker, TypeSystemMode,
@@ -16,6 +14,7 @@ use std::path::{Path, PathBuf};
 use crate::builtin_manifest;
 use crate::builtins;
 use crate::error::RuntimeError;
+use crate::std_prelude::build_std_prelude;
 use crate::BuiltinMode;
 
 /// Checker behavior mode, independent from builtin API surface.
@@ -98,15 +97,19 @@ pub fn compile_source_with_modes(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let std_import_prelude = build_std_import_prelude(source)?;
+    let std_prelude = build_std_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_import_prelude.is_empty() {
+    let builtin_offset = builtin_src.len() + 1;
+    let prelude_src = if std_prelude.prelude_source.is_empty() {
         builtin_src.to_string()
     } else {
-        format!("{}\n{}", builtin_src, std_import_prelude)
+        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
     };
     let user_offset = prelude_src.len() + 1;
-    let full_source = format!("{}\n{}", prelude_src, source);
+    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
+    if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
+        let _ = std::fs::write(path, &full_source);
+    }
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -142,7 +145,7 @@ pub fn compile_source_with_modes(
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
         .with_mode(type_system_mode(type_mode))
-        .with_skip_class_bodies_before(user_offset);
+        .with_skip_class_bodies_before(builtin_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
             errors
@@ -213,15 +216,19 @@ pub fn compile_source_with_options_and_modes(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let std_import_prelude = build_std_import_prelude(source)?;
+    let std_prelude = build_std_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_import_prelude.is_empty() {
+    let builtin_offset = builtin_src.len() + 1;
+    let prelude_src = if std_prelude.prelude_source.is_empty() {
         builtin_src.to_string()
     } else {
-        format!("{}\n{}", builtin_src, std_import_prelude)
+        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
     };
     let user_offset = prelude_src.len() + 1;
-    let full_source = format!("{}\n{}", prelude_src, source);
+    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
+    if let Ok(path) = std::env::var("RAYA_DEBUG_DUMP_SOURCE") {
+        let _ = std::fs::write(path, &full_source);
+    }
     let prefix_lines = full_source[..user_offset]
         .bytes()
         .filter(|&b| b == b'\n')
@@ -254,7 +261,7 @@ pub fn compile_source_with_options_and_modes(
     // Type check
     let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
         .with_mode(type_system_mode(type_mode))
-        .with_skip_class_bodies_before(user_offset);
+        .with_skip_class_bodies_before(builtin_offset);
     let check_result = checker.check_module(&ast).map_err(|errors| {
         RuntimeError::TypeCheck(
             errors
@@ -309,16 +316,17 @@ pub fn check_source_with_modes(
     precheck_user_top_level_duplicates(source)?;
     precheck_node_compat_symbol_usage(source, builtin_mode)?;
 
-    let std_import_prelude = build_std_import_prelude(source)?;
+    let std_prelude = build_std_prelude(source)?;
     let builtin_src = builtins::builtin_sources_for_mode(builtin_mode);
-    let prelude_src = if std_import_prelude.is_empty() {
+    let builtin_offset = builtin_src.len() + 1;
+    let prelude_src = if std_prelude.prelude_source.is_empty() {
         builtin_src.to_string()
     } else {
-        format!("{}\n{}", builtin_src, std_import_prelude)
+        format!("{}\n{}", builtin_src, std_prelude.prelude_source)
     };
     let user_offset = prelude_src.len() + 1; // +1 for \n separator
 
-    let full_source = format!("{}\n{}", prelude_src, source);
+    let full_source = format!("{}\n{}", prelude_src, std_prelude.rewritten_user_source);
 
     let prefix_lines = full_source[..user_offset]
         .bytes()
@@ -350,7 +358,7 @@ pub fn check_source_with_modes(
             // Binding succeeded — run type checker
             let checker = TypeChecker::new(&mut type_ctx, &symbols, &interner)
                 .with_mode(type_system_mode(type_mode))
-                .with_skip_class_bodies_before(user_offset);
+                .with_skip_class_bodies_before(builtin_offset);
             match checker.check_module(&ast) {
                 Ok(result) => (vec![], vec![], result.warnings),
                 Err(check_errs) => (vec![], check_errs, vec![]),
@@ -448,162 +456,6 @@ fn format_parse_errors(errors: &[ParseError], prefix_lines: usize) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn build_std_import_prelude(source: &str) -> Result<String, RuntimeError> {
-    let parser =
-        Parser::new(source).map_err(|errors| RuntimeError::Lex(format_lex_errors(&errors, 0)))?;
-    let (ast, interner) = parser
-        .parse()
-        .map_err(|errors| RuntimeError::Parse(format_parse_errors(&errors, 0)))?;
-
-    let registry = StdModuleRegistry::new();
-    let mut prelude = String::new();
-    let mut seen_modules: HashSet<String> = HashSet::new();
-    let mut default_alias_by_module: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut default_expr_by_module: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    let mut seen_bindings: HashSet<String> = HashSet::new();
-    let mut declared_symbols: HashSet<String> = HashSet::new();
-
-    for stmt in &ast.statements {
-        let Statement::ImportDecl(import) = stmt else {
-            continue;
-        };
-        let specifier = interner.resolve(import.source.value).to_string();
-        if !StdModuleRegistry::is_std_import(&specifier) {
-            continue;
-        }
-
-        let (canonical_module_name, module_src) =
-            registry.resolve_specifier(&specifier).ok_or_else(|| {
-                if StdModuleRegistry::is_node_import(&specifier) {
-                    unsupported_node_import_error(&specifier)
-                } else {
-                    RuntimeError::Dependency(format!("Unknown std module import '{}'", specifier))
-                }
-            })?;
-
-        if seen_modules.insert(canonical_module_name.clone()) {
-            let (module_body, default_expr) = strip_default_export(module_src);
-            prelude.push_str(&module_body);
-            prelude.push('\n');
-            collect_declared_symbols(&module_body, &mut declared_symbols);
-
-            if let Some(expr) = default_expr {
-                let alias = format!(
-                    "__std_default_{}",
-                    sanitize_module_specifier(&canonical_module_name)
-                );
-                prelude.push_str(&format!("const {} = {};\n", alias, expr));
-                default_alias_by_module.insert(canonical_module_name.clone(), alias);
-                default_expr_by_module.insert(canonical_module_name.clone(), expr);
-                declared_symbols.insert(format!(
-                    "__std_default_{}",
-                    sanitize_module_specifier(&canonical_module_name)
-                ));
-            }
-        }
-
-        for spec in &import.specifiers {
-            if let ImportSpecifier::Default(local) = spec {
-                let local_name = interner.resolve(local.name).to_string();
-                let binding_key = format!("{}::{}", canonical_module_name, local_name);
-                if !seen_bindings.insert(binding_key) {
-                    continue;
-                }
-
-                if let Some(expr) = default_expr_by_module.get(&canonical_module_name) {
-                    if expr == &local_name {
-                        continue;
-                    }
-                }
-
-                let alias = default_alias_by_module
-                    .get(&canonical_module_name)
-                    .ok_or_else(|| {
-                        RuntimeError::Dependency(format!(
-                            "std module '{}' has no default export for import '{}'",
-                            specifier, local_name
-                        ))
-                    })?;
-                if declared_symbols.contains(&local_name) {
-                    // Avoid duplicate declaration errors when shim internals
-                    // already declare this identifier (e.g. node:test).
-                    prelude.push_str(&format!("{} = {};\n", local_name, alias));
-                } else {
-                    prelude.push_str(&format!("const {} = {};\n", local_name, alias));
-                    declared_symbols.insert(local_name);
-                }
-            }
-        }
-    }
-
-    Ok(prelude)
-}
-
-fn collect_declared_symbols(source: &str, out: &mut HashSet<String>) {
-    for line in source.lines() {
-        let trimmed = line.trim_start();
-        // Strip optional "export " prefix so `export function`, `export const`, etc. are tracked
-        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
-        for prefix in ["class ", "function ", "const ", "let ", "var "] {
-            if let Some(rest) = trimmed.strip_prefix(prefix) {
-                let ident: String = rest
-                    .chars()
-                    .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
-                    .collect();
-                if !ident.is_empty() {
-                    out.insert(ident);
-                }
-                break;
-            }
-        }
-    }
-}
-
-fn strip_default_export(module_src: &str) -> (String, Option<String>) {
-    let mut out = String::new();
-    let mut default_expr: Option<String> = None;
-
-    for line in module_src.lines() {
-        let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("export default ") {
-            let expr = rest.trim_end_matches(';').trim();
-            if !expr.is_empty() {
-                default_expr = Some(expr.to_string());
-            }
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-
-    (out, default_expr)
-}
-
-fn sanitize_module_specifier(specifier: &str) -> String {
-    let mut out = String::new();
-    for ch in specifier.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    out
-}
-
-fn unsupported_node_import_error(specifier: &str) -> RuntimeError {
-    let supported = StdModuleRegistry::supported_node_module_names()
-        .map(|name| format!("node:{}", name))
-        .collect::<Vec<_>>()
-        .join(", ");
-    RuntimeError::Dependency(format!(
-        "Unsupported node module import '{}'. Supported node modules: {}",
-        specifier, supported
-    ))
 }
 
 /// Detect duplicate top-level declarations within user source before builtin/std
@@ -845,6 +697,49 @@ mod tests {
             "#,
         );
         assert!(result.is_ok(), "node:path should map to std:path");
+    }
+
+    #[test]
+    fn test_std_pm_import_compiles_with_transitive_named_exports() {
+        let result = compile_source(
+            r#"
+            import pm from "std:pm";
+            return pm != null;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "std:pm import should compile with transitive std dependencies"
+        );
+    }
+
+    #[test]
+    fn test_mixed_std_imports_compile_without_symbol_collision() {
+        let result = compile_source(
+            r#"
+            import path from "std:path";
+            import fs from "std:fs";
+            import env from "std:env";
+            let base = env.cwd();
+            let full = path.join(base, "tmp");
+            return fs != null && full.length >= 0;
+            "#,
+        );
+        assert!(
+            result.is_ok(),
+            "mixed std imports should compile without prelude symbol collisions"
+        );
+    }
+
+    #[test]
+    fn test_namespace_std_import_is_supported() {
+        let result = compile_source(
+            r#"
+            import * as p from "std:path";
+            return p.join("a", "b");
+            "#,
+        );
+        assert!(result.is_ok(), "namespace std import should be supported");
     }
 
     #[test]

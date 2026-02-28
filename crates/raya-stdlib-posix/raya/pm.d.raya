@@ -6,7 +6,7 @@
  * Usage:
  *   import pm from "std:pm";
  *
- *   pm.init("/path/to/project", "my-project");
+ *   pm.init("/path/to/project", "my-project", false);
  *   pm.install(".", false, false, false);
  *   pm.add(".", "logging@^1.0.0", false, false, false);
  *   pm.remove(".", "logging");
@@ -31,9 +31,9 @@ export class InstallResult {
  * Manifest loading and saving utilities.
  */
 export class Manifest {
-    /** Load a raya.toml manifest from a directory. */
+    /** Load a project manifest (package.json preferred, raya.toml fallback). */
     static load(dir: string): JsonValue;
-    /** Save a manifest to raya.toml in a directory. */
+    /** Save a manifest to the detected project format. */
     static save(dir: string, manifest: JsonValue): void;
     /** Get the package name from a manifest. */
     static name(manifest: JsonValue): string;
@@ -102,8 +102,9 @@ declare class PackageManager {
      * Initialize a new Raya project.
      * @param dir - Directory to initialize
      * @param name - Package name (defaults to directory basename)
+     * @param nodeMode - If true, create package.json + raya config block
      */
-    init(dir: string, name: string | null): void;
+    init(dir: string, name: string | null, nodeMode: boolean): void;
 
     /**
      * Install all dependencies from raya.toml.

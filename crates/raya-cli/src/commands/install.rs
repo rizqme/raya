@@ -10,7 +10,8 @@ pub fn execute(production: bool, _frozen: bool, force: bool) -> anyhow::Result<(
         .replace('\\', "/")
         .replace('"', "\\\"");
     let script = format!(
-        r#"const result = pm.install("{}", {}, {}, false);
+        r#"import pm from "std:pm";
+const result = pm.install("{}", {}, {}, false);
 io.writeln("Done! " + result.installed.toString() + " installed, " + result.cached.toString() + " from cache.")"#,
         cwd, production, force
     );

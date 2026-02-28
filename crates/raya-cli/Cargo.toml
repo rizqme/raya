@@ -24,6 +24,7 @@ raya-pm = { path = "../raya-pm" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 toml = { workspace = true }
+serde_json = { workspace = true }
 dirs = "5"
 rustyline = "15"
 termcolor = "1.4"

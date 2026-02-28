@@ -49,9 +49,56 @@ impl<'a> Interpreter<'a> {
                     };
 
                     if !closure_val.is_ptr() {
-                        return OpcodeResult::Error(VmError::TypeError(
-                            "Expected closure or bound method".to_string(),
-                        ));
+                        // Compatibility path: some lowered function references may
+                        // be represented as direct function IDs.
+                        let direct_func_id = closure_val
+                            .as_i32()
+                            .map(|v| v as usize)
+                            .or_else(|| {
+                                closure_val.as_f64().and_then(|v| {
+                                    if v.is_finite()
+                                        && v.fract() == 0.0
+                                        && v >= 0.0
+                                        && v <= usize::MAX as f64
+                                    {
+                                        Some(v as usize)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                        if let Some(func_id) = direct_func_id {
+                            if module.functions.get(func_id).is_some() {
+                                // Push args back for direct function frame call.
+                                for arg in args_tmp.into_iter().rev() {
+                                    if let Err(e) = stack.push(arg) {
+                                        return OpcodeResult::Error(e);
+                                    }
+                                }
+                                return OpcodeResult::PushFrame {
+                                    func_id,
+                                    arg_count,
+                                    is_closure: false,
+                                    closure_val: None,
+                                    return_action: ReturnAction::PushReturnValue,
+                                };
+                            }
+                        };
+                        let got = if closure_val.is_null() {
+                            "null".to_string()
+                        } else if let Some(v) = closure_val.as_bool() {
+                            format!("bool({})", v)
+                        } else if let Some(v) = closure_val.as_i32() {
+                            format!("int({})", v)
+                        } else if let Some(v) = closure_val.as_f64() {
+                            format!("number({})", v)
+                        } else {
+                            "non-pointer primitive".to_string()
+                        };
+                        return OpcodeResult::Error(VmError::TypeError(format!(
+                            "Expected closure or bound method, got {}",
+                            got
+                        )));
                     }
 
                     // Check GcHeader to distinguish BoundMethod from Closure

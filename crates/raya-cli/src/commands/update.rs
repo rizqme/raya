@@ -16,7 +16,8 @@ pub fn execute(package: Option<String>) -> anyhow::Result<()> {
         .replace('\\', "/")
         .replace('"', "\\\"");
     let script = format!(
-        r#"const result = pm.update("{}", false);
+        r#"import pm from "std:pm";
+const result = pm.update("{}", false);
 io.writeln("Done! " + result.installed.toString() + " installed, " + result.cached.toString() + " from cache.")"#,
         cwd
     );

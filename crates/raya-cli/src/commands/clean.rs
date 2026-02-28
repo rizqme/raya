@@ -6,12 +6,12 @@ pub fn execute(cache: bool, dist: bool, all: bool) -> anyhow::Result<()> {
     let clean_all = all || (!cache && !dist);
 
     if clean_all || cache {
-        let cache_dir = Path::new(".raya-cache");
-        if cache_dir.exists() {
-            std::fs::remove_dir_all(cache_dir)?;
-            println!("Removed .raya-cache/");
+        let local_raya_dir = Path::new(".raya");
+        if local_raya_dir.exists() {
+            std::fs::remove_dir_all(local_raya_dir)?;
+            println!("Removed .raya/");
         } else {
-            println!("No cache directory found.");
+            println!("No local .raya directory found.");
         }
     }
 

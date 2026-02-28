@@ -3,7 +3,8 @@
 use anyhow::{anyhow, Context};
 use raya_pm::PackageManifest;
 use raya_runtime::{BuiltinMode, Runtime, RuntimeOptions};
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[allow(dead_code)]
@@ -90,18 +91,18 @@ fn run_file(rt: &Runtime, path: &str) -> anyhow::Result<()> {
 }
 
 fn run_default(rt: &Runtime, _args: &RunArgs) -> anyhow::Result<()> {
-    let manifest = load_manifest_optional();
+    let manifest = load_project_manifest_optional();
 
     // Try [scripts].start first
     if let Some(ref manifest) = manifest {
-        if let Some(cmd) = manifest.scripts.get("start") {
+        if let Some(cmd) = manifest.scripts().get("start") {
             println!("Running script: start → {}", cmd);
             return run_script_cmd(cmd, rt);
         }
 
-        // Fall back to [package].main
-        if let Some(ref main_file) = manifest.package.main {
-            return run_file(rt, main_file);
+        // Fall back to main entry
+        if let Some(main_file) = manifest.main() {
+            return run_file(rt, &main_file);
         }
     }
 
@@ -112,19 +113,20 @@ fn run_default(rt: &Runtime, _args: &RunArgs) -> anyhow::Result<()> {
 
     Err(anyhow!(
         "No start script or main entry point defined.\n\
-         Add [scripts].start to raya.toml, set [package].main, or create src/main.raya."
+         Add scripts.start and raya.entry (package.json) or [scripts]/[package].main (raya.toml), or create src/main.raya."
     ))
 }
 
 fn run_script(name: &str, rt: &Runtime) -> anyhow::Result<()> {
-    let manifest =
-        load_manifest().context("Cannot run scripts without a raya.toml in the project")?;
+    let manifest = load_project_manifest()
+        .context("Cannot run scripts without a package.json or raya.toml in the project")?;
 
-    let cmd = manifest.scripts.get(name).ok_or_else(|| {
-        let available: Vec<&String> = manifest.scripts.keys().collect();
+    let scripts = manifest.scripts();
+    let cmd = scripts.get(name).ok_or_else(|| {
+        let available: Vec<&String> = scripts.keys().collect();
         if available.is_empty() {
             anyhow!(
-                "Unknown script '{}'. No scripts defined in raya.toml.",
+                "Unknown script '{}'. No scripts defined in project manifest.",
                 name
             )
         } else {
@@ -169,29 +171,38 @@ fn run_script_cmd(cmd: &str, rt: &Runtime) -> anyhow::Result<()> {
 }
 
 fn list_scripts() -> anyhow::Result<()> {
-    let manifest = load_manifest().context("No raya.toml found in this directory or any parent")?;
+    let manifest = load_project_manifest()
+        .context("No package.json or raya.toml found in this directory or any parent")?;
+    let scripts = manifest.scripts();
 
-    if manifest.scripts.is_empty() {
-        println!("No scripts defined in raya.toml.");
+    if scripts.is_empty() {
+        println!("No scripts defined in project manifest.");
         println!();
-        println!("Add scripts to your raya.toml:");
+        println!("Add scripts to your manifest:");
         println!();
-        println!("  [scripts]");
-        println!("  dev = \"src/main.raya --watch\"");
-        println!("  start = \"dist/main.ryb\"");
+        if matches!(manifest, ProjectManifest::PackageJson(_)) {
+            println!("  \"scripts\": {{");
+            println!("    \"dev\": \"src/main.raya --watch\",");
+            println!("    \"start\": \"dist/main.ryb\"");
+            println!("  }}");
+        } else {
+            println!("  [scripts]");
+            println!("  dev = \"src/main.raya --watch\"");
+            println!("  start = \"dist/main.ryb\"");
+        }
         return Ok(());
     }
 
-    println!("Available scripts (from raya.toml):");
+    println!("Available scripts:");
     println!();
 
     // Sort for consistent output
-    let mut scripts: Vec<(&String, &String)> = manifest.scripts.iter().collect();
-    scripts.sort_by(|(a, _), (b, _)| a.cmp(b));
+    let mut script_pairs: Vec<(&String, &String)> = scripts.iter().collect();
+    script_pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
 
-    let max_name_len = scripts.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    let max_name_len = script_pairs.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
 
-    for (name, cmd) in &scripts {
+    for (name, cmd) in &script_pairs {
         println!("  {:<width$}  {}", name, cmd, width = max_name_len);
     }
 
@@ -206,24 +217,81 @@ fn looks_like_file(s: &str) -> bool {
         || s.starts_with('.')
 }
 
-fn load_manifest() -> anyhow::Result<PackageManifest> {
-    let path = find_manifest()?;
-    PackageManifest::from_file(&path).map_err(|e| anyhow!("{}", e))
+#[derive(Debug, Clone)]
+struct PackageJsonManifest {
+    scripts: HashMap<String, String>,
+    main: Option<String>,
 }
 
-fn load_manifest_optional() -> Option<PackageManifest> {
-    load_manifest().ok()
+#[derive(Debug, Clone)]
+enum ProjectManifest {
+    RayaToml(PackageManifest),
+    PackageJson(PackageJsonManifest),
 }
 
-fn find_manifest() -> anyhow::Result<std::path::PathBuf> {
+impl ProjectManifest {
+    fn scripts(&self) -> &HashMap<String, String> {
+        match self {
+            ProjectManifest::RayaToml(m) => &m.scripts,
+            ProjectManifest::PackageJson(m) => &m.scripts,
+        }
+    }
+
+    fn main(&self) -> Option<String> {
+        match self {
+            ProjectManifest::RayaToml(m) => m.package.main.clone(),
+            ProjectManifest::PackageJson(m) => m.main.clone(),
+        }
+    }
+}
+
+fn load_project_manifest() -> anyhow::Result<ProjectManifest> {
+    let (path, is_package_json) = find_manifest()?;
+    if is_package_json {
+        let content = std::fs::read_to_string(&path)?;
+        let value: serde_json::Value = serde_json::from_str(&content)?;
+        let mut scripts = HashMap::new();
+        if let Some(obj) = value.get("scripts").and_then(|v| v.as_object()) {
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    scripts.insert(k.clone(), s.to_string());
+                }
+            }
+        }
+        let main = value
+            .get("raya")
+            .and_then(|v| v.get("entry"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| value.get("main").and_then(|v| v.as_str()).map(|s| s.to_string()));
+        Ok(ProjectManifest::PackageJson(PackageJsonManifest {
+            scripts,
+            main,
+        }))
+    } else {
+        PackageManifest::from_file(&path)
+            .map(ProjectManifest::RayaToml)
+            .map_err(|e| anyhow!("{}", e))
+    }
+}
+
+fn load_project_manifest_optional() -> Option<ProjectManifest> {
+    load_project_manifest().ok()
+}
+
+fn find_manifest() -> anyhow::Result<(PathBuf, bool)> {
     let mut dir = std::env::current_dir()?;
     loop {
-        let candidate = dir.join("raya.toml");
-        if candidate.exists() {
-            return Ok(candidate);
+        let package_candidate = dir.join("package.json");
+        if package_candidate.exists() {
+            return Ok((package_candidate, true));
+        }
+        let toml_candidate = dir.join("raya.toml");
+        if toml_candidate.exists() {
+            return Ok((toml_candidate, false));
         }
         if !dir.pop() {
-            return Err(anyhow!("No raya.toml found"));
+            return Err(anyhow!("No package.json or raya.toml found"));
         }
     }
 }

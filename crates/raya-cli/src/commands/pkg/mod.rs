@@ -32,6 +32,9 @@ pub enum PkgCommands {
         /// Force interactive prompts (npm-style)
         #[arg(long)]
         interactive: bool,
+        /// Initialize as a Node-style project using package.json
+        #[arg(long)]
+        node: bool,
     },
 
     /// Install all dependencies
@@ -155,7 +158,8 @@ pub fn execute(cmd: PkgCommands) -> anyhow::Result<()> {
             template,
             yes,
             interactive,
-        } => super::init::execute(path, name, template, yes, interactive),
+            node,
+        } => super::init::execute(path, name, template, yes, interactive, node),
         PkgCommands::Install { production, frozen, force } =>
             super::install::execute(production, frozen, force),
         PkgCommands::Add { package, dev, exact, no_install } =>

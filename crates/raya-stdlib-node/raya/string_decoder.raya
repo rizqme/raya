@@ -10,12 +10,12 @@ class StringDecoder {
     }
 
     write(buf: Buffer): string {
-        return String(buf);
+        return buf.toString(this.encoding);
     }
 
     end(buf?: Buffer): string {
         if (buf != null) {
-            return String(buf);
+            return buf.toString(this.encoding);
         }
         return "";
     }

@@ -2,7 +2,21 @@
 // Usage: import net from "node:net";
 // Wraps std:net with Node.js createServer/createConnection/Socket pattern.
 
-import stdNet, { TcpListener, TcpStream } from "std:net";
+import stdNet from "std:net";
+
+type TcpStream = {
+    remoteAddr: () => string,
+    writeText: (data: string) => number,
+    read: (size: number) => Buffer,
+    close: () => void,
+    localAddr: () => string,
+};
+
+type TcpListener = {
+    serve: (handler: (stream: TcpStream) => Promise<void>) => Promise<void>,
+    close: () => void,
+    localAddr: () => string,
+};
 
 class Socket {
     _stream: TcpStream;
@@ -52,7 +66,7 @@ class NetServer {
 
     listen(port: number, host?: string, callback?: () => void): NetServer {
         const h = host != null ? host : "127.0.0.1";
-        this._listener = stdNet.listen(h, port);
+        this._listener = stdNet.listen(h, port) as TcpListener;
         this.listening = true;
 
         if (callback != null) { callback(); }
@@ -89,7 +103,7 @@ class NodeNet {
 
     createConnection(port: number, host?: string, callback?: () => void): Socket {
         const h = host != null ? host : "127.0.0.1";
-        const stream = stdNet.connect(h, port);
+        const stream = stdNet.connect(h, port) as TcpStream;
         const socket = new Socket(stream);
         if (callback != null) { callback(); }
         return socket;

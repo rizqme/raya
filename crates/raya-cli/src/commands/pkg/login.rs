@@ -47,6 +47,20 @@ fn resolve_registry() -> String {
         return url;
     }
 
+    // Check project package.json (preferred)
+    if let Ok(content) = std::fs::read_to_string("package.json") {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(url) = pkg
+                .get("raya")
+                .and_then(|v| v.get("registry"))
+                .and_then(|v| v.get("url"))
+                .and_then(|v| v.as_str())
+            {
+                return url.to_string();
+            }
+        }
+    }
+
     // Check project raya.toml
     if let Ok(manifest) = raya_pm::PackageManifest::from_file(&std::path::Path::new("raya.toml")) {
         if let Some(reg) = manifest.registry {

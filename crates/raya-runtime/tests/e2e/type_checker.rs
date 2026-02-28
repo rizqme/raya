@@ -358,3 +358,34 @@ fn test_new_on_non_class() {
         "NewNonClass",
     );
 }
+
+// ============================================================================
+// 9. Fallback Retention & Diagnostics
+// ============================================================================
+
+#[test]
+fn test_parenthesized_expression_type_retained() {
+    expect_i32(
+        "let x: number = (41 + 1);
+         return x;",
+        42,
+    );
+}
+
+#[test]
+fn test_intrinsic_invalid_inference_context_reports_error() {
+    expect_compile_error(
+        "let x: number = __OPCODE_AWAIT(1);
+         return x;",
+        "InvalidIntrinsicInferenceContext",
+    );
+}
+
+#[test]
+fn test_checker_type_reference_arity_error() {
+    expect_compile_error(
+        "let x = 1 as Array<number, string>;
+         return 0;",
+        "InvalidTypeReferenceArity",
+    );
+}

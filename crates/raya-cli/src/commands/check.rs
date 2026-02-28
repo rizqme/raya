@@ -255,6 +255,9 @@ fn adjust_check_error_spans(err: &mut CheckError, offset: usize) {
         | CheckError::ImplicitThisForbidden { span }
         | CheckError::ImplicitAnyForbidden { span }
         | CheckError::UnknownNotActionable { span, .. }
+        | CheckError::InvalidIntrinsicInferenceContext { span, .. }
+        | CheckError::InvalidTypeReferenceArity { span, .. }
+        | CheckError::UnsupportedExpressionTypingPath { span, .. }
         | CheckError::StrictPropertyInitialization { span, .. }
         | CheckError::UnboundMethodCall { span, .. } => {
             if let Some(new_span) = adjust_span(*span, offset) {

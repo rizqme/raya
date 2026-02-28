@@ -235,6 +235,34 @@ impl<'a> Interpreter<'a> {
                         }
                         return OpcodeResult::Continue;
                     }
+                    // Compatibility path: function references may be encoded as
+                    // direct function IDs (int) instead of closure pointers.
+                    if expected == CAST_KIND_FUNCTION {
+                        let func_id = obj_val
+                            .as_i32()
+                            .map(|v| v as usize)
+                            .or_else(|| {
+                                obj_val.as_f64().and_then(|v| {
+                                    if v.is_finite()
+                                        && v.fract() == 0.0
+                                        && v >= 0.0
+                                        && v <= usize::MAX as f64
+                                    {
+                                        Some(v as usize)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                        if let Some(func_id) = func_id {
+                            if module.functions.get(func_id).is_some() {
+                                if let Err(e) = stack.push(obj_val) {
+                                    return OpcodeResult::Error(e);
+                                }
+                                return OpcodeResult::Continue;
+                            }
+                        }
+                    }
                     // Explicit cast to `int` can accept a numeric value only when
                     // the runtime number is finite and integral.
                     if expected == CAST_KIND_INT {

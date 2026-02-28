@@ -10,7 +10,11 @@ pub fn execute(package: String) -> anyhow::Result<()> {
         .replace('\\', "/")
         .replace('"', "\\\"");
     let pkg = package.replace('"', "\\\"");
-    let script = format!(r#"pm.remove("{}", "{}")"#, cwd, pkg);
+    let script = format!(
+        r#"import pm from "std:pm";
+pm.remove("{}", "{}")"#,
+        cwd, pkg
+    );
     match rt.eval(&script) {
         Ok(_) => Ok(()),
         Err(e) => {

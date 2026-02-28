@@ -313,6 +313,41 @@ pub enum CheckError {
         span: Span,
     },
 
+    /// Intrinsic return type could not be inferred safely from the call context.
+    #[error(
+        "E_INVALID_INTRINSIC_INFERENCE: intrinsic '{intrinsic}' requires a type argument or compatible operand type"
+    )]
+    InvalidIntrinsicInferenceContext {
+        /// Intrinsic function/opcode name
+        intrinsic: String,
+        /// Location of intrinsic call
+        span: Span,
+    },
+
+    /// Built-in generic type was referenced with wrong type argument count in checker paths.
+    #[error(
+        "E_INVALID_TYPE_REFERENCE_ARITY: type '{name}' expects {expected} type argument(s), got {actual}"
+    )]
+    InvalidTypeReferenceArity {
+        /// Type name
+        name: String,
+        /// Expected number of type arguments
+        expected: usize,
+        /// Actual number of type arguments
+        actual: usize,
+        /// Location of type reference
+        span: Span,
+    },
+
+    /// Expression kind has no first-class typing rule yet in checker.
+    #[error("E_UNSUPPORTED_EXPRESSION_TYPING: no typing rule implemented for expression kind '{expression}'")]
+    UnsupportedExpressionTypingPath {
+        /// Expression kind name
+        expression: String,
+        /// Location of expression
+        span: Span,
+    },
+
     /// Strict property initialization failure.
     #[error("E_STRICT_PROPERTY_INITIALIZATION: property '{property}' has no initializer and is not definitely assigned in constructor")]
     StrictPropertyInitialization {
@@ -399,6 +434,9 @@ impl CheckError {
             CheckError::ImplicitThisForbidden { span } => *span,
             CheckError::ImplicitAnyForbidden { span } => *span,
             CheckError::UnknownNotActionable { span, .. } => *span,
+            CheckError::InvalidIntrinsicInferenceContext { span, .. } => *span,
+            CheckError::InvalidTypeReferenceArity { span, .. } => *span,
+            CheckError::UnsupportedExpressionTypingPath { span, .. } => *span,
             CheckError::StrictPropertyInitialization { span, .. } => *span,
             CheckError::UnboundMethodCall { span, .. } => *span,
             CheckError::InvalidDecorator { span, .. } => *span,

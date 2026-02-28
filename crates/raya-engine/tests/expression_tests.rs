@@ -298,18 +298,19 @@ fn test_parse_object_literal_with_spread() {
 
 #[test]
 fn test_parse_empty_object() {
-    let source = "{}";
+    let source = "const obj = {};";
     let parser = Parser::new(source).unwrap();
     let (module, _interner) = parser.parse().unwrap();
 
     match &module.statements[0] {
-        Statement::Expression(expr_stmt) => match &expr_stmt.expression {
-            Expression::Object(obj) => {
-                assert_eq!(obj.properties.len(), 0);
+        Statement::VariableDecl(var_decl) => {
+            let init = var_decl.initializer.as_ref().expect("Expected initializer");
+            match init {
+                Expression::Object(obj) => assert_eq!(obj.properties.len(), 0),
+                _ => panic!("Expected object expression"),
             }
-            _ => panic!("Expected object expression"),
-        },
-        _ => panic!("Expected expression statement"),
+        }
+        _ => panic!("Expected variable declaration"),
     }
 }
 

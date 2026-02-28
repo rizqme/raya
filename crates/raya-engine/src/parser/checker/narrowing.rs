@@ -140,9 +140,9 @@ fn apply_typeof_guard(
         "number" => ctx.number_type(),
         "int" => ctx.int_type(),
         "boolean" => ctx.boolean_type(),
-        "function" => return Some(ty), // TODO: filter to function types only
-        "object" => return Some(ty),   // TODO: filter to object types only
-        _ => return Some(ty),          // Unknown type name, no narrowing
+        "function" => return narrow_by_predicate(ctx, ty, negated, is_function_type),
+        "object" => return narrow_by_predicate(ctx, ty, negated, is_object_like_type),
+        _ => return Some(ty), // Unknown type name, no narrowing
     };
 
     if negated {
@@ -151,6 +151,73 @@ fn apply_typeof_guard(
     } else {
         // typeof x === "string" - narrow to string
         Some(target_ty)
+    }
+}
+
+fn narrow_by_predicate(
+    ctx: &mut TypeContext,
+    ty: TypeId,
+    negated: bool,
+    pred: fn(&Type) -> bool,
+) -> Option<TypeId> {
+    match ctx.get(ty).cloned() {
+        Some(Type::Union(union)) => {
+            let mut kept = Vec::new();
+            for member in union.members {
+                if let Some(member_ty) = ctx.get(member) {
+                    let keep = if negated {
+                        !pred(member_ty)
+                    } else {
+                        pred(member_ty)
+                    };
+                    if keep {
+                        kept.push(member);
+                    }
+                }
+            }
+            if kept.is_empty() {
+                Some(ctx.never_type())
+            } else if kept.len() == 1 {
+                Some(kept[0])
+            } else {
+                Some(ctx.union_type(kept))
+            }
+        }
+        Some(t) => {
+            let keep = if negated { !pred(&t) } else { pred(&t) };
+            if keep {
+                Some(ty)
+            } else {
+                Some(ctx.never_type())
+            }
+        }
+        None => Some(ty),
+    }
+}
+
+fn is_function_type(ty: &Type) -> bool {
+    matches!(ty, Type::Function(_))
+}
+
+fn is_object_like_type(ty: &Type) -> bool {
+    use crate::parser::types::PrimitiveType;
+    match ty {
+        Type::Object(_)
+        | Type::Class(_)
+        | Type::Interface(_)
+        | Type::Array(_)
+        | Type::Map(_)
+        | Type::Set(_)
+        | Type::Task(_)
+        | Type::Channel(_)
+        | Type::Generic(_)
+        | Type::JSObject
+        | Type::Json
+        | Type::RegExp
+        | Type::Mutex => true,
+        Type::Primitive(PrimitiveType::Null) => false,
+        Type::Primitive(_) => false,
+        _ => false,
     }
 }
 
@@ -661,16 +728,8 @@ fn apply_type_predicate_guard(
         "isNumber" => Some(ctx.number_type()),
         "isBoolean" => Some(ctx.boolean_type()),
         "isNull" => Some(ctx.null_type()),
-        "isObject" => {
-            // isObject could mean any object type
-            // For now, we can't narrow precisely without more context
-            return Some(ty);
-        }
-        "isFunction" => {
-            // isFunction would narrow to function types
-            // For now, return as-is
-            return Some(ty);
-        }
+        "isObject" => return narrow_by_predicate(ctx, ty, negated, is_object_like_type),
+        "isFunction" => return narrow_by_predicate(ctx, ty, negated, is_function_type),
         _ => None,
     };
 

@@ -141,7 +141,8 @@ raya repl
 raya eval "1 + 2"
 
 # Package manager
-raya init              # Initialize project
+raya init              # Initialize project (raya.toml mode)
+raya init --node       # Initialize project (package.json mode)
 raya add <package>     # Add dependency
 raya install           # Install dependencies
 ```
@@ -155,6 +156,13 @@ raya init my-project
 cd my-project
 ```
 
+Node-style mode:
+
+```bash
+raya init --node my-project
+cd my-project
+```
+
 This creates:
 
 ```
@@ -162,6 +170,9 @@ my-project/
 ├── raya.toml          # Project config
 ├── src/
 │   └── main.raya      # Entry point
+├── .raya/
+│   ├── packages/      # Project-local installed dependencies
+│   └── build/         # Project-local artifacts
 └── tests/             # Test files
 ```
 
@@ -178,6 +189,22 @@ entry = "src/main.raya"
 
 [scripts]
 dev = "run src/main.raya"
+```
+
+Node mode writes `package.json` and places Raya settings under a top-level `raya` object with strict mode default:
+
+```json
+{
+  "name": "my-project",
+  "version": "0.1.0",
+  "dependencies": {},
+  "devDependencies": {},
+  "raya": {
+    "mode": "strict",
+    "entry": "src/main.raya",
+    "registry": { "url": "https://registry.npmjs.org" }
+  }
+}
 ```
 
 ## Next Steps

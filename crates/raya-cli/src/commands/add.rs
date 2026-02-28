@@ -11,7 +11,8 @@ pub fn execute(package: String, dev: bool, exact: bool, no_install: bool) -> any
         .replace('"', "\\\"");
     let pkg = package.replace('"', "\\\"");
     let script = format!(
-        r#"pm.add("{}", "{}", {}, {}, {})"#,
+        r#"import pm from "std:pm";
+pm.add("{}", "{}", {}, {}, {})"#,
         cwd, pkg, dev, exact, no_install
     );
     match rt.eval(&script) {

@@ -73,8 +73,8 @@ class NodeUrl {
         return urlObject.toString();
     }
 
-    resolve(from: string, to: string): string {
-        const resolved = new URL(to, from);
+    resolve(fromUrl: string, toUrl: string): string {
+        const resolved = new URL(toUrl, fromUrl);
         return resolved.toString();
     }
 

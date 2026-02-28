@@ -19,10 +19,24 @@ pub fn execute(url: Option<String>, global: bool, show: bool) -> anyhow::Result<
 }
 
 fn show_current() -> anyhow::Result<()> {
-    // Resolution order: RAYA_REGISTRY env > project raya.toml > global config > default
+    // Resolution order: RAYA_REGISTRY env > project package.json/raya.toml > global config > default
     if let Ok(url) = std::env::var("RAYA_REGISTRY") {
         println!("Registry: {} (from RAYA_REGISTRY)", url);
         return Ok(());
+    }
+
+    if let Ok(content) = std::fs::read_to_string("package.json") {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(url) = pkg
+                .get("raya")
+                .and_then(|r| r.get("registry"))
+                .and_then(|r| r.get("url"))
+                .and_then(|u| u.as_str())
+            {
+                println!("Registry: {} (from package.json)", url);
+                return Ok(());
+            }
+        }
     }
 
     if let Ok(manifest) = PackageManifest::from_file(Path::new("raya.toml")) {
@@ -48,10 +62,26 @@ fn show_current() -> anyhow::Result<()> {
 }
 
 fn set_project(url: &str) -> anyhow::Result<()> {
+    let package_json_path = Path::new("package.json");
+    if package_json_path.exists() {
+        let content = std::fs::read_to_string(package_json_path)?;
+        let mut pkg: serde_json::Value = serde_json::from_str(&content)?;
+        if !pkg.get("raya").map(|v| v.is_object()).unwrap_or(false) {
+            pkg["raya"] = serde_json::json!({});
+        }
+        if !pkg["raya"].get("registry").map(|v| v.is_object()).unwrap_or(false) {
+            pkg["raya"]["registry"] = serde_json::json!({});
+        }
+        pkg["raya"]["registry"]["url"] = serde_json::json!(url);
+        std::fs::write(package_json_path, serde_json::to_string_pretty(&pkg)?)?;
+        println!("Registry set to {} (in package.json)", url);
+        return Ok(());
+    }
+
     let manifest_path = Path::new("raya.toml");
     if !manifest_path.exists() {
         return Err(anyhow!(
-            "No raya.toml found. Use --global to set the registry globally, \
+            "No package.json or raya.toml found. Use --global to set the registry globally, \
              or run `raya init` first."
         ));
     }
