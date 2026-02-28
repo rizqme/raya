@@ -1,10 +1,97 @@
-// Perf Hooks - Node-compatible node:perf_hooks shim
+// node:perf_hooks - Node.js-compatible performance hooks
+// Usage: import { performance } from "node:perf_hooks";
+
+class PerformanceEntry {
+    name: string;
+    entryType: string;
+    startTime: number;
+    duration: number;
+
+    constructor(name: string, entryType: string, startTime: number, duration: number) {
+        this.name = name;
+        this.entryType = entryType;
+        this.startTime = startTime;
+        this.duration = duration;
+    }
+}
+
+class Performance {
+    _marks: string[];
+    _markTimes: number[];
+    _measures: PerformanceEntry[];
+    _epoch: number;
+
+    constructor() {
+        this._marks = [];
+        this._markTimes = [];
+        this._measures = [];
+        this._epoch = __NATIVE_CALL<number>("time.monotonic");
+    }
+
+    now(): number {
+        return __NATIVE_CALL<number>("time.monotonic") - this._epoch;
+    }
+
+    mark(name: string): void {
+        this._marks.push(name);
+        this._markTimes.push(this.now());
+    }
+
+    measure(name: string, startMark?: string, endMark?: string): PerformanceEntry {
+        let startTime = 0;
+        let endTime = this.now();
+
+        if (startMark != null) {
+            let i = 0;
+            while (i < this._marks.length) {
+                if (this._marks[i] == startMark) {
+                    startTime = this._markTimes[i];
+                }
+                i = i + 1;
+            }
+        }
+
+        if (endMark != null) {
+            let i = 0;
+            while (i < this._marks.length) {
+                if (this._marks[i] == endMark) {
+                    endTime = this._markTimes[i];
+                }
+                i = i + 1;
+            }
+        }
+
+        const entry = new PerformanceEntry(name, "measure", startTime, endTime - startTime);
+        this._measures.push(entry);
+        return entry;
+    }
+
+    clearMarks(): void {
+        this._marks = [];
+        this._markTimes = [];
+    }
+
+    clearMeasures(): void {
+        this._measures = [];
+    }
+
+    timeOrigin(): number {
+        return this._epoch;
+    }
+}
 
 class PerfHooks {
+    performance: Performance;
+
+    constructor() {
+        this.performance = new Performance();
+    }
+
     now(): number {
-        return __NATIVE_CALL<number>("runtime.now");
+        return this.performance.now();
     }
 }
 
 const perfHooks = new PerfHooks();
+export { Performance, PerformanceEntry };
 export default perfHooks;

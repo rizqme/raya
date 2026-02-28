@@ -1,20 +1,50 @@
 // node:https - Node.js-compatible HTTPS module
 // Usage: import https from "node:https";
-// HTTPS server requires TLS configuration — use std:http.HttpServer.withTls() for full control.
+// Client requests use std:fetch underneath. Server requires TLS config.
+
+class ClientResponse {
+    statusCode: number;
+    _body: string;
+    _headers: string[];
+
+    constructor(statusCode: number, body: string, headers: string[]) {
+        this.statusCode = statusCode;
+        this._body = body;
+        this._headers = headers;
+    }
+
+    body(): string { return this._body; }
+    headers(): string[] { return this._headers; }
+}
 
 class NodeHttps {
     createServer(): void {
         throw new Error("node:https.createServer() requires TLS cert/key — use std:http.HttpServer.withTls() directly");
     }
 
-    request(_url: string): void {
-        throw new Error("node:https.request() is not yet implemented — use std:fetch for HTTPS requests");
+    get(url: string, callback: (res: ClientResponse) => void): void {
+        async {
+            const h: number = __NATIVE_CALL<number>("fetch.request", "GET", url, "", "");
+            const status: number = __NATIVE_CALL<number>("fetch.resStatus", h);
+            const body: string = __NATIVE_CALL<string>("fetch.resText", h);
+            const headers: string[] = __NATIVE_CALL<string[]>("fetch.resHeaders", h);
+            __NATIVE_CALL("fetch.resRelease", h);
+            callback(new ClientResponse(status, body, headers));
+        };
     }
 
-    get(_url: string): void {
-        throw new Error("node:https.get() is not yet implemented — use std:fetch for HTTPS requests");
+    request(method: string, url: string, body: string, callback: (res: ClientResponse) => void): void {
+        async {
+            const h: number = __NATIVE_CALL<number>("fetch.request", method, url, body, "");
+            const status: number = __NATIVE_CALL<number>("fetch.resStatus", h);
+            const resBody: string = __NATIVE_CALL<string>("fetch.resText", h);
+            const headers: string[] = __NATIVE_CALL<string[]>("fetch.resHeaders", h);
+            __NATIVE_CALL("fetch.resRelease", h);
+            callback(new ClientResponse(status, resBody, headers));
+        };
     }
 }
 
 const https = new NodeHttps();
+export { ClientResponse };
 export default https;

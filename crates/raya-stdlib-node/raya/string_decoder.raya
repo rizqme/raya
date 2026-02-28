@@ -1,20 +1,28 @@
-// String Decoder - Node-compatible node:string_decoder shim
-// Usage: import stringDecoder from "node:string_decoder";
+// node:string_decoder - Node.js-compatible string decoder
+// Usage: import { StringDecoder } from "node:string_decoder";
+// Decodes Buffer to string. Currently only supports UTF-8.
 
 class StringDecoder {
-    constructor(_encoding: string) {}
+    encoding: string;
+
+    constructor(encoding?: string) {
+        this.encoding = encoding != null ? encoding : "utf8";
+    }
 
     write(buf: Buffer): string {
         return String(buf);
     }
 
-    end(buf: Buffer): string {
-        return String(buf);
+    end(buf?: Buffer): string {
+        if (buf != null) {
+            return String(buf);
+        }
+        return "";
     }
 }
 
 class StringDecoderModule {
-    create(encoding: string): StringDecoder {
+    create(encoding?: string): StringDecoder {
         return new StringDecoder(encoding);
     }
 }

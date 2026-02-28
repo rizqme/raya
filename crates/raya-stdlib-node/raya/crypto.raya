@@ -17,7 +17,13 @@ class Hash {
     }
 
     digest(encoding?: string): string {
-        return __NATIVE_CALL<string>("crypto.hash", this._algorithm, this._data);
+        const hex: string = __NATIVE_CALL<string>("crypto.hash", this._algorithm, this._data);
+        if (encoding == "base64") {
+            const buf: Buffer = __NATIVE_CALL<Buffer>("crypto.fromHex", hex);
+            return __NATIVE_CALL<string>("crypto.toBase64", buf);
+        }
+        // Default and "hex": return hex string
+        return hex;
     }
 }
 
@@ -38,7 +44,12 @@ class Hmac {
     }
 
     digest(encoding?: string): string {
-        return __NATIVE_CALL<string>("crypto.hmac", this._algorithm, this._key, this._data);
+        const hex: string = __NATIVE_CALL<string>("crypto.hmac", this._algorithm, this._key, this._data);
+        if (encoding == "base64") {
+            const buf: Buffer = __NATIVE_CALL<Buffer>("crypto.fromHex", hex);
+            return __NATIVE_CALL<string>("crypto.toBase64", buf);
+        }
+        return hex;
     }
 }
 
@@ -73,6 +84,14 @@ class NodeCrypto {
 
     generateKeyPairSync(algorithm: string): string[] {
         return __NATIVE_CALL<string[]>("crypto.generateKeyPair", algorithm);
+    }
+
+    getHashes(): string[] {
+        return ["sha1", "sha256", "sha384", "sha512", "md5"];
+    }
+
+    getCiphers(): string[] {
+        return ["aes-256-gcm"];
     }
 
     // Direct access to underlying std:crypto methods

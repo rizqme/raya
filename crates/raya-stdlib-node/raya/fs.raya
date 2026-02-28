@@ -3,21 +3,54 @@
 // Native-backed implementation (no std import indirection).
 
 class Stats {
-    _path: string;
+    _size: number;
+    _isFile: boolean;
+    _isDirectory: boolean;
+    _isSymbolicLink: boolean;
+    _mtimeMs: number;
+    _birthtimeMs: number;
+    _mode: number;
 
     constructor(path: string) {
-        this._path = path;
+        // fs.stat returns packed array: [size, isFile, isDir, isSymlink, modifiedMs, createdMs, mode]
+        const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
+        this._size = s[0];
+        this._isFile = s[1] == 1;
+        this._isDirectory = s[2] == 1;
+        this._isSymbolicLink = s[3] == 1;
+        this._mtimeMs = s[4];
+        this._birthtimeMs = s[5];
+        this._mode = s[6];
     }
 
-    isFile(): boolean { return __NATIVE_CALL<boolean>("fs.isFile", this._path); }
-    isDirectory(): boolean { return __NATIVE_CALL<boolean>("fs.isDir", this._path); }
-    isSymbolicLink(): boolean { return __NATIVE_CALL<boolean>("fs.isSymlink", this._path); }
-    size(): number { return __NATIVE_CALL<number>("fs.fileSize", this._path); }
-    mtimeMs(): number { return __NATIVE_CALL<number>("fs.lastModified", this._path); }
+    isFile(): boolean { return this._isFile; }
+    isDirectory(): boolean { return this._isDirectory; }
+    isSymbolicLink(): boolean { return this._isSymbolicLink; }
+    size(): number { return this._size; }
+    mtimeMs(): number { return this._mtimeMs; }
+    birthtimeMs(): number { return this._birthtimeMs; }
+    mode(): number { return this._mode; }
+}
+
+class Dirent {
+    name: string;
+    _isFile: boolean;
+    _isDir: boolean;
+
+    constructor(name: string, isFile: boolean, isDir: boolean) {
+        this.name = name;
+        this._isFile = isFile;
+        this._isDir = isDir;
+    }
+
+    isFile(): boolean { return this._isFile; }
+    isDirectory(): boolean { return this._isDir; }
 }
 
 class NodeFs {
-    readFileSync(path: string): string {
+    readFileSync(path: string, encoding?: string): string {
+        // Node returns Buffer by default, string with encoding
+        // Raya always returns string (text mode)
         return __NATIVE_CALL<string>("fs.readTextFile", path);
     }
 
@@ -37,6 +70,17 @@ class NodeFs {
         return new Stats(path);
     }
 
+    lstatSync(path: string): Stats {
+        // fs.stat already uses symlink_metadata (lstat behavior)
+        return new Stats(path);
+    }
+
+    accessSync(path: string, mode?: number): void {
+        if (!__NATIVE_CALL<boolean>("fs.exists", path)) {
+            throw new Error("ENOENT: no such file or directory, access '" + path + "'");
+        }
+    }
+
     mkdirSync(path: string, recursive?: boolean): void {
         if (recursive == true) {
             __NATIVE_CALL("fs.mkdirRecursive", path);
@@ -45,8 +89,21 @@ class NodeFs {
         }
     }
 
-    readdirSync(path: string): string[] {
-        return __NATIVE_CALL<string[]>("fs.readDir", path);
+    readdirSync(path: string, withFileTypes?: boolean): string[] | Dirent[] {
+        const names: string[] = __NATIVE_CALL<string[]>("fs.readDir", path);
+        if (withFileTypes == true) {
+            const entries: Dirent[] = [];
+            let i = 0;
+            while (i < names.length) {
+                const full = path + "/" + names[i];
+                const isFile = __NATIVE_CALL<boolean>("fs.isFile", full);
+                const isDir = __NATIVE_CALL<boolean>("fs.isDir", full);
+                entries.push(new Dirent(names[i], isFile, isDir));
+                i = i + 1;
+            }
+            return entries;
+        }
+        return names;
     }
 
     unlinkSync(path: string): void {
@@ -57,8 +114,13 @@ class NodeFs {
         __NATIVE_CALL("fs.rmdir", path);
     }
 
-    rmSync(path: string): void {
-        __NATIVE_CALL("fs.remove", path);
+    rmSync(path: string, recursive?: boolean): void {
+        if (recursive == true) {
+            // For recursive removal of directories, use rmdir which handles recursion
+            __NATIVE_CALL("fs.rmdir", path);
+        } else {
+            __NATIVE_CALL("fs.remove", path);
+        }
     }
 
     renameSync(oldPath: string, newPath: string): void {
@@ -89,6 +151,17 @@ class NodeFs {
         return __NATIVE_CALL<string>("fs.tempFile", prefix);
     }
 
+    truncateSync(path: string, len?: number): void {
+        const length = len != null ? len : 0;
+        // Read, truncate, write back
+        const content = __NATIVE_CALL<string>("fs.readTextFile", path);
+        if (length == 0) {
+            __NATIVE_CALL("fs.writeTextFile", path, "");
+        } else {
+            __NATIVE_CALL("fs.writeTextFile", path, content.slice(0, length));
+        }
+    }
+
     // Raya-native API pass-through for convenience
     readFile(path: string): Buffer { return __NATIVE_CALL<Buffer>("fs.readFile", path); }
     writeFile(path: string, data: Buffer): void { __NATIVE_CALL("fs.writeFile", path, data); }
@@ -101,5 +174,5 @@ class NodeFs {
 }
 
 const fs = new NodeFs();
-export { Stats };
+export { Stats, Dirent };
 export default fs;

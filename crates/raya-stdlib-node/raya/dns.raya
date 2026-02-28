@@ -4,7 +4,28 @@
 
 import stdDns from "std:dns";
 
+class DnsPromises {
+    async lookup(hostname: string): Promise<string[]> { return stdDns.lookup(hostname); }
+    async lookup4(hostname: string): Promise<string[]> { return stdDns.lookup4(hostname); }
+    async lookup6(hostname: string): Promise<string[]> { return stdDns.lookup6(hostname); }
+    async resolve(hostname: string): Promise<string[]> { return stdDns.lookup(hostname); }
+    async resolve4(hostname: string): Promise<string[]> { return stdDns.lookup4(hostname); }
+    async resolve6(hostname: string): Promise<string[]> { return stdDns.lookup6(hostname); }
+    async resolveMx(hostname: string): Promise<string[]> { return stdDns.lookupMx(hostname); }
+    async resolveTxt(hostname: string): Promise<string[]> { return stdDns.lookupTxt(hostname); }
+    async resolveSrv(hostname: string): Promise<string[]> { return stdDns.lookupSrv(hostname); }
+    async resolveCname(hostname: string): Promise<string[]> { return stdDns.lookupCname(hostname); }
+    async resolveNs(hostname: string): Promise<string[]> { return stdDns.lookupNs(hostname); }
+    async reverse(ip: string): Promise<string[]> { return stdDns.reverse(ip); }
+}
+
 class NodeDns {
+    promises: DnsPromises;
+
+    constructor() {
+        this.promises = new DnsPromises();
+    }
+
     lookup(hostname: string): string[] { return stdDns.lookup(hostname); }
     lookup4(hostname: string): string[] { return stdDns.lookup4(hostname); }
     lookup6(hostname: string): string[] { return stdDns.lookup6(hostname); }
@@ -20,4 +41,5 @@ class NodeDns {
 }
 
 const dns = new NodeDns();
+export { DnsPromises };
 export default dns;

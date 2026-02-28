@@ -1,10 +1,40 @@
-// V8 - Node-compatible node:v8 shim
+// node:v8 - Node.js-compatible V8 module
+// Usage: import v8 from "node:v8";
+// Returns Raya VM heap statistics where available.
+
+class HeapStatistics {
+    totalHeapSize: number;
+    usedHeapSize: number;
+    heapSizeLimit: number;
+    totalPhysicalSize: number;
+    totalAvailableSize: number;
+    mallocedMemory: number;
+    peakMallocedMemory: number;
+
+    constructor(used: number, total: number) {
+        this.usedHeapSize = used;
+        this.totalHeapSize = total;
+        this.heapSizeLimit = total * 2;
+        this.totalPhysicalSize = total;
+        this.totalAvailableSize = total * 2 - used;
+        this.mallocedMemory = 0;
+        this.peakMallocedMemory = 0;
+    }
+}
 
 class V8 {
-    getHeapStatistics(): string {
-        return "{}";
+    getHeapStatistics(): HeapStatistics {
+        const heapUsed = __NATIVE_CALL<number>("process.heapUsed");
+        const heapTotal = __NATIVE_CALL<number>("process.heapTotal");
+        return new HeapStatistics(heapUsed, heapTotal);
+    }
+
+    getHeapSpaceStatistics(): HeapStatistics[] {
+        // Return a single space representing the whole heap
+        return [this.getHeapStatistics()];
     }
 }
 
 const v8 = new V8();
+export { HeapStatistics };
 export default v8;

@@ -1,64 +1,131 @@
 // node:fs/promises - Node.js-compatible async filesystem module
 // Usage: import fsp from "node:fs/promises";
-// Async wrappers with Node.js naming conventions.
+// Async wrappers around native fs calls.
 
-import stdFs from "std:fs";
+class Stats {
+    _size: number;
+    _isFile: boolean;
+    _isDirectory: boolean;
+    _isSymbolicLink: boolean;
+    _mtimeMs: number;
+    _birthtimeMs: number;
+    _mode: number;
+
+    constructor(s: number[]) {
+        this._size = s[0];
+        this._isFile = s[1] == 1;
+        this._isDirectory = s[2] == 1;
+        this._isSymbolicLink = s[3] == 1;
+        this._mtimeMs = s[4];
+        this._birthtimeMs = s[5];
+        this._mode = s[6];
+    }
+
+    isFile(): boolean { return this._isFile; }
+    isDirectory(): boolean { return this._isDirectory; }
+    isSymbolicLink(): boolean { return this._isSymbolicLink; }
+    size(): number { return this._size; }
+    mtimeMs(): number { return this._mtimeMs; }
+    birthtimeMs(): number { return this._birthtimeMs; }
+    mode(): number { return this._mode; }
+}
 
 class FsPromises {
-    async readFile(path: string): Promise<string> {
-        return stdFs.readTextFile(path);
+    async readFile(path: string, encoding?: string): Promise<string> {
+        return __NATIVE_CALL<string>("fs.readTextFile", path);
     }
 
     async writeFile(path: string, data: string): Promise<void> {
-        stdFs.writeTextFile(path, data);
+        __NATIVE_CALL("fs.writeTextFile", path, data);
     }
 
     async appendFile(path: string, data: string): Promise<void> {
-        stdFs.appendFile(path, data);
+        __NATIVE_CALL("fs.appendFile", path, data);
     }
 
     async readdir(path: string): Promise<string[]> {
-        return stdFs.readDir(path);
+        return __NATIVE_CALL<string[]>("fs.readDir", path);
     }
 
-    async stat(path: string): Promise<number[]> {
-        return stdFs.stat(path);
+    async stat(path: string): Promise<Stats> {
+        const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
+        return new Stats(s);
+    }
+
+    async lstat(path: string): Promise<Stats> {
+        const s: number[] = __NATIVE_CALL<number[]>("fs.stat", path);
+        return new Stats(s);
     }
 
     async mkdir(path: string, recursive?: boolean): Promise<void> {
         if (recursive == true) {
-            stdFs.mkdirRecursive(path);
+            __NATIVE_CALL("fs.mkdirRecursive", path);
         } else {
-            stdFs.mkdir(path);
+            __NATIVE_CALL("fs.mkdir", path);
         }
     }
 
-    async rm(path: string): Promise<void> {
-        stdFs.remove(path);
+    async rm(path: string, recursive?: boolean): Promise<void> {
+        if (recursive == true) {
+            __NATIVE_CALL("fs.rmdir", path);
+        } else {
+            __NATIVE_CALL("fs.remove", path);
+        }
+    }
+
+    async rmdir(path: string): Promise<void> {
+        __NATIVE_CALL("fs.rmdir", path);
     }
 
     async unlink(path: string): Promise<void> {
-        stdFs.remove(path);
+        __NATIVE_CALL("fs.remove", path);
     }
 
     async rename(oldPath: string, newPath: string): Promise<void> {
-        stdFs.rename(oldPath, newPath);
+        __NATIVE_CALL("fs.rename", oldPath, newPath);
     }
 
     async copyFile(src: string, dest: string): Promise<void> {
-        stdFs.copy(src, dest);
+        __NATIVE_CALL("fs.copy", src, dest);
     }
 
     async realpath(path: string): Promise<string> {
-        return stdFs.realpath(path);
+        return __NATIVE_CALL<string>("fs.realpath", path);
+    }
+
+    async readlink(path: string): Promise<string> {
+        return __NATIVE_CALL<string>("fs.readlink", path);
+    }
+
+    async symlink(target: string, path: string): Promise<void> {
+        __NATIVE_CALL("fs.symlink", target, path);
+    }
+
+    async chmod(path: string, mode: number): Promise<void> {
+        __NATIVE_CALL("fs.chmod", path, mode);
     }
 
     async access(path: string): Promise<void> {
-        if (!stdFs.exists(path)) {
+        if (!__NATIVE_CALL<boolean>("fs.exists", path)) {
             throw new Error("ENOENT: no such file or directory: " + path);
+        }
+    }
+
+    async mkdtemp(prefix: string): Promise<string> {
+        return __NATIVE_CALL<string>("fs.tempFile", prefix);
+    }
+
+    async truncate(path: string, len?: number): Promise<void> {
+        const length = len != null ? len : 0;
+        if (length == 0) {
+            __NATIVE_CALL("fs.writeTextFile", path, "");
+        } else {
+            const content = __NATIVE_CALL<string>("fs.readTextFile", path);
+            __NATIVE_CALL("fs.writeTextFile", path, content.slice(0, length));
         }
     }
 }
 
 const fsp = new FsPromises();
+export { Stats };
 export default fsp;

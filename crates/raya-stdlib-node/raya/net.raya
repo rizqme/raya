@@ -7,32 +7,55 @@ import stdNet, { TcpListener, TcpStream } from "std:net";
 class Socket {
     _stream: TcpStream;
     remoteAddress: string;
+    remotePort: number;
+    _destroyed: boolean;
 
     constructor(stream: TcpStream) {
         this._stream = stream;
         this.remoteAddress = stream.remoteAddr();
+        // Extract port from "host:port" format
+        const addr = stream.remoteAddr();
+        const parts = addr.split(":");
+        this.remotePort = parts.length > 1 ? Number(parts[parts.length - 1]) : 0;
+        this._destroyed = false;
     }
 
     write(data: string): number { return this._stream.writeText(data); }
     read(size: number): Buffer { return this._stream.read(size); }
-    end(): void { this._stream.close(); }
-    destroy(): void { this._stream.close(); }
+
+    end(data?: string): void {
+        if (data != null) { this._stream.writeText(data); }
+        this._stream.close();
+    }
+
+    destroy(): void {
+        this._destroyed = true;
+        this._stream.close();
+    }
 
     localAddress(): string { return this._stream.localAddr(); }
+    setKeepAlive(_enable: boolean, _initialDelay?: number): void { /* no-op */ }
+    setTimeout(_timeout: number, _callback?: () => void): void { /* no-op */ }
+    setNoDelay(_noDelay?: boolean): void { /* no-op */ }
 }
 
 class NetServer {
     _listener: TcpListener | null;
     _handler: ((socket: Socket) => void) | null;
+    listening: boolean;
 
     constructor(handler?: (socket: Socket) => void) {
         this._handler = handler != null ? handler : null;
         this._listener = null;
+        this.listening = false;
     }
 
-    listen(port: number, host?: string): NetServer {
+    listen(port: number, host?: string, callback?: () => void): NetServer {
         const h = host != null ? host : "127.0.0.1";
         this._listener = stdNet.listen(h, port);
+        this.listening = true;
+
+        if (callback != null) { callback(); }
 
         if (this._handler != null) {
             const handler = this._handler;
@@ -47,8 +70,10 @@ class NetServer {
         return this;
     }
 
-    close(): void {
+    close(callback?: () => void): void {
         if (this._listener != null) { this._listener.close(); }
+        this.listening = false;
+        if (callback != null) { callback(); }
     }
 
     address(): string {
@@ -62,15 +87,30 @@ class NodeNet {
         return new NetServer(handler);
     }
 
-    createConnection(port: number, host?: string): Socket {
+    createConnection(port: number, host?: string, callback?: () => void): Socket {
         const h = host != null ? host : "127.0.0.1";
         const stream = stdNet.connect(h, port);
-        return new Socket(stream);
+        const socket = new Socket(stream);
+        if (callback != null) { callback(); }
+        return socket;
     }
 
-    connect(port: number, host?: string): Socket {
-        return this.createConnection(port, host);
+    connect(port: number, host?: string, callback?: () => void): Socket {
+        return this.createConnection(port, host, callback);
     }
+
+    isIP(input: string): number {
+        // Basic IP version detection
+        if (input.includes(":")) { return 6; }
+        if (input.includes(".")) {
+            const parts = input.split(".");
+            if (parts.length == 4) { return 4; }
+        }
+        return 0;
+    }
+
+    isIPv4(input: string): boolean { return this.isIP(input) == 4; }
+    isIPv6(input: string): boolean { return this.isIP(input) == 6; }
 }
 
 const net = new NodeNet();

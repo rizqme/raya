@@ -2,32 +2,6 @@
 // Usage: import { URL, URLSearchParams } from "node:url";
 // Native-backed implementation (no std import indirection).
 
-class URL {
-    _handle: number;
-
-    constructor(input: string, base?: string) {
-        const b = base != null ? base : "";
-        if (b == "") {
-            this._handle = __NATIVE_CALL<number>("url.parse", input);
-        } else {
-            this._handle = __NATIVE_CALL<number>("url.parseWithBase", input, b);
-        }
-    }
-
-    protocol(): string { return __NATIVE_CALL<string>("url.protocol", this._handle); }
-    hostname(): string { return __NATIVE_CALL<string>("url.hostname", this._handle); }
-    port(): string { return __NATIVE_CALL<string>("url.port", this._handle); }
-    host(): string { return __NATIVE_CALL<string>("url.host", this._handle); }
-    pathname(): string { return __NATIVE_CALL<string>("url.pathname", this._handle); }
-    search(): string { return __NATIVE_CALL<string>("url.search", this._handle); }
-    hash(): string { return __NATIVE_CALL<string>("url.hash", this._handle); }
-    origin(): string { return __NATIVE_CALL<string>("url.origin", this._handle); }
-    href(): string { return __NATIVE_CALL<string>("url.href", this._handle); }
-    username(): string { return __NATIVE_CALL<string>("url.username", this._handle); }
-    password(): string { return __NATIVE_CALL<string>("url.password", this._handle); }
-    toString(): string { return __NATIVE_CALL<string>("url.toString", this._handle); }
-}
-
 class URLSearchParams {
     _handle: number;
 
@@ -54,6 +28,42 @@ class URLSearchParams {
     size(): number { return __NATIVE_CALL<number>("url.paramsSize", this._handle); }
 }
 
+class URL {
+    _handle: number;
+    searchParams: URLSearchParams;
+
+    constructor(input: string, base?: string) {
+        const b = base != null ? base : "";
+        if (b == "") {
+            this._handle = __NATIVE_CALL<number>("url.parse", input);
+        } else {
+            this._handle = __NATIVE_CALL<number>("url.parseWithBase", input, b);
+        }
+        // Initialize searchParams from the URL's query string
+        const s = __NATIVE_CALL<string>("url.search", this._handle);
+        if (s != "" && s.length > 1) {
+            // Strip leading "?"
+            this.searchParams = new URLSearchParams(s.slice(1));
+        } else {
+            this.searchParams = new URLSearchParams();
+        }
+    }
+
+    protocol(): string { return __NATIVE_CALL<string>("url.protocol", this._handle); }
+    hostname(): string { return __NATIVE_CALL<string>("url.hostname", this._handle); }
+    port(): string { return __NATIVE_CALL<string>("url.port", this._handle); }
+    host(): string { return __NATIVE_CALL<string>("url.host", this._handle); }
+    pathname(): string { return __NATIVE_CALL<string>("url.pathname", this._handle); }
+    search(): string { return __NATIVE_CALL<string>("url.search", this._handle); }
+    hash(): string { return __NATIVE_CALL<string>("url.hash", this._handle); }
+    origin(): string { return __NATIVE_CALL<string>("url.origin", this._handle); }
+    href(): string { return __NATIVE_CALL<string>("url.href", this._handle); }
+    username(): string { return __NATIVE_CALL<string>("url.username", this._handle); }
+    password(): string { return __NATIVE_CALL<string>("url.password", this._handle); }
+    toString(): string { return __NATIVE_CALL<string>("url.toString", this._handle); }
+    toJSON(): string { return this.toString(); }
+}
+
 class NodeUrl {
     parse(urlString: string): URL {
         return new URL(urlString);
@@ -68,8 +78,13 @@ class NodeUrl {
         return resolved.toString();
     }
 
+    // Node-compatible global function aliases
     encode(component: string): string { return __NATIVE_CALL<string>("url.encode", component); }
     decode(component: string): string { return __NATIVE_CALL<string>("url.decode", component); }
+
+    // Aliases matching encodeURIComponent/decodeURIComponent
+    encodeURIComponent(component: string): string { return __NATIVE_CALL<string>("url.encode", component); }
+    decodeURIComponent(component: string): string { return __NATIVE_CALL<string>("url.decode", component); }
 }
 
 const url = new NodeUrl();

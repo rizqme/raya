@@ -1,19 +1,65 @@
 // node:test - Node.js-compatible test runner
 // Usage: import test from "node:test";
-// Usage: import { describe, it } from "node:test";
+// Usage: import { describe, it, before, after, beforeEach, afterEach } from "node:test";
+
+function _noop(): void {}
+
+let _passed: number = 0;
+let _failed: number = 0;
+let _suiteBeforeHook: () => void = _noop;
+let _suiteAfterHook: () => void = _noop;
+let _beforeEachHook: () => void = _noop;
+let _afterEachHook: () => void = _noop;
+
+function before(fn: () => void): void {
+    _suiteBeforeHook = fn;
+}
+
+function after(fn: () => void): void {
+    _suiteAfterHook = fn;
+}
+
+function beforeEach(fn: () => void): void {
+    _beforeEachHook = fn;
+}
+
+function afterEach(fn: () => void): void {
+    _afterEachHook = fn;
+}
 
 function describe(name: string, fn: () => void): void {
-    const _name = name;
+    __NATIVE_CALL("io.write", "# " + name + "\n");
+    const prevBefore = _suiteBeforeHook;
+    const prevAfter = _suiteAfterHook;
+    const prevBeforeEach = _beforeEachHook;
+    const prevAfterEach = _afterEachHook;
+    _suiteBeforeHook = _noop;
+    _suiteAfterHook = _noop;
+    _beforeEachHook = _noop;
+    _afterEachHook = _noop;
+
     fn();
+
+    _suiteBeforeHook();
+    _suiteAfterHook();
+
+    _suiteBeforeHook = prevBefore;
+    _suiteAfterHook = prevAfter;
+    _beforeEachHook = prevBeforeEach;
+    _afterEachHook = prevAfterEach;
 }
 
 function it(name: string, fn: () => void): void {
+    _beforeEachHook();
     try {
         fn();
-        const _ok = name;
+        _passed = _passed + 1;
+        __NATIVE_CALL("io.write", "  ok - " + name + "\n");
     } catch (e) {
-        throw e;
+        _failed = _failed + 1;
+        __NATIVE_CALL("io.writeErr", "  FAIL - " + name + "\n");
     }
+    _afterEachHook();
 }
 
 function testCase(name: string, fn: () => void): void {
@@ -24,8 +70,16 @@ class Test {
     describe(name: string, fn: () => void): void { describe(name, fn); }
     it(name: string, fn: () => void): void { it(name, fn); }
     test(name: string, fn: () => void): void { testCase(name, fn); }
+    before(fn: () => void): void { before(fn); }
+    after(fn: () => void): void { after(fn); }
+    beforeEach(fn: () => void): void { beforeEach(fn); }
+    afterEach(fn: () => void): void { afterEach(fn); }
+
+    passed(): number { return _passed; }
+    failed(): number { return _failed; }
+    total(): number { return _passed + _failed; }
 }
 
 const testRunner = new Test();
-export { describe, it, testCase as test };
+export { describe, it, testCase as test, before, after, beforeEach, afterEach };
 export default testRunner;

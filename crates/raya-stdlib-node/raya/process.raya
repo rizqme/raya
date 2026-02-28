@@ -2,15 +2,88 @@
 // Usage: import process from "node:process";
 // Native-backed implementation (no std import indirection).
 
+class ProcessEnv {
+    get(key: string): string {
+        return __NATIVE_CALL<string>("env.get", key);
+    }
+    set(key: string, value: string): void {
+        __NATIVE_CALL("env.set", key, value);
+    }
+    has(key: string): boolean {
+        return __NATIVE_CALL<boolean>("env.has", key);
+    }
+    delete(key: string): void {
+        __NATIVE_CALL("env.remove", key);
+    }
+    keys(): string[] {
+        // env.all returns flattened [key, value, key, value, ...]
+        const all: string[] = __NATIVE_CALL<string[]>("env.all");
+        const result: string[] = [];
+        let i = 0;
+        while (i < all.length) {
+            result.push(all[i]);
+            i = i + 2;
+        }
+        return result;
+    }
+}
+
+class MemoryUsage {
+    rss: number;
+    heapTotal: number;
+    heapUsed: number;
+    external: number;
+    arrayBuffers: number;
+
+    constructor(heapUsed: number, heapTotal: number) {
+        this.heapUsed = heapUsed;
+        this.heapTotal = heapTotal;
+        this.rss = heapTotal; // Approximation
+        this.external = 0;
+        this.arrayBuffers = 0;
+    }
+}
+
+class WritableStub {
+    write(data: string): boolean {
+        __NATIVE_CALL("io.write", data);
+        return true;
+    }
+}
+
+class ErrWritableStub {
+    write(data: string): boolean {
+        __NATIVE_CALL("io.writeErr", data);
+        return true;
+    }
+}
+
 class NodeProcess {
+    env: ProcessEnv;
+    stdout: WritableStub;
+    stderr: ErrWritableStub;
+    exitCode: number;
+
+    constructor() {
+        this.env = new ProcessEnv();
+        this.stdout = new WritableStub();
+        this.stderr = new ErrWritableStub();
+        this.exitCode = 0;
+    }
+
     pid(): number { return __NATIVE_CALL<number>("process.pid"); }
     ppid(): number { return __NATIVE_CALL<number>("process.ppid"); }
     argv(): string[] { return __NATIVE_CALL<string[]>("process.argv"); }
     execPath(): string { return __NATIVE_CALL<string>("process.execPath"); }
     version(): string { return __NATIVE_CALL<string>("process.version"); }
     uptime(): number { return __NATIVE_CALL<number>("process.uptime"); }
+    platform(): string { return __NATIVE_CALL<string>("os.platform"); }
+    arch(): string { return __NATIVE_CALL<string>("os.arch"); }
 
-    exit(code: number): void { __NATIVE_CALL("process.exit", code); }
+    exit(code?: number): void {
+        const c = code != null ? code : this.exitCode;
+        __NATIVE_CALL("process.exit", c);
+    }
     abort(): void { __NATIVE_CALL("process.exit", 134); }
 
     cwd(): string { return __NATIVE_CALL<string>("env.cwd"); }
@@ -19,14 +92,24 @@ class NodeProcess {
     title(): string { return __NATIVE_CALL<string>("process.title"); }
     setTitle(t: string): void { __NATIVE_CALL("process.setTitle", t); }
 
-    memoryUsage(): number[] {
+    memoryUsage(): MemoryUsage {
         const heapUsed = __NATIVE_CALL<number>("process.heapUsed");
         const heapTotal = __NATIVE_CALL<number>("process.heapTotal");
-        return [heapUsed, heapTotal];
+        return new MemoryUsage(heapUsed, heapTotal);
     }
 
     cpuUsage(): number[] { return __NATIVE_CALL<number[]>("process.cpuUsage"); }
-    hrtime(): number[] { return __NATIVE_CALL<number[]>("process.cpuUsage"); }
+
+    hrtime(): number[] {
+        const ns = __NATIVE_CALL<number>("time.hrtime");
+        const rem = ns % 1000000000;
+        const sec = (ns - rem) / 1000000000;
+        return [sec, rem];
+    }
+
+    nextTick(callback: () => void): void {
+        async { callback(); };
+    }
 
     uid(): number { return __NATIVE_CALL<number>("process.uid"); }
     gid(): number { return __NATIVE_CALL<number>("process.gid"); }
@@ -51,4 +134,5 @@ class NodeProcess {
 }
 
 const process = new NodeProcess();
+export { ProcessEnv, MemoryUsage };
 export default process;

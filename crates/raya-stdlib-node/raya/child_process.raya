@@ -41,6 +41,20 @@ class ChildProcess {
     }
 }
 
+class SpawnSyncResult {
+    status: number;
+    stdout: string;
+    stderr: string;
+    error: Error | null;
+
+    constructor(status: number, stdout: string, stderr: string, error: Error | null) {
+        this.status = status;
+        this.stdout = stdout;
+        this.stderr = stderr;
+        this.error = error;
+    }
+}
+
 class ChildProcessModule {
     execSync(command: string): string {
         const handle: number = __NATIVE_CALL<number>("process.exec", command);
@@ -54,9 +68,27 @@ class ChildProcessModule {
         return out;
     }
 
+    exec(command: string, callback: (error: Error | null, stdout: string, stderr: string) => void): void {
+        async {
+            const handle: number = __NATIVE_CALL<number>("process.exec", command);
+            const code: number = __NATIVE_CALL<number>("process.execGetCode", handle);
+            const out: string = __NATIVE_CALL<string>("process.execGetStdout", handle);
+            const err: string = __NATIVE_CALL<string>("process.execGetStderr", handle);
+            __NATIVE_CALL("process.execRelease", handle);
+            if (code != 0) {
+                callback(new Error("Command failed: " + command + "\n" + err), out, err);
+            } else {
+                callback(null, out, err);
+            }
+        };
+    }
+
     execFileSync(file: string, args: string[]): string {
-        const child = this.spawnSync(file, args);
-        return child.stdout();
+        const result = this.spawnSync(file, args);
+        if (result.status != 0) {
+            throw new Error("Command failed: " + file + "\n" + result.stderr);
+        }
+        return result.stdout;
     }
 
     spawn(command: string, args?: string[]): ChildProcess {
@@ -69,10 +101,17 @@ class ChildProcessModule {
         return new ChildProcess(h);
     }
 
-    spawnSync(command: string, args?: string[]): ChildProcess {
-        const child = this.spawn(command, args);
-        child.wait();
-        return child;
+    spawnSync(command: string, args?: string[]): SpawnSyncResult {
+        let child: ChildProcess;
+        if (args != null) {
+            child = this.spawn(command, args);
+        } else {
+            child = this.spawn(command);
+        }
+        const status = child.wait();
+        const out = child.stdout();
+        const err = child.stderr();
+        return new SpawnSyncResult(status, out, err, null);
     }
 
     fork(_modulePath: string): ChildProcess {
@@ -81,5 +120,5 @@ class ChildProcessModule {
 }
 
 const childProcess = new ChildProcessModule();
-export { ChildProcess };
+export { ChildProcess, SpawnSyncResult };
 export default childProcess;

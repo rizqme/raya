@@ -1,23 +1,85 @@
-// Diagnostics Channel - Node-compatible node:diagnostics_channel shim
+// node:diagnostics_channel - Node.js-compatible diagnostics channel
+// Usage: import diagnosticsChannel from "node:diagnostics_channel";
+// Pure Raya pub/sub implementation.
 
-class DiagnosticsNodeChannel {
+class DiagChannel {
     _name: string;
+    _subscribers: ((message: unknown) => void)[];
 
     constructor(name: string) {
         this._name = name;
+        this._subscribers = [];
     }
 
-    publish(_message: string): void {
-        // No-op shim
+    subscribe(handler: (message: unknown) => void): void {
+        this._subscribers.push(handler);
+    }
+
+    unsubscribe(handler: (message: unknown) => void): boolean {
+        let i = 0;
+        while (i < this._subscribers.length) {
+            if (this._subscribers[i] == handler) {
+                this._subscribers.splice(i, 1);
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    publish(message: unknown): void {
+        let i = 0;
+        while (i < this._subscribers.length) {
+            this._subscribers[i](message);
+            i = i + 1;
+        }
+    }
+
+    hasSubscribers(): boolean {
+        return this._subscribers.length > 0;
+    }
+
+    name(): string {
+        return this._name;
     }
 }
 
 class DiagnosticsChannel {
-    channel(name: string): DiagnosticsNodeChannel {
-        return new DiagnosticsNodeChannel(name);
+    _channels: DiagChannel[];
+    _channelNames: string[];
+
+    constructor() {
+        this._channels = [];
+        this._channelNames = [];
+    }
+
+    channel(name: string): DiagChannel {
+        // Return existing or create new
+        let i = 0;
+        while (i < this._channelNames.length) {
+            if (this._channelNames[i] == name) {
+                return this._channels[i];
+            }
+            i = i + 1;
+        }
+        const ch = new DiagChannel(name);
+        this._channelNames.push(name);
+        this._channels.push(ch);
+        return ch;
+    }
+
+    hasSubscribers(name: string): boolean {
+        let i = 0;
+        while (i < this._channelNames.length) {
+            if (this._channelNames[i] == name) {
+                return this._channels[i].hasSubscribers();
+            }
+            i = i + 1;
+        }
+        return false;
     }
 }
 
 const diagnosticsChannel = new DiagnosticsChannel();
-export { DiagnosticsNodeChannel };
+export { DiagChannel };
 export default diagnosticsChannel;

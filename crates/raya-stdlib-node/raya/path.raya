@@ -19,12 +19,38 @@ class ParsedPath {
 }
 
 class NodePath {
-    join(a: string, b: string): string {
-        return __NATIVE_CALL<string>("path.join", a, b);
+    sep: string;
+    delimiter: string;
+
+    constructor() {
+        this.sep = __NATIVE_CALL<string>("path.sep");
+        this.delimiter = __NATIVE_CALL<string>("path.delimiter");
     }
 
-    resolve(a: string, b: string): string {
-        return __NATIVE_CALL<string>("path.resolve", a, b);
+    join(...segments: string[]): string {
+        if (segments.length == 0) { return "."; }
+        let result = segments[0];
+        let i = 1;
+        while (i < segments.length) {
+            result = __NATIVE_CALL<string>("path.join", result, segments[i]);
+            i = i + 1;
+        }
+        return result;
+    }
+
+    resolve(...segments: string[]): string {
+        if (segments.length == 0) { return __NATIVE_CALL<string>("env.cwd"); }
+        let result = segments[0];
+        let i = 1;
+        while (i < segments.length) {
+            result = __NATIVE_CALL<string>("path.resolve", result, segments[i]);
+            i = i + 1;
+        }
+        // If the result is not absolute, resolve against cwd
+        if (!__NATIVE_CALL<boolean>("path.isAbsolute", result)) {
+            result = __NATIVE_CALL<string>("path.resolve", __NATIVE_CALL<string>("env.cwd"), result);
+        }
+        return result;
     }
 
     normalize(p: string): string {
@@ -65,14 +91,16 @@ class NodePath {
     }
 
     format(pathObj: ParsedPath): string {
-        return __NATIVE_CALL<string>("path.join", pathObj.dir, pathObj.base);
+        // Node.js format: dir + sep + base (or root + base if no dir)
+        if (pathObj.dir != null && pathObj.dir != "") {
+            return __NATIVE_CALL<string>("path.join", pathObj.dir, pathObj.base);
+        }
+        return pathObj.root + pathObj.base;
     }
 
-    sep(): string {
-        return __NATIVE_CALL<string>("path.sep");
-    }
-    delimiter(): string {
-        return __NATIVE_CALL<string>("path.delimiter");
+    toNamespacedPath(p: string): string {
+        // On POSIX, returns path unchanged. Windows would add \\?\ prefix.
+        return p;
     }
 }
 

@@ -1,4 +1,9 @@
-// Events - Node-compatible events module shim
+// node:events - Node.js-compatible events module
 // Usage: import EventEmitter from "node:events";
+// The builtin EventEmitter already implements the full Node.js API:
+//   on, once, off, emit, addListener, removeListener,
+//   removeAllListeners, listeners, listenerCount,
+//   eventNames, setMaxListeners, getMaxListeners
 
+export { EventEmitter };
 export default EventEmitter;

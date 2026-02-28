@@ -1,24 +1,31 @@
-// Stream Web - Node-compatible node:stream/web shim
-// Usage: import streamWeb from "node:stream/web";
+// node:stream/web - Node.js-compatible Web Streams API
+// Usage: import { ReadableStream, WritableStream, TransformStream } from "node:stream/web";
+// Stub implementation — Web Streams are not yet supported in Raya.
 
-class WebReadableStream {}
-class WebWritableStream {}
-class WebTransformStream {}
-
-class StreamWeb {
-    ReadableStream(): string {
-        return "ReadableStream";
-    }
-
-    WritableStream(): string {
-        return "WritableStream";
-    }
-
-    TransformStream(): string {
-        return "TransformStream";
+class ReadableStream {
+    constructor() {
+        throw new Error("node:stream/web ReadableStream is not implemented — use node:stream Readable instead");
     }
 }
 
+class WritableStream {
+    constructor() {
+        throw new Error("node:stream/web WritableStream is not implemented — use node:stream Writable instead");
+    }
+}
+
+class TransformStream {
+    constructor() {
+        throw new Error("node:stream/web TransformStream is not implemented — use node:stream Transform instead");
+    }
+}
+
+class StreamWeb {
+    ReadableStream(): ReadableStream { throw new Error("node:stream/web is not implemented — use node:stream instead"); }
+    WritableStream(): WritableStream { throw new Error("node:stream/web is not implemented — use node:stream instead"); }
+    TransformStream(): TransformStream { throw new Error("node:stream/web is not implemented — use node:stream instead"); }
+}
+
 const streamWeb = new StreamWeb();
-export { WebReadableStream, WebWritableStream, WebTransformStream };
+export { ReadableStream, WritableStream, TransformStream };
 export default streamWeb;

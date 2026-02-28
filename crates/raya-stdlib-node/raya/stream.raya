@@ -1,5 +1,5 @@
 // node:stream - Node.js-compatible stream module
-// Usage: import { Readable, Writable, Transform } from "node:stream";
+// Usage: import { Readable, Writable, Transform, Duplex, PassThrough, pipeline, finished } from "node:stream";
 // Re-exports std:stream types with Node.js-compatible class aliases.
 
 import {
@@ -23,11 +23,13 @@ class Readable {
     read(): string | null { return this._inner.read(); }
     isClosed(): boolean { return this._inner.isClosed(); }
 
-    pipe(writable: Writable): void {
+    pipe(writable: Writable): Writable {
         this._inner.pipe(writable._inner);
+        return writable;
     }
 
     toArray(): string[] { return this._inner.collect(); }
+    destroy(): void { /* close the stream */ }
 }
 
 class Writable {
@@ -41,6 +43,7 @@ class Writable {
     write(value: string): void { this._inner.write(value); }
     end(): void { this._inner.close(); }
     isClosed(): boolean { return this._inner.isClosed(); }
+    destroy(): void { this._inner.close(); }
 }
 
 class Transform {
@@ -64,6 +67,62 @@ class Transform {
     }
 }
 
-export { Readable, Writable, Transform };
+class Duplex {
+    _readable: Readable;
+    _writable: Writable;
+
+    constructor(
+        producer: (ctrl: ReadableController<string>) => void,
+        consumer: (ctrl: WritableController<string>) => void,
+        capacity?: number
+    ) {
+        const cap = capacity != null ? capacity : 16;
+        this._readable = new Readable(producer, cap);
+        this._writable = new Writable(consumer, cap);
+    }
+
+    read(): string | null { return this._readable.read(); }
+    write(value: string): void { this._writable.write(value); }
+    end(): void { this._writable.end(); }
+    isClosed(): boolean { return this._writable.isClosed(); }
+    destroy(): void { this._writable.destroy(); }
+
+    pipe(writable: Writable): Writable {
+        return this._readable.pipe(writable);
+    }
+}
+
+class PassThrough {
+    _transform: Transform;
+
+    constructor(capacity?: number) {
+        const cap = capacity != null ? capacity : 16;
+        this._transform = new Transform(
+            (input: string, ctrl: TransformController<string>): void => {
+                ctrl.push(input);
+            },
+            cap
+        );
+    }
+
+    getReadable(): Readable { return this._transform.getReadable(); }
+    getWritable(): Writable { return this._transform.getWritable(); }
+}
+
+function pipeline(source: Readable, destination: Writable, callback?: (err: Error | null) => void): void {
+    try {
+        source.pipe(destination);
+        if (callback != null) { callback(null); }
+    } catch (e) {
+        if (callback != null) { callback(e); }
+    }
+}
+
+function finished(stream: Readable | Writable, callback: (err: Error | null) => void): void {
+    // Simplified: call callback immediately since streams are synchronous in Raya
+    callback(null);
+}
+
+export { Readable, Writable, Transform, Duplex, PassThrough, pipeline, finished };
 export { ReadableStream, WritableStream, TransformStream };
 export default Readable;

@@ -1,13 +1,38 @@
 // node:util - Node.js-compatible utility module
 // Usage: import util from "node:util";
 
+class UtilTypes {
+    isDate(value: unknown): boolean {
+        return value instanceof Date;
+    }
+    isRegExp(value: unknown): boolean {
+        return value instanceof RegExp;
+    }
+    isArray(value: unknown): boolean {
+        return Array.isArray(value);
+    }
+    isNativeError(value: unknown): boolean {
+        return value instanceof Error;
+    }
+    isPromise(value: unknown): boolean {
+        return value instanceof Promise;
+    }
+}
+
 class Util {
-    inspect(value: unknown): string {
+    types: UtilTypes;
+
+    constructor() {
+        this.types = new UtilTypes();
+    }
+
+    inspect(value: unknown, depth?: number): string {
         return JSON.stringify(value);
     }
 
-    format(fmt: string, args: string[]): string {
-        let out = fmt;
+    format(fmt: string, ...args: string[]): string {
+        // Escape %% first by replacing with a placeholder
+        let out = fmt.replace("%%", "\x00PERCENT\x00");
         let i = 0;
         while (i < args.length) {
             if (out.includes("%s")) {
@@ -15,13 +40,14 @@ class Util {
             } else if (out.includes("%d")) {
                 out = out.replace("%d", args[i]);
             } else if (out.includes("%j")) {
-                out = out.replace("%j", args[i]);
+                out = out.replace("%j", JSON.stringify(args[i]));
             } else if (out.includes("%o")) {
-                out = out.replace("%o", args[i]);
+                out = out.replace("%o", JSON.stringify(args[i]));
             }
             i = i + 1;
         }
-        out = out.replace("%%", "%");
+        // Restore escaped percents
+        out = out.replace("\x00PERCENT\x00", "%");
         return out;
     }
 
@@ -36,7 +62,34 @@ class Util {
     inherits(_ctor: unknown, _superCtor: unknown): void {
         // No-op in Raya — use class extends instead
     }
+
+    promisify(fn: (callback: (err: unknown, result: unknown) => void) => void): () => Promise<unknown> {
+        // Simplified: wraps a zero-arg callback-style function into promise-returning
+        return (): Promise<unknown> => {
+            return new Promise((resolve: (value: unknown) => void, reject: (reason: unknown) => void): void => {
+                fn((err: unknown, result: unknown): void => {
+                    if (err != null) { reject(err); }
+                    else { resolve(result); }
+                });
+            });
+        };
+    }
+
+    callbackify(fn: () => Promise<unknown>): (callback: (err: unknown, result: unknown) => void) => void {
+        // Simplified: wraps a promise-returning function into callback-style
+        return (callback: (err: unknown, result: unknown) => void): void => {
+            fn().then(
+                (result: unknown): void => { callback(null, result); },
+                (err: unknown): void => { callback(err, null); }
+            );
+        };
+    }
+
+    isBuffer(value: unknown): boolean {
+        return value instanceof Buffer;
+    }
 }
 
 const util = new Util();
+export { UtilTypes };
 export default util;
