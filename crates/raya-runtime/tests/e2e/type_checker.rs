@@ -389,3 +389,30 @@ fn test_checker_type_reference_arity_error() {
         "InvalidTypeReferenceArity",
     );
 }
+
+#[test]
+fn test_checker_map_type_reference_arity_error() {
+    expect_compile_error(
+        "let m = 1 as Map<string>;
+         return 0;",
+        "InvalidTypeReferenceArity",
+    );
+}
+
+#[test]
+fn test_checker_set_type_reference_arity_error() {
+    expect_compile_error(
+        "let s = 1 as Set<number, string>;
+         return 0;",
+        "InvalidTypeReferenceArity",
+    );
+}
+
+#[test]
+fn test_index_missing_property_reports_error() {
+    expect_compile_error(
+        "let o: { x: number } = { x: 1 };
+         return o[\"y\"];",
+        "PropertyNotFound",
+    );
+}

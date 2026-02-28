@@ -3744,6 +3744,12 @@ impl<'a> TypeChecker<'a> {
             return inferred;
         }
 
+        if let Some(key) = self.string_key_from_index_expr(&index.index) {
+            if self.emit_missing_index_property_diagnostic(object_ty, &key, index.span) {
+                return self.fallback_type(index.span, FallbackReason::Unavoidable, "index-missing");
+            }
+        }
+
         self.fallback_type(index.span, FallbackReason::Unavoidable, "index-access")
     }
 
@@ -3862,6 +3868,78 @@ impl<'a> TypeChecker<'a> {
             Expression::StringLiteral(lit) => Some(self.resolve(lit.value)),
             Expression::IntLiteral(int_lit) => Some(int_lit.value.to_string()),
             _ => None,
+        }
+    }
+
+    fn has_named_member_or_index_signature(&mut self, ty: TypeId, key: &str) -> bool {
+        use crate::parser::types::Type;
+        match self.type_ctx.get(ty).cloned() {
+            Some(Type::Object(obj)) => {
+                obj.properties.iter().any(|p| p.name == key) || obj.index_signature.is_some()
+            }
+            Some(Type::Class(class_ty)) => self.lookup_class_member(&class_ty, key).is_some(),
+            Some(Type::TypeVar(tv)) => tv
+                .constraint
+                .map(|constraint| self.has_named_member_or_index_signature(constraint, key))
+                .unwrap_or(false),
+            Some(Type::Union(union)) => union
+                .members
+                .iter()
+                .copied()
+                .any(|member| self.has_named_member_or_index_signature(member, key)),
+            _ => false,
+        }
+    }
+
+    fn emit_missing_index_property_diagnostic(
+        &mut self,
+        object_ty: TypeId,
+        key: &str,
+        span: Span,
+    ) -> bool {
+        use crate::parser::types::Type;
+        match self.type_ctx.get(object_ty).cloned() {
+            Some(Type::Object(_)) | Some(Type::Class(_)) | Some(Type::TypeVar(_)) => {
+                if self.has_named_member_or_index_signature(object_ty, key) {
+                    return false;
+                }
+                self.errors.push(CheckError::PropertyNotFound {
+                    property: key.to_string(),
+                    ty: self.format_type(object_ty),
+                    span,
+                });
+                true
+            }
+            Some(Type::Union(union)) => {
+                let null_ty = self.type_ctx.null_type();
+                let mut object_like_members = 0usize;
+                let mut found = false;
+                for member in union.members {
+                    if member == null_ty {
+                        continue;
+                    }
+                    match self.type_ctx.get(member).cloned() {
+                        Some(Type::Object(_)) | Some(Type::Class(_)) | Some(Type::TypeVar(_)) => {
+                            object_like_members += 1;
+                            if self.has_named_member_or_index_signature(member, key) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if object_like_members > 0 && !found {
+                    self.errors.push(CheckError::PropertyNotFound {
+                        property: key.to_string(),
+                        ty: self.format_type(object_ty),
+                        span,
+                    });
+                    return true;
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -5903,29 +5981,62 @@ impl<'a> TypeChecker<'a> {
                 }
                 if name == TC::CHANNEL_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
-                        if type_args.len() == 1 {
-                            let msg_ty = self.resolve_type_annotation(&type_args[0]);
-                            return self.type_ctx.channel_type_with(msg_ty);
+                        if type_args.len() != 1 {
+                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                                name: name.clone(),
+                                expected: 1,
+                                actual: type_args.len(),
+                                span: type_ref.name.span,
+                            });
+                            return self.fallback_type(
+                                type_ref.name.span,
+                                FallbackReason::RecoverableUnsupportedExpr,
+                                "type-reference-channel-arity",
+                            );
                         }
+                        let msg_ty = self.resolve_type_annotation(&type_args[0]);
+                        return self.type_ctx.channel_type_with(msg_ty);
                     }
                     return self.type_ctx.channel_type();
                 }
                 if name == TC::MAP_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
-                        if type_args.len() == 2 {
-                            let key_ty = self.resolve_type_annotation(&type_args[0]);
-                            let value_ty = self.resolve_type_annotation(&type_args[1]);
-                            return self.type_ctx.map_type_with(key_ty, value_ty);
+                        if type_args.len() != 2 {
+                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                                name: name.clone(),
+                                expected: 2,
+                                actual: type_args.len(),
+                                span: type_ref.name.span,
+                            });
+                            return self.fallback_type(
+                                type_ref.name.span,
+                                FallbackReason::RecoverableUnsupportedExpr,
+                                "type-reference-map-arity",
+                            );
                         }
+                        let key_ty = self.resolve_type_annotation(&type_args[0]);
+                        let value_ty = self.resolve_type_annotation(&type_args[1]);
+                        return self.type_ctx.map_type_with(key_ty, value_ty);
                     }
                     return self.type_ctx.map_type();
                 }
                 if name == TC::SET_TYPE_NAME {
                     if let Some(ref type_args) = type_ref.type_args {
-                        if type_args.len() == 1 {
-                            let elem_ty = self.resolve_type_annotation(&type_args[0]);
-                            return self.type_ctx.set_type_with(elem_ty);
+                        if type_args.len() != 1 {
+                            self.errors.push(CheckError::InvalidTypeReferenceArity {
+                                name: name.clone(),
+                                expected: 1,
+                                actual: type_args.len(),
+                                span: type_ref.name.span,
+                            });
+                            return self.fallback_type(
+                                type_ref.name.span,
+                                FallbackReason::RecoverableUnsupportedExpr,
+                                "type-reference-set-arity",
+                            );
                         }
+                        let elem_ty = self.resolve_type_annotation(&type_args[0]);
+                        return self.type_ctx.set_type_with(elem_ty);
                     }
                     return self.type_ctx.set_type();
                 }

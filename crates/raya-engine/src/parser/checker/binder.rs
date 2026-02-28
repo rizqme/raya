@@ -3057,13 +3057,47 @@ impl<'a> Binder<'a> {
                             let message_ty = self.resolve_type_annotation(&type_args[0])?;
                             return Ok(self.type_ctx.channel_type_with(message_ty));
                         }
+                        return Err(BindError::InvalidTypeArguments {
+                            name,
+                            expected: 1,
+                            actual: type_args.len(),
+                            span,
+                        });
                     }
-                    return Err(BindError::InvalidTypeArguments {
-                        name,
-                        expected: 1,
-                        actual: type_ref.type_args.as_ref().map(|a| a.len()).unwrap_or(0),
-                        span,
-                    });
+                    return Ok(self.type_ctx.channel_type());
+                }
+
+                if name == TC::MAP_TYPE_NAME {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 2 {
+                            let key_ty = self.resolve_type_annotation(&type_args[0])?;
+                            let value_ty = self.resolve_type_annotation(&type_args[1])?;
+                            return Ok(self.type_ctx.map_type_with(key_ty, value_ty));
+                        }
+                        return Err(BindError::InvalidTypeArguments {
+                            name,
+                            expected: 2,
+                            actual: type_args.len(),
+                            span,
+                        });
+                    }
+                    return Ok(self.type_ctx.map_type());
+                }
+
+                if name == TC::SET_TYPE_NAME {
+                    if let Some(ref type_args) = type_ref.type_args {
+                        if type_args.len() == 1 {
+                            let elem_ty = self.resolve_type_annotation(&type_args[0])?;
+                            return Ok(self.type_ctx.set_type_with(elem_ty));
+                        }
+                        return Err(BindError::InvalidTypeArguments {
+                            name,
+                            expected: 1,
+                            actual: type_args.len(),
+                            span,
+                        });
+                    }
+                    return Ok(self.type_ctx.set_type());
                 }
 
                 // Handle Record<K, V> utility type as an indexed object shape.
