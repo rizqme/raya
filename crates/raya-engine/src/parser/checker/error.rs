@@ -48,7 +48,7 @@ pub enum BindError {
     },
 
     /// Invalid type arguments for built-in generic type
-    #[error("Type '{name}' expects {expected} type argument(s), got {actual}")]
+    #[error("E_INVALID_TYPE_REFERENCE_ARITY: type '{name}' expects {expected} type argument(s), got {actual}")]
     InvalidTypeArguments {
         /// Type name
         name: String,

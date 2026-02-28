@@ -458,6 +458,26 @@ fn test_interface_extends_type_retained() {
 }
 
 #[test]
+fn test_interface_extends_undefined_type_reports_error() {
+    expect_compile_error(
+        "interface Derived extends MissingBase { y: number }
+         let d: Derived = { y: 1 };
+         return d.y;",
+        "UndefinedType",
+    );
+}
+
+#[test]
+fn test_interface_missing_required_property_reports_error() {
+    expect_compile_error(
+        "interface Box { value: number }
+         let b: Box = {};
+         return 0;",
+        "TypeMismatch",
+    );
+}
+
+#[test]
 fn test_member_non_object_reports_unsupported_typing_path() {
     expect_compile_error(
         "let x: number = 1;
